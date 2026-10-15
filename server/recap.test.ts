@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { detectLanguage, generateRecap, invalidateRecapCache } from './recap.js'
+import { detectLanguage, generateRecap, invalidateRecapCache, RecapManager } from './recap.js'
+import type { SessionRecap } from '../shared/session-info.js'
 import { __setConfigForTest, config } from './config.js'
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -368,6 +369,126 @@ describe('recap', () => {
       expect(r2.summary).toBe('shared result')
       // Only one API call should have been made.
       expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  // ── Generation identity ─────────────────────────────────────────
+  //
+  // The recap window's close button is keyed on SessionRecap.generatedAt
+  // (ChatPanel's recapDismissedAt): while status==='pending' the card shows
+  // its loading state and a close click stores recap.generatedAt, so the
+  // dismissal gate (`generatedAt !== recapDismissedAt`) can recognize it.
+  // Two invariants make that work:
+  //   1. pending MUST carry a stamp — undefined collapses to the
+  //      "no dismissal in effect" null sentinel and the click becomes a
+  //      no-op (the card cannot be closed while loading);
+  //   2. ready/error of the SAME generation MUST reuse the pending's
+  //      stamp — restamping at completion would fail the !== gate and pop
+  //      the dismissed card back open when the LLM call lands.
+  // A NEW generation gets a fresh stamp — that is what auto-reopens the
+  // window for a genuinely new recap.
+
+  describe('generation identity (recap-window dismissal)', () => {
+    // vi.setSystemTime mocks Date for the rest of this worker — restore it
+    // so tests added later (in this file, this describe or below it) don't
+    // silently read a frozen clock. vi.restoreAllMocks in the outer
+    // beforeEach does NOT reset it.
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    function makeManager(writes: SessionRecap[]): RecapManager {
+      return new RecapManager({
+        getPhase: () => 'idle',
+        getHistory: () => [userMsg('a', 'u1'), assistantMsg('b', 'a1')],
+        getTarget: () => ({
+          model: 'test-recap-model',
+          baseUrl: 'https://api.anthropic.com',
+          authToken: 'test-token-123',
+        }),
+        setRecap: (_id, recap) => {
+          if (recap) writes.push(recap)
+        },
+        broadcastRecap: () => {},
+      })
+    }
+
+    it('pending carries a generatedAt stamp and ready reuses it', async () => {
+      let resolveFetch!: (v: unknown) => void
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockReturnValue(
+          new Promise((r) => {
+            resolveFetch = r
+          }),
+        ),
+      )
+
+      const t0 = Date.parse('2026-01-01T00:00:00Z')
+      vi.setSystemTime(t0)
+      const writes: SessionRecap[] = []
+      const mgr = makeManager(writes)
+
+      const inflight = mgr.requestGenerate('ident-1')
+      // The pending write is synchronous up to the first await (the LLM
+      // call), so it has landed by the time requestGenerate returns.
+      expect(writes).toHaveLength(1)
+      expect(writes[0].status).toBe('pending')
+      expect(typeof writes[0].generatedAt).toBe('number')
+
+      // Completion happens LATER — a restamp with Date.now() would differ
+      // from the pending stamp and reopen a dismissed card.
+      vi.setSystemTime(t0 + 60_000)
+      resolveFetch({
+        ok: true,
+        json: async () => ({ content: [{ type: 'text', text: 'summary' }] }),
+      })
+      const returned = await inflight
+
+      expect(writes).toHaveLength(2)
+      expect(writes[1].status).toBe('ready')
+      expect(writes[1].generatedAt).toBe(writes[0].generatedAt)
+      expect(returned.generatedAt).toBe(writes[0].generatedAt)
+    })
+
+    it('error reuses the pending stamp (dismissal survives a failed generation)', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')))
+
+      const t0 = Date.parse('2026-01-02T00:00:00Z')
+      vi.setSystemTime(t0)
+      const writes: SessionRecap[] = []
+      const mgr = makeManager(writes)
+
+      await expect(mgr.requestGenerate('ident-err')).rejects.toThrow('boom')
+
+      const pending = writes.find((w) => w.status === 'pending')
+      const errored = writes.find((w) => w.status === 'error')
+      expect(pending).toBeDefined()
+      expect(errored).toBeDefined()
+      expect(typeof pending!.generatedAt).toBe('number')
+      expect(errored!.generatedAt).toBe(pending!.generatedAt)
+    })
+
+    it('a new generation gets a fresh stamp (auto-reopen for a new recap)', async () => {
+      mockFetchSuccess('first summary')
+      const t0 = Date.parse('2026-01-03T00:00:00Z')
+      vi.setSystemTime(t0)
+      const writes: SessionRecap[] = []
+      const mgr = makeManager(writes)
+
+      await mgr.requestGenerate('ident-new')
+      const firstPending = writes.find((w) => w.status === 'pending')!
+
+      // Conversation mutated → invalidate → the next generation is a NEW
+      // recap the client should auto-reopen for.
+      mgr.invalidate('ident-new')
+      mockFetchSuccess('second summary')
+      vi.setSystemTime(t0 + 60_000)
+      await mgr.requestGenerate('ident-new')
+
+      const pendings = writes.filter((w) => w.status === 'pending')
+      expect(pendings).toHaveLength(2)
+      expect(pendings[1].generatedAt).not.toBe(firstPending.generatedAt)
     })
   })
 

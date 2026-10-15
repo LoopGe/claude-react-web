@@ -2,8 +2,9 @@
 // Non-modal: occupies only the top portion (~45% max height) so the chat
 // stays visible and scrollable beneath it. Frosted-glass backdrop matches
 // the SettingsPanel/GitPanel overlays. A close (X) button dismisses it;
-// once dismissed it stays hidden until a NEW recap arrives (new generatedAt)
-// or the user reopens it via the header button.
+// once dismissed it stays hidden until a NEW recap generation arrives
+// (fresh generatedAt — reachable via Alt+R, which dispatches a new
+// generation) or the panel switches sessions (dismissal state resets).
 //
 // Three states share the same shell (ready / pending / error), mirroring the
 // old RecapFooter that lived in the Virtuoso footer slot.
@@ -178,10 +179,11 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
       <div className="recap-window-body" ref={setBodyOs}>
         {/* Key includes generatedAt so a freshly-GENERATED summary (same
             'ready' status, new generation) remounts and replays the per-block
-            reveal; pending carries no generatedAt (key 'pending:'). The
-            -ready class opts the mounted summary out of the whole-body
-            recap-body-in fade — the reveal is per-block there, and the two
-            fades would multiply into mush. */}
+            reveal. Remount semantics are owned by the status component of
+            the key alone — the stamp's job is the dismissal identity, not
+            mounting. The -ready class opts the mounted summary out of the
+            whole-body recap-body-in fade — the reveal is per-block there,
+            and the two fades would multiply into mush. */}
         <div
           key={`${recap.status}:${recap.generatedAt ?? ''}`}
           className={`recap-window-body-inner${

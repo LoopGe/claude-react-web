@@ -46,8 +46,12 @@ export interface SessionRecap {
   summary?: string
   stats?: SessionRecapStats
   error?: string
-  /** Epoch ms of the most recent successful generation OR the most
-   *  recent error. Used by the client only for display. */
+  /** Epoch ms stamped when this generation was DISPATCHED, stable across
+   *  its pending → ready/error lifecycle (every frame of one generation
+   *  carries the same value). The client keys the recap window's dismissal
+   *  on it: closing the card while pending records the stamp, so the card
+   *  stays closed when that generation completes, and only a NEW
+   *  generation's fresh stamp reopens it. */
   generatedAt?: number
 }
 

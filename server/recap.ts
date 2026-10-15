@@ -327,12 +327,15 @@ export class RecapManager {
    *   412 — phase === 'dormant' (session unloaded; resume first)
    *   404 — phase === 'unknown' (session not in the manager's map)
    *
-   * Cache rules:
-   *   - status:'ready' is returned as-is and counts as fresh.
-   *     `invalidate()` is the only way fresh becomes stale.
-   *   - status:'pending' from a previous call dedups — second caller
-   *     awaits the same promise.
-   *   - status:'error' is NOT treated as fresh. The next call retries.
+   * Dispatch rules: every call on a session with no in-flight generation
+   * dispatches a FRESH generation (there is no ready-cache here — the
+   * uuid-fingerprint cache exists only in the legacy generateRecap shim
+   * below). Re-spending is prevented client-side: the auto-fire path only
+   * fires when session.recap is undefined, and a manual Alt+R
+   * re-generating on purpose is the documented behavior (its fresh stamp
+   * is what reopens a dismissed window).
+   *   - status:'pending' from a previous in-flight call dedups — a
+   *     concurrent second caller awaits the same promise.
    */
   async requestGenerate(sessionId: string): Promise<SessionRecap> {
     const phase = this.deps.getPhase(sessionId)
@@ -388,6 +391,17 @@ export class RecapManager {
     // Snapshot the generation at dispatch. invalidate() bumps it; the
     // final ready/error apply is then recognised as stale and dropped.
     const gen = this.generation.get(sessionId) ?? 0
+    // Generation identity: stamped ONCE at dispatch and reused on every
+    // recap write of this cycle (pending/ready/error). The client keys the
+    // recap window's dismissal on it (ChatPanel's recapDismissedAt): the
+    // pending frame must carry it — a pending recap without a stamp cannot
+    // be dismissed (its undefined collapses to the "no dismissal" null
+    // sentinel, making the close button a no-op while loading) — and
+    // ready/error must REUSE it, so a card dismissed while loading stays
+    // dismissed when that same generation completes. A new generation
+    // (invalidate → fresh requestGenerate) stamps fresh, which is what
+    // auto-reopens the window for a genuinely new recap.
+    const generatedAt = Date.now()
 
     // Empty session: synthesize a ready recap with no LLM call. Same
     // behaviour as the old empty-session shortcut, but now the result
@@ -397,7 +411,7 @@ export class RecapManager {
         status: 'ready',
         summary: 'No messages yet.',
         stats,
-        generatedAt: Date.now(),
+        generatedAt,
       }
       this.#applyResult(sessionId, empty, gen)
       return empty
@@ -414,7 +428,7 @@ export class RecapManager {
       const errored: SessionRecap = {
         status: 'error',
         error: "Recap unavailable: the session's profile has no authToken configured. Set authToken in config.json.",
-        generatedAt: Date.now(),
+        generatedAt,
       }
       this.#applyResult(sessionId, errored, gen)
       // Throw so the route returns the error to the explicit caller too.
@@ -422,10 +436,13 @@ export class RecapManager {
     }
 
     // Mark pending so live clients show the loading state immediately.
-    // The pending broadcast is intentionally NOT gated on generation —
-    // it represents an in-flight call the user just triggered, and the
-    // UI relies on it to show a spinner before the LLM round-trip.
-    const pending: SessionRecap = { status: 'pending' }
+    // The write passes `gen` like the final applies — it is safe to drop
+    // when stale; in practice the gate cannot trip here because this runs
+    // synchronously before the first await, so nothing can bump the
+    // generation between the snapshot above and this write. It carries
+    // the dispatch stamp (see `generatedAt` above) so the card can be
+    // dismissed while loading.
+    const pending: SessionRecap = { status: 'pending', generatedAt }
     this.#applyResult(sessionId, pending, gen)
 
     try {
@@ -435,7 +452,7 @@ export class RecapManager {
         status: 'ready',
         summary,
         stats,
-        generatedAt: Date.now(),
+        generatedAt,
       }
       this.#applyResult(sessionId, ready, gen)
       return ready
@@ -444,7 +461,7 @@ export class RecapManager {
       const errored: SessionRecap = {
         status: 'error',
         error: message,
-        generatedAt: Date.now(),
+        generatedAt,
       }
       this.#applyResult(sessionId, errored, gen)
       // Re-throw so the route caller sees the failure too.

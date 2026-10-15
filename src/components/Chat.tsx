@@ -279,9 +279,10 @@ interface Props {
    *  button is the only trigger now that the header chip is gone. */
   onOpenTasksPanel?: (sessionId: string) => void
   /** When true, render the floating Recap window at the top of the chat
-   *  area. Owned by ChatPanel (which also renders the reopen button in the
-   *  header); Chat just renders the window and calls onCloseRecap when the
-   *  user clicks X. */
+   *  area. Owned by ChatPanel (which records the dismissal); Chat just
+   *  renders the window and calls onCloseRecap when the user clicks X.
+   *  There is no dedicated reopen button — a new generation (Alt+R) or a
+   *  session switch reopens it. */
   recapOpen?: boolean
   onCloseRecap?: () => void
   /** Whether this panel is the currently focused (active) one. Used by

@@ -389,6 +389,9 @@ export const ChatPanel = memo(function ChatPanel({
   /** Tracks the `generatedAt` of the recap the user has dismissed. When it
    *  matches the current session.recap.generatedAt, the floating window
    *  stays hidden; a NEW recap (different generatedAt) auto-reopens it.
+   *  The stamp is stable across one generation's pending → ready/error
+   *  lifecycle (stamped at dispatch server-side), so a card closed while
+   *  LOADING also stays closed when that generation completes.
    *  Null = no dismissal in effect → window shows whenever a recap exists.
    *  Reset on session switch (see effect below). */
   const [recapDismissedAt, setRecapDismissedAt] = useState<number | null>(null)
