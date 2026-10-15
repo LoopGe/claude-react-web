@@ -8413,8 +8413,8 @@ describe('create() worktree isolation', () => {
     const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
     const wtPath = join(dir, 'worktrees', info.id)
     expect(info.cwd).toBe(wtPath)
-    expect(info.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: head })
-    expect(store.get(info.id)?.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: head })
+    expect(info.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: head, path: wtPath })
+    expect(store.get(info.id)?.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: head, path: wtPath })
     // the subprocess actually spawned with the worktree as its cwd
     expect(mockHandles[0].options.cwd).toBe(wtPath)
   })
@@ -8486,7 +8486,7 @@ describe('resume() worktree recreate chain', () => {
     // Isolation metadata survived: same branch, still persisted.
     const meta = store.get(info.id)!
     expect(meta.cwd).toBe(wtPath)
-    expect(meta.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: expect.any(String) })
+    expect(meta.worktree).toEqual({ mainRepoPath: repo, branch: `crw/${info.id.slice(0, 8)}`, baseSha: expect.any(String), path: wtPath })
   })
 
   it('recreates the worktree from baseSha when the branch was deleted too', async () => {

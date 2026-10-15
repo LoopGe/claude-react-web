@@ -334,10 +334,15 @@ export function coerceMemory(raw: unknown): SessionMemorySettings | undefined {
   return Object.keys(out).length > 0 ? out : undefined
 }
 
-/** Narrow untrusted JSON into a WorktreeInfo. Absent/malformed → undefined. */
+/** Narrow untrusted JSON into a WorktreeInfo. Absent/malformed → undefined.
+ *  `path` (the recorded worktree dir, added after the field shipped) is
+ *  preserved when it's a non-empty string and dropped otherwise — a legacy
+ *  meta without it falls back to the session-id-derived path. */
 function coerceWorktree(raw: unknown): WorktreeInfo | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined
   const w = raw as Record<string, unknown>
   if (typeof w.mainRepoPath !== 'string' || typeof w.branch !== 'string' || typeof w.baseSha !== 'string') return undefined
-  return { mainRepoPath: w.mainRepoPath, branch: w.branch, baseSha: w.baseSha }
+  const out: WorktreeInfo = { mainRepoPath: w.mainRepoPath, branch: w.branch, baseSha: w.baseSha }
+  if (typeof w.path === 'string' && w.path) out.path = w.path
+  return out
 }

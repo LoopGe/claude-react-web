@@ -8,7 +8,7 @@ import { HttpError } from './errors.js'
 import { branchExists, commitExists } from './git.js'
 import {
   branchFor, ensureWorktreeForResume, provisionWorktree,
-  removeWorktreeForSession, withRepoLock, worktreePathFor,
+  removeWorktreeForSession, withRepoLock, worktreePathFor, worktreePathOf,
 } from './session-worktree.js'
 import type { WorktreeInfo } from '../shared/session-info.js'
 import {
@@ -33,6 +33,18 @@ describe('worktreePathFor / branchFor', () => {
   it('derives the worktree path and branch name from the session id', () => {
     expect(worktreePathFor('/state', 'sess-1234-abcd')).toBe('/state/worktrees/sess-1234-abcd')
     expect(branchFor('sess-1234-abcd')).toBe('crw/sess-123')
+  })
+})
+
+describe('worktreePathOf', () => {
+  it('prefers the recorded path over the id-derived one', () => {
+    const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h', path: '/elsewhere/wt' }
+    expect(worktreePathOf('/state', 'sess-1', wt)).toBe('/elsewhere/wt')
+  })
+
+  it('falls back to the id-derived path for legacy metas (no path)', () => {
+    const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h' }
+    expect(worktreePathOf('/state', 'sess-1', wt)).toBe(worktreePathFor('/state', 'sess-1'))
   })
 })
 
@@ -149,6 +161,22 @@ describe('ensureWorktreeForResume', () => {
     expect(await branchExists(repo, wt.branch)).toBe(true)
   })
 
+  it('recreates at the recorded path when the session id differs (/clear inheritance)', async () => {
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    // X provisioned at a dir named after X; Y (new id) inherits X's meta —
+    // the recreate must rebuild at the RECORDED dir, not the id-derived one.
+    const p = await provisionWorktree(stateDir, 'inh-aaaa-x', repo)
+    const wt: WorktreeInfo = { mainRepoPath: repo, branch: p.branch, baseSha: p.baseSha, path: p.worktreePath }
+    await fsPromises.rm(p.worktreePath, { recursive: true, force: true })
+
+    const r = await ensureWorktreeForResume(stateDir, 'inh-aaaa-y', wt)
+
+    expect(r.cwd).toBe(p.worktreePath)
+    expect(r.worktree).toBe(wt)
+    await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
+  })
+
   it('falls back to the main repo when the branch and baseSha are both gone', async () => {
     const repo = await makeRepo()
     const { stateDir, worktreePath } = await provisioned(repo, 'res-dddd-1')
@@ -180,6 +208,22 @@ describe('removeWorktreeForSession', () => {
     const warnings: string[] = []
     await removeWorktreeForSession(stateDir, 'rm-aaaa-1', wt, { warn: (m) => warnings.push(m) })
     await expect(fsPromises.access(worktreePath)).rejects.toThrow()
+    expect(await branchExists(repo, wt.branch)).toBe(true)
+    expect(warnings).toEqual([])
+  })
+
+  it('removes the dir recorded in meta.path even when named after another session', async () => {
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    // /clear inheritance: the meta was created under X but is held by Y —
+    // cleanup must remove the RECORDED dir, not the id-derived one.
+    const p = await provisionWorktree(stateDir, 'inh-bbbb-x', repo)
+    const wt: WorktreeInfo = { mainRepoPath: repo, branch: p.branch, baseSha: p.baseSha, path: p.worktreePath }
+    const warnings: string[] = []
+
+    await removeWorktreeForSession(stateDir, 'inh-bbbb-y', wt, { warn: (m) => warnings.push(m) })
+
+    await expect(fsPromises.access(p.worktreePath)).rejects.toThrow()
     expect(await branchExists(repo, wt.branch)).toBe(true)
     expect(warnings).toEqual([])
   })

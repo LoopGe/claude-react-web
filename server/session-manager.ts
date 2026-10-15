@@ -1581,6 +1581,10 @@ export class SessionManager {
       withDefault.cwd = prov.worktreePath
       ;(withDefault as Options & { worktree?: WorktreeInfo }).worktree = {
         mainRepoPath: mainRepo, branch: prov.branch, baseSha: prov.baseSha,
+        // Record the actual dir so /clear inheritance (Y gets a NEW id) and
+        // the orphan sweep can still find it. Legacy metas (pre-field) fall
+        // back to the id-derived path via worktreePathOf.
+        path: prov.worktreePath,
       }
       return this.spawn(id, withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
     }

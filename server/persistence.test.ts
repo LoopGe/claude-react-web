@@ -477,6 +477,7 @@ describe('SessionStore', () => {
     await store.load()
     const wt: NonNullable<SessionMeta['worktree']> = {
       mainRepoPath: '/repo/main', branch: 'crw/abcd1234', baseSha: 'a'.repeat(40),
+      path: '/state/worktrees/sess-a',
     }
     store.upsert(makeMeta('a', { worktree: wt }))
     await store.flush()

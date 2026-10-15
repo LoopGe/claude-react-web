@@ -39,6 +39,15 @@ export function worktreePathFor(stateDir: string, sessionId: string): string {
   return join(stateDir, 'worktrees', sessionId)
 }
 
+/** The directory a session's worktree actually lives at: the meta's
+ *  recorded `path` when present, else the session-id-derived path
+ *  (identical for every meta persisted before `path` existed). The
+ *  recorded path matters for /clear-inherited worktrees — the replacement
+ *  session has a NEW id while the directory still lives at the old one. */
+export function worktreePathOf(stateDir: string, sessionId: string, wt: WorktreeInfo): string {
+  return wt.path ?? worktreePathFor(stateDir, sessionId)
+}
+
 export function branchFor(sessionId: string): string {
   return `crw/${sessionId.slice(0, 8)}`
 }
@@ -86,7 +95,7 @@ export async function provisionWorktree(
 export async function ensureWorktreeForResume(
   stateDir: string, sessionId: string, wt: WorktreeInfo,
 ): Promise<{ cwd: string; worktree?: WorktreeInfo }> {
-  const worktreePath = worktreePathFor(stateDir, sessionId)
+  const worktreePath = worktreePathOf(stateDir, sessionId, wt)
   if (existsSync(worktreePath)) return { cwd: worktreePath, worktree: wt }
   if (!existsSync(wt.mainRepoPath)) return { cwd: wt.mainRepoPath, worktree: undefined }
   const commonDir = await getGitCommonDir(wt.mainRepoPath)
@@ -114,7 +123,7 @@ export async function ensureWorktreeForResume(
 export async function removeWorktreeForSession(
   stateDir: string, sessionId: string, wt: WorktreeInfo, log: { warn(msg: string): void },
 ): Promise<void> {
-  const worktreePath = worktreePathFor(stateDir, sessionId)
+  const worktreePath = worktreePathOf(stateDir, sessionId, wt)
   if (!existsSync(worktreePath)) return
   try {
     const commonDir = await getGitCommonDir(wt.mainRepoPath)

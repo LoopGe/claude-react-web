@@ -149,6 +149,12 @@ export interface WorktreeInfo {
   /** Main-repo HEAD at creation time — recreate fallback when the branch
    *  was deleted externally. */
   baseSha: string
+  /** Actual worktree directory. Undefined on metas persisted before this
+   *  field existed — consumers fall back to the session-id-derived path
+   *  (identical for those sessions). Needed because /clear spawns a
+   *  replacement session under a NEW id that inherits X's WorktreeInfo
+   *  while the directory still lives at the X-named path. */
+  path?: string
 }
 
 export interface SessionInfoBase<PM = string> {

@@ -18,7 +18,7 @@ import { isBlockedEnvVar } from '../session-env.js'
 import { createLogger } from '../log.js'
 import { validateSendBody } from '../send-body.js'
 import { worktreeIsDirty } from '../git.js'
-import { worktreePathFor } from '../session-worktree.js'
+import { worktreePathOf } from '../session-worktree.js'
 
 const log = createLogger('http')
 
@@ -398,7 +398,7 @@ export function buildSessionRouter(
     const id = c.req.param('id')
     const wt = sm.get(id).worktree
     if (!wt || !stateDir) return c.json({ available: false })
-    const worktreePath = worktreePathFor(stateDir, id)
+    const worktreePath = worktreePathOf(stateDir, id, wt)
     if (!existsSync(worktreePath)) return c.json({ available: false })
     // A broken worktree dir (deleted .git file, corrupt registration) makes
     // the dirty probe throw — that must not 500 the delete confirmation. The
