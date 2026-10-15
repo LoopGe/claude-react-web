@@ -258,6 +258,11 @@ export interface ResumableSession {
   customTitle?: string
   /** First meaningful user prompt — shown as a preview/secondary line. */
   firstPrompt?: string
+  /** Last user prompt — tail-read from the transcript (`last-prompt` entry,
+   *  falling back to the newest string-content user message). Display-only
+   *  preview for the /resume picker; whitespace-condensed and capped at 120
+   *  chars. Undefined when the transcript is missing or has no prompt. */
+  lastPrompt?: string
   cwd?: string
   /** The CLI's permission mode (default/acceptEdits/bypassPermissions/plan),
    *  from the SDK's getSessionInfo `mode` field. Only set for CLI-created

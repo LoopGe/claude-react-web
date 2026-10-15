@@ -62,6 +62,9 @@ export interface ResumableSession {
   sessionId: string
   title?: string
   firstPrompt?: string
+  /** Last user prompt — server tail-reads it from the transcript, condensed
+   *  to 120 chars. Display-only preview in the /resume picker. */
+  lastPrompt?: string
   cwd?: string
   createdAt?: number
   lastModified: number

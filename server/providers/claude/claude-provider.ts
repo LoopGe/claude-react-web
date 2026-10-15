@@ -24,7 +24,8 @@ import {
   resolveConfiguredModelId,
   resolveGroup,
 } from '../../model-groups.js'
-import { readHistoryEntries } from '../../history-reader.js'
+import { readHistoryEntries, readLastUserPrompt } from '../../history-reader.js'
+import { condensePromptPreview } from '../../../shared/prompt-preview.js'
 import { jsonlPageCache } from '../../jsonl-cache.js'
 import { claudeConfigDir } from '../../claude-config-dir.js'
 import { filterClientEnv } from '../../session-env.js'
@@ -737,7 +738,35 @@ export class ClaudeProvider implements AgentProvider {
 
   async listResumable(opts?: ListResumableOptions): Promise<ResumableSession[]> {
     const raw = await listSessions(opts?.dir ? { dir: opts.dir } : undefined)
-    return raw.map((session) => this.toResumable(session))
+    // Attach the last-prompt preview per row (tail read, cached — see
+    // readLastUserPrompt). Display-only. Suppressed when it is the SAME
+    // prompt as firstPrompt (single-turn sessions) — the dedup lives HERE,
+    // server-side, where both values and the shared condense rule live;
+    // the client renders lastPrompt verbatim without re-deriving anything.
+    // (Known condense limitation: two DIFFERENT prompts sharing their first
+    // 120 chars also dedup — accepted for a display-only hint.)
+    // Reads run with bounded concurrency: "All projects" mode can list
+    // thousands of transcripts and an unbounded Promise.all would spike file
+    // handles + stats in one burst right as the picker opens.
+    const out: ResumableSession[] = new Array(raw.length)
+    const CHUNK = 16
+    for (let start = 0; start < raw.length; start += CHUNK) {
+      const chunk = raw.slice(start, start + CHUNK)
+      const part = await Promise.all(
+        chunk.map(async (session, j) => {
+          const lastPrompt = await readLastUserPrompt(session.sessionId)
+          out[start + j] = {
+            ...this.toResumable(session),
+            lastPrompt:
+              lastPrompt !== undefined && lastPrompt !== condensePromptPreview(session.firstPrompt ?? '')
+                ? lastPrompt
+                : undefined,
+          }
+        }),
+      )
+      void part
+    }
+    return out
   }
 
   readHistoryPage(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage> {

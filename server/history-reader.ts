@@ -36,12 +36,13 @@
 //             'queued'. tool_result-bearing user frames are never queued
 //             (parent != null), so they only get receivedAt.
 
-import { readFile, readdir, stat, unlink } from 'node:fs/promises'
+import { open, readFile, readdir, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { claudeConfigDir } from './claude-config-dir.js'
 import { BROADCAST_SYSTEM_SUBTYPES, trimLargeToolResults } from './history-utils.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
+import { condensePromptPreview } from '../shared/prompt-preview.js'
 
 const log = createLogger('history')
 
@@ -71,6 +72,8 @@ export interface RawLine {
   session_id?: string
   isMeta?: boolean
   isSidechain?: boolean
+  /** CLI compaction-summary frame — not a user prompt. */
+  isCompactSummary?: boolean
   message?: { role?: string; content?: unknown }
   [k: string]: unknown
 }
@@ -160,6 +163,209 @@ export async function findTranscriptFile(sessionId: string): Promise<TranscriptF
     }
   }
   return null
+}
+
+// ---------------------------------------------------------------------------
+// Last-user-prompt preview (for the /resume picker's per-row previews).
+//
+// The CLI appends a `{"type":"last-prompt","lastPrompt":"…"}` entry to the
+// transcript around every turn, so the session's latest prompt sits at the
+// very end of the file. Reading a small tail window (instead of parsing the
+// whole transcript through the page cache) keeps the picker's per-row cost
+// flat — "All projects" mode lists every transcript on disk.
+
+/** How much of the file tail to read per row. Large enough to cover the
+ *  newest turn's entries (last-prompt / custom-title / mode / attachments)
+ *  AND to keep the torn-line edge rare: a `last-prompt` line longer than the
+ *  window would be torn mid-prefix (where the prompt text lives) and lost —
+ *  64 KB swallows every realistic prompt line. Still cheap per row, and the
+ *  result is cached. */
+const LAST_PROMPT_TAIL_BYTES = 64 * 1024
+
+/** Single-line preview cap + condense rule come from shared/prompt-preview —
+ *  shared with the client so the picker's duplicate-line dedup (server-side,
+ *  in claude-provider) can never drift between the wire value and the raw
+ *  firstPrompt it is compared against. */
+
+interface LastPromptCacheEntry {
+  /** Resolved transcript path; null = "no transcript exists for this id"
+   *  (tombstone — e.g. clear() deleted it, the id is retired). */
+  path: string | null
+  size: number
+  mtimeMs: number
+  text: string | undefined
+}
+
+/** Keyed by SESSION id (not path), storing the resolved location: on a hit
+ *  a single stat of the cached path verifies freshness (same (size, mtime)
+ *  key the jsonl page cache uses) instead of re-running findTranscriptFile's
+ *  full projects/ tree scan — the picker lists every transcript on disk, so
+ *  an O(rows × project-dirs) locate per open would dominate the cost the
+ *  tail read was meant to keep flat. Missing transcripts tombstone as
+ *  path:null so a deleted-transcript row doesn't re-scan every open.
+ *  Bounded LRU. */
+const lastPromptCache = new Map<string, LastPromptCacheEntry>()
+/** Sized to cover "All projects" mode's row count (the picker lists every
+ *  transcript on disk) so a warm open is O(rows) single stats, not re-locates.
+ *  Entries are tiny (path + numbers + one short string). */
+const LAST_PROMPT_CACHE_CAP = 512
+
+/** CLI-synthetic user frames (command expansions, bash echoes) start with one
+ *  of these literal tags — the same narrow family the SDK's own firstPrompt
+ *  derivation skips. A user prompt that merely BEGINS with '<' (pasted HTML,
+ *  "<label> should be red") must still qualify, so this is deliberately NOT
+ *  a broad any-XML-tag rule. */
+const SYNTHETIC_FRAME_PREFIX_RE =
+  /^\s*<(command-name|command-message|command-args|bash-input|bash-stdout|bash-stderr|local-command-stdout|local-command-stderr)>/
+
+/** Parse a transcript tail window into the session's last user prompt.
+ *
+ *  The window may start mid-line (a tail read lands wherever the math puts
+ *  it, possibly inside a huge line or a multi-byte char). There is no reliable
+ *  way to tell a torn first segment from a complete one — when the window
+ *  starts at a line boundary the first segment IS the complete line — so no
+ *  segment is pre-emptively discarded: a torn first line fails JSON.parse
+ *  (a JSON-object suffix is never valid JSON with a `type` field) and is
+ *  skipped by the same corrupt-row tolerance as any other bad row.
+ *
+ *  Lines are scanned BACKWARD, tracking the newest candidate of EACH kind
+ *  rather than returning on the first hit: `last-prompt` entries are written
+ *  around turn bookkeeping, so a mid-turn tail can contain a last-prompt for
+ *  the PREVIOUS turn positioned BEFORE a newer raw user message — recency is
+ *  decided by file position, not entry kind. A top-level user message
+ *  qualifies via a plain-string content or a content array of text (and
+ *  image) blocks; tool_result frames, isMeta / isCompactSummary /
+ *  isSidechain lines, interrupt placeholders, and CLI-synthetic markup frames
+ *  (command expansions etc. — anything starting with an XML tag, mirroring
+ *  the SDK's own firstPrompt derivation) are skipped, matching the
+ *  renderable-subset rules above. Corrupt rows are skipped. */
+export function parseLastUserPrompt(tail: string): string | undefined {
+  if (!tail.trim()) return undefined
+  let lastPromptHit: { index: number; text: string | undefined } | undefined
+  let userHit: { index: number; text: string } | undefined
+  const lines = tail.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    // Both newest-of-kind candidates resolved — older lines can't change
+    // either, so stop.
+    if (lastPromptHit && userHit) break
+    const line = lines[i].trim()
+    if (!line) continue
+    let o: RawLine
+    try {
+      o = JSON.parse(line) as RawLine
+    } catch {
+      continue
+    }
+    if (o.type === 'last-prompt' && !lastPromptHit) {
+      // A BLANK value is still a verdict: the CLI records "the last prompt is
+      // empty" (fresh/failed turn, post-clear bookkeeping). Recording it —
+      // instead of skipping to an older user message — keeps the reader's
+      // recency-by-file-position rule honest. text may be undefined here.
+      const raw = typeof o.lastPrompt === 'string' ? condensePromptPreview(o.lastPrompt) : undefined
+      lastPromptHit = { index: i, text: raw || undefined }
+      continue
+    }
+    if (!userHit && o.type === 'user' && !o.isMeta && !o.isSidechain && !o.isCompactSummary) {
+      const content = o.message?.content
+      if (typeof content === 'string') {
+        if (!isInterruptPlaceholder(content) && !SYNTHETIC_FRAME_PREFIX_RE.test(content)) {
+          const text = condensePromptPreview(content)
+          if (text) userHit = { index: i, text }
+        }
+        continue
+      }
+      // Array content: a real prompt's blocks are text/image; a tool_result
+      // frame carries a tool_result block and never qualifies. The array
+      // shape of the interrupt placeholder and of the CLI-synthetic markup
+      // frames (same predicate as the string branch) are skipped as well.
+      if (Array.isArray(content) && !isInterruptPlaceholder(content)) {
+        let hasToolResult = false
+        const texts: string[] = []
+        for (const block of content) {
+          if (!block || typeof block !== 'object') continue
+          const b = block as { type?: unknown; text?: unknown }
+          if (b.type === 'tool_result') hasToolResult = true
+          else if (b.type === 'text' && typeof b.text === 'string') texts.push(b.text)
+        }
+        const joined = texts.join(' ')
+        if (!hasToolResult && joined && !SYNTHETIC_FRAME_PREFIX_RE.test(joined)) {
+          const text = condensePromptPreview(joined)
+          if (text) userHit = { index: i, text }
+        }
+      }
+    }
+  }
+  if (lastPromptHit && (!userHit || lastPromptHit.index > userHit.index)) return lastPromptHit.text
+  return userHit?.text
+}
+
+/** Read a session's last user prompt from its on-disk transcript (tail read,
+ *  cached). Returns undefined when no transcript exists or nothing prompt-
+ *  like is found in the tail — callers treat that as "no preview". */
+export async function readLastUserPrompt(sessionId: string): Promise<string | undefined> {
+  // Fast path: one stat against the cached location. Size+mtime unchanged →
+  // the tail (and the verdict "no prompt") is still valid.
+  const cached = lastPromptCache.get(sessionId)
+  if (cached) {
+    if (cached.path === null) {
+      // Tombstone: no transcript for this id. Refresh LRU position.
+      lastPromptCache.delete(sessionId)
+      lastPromptCache.set(sessionId, cached)
+      return undefined
+    }
+    try {
+      const s = await stat(cached.path)
+      if (s.size === cached.size && s.mtimeMs === cached.mtimeMs) {
+        // Refresh LRU position on hit.
+        lastPromptCache.delete(sessionId)
+        lastPromptCache.set(sessionId, cached)
+        return cached.text
+      }
+    } catch {
+      // File gone / moved — fall through to a fresh locate.
+    }
+  }
+  const file = await findTranscriptFile(sessionId)
+  if (!file) {
+    // Tombstone the negative verdict (display-only feature; the usual
+    // producers of a permanently-missing transcript are clear() / delete,
+    // where the id is retired) so this row stops re-scanning the tree.
+    lastPromptCache.delete(sessionId)
+    lastPromptCache.set(sessionId, { path: null, size: 0, mtimeMs: 0, text: undefined })
+    if (lastPromptCache.size > LAST_PROMPT_CACHE_CAP) {
+      const oldest = lastPromptCache.keys().next().value
+      if (oldest !== undefined) lastPromptCache.delete(oldest)
+    }
+    return undefined
+  }
+  let text: string | undefined
+  try {
+    const start = Math.max(0, file.size - LAST_PROMPT_TAIL_BYTES)
+    const length = file.size - start
+    const buf = Buffer.alloc(length)
+    const fh = await open(file.path, 'r')
+    try {
+      await fh.read(buf, 0, length, start)
+    } finally {
+      await fh.close()
+    }
+    text = parseLastUserPrompt(buf.toString('utf8'))
+  } catch (err) {
+    // Unreadable transcript → no preview for this row, same fail-soft as
+    // findTranscriptFile. NOT cached: a transient failure (Windows EBUSY /
+    // antivirus / the CLI still holding the file) must not pin "no preview"
+    // for the process lifetime on a session whose transcript never changes
+    // again — the next picker open retries.
+    log.warn(`readLastUserPrompt failed session=${sessionId}: ${(err as Error).message ?? err}`)
+    return undefined
+  }
+  lastPromptCache.delete(sessionId)
+  lastPromptCache.set(sessionId, { path: file.path, size: file.size, mtimeMs: file.mtimeMs, text })
+  if (lastPromptCache.size > LAST_PROMPT_CACHE_CAP) {
+    const oldest = lastPromptCache.keys().next().value
+    if (oldest !== undefined) lastPromptCache.delete(oldest)
+  }
+  return text
 }
 
 /** Delete the on-disk transcript `.jsonl` for a session id. No-op (returns

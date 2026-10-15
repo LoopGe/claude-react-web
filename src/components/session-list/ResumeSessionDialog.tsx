@@ -19,6 +19,17 @@ import { PanelOverlay } from '../PanelOverlay'
 import { Overlay } from '../Overlay'
 import { formatRelativeFromMs } from '../../utils/format'
 
+/** Shared inline style for the first/last prompt preview lines: display:block
+ *  (spans don't honor width otherwise) + maxWidth:100% overriding
+ *  .palette-item-hint's 200px cap, so each preview spans the full row and
+ *  truncates via the .truncate utility. */
+const PROMPT_PREVIEW_STYLE: React.CSSProperties = {
+  display: 'block',
+  fontSize: 'var(--fs-xs)',
+  width: '100%',
+  maxWidth: '100%',
+}
+
 export interface ResumeSessionDialogProps {
   open?: boolean
   /** Default working directory — used to scope the initial "this project"
@@ -97,6 +108,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
       (s) =>
         s.title?.toLowerCase().includes(q) ||
         s.firstPrompt?.toLowerCase().includes(q) ||
+        s.lastPrompt?.toLowerCase().includes(q) ||
         s.cwd?.toLowerCase().includes(q) ||
         s.sessionId.toLowerCase().includes(q),
     )
@@ -230,6 +242,32 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
                     {s.terminated && s.canRetryResume && <span className="resume-badge">retry</span>}
                     {!s.known && !s.terminated && <span className="resume-badge">CLI</span>}
                   </span>
+                  {/* First / last user prompt previews (display-only). The
+                      server condenses both sides and already suppresses
+                      lastPrompt when it equals firstPrompt, so the client
+                      renders verbatim. The FIRST line is skipped on untitled
+                      rows — the label fallback already IS the first prompt.
+                      display:block + maxWidth:100% override the hint class's
+                      inline default (max-width: 200px) so each preview spans
+                      the full row and truncates via .truncate. */}
+                  {s.title && s.firstPrompt && (
+                    <span
+                      className="palette-item-hint truncate"
+                      style={PROMPT_PREVIEW_STYLE}
+                      title={s.firstPrompt}
+                    >
+                      {s.firstPrompt}
+                    </span>
+                  )}
+                  {s.lastPrompt && (
+                    <span
+                      className="palette-item-hint truncate"
+                      style={PROMPT_PREVIEW_STYLE}
+                      title={s.lastPrompt}
+                    >
+                      → {s.lastPrompt}
+                    </span>
+                  )}
                   <span
                     className="palette-item-hint"
                     style={{ display: 'flex', gap: 8, fontSize: 'var(--fs-xs)' }}
