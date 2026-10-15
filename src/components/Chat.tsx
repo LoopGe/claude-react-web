@@ -39,11 +39,12 @@ import { useAttachments, type Attachment } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
 import { writeClipboard, COPY_FAILED_MESSAGE } from '../hooks/useCopy'
 import { usePastedImages } from '../hooks/usePastedImages'
+import { useDraftImages } from '../hooks/useDraftImages'
 import { usePastedTexts } from '../hooks/usePastedTexts'
 import { useInputHistory } from '../hooks/useInputHistory'
 import { useHistoryImageRecall } from '../hooks/useHistoryImageRecall'
 import type { HistoryPanelEntry } from '../hooks/useInputHistoryPanel'
-import { toPersistedImage } from '../state/inputHistoryImages'
+import { toPersistedImage, deleteDraftImages } from '../state/inputHistoryImages'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
@@ -105,14 +106,7 @@ import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
 import { clamp } from '../utils/clamp'
-import { DRAFT_KEY_PREFIX, DRAFT_BODIES_KEY_PREFIX } from '../constants/storageKeys'
-
-/** Bodies the draft's `[Pasted text #N]` references resolve against. Written
- *  only when the map changes, never on a keystroke. */
-
-/** Trailing-edge delay for persisting the draft. Long enough that a burst of
- *  typing produces one write, short enough that a crash loses little. */
-const DRAFT_WRITE_DEBOUNCE_MS = 400
+import { DRAFT_KEY_PREFIX, DRAFT_BODIES_KEY_PREFIX, DRAFT_WRITE_DEBOUNCE_MS } from '../constants/storageKeys'
 
 // Module-level predicates for the three minimize/reopen sets (questions,
 // plan-permissions, non-plan permissions). Stable identity so useMinimizedSet
@@ -848,6 +842,12 @@ export const Chat = memo(function Chat({
 
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
+  // The draft's image half. The text half survives unmounts via
+  // sessionStorage (readDraft/writeDraft above); the image half survives via
+  // the IDB side store — restored here on mount, debounced-written on every
+  // change, flushed on unmount — so a panel swap (session-group switch,
+  // session switch, panel close) no longer silently drops pasted images.
+  useDraftImages(session.id, pastedImages.images, pastedImages.mutationsRef, pastedImages.applyImages)
   // History-recall image hand-off: the Composer decides when (entry vs draft
   // restore), this loads the entry's images from the IDB side store and
   // restores them into the composer (seq-guarded against slow loads).
@@ -1688,6 +1688,14 @@ export const Chat = memo(function Chat({
       setInput('')
       clearAttachments()
       clearPastedImages()
+      // Delete the draft's image record IMPERATIVELY, not via the
+      // useDraftImages effect: this continuation runs after the POST, and if
+      // the panel unmounted mid-POST (group switch / close) the effect is
+      // gone and clearPastedImages' setImages is a no-op on the dead
+      // component — without this the unmount flush's record would come back
+      // as a phantom draft of already-sent images. The catch path
+      // deliberately does NOT delete: a failed send leaves the draft.
+      void deleteDraftImages(session.id)
       // Put focus back on the textarea so the user can keep typing. If
       // they used Enter-to-send the focus is already there; if they
       // clicked the Send button it's currently on the button and the
@@ -1861,11 +1869,15 @@ export const Chat = memo(function Chat({
       setInput('')
       clearAttachments()
       clearPastedImages()
+      // Same imperative draft-record delete as send()'s success path — the
+      // schedule consumed the images, and the await above can straddle a
+      // panel unmount exactly like the POST does.
+      void deleteDraftImages(session.id)
       setComposerFocusSignal((n) => n + 1)
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [input, attachmentList, scheduled, setInput, clearAttachments, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError])
+  }, [input, attachmentList, scheduled, setInput, clearAttachments, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError, session.id])
   /** Snippets are persisted server-side and re-inserted in later sessions, so
    *  a `[Pasted text #N]` reference saved as-is would outlive the body backing
    *  it and resolve to nothing (or to a different paste). Store the text. */

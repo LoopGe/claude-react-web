@@ -26,6 +26,11 @@ export const LAST_SEEN_TURN_KEY = 'claude-react-web:last-seen-turn'
 export const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
 /** sessionStorage key prefix for per-session composer attachment state. */
 export const DRAFT_BODIES_KEY_PREFIX = 'claude-react-web:draft-bodies:'
+/** Debounce for persisting the composer draft, SHARED by both halves of one
+ *  draft: the text half (Chat.tsx's sessionStorage writes) and the image
+ *  half (useDraftImages' IDB side-store writes) hit their stores at the same
+ *  cadence. Tune once — both follow. */
+export const DRAFT_WRITE_DEBOUNCE_MS = 400
 
 /** Allowed range for the max-group-panels / max-sessions-per-group setting. */
 export const MAX_OPEN_MIN = 2

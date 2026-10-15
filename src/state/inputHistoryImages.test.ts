@@ -9,6 +9,11 @@ import {
   deleteImages,
   getImages,
   putImages,
+  putDraftImages,
+  getDraftImages,
+  deleteDraftImages,
+  deleteDraftImagesForRemovedSession,
+  resumeDraftWrites,
 } from './inputHistoryImages'
 import { resetInputHistoryIdb, makeImg as img } from '../test-utils/inputHistoryIdb'
 
@@ -89,5 +94,77 @@ describe('inputHistoryImages', () => {
     ;(globalThis as any).indexedDB = new IDBFactory()
     await putImages('e1', [img('OK')])
     expect(await getImages('e1')).toEqual([img('OK')])
+  })
+})
+
+describe('draft images', () => {
+  it('round-trips a draft by session id', async () => {
+    await putDraftImages('s1', [img('DDDD', 'image/webp')])
+    expect(await getDraftImages('s1')).toEqual([
+      { data: 'DDDD', mediaType: 'image/webp', width: 10, height: 20, size: 3 },
+    ])
+  })
+
+  it('returns [] when no draft was stored', async () => {
+    expect(await getDraftImages('nope')).toEqual([])
+  })
+
+  it('a later put replaces the session draft', async () => {
+    await putDraftImages('s1', [img()])
+    await putDraftImages('s1', [img('EEEE', 'image/gif')])
+    expect(await getDraftImages('s1')).toEqual([
+      { data: 'EEEE', mediaType: 'image/gif', width: 10, height: 20, size: 3 },
+    ])
+  })
+
+  it('deleteDraftImages removes only that session’s draft', async () => {
+    await putDraftImages('s1', [img()])
+    await putDraftImages('s2', [img('EEEE')])
+    await deleteDraftImages('s1')
+    expect(await getDraftImages('s1')).toEqual([])
+    expect(await getDraftImages('s2')).toHaveLength(1)
+  })
+
+  it('coexists with history records: entry-id orphan cleanup never touches drafts', async () => {
+    await putImages('e1', [img()])
+    await putDraftImages('s1', [img('DDDD')])
+    // The orphan cleanup inputHistoryStore.add() performs passes HISTORY
+    // ENTRY ids — draft keys live in a disjoint namespace, so the draft
+    // record must survive it.
+    await deleteImages(['e1'])
+    expect(await getImages('e1')).toEqual([])
+    expect(await getDraftImages('s1')).toEqual([img('DDDD')])
+  })
+
+  it('a put issued after the removed-session delete is a no-op (closing panel’s unmount flush)', async () => {
+    // Delete flows (performDelete / session-removed teardown) run BEFORE the
+    // deleted panel's unmount commit, whose draft flush then issues its put
+    // — IDB executes same-connection transactions in issue order, so that
+    // late put would resurrect the deleted session's record. The removed-
+    // session delete tombstones the id; the late put must be dropped.
+    await putDraftImages('s1', [img()])
+    await deleteDraftImagesForRemovedSession('s1')
+    await putDraftImages('s1', [img('LATE')])
+    expect(await getDraftImages('s1')).toEqual([])
+  })
+
+  it('the send-clear delete does NOT tombstone — a later paste persists again', async () => {
+    // The hook deletes on send-consumed drafts; the same session must keep
+    // persisting future drafts afterwards.
+    await putDraftImages('s1', [img()])
+    await deleteDraftImages('s1')
+    await putDraftImages('s1', [img('NEW')])
+    expect(await getDraftImages('s1')).toEqual([img('NEW')])
+  })
+
+  it('resumeDraftWrites re-arms puts after a removed-session tombstone', async () => {
+    // Session ids are NOT dead forever: resume() re-spawns under the SAME id
+    // (server doResume), so a tombstoned id can legitimately write again
+    // once a live panel mounts for it. The hook calls this on mount.
+    await putDraftImages('s1', [img()])
+    await deleteDraftImagesForRemovedSession('s1')
+    resumeDraftWrites('s1')
+    await putDraftImages('s1', [img('AGAIN')])
+    expect(await getDraftImages('s1')).toEqual([img('AGAIN')])
   })
 })

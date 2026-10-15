@@ -69,6 +69,7 @@ import { DesktopTitlebarTabs } from './components/DesktopTitlebarTabs'
 import { TITLEBAR_HEIGHT_PX } from '../shared/desktop-bridge'
 import { useUiState } from './hooks/useUiState'
 import { sessionStoreRegistry } from './session-store/registry'
+import { deleteDraftImagesForRemovedSession } from './state/inputHistoryImages'
 import { useAppOverlays } from './app/useAppOverlays'
 import { useExitPresence } from './hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
@@ -1525,6 +1526,13 @@ export function App() {
         return next
       })
       pruneSession(id)
+      // The session is gone server-side (another tab's delete or /clear, a
+      // server GC) — purge its persisted draft images so the IDB record
+      // doesn't leak. Tombstoned: this tab's closing panel for X flushes its
+      // draft at unmount, AFTER this delete was issued. The SAME-tab /clear
+      // and /discard swaps skip this teardown (clearing guard) and purge at
+      // their own swap sites instead.
+      void deleteDraftImagesForRemovedSession(id)
       setDeletingSessionIds((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : prev))
       interruptFnsRef.current.delete(id)
       recapFnsRef.current.delete(id)
@@ -1994,6 +2002,11 @@ export function App() {
         // whose writes then fail. Going through the registry destroys the
         // in-memory store first so the idle sweep can't re-persist it.
         sessionStoreRegistry.delete(id)
+        // Same lifecycle for the session's persisted draft images (IDB —
+        // which, unlike sessionStorage drafts, outlives the tab). The
+        // removed-session variant tombstones the id so the closing panel's
+        // unmount draft-flush can't resurrect the record.
+        void deleteDraftImagesForRemovedSession(id)
         // Remove deleted session from any group it belongs to so the
         // group's session count stays accurate.
         setGroups((prev) =>
@@ -4343,8 +4356,11 @@ export function App() {
           await swapSession(id, newId, res.session)
           // X is gone — prune its notification edge-detector entry (the
           // guarded session-removed skipped pruneSession; swapSession
-          // doesn't touch it; <Chat> unmount has no backstop for it).
+          // doesn't touch it; <Chat> unmount has no backstop for it), and
+          // its persisted draft images (same reason — the guarded
+          // session-removed skipped the teardown that usually deletes them).
           pruneSession(id)
+          void deleteDraftImagesForRemovedSession(id)
         }
         // else: server short-circuited (newId === id — another clear is in
         // flight, or the server's `clearing` flag is stuck). Do nothing here;
@@ -4419,7 +4435,10 @@ export function App() {
         if (newId !== id) {
           cleanupSideChat(id)
           await swapSession(id, newId, res.session)
+          // X is gone (replaced by Y) — same draft-image purge as /clear's
+          // swap: the guarded session-removed skipped the teardown.
           pruneSession(id)
+          void deleteDraftImagesForRemovedSession(id)
         }
       } catch (e) {
         if (clearingServerRemovedRef.current.has(id)) {
