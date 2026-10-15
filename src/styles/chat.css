@@ -1366,17 +1366,21 @@ button.chat-empty-env-chip:hover {
    its exit is the unmount, masked by the icon crossfading back over the
    slot. .composer-tasks-idle keeps the icon dimmed at zero tasks. */
 .composer-tasks-face {
-  position: relative;
   display: grid;
   place-items: center;
+  /* place-items centers items IN their track, but when the digit is wider
+     than the 18px cell (two digits at the xlarge fs-preset) the auto track
+     itself overflows and justify/align-content:normal anchors it to the
+     start — the digit sat ~2px off button-center. place-content centers the
+     overflowing TRACK so the spill is symmetric on both sides. */
+  place-content: center;
   width: 18px;
   height: 18px;
 }
 .composer-tasks-face > * {
   grid-area: 1 / 1;
-  transition:
-    opacity var(--motion-duration-fast) var(--motion-ease-standard),
-    transform var(--motion-duration-base) var(--motion-ease-standard);
+  /* Crossfade timing lives in the shared .slot-morph utility class
+     (utilities.css) — same recipe as the Send⇄Interrupt toggle. */
 }
 .composer-tasks-count {
   /* A notch larger than the button's --fs-sm — the count is the button's
@@ -1524,10 +1528,8 @@ button.chat-empty-env-chip:hover {
 .composer-action-toggle .composer-toggle-stop {
   transform-box: fill-box;
   transform-origin: center;
-  transition:
-    opacity var(--motion-duration-fast) var(--motion-ease-standard),
-    transform var(--motion-duration-base) var(--motion-ease-standard),
-    stroke-dashoffset var(--motion-duration-base) var(--motion-ease-standard);
+  /* Crossfade timing lives in the shared .slot-morph utility class
+     (utilities.css) — same recipe as the tasks icon⇄digit swap. */
 }
 .composer-action-toggle .composer-toggle-send-line,
 .composer-action-toggle .composer-toggle-send-head {

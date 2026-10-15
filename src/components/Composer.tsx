@@ -1036,9 +1036,9 @@ export const Composer = memo(function Composer({
                 burst reads as ticking. aria-hidden: the button's aria-label
                 already carries the count text. */}
             <span className="composer-tasks-face" aria-hidden>
-              <IconListTodo size={18} className="composer-tasks-icon" />
+              <IconListTodo size={18} className="composer-tasks-icon slot-morph" />
               {tasksIndicator > 0 && (
-                <span key={shownCount} className="composer-tasks-count">
+                <span key={shownCount} className="composer-tasks-count slot-morph">
                   {shownCount}
                 </span>
               )}

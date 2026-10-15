@@ -693,10 +693,10 @@ export function IconSendInterruptToggle(props: IconProps) {
   return (
     <Icon {...props}>
       <g className="composer-toggle-send">
-        <path className="composer-toggle-send-line" d="M12 20V4" pathLength={1} />
-        <path className="composer-toggle-send-head" d="m7 9 5-5 5 5" pathLength={1} />
+        <path className="composer-toggle-send-line slot-morph" d="M12 20V4" pathLength={1} />
+        <path className="composer-toggle-send-head slot-morph" d="m7 9 5-5 5 5" pathLength={1} />
       </g>
-      <rect className="composer-toggle-stop" x="5" y="5" width="14" height="14" rx="2" pathLength={1} />
+      <rect className="composer-toggle-stop slot-morph" x="5" y="5" width="14" height="14" rx="2" pathLength={1} />
     </Icon>
   )
 }

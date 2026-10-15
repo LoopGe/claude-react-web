@@ -910,6 +910,32 @@ describe('Composer tasks button', () => {
     )
   })
 
+  it('never reads 0 while lit: the first task start clamps the gliding digit to 1', () => {
+    // useCountUp snaps to the target on MOUNT but glides on RETARGET. On the
+    // 0→1 start the tween eases from the previous value 0, so for the first
+    // ~60ms of the 300ms ramp Math.round(value) still reads 0 while the digit
+    // is already mounted (tasksIndicator > 0 mounts it). The Math.max(1, …)
+    // clamp on shownCount is the only thing keeping the digit from flashing
+    // "0" against the lit state — this test pins that invariant, so removing
+    // the clamp must fail here (the mount-time tests above never retarget,
+    // so they cannot catch it).
+    const { container, rerender } = render(
+      <Composer {...defaultProps} onOpenTasks={noop} taskCount={0} totalTaskCount={0} />,
+    )
+    expect(container.querySelector('.composer-tasks-count')).toBeNull()
+
+    // First task starts. Assert synchronously after the rerender — before any
+    // rAF tick of the glide can ease the value above 0 (act flushes the
+    // retarget effect, but the tween's first tick is async).
+    rerender(
+      <ToastProvider>
+        <Composer {...defaultProps} onOpenTasks={noop} taskCount={1} totalTaskCount={1} />
+      </ToastProvider>,
+    )
+    const digit = container.querySelector('.composer-tasks-count')!
+    expect(digit.textContent).toBe('1')
+  })
+
   it('calls onOpenTasks on click', () => {
     const onOpenTasks = vi.fn()
     const { container } = render(
