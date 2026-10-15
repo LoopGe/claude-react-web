@@ -26,7 +26,7 @@ User message:
 ${text}`
 }
 
-interface PendingEntry extends SteerEntryInput {}
+type PendingEntry = SteerEntryInput
 
 export class SupplementSession {
   private admissionOpen = false
