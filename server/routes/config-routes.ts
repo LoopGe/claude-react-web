@@ -286,6 +286,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
       appToolsGit: serverConfig.appToolsGit,
       firstPartyTools: serverConfig.firstPartyTools,
       allowSensitivePathEdits: serverConfig.allowSensitivePathEdits,
+      steering: serverConfig.steering,
       defaults: {
         // Same one authority as GET /api/config — this surface used to
         // hardcode its own process.cwd() and disagree with it.

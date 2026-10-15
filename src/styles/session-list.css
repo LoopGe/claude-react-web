@@ -326,10 +326,17 @@
 /* AnimatedCollapse clips its body on the Y axis (overflow-y: clip) so the
    collapse animation can shrink to 0. That clip also cuts off the focused
    card's *outer* box-shadow halo (the 1px ring + glow) at the group body's
-   bottom edge — the last card's halo read as "no bottom". Lift the clip only
-   when the group is expanded and the open/close animation is idle, so the
-   halo can paint past the body while collapse still clips during the tween. */
-.session-group-collapse[aria-hidden='false']:not(.animating) {
+   edges — a list-first card's halo read as "no top", the last card's as
+   "no bottom". Lift the clip only when the group is expanded and the
+   open/close animation is idle, so the halo can paint past the body while
+   collapse still clips during the tween.
+
+   The open state is matched via :not([aria-hidden='true']) — NOT
+   [aria-hidden='false'] — because AnimatedCollapse manages the attribute
+   imperatively: at rest-open it REMOVES the attribute (never writes 'false'),
+   so an [aria-hidden='false'] selector never matches and the clip silently
+   came back (regression vs the declarative aria-hidden={!open} era). */
+.session-group-collapse:not([aria-hidden='true']):not(.animating) {
   overflow-y: visible;
 }
 /* Drop target highlights while a session card is being dragged over a

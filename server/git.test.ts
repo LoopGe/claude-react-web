@@ -40,6 +40,7 @@ import {
   trimGitErrorOutput,
   parseNumstatZ,
   runGit,
+  probeRepo,
 } from './git.js'
 import { Hono } from 'hono'
 import { createErrorHandler } from './errors.js'
@@ -966,6 +967,59 @@ describe('listWorktrees', () => {
 
     const status = await getStatusInRepo(dir)
     expect(status.linkedWorktrees.some((w) => w.branch === 'worktree-feature-auth')).toBe(true)
+  })
+
+  // Regression: the old check stat'ed `<toplevel>/.git/worktrees`, but inside
+  // a linked worktree `<toplevel>/.git` is a FILE, so the list was always
+  // empty there. The probe's --git-common-dir points at the shared dir.
+  it.skipIf(!gitOk)('reports linked worktrees when called from INSIDE a linked worktree', async () => {
+    seedRepo(dir)
+    const linkedPath = wtPath('feature-auth')
+    execFileSync('git', ['worktree', 'add', linkedPath, '-b', 'worktree-feature-auth', 'main'], { cwd: dir })
+
+    const fromLinked = await getStatusInRepo(linkedPath)
+    expect(fromLinked.branch).toBe('worktree-feature-auth')
+    expect(fromLinked.linkedWorktrees.some((w) => w.branch === 'worktree-feature-auth')).toBe(true)
+    expect(fromLinked.linkedWorktrees.some((w) => w.branch === 'main')).toBe(true)
+    // getStatus (probe passed through) agrees.
+    const viaGetStatus = await getStatus(linkedPath)
+    expect('isRepo' in viaGetStatus && viaGetStatus.isRepo && viaGetStatus.linkedWorktrees.length).toBe(2)
+  })
+
+  it.skipIf(!gitOk)('reports no linked worktrees for a plain repo (no worktrees dir)', async () => {
+    seedRepo(dir)
+    const status = await getStatusInRepo(dir)
+    expect(status.linkedWorktrees).toEqual([])
+  })
+})
+
+describe('probeRepo / getStatus repo detection', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = tempDir('git-probe')
+  })
+  afterEach(() => {
+    void rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
+  })
+
+  it.skipIf(!gitOk)('resolves toplevel and git dirs from a subdirectory', async () => {
+    seedRepo(dir)
+    const probe = await probeRepo(join(dir, 'sub'))
+    expect(probe).not.toBeNull()
+    expect(realpathSync.native(probe!.toplevel)).toBe(realpathSync.native(dir))
+    expect(realpathSync.native(probe!.gitDir)).toBe(realpathSync.native(join(dir, '.git')))
+    expect(realpathSync.native(probe!.gitCommonDir)).toBe(realpathSync.native(join(dir, '.git')))
+  })
+
+  it.skipIf(!gitOk)('treats a cwd inside .git as not a repo', async () => {
+    seedRepo(dir)
+    expect(await probeRepo(join(dir, '.git'))).toBeNull()
+    expect(await getStatus(join(dir, '.git'))).toEqual({ isRepo: false })
+  })
+
+  it.skipIf(!gitOk)('treats a non-repo dir and a relative cwd as not a repo', async () => {
+    expect(await getStatus(dir)).toEqual({ isRepo: false })
+    expect(await probeRepo('relative/path')).toBeNull()
   })
 })
 

@@ -21,7 +21,6 @@ import { extractTag, extractUserText, willRenderEmpty } from './rendering'
 import { FoldableBody } from './FoldableBody'
 import { userBodyFoldKey } from './fold-key'
 import {
-  ApiRetryView,
   BashMessage,
   CompactBoundary,
   CompactSummary,
@@ -117,10 +116,11 @@ export const MessageView = memo(function MessageView({
   sending?: boolean
   /** Queue-delivery state of a top-level user turn. 'queued' renders a
    *  "queued" chip (the SDK is busy and hasn't read this turn yet);
-   *  'consumed' renders a brief "processing" chip; undefined renders
+   *  'consumed' renders a brief "processing" chip; 'injecting'/'injected'
+   *  are the mid-run steering states (spec §10); undefined renders
    *  nothing. Mutually exclusive with `sending` in practice (sending is
    *  the pre-ack optimistic state, deliveryStatus is post-ack). */
-  deliveryStatus?: 'queued' | 'consumed'
+  deliveryStatus?: 'queued' | 'consumed' | 'injecting' | 'injected'
   /** Whether the session is currently working. Gates the processing
    *  indicator so it only shows on active turns, not on historical
    *  consumed messages after a reconnect. */
@@ -375,6 +375,13 @@ export const MessageView = memo(function MessageView({
     // the session is actively working, so historical consumed messages
     // after a reconnect don't re-trigger the indicator.
     const showQueued = !sending && deliveryStatus === 'queued'
+    // Mid-run steering chips (spec §10). 'injected' always shows (a durable
+    // historical fact — the boundary delivered it); 'injecting' only while
+    // the session is working — a non-terminal steeredAt on an idle session
+    // is a crash leftover (orphan, spec §8.3) and renders as a plain sent
+    // message instead of a promise that will never resolve.
+    const showInjectedChip = !sending && deliveryStatus === 'injected'
+    const showInjectingChip = !sending && deliveryStatus === 'injecting' && working
     // Show processing only while the session is working AND the model
     // hasn't started responding yet. Once an assistant/result message
     // appears after this user turn, the model has moved on —hide the
@@ -404,6 +411,26 @@ export const MessageView = memo(function MessageView({
             >
               <span className="msg-queued-dot" aria-hidden />
               <span className="msg-queued-label">queued</span>
+            </span>
+          )}
+          {showInjectingChip && (
+            <span
+              className="msg-queued-indicator msg-steered-indicator"
+              title="Injecting - this message will be delivered into the current turn at the next tool boundary"
+              aria-label="Injecting into the current turn"
+            >
+              <span className="msg-queued-dot" aria-hidden />
+              <span className="msg-queued-label">injecting</span>
+            </span>
+          )}
+          {showInjectedChip && (
+            <span
+              className="msg-queued-indicator msg-steered-indicator"
+              title="Injected - this message was delivered into the turn that was running when it was sent"
+              aria-label="Injected into the current turn"
+            >
+              <span className="msg-queued-dot" aria-hidden />
+              <span className="msg-queued-label">injected</span>
             </span>
           )}
           {showProcessing && (
@@ -633,10 +660,6 @@ export const MessageView = memo(function MessageView({
 
   if (type === 'system' && msg.subtype === 'compact_boundary') {
     return <CompactBoundary msg={msg} />
-  }
-
-  if (type === 'system' && msg.subtype === 'api_retry') {
-    return <ApiRetryView msg={msg} />
   }
 
   if (type === 'system' && msg.subtype === 'local_command_output') {

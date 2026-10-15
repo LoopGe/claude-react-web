@@ -1,6 +1,7 @@
 // Session routes: CRUD, messaging, control, MCP/plugin per-session, queries.
 
 import { Hono } from 'hono'
+import { existsSync } from 'node:fs'
 import { serverDefaultCwd, withDefaultCwd } from '../default-cwd.js'
 import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
@@ -18,6 +19,8 @@ import { createLogger } from '../log.js'
 import { validateSendBody } from '../send-body.js'
 import { HttpError } from '../errors.js'
 import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
+import { worktreeIsDirty } from '../git.js'
+import { worktreePathFor } from '../session-worktree.js'
 
 const log = createLogger('http')
 
@@ -96,6 +99,7 @@ const CREATE_BODY_FIELDS = new Set([
   'showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups',
   'showMessageHeaders',
   'mcpServers', 'enabledMcpServers', 'enabledPlugins',
+  'isolateWorktree',
 ])
 
 /** Whitelist + validate the fields that flow from POST /sessions into the SDK
@@ -137,7 +141,7 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
     const err = validateStringArray(name, rest[name])
     if (err) return { ok: false, error: err }
   }
-  for (const name of ['includePartialMessages', 'includeHookEvents']) {
+  for (const name of ['includePartialMessages', 'includeHookEvents', 'isolateWorktree']) {
     const v = rest[name]
     if (v !== undefined && typeof v !== 'boolean') {
       return { ok: false, error: `${name} must be a boolean` }
@@ -273,7 +277,15 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
   return { ok: true, value: rest, dropped }
 }
 
-export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentDefinitionStore?: AgentDefinitionStore): Hono {
+export function buildSessionRouter(
+  sm: SessionManager,
+  mpStore?: MpStore,
+  agentDefinitionStore?: AgentDefinitionStore,
+  // The state dir (AppOptions.configDir — bootstrap passes stateDir here).
+  // Isolated worktrees live under <stateDir>/worktrees/<sessionId>, the same
+  // layout session-worktree.ts provisions against the manager's store dir.
+  stateDir?: string,
+): Hono {
   const app = new Hono()
 
   // List sessions (snapshot only — for push-based updates the frontend
@@ -355,7 +367,7 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     // create that omitted cwd reached the SDK with no cwd at all, leaving the
     // CLI to inherit whatever directory the host process happened to be in.
     const createBody = withDefaultCwd(narrowed.value, serverDefaultCwd())
-    const info = sm.create(createBody as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
+    const info = await sm.create(createBody as Options & { provider?: string }, customEnv as Record<string, string> | undefined, joinGroupOf as string | undefined, evicting)
     return c.json({ session: info }, 201)
   })
 
@@ -381,6 +393,26 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ ok: true })
   })
 
+  // Dirty-check for the delete confirmation: does this session run in an
+  // isolated worktree, and does that worktree hold uncommitted changes?
+  // Unavailable when there is no worktree meta or the worktree dir is gone.
+  app.get('/sessions/:id/worktree-status', async (c) => {
+    const id = c.req.param('id')
+    const wt = sm.get(id).worktree
+    if (!wt || !stateDir) return c.json({ available: false })
+    const worktreePath = worktreePathFor(stateDir, id)
+    if (!existsSync(worktreePath)) return c.json({ available: false })
+    // A broken worktree dir (deleted .git file, corrupt registration) makes
+    // the dirty probe throw — that must not 500 the delete confirmation. The
+    // client already tolerates an unavailable status (plain confirm dialog).
+    try {
+      const dirty = await worktreeIsDirty(worktreePath)
+      return c.json({ available: true, dirty, branch: wt.branch, mainRepoPath: wt.mainRepoPath })
+    } catch {
+      return c.json({ available: false })
+    }
+  })
+
   // Patch session metadata (title and/or cwd). `cwd` is how a user recovers
   // a session whose project directory was moved — without it the only fix is
   // hand-editing sessions.json (which a live server overwrites).
@@ -398,8 +430,9 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     // Cwd first: it can 400/409 after the existsSync pre-check (TOCTOU, live
     // session). Applying rename first would persist a title the caller
     // treats as part of a failed patch.
-    let info = hasCwd ? sm.setCwd(id, body.cwd as string) : undefined
-    if (hasTitle) info = sm.rename(id, body.title as string)
+    // Both wait on the session's op lock (e.g. behind an in-flight resume).
+    let info = hasCwd ? await sm.setCwd(id, body.cwd as string) : undefined
+    if (hasTitle) info = await sm.rename(id, body.title as string)
     return c.json({ session: info })
   })
 
@@ -637,16 +670,11 @@ export function buildSessionRouter(sm: SessionManager, mpStore?: MpStore, agentD
     return c.json({ ok: true, session })
   })
 
-  // Compact `/compact` — summarize the conversation, then continue in a fresh
-  // session seeded with the hand-off summary (CLI /compact semantics). Same
-  // continuation-session shape as /clear (compact() is clear-with-seed
-  // server-side), so the client swaps the panel X → Y exactly like /clear.
-  // Phase guards (working→409 / unknown→404 / terminated→410 / dormant→412)
-  // are thrown by sm.compact and translated by the app's onError handler.
-  app.post('/sessions/:id/compact', async (c) => {
-    const session = await sm.compact(c.req.param('id'))
-    return c.json({ ok: true, session })
-  })
+  // NOTE: there is no POST /sessions/:id/compact route — the UI's `/compact`
+  // passes through as a plain user message and the CLI runs its native
+  // in-place compact (see src/local-commands.ts). The app-side
+  // summarize+clear-with-seed path survives only as SessionManager.compact(),
+  // driven directly by the idle-compact plugin's host API (session-adapter).
 
   // `!` bash mode — run a shell command directly in the session's cwd.
   // Requires confirm:true (destructive-verb convention from git write

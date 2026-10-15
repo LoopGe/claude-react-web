@@ -72,7 +72,7 @@ export interface ChatStream {
   tasks: TaskRecordUi[]
   /** Transient `api_retry` frame (rate-limit retry indicator), or null when
    *  no retry is in flight. Routed to a dedicated slot (not items/messages) —
-   *  MessageList renders it as a tail divider. */
+   *  the WorkingBubble's RetryLabel renders it as the retrying phase label. */
   apiRetry: SdkMessage | null
   /** Live thinking-token estimate for the current thinking block
    *  (`system/thinking_tokens` frames), or null when none is in flight.
@@ -145,6 +145,10 @@ export interface ChatStream {
   hasOlder: boolean
   /** True while a loadOlder() request is in flight. */
   loadingOlder: boolean
+  /** Set when a loadOlder() page fetch failed (network/parse). Non-fatal —
+   *  the transcript keeps working; the float offers a Retry. Cleared when the
+   *  next attempt starts and on session switch. */
+  olderError: string | null
 }
 
 export interface PermissionHandlers {
@@ -233,6 +237,12 @@ export function useChatStream(
   // loadingOlder is React state (drives UI). The in-flight guard is a ref
   // (doesn't need to trigger renders). Reset when the session changes.
   const [loadingOlder, setLoadingOlder] = useState(false)
+  const [olderError, setOlderError] = useState<string | null>(null)
+  // Mirrors `sessionId` for async guards: a loadOlder() page fetch still in
+  // flight when the user switches sessions resolves on the OLD closure — its
+  // post-await React state write (setOlderError) must not land on the NEW
+  // session's UI. Kept current by the [sessionId] reset effect.
+  const sessionIdRef = useRef(sessionId)
   const inFlightRef = useRef(false)
   // Armed when the server's seq space is known to have moved (session-cleared,
   // an attached generation bump): any tail page read at a LOWER generation is
@@ -622,6 +632,14 @@ export function useChatStream(
           store.dispatch({ type: 'MESSAGE_CONSUMED', uuid: frame.uuid, consumedAt: frame.consumedAt })
           break
         }
+        case 'message-steered': {
+          // Steered delivery transition: 'injected' flips the bubble chip to
+          // "injected"; 'requeued' means the turn ended before delivery and
+          // the message went back to the SDK input queue (chip falls back to
+          // the normal queued→consumed flow).
+          store.dispatch({ type: 'MESSAGE_STEERED', uuid: frame.uuid, state: frame.state })
+          break
+        }
         case 'messages-withdrawn': {
           // Queued user turns withdrawn by an interrupt with cancelQueued —
           // the server already removed them from its replay ring, so evict
@@ -686,6 +704,9 @@ export function useChatStream(
           clearEpochRef.current++
           permsRef.current.onCleared?.()
           void refetchTail()
+          // The stale failure pill must go with the transcript — its Retry
+          // would refetch a cleared window and the pill would stick.
+          setOlderError(null)
           break
         }
         default:
@@ -767,6 +788,8 @@ export function useChatStream(
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLoadingOlder(false)
     inFlightRef.current = false
+    sessionIdRef.current = sessionId
+    setOlderError(null)
   }, [sessionId])
 
   const loadOlder = useCallback(async (): Promise<number> => {
@@ -787,6 +810,9 @@ export function useChatStream(
     if (!snap.hasOlder || snap.oldestSeq == null) return 0
     inFlightRef.current = true
     setLoadingOlder(true)
+    // A new attempt supersedes the previous failure — the float flips from the
+    // error pill to the loading pill while the retry runs.
+    setOlderError(null)
     try {
       // Through the validated fetch like every other page read: a head page
       // in flight when a session-cleared lands is pre-clear content, and
@@ -807,12 +833,19 @@ export function useChatStream(
       // the window and the snapshot mirrors it.
       return page.messages.length
     } catch {
-      // Network/parse error — leave hasOlder as-is so the user can retry by
-      // scrolling again. Don't surface to the error banner (non-fatal).
+      // Network/parse error — leave hasOlder as-is (store-owned) so the user
+      // can retry via the float's Retry button (or by scrolling again).
+      // Non-fatal: don't surface to the error banner.
+      if (sessionIdRef.current === sessionId) setOlderError("Couldn't load earlier messages")
       return 0
     } finally {
-      inFlightRef.current = false
-      setLoadingOlder(false)
+      // Skip the latch-clear when the session switched mid-flight: the reset
+      // effect already cleared it, and this stale closure must not break the
+      // NEW session's in-flight guard or hide its loading pill mid-fetch.
+      if (sessionIdRef.current === sessionId) {
+        inFlightRef.current = false
+        setLoadingOlder(false)
+      }
     }
   }, [store, sessionId, fetchValidatedPage])
 
@@ -855,7 +888,8 @@ export function useChatStream(
       loadOlder,
       hasOlder,
       loadingOlder,
+      olderError,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, oldestSeq, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, thinkingTokens, tokenRate, activePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, oldestSeq, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder, olderError],
   )
 }

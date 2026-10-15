@@ -74,9 +74,12 @@ async function openImagesDb(): Promise<IDBPDatabase | null> {
   return dbPromise
 }
 
-/** Best-effort reset of the cached DB promise. For tests. */
+/** Best-effort reset of the cached DB promise and the draft tombstones. For
+ *  tests — the tombstone set is module state that must reset alongside the
+ *  db promise or it leaks across tests. */
 export function _resetDbForTests(): void {
   dbPromise = null
+  deletedDraftSessions.clear()
 }
 
 /** Store (or replace) the image record for a history-entry id. */
@@ -125,6 +128,85 @@ export async function clearImages(): Promise<void> {
   } catch (err) {
     console.warn('[inputHistoryImages] clear failed:', err)
   }
+}
+
+/** Draft records share the images store with history records. The `draft:`
+ *  prefix keeps the key spaces disjoint: history keys are randomId()s, which
+ *  never contain ':', so the orphan cleanup inputHistoryStore.add() performs
+ *  (deleteImages of evicted ENTRY ids) can never touch a draft record, and
+ *  clearImages() (reset-config) wipes both kinds together, as intended.
+ *  One record per session: the composer's CURRENT unsent images. */
+const DRAFT_KEY_PREFIX = 'draft:'
+
+/** Session ids whose session was REMOVED (delete / session-removed teardown).
+ *  Those flows run BEFORE the removed panel's unmount commit, whose draft
+ *  flush then issues its put — and IDB executes same-connection transactions
+ *  in issue order, so that late put would resurrect the record. The
+ *  tombstone makes it a no-op. Same pattern as sessionStoreRegistry.delete
+ *  preventing the idle sweep from re-persisting a deleted session's
+ *  transcript. Ids are NOT dead forever — resume() re-spawns under the same
+ *  id — so useDraftImages clears the tombstone (resumeDraftWrites) whenever
+ *  a live panel mounts for the id. The send-clear delete (deleteDraftImages)
+ *  does NOT tombstone — a later paste must persist. */
+const deletedDraftSessions = new Set<string>()
+
+/** Store (or replace) the draft image record for a session. */
+export async function putDraftImages(sessionId: string, images: PersistedImage[]): Promise<void> {
+  if (deletedDraftSessions.has(sessionId)) return
+  const db = await openImagesDb()
+  if (!db) return
+  try {
+    await db.put(IMAGES_STORE, { id: DRAFT_KEY_PREFIX + sessionId, images } satisfies ImageRecord)
+  } catch (err) {
+    console.warn('[inputHistoryImages] draft put failed:', err)
+  }
+}
+
+/** The draft images stored for a session; [] when absent. */
+export async function getDraftImages(sessionId: string): Promise<PersistedImage[]> {
+  const db = await openImagesDb()
+  if (!db) return []
+  try {
+    const rec = (await db.get(IMAGES_STORE, DRAFT_KEY_PREFIX + sessionId)) as ImageRecord | undefined
+    return rec?.images ?? []
+  } catch (err) {
+    console.warn('[inputHistoryImages] draft get failed:', err)
+    return []
+  }
+}
+
+/** Delete a session's draft record — the send-clear path (the draft was
+ *  consumed; the session lives on and a later paste must persist again). */
+export async function deleteDraftImages(sessionId: string): Promise<void> {
+  const db = await openImagesDb()
+  if (!db) return
+  try {
+    await db.delete(IMAGES_STORE, DRAFT_KEY_PREFIX + sessionId)
+  } catch (err) {
+    console.warn('[inputHistoryImages] draft delete failed:', err)
+  }
+}
+
+/** Delete a session's draft record because the SESSION is gone (performDelete
+ *  / session-removed teardown). Tombstones the id so the removed panel's
+ *  late unmount-flush put cannot resurrect it — see deletedDraftSessions. */
+export async function deleteDraftImagesForRemovedSession(sessionId: string): Promise<void> {
+  deletedDraftSessions.add(sessionId)
+  const db = await openImagesDb()
+  if (!db) return
+  try {
+    await db.delete(IMAGES_STORE, DRAFT_KEY_PREFIX + sessionId)
+  } catch (err) {
+    console.warn('[inputHistoryImages] draft delete failed:', err)
+  }
+}
+
+/** Re-arm draft writes for a session id that legitimately (re-)entered this
+ *  tab — a live panel mounting for it. Needed because session ids are NOT
+ *  dead forever once removed: resume() re-spawns under the SAME id, so a
+ *  tombstoned id must become writable again. No-op when never tombstoned. */
+export function resumeDraftWrites(sessionId: string): void {
+  deletedDraftSessions.delete(sessionId)
 }
 
 /** Strip a live PastedImage down to its persistable shape (drops the runtime

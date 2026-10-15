@@ -247,6 +247,11 @@ export const Composer = memo(function Composer({
   // Glide the digit so a burst of task starts/ends reads as a count ticking
   // rather than strobing — same treatment the working-bar pill had.
   const countTasks = Math.round(useCountUp(tasksIndicator, 300))
+  // The tween eases from the PREVIOUS value, so on the first task start the
+  // rounded glide still reads 0 for the first ~60ms of the 300ms ramp while
+  // the digit is already mounted — clamp the displayed value to ≥1 whenever
+  // tasks exist: the digit may never contradict the lit state.
+  const shownCount = Math.max(1, countTasks)
   const tasksLabel = tasksIdle
     ? 'Background tasks'
     : tasksAmbientOnly
@@ -1014,13 +1019,30 @@ export const Composer = memo(function Composer({
         {onOpenTasks && (
           <button
             type="button"
-            className={'btn btn-icon composer-tasks' + (tasksIdle ? ' composer-tasks-idle' : '')}
+            className={
+              'btn btn-icon composer-tasks'
+              + (tasksIdle ? ' composer-tasks-idle' : '')
+              + (tasksIndicator > 0 ? ' composer-tasks-live' : '')
+            }
             onClick={onOpenTasks}
             title={tasksTitle}
             aria-label={tasksLabel}
           >
-            <IconListTodo size={18} aria-hidden />
-            {tasksIndicator > 0 && countTasks}
+            {/* Icon ⇄ digit share one fixed 18×18 slot — the digit REPLACES
+                the icon instead of widening the button (motion design lives
+                in chat.css .composer-tasks-face). `key` remounts the digit
+                per displayed integer so the pop animation replays per
+                increment; useCountUp glides through the intermediates so a
+                burst reads as ticking. aria-hidden: the button's aria-label
+                already carries the count text. */}
+            <span className="composer-tasks-face" aria-hidden>
+              <IconListTodo size={18} className="composer-tasks-icon slot-morph" />
+              {tasksIndicator > 0 && (
+                <span key={shownCount} className="composer-tasks-count slot-morph">
+                  {shownCount}
+                </span>
+              )}
+            </span>
           </button>
         )}
         {SCHEDULE_SEND_ENABLED && onSendScheduled && scheduled && (

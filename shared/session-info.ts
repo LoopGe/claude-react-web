@@ -46,8 +46,12 @@ export interface SessionRecap {
   summary?: string
   stats?: SessionRecapStats
   error?: string
-  /** Epoch ms of the most recent successful generation OR the most
-   *  recent error. Used by the client only for display. */
+  /** Epoch ms stamped when this generation was DISPATCHED, stable across
+   *  its pending → ready/error lifecycle (every frame of one generation
+   *  carries the same value). The client keys the recap window's dismissal
+   *  on it: closing the card while pending records the stamp, so the card
+   *  stays closed when that generation completes, and only a NEW
+   *  generation's fresh stamp reopens it. */
   generatedAt?: number
 }
 
@@ -133,6 +137,20 @@ export interface PluginLoadError {
   path?: string
 }
 
+/** Worktree isolation metadata. Present (and `cwd` = the worktree path)
+ *  when the session runs in its own linked git worktree. */
+export interface WorktreeInfo {
+  /** The user's MAIN repo checkout — what fork falls back to and what
+   *  recreate reads branches from. */
+  mainRepoPath: string
+  /** Branch created for this session (`crw/<sessionId8>`). Kept after
+   *  session deletion. */
+  branch: string
+  /** Main-repo HEAD at creation time — recreate fallback when the branch
+   *  was deleted externally. */
+  baseSha: string
+}
+
 export interface SessionInfoBase<PM = string> {
   id: string
   provider?: string
@@ -184,7 +202,7 @@ export interface SessionInfoBase<PM = string> {
   fastModeState?: 'off' | 'cooldown' | 'on'
   /** SDK-reported runtime compaction state — true while the CLI is compacting
    *  the transcript (auto-recap / context-window compression). Surfaced so the
-   *  WorkingBubble can show "Recap (auto)…" instead of a stale phase while the
+   *  WorkingBubble can show "Recap…" instead of a stale phase while the
    *  context window is being compressed mid-turn. Not persisted; the SDK
    *  re-reports it via `system/status` after respawn. */
   compacting?: boolean
@@ -215,6 +233,12 @@ export interface SessionInfoBase<PM = string> {
    *  on gateway deployments). undefined = unknown → UI shows the chip;
    *  false = hide it. Not persisted. */
   thinkingSupported?: boolean
+  /** Whether this session's provider implements mid-run steering (the
+   *  claude provider does; runtime degradation on old CLIs is handled inside
+   *  the handle, so this is the provider mechanism flag — spec §9). Drives
+   *  the composer's "will inject into the running turn" affordance. Not
+   *  persisted — re-derived from the provider registry on every snapshot. */
+  steeringSupported?: boolean
   /** User intent: absolute auto-compact window size in tokens (SDK
    *  Settings.autoCompactWindow). Undefined means "auto" — the CLI derives
    *  the threshold from the model's context window. Persisted so it survives
@@ -265,6 +289,9 @@ export interface SessionInfoBase<PM = string> {
    *  HEAD was detached/unborn, or git was unavailable. Survives
    *  process restarts via persistence.coerceMeta. */
   gitStartSha?: string
+  /** Worktree isolation metadata. Undefined = the session runs in the user's
+   *  own checkout. Persisted; survives resume/restart. */
+  worktree?: WorktreeInfo
   /** Number of tool-permission requests / AskUserQuestion prompts
    *  awaiting a user decision. Drives the sidebar badge on
    *  SessionCard so users can see at a glance which background

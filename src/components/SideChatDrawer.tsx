@@ -11,6 +11,7 @@ import type { SessionInfo } from '../types'
 import type { ChatStream } from '../hooks/useChatStream'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { MessageList, WorkingBubble } from './MessageList'
+import { OlderHistoryFloat } from './message-list/transcript-chrome'
 import { PermissionDialog } from './PermissionDialog'
 import { RichPromptInput } from './RichPromptInput'
 import { pasteAtCaret } from './richPromptApi'
@@ -254,7 +255,16 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         </Tooltip>
       </div>
 
-      <div className="side-chat-drawer-body" ref={bodyRefMerged}>
+      {/* Positioned wrapper for the older-history float: the body below is
+          the scroll container, so an absolutely-anchored pill inside it would
+          scroll away with the content. The stage stays put. */}
+      <div className="side-chat-drawer-stage">
+        <OlderHistoryFloat
+          loading={stream.loadingOlder}
+          error={stream.olderError}
+          onRetry={stream.loadOlder}
+        />
+        <div className="side-chat-drawer-body" ref={bodyRefMerged}>
         <MessageList
           items={stream.items}
           working={session.working}
@@ -297,10 +307,12 @@ export const SideChatDrawer = memo(function SideChatDrawer({
                 tokenRate={stream.tokenRate}
                 activePhase={stream.activePhase}
                 waiting={waiting}
+                apiRetry={stream.apiRetry}
               />
             </BottomCardMotion>
           )}
         </AnimatePresence>
+        </div>
       </div>
 
       {stream.error && (

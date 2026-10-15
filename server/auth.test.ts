@@ -201,3 +201,70 @@ describe('authorizeUpgrade', () => {
     expect(authorizeUpgrade(req({}))).toBe('ok')
   })
 })
+
+describe('cross-site ?token= failures use a separate bucket (Sec-Fetch-Site)', () => {
+  let app: Hono
+
+  beforeEach(() => {
+    __resetAuthRateLimitForTest()
+    setWebAuth(TOKEN, true)
+    app = makeApp()
+  })
+
+  afterEach(() => {
+    setWebAuth('', false)
+    __resetAuthRateLimitForTest()
+  })
+
+  const visit = (token: string, headers: Record<string, string> = {}) =>
+    app.request(`${BASE}/?token=${encodeURIComponent(token)}`, { headers }, peer('192.168.1.100'))
+
+  it('cross-site ?token= failures do not 429 the header-less sign-in', async () => {
+    for (let i = 0; i < 5; i++) {
+      expect((await visit('x', { 'sec-fetch-site': 'cross-site' })).status).toBe(401)
+    }
+    expect((await visit(TOKEN)).status).toBe(302)
+  })
+
+  it('a client forging Sec-Fetch-Site: cross-site is still limited (6th attempt → 429)', async () => {
+    for (let i = 0; i < 5; i++) {
+      expect((await visit('x', { 'sec-fetch-site': 'cross-site' })).status).toBe(401)
+    }
+    expect((await visit('x', { 'sec-fetch-site': 'cross-site' })).status).toBe(429)
+    // Even the right token is refused in that bucket, while the
+    // header-less (same-origin) sign-in from the same peer still works.
+    expect((await visit(TOKEN, { 'sec-fetch-site': 'cross-site' })).status).toBe(429)
+    expect((await visit(TOKEN)).status).toBe(302)
+  })
+
+  it('a cross-site Bearer failure is counted in the peer bucket', async () => {
+    const api = (auth: string, headers: Record<string, string> = {}) =>
+      app.request(`${BASE}/api/ping`, { headers: { authorization: auth, ...headers } }, peer('192.168.1.102'))
+    for (let i = 0; i < 5; i++) {
+      expect((await api('Bearer wrong', { 'sec-fetch-site': 'cross-site' })).status).toBe(401)
+    }
+    expect((await api(`Bearer ${TOKEN}`)).status).toBe(429)
+  })
+
+  it('header-less failures are still counted (6th presented attempt → 429)', async () => {
+    for (let i = 0; i < 5; i++) expect((await visit('x')).status).toBe(401)
+    expect((await visit('x')).status).toBe(429)
+  })
+
+  it('same-site failures are counted', async () => {
+    for (let i = 0; i < 5; i++) {
+      expect((await visit('x', { 'sec-fetch-site': 'same-site' })).status).toBe(401)
+    }
+    expect((await visit(TOKEN, { 'sec-fetch-site': 'same-site' })).status).toBe(429)
+  })
+
+  it('authorizeUpgrade counts cross-site ?token= failures in their own bucket', () => {
+    const q = (token: string, headers: Record<string, string | string[]> = {}) =>
+      ({ headers, url: `/api/ws?token=${encodeURIComponent(token)}`, socket: { remoteAddress: '192.168.1.101' } }) as unknown as IncomingMessage
+    for (let i = 0; i < 5; i++) {
+      expect(authorizeUpgrade(q('wrong', { 'sec-fetch-site': 'Cross-Site' }))).toBe('unauthorized')
+    }
+    expect(authorizeUpgrade(q('wrong', { 'sec-fetch-site': 'Cross-Site' }))).toBe('rate-limited')
+    expect(authorizeUpgrade(q(TOKEN))).toBe('ok')
+  })
+})

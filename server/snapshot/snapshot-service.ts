@@ -1,8 +1,7 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { realpath } from 'node:fs/promises'
 import { join, isAbsolute } from 'node:path'
 import { createLogger } from '../log.js'
+import { runGit } from '../git.js'
 import { DEFAULT_MAX_UNTRACKED_BYTES } from '../constants.js'
 import { odbDir } from './paths.js'
 import {
@@ -20,7 +19,6 @@ import {
 import { SnapshotStore } from './snapshot-store.js'
 
 const log = createLogger('snapshot')
-const execFileAsync = promisify(execFile)
 
 export interface SnapshotServiceOptions {
   stateDir: string
@@ -55,21 +53,16 @@ interface ResolvedRepo {
   sourceGitDir: string
 }
 
+/** Probe helper over runGit: any exit code resolves (callers check it);
+ *  spawn-level failures (git missing, timeout) collapse to null. */
 async function safeExec(
   cwd: string,
   args: string[],
 ): Promise<{ stdout: string; code: number } | null> {
   try {
-    const { stdout } = await execFileAsync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 15_000,
-    })
-    return { stdout, code: 0 }
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException & { code?: string | number; stdout?: string }
-    if (typeof e.code === 'number') return { stdout: e.stdout ?? '', code: e.code }
+    const r = await runGit(cwd, args, { timeoutMs: 15_000, allowAnyExitCode: true })
+    return { stdout: r.stdout, code: r.exitCode }
+  } catch {
     return null
   }
 }

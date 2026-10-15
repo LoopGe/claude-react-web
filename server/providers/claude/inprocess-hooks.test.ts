@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildInProcessHooks, capHookInput, parseHookBackgroundTasks, parseSubagentStopInput } from './inprocess-hooks.js'
 import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './inprocess-hooks.js'
+import { SupplementSession } from './steering.js'
 
 describe('buildInProcessHooks', () => {
   it('registers a Stop hook matcher', () => {
@@ -261,5 +262,81 @@ describe('capHookInput', () => {
 
   it('returns short strings unchanged', () => {
     expect(capHookInput('hi', 100)).toBe('hi')
+  })
+})
+
+describe('buildInProcessHooks with steering', () => {
+  const mkSteering = (): SupplementSession => {
+    const s = new SupplementSession(vi.fn())
+    s.notePromptConsumed()
+    return s
+  }
+
+  it('registers Pre/PostToolUse(+Failure) matchers and merges Stop decision into the existing callback', async () => {
+    const steering = mkSteering()
+    const forward = vi.fn()
+    const hooks = buildInProcessHooks(forward, undefined, undefined, steering)
+    expect(Object.keys(hooks)).toEqual(
+      expect.arrayContaining(['Stop', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure']),
+    )
+    // 宽松签名：测试只关心 agent_id/session_id 的运行时行为，不构造完整 HookInput
+    const stopCb = hooks.Stop![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
+    // 空 pending：返回 undefined（现状不变），且 run-log forward 照常触发
+    expect(await stopCb({ session_id: 's1' }, undefined, {})).toBeUndefined()
+    expect(forward).toHaveBeenCalledWith('s1', expect.objectContaining({ kind: 'completed' }))
+    // 空 Stop 已按语义关闭 admission——模拟下一轮 prompt 读取重开后再注入
+    steering.notePromptConsumed()
+    // 有 pending：返回 decision block，快照逻辑依然执行（forward 再次触发）
+    steering.enqueue({ uuid: 'u1', text: 'pivot' })
+    const out = await stopCb({ session_id: 's1' }, undefined, {})
+    expect(out).toEqual({ decision: 'block', reason: expect.stringContaining('pivot') })
+    expect(forward).toHaveBeenCalledTimes(2)
+  })
+
+  it('PreToolUse matcher returns additionalContext when pending, undefined otherwise', async () => {
+    const steering = mkSteering()
+    const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
+    const cb = hooks.PreToolUse![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
+    expect(await cb({}, undefined, {})).toBeUndefined()
+    steering.enqueue({ uuid: 'u1', text: 'go' })
+    expect(await cb({}, undefined, {})).toEqual({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: expect.stringContaining('go') },
+    })
+  })
+
+  it('subagent agent_id returns undefined and leaves pending intact', async () => {
+    const steering = mkSteering()
+    steering.enqueue({ uuid: 'u1', text: 'go' })
+    const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
+    const cb = hooks.PreToolUse![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
+    expect(await cb({ agent_id: 'agent-9' }, undefined, {})).toBeUndefined()
+    expect(steering.drainUndelivered()).toEqual([{ uuid: 'u1' }])
+  })
+
+  it('abort signal skips the steering boundary entirely', async () => {
+    const steering = mkSteering()
+    steering.enqueue({ uuid: 'u1', text: 'go' })
+    const hooks = buildInProcessHooks(undefined, undefined, undefined, steering)
+    const cb = hooks.PreToolUse![0]!.hooks[0]! as unknown as (
+      input: unknown,
+      toolUseID?: string,
+      deps?: { signal?: AbortSignal },
+    ) => Promise<unknown>
+    const ac = new AbortController()
+    ac.abort()
+    expect(await cb({}, undefined, { signal: ac.signal })).toBeUndefined()
+    expect(steering.drainUndelivered()).toEqual([{ uuid: 'u1' }])
   })
 })

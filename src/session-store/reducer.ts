@@ -308,6 +308,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     }
     case 'MESSAGE_CONSUMED':
       return applyMessageConsumed(state, action.uuid, action.consumedAt)
+    case 'MESSAGE_STEERED':
+      return applyMessageSteered(state, action.uuid, action.state)
     case 'ERROR':
       // ERROR straddles the boundary: the WS error frame writes it (server-
       // originated) but the lifecycle (clearError) is client-owned. We park
@@ -1567,6 +1569,33 @@ function clearSendingPlaceholders(intent: ClientIntent): ClientIntent {
  *  the message object's consumedAt in place (consistent with the server,
  *  where history and the live frame share one reference) and rebuilds just
  *  the affected TranscriptItem so deliveryStatus re-derives. */
+/** MESSAGE_STEERED: stamp injectedAt / requeuedAt on the matching steered
+ *  message and re-derive its deliveryStatus. Simpler than
+ *  applyMessageConsumed: the initial broadcast carries steeredAt (the
+ *  'injecting' state never arrives via this action), and the injected /
+ *  requeued frames are pushed strictly after the broadcast, so the item is
+ *  always present — a miss is a harmless no-op (replay's ring stamps are the
+ *  durable truth). 'requeued' falls through to the queued→consumed flow:
+ *  the msg keeps its stamps and deriveDeliveryStatus skips the steered
+ *  branch once requeuedAt is present. */
+function applyMessageSteered(state: SessionState, uuid: string, steerState: 'injected' | 'requeued'): SessionState {
+  const mirror = state.mirror
+  const idx = mirror.items.findIndex((it) => it.id === uuid)
+  if (idx < 0) return state
+  const item = mirror.items[idx]
+  const stamp = steerState === 'injected' ? { injectedAt: Date.now() } : { requeuedAt: Date.now() }
+  if (steerState === 'injected' && item.deliveryStatus === 'injected') return state
+  const nextMsg: SdkMessage = { ...item.msg, ...stamp }
+  const items = mirror.items.slice()
+  items[idx] = { ...item, msg: nextMsg, deliveryStatus: steerState === 'injected' ? 'injected' : 'queued' }
+  const mIdx = mirror.messages.findIndex(
+    (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
+  )
+  const messages = mirror.messages.slice()
+  if (mIdx >= 0) messages[mIdx] = nextMsg
+  return withMirror(state, { ...mirror, items, messages })
+}
+
 function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: number): SessionState {
   const mirror = state.mirror
   // Also stamp a placeholder living in intent: the user message hasn't been
@@ -2142,6 +2171,15 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // slot). updateTranscriptMirror is a no-op for api_retry (toTranscriptItem
   // returns null), so it neither appends nor needs the old in-place
   // replace/strip logic.
+  //
+  // No parent_tool_use_id check is needed (verified against the CLI binary's
+  // own emitter, 2.1.x): the host loop converts an internal `api_error` into
+  // `{type:'system', subtype:'api_retry', attempt, max_retries, …}` with NO
+  // parent field, and the subagent-stream forwarding loop explicitly SKIPS
+  // the child's api_retry frames — a subagent's retry instead rides a
+  // `tool_progress` frame (data.type 'agent_api_retry', subagent_retry
+  // payload), which our pump drops with every other tool_progress. So every
+  // `system/api_retry` that reaches this reducer is a MAIN-thread retry.
   const isApiRetry = message.type === 'system' && message.subtype === 'api_retry'
   // `thinking_tokens` is a transient live estimate of the current thinking
   // block's token count (see toTranscriptItem — never a TranscriptItem). It

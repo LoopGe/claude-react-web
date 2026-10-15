@@ -23,12 +23,8 @@
 // a turn's last assistant frame preserves that entire turn and drops only
 // LATER turns — no mid-turn cut, no orphaned tool_use/tool_result.
 
-import { readFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
-import { createLogger } from './log.js'
-import { writeAtomic } from './json-file-store.js'
-
-const log = createLogger('turn-anchors')
+import { PerSessionSidecar } from './per-session-sidecar.js'
 
 /** One entry per successfully-completed turn, in completion order. */
 export interface TurnAnchorEntry {
@@ -51,77 +47,52 @@ export function retainTurnAnchorEntries(entries: TurnAnchorEntry[], cap: number)
 }
 
 export class TurnAnchorStore {
-  private readonly dir: string | null
   private readonly cap: number
-  /** Serialises concurrent writes so two appends (or append + save) for the
-   *  same session can't race on `writeAtomic`'s tmp+rename — on Windows a
-   *  rename onto a file mid-write returns EPERM. The pump fires
-   *  recordTurnAnchor as fire-and-forget, so back-to-back success results
-   *  (or a discard-time save racing an in-flight append) would otherwise
-   *  collide. Mirrors JsonFileStore's `writing` chain pattern. */
-  private writing: Promise<void> = Promise.resolve()
+  /** Per-session write chain + remove tombstone + cache. Serialising per
+   *  session keeps two appends (or append + save) for the same session off
+   *  `writeAtomic`'s tmp+rename at the same time — on Windows a rename onto
+   *  a file mid-write returns EPERM. The pump fires recordTurnAnchor as
+   *  fire-and-forget, so back-to-back success results (or a discard-time
+   *  save racing an in-flight append) would otherwise collide. */
+  private readonly sidecar: PerSessionSidecar<TurnAnchorEntry>
   constructor(stateDir: string | undefined, historyCap: number) {
     // Tolerate an absent state dir (standalone buildApp / unit tests that
     // don't exercise discard): the store no-ops load/save/remove rather
     // than crashing path.join on `undefined`.
-    this.dir = stateDir ? join(stateDir, 'turn-anchors') : null
+    this.sidecar = new PerSessionSidecar({
+      dir: stateDir ? join(stateDir, 'turn-anchors') : null,
+      label: 'turn-anchors',
+    })
     this.cap = historyCap
   }
 
-  private file(sessionId: string): string | null {
-    return this.dir ? join(this.dir, `${sessionId}.json`) : null
-  }
-
-  async load(sessionId: string): Promise<TurnAnchorEntry[] | null> {
-    const file = this.file(sessionId)
-    if (!file) return null
-    try {
-      const raw = await readFile(file, 'utf8')
-      const parsed = JSON.parse(raw)
-      return Array.isArray(parsed) ? (parsed as TurnAnchorEntry[]) : null
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code === 'ENOENT') return null
-      log.warn(`load failed for ${sessionId}: ${(err as Error).message ?? err}`)
-      return null
-    }
+  load(sessionId: string): Promise<TurnAnchorEntry[] | null> {
+    return this.sidecar.load(sessionId)
   }
 
   /** Append a new turn anchor, dedup by assistantUuid (a re-promoted anchor
    *  for the same uuid updates completedAt rather than duplicating), cap to
    *  the newest `cap` entries, and persist atomically. Fire-and-forget safe:
    *  callers (the pump) don't await this on the turn path. The whole
-   *  load→modify→write sequence is serialised per-store so back-to-back
+   *  load→modify→write sequence runs in the session's chain so back-to-back
    *  appends can't race (one would otherwise read the pre-append state and
    *  clobber the other's entry on rename). */
   async append(sessionId: string, entry: TurnAnchorEntry): Promise<void> {
-    // Run load+modify+write inside the serialised chain so two concurrent
-    // appends for the same session see each other's writes. The returned
-    // promise resolves when THIS append's write lands; callers that don't
-    // await (the pump) just don't wait, but the chain still orders them.
-    this.writing = this.writing.then(async () => {
-      const existing = (await this.load(sessionId)) ?? []
+    await this.sidecar.update(sessionId, (prev) => {
+      const existing = prev ?? []
       const idx = existing.findIndex((e) => e.assistantUuid === entry.assistantUuid)
       if (idx >= 0) {
         existing[idx] = entry
       } else {
         existing.push(entry)
       }
-      const capped = retainTurnAnchorEntries(existing, this.cap)
-      await this.writeRaw(sessionId, capped)
-    }).catch((err) => {
-      // Swallow so a failed write doesn't break the chain for the next one.
-      log.warn(`append chain error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
+      return retainTurnAnchorEntries(existing, this.cap)
     })
-    await this.writing
   }
 
   async save(sessionId: string, entries: TurnAnchorEntry[]): Promise<void> {
     const capped = retainTurnAnchorEntries(entries, this.cap)
-    this.writing = this.writing.then(() => this.writeRaw(sessionId, capped)).catch((err) => {
-      log.warn(`save chain error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
-    })
-    await this.writing
+    await this.sidecar.update(sessionId, () => capped)
   }
 
   /** Merge `entries` into the current sidecar (dedup by assistantUuid,
@@ -131,10 +102,10 @@ export class TurnAnchorStore {
    *  write — the backfill path loads the sidecar, finds it empty, reads
    *  the disk transcript, and merges; if the pump appended a new anchor
    *  in that window, `merge` keeps it instead of clobbering it. The whole
-   *  load→merge→write runs inside the serialised `writing` chain. */
+   *  load→merge→write runs inside the session's chain. */
   async merge(sessionId: string, entries: TurnAnchorEntry[]): Promise<void> {
-    this.writing = this.writing.then(async () => {
-      const existing = (await this.load(sessionId)) ?? []
+    await this.sidecar.update(sessionId, (prev) => {
+      const existing = prev ?? []
       const byUuid = new Map<string, TurnAnchorEntry>()
       // Insert existing first (so a concurrent append is preserved), then
       // overwrite/add from `entries` (backfilled values win on dedup since
@@ -143,33 +114,21 @@ export class TurnAnchorStore {
       // prefix even when existing (new) and entries (backfilled old) interleave.
       for (const e of existing) byUuid.set(e.assistantUuid, e)
       for (const e of entries) byUuid.set(e.assistantUuid, e)
-      const merged = retainTurnAnchorEntries(
+      return retainTurnAnchorEntries(
         [...byUuid.values()].sort((a, b) => a.completedAt - b.completedAt),
         this.cap,
       )
-      await this.writeRaw(sessionId, merged)
-    }).catch((err) => {
-      log.warn(`merge chain error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
     })
-    await this.writing
   }
 
-  /** Raw write, no cap/retry — callers pass already-capped entries. Runs
-   *  inside the serialised `writing` chain. */
-  private async writeRaw(sessionId: string, entries: TurnAnchorEntry[]): Promise<void> {
-    const file = this.file(sessionId)
-    if (!file || !this.dir) return
-    await writeAtomic(this.dir, file, entries)
+  /** Delete the sidecar. Tombstones the id first, so an append still in
+   *  flight (or fired after this) can't recreate the file. */
+  remove(sessionId: string): Promise<void> {
+    return this.sidecar.remove(sessionId)
   }
 
-  async remove(sessionId: string): Promise<void> {
-    const file = this.file(sessionId)
-    if (!file) return
-    try {
-      await unlink(file)
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code
-      if (code !== 'ENOENT') log.warn(`remove failed for ${sessionId}: ${(err as Error).message ?? err}`)
-    }
+  /** Clear the remove() tombstone for a new session reusing `sessionId`. */
+  revive(sessionId: string): void {
+    this.sidecar.revive(sessionId)
   }
 }

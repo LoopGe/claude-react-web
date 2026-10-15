@@ -37,7 +37,6 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
     msg.type === 'system' &&
     msg.subtype !== 'error' &&
     msg.subtype !== 'compact_boundary' &&
-    msg.subtype !== 'api_retry' &&
     // CLI-local command output (/usage, /voice, …) — renderable text body.
     msg.subtype !== 'local_command_output' &&
     // Auto-memory recall — renders as a "Recalled from memory" card.
@@ -237,11 +236,18 @@ export function toTranscriptItem(
  *  (disk-restored history, or an optimistic local insert that hasn't been
  *  server-echoed) also returns undefined: we have no server-side queue
  *  signal to show. */
-function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | undefined {
+function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | 'injecting' | 'injected' | undefined {
   if (msg.type !== 'user') return undefined
   if (msg.parent_tool_use_id != null) return undefined
   if (userMessageHasToolResult(msg)) return undefined
   if (isTaskNotificationUserMessage(msg)) return undefined
+  // Steered branch (spec §10): once requeued the message is an ordinary
+  // queued prompt again — fall through to the queued/consumed derivation so
+  // its chip follows the normal flow.
+  if (typeof (msg as { requeuedAt?: number }).requeuedAt !== 'number') {
+    if (typeof (msg as { injectedAt?: number }).injectedAt === 'number') return 'injected'
+    if (typeof (msg as { steeredAt?: number }).steeredAt === 'number') return 'injecting'
+  }
   if (typeof msg.consumedAt === 'number') return 'consumed'
   // Only call it "queued" once the server has acknowledged it (receivedAt).
   // Without that, an optimistic placeholder would flash a "queued" badge
@@ -256,7 +262,13 @@ function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | undefine
  *  messages (interrupt with cancelQueued), so the tooltip can say so. */
 export function countQueuedUserTurns(messages: readonly SdkMessage[]): number {
   let n = 0
-  for (const m of messages) if (deriveDeliveryStatus(m) === 'queued') n++
+  // 'injecting' counts too: Stop + cancelQueued withdraws steer pending the
+  // same way it withdraws queued turns, so the Composer's affordance count
+  // must include them.
+  for (const m of messages) {
+    const s = deriveDeliveryStatus(m)
+    if (s === 'queued' || s === 'injecting') n++
+  }
   return n
 }
 

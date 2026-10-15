@@ -27,10 +27,10 @@
  *      keep its own DOM node — and therefore its measured height and mounted
  *      subtree state — when other rows appear or disappear around it.
  *
- *  I2  Synthetic rows (SubagentOverlay's injected prompt/result, the transient
- *      `api_retry` divider) are ordinary rows with ordinary ids. Callers must
- *      hand in referentially stable `TranscriptItem`s for them; a fresh object
- *      per flush defeats both the row memo and the front-anchor bookkeeping.
+ *  I2  Synthetic rows (SubagentOverlay's injected prompt/result) are
+ *      ordinary rows with ordinary ids. Callers must hand in referentially
+ *      stable `TranscriptItem`s for them; a fresh object per flush defeats
+ *      both the row memo and the front-anchor bookkeeping.
  *
  *  I3  Rows are NOT append-only. `willRenderEmpty(…, isResultConsumed)` drops
  *      a row once its tool_result has been merged into the owning card, and
@@ -70,9 +70,10 @@ export interface TranscriptRow {
    *  server's broadcast lands and the optimistic gets swapped out. */
   sending?: boolean
   /** Queue-delivery state of a top-level user turn ('queued' = waiting
-   *  behind an in-flight turn, 'consumed' = SDK has started processing).
+   *  behind an in-flight turn, 'consumed' = SDK has started processing,
+   *  'injecting'/'injected' = mid-run steering states, spec §10).
    *  Undefined for everything else. Drives the queued/processing chip. */
-  deliveryStatus?: 'queued' | 'consumed'
+  deliveryStatus?: 'queued' | 'consumed' | 'injecting' | 'injected'
   /** Wall-clock ms when first observed. Carried from the TranscriptItem so
    *  the entrance-animation gate can tell a live arrival (timestamp present)
    *  from disk-restored history (undefined). */
@@ -115,9 +116,6 @@ export interface BuildTranscriptRowsInput {
    *  (a synchronous subagent's reply, which lands as the Agent tool_result on
    *  the MAIN thread and so has parent_tool_use_id = null). */
   trailingItems?: readonly TranscriptItem[]
-  /** Transient `api_retry` frame. Render-only: it lives in its own slot, not
-   *  in items/messages/IDB, and is appended as a synthetic tail row. */
-  apiRetry?: SdkMessage | null
   /** Whether consecutive tool-only rows fold into collapsible group cards
    *  (the `toolGroupCards` UI pref). False renders each tool row individually
    *  with no fold chrome. Defaults to true. */
@@ -135,11 +133,6 @@ export interface TranscriptRowsResult {
    *  row-level memo. */
   nextItemTypeMap: Map<string, string>
 }
-
-/** Synthetic row id for the transient api_retry divider. Stable across
- *  consecutive retry frames so the slot is overwritten in place (fresh
- *  delayMs props, no remount) instead of appending a new row each time. */
-export const API_RETRY_ROW_ID = '__api_retry__'
 
 function pushRow(
   out: TranscriptRow[],
@@ -243,7 +236,6 @@ export function buildTranscriptRows({
   isResultConsumed,
   leadingItems,
   trailingItems,
-  apiRetry,
   toolGroupCards = true,
 }: BuildTranscriptRowsInput): TranscriptRowsResult {
   const out: TranscriptRow[] = []
@@ -273,20 +265,6 @@ export function buildTranscriptRows({
     for (let ti = 0; ti < trailingItems.length; ti++) {
       pushRow(out, trailingItems[ti], -1000 - ti, isResultConsumed)
     }
-  }
-
-  if (apiRetry) {
-    out.push({
-      id: API_RETRY_ROW_ID,
-      msg: apiRetry,
-      isCompactSummary: false,
-      renderableIndex: out.length,
-      // No receivedAt, so the entrance-animation gate skips it.
-      itemIndex: -2,
-      // Never consumed by the fold predicate (not a human user message),
-      // but the field is required on every row.
-      plainText: null,
-    })
   }
 
   // Fold tool-only assistant runs. Must run before nextItemTypeMap so the
@@ -473,7 +451,8 @@ export function subagentResultItem(
 // the SDK's echo. Both happen in the same build (the echo row is what flips
 // `sdkEchoedSubagentPrompt` true), so the head is REPLACED, not removed — row
 // count before the head is unchanged and `firstItemIndex` genuinely shouldn't
-// move. That lands on the re-anchor branch, which is the right answer.
+// move. The surviving-tail scan answers that with frontShift 0 (nothing
+// shifted, no reset), which is the right answer.
 
 /** Starting anchor. A large value so `loadOlder` prepends can decrement for a
  *  very long time without approaching zero (Virtuoso rejects negatives).
@@ -488,11 +467,14 @@ export interface RowAnchor {
   /** Row ids from the build this anchor was computed for, in order. */
   rowIds: readonly string[]
   /** Data-space shift of THIS build relative to the previous one: +N when N
-   *  rows were inserted ahead of the previous first row, -N when N rows were
-   *  dropped off the front, 0 when the front is unchanged. null when the list
-   *  was rebuilt (replay replace / clear swap / emptied) and the whole index
-   *  space is invalid — callers holding data-space indices into the previous
-   *  build (the pinned header's visible-top ref) must reset, not shift. */
+   *  rows were inserted ahead of the previous front (the previous first row
+   *  when it survives, else the first SURVIVING row — the swallowed-head
+   *  case), -N when N rows were dropped off the front, 0 when no row moved
+   *  (a head swap that inserts nothing ahead of the survivors included).
+   *  null when the list was rebuilt (replay replace / clear swap / emptied)
+   *  and the whole index space is invalid — callers holding data-space
+   *  indices into the previous build (the pinned header's visible-top ref)
+   *  must reset, not shift. */
   frontShift: number | null
 }
 
@@ -539,6 +521,14 @@ const reanchoredAnchor = (rowIds: readonly string[], externalAnchor?: number | n
  * `index` only ever DECREASES on a front insert, from a starting point of
  * 1e6 or the (much smaller) seq anchor, so it cannot realistically reach
  * zero (Virtuoso rejects negatives).
+ *
+ * A front insert is recognized even when the old head row's id has VANISHED —
+ * a loadOlder page whose trailing tool run continues the head group re-keys
+ * the folded group to its new first member. The surviving old tail then maps
+ * contiguously onto the new rows, and the shift is read from its displacement
+ * (see the swallowed-head branch in the body). Missing this pinned the offset
+ * and permanently disarmed react-virtuoso's startReached (distinct-until-
+ * changed over the first item's index), killing scroll-up paging.
  */
 export function advanceRowAnchor(
   prev: RowAnchor,
@@ -581,8 +571,48 @@ export function advanceRowAnchor(
     return { index: prev.index + removed, rowIds, frontShift: -removed }
   }
 
-  // Neither a front insert nor a front removal — an unrelated rebuild (replay
-  // replace, fork, /clear swap). Re-anchor; Virtuoso resets its size tree.
+  // Both the old head and the new head are gone-from/absent-in the other
+  // list. Before concluding a rebuild, rule out the loadOlder group-extend:
+  // a page whose trailing tool run continues the head group folds those
+  // members into it, RE-KEYING the group row to the page's first member —
+  // the old head row's id vanishes even though the prepend is an ordinary
+  // front insert (or, in the degenerate shape, inserts nothing ahead). The
+  // surviving tail betrays it: find the first old row that still exists; if
+  // the whole old tail from there maps contiguously onto the new rows, then
+  // (new position − old position) rows were inserted ahead of it. Missing
+  // this case pinned firstItemIndex at its current value, and react-virtuoso's
+  // startReached — distinct-until-changed over the first item's index — never
+  // re-armed, so scroll-up paging stopped for the life of the panel.
+  const newIdSet = new Set(rowIds)
+  let survivor = 1
+  while (survivor < prev.rowIds.length && !newIdSet.has(prev.rowIds[survivor]!)) survivor++
+  if (survivor < prev.rowIds.length) {
+    const m = rowIds.indexOf(prev.rowIds[survivor]!)
+    if (m >= survivor) {
+      const tailLen = prev.rowIds.length - survivor
+      let contiguous = m + tailLen <= rowIds.length
+      for (let i = 0; contiguous && i < tailLen; i++) {
+        if (rowIds[m + i] !== prev.rowIds[survivor + i]) contiguous = false
+      }
+      if (contiguous) {
+        const inserted = m - survivor
+        // inserted === 0 (the degenerate all-folded page) keeps the offset:
+        // no row moved, so no reset — the head replacement is not a rebuild.
+        // Known limit of that answer: firstItemIndex is unchanged, and
+        // react-virtuoso arms startReached distinct-until-changed over the
+        // first item's index, so a page that folds ENTIRELY into the head
+        // group (zero rows of its own) still leaves scroll-up paging
+        // disarmed. No offset change can fix that — any nonzero decrement
+        // would misalign the survivors — so that shape needs a mechanism
+        // outside the anchor (e.g. loadOlder chaining while still at top).
+        return { index: prev.index - inserted, rowIds, frontShift: inserted }
+      }
+    }
+  }
+
+  // Neither a front insert nor a front removal nor a swallowed-head prepend —
+  // an unrelated rebuild (replay replace, fork, /clear swap). Re-anchor;
+  // Virtuoso resets its size tree.
   return reanchoredAnchor(rowIds, externalAnchor)
 }
 

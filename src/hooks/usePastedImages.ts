@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { formatBytes } from '../utils/format'
 import { randomId } from '../utils/uuid'
 import { getMaxPastedImageBytes } from './config-store'
@@ -19,6 +19,26 @@ export interface UsePastedImages {
    *  cache owns their lifecycle). An in-flight addImage is NOT discarded —
    *  it lands on the applied set. Empty array = clear (text-only recall). */
   applyImages: (prebuilt: readonly PastedImage[]) => void
+  /** Synchronous mutation signal, replaced (not mutated) with every image-set
+   *  change: `seq` is a monotonic counter, `kind` names the most recent
+   *  mutation. Async pipelines that apply images (draft restore) capture
+   *  `seq` before their async work and drop their apply if it advanced — a
+   *  user edit in the window always wins. `kind` distinguishes consumption
+   *  (send's `clear`, a `remove`) from replacement (a history recall's
+   *  `apply`): the draft-image persistence deletes its record on the former
+   *  and keeps it through the latter. A ref, not state: consumers read it
+   *  from async callbacks, where they need the value at land time, not at
+   *  last render. */
+  mutationsRef: RefObject<ImageMutations>
+}
+
+/** What kind of mutation last touched the image set. */
+export type ImageMutationKind = 'add' | 'remove' | 'clear' | 'apply'
+
+/** The value shape of `usePastedImages`' mutation signal. */
+export interface ImageMutations {
+  seq: number
+  kind: ImageMutationKind
 }
 
 export function usePastedImages(): UsePastedImages {
@@ -30,6 +50,11 @@ export function usePastedImages(): UsePastedImages {
   // value before its await and skips the state update if clear() ran
   // in the interim — otherwise the image lands with a revoked blob URL.
   const clearGenerationRef = useRef(0)
+  // Synchronous mutation signal for async appliers — see the interface docs.
+  const mutationsRef = useRef<ImageMutations>({ seq: 0, kind: 'apply' })
+  const bumpMutations = useCallback((kind: ImageMutationKind) => {
+    mutationsRef.current = { seq: mutationsRef.current.seq + 1, kind }
+  }, [])
   // Every blob URL we create is registered here the instant it's minted,
   // and removed only once it has been explicitly revoked. This closes the
   // race where the component unmounts while addImage is still awaiting
@@ -45,19 +70,21 @@ export function usePastedImages(): UsePastedImages {
   }, [])
 
   const removeImage = useCallback((id: string) => {
+    bumpMutations('remove')
     setImages((prev) => {
       const img = prev.find((i) => i.id === id)
       if (img) revokeUrl(img.previewUrl)
       return prev.filter((i) => i.id !== id)
     })
-  }, [revokeUrl])
+  }, [revokeUrl, bumpMutations])
 
   const clear = useCallback(() => {
     clearGenerationRef.current++
+    bumpMutations('clear')
     for (const img of imagesRef.current) revokeUrl(img.previewUrl)
     setImages([])
     setError(null)
-  }, [revokeUrl])
+  }, [revokeUrl, bumpMutations])
 
   // History-recall path: apply a PREBUILT set built by the image decode
   // cache. The URLs are minted fresh per build and composer-owned (the cache
@@ -71,12 +98,13 @@ export function usePastedImages(): UsePastedImages {
   const applyImages = useCallback(
     (prebuilt: readonly PastedImage[]) => {
       const next: PastedImage[] = [...prebuilt]
+      bumpMutations('apply')
       setImages((prev) => {
         for (const img of prev) revokeUrl(img.previewUrl)
         return next
       })
     },
-    [revokeUrl],
+    [revokeUrl, bumpMutations],
   )
 
   const addImage = useCallback(async (file: File) => {
@@ -114,6 +142,7 @@ export function usePastedImages(): UsePastedImages {
         return
       }
 
+      bumpMutations('add')
       setImages((prev) => [
         ...prev,
         {
@@ -129,7 +158,7 @@ export function usePastedImages(): UsePastedImages {
     } catch {
       revokeUrl(previewUrl)
     }
-  }, [revokeUrl])
+  }, [revokeUrl, bumpMutations])
 
   // Cleanup on unmount: revoke every URL we created, including any that
   // are still mid-decode (not yet in `images`). The Set instance is stable
@@ -152,8 +181,8 @@ export function usePastedImages(): UsePastedImages {
   // callbacks are `useCallback([])`-stable — so the memo returns the
   // same reference until the user pastes / removes / clears.
   return useMemo(
-    () => ({ images, error, addImage, removeImage, clear, applyImages }),
-    [images, error, addImage, removeImage, clear, applyImages],
+    () => ({ images, error, addImage, removeImage, clear, applyImages, mutationsRef }),
+    [images, error, addImage, removeImage, clear, applyImages, mutationsRef],
   )
 }
 

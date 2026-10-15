@@ -22,6 +22,7 @@ const McpInstaller = lazy(() =>
 import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
 import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../../constants/recentKeys'
 import { clamp } from '../../utils/clamp'
+import { groupNameIssue } from '../../utils/group-name'
 
 /** useLocalStorage validator for the recent lists. A corrupt entry (other tab,
  *  older build, hand-edit) must collapse to [] — iterating a non-array would
@@ -76,6 +77,8 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // already sees the stored list.
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
   const [cwd, setCwd] = useState<string>(initialCwd ?? recentCwds[0] ?? defaults.cwd ?? '')
+  // Opt-in worktree isolation — off by default; only sent when checked.
+  const [isolate, setIsolate] = useState(false)
   const [model, setModel] = useState<string>(defaults.model ?? '')
   /** Model Group pin. Mutually exclusive with a concrete `model` — selecting
    *  one clears the other (ChatPanel's ModelPicker has the same contract). */
@@ -93,6 +96,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     if (g.sessionIds.length >= maxGroupSize) return ''
     return initialGroupId
   })
+  /** Pending inline group creation (the "Create group «name»" row). Mutually
+   *  exclusive with `groupId` — picking either clears the other. Submitted as
+   *  `newGroupName`; App mints the group when the create POST lands, so
+   *  cancelling the dialog leaves nothing behind. */
+  const [newGroupName, setNewGroupName] = useState('')
   const [showPicker, setShowPicker] = useState(false)
   const pickerPresence = useExitPresence(showPicker)
   // Guards against double-submit: the parent unmounts this dialog on
@@ -360,14 +368,35 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     [permissionMode],
   )
 
-  const groupOptions: FieldPickerOption[] = useMemo(
-    () => [
+  const groupOptions: FieldPickerOption[] = useMemo(() => {
+    const rows: FieldPickerOption[] = [
       {
         key: '',
         label: 'None (Ungrouped)',
-        selected: !activeGroup,
-        onSelect: () => setGroupId(''),
+        selected: !activeGroup && !newGroupName,
+        onSelect: () => {
+          setGroupId('')
+          setNewGroupName('')
+        },
       },
+    ]
+    // The pending pick shows as its own CHECKED row on reopen — the same
+    // contract as the Model picker's current-value row. Its label also makes
+    // FieldPicker's exact-label rule suppress the create row while the
+    // pending name is re-typed.
+    if (newGroupName) {
+      rows.push({
+        key: 'pending-new-group',
+        label: newGroupName,
+        sub: 'new group',
+        selected: true,
+        onSelect: () => {
+          setGroupId('')
+          setNewGroupName(newGroupName)
+        },
+      })
+    }
+    rows.push(
       ...groups.map((g) => {
         const full = g.sessionIds.length >= maxGroupSize
         return {
@@ -375,12 +404,37 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
           label: g.name,
           sub: `${g.sessionIds.length}/${maxGroupSize}${full ? ' — will replace oldest' : ''}`,
           selected: groupId === g.id,
-          onSelect: () => setGroupId(g.id),
+          onSelect: () => {
+            setGroupId(g.id)
+            setNewGroupName('')
+          },
         }
       }),
-    ],
-    [groups, groupId, activeGroup, maxGroupSize],
-  )
+    )
+    return rows
+  }, [groups, groupId, activeGroup, newGroupName, maxGroupSize])
+
+  // Free-text group names (no matching group exists yet) get a trailing
+  // "Create group «name»" row — the same contract as the Model picker's
+  // custom row. FieldPicker's exact-label match already suppresses it when
+  // the typed name equals an existing group; the pure-name check keeps it
+  // from offering a row App's validator would deterministically reject
+  // (over-length) — that pick would only fail after the session POST
+  // landed, stranding the session ungrouped.
+  const groupCustomOption = useCallback((q: string): FieldPickerOption | null => {
+    const raw = q.trim()
+    if (!raw) return null
+    if (groupNameIssue(raw)) return null
+    return {
+      key: 'new-group',
+      label: `Create group “${raw}”`,
+      sub: 'new group',
+      onSelect: () => {
+        setGroupId('')
+        setNewGroupName(raw)
+      },
+    }
+  }, [])
 
   // Tiny static lists — left un-memoized on purpose so the React Compiler can
   // infer deps. Manual useMemo here made the compiler skip optimizing the
@@ -454,6 +508,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
 
     onSubmit({
       cwd: cwd.trim() || undefined,
+      isolateWorktree: isolate || undefined,
       model: activeModelGroup ? undefined : model.trim() || undefined,
       // Derived (not raw state): a model group deleted while the dialog is
       // open must not be posted — create() 400s on an unknown group.
@@ -463,7 +518,9 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       systemPrompt: systemPrompt.trim() || undefined,
       title: title.trim() || undefined,
       betas: [ONE_M_CONTEXT_BETA],
-      groupId: activeGroup?.id,
+      // The pending new-group pick replaces any concrete group — never both.
+      groupId: newGroupName.trim() ? undefined : activeGroup?.id,
+      newGroupName: newGroupName.trim() || undefined,
       // Advanced options — only include when non-empty
       effort: (effort || undefined) as NewSessionForm['effort'],
       thinking,
@@ -598,6 +655,36 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                 onForget={forgetCwd}
                 onBrowse={() => setShowPicker(true)}
               />
+              {/* Opt-in worktree isolation. Same inline-styled checkbox row
+                  shape as the MCP / first-party / plugin pickers below; the
+                  hint spells out the two surprises (separate branch, no
+                  gitignored files) so the user isn't blindsided after
+                  create. */}
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                  fontSize: 'var(--fs-xs)',
+                  cursor: 'pointer',
+                  marginTop: 6,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={isolate}
+                  onChange={(e) => setIsolate(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  Isolate in its own worktree
+                  <span style={{ display: 'block', color: 'var(--fg-muted)' }}>
+                    Changes go to a dedicated branch (crw/…) and never touch the main checkout. The
+                    worktree is a clean checkout of HEAD and does not include gitignored files
+                    (e.g. .env, node_modules).
+                  </span>
+                </span>
+              </label>
             </div>
 
             <div className="settings-field">
@@ -666,19 +753,22 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
               <label htmlFor={uid + '-group'}>Group</label>
               <FieldPicker
                 id={uid + '-group'}
-                label={activeGroup?.name ?? ''}
+                label={newGroupName || activeGroup?.name || ''}
                 sub={
-                  activeGroup
-                    ? `${activeGroup.sessionIds.length}/${maxGroupSize}${
-                        activeGroup.sessionIds.length >= maxGroupSize ? ' — will replace oldest' : ''
-                      }`
-                    : undefined
+                  newGroupName
+                    ? 'new group'
+                    : activeGroup
+                      ? `${activeGroup.sessionIds.length}/${maxGroupSize}${
+                          activeGroup.sessionIds.length >= maxGroupSize ? ' — will replace oldest' : ''
+                        }`
+                      : undefined
                 }
                 placeholder="None"
                 menuLabel="Groups"
                 searchLabel="Search groups"
                 searchPlaceholder="Search groups…"
                 options={groupOptions}
+                customOption={groupCustomOption}
               />
             </div>
 

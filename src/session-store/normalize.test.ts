@@ -255,10 +255,9 @@ describe('shouldHideByDefault', () => {
     expect(shouldHideByDefault({ type: 'system', subtype: 'init' } as unknown as SdkMessage)).toBe(true)
   })
 
-  it('keeps error / compact_boundary / api_retry system frames visible (unchanged)', () => {
+  it('keeps error / compact_boundary system frames visible (unchanged)', () => {
     expect(shouldHideByDefault({ type: 'system', subtype: 'error' } as unknown as SdkMessage)).toBe(false)
     expect(shouldHideByDefault({ type: 'system', subtype: 'compact_boundary' } as unknown as SdkMessage)).toBe(false)
-    expect(shouldHideByDefault({ type: 'system', subtype: 'api_retry' } as unknown as SdkMessage)).toBe(false)
   })
 
   it('keeps local_command_output system frames visible (CLI /usage etc. output)', () => {

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable } from './history-reader.js'
+import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 
 // Creating a symlink needs no privileges on POSIX but does on Windows unless a
@@ -643,5 +643,173 @@ describe('paginateRenderable', () => {
     ] as never[]
     const page = paginateRenderable(withTs, SID, { limit: 10 })
     expect((page.messages[0] as { consumedAt?: number }).consumedAt).toBe(Date.parse('2026-01-01T00:00:00.000Z'))
+  })
+})
+
+describe('parseLastUserPrompt — tail text → last prompt preview', () => {
+  it('prefers the last last-prompt entry over older user messages', () => {
+    const tail = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first question' } },
+      { type: 'last-prompt', lastPrompt: 'newest question' },
+    ])
+    expect(parseLastUserPrompt(tail)).toBe('newest question')
+  })
+
+  it('recency is decided by file position: a newer user message outranks an older last-prompt', () => {
+    // Mid-turn tail: the CLI wrote last-prompt for Q1, then the user already
+    // typed Q3 — the preview must show Q3, not the previous turn's Q1.
+    const tail = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'Q1' } },
+      { type: 'last-prompt', lastPrompt: 'Q1' },
+      { type: 'user', uuid: 'u3', message: { role: 'user', content: 'Q3' } },
+      { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } },
+    ])
+    expect(parseLastUserPrompt(tail)).toBe('Q3')
+  })
+
+  it('fallback accepts a multimodal prompt (text blocks joined, image-only blocks ignored)', () => {
+    const tail = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'old string prompt' } },
+      {
+        type: 'user',
+        uuid: 'mm',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'look at this' },
+            { type: 'image', source: { type: 'base64', data: '…' } },
+          ],
+        },
+      },
+    ])
+    expect(parseLastUserPrompt(tail)).toBe('look at this')
+  })
+
+  it('falls back to the last string-content top-level user message when no last-prompt exists', () => {
+    const tail = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first question' } },
+      { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: 'latest question' } },
+    ])
+    expect(parseLastUserPrompt(tail)).toBe('latest question')
+  })
+
+  it('fallback skips tool_result frames, meta/sidechain lines, and interrupt placeholders', () => {
+    const tail = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'real prompt' } },
+      {
+        type: 'user',
+        uuid: 'tr',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'result' }] },
+      },
+      { type: 'user', uuid: 'm1', isMeta: true, message: { role: 'user', content: 'meta prompt' } },
+      { type: 'user', uuid: 's1', isSidechain: true, message: { role: 'user', content: 'subagent prompt' } },
+      { type: 'user', uuid: 'i1', message: { role: 'user', content: '[Request interrupted by user]' } },
+    ])
+    expect(parseLastUserPrompt(tail)).toBe('real prompt')
+  })
+
+  it('fallback skips the array-shaped interrupt placeholder and compact-summary/command frames', () => {
+    const tail = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'real prompt' } },
+      {
+        type: 'user',
+        uuid: 'ia',
+        message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+      },
+      {
+        type: 'user',
+        uuid: 'cs',
+        isCompactSummary: true,
+        message: { role: 'user', content: 'compaction summary text' },
+      },
+      {
+        type: 'user',
+        uuid: 'cmd',
+        message: { role: 'user', content: '<command-name>/clear</command-name>' },
+      },
+      {
+        type: 'user',
+        uuid: 'bash',
+        message: { role: 'user', content: '<bash-input>ls</bash-input>' },
+      },
+    ])
+    expect(parseLastUserPrompt(tail)).toBe('real prompt')
+  })
+
+  it('a genuine prompt that starts with "<" still qualifies (skip rule is synthetic-prefix narrow)', () => {
+    const tail = jsonl([
+      { type: 'user', uuid: 'cmd', message: { role: 'user', content: '<command-name>/x</command-name>' } },
+      { type: 'user', uuid: 'u2', message: { role: 'user', content: '<label> should be red, see HTML below' } },
+    ])
+    expect(parseLastUserPrompt(tail)).toBe('<label> should be red, see HTML below')
+  })
+
+  it('collapses whitespace (multiline prompt) and truncates past 120 chars', () => {
+    const long = 'a'.repeat(150)
+    const tail = jsonl([{ type: 'last-prompt', lastPrompt: `line one\n\nline two\t${long}` }])
+    const out = parseLastUserPrompt(tail)!
+    expect(out.startsWith('line one line two aaaaaaaaaa')).toBe(true)
+    expect(out).toHaveLength(121)
+    expect(out.endsWith('…')).toBe(true)
+  })
+
+  it('tolerates a torn partial first line (tail window starts mid-line)', () => {
+    // A tail read can land in the middle of a huge line; everything before
+    // the first \n must be discarded, not parsed.
+    const tail = `,"torn": true}` + '\n' + jsonl([{ type: 'last-prompt', lastPrompt: 'after torn line' }])
+    expect(parseLastUserPrompt(tail)).toBe('after torn line')
+  })
+
+  it('returns undefined for corrupt rows, blank last-prompt values, and empty input', () => {
+    expect(parseLastUserPrompt('not json\n{also bad}')).toBeUndefined()
+    expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: '   ' }]))).toBeUndefined()
+    expect(parseLastUserPrompt('')).toBeUndefined()
+    expect(parseLastUserPrompt('no newline at all')).toBeUndefined()
+  })
+
+  it('a blank last-prompt entry is the newest verdict — an older user message must not resurface', () => {
+    const tail = jsonl([
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'old prompt' } },
+      { type: 'last-prompt', lastPrompt: '' },
+    ])
+    expect(parseLastUserPrompt(tail)).toBeUndefined()
+  })
+})
+
+describe('readLastUserPrompt — transcript file tail read', () => {
+  it('reads the last prompt from $CLAUDE_CONFIG_DIR/projects transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-lastprompt-'))
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      const projectDir = join(root, 'projects', 'D--codes-demo')
+      await mkdir(projectDir, { recursive: true })
+      await writeFile(
+        join(projectDir, 'sess-tail.jsonl'),
+        jsonl([
+          { type: 'user', uuid: 'u1', message: { role: 'user', content: 'first' } },
+          { type: 'last-prompt', lastPrompt: 'the latest prompt' },
+        ]),
+      )
+      expect(await readLastUserPrompt('sess-tail')).toBe('the latest prompt')
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+
+  it('returns undefined when no transcript file exists for the id', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-lastprompt-'))
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      expect(await readLastUserPrompt('no-such-session')).toBeUndefined()
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
   })
 })

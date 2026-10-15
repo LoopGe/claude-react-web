@@ -9,6 +9,7 @@ import { Chat } from './Chat'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
+import { WorktreeIsolationBadge } from './WorktreeIsolationBadge'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -202,11 +203,6 @@ export interface ChatPanelProps {
    *  and returns a fresh session; App swaps the panel id. Triggered by the
    *  `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
-  /** `/compact` this panel — the server summarizes and returns a fresh seeded
-   *  continuation session; App swaps the panel id. Triggered by the `/compact`
-   *  local command. Required (like onClearSession) so a missing pass-through
-   *  fails loudly instead of silently swallowing `/compact`. */
-  onCompactSession: (panelSessionId: string) => void
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). Server forks from the anchor and swaps the
    *  panel id; `deleteOriginal` also unlinks the source transcript. */
@@ -314,7 +310,6 @@ export const ChatPanel = memo(function ChatPanel({
   historyOpen,
   onCloseHistory,
   onClearSession,
-  onCompactSession,
   onDiscard,
   onOpenSettingsTab,
   onShowHelp,
@@ -395,6 +390,9 @@ export const ChatPanel = memo(function ChatPanel({
   /** Tracks the `generatedAt` of the recap the user has dismissed. When it
    *  matches the current session.recap.generatedAt, the floating window
    *  stays hidden; a NEW recap (different generatedAt) auto-reopens it.
+   *  The stamp is stable across one generation's pending → ready/error
+   *  lifecycle (stamped at dispatch server-side), so a card closed while
+   *  LOADING also stays closed when that generation completes.
    *  Null = no dismissal in effect → window shows whenever a recap exists.
    *  Reset on session switch (see effect below). */
   const [recapDismissedAt, setRecapDismissedAt] = useState<number | null>(null)
@@ -1198,6 +1196,11 @@ export const ChatPanel = memo(function ChatPanel({
                 </span>
               </Tooltip>
             )}
+            {/* Worktree-isolation badge — the session was created with the
+                new-session dialog's isolate checkbox, so its cwd IS a
+                server-provisioned linked worktree (crw/<id> branch). The cwd
+                tooltip alone doesn't say that; this badge does. */}
+            {session.worktree && <WorktreeIsolationBadge worktree={session.worktree} />}
             {/* Git chip — surfaces branch + dirty/ahead/behind/untracked
                 counts at a glance. Lives on row 2, right-aligned, so it
                 no longer competes with the row-1 badges. Hidden when the
@@ -1274,7 +1277,6 @@ export const ChatPanel = memo(function ChatPanel({
             historyOpen={historyOpen}
             onCloseHistory={onCloseHistory}
             onClearSession={onClearSession}
-            onCompactSession={onCompactSession}
             onDiscard={onDiscard}
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}

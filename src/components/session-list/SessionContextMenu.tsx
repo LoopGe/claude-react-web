@@ -4,6 +4,7 @@ import { writeClipboard, COPY_FAILED_MESSAGE } from '../../hooks/useCopy'
 import { ToastShowContext } from '../../hooks/toastContext'
 import type { SessionGroup, SessionInfo } from '../../types'
 import { sessionTitleOrFallback } from '../../utils/session-title'
+import { worktreeDeleteWarning } from './worktree-delete-warning'
 import {
   IconPencil,
   IconTrash,
@@ -263,9 +264,12 @@ export function SessionContextMenu({
       label: 'Delete session',
       icon: <IconTrash size={14} />,
       danger: true,
-      onClick: () => {
+      onClick: async () => {
         // Always confirm before an irreversible delete, even for empty
         // scratch sessions. The delete fires only after the user confirms.
+        // The worktree-status probe resolves BEFORE the dialog opens, so an
+        // isolated session's uncommitted-worktree warning is part of the
+        // message the user actually confirms against.
         const title = sessionTitleOrFallback(session)
         if (onAskConfirm) {
           onAskConfirm({
@@ -274,6 +278,7 @@ export function SessionContextMenu({
               <>
                 <p>Delete &ldquo;{title}&rdquo;?</p>
                 <p>This permanently removes the conversation from disk. The Anthropic SDK&rsquo;s own session log on disk is kept, but the app won&rsquo;t reference it anymore.</p>
+                {await worktreeDeleteWarning(session)}
               </>
             ),
             confirmLabel: 'Delete',

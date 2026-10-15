@@ -1,11 +1,18 @@
 // Client-side "local commands" — slash commands the browser intercepts and
 // handles itself instead of forwarding to the SDK as a normal user message.
 //
-// Why this exists: most slash commands (e.g. /init, /review) are real SDK /
-// plugin commands and must be POSTed through to the `claude` subprocess. But a
-// few actions are purely UI-level (e.g. /resume, which should pop the
-// in-app resume picker scope to the current panel). Those are registered here
-// and matched in Chat.send() before any network call.
+// Why this exists: most slash commands (e.g. /init, /review, /compact) are
+// real SDK / plugin commands and must be POSTed through to the `claude`
+// subprocess. But a few actions are purely UI-level (e.g. /resume, which
+// should pop the in-app resume picker scope to the current panel). Those are
+// registered here and matched in Chat.send() before any network call.
+//
+// /compact is deliberately NOT local: it passes through as a plain user
+// message and the CLI runs its native in-place compact (probe-verified —
+// SDK streaming mode executes the prompt as a command and emits
+// system/compact_boundary, keeping pre-compact history in the same session).
+// The old app-side summarize+clear-with-seed path survives as
+// SessionManager.compact() for the idle-compact plugin's host API.
 //
 // Extensibility: to add a new local command, append an entry to LOCAL_COMMANDS
 // and (if it needs a new capability) widen LocalCommandContext. The
@@ -37,9 +44,6 @@ export interface LocalCommandContext {
   showHelp: (commands: SlashCommand[]) => void
   /** Clear this session's conversation context via the server control path. */
   clearSession: (sessionId: string) => void
-  /** Compact `/compact` this session — summarize + continue in a fresh seeded
-   *  continuation session (CLI /compact semantics). */
-  compactSession: (sessionId: string) => void
 }
 
 export interface LocalCommand {
@@ -71,12 +75,6 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
     description: 'Clear conversation history and context',
     aliases: ['reset', 'new'],
     run: (ctx) => ctx.clearSession(ctx.sessionId),
-  },
-  {
-    name: 'compact',
-    description: 'Summarize the conversation and continue in a fresh session',
-    aliases: ['summarize'],
-    run: (ctx) => ctx.compactSession(ctx.sessionId),
   },
 ]
 

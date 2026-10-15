@@ -142,3 +142,55 @@ describe('usePastedImages.applyImages', () => {
     }
   })
 })
+
+describe('usePastedImages.mutationsRef', () => {
+  it('starts at seq 0 and does not advance without a mutation', () => {
+    const { result } = renderHook(() => usePastedImages())
+    expect(result.current.mutationsRef.current.seq).toBe(0)
+  })
+
+  it('stamps kind=apply on applyImages (including the empty clear-out)', () => {
+    const { result } = renderHook(() => usePastedImages())
+    act(() => result.current.applyImages([built('AAAA')]))
+    expect(result.current.mutationsRef.current).toMatchObject({ seq: 1, kind: 'apply' })
+    act(() => result.current.applyImages([]))
+    expect(result.current.mutationsRef.current).toMatchObject({ seq: 2, kind: 'apply' })
+  })
+
+  it('stamps kind=remove on removeImage', () => {
+    const { result } = renderHook(() => usePastedImages())
+    act(() => result.current.applyImages([built('AAAA')]))
+    act(() => result.current.removeImage(result.current.images[0].id))
+    expect(result.current.mutationsRef.current).toMatchObject({ seq: 2, kind: 'remove' })
+  })
+
+  it('stamps kind=clear on clear', () => {
+    const { result } = renderHook(() => usePastedImages())
+    act(() => result.current.clear())
+    expect(result.current.mutationsRef.current).toMatchObject({ seq: 1, kind: 'clear' })
+  })
+
+  it('stamps kind=add when an addImage LANDS, not when it starts — a discarded in-flight paste must not bump', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      await act(async () => {
+        await result.current.addImage(new File(['x'], 'p.png', { type: 'image/png' }))
+      })
+      // The paste landed: exactly one bump.
+      expect(result.current.mutationsRef.current).toMatchObject({ seq: 1, kind: 'add' })
+
+      // Second paste gets cleared mid-decode: the clear bumps, the discarded
+      // paste must NOT add a second bump.
+      await act(async () => {
+        const adding = result.current.addImage(new File(['x'], 'p.png', { type: 'image/png' }))
+        result.current.clear()
+        await adding
+      })
+      expect(result.current.images).toEqual([])
+      expect(result.current.mutationsRef.current).toMatchObject({ seq: 2, kind: 'clear' })
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+})

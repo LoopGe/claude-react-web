@@ -25,6 +25,16 @@ export function attachmentsPreamble(attachments: Attachment[]): string {
 }
 
 /**
+ * Legacy composer alias: `/summarize` was the app-side /compact alias before
+ * `/compact` became a CLI pass-through (see local-commands.ts). The CLI has
+ * no `/summarize` builtin, so the literal text would reach the model as a
+ * plain prompt. Rewritten at this shared chokepoint so the immediate-send and
+ * scheduled-send paths can't drift. The explicit end-or-space lookahead keeps
+ * `/summarize-x` (never an alias) passing through verbatim.
+ */
+const SUMMARIZE_ALIAS = /^\/summarize(?=\s|$)/i
+
+/**
  * Expand pasted-text references, then prepend the attachments preamble.
  *
  * Returns `text` (what the user typed, expanded, still un-prefixed — the shell
@@ -38,6 +48,6 @@ export function composeOutgoing(
   attachments: Attachment[],
   expand: (text: string) => string,
 ): { text: string; full: string } {
-  const text = expand(input.trim())
+  const text = expand(input.trim().replace(SUMMARIZE_ALIAS, '/compact'))
   return { text, full: attachmentsPreamble(attachments) + text }
 }

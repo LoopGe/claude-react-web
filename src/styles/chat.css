@@ -663,26 +663,111 @@ button.chat-empty-env-chip:hover {
   line-height: 1.5;
 }
 
-/* Floating "scroll to bottom" button ?visible only when the user has
-   scrolled up. Shows a count badge when new messages arrived meanwhile. */
-.chat-older-history {
+/* Floating "loading earlier messages" pill and its failure variant with
+   Retry. Replaces the old in-flow Virtuoso Header strip: no reserved layout
+   space, no permanent idle hint. The wrapper is always mounted (stable
+   aria-live region); visibility flips via .is-visible so the fade/slide
+   transition runs both ways.
+   Positioning is MOUNT-SCOPED (see .chat-top-stack and
+   .side-chat-drawer-stage rules) — the component itself stays neutral so
+   each site decides anchor + z-index, mirroring how the overlay stacks do.
+   The wrapper stays pointer-events:none even when visible; only the pill
+   re-enables (its empty flanks must click/wheel through to the transcript). */
+.chat-older-float {
   display: flex;
-  align-items: center;
   justify-content: center;
-  padding: var(--space-2-5) var(--space-3);
-  min-height: 32px;
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(calc(-1 * var(--space-1)));
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-fast) var(--motion-ease-standard),
+    visibility 0s linear var(--motion-duration-fast);
 }
-
-.chat-older-history-loading {
+.chat-older-float.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition-delay: 0s;
+}
+/* Main panel: a flex sibling inside .chat-top-stack — stacks beneath the
+   recap / pinned-question cards instead of overlapping them (they share the
+   top band; a positioned pill would paint under the z-4 stack cards). */
+.chat-top-stack .chat-older-float {
+  position: static;
+  align-self: center;
+  flex: 0 0 auto;
+}
+/* Side drawer: absolutely anchored inside .side-chat-drawer-stage (the
+   positioned wrapper in SideChatDrawer.tsx) — the body below it scrolls, so
+   the pill must not anchor to anything that scrolls with the content. */
+.side-chat-drawer-stage .chat-older-float {
+  position: absolute;
+  top: var(--space-2);
+  left: 0;
+  right: 0;
+  z-index: 2;
+}
+/* Frosted pill shell — same vocabulary as .pinned-user-message (overlays.css):
+   theme vars only, so light/dark follow the theme with no extra rules. */
+.chat-older-float-pill {
+  pointer-events: auto; /* only the pill; the wrapper's flanks stay click-through */
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
+  max-width: 85%;
+  padding: var(--space-1-5) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  box-shadow: var(--drawer-shadow);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
-
-.chat-older-history-hint {
-  opacity: 0.6;
+/* The message line ellipsizes instead of the pill clipping its END — the
+   Retry button must stay reachable on narrow stages. */
+.chat-older-float-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-older-float-pill--error {
+  color: var(--fg);
+  /* Danger-tinted border so the failure reads at a glance without turning
+     the pill into a full alert surface. */
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+.chat-older-float-pill--error svg {
+  color: var(--danger);
+  flex: 0 0 auto;
+}
+.chat-older-float-spin {
+  animation: spin 1s linear infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+  flex: 0 0 auto;
+}
+.chat-older-float-retry {
+  margin-left: var(--space-1);
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
+              border-color var(--motion-duration-fast) var(--motion-ease-standard);
+}
+.chat-older-float-retry:hover {
+  background: var(--btn-hover-bg);
+  border-color: var(--danger);
 }
 /* Context-usage bar.
    Default (SettingsPanel Context tab): full-width strip with elevated
@@ -1253,10 +1338,11 @@ button.chat-empty-env-chip:hover {
   flex: none;
 }
 /* Tasks button — always-mounted entry to the Tasks overlay (moved from the
-   working bar, whose pill vanished with the bar itself). Accent-lit icon +
-   tabular digit whenever tasks exist; .composer-tasks-idle dims to muted at
-   zero tasks but keeps the button reachable (the panel also lists terminal
-   history). Color only — the chrome (bg/border/hover) comes from .btn-icon. */
+   working bar, whose pill vanished with the bar itself). Accent-lit icon,
+   swapped for the tabular digit whenever tasks exist; .composer-tasks-idle
+   dims to muted at zero tasks but keeps the button reachable (the panel also
+   lists terminal history). Color only — the chrome (bg/border/hover) comes
+   from .btn-icon. */
 .composer-tasks {
   color: var(--accent-text);
   font-family: var(--mono);
@@ -1267,6 +1353,50 @@ button.chat-empty-env-chip:hover {
 }
 .composer-tasks-idle {
   color: var(--fg-muted);
+}
+/* Icon ⇄ digit share one fixed 18×18 grid cell — the digit REPLACES the icon
+   (same one-slot morph as the Send/Interrupt toggle) so the button's width
+   never changes when tasks appear or count up. The ICON does the crossfade:
+   it stays mounted and .composer-tasks-live flips it out/in via transition.
+   The DIGIT is mounted only while tasks exist — a freshly inserted element
+   has no prior style to transition from, so its entrance is purely the
+   tasks-digit-pop animation (replayed per displayed integer via
+   key={shownCount} in Composer.tsx; useCountUp glides through the
+   intermediate values so a burst of task starts/ends reads as ticking), and
+   its exit is the unmount, masked by the icon crossfading back over the
+   slot. .composer-tasks-idle keeps the icon dimmed at zero tasks. */
+.composer-tasks-face {
+  display: grid;
+  place-items: center;
+  /* place-items centers items IN their track, but when the digit is wider
+     than the 18px cell (two digits at the xlarge fs-preset) the auto track
+     itself overflows and justify/align-content:normal anchors it to the
+     start — the digit sat ~2px off button-center. place-content centers the
+     overflowing TRACK so the spill is symmetric on both sides. */
+  place-content: center;
+  width: 18px;
+  height: 18px;
+}
+.composer-tasks-face > * {
+  grid-area: 1 / 1;
+  /* Crossfade timing lives in the shared .slot-morph utility class
+     (utilities.css) — same recipe as the Send⇄Interrupt toggle. */
+}
+.composer-tasks-count {
+  /* A notch larger than the button's --fs-sm — the count is the button's
+     whole point once live, and the slot math in the face comment leaves
+     room (two digits stay inside the button's padding at every fs-scale). */
+  font-size: var(--fs-md);
+  animation: tasks-digit-pop var(--motion-duration-base) var(--motion-ease-enter);
+}
+.composer-tasks-live .composer-tasks-icon {
+  opacity: 0;
+  transform: scale(0.6);
+}
+@keyframes tasks-digit-pop {
+  from {
+    transform: scale(1.3);
+  }
 }
 
 /* ── Context orb (pure ring) + hover panel ─────────────────────────────
@@ -1398,10 +1528,8 @@ button.chat-empty-env-chip:hover {
 .composer-action-toggle .composer-toggle-stop {
   transform-box: fill-box;
   transform-origin: center;
-  transition:
-    opacity var(--motion-duration-fast) var(--motion-ease-standard),
-    transform var(--motion-duration-base) var(--motion-ease-standard),
-    stroke-dashoffset var(--motion-duration-base) var(--motion-ease-standard);
+  /* Crossfade timing lives in the shared .slot-morph utility class
+     (utilities.css) — same recipe as the tasks icon⇄digit swap. */
 }
 .composer-action-toggle .composer-toggle-send-line,
 .composer-action-toggle .composer-toggle-send-head {
@@ -2647,6 +2775,18 @@ button.chat-empty-env-chip:hover {
 }
 .working-bar-waiting .working-bar-label {
   color: var(--fg-muted);
+}
+
+/* Retry state: an `api_retry` frame is in flight (429/529 auto-retry). The
+   retry countdown replaces the phase label (nothing streams during the
+   wait, so the phase is stale) and reads as amber — the same warn tier the
+   old transcript divider used, so the color carries the severity.
+   tabular-nums (same reason as .working-timer): the seconds tick every
+   second, and proportional digits would change the label width per tick,
+   visibly shifting the adjacent timer / rate / swarm pill. */
+.working-bar-retry .working-bar-label {
+  color: var(--warn-text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Idle-with-tasks: the turn has fully ended and nothing is actively working —
@@ -3944,6 +4084,15 @@ button.chat-empty-env-chip:hover {
   font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--fg-muted);
+}
+.side-chat-drawer-stage {
+  /* Positioned ancestor for the older-history float; wraps the scrolling
+     body so the pill stays pinned while messages scroll beneath it. */
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .side-chat-drawer-body {
   flex: 1;

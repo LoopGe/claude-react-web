@@ -20,7 +20,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { promises as fsPromises } from 'node:fs'
-import { isAbsolute, join, normalize, sep } from 'node:path'
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
 import type {
@@ -78,6 +78,21 @@ interface RunGitOpts {
    *  commands like `rev-parse --is-inside-work-tree` where exit 128 is
    *  the documented "no repo" signal. */
   allowExitCodes?: ReadonlySet<number>
+  /** Resolve with ANY numeric exit code instead of throwing (spawn-level
+   *  failures — ENOENT, timeout, maxBuffer — still throw). For callers
+   *  that branch on the exit code themselves (`check-ignore` 0/1, the
+   *  snapshot module's probes). */
+  allowAnyExitCode?: boolean
+  /** Run with `GIT_OPTIONAL_LOCKS=0` so a read-only command (`status`,
+   *  `diff --numstat`, …) never takes `index.lock` to opportunistically
+   *  refresh the index — a background snapshot read must not make the
+   *  agent's own concurrent `git add` / `git commit` fail on the lock.
+   *  The env is built per call from the live `process.env`. */
+  noOptionalLocks?: boolean
+  /** Written to the child's stdin, which is then closed. EPIPE from a git
+   *  that exits before draining stdin is swallowed — the exit code is the
+   *  real signal. */
+  stdin?: string
 }
 
 interface RunGitResult {
@@ -126,7 +141,7 @@ export async function runGit(cwd: string, args: readonly string[], opts: RunGitO
     throw new HttpError(503, 'git executable not found in PATH')
   }
   try {
-    const { stdout, stderr } = await execFileAsync('git', [...args], {
+    const p = execFileAsync('git', [...args], {
       cwd,
       timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxBuffer: opts.maxBuffer ?? MAX_BUFFER_BYTES,
@@ -134,14 +149,22 @@ export async function runGit(cwd: string, args: readonly string[], opts: RunGitO
       // paths human-readable instead of \nnn-octal-escaped.
       encoding: 'utf8',
       windowsHide: true,
+      ...(opts.noOptionalLocks ? { env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } } : {}),
     })
+    if (opts.stdin !== undefined) {
+      // Ignore EPIPE from git exiting early — the exit code (handled
+      // below) already reports the real outcome.
+      p.child.stdin?.on('error', () => {})
+      p.child.stdin?.end(opts.stdin)
+    }
+    const { stdout, stderr } = await p
     return { stdout, stderr, exitCode: 0 }
   } catch (err) {
     const e = err as NodeJS.ErrnoException & { code?: string | number; stdout?: string; stderr?: string; killed?: boolean }
     // execFile rejection: `code` is a number when git exited non-zero,
     // a string like 'ENOENT' / 'ETIMEDOUT' for spawn-level failures.
     if (typeof e.code === 'number') {
-      if (opts.allowExitCodes?.has(e.code)) {
+      if (opts.allowAnyExitCode || opts.allowExitCodes?.has(e.code)) {
         return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', exitCode: e.code }
       }
       const msg = trimGitErrorOutput((e.stderr || e.message || '').trim())
@@ -194,17 +217,35 @@ export async function ensureGitRepo(cwd: string): Promise<void> {
   }
 }
 
-/** Resolve the repo's .git directory (handles linked worktrees, where
- *  it's not literally `<cwd>/.git`). Returns null if not in a repo. */
-async function getGitDir(cwd: string): Promise<string | null> {
-  const r = await runGit(cwd, ['rev-parse', '--git-dir'], {
+/** Everything a status read needs to know about the repo around `cwd`,
+ *  from ONE `git rev-parse`. */
+export interface RepoProbe {
+  /** Work-tree top level as git prints it (forward slashes on Windows). */
+  toplevel: string
+  /** This work tree's git dir — `<common>/worktrees/<name>` in a linked
+   *  worktree. In-progress markers (MERGE_HEAD, rebase-*) live here. */
+  gitDir: string
+  /** The repo-wide git dir shared by every worktree. `worktrees/` lives
+   *  here, whichever worktree `cwd` is in. */
+  gitCommonDir: string
+}
+
+/** One-spawn repo probe: `rev-parse --is-inside-work-tree --show-toplevel
+ *  --git-dir --git-common-dir`. Null for every "not a work tree" reason
+ *  (relative cwd, missing cwd / no repo → exit 128, inside `.git` or a
+ *  bare repo → `false` + exit 128). Throws only on infrastructure errors
+ *  (timeout, git missing), like isInsideWorkTree. The two git dirs may be
+ *  printed relative to `cwd` (e.g. `../.git` from a subdirectory), so they
+ *  are resolved against it. */
+export async function probeRepo(cwd: string): Promise<RepoProbe | null> {
+  if (!isAbsolute(cwd)) return null
+  const r = await runGit(cwd, ['rev-parse', '--is-inside-work-tree', '--show-toplevel', '--git-dir', '--git-common-dir'], {
     allowExitCodes: new Set([128]),
   })
   if (r.exitCode !== 0) return null
-  const raw = r.stdout.trim()
-  if (!raw) return null
-  // git can return either an absolute path or one relative to cwd.
-  return isAbsolute(raw) ? raw : join(cwd, raw)
+  const [inside, toplevel, gitDir, gitCommonDir] = r.stdout.split('\n').map((l) => l.trim())
+  if (inside !== 'true' || !toplevel || !gitDir || !gitCommonDir) return null
+  return { toplevel, gitDir: resolve(cwd, gitDir), gitCommonDir: resolve(cwd, gitCommonDir) }
 }
 
 /** Detect in-progress merge/rebase/cherry-pick/etc by looking for the
@@ -216,9 +257,7 @@ async function getGitDir(cwd: string): Promise<string | null> {
  *  is aborted or its process is killed, and git itself only reports a
  *  rebase in progress via the rebase-apply/ or rebase-merge/ dirs — a
  *  lone REBASE_HEAD is stale residue, not an active rebase. */
-async function detectInProgressState(cwd: string): Promise<GitRepoState | null> {
-  const gitDir = await getGitDir(cwd)
-  if (!gitDir) return null
+async function detectInProgressState(gitDir: string): Promise<GitRepoState | null> {
   // Use async fs.access instead of sync existsSync to avoid blocking the
   // event loop. Check all markers in parallel for speed.
   const check = async (file: string, state: GitRepoState): Promise<GitRepoState | null> => {
@@ -345,7 +384,7 @@ async function getNumstatMap(
 ): Promise<Map<string, NumstatEntry>> {
   const args = ['-c', 'core.quotepath=false', 'diff', '--numstat']
   if (cached) args.push('--cached')
-  const { stdout } = await runGit(cwd, args)
+  const { stdout } = await runGit(cwd, args, { noOptionalLocks: true })
   return parseNumstatOutput(stdout)
 }
 
@@ -364,36 +403,28 @@ function applyNumstat(
 }
 
 export async function getStatus(cwd: string): Promise<GitStatusResponse> {
-  if (!(await isInsideWorkTree(cwd))) {
-    return { isRepo: false }
-  }
-  return getStatusInRepo(cwd)
+  const probe = await probeRepo(cwd)
+  if (!probe) return { isRepo: false }
+  return getStatusInRepo(cwd, probe)
 }
 
-/** Variant of getStatus that skips the inside-work-tree probe. Callers
- *  must have already proven the cwd is a repo (e.g. via the per-route
- *  ensureGitRepo() that ran before the write itself). Saves one git
- *  spawn per write request — measurable when a panel issues bursts of
- *  stage/unstage clicks. */
-export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
+/** Variant of getStatus for callers that already proved the cwd is a
+ *  repo (e.g. via the per-route ensureGitRepo() that ran before the write
+ *  itself). With a `probe` (getStatus) it spawns no rev-parse at all;
+ *  without one it runs the single probeRepo for the top level + git dirs. */
+export async function getStatusInRepo(cwd: string, probe?: RepoProbe): Promise<GitStatus> {
   // Work-tree top level. Status paths below are relative to THIS, not to
   // `cwd`, so clients that resolve an absolute path (the FileViewer's
   // readFile) need it. getStatusInRepo implies inside a work tree, so the
-  // call should always succeed; the cwd fallback is pure defensiveness —
+  // probe should always succeed; the cwd fallback is pure defensiveness —
   // worst case the client anchors against cwd, the pre-existing behaviour.
-  let repoRoot = cwd
-  try {
-    const r = await runGit(cwd, ['rev-parse', '--show-toplevel'])
-    const trimmed = r.stdout.trim()
-    if (trimmed) repoRoot = trimmed
-  } catch {
-    // keep cwd fallback
-  }
+  const repo = probe ?? (await probeRepo(cwd).catch(() => null))
+  const repoRoot = repo?.toplevel || cwd
 
   const { stdout } = await runGit(cwd, [
     '-c', 'core.quotepath=false',
     'status', '--porcelain=v1', '--branch', '-z',
-  ])
+  ], { noOptionalLocks: true })
 
   // With -z, every record (including the branch line) is NUL-terminated.
   // For renames/copies the source path is its OWN NUL-terminated record
@@ -476,7 +507,7 @@ export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
   applyNumstat(buckets.staged, stagedNumstat)
   applyNumstat(buckets.unstaged, unstagedNumstat)
 
-  const inProgress = await detectInProgressState(cwd)
+  const inProgress = repo ? await detectInProgressState(repo.gitDir) : null
   const dirty =
     buckets.staged.length > 0 ||
     buckets.unstaged.length > 0 ||
@@ -486,13 +517,17 @@ export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
   // Only spawn `git worktree list --porcelain` when the repo actually has
   // linked worktrees. The common case (no worktrees) would otherwise pay an
   // extra git subprocess on every status fetch — a debounce-hot path. The
-  // main git dir at `<repoRoot>/.git/worktrees/` holds every linked worktree
-  // for the whole repo regardless of which worktree `cwd` lives in, so a
-  // single stat is enough and is correct from any cwd.
-  const hasLinkedWorktrees = await fsPromises
-    .access(join(repoRoot, '.git', 'worktrees'))
-    .then(() => true)
-    .catch(() => false)
+  // COMMON git dir's `worktrees/` holds every linked worktree for the whole
+  // repo regardless of which worktree `cwd` lives in, so one readdir is
+  // enough. (Not `<repoRoot>/.git/worktrees`: inside a linked worktree
+  // `<repoRoot>/.git` is a FILE, so that stat was always false there.) An
+  // empty dir — left behind by `git worktree prune` — counts as none.
+  const hasLinkedWorktrees = repo
+    ? await fsPromises
+      .readdir(join(repo.gitCommonDir, 'worktrees'))
+      .then((entries) => entries.length > 0)
+      .catch(() => false)
+    : false
 
   return {
     isRepo: true,
@@ -516,7 +551,7 @@ export async function getStatusInRepo(cwd: string): Promise<GitStatus> {
  *  callers can reconcile an agent EnterWorktree intent against the git
  *  fact (does the branch exist? is it locked, and by whom?). */
 export async function listWorktrees(cwd: string): Promise<GitLinkedWorktree[]> {
-  const { stdout } = await runGit(cwd, ['worktree', 'list', '--porcelain'])
+  const { stdout } = await runGit(cwd, ['worktree', 'list', '--porcelain'], { noOptionalLocks: true })
   const out: GitLinkedWorktree[] = []
   for (const record of stdout.split('\n\n')) {
     if (!record.trim()) continue
@@ -540,6 +575,104 @@ export async function listWorktrees(cwd: string): Promise<GitLinkedWorktree[]> {
     out.push({ path, branch: detached ? null : branch, locked, lockMessage })
   }
   return out
+}
+
+/** Absolute path of the shared git dir (common dir) for the repo that `cwd`
+ *  lives in — for a linked worktree this is the MAIN repo's .git, which is
+ *  where `worktrees/`, refs and packed-refs.lock live. Concurrency on
+ *  worktree add/remove/prune must be keyed on THIS, not on the worktree
+ *  path. Older git prints a relative path — resolve against cwd. */
+export async function getGitCommonDir(cwd: string): Promise<string> {
+  const r = await runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+  const p = r.stdout.trim()
+  return isAbsolute(p) ? p : join(cwd, p)
+}
+
+/** Does a local branch with this exact name exist? */
+export async function branchExists(cwd: string, branch: string): Promise<boolean> {
+  validateRef(branch)
+  // Exit 1 = missing ref, the documented "no" signal — let it resolve.
+  const r = await runGit(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], {
+    allowAnyExitCode: true,
+  })
+  return r.exitCode === 0
+}
+
+/** Does a commit object with this sha exist in the object store? */
+export async function commitExists(cwd: string, sha: string): Promise<boolean> {
+  // Exit 128 for malformed / missing objects — still just "no".
+  const r = await runGit(cwd, ['cat-file', '-e', `${sha}^{commit}`], {
+    allowAnyExitCode: true,
+  })
+  return r.exitCode === 0
+}
+
+/** Create a linked worktree. `newBranch=true` → `worktree add -b <branch> <path> <baseRef>`;
+ *  `false` → check out the EXISTING branch (`worktree add <path> <branch>`, baseRef ignored). */
+export async function createWorktree(
+  mainRepoCwd: string,
+  worktreePath: string,
+  branch: string,
+  baseRef: string,
+  newBranch: boolean,
+): Promise<void> {
+  validateRef(branch)
+  const args = newBranch
+    ? ['worktree', 'add', '-b', branch, worktreePath, baseRef]
+    : ['worktree', 'add', worktreePath, branch]
+  // runGit throws (HttpError with trimmed stderr) when git exits non-zero.
+  // 30s (vs the 10s default): `worktree add` checks out the whole tree, so a
+  // large repo can legitimately approach the default timeout.
+  await runGit(mainRepoCwd, args, { timeoutMs: 30_000 })
+}
+
+/** Remove a linked worktree (force — the delete-session flow has already
+ *  confirmed the loss of uncommitted changes). Branch is NOT touched. */
+export async function removeWorktreeDir(mainRepoCwd: string, worktreePath: string): Promise<void> {
+  await runGit(mainRepoCwd, ['worktree', 'remove', '--force', worktreePath], { timeoutMs: 30_000 })
+}
+
+/** Clear stale worktree registrations — entries whose directory was deleted
+ *  out-of-band (e.g. a user `rm -rf` of the worktree). Without this,
+ *  re-adding a worktree at the same path fails with
+ *  "missing but already registered worktree". Only prunes registrations
+ *  whose directory is gone; live worktrees are untouched. */
+export async function pruneWorktrees(mainRepoCwd: string): Promise<void> {
+  await runGit(mainRepoCwd, ['worktree', 'prune'])
+}
+
+/** Any uncommitted (staged, unstaged or untracked) change in the work tree
+ *  that `cwd` belongs to? */
+export async function worktreeIsDirty(cwd: string): Promise<boolean> {
+  const r = await runGit(cwd, ['status', '--porcelain'], { noOptionalLocks: true })
+  return r.stdout.trim().length > 0
+}
+
+// ── Snapshot ─────────────────────────────────────────────────────────
+
+/** The three lists that make up one pushed `git-snapshot` frame. */
+export interface GitSnapshotPayload {
+  status: GitStatusResponse
+  branches: GitBranch[]
+  stashes: GitStashEntry[]
+}
+
+/** Compute one git snapshot for `cwd`, reusing whatever `partial` already
+ *  carries (write routes pass the status / branches / stashes they just
+ *  computed) so no field is git-spawned twice. Exactly one rev-parse runs
+ *  (getStatus's probe; none when `partial.status` is given): branches and
+ *  stashes use the InRepo variants because the status already proved
+ *  repo-ness. Every read runs with GIT_OPTIONAL_LOCKS=0. */
+export async function getGitSnapshot(cwd: string, partial?: Partial<GitSnapshotPayload>): Promise<GitSnapshotPayload> {
+  const status = partial?.status ?? (await getStatus(cwd))
+  const isRepo = 'isRepo' in status && status.isRepo
+  const [branches, stashes] = isRepo
+    ? await Promise.all([
+      partial?.branches ?? listBranchesInRepo(cwd),
+      partial?.stashes ?? listStashesInRepo(cwd),
+    ])
+    : [partial?.branches ?? [], partial?.stashes ?? []]
+  return { status, branches, stashes }
 }
 
 // ── Diff ────────────────────────────────────────────────────────────
@@ -859,6 +992,12 @@ export async function abortRebase(cwd: string): Promise<void> {
 
 export async function listStashes(cwd: string): Promise<GitStashEntry[]> {
   await ensureGitRepo(cwd)
+  return listStashesInRepo(cwd)
+}
+
+/** listStashes without the ensureGitRepo probe — for callers that already
+ *  proved `cwd` is a work tree (getGitSnapshot, after its status probe). */
+export async function listStashesInRepo(cwd: string): Promise<GitStashEntry[]> {
   // Output one stash per record, NUL-separated. Field separator is the
   // ASCII Unit Separator (0x1f) — git's stash messages don't contain
   // control chars, so this round-trips cleanly.
@@ -866,7 +1005,7 @@ export async function listStashes(cwd: string): Promise<GitStashEntry[]> {
   const { stdout } = await runGit(cwd, [
     '-c', 'core.quotepath=false',
     'stash', 'list', `--format=${fmt}%x00`,
-  ])
+  ], { noOptionalLocks: true })
   const entries: GitStashEntry[] = []
   const records = stdout.split('\0')
   if (records.length && records[records.length - 1] === '') records.pop()
@@ -949,6 +1088,12 @@ export async function validateBranchName(name: string): Promise<void> {
 
 export async function listBranches(cwd: string): Promise<GitBranch[]> {
   await ensureGitRepo(cwd)
+  return listBranchesInRepo(cwd)
+}
+
+/** listBranches without the ensureGitRepo probe — for callers that already
+ *  proved `cwd` is a work tree (getGitSnapshot, after its status probe). */
+export async function listBranchesInRepo(cwd: string): Promise<GitBranch[]> {
   // for-each-ref with custom format is more reliable than parsing
   // `git branch` output (which has presentation noise like the leading
   // asterisk for current branch). %(HEAD) is '*' for HEAD's branch and
@@ -958,7 +1103,7 @@ export async function listBranches(cwd: string): Promise<GitBranch[]> {
     'for-each-ref',
     `--format=${fmt}`,
     'refs/heads',
-  ])
+  ], { noOptionalLocks: true })
   const branches: GitBranch[] = []
   for (const line of stdout.split('\n')) {
     if (!line) continue

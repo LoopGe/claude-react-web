@@ -1276,6 +1276,28 @@ button.tool-group-failed-jump:focus-visible {
   white-space: nowrap;
 }
 
+/* ── Shared slot-morph crossfade ───────────────────────────────────
+ * ONE transition recipe for "two glyphs share one fixed slot and
+ * crossfade on a state flip" — the Send⇄Interrupt toggle
+ * (.composer-action-toggle) and the tasks icon⇄digit swap
+ * (.composer-tasks-face). Consumers stack their own state rules
+ * (opacity / transform / stroke-dashoffset endpoints) on top; the
+ * timing lives ONLY here, so the two morphs can never drift apart.
+ * stroke-dashoffset is in the recipe for the SVG toggle parts; on HTML
+ * elements it never changes, so it is a harmless no-op there.
+ *
+ * Wrapped in :where() for ZERO specificity, same contract as the
+ * spinner group above: call-site rules always win, and the
+ * reduced-motion kill-list below (which lists .slot-morph once) can
+ * never be out-ranked by accident. New slot-morph surfaces add the
+ * class in JSX — do not re-declare the transition at the call site. */
+:where(.slot-morph) {
+  transition:
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-base) var(--motion-ease-standard),
+    stroke-dashoffset var(--motion-duration-base) var(--motion-ease-standard);
+}
+
 /* ── A11y: prefers-reduced-motion ──────────────────────────────────
  *
  * Vestibular-sensitive users need motion-on-state-change kept short
@@ -1354,13 +1376,12 @@ button.tool-group-failed-jump:focus-visible {
   .appearance-panel,
   .chat-panel-mode-badge.mode-slide-in,
   .chat-panel-mode-badge.mode-slide-out,
-  .copied-pop {
+  .copied-pop,
+  .composer-tasks-count {
     animation-duration: 0.01ms !important;
   }
   .notification-icon .notification-icon-slash,
-  .composer-action-toggle .composer-toggle-send-line,
-  .composer-action-toggle .composer-toggle-send-head,
-  .composer-action-toggle .composer-toggle-stop {
+  .slot-morph {
     transition-duration: 0.01ms !important;
   }
 }

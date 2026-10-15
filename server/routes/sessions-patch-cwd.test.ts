@@ -16,8 +16,9 @@ import { rmRf } from '../__test-utils__/index.js'
 function makeApp() {
   const sm = {
     list: vi.fn(() => []),
-    rename: vi.fn((_id: string, title: string) => ({ id: 's1', title })),
-    setCwd: vi.fn((_id: string, cwd: string) => ({ id: 's1', cwd })),
+    // Async like the real methods (both wait on the session's op lock).
+    rename: vi.fn(async (_id: string, title: string) => ({ id: 's1', title })),
+    setCwd: vi.fn(async (_id: string, cwd: string): Promise<{ id: string; cwd: string }> => ({ id: 's1', cwd })),
   }
   return { app: buildSessionRouter(sm as unknown as SessionManager), sm }
 }
@@ -64,6 +65,23 @@ describe('PATCH /sessions/:id cwd', () => {
     expect(res.status).toBe(200)
     expect(sm.rename).toHaveBeenCalledWith('s1', 'New name')
     expect(sm.setCwd).not.toHaveBeenCalled()
+  })
+
+  it('awaits setCwd before rename, and a rejected setCwd skips the rename', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-patch-cwd-'))
+    try {
+      const { app, sm } = makeApp()
+      sm.setCwd.mockImplementationOnce(async () => {
+        await new Promise((r) => setTimeout(r, 10))
+        throw new Error('session s1 is running — sleep it first')
+      })
+      const res = await app.request('/sessions/s1', patch({ cwd: dir, title: 'New name' }))
+      expect(res.status).toBeGreaterThanOrEqual(400)
+      expect(sm.setCwd).toHaveBeenCalledWith('s1', dir)
+      expect(sm.rename).not.toHaveBeenCalled()
+    } finally {
+      rmRf(dir)
+    }
   })
 
   it('400s when neither title nor cwd is provided', async () => {

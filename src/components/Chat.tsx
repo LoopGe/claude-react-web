@@ -39,11 +39,12 @@ import { useAttachments, type Attachment } from '../hooks/useAttachments'
 import { useChatStream } from '../hooks/useChatStream'
 import { writeClipboard, COPY_FAILED_MESSAGE } from '../hooks/useCopy'
 import { usePastedImages } from '../hooks/usePastedImages'
+import { useDraftImages } from '../hooks/useDraftImages'
 import { usePastedTexts } from '../hooks/usePastedTexts'
 import { useInputHistory } from '../hooks/useInputHistory'
 import { useHistoryImageRecall } from '../hooks/useHistoryImageRecall'
 import type { HistoryPanelEntry } from '../hooks/useInputHistoryPanel'
-import { toPersistedImage } from '../state/inputHistoryImages'
+import { toPersistedImage, deleteDraftImages } from '../state/inputHistoryImages'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
@@ -51,6 +52,7 @@ import { usePhaseDwell } from '../hooks/usePhaseDwell'
 import { Composer } from './Composer'
 import { ContextOrb } from './ContextOrb'
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
+import { OlderHistoryFloat } from './message-list/transcript-chrome'
 import { ChatEmptyStateEnv } from './ChatEmptyStateEnv'
 import { PermissionDialog } from './PermissionDialog'
 import { QuestionDialog, type QuestionDraft } from './QuestionDialog'
@@ -104,14 +106,7 @@ import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
 import { clamp } from '../utils/clamp'
-import { DRAFT_KEY_PREFIX, DRAFT_BODIES_KEY_PREFIX } from '../constants/storageKeys'
-
-/** Bodies the draft's `[Pasted text #N]` references resolve against. Written
- *  only when the map changes, never on a keystroke. */
-
-/** Trailing-edge delay for persisting the draft. Long enough that a burst of
- *  typing produces one write, short enough that a crash loses little. */
-const DRAFT_WRITE_DEBOUNCE_MS = 400
+import { DRAFT_KEY_PREFIX, DRAFT_BODIES_KEY_PREFIX, DRAFT_WRITE_DEBOUNCE_MS } from '../constants/storageKeys'
 
 // Module-level predicates for the three minimize/reopen sets (questions,
 // plan-permissions, non-plan permissions). Stable identity so useMinimizedSet
@@ -244,11 +239,6 @@ interface Props {
    *  detaches the pre-clear conversation and returns a fresh session under a
    *  new id). Invoked by the `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
-  /** `/compact` this panel. App owns the POST + panel id-swap: the server
-   *  summarizes and returns a fresh seeded continuation session under a new
-   *  id. Invoked by the `/compact` local command. Required (like /clear) so a
-   *  missing pass-through fails loudly rather than swallowing `/compact`. */
-  onCompactSession: (panelSessionId: string) => void
   /** Nonce-stamped request to switch the settings tab ?forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -289,9 +279,10 @@ interface Props {
    *  button is the only trigger now that the header chip is gone. */
   onOpenTasksPanel?: (sessionId: string) => void
   /** When true, render the floating Recap window at the top of the chat
-   *  area. Owned by ChatPanel (which also renders the reopen button in the
-   *  header); Chat just renders the window and calls onCloseRecap when the
-   *  user clicks X. */
+   *  area. Owned by ChatPanel (which records the dismissal); Chat just
+   *  renders the window and calls onCloseRecap when the user clicks X.
+   *  There is no dedicated reopen button — a new generation (Alt+R) or a
+   *  session switch reopens it. */
   recapOpen?: boolean
   onCloseRecap?: () => void
   /** Whether this panel is the currently focused (active) one. Used by
@@ -440,7 +431,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onCompactSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -852,6 +843,12 @@ export const Chat = memo(function Chat({
 
   const attachments = useAttachments(session.id, session.cwd)
   const pastedImages = usePastedImages()
+  // The draft's image half. The text half survives unmounts via
+  // sessionStorage (readDraft/writeDraft above); the image half survives via
+  // the IDB side store — restored here on mount, debounced-written on every
+  // change, flushed on unmount — so a panel swap (session-group switch,
+  // session switch, panel close) no longer silently drops pasted images.
+  useDraftImages(session.id, pastedImages.images, pastedImages.mutationsRef, pastedImages.applyImages)
   // History-recall image hand-off: the Composer decides when (entry vs draft
   // restore), this loads the entry's images from the IDB side store and
   // restores them into the composer (seq-guarded against slow loads).
@@ -1554,13 +1551,6 @@ export const Chat = memo(function Chat({
     onClearSession(sessionId)
   }, [clearError, onClearSession])
 
-  const requestCompactSession = useCallback((sessionId: string) => {
-    // Same owned-by-App contract as /clear: the server returns a fresh
-    // continuation session Y (seeded with the summary); App swaps this panel
-    // from X to Y. No local error/clearing state — failures toast in App.
-    onCompactSession(sessionId)
-  }, [onCompactSession])
-
   /** Run a `!`/`!!` bash command: optimistic placeholder → POST /exec →
    *  ack/rollback. `share:true` (`!!`) injects the result into the SDK
    *  transcript so the model sees it (triggers a model turn); the default
@@ -1620,7 +1610,8 @@ export const Chat = memo(function Chat({
       return
     }
     // Expanded here, after routing, so every path below works on the pasted
-    // bodies instead of `[Pasted text #N]`.
+    // bodies instead of `[Pasted text #N]`. composeOutgoing also rewrites the
+    // /summarize legacy alias to /compact (see outgoing-text.ts).
     const { text, full } = composeOutgoing(input, attachmentList, expandPastedText)
     // Client-side local commands (e.g. /resume) are intercepted here and
     // handled in-app instead of being POSTed to the SDK. Matched strictly
@@ -1635,7 +1626,6 @@ export const Chat = memo(function Chat({
         openSettingsTab: onOpenSettingsTab,
         showHelp: onShowHelp,
         clearSession: requestClearSession,
-        compactSession: requestCompactSession,
       })
       return
     }
@@ -1699,6 +1689,14 @@ export const Chat = memo(function Chat({
       setInput('')
       clearAttachments()
       clearPastedImages()
+      // Delete the draft's image record IMPERATIVELY, not via the
+      // useDraftImages effect: this continuation runs after the POST, and if
+      // the panel unmounted mid-POST (group switch / close) the effect is
+      // gone and clearPastedImages' setImages is a no-op on the dead
+      // component — without this the unmount flush's record would come back
+      // as a phantom draft of already-sent images. The catch path
+      // deliberately does NOT delete: a failed send leaves the draft.
+      void deleteDraftImages(session.id)
       // Put focus back on the textarea so the user can keep typing. If
       // they used Enter-to-send the focus is already there; if they
       // clicked the Send button it's currently on the button and the
@@ -1714,7 +1712,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestCompactSession, runBashCommand])
+  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, runBashCommand])
 
   // The Overlay primitive owns the focus traps and presence for the settings
   // + git overlays; its `mounted && open` active gate reproduces the old
@@ -1872,11 +1870,15 @@ export const Chat = memo(function Chat({
       setInput('')
       clearAttachments()
       clearPastedImages()
+      // Same imperative draft-record delete as send()'s success path — the
+      // schedule consumed the images, and the await above can straddle a
+      // panel unmount exactly like the POST does.
+      void deleteDraftImages(session.id)
       setComposerFocusSignal((n) => n + 1)
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [input, attachmentList, scheduled, setInput, clearAttachments, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError])
+  }, [input, attachmentList, scheduled, setInput, clearAttachments, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError, session.id])
   /** Snippets are persisted server-side and re-inserted in later sessions, so
    *  a `[Pasted text #N]` reference saved as-is would outlive the body backing
    *  it and resolve to nothing (or to a different paste). Store the text. */
@@ -2232,7 +2234,6 @@ export const Chat = memo(function Chat({
           clearing={effectiveClearing}
           transcriptRevealKey={session.id}
           sessionId={session.id}
-          apiRetry={stream.apiRetry}
           planStatus={stream.planStatus}
           planContent={stream.planContent}
           questionAnswers={stream.questionAnswers}
@@ -2481,6 +2482,7 @@ export const Chat = memo(function Chat({
                   activePhase={displayPhase}
                   recapping={session.compacting ?? false}
                   waiting={waiting}
+                  apiRetry={stream.apiRetry}
                   onOpenSubagent={openSubagent}
                 />
               </BottomCardMotion>
@@ -2744,6 +2746,16 @@ export const Chat = memo(function Chat({
             />
           )}
         </AnimatePresence>
+        {/* Older-history paging float (loading / failure-with-retry). A flex
+            sibling — NOT inside AnimatePresence — so it stacks beneath the
+            recap and pinned-question cards instead of overlapping them, and
+            skips their exit animations. Hidden unless a page is loading or
+            the last page failed. */}
+        <OlderHistoryFloat
+          loading={stream.loadingOlder}
+          error={stream.olderError}
+          onRetry={streamLoadOlder}
+        />
       </div>
 
       {subagentStack.length > 0 && (

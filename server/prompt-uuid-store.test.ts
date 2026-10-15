@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
@@ -147,6 +147,29 @@ describe('PromptUuidStore', () => {
     await store.save('s1', [entry('U1', 'V1')])
     await store.remove('s1')
     expect(await store.load('s1')).toBeNull()
+  })
+
+  it('a save racing remove cannot recreate the sidecar; revive re-enables saves', async () => {
+    await store.save('s1', [entry('U1', 'V1')])
+    // Fire-and-forget saves (onPromptEcho) on both sides of a delete.
+    const before = store.save('s1', [entry('U1', 'V1'), entry('U2', 'V2')])
+    const removing = store.remove('s1')
+    const after = store.save('s1', [entry('U1', 'V1'), entry('U2', 'V2'), entry('U3', 'V3')])
+    await Promise.all([before, removing, after])
+    await expect(access(join(dir, 'prompt-uuids', 's1.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await store.load('s1')).toBeNull()
+
+    store.revive('s1')
+    await store.save('s1', [entry('U9', 'V9')])
+    expect(await store.load('s1')).toEqual([entry('U9', 'V9')])
+  })
+
+  it('save snapshots the caller list at call time', async () => {
+    const live = [entry('U1', 'V1')]
+    const saving = store.save('s1', live)
+    live.push(entry('U2', 'V2')) // caller keeps mutating its live list
+    await saving
+    expect(await store.load('s1')).toEqual([entry('U1', 'V1')])
   })
 
   it('remove is a no-op when no sidecar exists', async () => {

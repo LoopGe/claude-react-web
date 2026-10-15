@@ -546,12 +546,18 @@ export function reconcileTasksFromStopHook(session: Session, summaries: StopHook
  *  still overrides an over-eager `stopped`, since a task_notification frame
  *  writes its own status.
  *
+ *  `skipTaskIds` leaves those records untouched: the subagent watcher's
+ *  process-exit settle has already claimed them and folds their outcome
+ *  (possibly `completed`, read from the transcript) asynchronously, so
+ *  sweeping them here would flash them to `stopped` first.
+ *
  *  Returns true when anything changed. */
-export function settleTasksOnProcessExit(session: Session): boolean {
+export function settleTasksOnProcessExit(session: Session, skipTaskIds?: ReadonlySet<string>): boolean {
   const now = Date.now()
   let changed = false
   for (const [taskId, rec] of session.tasks) {
     if (isTerminalTaskStatus(rec.status)) continue
+    if (skipTaskIds?.has(taskId)) continue
     session.tasks.set(taskId, {
       ...rec,
       status: 'stopped',
@@ -672,6 +678,11 @@ export function cliNotificationOf(msg: SDKMessage): CliNotification | null {
 
 export interface PumpDeps {
   historyCap: number
+  /** Mid-run steering turn-end fallback (spec §6.3): invoked in the result
+   *  handler before the moreQueued check. The host drains undelivered
+   *  supplements from the provider handle and re-routes them onto the SDK
+   *  input queue as normal next-turn prompts (zero-loss guarantee). */
+  onTurnSettling?: (session: Session) => void
   /** Separate FIFO budget for subagent frames (parent_tool_use_id != null).
    *  Independent of historyCap so subagent volume never evicts main-thread
    *  frames from the replay surface. */
@@ -1187,7 +1198,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // Track the SDK-reported compaction state. It rides on `system/status`
         // frames (`status: 'compacting'` while the CLI compacts the transcript;
         // a later status frame clears it). When it changes, broadcast a
-        // session-update so the WorkingBubble can show "Recap (auto)…" instead
+        // session-update so the WorkingBubble can show "Recap…" instead
         // of a stale phase. Not persisted — the SDK re-reports it after respawn.
         {
           const compacting = compactingOf(msg)
@@ -1568,6 +1579,11 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           if (!emptyResult && session.lastAssistantUuid) {
             deps.recordTurnSnapshot?.(session.id, session.lastAssistantUuid)
           }
+          // Mid-run steering turn-end fallback (spec §6.3): drain undelivered
+          // supplements and requeue them as normal next-turn prompts BEFORE
+          // the moreQueued check so they count toward the working-state
+          // decision (a requeued supplement is exactly a queued turn).
+          deps.onTurnSettling?.(session)
           const moreQueued = session.handle.queueDepth > 0
           log.debug(
             `[session ${session.id}] result received — total msgs: ${msgCount}, ` +
@@ -1604,7 +1620,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // Compaction is a mid-turn phenomenon — a `result` means the turn
           // (and any compaction it triggered) is done. The CLI normally clears
           // `compacting` via a status frame; this is a lifecycle bound so a
-          // missed frame can't stick the "Recap (auto)…" label on forever.
+          // missed frame can't stick the "Recap…" label on forever.
           if (session.compacting) {
             session.compacting = undefined
             deps.broadcastInfo?.(session)

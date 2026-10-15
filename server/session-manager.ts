@@ -25,12 +25,14 @@ import type { ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd } from './cwd-equality.js'
 import { randomUUID } from 'node:crypto'
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
+import { SteeredStore, spliceSteeredIntoPage } from './steered-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
+import { SessionOpLock } from './session-op-lock.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { SnapshotService, type RewindPreview } from './snapshot/snapshot-service.js'
@@ -45,8 +47,9 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
-import { tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
+import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
+import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -100,7 +103,7 @@ import { HttpError, controlHttpError, type ControlWrapOpts } from './errors.js'
 import { filterClientEnv } from './session-env.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
-import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
+import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting, type WorktreeInfo } from '../shared/session-info.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
@@ -126,7 +129,7 @@ import {
   subagentTranscriptPath,
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId, trimLargeToolResults } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, stampRequeuedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId, trimLargeToolResults } from './history-utils.js'
 import { TranscriptStore, type TranscriptWindow } from './transcript-store.js'
 import {
   TranscriptSidecar,
@@ -142,7 +145,7 @@ import { deleteTranscriptFile } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
-import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
+import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
 import { countMatches, findRanges } from '../shared/search/match.js'
 import { extractMessagePlainText } from '../shared/search/extract.js'
 import type { MessageSearchHit } from '../shared/search-results.js'
@@ -165,7 +168,7 @@ import {
 import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 import { raceWithFallback } from './with-timeout.js'
-import { COMMAND_PREVIEW_CAP } from './constants.js'
+import { COMMAND_PREVIEW_CAP, DELETE_LOCK_MAX_WAIT_MS } from './constants.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -710,6 +713,38 @@ type SdkModelInfo = {
   supportedEffortLevels: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[]
 }
 
+type ForkOpts = {
+  resumeSessionAt?: string
+  historySeed?: SDKMessage[]
+  inheritIdentity?: boolean
+  replacesSource?: boolean
+  forkFromLastSafe?: boolean
+}
+
+/** True when a user message's content is plain text only (string content, or
+ *  a block array of nothing but text blocks). Only such messages can steer:
+ *  hook `additionalContext` is a string — images and other block types would
+ *  be silently dropped by injection, so they must queue as next-turn prompts
+ *  (spec §6.1). Pure + exported for tests. */
+export function isSteerableUserText(msg: SDKUserMessage): boolean {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (typeof content === 'string') return true
+  if (!Array.isArray(content)) return false
+  return content.every((b) => (b as { type?: string }).type === 'text')
+}
+
+/** Extract the plain text of a steerable user message (string content, or
+ *  text blocks joined with newlines). Callers gate on isSteerableUserText
+ *  first; a non-steerable message yields the empty string. */
+export function userTextOf(msg: SDKUserMessage): string {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((b) => (b as { text?: string }).text ?? '')
+    .join('\n')
+}
+
 export class SessionManager {
   private sessions = new Map<string, Session>()
   private historyCap: number
@@ -728,9 +763,12 @@ export class SessionManager {
    *  that may crash again, and the user should take over after a couple of
    *  failures. Configurable via SessionManagerOptions.maxCrashRecovery. */
   private maxCrashRecovery: number
+  /** delete()'s bound on queueing for the op lock (see DELETE_LOCK_MAX_WAIT_MS). */
+  private readonly deleteLockMaxWaitMs: number
   private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
   private promptUuidStore: PromptUuidStore
+  private steeredStore: SteeredStore
   private turnAnchorStore: TurnAnchorStore
   private resultFrameStore: ResultFrameStore
   /** Sidecar store for shadow-repo file snapshots. Holds per-session
@@ -846,8 +884,13 @@ export class SessionManager {
     this.autoResumeEnabled = opts.autoResume ?? false
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.maxCrashRecovery = opts.maxCrashRecovery ?? 2
+    this.deleteLockMaxWaitMs = opts.deleteLockMaxWaitMs ?? DELETE_LOCK_MAX_WAIT_MS
     this.store = opts.store ?? new SessionStore()
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
+    // Mid-run steering 的回放 sidecar（spec §8.1）——steered 消息不在 CLI
+    // JSONL 里（additionalContext 落盘为不可渲染的 attachment），这是它
+    // 唯一的磁盘回放来源。
+    this.steeredStore = new SteeredStore(this.store.getDir(), this.historyCap)
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
     this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
     // Shadow-repo file snapshots: build the store and service against the
@@ -930,7 +973,7 @@ export class SessionManager {
       broadcastGlobal: (ev) => this.broadcastGlobal(ev),
       info: (s) => this.info(s),
       historyCap: this.historyCap,
-      isLive: (id) => this.sessions.has(id),
+      getSession: (id) => this.sessions.get(id),
     })
 
     this.skills = new SessionSkillManager({
@@ -1006,8 +1049,10 @@ export class SessionManager {
     // fresh watcher; a late real completion still overrides an over-eager
     // `stopped`. Deliberately NOT done on the clean-exit path above (idle
     // timeout → auto-resume commonly re-arms the same watcher, and a settle
-    // there would flap stopped→done).
-    this.settleBackgroundWatchersOnProcessExit(s)
+    // there would flap stopped→done). The watchers are claimed synchronously
+    // here; their transcript reads and synthesized frames land asynchronously
+    // (into whatever session is live under this id by then).
+    const watcherTaskIds = this.settleBackgroundWatchersOnProcessExit(s)
     // The watcher above only covers the subagent dispatches IT tracks; every
     // other record in the task map (background shell / workflow / ambient) is
     // equally orphaned by the exit and would otherwise spin in the TasksPanel
@@ -1022,8 +1067,10 @@ export class SessionManager {
     // shell / workflow / ambient records changes no observable field — broadcast
     // only when the count actually moved. The settled RECORDS still reach open
     // panels either way: settleTasksOnProcessExit pushes a task snapshot.
+    // The watcher-claimed records are skipped: their async settle folds the
+    // real outcome (and re-broadcasts the info frame itself).
     const countBefore = this.backgroundSubagentCount(s)
-    if (settleTasksOnProcessExit(s) && this.backgroundSubagentCount(s) !== countBefore) {
+    if (settleTasksOnProcessExit(s, watcherTaskIds) && this.backgroundSubagentCount(s) !== countBefore) {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
 
@@ -1179,19 +1226,27 @@ export class SessionManager {
   ): void {
     const session = this.sessions.get(sessionId)
     if (!session) return
-    this.backgroundWatchers.settleByAgentId(session, info.agentId, {
+    void this.backgroundWatchers.settleByAgentId(session, info.agentId, {
       transcriptPath: info.transcriptPath,
       lastAssistantMessage: info.lastAssistantMessage,
       backgroundTasks: info.backgroundTasks,
+    }).catch((err) => {
+      log.warn(`[session ${sessionId}] SubagentStop settle failed (agentId=${info.agentId}):`, err)
     })
   }
 
   /** Settle all background-subagent watchers for a session because its CLI
    *  subprocess exited — see BackgroundWatcherRegistry.settleAllOnProcessExit.
    *  Uses the process-exit as the certain completion signal instead of waiting
-   *  out the watcher's 2 h backstop. */
-  private settleBackgroundWatchersOnProcessExit(session: Session): void {
-    this.backgroundWatchers.settleAllOnProcessExit(session)
+   *  out the watcher's 2 h backstop. The claim is synchronous; returns the
+   *  task-record ids the asynchronous settle will fold, for the caller's
+   *  process-exit sweep to skip. */
+  private settleBackgroundWatchersOnProcessExit(session: Session): Set<string> {
+    const { claimedTaskIds, done } = this.backgroundWatchers.settleAllOnProcessExit(session)
+    void done.catch((err) => {
+      log.warn(`[session ${session.id}] background watcher process-exit settle failed:`, err)
+    })
+    return claimedTaskIds
   }
 
   /** Unload a spawn-failed session to dormant (resumable) state with the
@@ -1307,6 +1362,7 @@ export class SessionManager {
       lastTurnAt: s.lastTurnAt,
       gitStartSha: s.gitStartSha,
       repoRoot: s.repoRoot,
+      worktree: s.worktree,
       parentId: s.parentId,
       forkBoundaryUuid: s.forkBoundaryUuid,
       mcpServerNames: s.mcpServerNames,
@@ -1376,7 +1432,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1432,6 +1488,7 @@ export class SessionManager {
         return sb && sb.enabled === true ? sb : undefined
       })(),
       cliDebug: (opts as { cliDebug?: boolean }).cliDebug,
+      worktree: (opts as { worktree?: WorktreeInfo }).worktree,
     }
   }
 
@@ -1456,7 +1513,7 @@ export class SessionManager {
    *
    *  For resume, use `resume()` instead — this path always allocates a
    *  fresh UUID and won't wire up SDK `resume`. */
-  create(
+  async create(
     opts: Options & { provider?: string; modelGroupId?: string },
     customEnv?: Record<string, string>,
     /** Set by the restart flow: the id of the session Y joins. Threaded
@@ -1468,7 +1525,7 @@ export class SessionManager {
      *  `created` broadcast carries `evictingSource`, letting the client
      *  bypass its maxGroupSize cap when appending Y. */
     evictingSource?: boolean,
-  ): SessionInfo {
+  ): Promise<SessionInfo> {
     // Validate profileId first so we can use the effective profile for
     // downstream checks (modelGroupId, default model).
     const profileId = (opts as { profileId?: unknown }).profileId
@@ -1541,6 +1598,24 @@ export class SessionManager {
           firstPartyTools: firstParty,
         }
       : undefined
+    // Worktree isolation (方案 A"创建即替换"): provision BEFORE spawn so
+    // opts.cwd / opts.worktree are final when snapshotMeta captures them.
+    const isolate = (opts as { isolateWorktree?: unknown }).isolateWorktree
+    if (isolate !== undefined && typeof isolate !== 'boolean') {
+      throw new HttpError(400, 'isolateWorktree must be a boolean')
+    }
+    if (isolate === true) {
+      const id = randomUUID()
+      if (!this.store) throw new HttpError(400, 'worktree isolation requires a state dir')
+      const mainRepo = withDefault.cwd
+      if (!mainRepo) throw new HttpError(400, 'worktree isolation requires a cwd')
+      const prov = await provisionWorktree(this.store.getDir(), id, mainRepo)
+      withDefault.cwd = prov.worktreePath
+      ;(withDefault as Options & { worktree?: WorktreeInfo }).worktree = {
+        mainRepoPath: mainRepo, branch: prov.branch, baseSha: prov.baseSha,
+      }
+      return this.spawn(id, withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
+    }
     return this.spawn(randomUUID(), withDefault, customEnv, undefined, undefined, createPrefs, joinGroupOf, evictingSource)
   }
 
@@ -1556,21 +1631,21 @@ export class SessionManager {
    *  - Refuses to resume terminated sessions; the SDK can't continue past
    *    a `result` message anyway.
    */
-  async resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
+  resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
     // Coalesce: resume() awaits hasSdkTranscript / history / MCP refresh before
     // spawning, so two racing calls (parallel /resume POSTs) both pass the live
     // guard above and both reach spawn() — the second sessions.set() orphans the
     // first Query, leaving a duplicate claude.exe (observed). Return the in-flight
-    // promise so a concurrent second call awaits the SAME spawn.
+    // promise so a concurrent second call awaits the SAME spawn. (Deliberately
+    // not `async`: an async wrapper would hand each caller a distinct promise.)
     const inflight = this.resumeInFlight.get(id)
     if (inflight) return inflight
-    // Meta-write lock held across the WHOLE doResume (probe → spawn →
-    // writeStore). setCwd / rename must not interleave: writeStore is a
-    // wholesale replace from a snapshot captured here, so a field update in
-    // the await window would be silently reverted (TOCTOU).
-    this.metaWriteInFlight.add(id)
-    const p = this.doResume(id, opts).finally(() => {
-      this.metaWriteInFlight.delete(id)
+    // The op lock is held across the WHOLE doResume (probe → spawn →
+    // writeStore), so setCwd / rename / clear / sleep etc. queue behind it
+    // instead of interleaving: writeStore is a wholesale replace from a
+    // snapshot captured here, so a field update in the await window would be
+    // silently reverted (TOCTOU).
+    const p = this.opLock.run(id, () => this.doResume(id, opts)).finally(() => {
       // Only clear if we're still tracked — a later resume may have replaced
       // us while we were settling (don't remove the replacement).
       if (this.resumeInFlight.get(id) === p) this.resumeInFlight.delete(id)
@@ -1608,7 +1683,7 @@ export class SessionManager {
     // in our store). Probe the SDK's on-disk metadata and, if it exists,
     // register a SessionMeta so the normal resume path below can run.
     // After this first resume the session is "known" like any other.
-    const meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
+    let meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     // Terminal gate FIRST: a hard-ended session is 410 regardless of the
     // workspace. Checking cwd before this sent users to "restore the
@@ -1629,6 +1704,40 @@ export class SessionManager {
         )
       } else {
         throw new HttpError(410, `session ${id} has ended and cannot be resumed`)
+      }
+    }
+    // Worktree recreate chain (spec: 路径在 → 分支在 → baseSha → 回退主仓).
+    // Runs BEFORE the cwdMissing probe: a GC'd worktree dir must reconstruct,
+    // not 400. Mutates the local meta copy and persists the fallback so the
+    // next resume doesn't re-walk the chain. A throw is split by ground truth:
+    // when the main repo is still a valid git repo the failure is TRANSIENT
+    // (lock contention, FS hiccup) — rethrow so resume fails loudly and the
+    // user can retry rather than silently losing isolation. Only a main repo
+    // that is genuinely no longer a git repo justifies the de-isolating
+    // fallback (a session can still run fine in a non-repo directory).
+    if (meta.worktree && meta.cwd && !existsSync(meta.cwd)) {
+      let ensured: { cwd: string; worktree?: WorktreeInfo }
+      try {
+        ensured = await ensureWorktreeForResume(this.store!.getDir(), id, meta.worktree)
+      } catch (err) {
+        if (await isInsideWorkTree(meta.worktree.mainRepoPath)) {
+          log.warn(
+            `[session ${id}] worktree recreate failed transiently ` +
+            `(main repo ${meta.worktree.mainRepoPath} is still a git repo); ` +
+            `failing resume so the user can retry: ${err instanceof Error ? err.message : String(err)}`,
+          )
+          throw err
+        }
+        log.warn(
+          `[session ${id}] worktree recreate failed ` +
+          `(main repo ${meta.worktree.mainRepoPath} is no longer a git repo), ` +
+          `de-isolating: falling back to main repo path: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        ensured = { cwd: meta.worktree.mainRepoPath, worktree: undefined }
+      }
+      if (ensured.cwd !== meta.cwd || ensured.worktree !== meta.worktree) {
+        meta = { ...meta, cwd: ensured.cwd, worktree: ensured.worktree }
+        this.store?.upsert(meta)
       }
     }
     // Pre-spawn probe: a missing workspace is the real fault behind a whole
@@ -1724,6 +1833,10 @@ export class SessionManager {
     const resumeOpts = this.baseSpawnOptions({
       provider,
       cwd: meta.cwd,
+      // Carried so re-spawn's snapshotMeta captures it (spawn's existingMeta
+      // re-read already has it via the upsert above — this keeps both paths
+      // consistent for a resume that did NOT walk the recreate chain too).
+      worktree: meta.worktree,
       model: resolvedModel,
       modelGroupId: meta.modelGroupId,
       // Use the persisted permissionMode if available (sessions we created).
@@ -1874,7 +1987,13 @@ export class SessionManager {
       createdAt: info.createdAt ?? info.lastModified ?? now,
       lastActivityAt: info.lastModified ?? now,
       cwd: info.cwd,
-      title: info.title ?? info.firstPrompt,
+      // Only a REAL title (on-disk customTitle — a CLI-side /rename) is
+      // carried. Never derive one from firstPrompt/summary: conversation
+      // content is not a name, and a derived title here would ride the resume
+      // spawn as Options.title — the CLI then persists it as custom-title
+      // entries, permanently masking any future CLI aiTitle. Untitled stays
+      // untitled (sidebar falls back to the id prefix).
+      title: info.title,
       messageCount: 0,
       terminated: false,
       // Non-null so the no_data guard passes — the transcript file existing
@@ -1949,10 +2068,20 @@ export class SessionManager {
       `(cwd=${meta.cwd ?? '<none>'}, lastTurnAt=${meta.lastTurnAt ?? 'none'}, ` +
       `messageCount=${meta.messageCount})`,
     )
-    meta.terminated = true
-    meta.terminatedReason = 'transcript_missing'
-    this.store?.upsert(meta)
-    this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(meta) })
+    const mark: Pick<SessionMeta, 'terminated' | 'terminatedReason'> = {
+      terminated: true,
+      terminatedReason: 'transcript_missing',
+    }
+    // Field-scoped patch of the CURRENT entry, so a meta snapshot the caller
+    // took before its transcript probe can't revert a concurrent write. A
+    // session with no store entry (caller-built fallback meta) is inserted
+    // whole, as before.
+    let next = this.store?.patch(meta.id, mark)
+    if (!next) {
+      next = { ...meta, ...mark }
+      this.store?.upsert(next)
+    }
+    this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(next) })
   }
 
   private readProviderHistoryPage(
@@ -1983,7 +2112,13 @@ export class SessionManager {
    *  `result` message, so forking earlier fails with `No conversation
    *  found with session ID: <uuid>` from the CLI. `lastTurnAt` is our
    *  ground-truth signal (set only by the pump on a real `result`). */
-  async fork(id: string, opts?: { resumeSessionAt?: string; historySeed?: SDKMessage[]; inheritIdentity?: boolean; replacesSource?: boolean; forkFromLastSafe?: boolean }): Promise<SessionInfo> {
+  async fork(id: string, opts?: ForkOpts): Promise<SessionInfo> {
+    // Locked on the SOURCE id (see opLock): the source's meta / sidecars are
+    // what fork reads across its awaits.
+    return this.opLock.run(id, () => this.doFork(id, opts))
+  }
+
+  private async doFork(id: string, opts?: ForkOpts): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     const meta = live ?? this.store?.get(id)
     if (!meta) throw new HttpError(404, `session ${id} not found`)
@@ -2068,7 +2203,11 @@ export class SessionManager {
     const sourceProvider = meta.provider ?? this.defaultProvider
     const forkOpts = this.baseSpawnOptions({
       provider: sourceProvider,
-      cwd: meta.cwd,
+      // An isolated source forks back to the user's main repo: two sessions
+      // sharing one worktree is a clobber hazard, and forking INTO a second
+      // worktree is out of scope for v1. The user can re-check isolation on
+      // the fork's own create path.
+      cwd: meta.worktree?.mainRepoPath ?? meta.cwd,
       model: meta.model,
       modelGroupId: meta.modelGroupId,
       permissionMode: meta.permissionMode,
@@ -2212,6 +2351,14 @@ export class SessionManager {
    *  later discard on Y can still cut at any earlier turn (the feature
    *  composes — repeated discards walk back through history). */
   async discard(
+    id: string,
+    fromAssistantUuid: string,
+    opts?: { deleteOriginal?: boolean },
+  ): Promise<SessionInfo> {
+    return this.opLock.run(id, () => this.doDiscard(id, fromAssistantUuid, opts))
+  }
+
+  private async doDiscard(
     id: string,
     fromAssistantUuid: string,
     opts?: { deleteOriginal?: boolean },
@@ -2437,8 +2584,18 @@ export class SessionManager {
       await this.resultFrameStore.remove(id)
       await this.snapshotStore.remove(id)
       await this.promptUuidStore.remove(id)
+      await this.steeredStore.remove(id)
     } else {
       await this.unload(id, { removeFromStore: true })
+    }
+
+    // Worktree teardown for the discarded session. Y (the fork) landed in the
+    // main repo per the fork ruling, so X's worktree is ownerless — and
+    // unload() never runs delete()'s cleanup, so without this the worktree
+    // dir + git registration leak forever. Best-effort: the helper never
+    // throws (branch kept, dir removed).
+    if (metaX?.worktree && this.store) {
+      await removeWorktreeForSession(this.store.getDir(), id, metaX.worktree, log)
     }
 
     log.info(
@@ -2659,17 +2816,21 @@ export class SessionManager {
     if (!session.cwd) return
     if (!session.gitStartSha) {
       void tryCaptureGitHead(session.cwd).then((sha) => {
-        if (!sha || session.terminated || !this.sessions.has(session.id)) return
+        // Identity check (not .has): a replaced Session object under the same
+        // id must not write. Patch only this field — these callbacks land at
+        // an arbitrary point relative to any locked op on the session, so a
+        // wholesale writeStore here could revert a concurrent meta write.
+        if (!sha || session.terminated || this.sessions.get(session.id) !== session) return
         session.gitStartSha = sha
-        this.writeStore(session)
+        this.store?.patch(session.id, { gitStartSha: sha })
         this.broadcastGlobal({ kind: 'update', session: this.info(session) })
       }).catch(() => {})
     }
     if (!session.repoRoot) {
       void tryCaptureRepoRoot(session.cwd).then((root) => {
-        if (!root || session.terminated || !this.sessions.has(session.id)) return
+        if (!root || session.terminated || this.sessions.get(session.id) !== session) return
         session.repoRoot = root
-        this.writeStore(session)
+        this.store?.patch(session.id, { repoRoot: root })
       }).catch(() => {})
     }
   }
@@ -2804,13 +2965,15 @@ export class SessionManager {
       createdAt,
       lastActivityAt: Date.now(),
       ...metaSnapshot,
-      // Title / cwd are NOT snapshotted from opts alone: writeStore is a
-      // wholesale replace, so a concurrent setCwd / rename (or any future
-      // dormant meta writer) would be reverted by this spawn. Re-read them
-      // like gitStartSha / lastTurnAt / hooks below — the existingMeta
-      // carry-forward is the write-store-level half of the meta-write lock.
+      // Title / cwd are re-read from the persisted meta, like gitStartSha /
+      // lastTurnAt / hooks below: the persisted meta is the carry path for a
+      // same-id spawn (resume / respawnFresh). The op lock serializes setCwd /
+      // rename against resume, so they can no longer land inside the
+      // resume → spawn window; writeStore below is still a wholesale replace
+      // from this projection.
       title: existingMeta?.title ?? metaSnapshot.title,
       cwd: existingMeta?.cwd ?? metaSnapshot.cwd,
+      worktree: existingMeta?.worktree ?? metaSnapshot.worktree,
       // Carry a spawn-scoped tool-surface profile. A caller-supplied profile
       // (/clear, fork) wins; otherwise capture any create-body passthrough so
       // it too survives a later /clear. RAM-only — see Session.toolProfile.
@@ -2869,6 +3032,7 @@ export class SessionManager {
       tasklistSubscribers: new Set(),
       messageStatusSubscribers: new Set(),
       withdrawnUuids: [],
+      steeredInFlight: new Map(),
       commandSubscribers: new Set(),
       hookRuns: [],
       hookRunSubscribers: new Set(),
@@ -3087,7 +3251,11 @@ export class SessionManager {
       includePartialMessages: fullOpts.includePartialMessages,
       includeHookEvents: true,
       inProcessHookForward: (_sid, event) => this.recordHookRun(id, event),
-      inProcessTaskSnapshot: (_sid, tasks) => this.reconcileTasksFromStopHook(id, tasks),
+      inProcessTaskSnapshot: (_sid, tasks) => {
+        void this.reconcileTasksFromStopHook(id, tasks).catch((err) => {
+          log.warn(`[session ${id}] Stop-hook task reconcile failed:`, err)
+        })
+      },
       inProcessSubagentStop: (_sid, info) => this.settleBackgroundSubagentFromHook(id, info),
       // Forward subagent text/thinking frames so SubagentOverlay can render
       // the nested transcript. Spawn-time SDK Options key (config-gated;
@@ -3097,6 +3265,7 @@ export class SessionManager {
       forkSession: fullOpts.forkSession,
       resumeSessionAt: (fullOpts as { resumeSessionAt?: string }).resumeSessionAt,
       onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
+      onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(id, uuid, outcome),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       // Atomic pair: the SDK requires onUserDialog whenever
@@ -3124,9 +3293,13 @@ export class SessionManager {
     }
 
     session.pumpTask = this.pump(session)
-    // Clear any snapshot tombstone from a previous session with this id,
-    // so the new session's sidecar writes are not silently suppressed.
+    // Clear any snapshot / sidecar tombstone from a previous session with
+    // this id, so the new session's sidecar writes are not silently suppressed.
     this.snapshotStore.revive(id)
+    this.turnAnchorStore.revive(id)
+    this.resultFrameStore.revive(id)
+    this.promptUuidStore.revive(id)
+    this.steeredStore.revive(id)
     this.sessions.set(id, session)
     metrics.gauge('sessions_active', this.sessions.size)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
@@ -3190,6 +3363,9 @@ export class SessionManager {
     // missing only the rewind-to-this-message option. Spec: capture before
     // tools run — in practice the SDK takes 1–3s to start the first
     // tool_use, while capture typically finishes in <500ms.
+    // (Steered messages never get an anchor: they are always mid-turn here,
+    // so they always take the defer path — and trySteerMessage removes the
+    // deferred uuid the moment the steer decision lands.)
     this.captureAnchor(id, s, userMsg.uuid!)
     this.dispatchUserMessage(s, userMsg)
     // dispatchUserMessage → pushToSession → stampReceivedAt stamps receivedAt
@@ -3306,6 +3482,13 @@ export class SessionManager {
     if (s.lastPromptSuggestion != null) {
       s.lastPromptSuggestion = undefined
     }
+    // Mid-run steering route (spec §6.1): a plain-text message sent while a
+    // turn is active goes into the supplement queue (injected at the next
+    // tool-hook boundary) INSTEAD of the SDK input queue. All downstream
+    // bookkeeping a queued prompt gets — SDK enqueue, promptUuids pairing,
+    // snapshot anchor — is skipped; the turn-end fallback re-routes anything
+    // undelivered back through the normal path.
+    if (this.trySteerMessage(s, userMsg)) return
     const forSdk = { ...userMsg }
     s.handle.enqueueUserMessage(forSdk)
     // Direct-hand-off case: the consume hook already ran, synchronously,
@@ -3315,6 +3498,40 @@ export class SessionManager {
     if (typeof consumedAt === 'number') stampConsumedAt(userMsg, consumedAt)
     this.pushToSession(s, userMsg)
     this.recordPromptUuid(s, userMsg)
+  }
+
+  /** Try to route a mid-turn plain-text message into steering (spec §6.1).
+   *  Returns true when the message took the steering path (broadcast + ring
+   *  still happen via pushToSession); false means the caller must run the
+   *  normal queue path. Four conditions (plan Task 6 / pre-flight ruling):
+   *  the global switch, the provider's steering member, plain-text-only
+   *  content (additionalContext is a string — images cannot ride it), and a
+   *  live turn. enqueue()'s own admission/version gate is the final arbiter
+   *  — a false return here is a transparent fallback, never an error. */
+  private trySteerMessage(s: Session, userMsg: SDKUserMessage): boolean {
+    if (defaultConfig.steering === false) return false
+    const enqueue = (s.handle as ProviderSessionHandle & {
+      enqueueSupplement?: (entry: { uuid: string; text: string }) => boolean
+    }).enqueueSupplement
+    if (typeof enqueue !== 'function') return false
+    if (!isSteerableUserText(userMsg)) return false
+    if (!(s.pendingTurns > 0 || s.turnActive === true)) return false
+    if (!userMsg.uuid) return false // 无法跟踪的消息不 steer
+    const text = userTextOf(userMsg)
+    if (!enqueue.call(s.handle, { uuid: userMsg.uuid, text })) return false
+    const steeredAt = stampSteeredAt(userMsg)
+    s.steeredInFlight.set(userMsg.uuid, userMsg)
+    // A steered message never starts a turn, so it must not keep the snapshot
+    // anchor captureAnchor just deferred for it (steering is mid-turn-only,
+    // so the defer path is the only one it can have taken). Drop it now, at
+    // the moment the steer decision is known (spec §6.1 skip list).
+    if (s.pendingSnapshotAnchors?.length) {
+      s.pendingSnapshotAnchors = s.pendingSnapshotAnchors.filter((u) => u !== userMsg.uuid)
+    }
+    void this.steeredStore.record(s.id, { u: userMsg.uuid, text, steeredAt })
+    log.info(`[session ${s.id}] steered ${userMsg.uuid.slice(0, 8)} mid-turn (${text.length} chars)`)
+    this.pushToSession(s, userMsg)
+    return true
   }
 
   /** Record a just-sent top-level prompt's server-minted uuid (`u`) as an
@@ -3443,6 +3660,15 @@ export class SessionManager {
     // conservative filter keeps the live ring and the transcript consistent
     // even if that ever changes) out of the removal set.
     const queuedUserUuids = new Set((s.promptUuids ?? []).filter((e) => e.v == null).map((e) => e.u))
+    // Steer pending 先于一切（spec §6.4 竞态对策）：drain 清空后，interrupt
+    // 期间并发的 hook 边界只见空队列——这是 multica writing-flag 串行化的
+    // 进程内等价物。plain interrupt 与「queued 消息在 Stop 后存活」语义对齐
+    // → 余量转排队；cancelQueued 的余量并入下方撤回集合。
+    const steerLeftovers =
+      (s.handle as ProviderSessionHandle & { drainSupplements?: () => Array<{ uuid: string }> }).drainSupplements?.() ?? []
+    if (!opts?.cancelQueued && steerLeftovers.length > 0) {
+      this.requeueSteeredLeftovers(s, steerLeftovers)
+    }
     // Withdraw leg 1 (host queue) before the interrupt lands — see above for
     // the ordering rationale.
     const { msgs: withdrawnMsgs, uuids: drainedUuids } = opts?.cancelQueued
@@ -3464,6 +3690,17 @@ export class SessionManager {
       }
       for (const u of receipt?.cancelledQueued ?? []) {
         if (stillUnpaired(u)) uuids.add(u)
+      }
+      // Steer 撤回（cancelQueued 路径）：steered 消息从不在 promptUuids 里
+      // （dispatch 即跳过记录，requeue 时才补录——而被撤回的不会再 requeue），
+      // 所以绕过 stillUnpaired 过滤直接并入。ring 移除 / withdrawnUuids /
+      // messages-withdrawn 广播全部复用下方现有 uuids 集合路径。
+      for (const { uuid: steerUuid } of steerLeftovers) {
+        if (opts?.cancelQueued) {
+          uuids.add(steerUuid)
+          s.steeredInFlight.delete(steerUuid)
+          void this.steeredStore.markWithdrawn(s.id, steerUuid, Date.now())
+        }
       }
       let removed = 0
       if (uuids.size > 0) {
@@ -3600,7 +3837,7 @@ export class SessionManager {
    *  reconnect) for consumed flips, the ring removal + `withdrawnUuids`
    *  subscribe replay for withdrawals, the sidecar tombstone rows for
    *  evictions — so a dropped live frame self-heals. */
-  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted): void {
+  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted): void {
     const s = this.sessions.get(id)
     if (!s || s.messageStatusSubscribers.size === 0) return
     for (const sub of s.messageStatusSubscribers) {
@@ -3776,6 +4013,15 @@ export class SessionManager {
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
   async clear(id: string, opts?: { seedText?: string }): Promise<SessionInfo> {
+    // Idempotency fast path BEFORE queueing on the op lock: a second clear()
+    // while one is in flight returns the current info at once, as it always
+    // has, instead of waiting for the first to remove X and then 404ing.
+    const inFlight = this.sessions.get(id)
+    if (inFlight?.clearing) return this.info(inFlight)
+    return this.opLock.run(id, () => this.doClear(id, opts))
+  }
+
+  private async doClear(id: string, opts?: { seedText?: string }): Promise<SessionInfo> {
     const s = this.requireRunnable(id)
     if (s.clearing) return this.info(s)
 
@@ -3848,6 +4094,13 @@ export class SessionManager {
         // the session's configuration. Dropping it here would silently hand
         // back a plain session after twenty turns as a custom agent.
         agent: s.agent,
+        // Carry X's worktree isolation onto Y: X's cwd IS the worktree path,
+        // so Y runs there — without the metadata Y would be an unbadged
+        // session inside a worktree dir the delete-confirm dirty check never
+        // sees and whose registration would orphan when Y is deleted. /clear
+        // resets the conversation, not the isolation (unlike fork, which
+        // deliberately lands in the main repo).
+        worktree: s.worktree,
       }
 
       // Pure-UI pref overrides + per-server first-party tool pins ride the
@@ -3895,6 +4148,10 @@ export class SessionManager {
         betas: settings.betas,
         hooks: settings.hooks,
         enabledPlugins: settings.enabledPlugins,
+        // snapshotMeta captures this — Y keeps the isolation metadata (badge,
+        // delete-confirm dirty check, worktree cleanup) while running in the
+        // inherited worktree dir.
+        worktree: settings.worktree,
       }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting; parentId?: string }
       // Carry the auto-memory intent onto the fresh session (new id —
       // snapshotMeta captures it from here, same as fork).
@@ -4128,29 +4385,31 @@ export class SessionManager {
    *  Terminated sessions fail `requireLive` (410); already-dormant sessions
    *  aren't in the live map, so `requireLive` → `require` throws 404. */
   async sleep(id: string): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if (this.phaseOf(s) !== 'idle') {
-      // The parent turn may have already finished while a background
-      // subagent is still running — blame the real blocker, not the turn.
-      const hasBackgroundSubagent = this.backgroundSubagentCount(s) > 0
-      throw new HttpError(
-        409,
-        hasBackgroundSubagent
-          ? `session ${id} has a background subagent still running — wait for it to finish before sleeping`
-          : `session ${id} is working — wait for the turn to finish before sleeping`,
-      )
-    }
-    log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
-    // Mark the session as deliberately-slept BEFORE unload persists it, so
-    // the flag survives a server restart and the client can distinguish
-    // this from a passive restart/crash dormant state (and skip auto-resume
-    // paths). Cleared on the next spawn() (resume / fresh).
-    s.slept = true
-    await this.unload(id) // no opts => dormant, not terminated; keep store + transcript
-    // Read the info off the (now-detached) session object directly rather
-    // than this.get(id): `s` is the ground truth we just unloaded, and this
-    // avoids a store lookup (and works even when no store is configured).
-    return this.info(s)
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      if (this.phaseOf(s) !== 'idle') {
+        // The parent turn may have already finished while a background
+        // subagent is still running — blame the real blocker, not the turn.
+        const hasBackgroundSubagent = this.backgroundSubagentCount(s) > 0
+        throw new HttpError(
+          409,
+          hasBackgroundSubagent
+            ? `session ${id} has a background subagent still running — wait for it to finish before sleeping`
+            : `session ${id} is working — wait for the turn to finish before sleeping`,
+        )
+      }
+      log.info(`[session ${id}] sleep: unloading to dormant (releasing SDK subprocess + subscribers)`)
+      // Mark the session as deliberately-slept BEFORE unload persists it, so
+      // the flag survives a server restart and the client can distinguish
+      // this from a passive restart/crash dormant state (and skip auto-resume
+      // paths). Cleared on the next spawn() (resume / fresh).
+      s.slept = true
+      await this.unload(id) // no opts => dormant, not terminated; keep store + transcript
+      // Read the info off the (now-detached) session object directly rather
+      // than this.get(id): `s` is the ground truth we just unloaded, and this
+      // avoids a store lookup (and works even when no store is configured).
+      return this.info(s)
+    })
   }
 
   /** Switch the MAIN-THREAD agent (persona) on a live session. `name` must
@@ -4211,116 +4470,125 @@ export class SessionManager {
   }
 
   async setModel(id: string, model?: string): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    const wasGroup = !!s.modelGroupId
-    await this.requireHandleMethod<(model?: string) => Promise<void>>(
-      s,
-      'setModel',
-      'model switching',
-      'supportsModelSwitch',
-    )(model)
-    if (wasGroup) {
-      // Switching to a single model fully reverts today's behavior: clear
-      // the group reference AND the fallback degradation chain so no
-      // residual aliases survive the switch.
-      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      const wasGroup = !!s.modelGroupId
+      await this.requireHandleMethod<(model?: string) => Promise<void>>(
         s,
-        'applyFlagSettings',
-        'fallback model',
+        'setModel',
+        'model switching',
         'supportsModelSwitch',
-      )({ fallbackModel: null })
-    }
-    s.model = model
-    s.modelGroupId = undefined
-    s.lastActivityAt = Date.now()
-    // The model changed — recompute its effort capability (keyword-based,
-    // so a switch between model classes changes what's available), then
-    // carry the new effortLevels.
-    s.effortLevels = effortLevelsForModel(s.model)
-    // Thinking capability tracks the model family too — recompute on switch.
-    s.thinkingSupported = supportsThinkingForModel(s.model)
-    // The CLI's cached auto-compact threshold was computed for the OLD model's
-    // window. resolveAutoCompactThreshold gates on the model name so a stale
-    // entry can't leak into the bar, but drop it eagerly so the next turn
-    // doesn't carry a dead object around.
-    s.lastSdkAutoCompact = undefined
-    this.persist(s)
-    return this.info(s)
+      )(model)
+      if (wasGroup) {
+        // Switching to a single model fully reverts today's behavior: clear
+        // the group reference AND the fallback degradation chain so no
+        // residual aliases survive the switch.
+        await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+          s,
+          'applyFlagSettings',
+          'fallback model',
+          'supportsModelSwitch',
+        )({ fallbackModel: null })
+      }
+      s.model = model
+      s.modelGroupId = undefined
+      s.lastActivityAt = Date.now()
+      // The model changed — recompute its effort capability (keyword-based,
+      // so a switch between model classes changes what's available), then
+      // carry the new effortLevels.
+      s.effortLevels = effortLevelsForModel(s.model)
+      // Thinking capability tracks the model family too — recompute on switch.
+      s.thinkingSupported = supportsThinkingForModel(s.model)
+      // The CLI's cached auto-compact threshold was computed for the OLD model's
+      // window. resolveAutoCompactThreshold gates on the model name so a stale
+      // entry can't leak into the bar, but drop it eagerly so the next turn
+      // doesn't carry a dead object around.
+      s.lastSdkAutoCompact = undefined
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Point a session at a ModelGroup. The main model + fallback chain switch
    *  immediately (live); the tier env vars (subagent routing) land on the
    *  next respawn — an SDK runtime limitation, not a bug (spec §7). */
   async setModelGroup(id: string, groupId: string): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    const profile = effectiveProfileFor(s.profileId)
-    const group = profile.modelGroups.find((g) => g.id === groupId)
-    if (!group) throw new HttpError(400, `model group ${groupId} not found`)
-    const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
-    await this.requireHandleMethod<(model?: string) => Promise<void>>(
-      s,
-      'setModel',
-      'model switching',
-      'supportsModelSwitch',
-    )(r.main)
-    const fallback = fallbackAliasesFor(group.main ?? 'opus')
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      'fallback model',
-      'supportsModelSwitch',
-    )({ fallbackModel: fallback.length > 0 ? fallback : null })
-    s.model = r.main
-    s.modelGroupId = groupId
-    s.lastActivityAt = Date.now()
-    s.effortLevels = effortLevelsForModel(s.model)
-    s.thinkingSupported = supportsThinkingForModel(s.model)
-    this.persist(s)
-    return this.info(s)
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      const profile = effectiveProfileFor(s.profileId)
+      const group = profile.modelGroups.find((g) => g.id === groupId)
+      if (!group) throw new HttpError(400, `model group ${groupId} not found`)
+      const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
+      await this.requireHandleMethod<(model?: string) => Promise<void>>(
+        s,
+        'setModel',
+        'model switching',
+        'supportsModelSwitch',
+      )(r.main)
+      const fallback = fallbackAliasesFor(group.main ?? 'opus')
+      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+        s,
+        'applyFlagSettings',
+        'fallback model',
+        'supportsModelSwitch',
+      )({ fallbackModel: fallback.length > 0 ? fallback : null })
+      s.model = r.main
+      s.modelGroupId = groupId
+      s.lastActivityAt = Date.now()
+      s.effortLevels = effortLevelsForModel(s.model)
+      s.thinkingSupported = supportsThinkingForModel(s.model)
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Pin a session to a provider profile. Live-applies the profile's default
    *  model/group, persists the pin, and (when apply==='now' and the session is
    *  idle) restarts the Query so the new credentials take effect immediately.
-   *  `deferred` only persists — credentials apply on the next respawn. */
+   *  `deferred` only persists — credentials apply on the next respawn. The
+   *  nested setModel / setModelGroup / restart calls re-enter the op lock. */
   async setProfile(id: string, profileId: string, apply: 'now' | 'deferred' = 'now'): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if (s.profileId === profileId) return this.info(s)
-    const profile = findProfile(defaultConfig.profiles, profileId)
-    if (!profile) throw new HttpError(400, `profile ${profileId} not found`)
-    s.profileId = profileId
-    s.lastActivityAt = Date.now()
-    // Live-apply the profile's default model/group. A group pin only survives
-    // if the new profile still has that group id; otherwise collapse to the
-    // profile's default model (the old group's slots may not exist here).
-    if (s.modelGroupId) {
-      const group = profile.modelGroups.find((g) => g.id === s.modelGroupId)
-      if (group) {
-        await this.setModelGroup(id, s.modelGroupId)
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      if (s.profileId === profileId) return this.info(s)
+      const profile = findProfile(defaultConfig.profiles, profileId)
+      if (!profile) throw new HttpError(400, `profile ${profileId} not found`)
+      s.profileId = profileId
+      s.lastActivityAt = Date.now()
+      // Live-apply the profile's default model/group. A group pin only survives
+      // if the new profile still has that group id; otherwise collapse to the
+      // profile's default model (the old group's slots may not exist here).
+      if (s.modelGroupId) {
+        const group = profile.modelGroups.find((g) => g.id === s.modelGroupId)
+        if (group) {
+          await this.setModelGroup(id, s.modelGroupId)
+        } else {
+          await this.setModel(id, profileDefaultModel(profile))
+        }
       } else {
         await this.setModel(id, profileDefaultModel(profile))
       }
-    } else {
-      await this.setModel(id, profileDefaultModel(profile))
-    }
-    this.persist(s)
-    if (apply === 'now') {
-      await this.restart(id)
-    }
-    return this.info(s)
+      this.persist(s)
+      if (apply === 'now') {
+        await this.restart(id)
+      }
+      return this.info(s)
+    })
   }
 
   /** Restart a live session's Query in-place, preserving the transcript
    *  (same id, `resume: id`). No-op (deferred) while a turn is in flight or a
    *  clear is already driving its own respawn. */
   async restart(id: string): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if (s.pendingTurns > 0 || s.handle.queueDepth > 0 || s.clearing) {
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      if (s.pendingTurns > 0 || s.handle.queueDepth > 0 || s.clearing) {
+        return this.info(s)
+      }
+      const resumeOpts = await this.buildResumeOpts(s)
+      this.respawnInPlace(s, resumeOpts, 'restart')
       return this.info(s)
-    }
-    const resumeOpts = await this.buildResumeOpts(s)
-    this.respawnInPlace(s, resumeOpts, 'restart')
-    return this.info(s)
+    })
   }
 
   /** Relocate a session's workspace (e.g. the project directory was moved).
@@ -4329,87 +4597,93 @@ export class SessionManager {
    *  process silently disagree. Clears stale spawn_failed / transcript_missing
    *  state (updating the cwd is how a user recovers from a gone workspace)
    *  and the git anchors (repoRoot / gitStartSha belong to the OLD tree; the
-   *  next spawn recaptures them against the new cwd). */
-  setCwd(id: string, cwd: string): SessionInfo {
-    if (this.metaWriteInFlight.has(id)) {
-      throw new HttpError(
-        409,
-        `session ${id} has a resume in flight — wait for it to finish, ` +
-        `then change the workspace (the spawn would overwrite it)`,
-      )
-    }
-    if (cwdMissing(cwd)) {
-      throw new HttpError(400, workingDirMissingMsg(cwd))
-    }
-    const live = this.sessions.get(id)
-    if (live) {
-      throw new HttpError(
-        409,
-        `session ${id} is running — sleep it first, then change the workspace ` +
-        `(a live CLI keeps the cwd it was spawned with)`,
-      )
-    }
-    if (!this.store) throw new HttpError(404, `session ${id} not found`)
-    const meta = this.store.get(id)
-    if (!meta) throw new HttpError(404, `session ${id} not found`)
-    // Both reasons mean "the old path was wrong/missing". transcript_missing
-    // is how the pre-id-scoped hasTranscript false-negative used to
-    // permanently kill relocated sessions — a PATCH cwd is the user saying
-    // "here is where the project lives now", so re-arm resume. The id-scoped
-    // probe will authoritatively accept or refuse the transcript.
-    const cleared =
-      meta.terminatedReason === 'spawn_failed' ||
-      meta.terminatedReason === 'transcript_missing'
-    const nextMeta: SessionMeta = {
-      ...meta,
-      cwd,
-      lastActivityAt: Date.now(),
-      // Git anchors were captured against the OLD tree.
-      repoRoot: undefined,
-      gitStartSha: undefined,
-      ...(cleared
-        ? { terminated: false, terminatedReason: undefined, error: undefined }
-        : {}),
-    }
-    this.store.upsert(nextMeta)
-    const info = this.infoFromMeta(nextMeta)
-    this.broadcastGlobal({ kind: 'update', session: info })
-    return info
+   *  next spawn recaptures them against the new cwd). Worktree isolation is
+   *  cleared too (and the snapshot sidecar dropped) — an explicit cwd
+   *  re-point invalidates everything anchored to the OLD tree; the
+   *  `crw/<id>` branch itself is left behind. */
+  async setCwd(id: string, cwd: string): Promise<SessionInfo> {
+    // Under the op lock: a PATCH cwd that lands during a resume waits for the
+    // resume to finish (and then hits the "running — sleep it first" 409
+    // below, since the session is live by then) instead of racing spawn's
+    // wholesale writeStore.
+    return this.opLock.run(id, () => {
+      if (cwdMissing(cwd)) {
+        throw new HttpError(400, workingDirMissingMsg(cwd))
+      }
+      const live = this.sessions.get(id)
+      if (live) {
+        throw new HttpError(
+          409,
+          `session ${id} is running — sleep it first, then change the workspace ` +
+          `(a live CLI keeps the cwd it was spawned with)`,
+        )
+      }
+      if (!this.store) throw new HttpError(404, `session ${id} not found`)
+      const meta = this.store.get(id)
+      if (!meta) throw new HttpError(404, `session ${id} not found`)
+      // Both reasons mean "the old path was wrong/missing". transcript_missing
+      // is how the pre-id-scoped hasTranscript false-negative used to
+      // permanently kill relocated sessions — a PATCH cwd is the user saying
+      // "here is where the project lives now", so re-arm resume. The id-scoped
+      // probe will authoritatively accept or refuse the transcript.
+      const cleared =
+        meta.terminatedReason === 'spawn_failed' ||
+        meta.terminatedReason === 'transcript_missing'
+      // Field-scoped patch (not a wholesale upsert of the snapshot above).
+      const nextMeta = this.store.patch(id, {
+        cwd,
+        lastActivityAt: Date.now(),
+        // Git anchors were captured against the OLD tree.
+        repoRoot: undefined,
+        gitStartSha: undefined,
+        // The user re-pointed the session by hand — worktree isolation no
+        // longer applies (and the recreate chain must not resurrect a
+        // worktree at the new cwd's expense).
+        worktree: undefined,
+        ...(cleared
+          ? { terminated: false, terminatedReason: undefined, error: undefined }
+          : {}),
+      })!
+      // Stale shadow-repo meta points at the OLD cwd (resolveRepo reuses it
+      // blindly) — drop it so the next capture re-resolves against the new
+      // dir. This also drops the session's snapshot anchors deliberately.
+      void this.snapshotStore.remove(id)
+      const info = this.infoFromMeta(nextMeta)
+      this.broadcastGlobal({ kind: 'update', session: info })
+      return info
+    })
   }
 
   /** Rename a session. Accepts both live and dormant sessions (title is
    *  pure UI metadata — no SDK call needed). Empty string / whitespace
-   *  clears the title so the UI falls back to the id prefix. */
-  rename(id: string, title: string): SessionInfo {
-    if (this.metaWriteInFlight.has(id)) {
-      throw new HttpError(
-        409,
-        `session ${id} has a resume in flight — the title would be ` +
-        `overwritten by the spawn; retry once it finishes`,
-      )
-    }
-    const trimmed = title.trim() || undefined
-    const live = this.sessions.get(id)
-    if (live) {
-      live.title = trimmed
-      live.lastActivityAt = Date.now()
-      this.persist(live)
-      // Best-effort: mirror the manual title into the provider's on-disk
-      // transcript so it survives an external `claude --resume` (which prefers
-      // the transcript title over this app's metadata). Fire-and-forget — the
-      // metadata rename is authoritative and must not block on a failed write.
-      void this.persistTitleToTranscript(live.provider, id, trimmed)
-      return this.info(live)
-    }
-    if (!this.store) throw new HttpError(404, `session ${id} not found`)
-    const meta = this.store?.get(id)
-    if (!meta) throw new HttpError(404, `session ${id} not found`)
-    const nextMeta: SessionMeta = { ...meta, title: trimmed, lastActivityAt: Date.now() }
-    this.store.upsert(nextMeta)
-    const info = this.infoFromMeta(nextMeta)
-    this.broadcastGlobal({ kind: 'update', session: info })
-    void this.persistTitleToTranscript(meta.provider, id, trimmed)
-    return info
+   *  clears the title so the UI falls back to the id prefix. Under the op
+   *  lock: a rename during a resume waits for it, then applies to the
+   *  freshly-spawned live session. */
+  async rename(id: string, title: string): Promise<SessionInfo> {
+    return this.opLock.run(id, () => {
+      const trimmed = title.trim() || undefined
+      const live = this.sessions.get(id)
+      if (live) {
+        live.title = trimmed
+        live.lastActivityAt = Date.now()
+        this.persist(live)
+        // Best-effort: mirror the manual title into the provider's on-disk
+        // transcript so it survives an external `claude --resume` (which prefers
+        // the transcript title over this app's metadata). Fire-and-forget — the
+        // metadata rename is authoritative and must not block on a failed write.
+        void this.persistTitleToTranscript(live.provider, id, trimmed)
+        return this.info(live)
+      }
+      if (!this.store) throw new HttpError(404, `session ${id} not found`)
+      const meta = this.store.get(id)
+      if (!meta) throw new HttpError(404, `session ${id} not found`)
+      // Field-scoped patch (not a wholesale upsert of the snapshot above).
+      const nextMeta = this.store.patch(id, { title: trimmed, lastActivityAt: Date.now() })!
+      const info = this.infoFromMeta(nextMeta)
+      this.broadcastGlobal({ kind: 'update', session: info })
+      void this.persistTitleToTranscript(meta.provider, id, trimmed)
+      return info
+    })
   }
 
   /** Best-effort durability: append a custom-title entry to the provider's
@@ -4436,6 +4710,10 @@ export class SessionManager {
   }
 
   async setPermissionMode(id: string, mode: PermissionMode): Promise<SessionInfo> {
+    return this.opLock.run(id, () => this.doSetPermissionMode(id, mode))
+  }
+
+  private async doSetPermissionMode(id: string, mode: PermissionMode): Promise<SessionInfo> {
     const s = this.requireLive(id)
     // Local state is updated FIRST and unconditionally — it is the source of
     // truth for canUseTool and the UI, and guarantees the switch never fails
@@ -4605,16 +4883,18 @@ export class SessionManager {
     cliDebug: { global: boolean; perSession?: boolean; effective: boolean }
     note: string
   }> {
-    const s = this.require(id)
-    const v = body?.cliDebug
-    if (v === undefined) throw new HttpError(400, 'cliDebug (boolean or null) is required')
-    s.cliDebug = v === null ? undefined : v
-    this.writeStore(s)
-    const global = defaultConfig.cliDebug ?? false
-    return {
-      cliDebug: { global, perSession: s.cliDebug, effective: s.cliDebug ?? global },
-      note: 'applies on the next session start',
-    }
+    return this.opLock.run(id, () => {
+      const s = this.require(id)
+      const v = body?.cliDebug
+      if (v === undefined) throw new HttpError(400, 'cliDebug (boolean or null) is required')
+      s.cliDebug = v === null ? undefined : v
+      this.writeStore(s)
+      const global = defaultConfig.cliDebug ?? false
+      return {
+        cliDebug: { global, perSession: s.cliDebug, effective: s.cliDebug ?? global },
+        note: 'applies on the next session start',
+      }
+    })
   }
 
   /** Dev-only (`appdebug` client-debug): broadcast one DOM debug op to the
@@ -4684,6 +4964,7 @@ export class SessionManager {
         return tail.map(projectHistoryFrame)
       })(),
       withdrawnUuids: s ? [...s.withdrawnUuids] : [],
+      steeredInFlight: s ? [...s.steeredInFlight.keys()] : [],
       promptUuids: (s?.promptUuids ?? []).map((e) => ({ u: e.u, v: e.v })),
       tasks: (s ? [...s.tasks.values()] : []).map((t) => ({
         taskId: t.taskId,
@@ -4737,17 +5018,21 @@ export class SessionManager {
     mutate: (s: Session) => void,
     capability?: keyof ProviderCapabilities,
   ): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
-      s,
-      'applyFlagSettings',
-      action,
-      capability,
-    )(flags)
-    mutate(s)
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    // The op lock is taken HERE (not in each caller): this helper is the sole
+    // persist path of every setter that delegates to it — see opLock.
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
+        s,
+        'applyFlagSettings',
+        action,
+        capability,
+      )(flags)
+      mutate(s)
+      s.lastActivityAt = Date.now()
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Toggle fast mode for a session. Forwards the intent to the SDK via
@@ -4836,25 +5121,27 @@ export class SessionManager {
       showMessageHeaders?: boolean | undefined
     },
   ): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if ('showPinnedUserMessage' in partial) {
-      s.showPinnedUserMessage = partial.showPinnedUserMessage
-    }
-    if ('autoRecap' in partial) {
-      s.autoRecap = partial.autoRecap
-    }
-    if ('toolGroupCards' in partial) {
-      s.toolGroupCards = partial.toolGroupCards
-    }
-    if ('autoExpandRunningGroups' in partial) {
-      s.autoExpandRunningGroups = partial.autoExpandRunningGroups
-    }
-    if ('showMessageHeaders' in partial) {
-      s.showMessageHeaders = partial.showMessageHeaders
-    }
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    return this.opLock.run(id, () => {
+      const s = this.requireLive(id)
+      if ('showPinnedUserMessage' in partial) {
+        s.showPinnedUserMessage = partial.showPinnedUserMessage
+      }
+      if ('autoRecap' in partial) {
+        s.autoRecap = partial.autoRecap
+      }
+      if ('toolGroupCards' in partial) {
+        s.toolGroupCards = partial.toolGroupCards
+      }
+      if ('autoExpandRunningGroups' in partial) {
+        s.autoExpandRunningGroups = partial.autoExpandRunningGroups
+      }
+      if ('showMessageHeaders' in partial) {
+        s.showMessageHeaders = partial.showMessageHeaders
+      }
+      s.lastActivityAt = Date.now()
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Per-session override for the first-party `git-tools` git MCP server
@@ -4945,26 +5232,28 @@ export class SessionManager {
    *  (spawn re-applies from meta); reconciling it automatically would require
    *  distinguishing display rejections from other errors by message text. */
   async setThinking(id: string, setting: ThinkingSetting, opts?: { clearDisplay?: boolean }): Promise<SessionInfo> {
-    const s = this.requireLive(id)
-    if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
-      throw new HttpError(400, "thinking 'enabled' requires a positive budgetTokens for a live switch")
-    }
-    const tokens = setting.type === 'adaptive' ? null
-      : setting.type === 'disabled' ? 0
-      : (setting.budgetTokens as number)
-    const display = setting.type === 'disabled'
-      ? undefined
-      : opts?.clearDisplay ? null : setting.display
-    await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null) => Promise<void>>(
-      s,
-      'setMaxThinkingTokens',
-      'thinking config',
-      'supportsThinkingControl',
-    )(tokens, display)
-    s.thinking = setting
-    s.lastActivityAt = Date.now()
-    this.persist(s)
-    return this.info(s)
+    return this.opLock.run(id, async () => {
+      const s = this.requireLive(id)
+      if (setting.type === 'enabled' && (setting.budgetTokens == null || setting.budgetTokens <= 0)) {
+        throw new HttpError(400, "thinking 'enabled' requires a positive budgetTokens for a live switch")
+      }
+      const tokens = setting.type === 'adaptive' ? null
+        : setting.type === 'disabled' ? 0
+        : (setting.budgetTokens as number)
+      const display = setting.type === 'disabled'
+        ? undefined
+        : opts?.clearDisplay ? null : setting.display
+      await this.requireHandleMethod<(tokens: number | null, display?: 'summarized' | 'omitted' | 'highlights' | null) => Promise<void>>(
+        s,
+        'setMaxThinkingTokens',
+        'thinking config',
+        'supportsThinkingControl',
+      )(tokens, display)
+      s.thinking = setting
+      s.lastActivityAt = Date.now()
+      this.persist(s)
+      return this.info(s)
+    })
   }
 
   /** Toggle a marketplace plugin for a session. Two layers:
@@ -5106,7 +5395,9 @@ export class SessionManager {
 
   /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
   async setMcpServers(id: string, servers: Record<string, unknown>) {
-    return this.mcp.setMcpServers(id, servers)
+    // Locked: persists the session's mcpServerNames, which clear / fork /
+    // resume read to rebuild the next spawn's MCP set.
+    return this.opLock.run(id, () => this.mcp.setMcpServers(id, servers))
   }
 
   /** Pin (or clear, mode:null) a per-MCP-server permission-mode override on a
@@ -5128,7 +5419,7 @@ export class SessionManager {
   /** Set a per-session first-party tool server override. See
    *  SessionMcpManager.setFirstPartyTool. */
   async setFirstPartyTool(id: string, name: string, enabled: boolean | null): Promise<SessionInfo> {
-    return this.mcp.setFirstPartyTool(id, name, enabled)
+    return this.opLock.run(id, () => this.mcp.setFirstPartyTool(id, name, enabled))
   }
 
   /** Merge global MCP configs with session-specific overrides. See
@@ -5164,7 +5455,8 @@ export class SessionManager {
   /** Pin a session's skill policy override. See
    *  SessionSkillManager.setSkillOverride. */
   async setSkillOverride(id: string, override: SessionSkillOverride | undefined): Promise<SessionInfo> {
-    return this.skills.setSkillOverride(id, override)
+    // Locked: clear() / fork() carry skillOverride onto the next session.
+    return this.opLock.run(id, () => this.skills.setSkillOverride(id, override))
   }
 
   /** Read the session's current RAM tool-surface profile. See
@@ -5921,7 +6213,7 @@ export class SessionManager {
   }
 
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>
     unsubscribe: () => void
   } | null {
     return this.broadcaster.subscribeMessageStatus(id)
@@ -5964,18 +6256,24 @@ export class SessionManager {
    *  settlement re-broadcasts the sidebar count when it changed: each agent
    *  transition (pause, wake, finish) injects a notification turn whose end
    *  fires this hook, so the count self-corrects within one turn cycle. */
-  reconcileTasksFromStopHook(id: string, tasks: StopHookTaskSummary[]): void {
+  async reconcileTasksFromStopHook(id: string, tasks: StopHookTaskSummary[]): Promise<void> {
     const s = this.sessions.get(id)
     if (!s) return
     const live = new Set(tasks.map((t) => t.id))
-    const settled = this.backgroundWatchers.settleUnlisted(s, live)
-    const swept = reconcileTaskMapFromStopHook(s, tasks)
+    // Awaited BEFORE the sweep: the synthesized 'completed' (transcript read)
+    // must land before the sweep would mark the same record 'stopped'.
+    const settled = await this.backgroundWatchers.settleUnlisted(s, live)
+    // Re-resolve by id: the session may have been unloaded or replaced while
+    // the transcript reads were in flight.
+    const current = this.sessions.get(id)
+    if (!current) return
+    const swept = reconcileTaskMapFromStopHook(current, tasks)
     if (settled || swept) {
       // The task map (and with it the sidebar's backgroundSubagentCount)
       // changed — re-broadcast the info frame so the count dot updates in
       // the same tick as the CLI's authoritative list. One frame per Stop
       // hook, after both the settlement and the sweep have touched the map.
-      this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+      this.broadcastGlobal({ kind: 'update', session: this.info(current) })
     }
   }
 
@@ -6029,6 +6327,65 @@ export class SessionManager {
    *       carries the stamp across for that one.)
    *    4. Broadcast a live `message-consumed` signal so currently-attached
    *       tabs flip the bubble without waiting for a replay. */
+  /** Provider 的 onSupplementDelivered 回调落点（spec §6.2）：一条 steered
+   *  消息在钩子边界投递完成。ring 条目打 injectedAt（重放正确性的 durable
+   *  半边）、steeredInFlight 清项、sidecar 更新、live 帧广播。ok=false 仅
+   *  出现在 handle 销毁路径（aborted）——条目随 session 终结，不标记。 */
+  private onSupplementDelivered(id: string, uuid: string, outcome: SupplementOutcome): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    if (!outcome.ok) {
+      // aborted = handle 销毁（unload / respawn / crash-recovery 的统一路
+      // 径）：supplement 已不可投递——清掉 in-flight 跟踪，否则残留 uuid 随
+      // 会话存活（终审 Important #2）。ring 条目保留无终态的 steeredAt，
+      // 客户端按 orphan 规则渲染（spec §8.3）。
+      s.steeredInFlight.delete(uuid)
+      return
+    }
+    // 与 onInputConsumed 相同的后向 uuid 扫描：只认主线程用户帧。
+    for (let i = s.history.length - 1; i >= 0; i--) {
+      const entry = s.history[i] as ({ type?: string; uuid?: string } | undefined)
+      if (entry?.type === 'user' && entry.uuid === uuid) {
+        stampInjectedAt(entry)
+        break
+      }
+    }
+    s.steeredInFlight.delete(uuid)
+    void this.steeredStore.markInjected(id, uuid, Date.now())
+    this.pushMessageStatus(id, { kind: 'message-steered', sessionId: id, uuid, state: 'injected' })
+    log.info(`[session ${id}] steered ${uuid.slice(0, 8)} injected at ${outcome.boundary}`)
+  }
+
+  /** Turn-end fallback（spec §6.3，pump 的 onTurnSettling 落点）：drain 全部
+   *  未投递的 supplement 并逐条转回 SDK 输入队列——零丢失保证。必须在
+   *  result 处理器的 moreQueued 检查之前调用（pump 已保证），requeue 后
+   *  的条目要被 queueDepth 检查看见。 */
+  private drainAndRequeueSteered(s: Session): void {
+    const handle = s.handle as ProviderSessionHandle & { drainSupplements?: () => Array<{ uuid: string }> }
+    if (typeof handle.drainSupplements !== 'function') return
+    this.requeueSteeredLeftovers(s, handle.drainSupplements())
+  }
+
+  /** Requeue 一组已 drain 的 steer 余量（turn 结束与 plain interrupt 共用，
+   *  spec §6.3/§6.4）。每条：原文转投 SDK 输入队列 → ring 条目打
+   *  requeuedAt → promptUuids 补录（此刻起才会 echo）→ sidecar 更新 →
+   *  message-steered {state:'requeued'} 帧。 */
+  private requeueSteeredLeftovers(s: Session, leftovers: Array<{ uuid: string }>): void {
+    for (const { uuid } of leftovers) {
+      const userMsg = s.steeredInFlight.get(uuid)
+      s.steeredInFlight.delete(uuid)
+      if (!userMsg) continue
+      const at = stampRequeuedAt(userMsg)
+      s.handle.enqueueUserMessage({ ...userMsg })
+      // 【补录】requeue 后它就是一条会 echo 的普通 prompt——此刻才进
+      // FIFO 配对（spec §6.3；漏掉会让 onPromptEcho 永久错配）。
+      this.recordPromptUuid(s, userMsg)
+      void this.steeredStore.markRequeued(s.id, uuid, at)
+      this.pushMessageStatus(s.id, { kind: 'message-steered', sessionId: s.id, uuid, state: 'requeued' })
+      log.info(`[session ${s.id}] steered ${uuid.slice(0, 8)} requeued as next-turn prompt`)
+    }
+  }
+
   private onInputConsumed(id: string, msg: SDKUserMessage): void {
     if (msg.type !== 'user') return
     if (msg.parent_tool_use_id != null) return
@@ -6451,25 +6808,44 @@ export class SessionManager {
   /** Delete a session for good: close its Query AND erase its persistence
    *  entry. Use when the user explicitly clicks "delete" in the UI. */
   async delete(id: string): Promise<void> {
-    await this.unload(id, { terminated: true, reason: 'deleted' })
-    this.store?.remove(id)
-    // Drop the promptUuids sidecar too — the session is gone for good.
-    void this.promptUuidStore.remove(id)
-    // And the turn-anchor sidecar (legal discard cut points).
-    void this.turnAnchorStore.remove(id)
-    // And the result-frame sidecar (per-turn result summaries).
-    void this.resultFrameStore.remove(id)
-    // And the snapshot sidecar (shadow-repo file snapshots + anchors).
-    void this.snapshotStore.remove(id)
-    // And the transcript seq store (in-memory holder + ndjson sidecar) —
-    // the session is gone for good, so its seq space goes with it.
-    void this.removeTranscriptState(id)
-    // Drop any stored recap — otherwise a new session that happens to
-    // reuse this id (rare, but possible under --state-dir swaps) would
-    // see the old summary. unload() already calls invalidate() but we
-    // do it again here as a safety net for delete-without-unload paths.
-    this.recapManager.invalidate(id)
-    this.broadcastGlobal({ kind: 'removed', id })
+    // Locked. unload({ terminated }) awaits the pump from inside the lock;
+    // that's safe because the pump's teardown only reaches unlocked methods
+    // (see the deadlock rule at opLock) and the await is capped at 1 s.
+    // The queueing is bounded too (deleteLockMaxWaitMs): a setter wedged on
+    // an SDK control request that never answers holds the lock forever, and
+    // delete must still work then — it already tolerates running alongside
+    // other work (unload is idempotent; the health monitor calls it unlocked).
+    return this.opLock.run(id, async () => {
+      // Read the meta BEFORE store.remove drops the entry — the worktree
+      // info must survive long enough to drive the cleanup below.
+      const meta = this.store?.get(id)
+      await this.unload(id, { terminated: true, reason: 'deleted' })
+      // Best-effort worktree teardown (dir removed, branch kept). A failure
+      // only warns — deletion must not be blocked by it.
+      if (meta?.worktree && this.store) {
+        await removeWorktreeForSession(this.store.getDir(), id, meta.worktree, log)
+      }
+      this.store?.remove(id)
+      // Drop the promptUuids sidecar too — the session is gone for good.
+      void this.promptUuidStore.remove(id)
+      // And the steered-message sidecar (mid-run steering replay source).
+      void this.steeredStore.remove(id)
+      // And the turn-anchor sidecar (legal discard cut points).
+      void this.turnAnchorStore.remove(id)
+      // And the result-frame sidecar (per-turn result summaries).
+      void this.resultFrameStore.remove(id)
+      // And the snapshot sidecar (shadow-repo file snapshots + anchors).
+      void this.snapshotStore.remove(id)
+      // And the transcript seq store (in-memory holder + ndjson sidecar) —
+      // the session is gone for good, so its seq space goes with it.
+      void this.removeTranscriptState(id)
+      // Drop any stored recap — otherwise a new session that happens to
+      // reuse this id (rare, but possible under --state-dir swaps) would
+      // see the old summary. unload() already calls invalidate() but we
+      // do it again here as a safety net for delete-without-unload paths.
+      this.recapManager.invalidate(id)
+      this.broadcastGlobal({ kind: 'removed', id })
+    }, { maxWaitMs: this.deleteLockMaxWaitMs })
   }
 
   /** Close the Query and drop the in-memory session, but keep metadata on
@@ -6649,8 +7025,11 @@ export class SessionManager {
         // latest question". Precedence: the on-disk customTitle (a CLI-side
         // /rename must not be masked by our stored title — app-side renames
         // mirror INTO the transcript, so it's the freshest of the two), then
-        // this app's own known title, then the provider's firstPrompt-based
-        // fallback for unknown (CLI-native) sessions.
+        // this app's own known title. There is NO derived fallback: untitled
+        // sessions carry no title at all here (the provider's toResumable no
+        // longer derives one from firstPrompt/summary either) — the picker
+        // labels untitled rows itself from `firstPrompt` as a display-only
+        // preview, and the sidebar falls back to the id prefix.
         const knownTitle = s.customTitle ?? live?.title ?? meta?.title
         mapped.push({
           ...s,
@@ -6796,10 +7175,19 @@ export class SessionManager {
     // paging (the client's loadOlder scroll-up) never surfaces the parent's
     // history inside the Side Chat UI. Undefined for non-Side-Chat sessions.
     const afterUuid = live?.forkBoundaryUuid ?? meta?.forkBoundaryUuid
-    return this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, {
+    let page = await this.readProviderHistoryPage(live?.provider ?? meta?.provider ?? this.defaultProvider, id, {
       ...opts,
       ...(afterUuid ? { afterUuid } : {}),
     })
+    // Mid-run steering 回放拼接（spec §8.2）：steered 消息不在 CLI JSONL 里
+    // （additionalContext 落盘为不可渲染的 attachment），sidecar 是它唯一的
+    // 磁盘回放来源——按 steeredAt 时间戳拼进页面。splice 自带去重规则
+    // （requeued/withdrawn 跳过；比页内最新还新跳过）。
+    const steered = await this.steeredStore.load(id)
+    if (steered && steered.length > 0) {
+      page = spliceSteeredIntoPage(page, steered)
+    }
+    return page
   }
 
   async searchMessages(
@@ -7072,6 +7460,7 @@ export class SessionManager {
     error?: string
     lastTurnAt?: number
     gitStartSha?: string
+    worktree?: WorktreeInfo
     parentId?: string
     mcpServerNames?: string[]
     enabledPlugins?: string[]
@@ -7112,6 +7501,7 @@ export class SessionManager {
       error: x.error,
       lastTurnAt: x.lastTurnAt,
       gitStartSha: x.gitStartSha,
+      worktree: x.worktree,
       parentId: x.parentId,
       mcpServerNames: x.mcpServerNames,
       enabledPlugins: x.enabledPlugins,
@@ -7139,6 +7529,9 @@ export class SessionManager {
       pluginErrors: s.pluginErrors,
       effortLevels: s.effortLevels,
       thinkingSupported: s.thinkingSupported,
+      steeringSupported:
+        (s.handle as ProviderSessionHandle).steeringActive ??
+        this.providers.get(s.provider).capabilities.supportsSteering,
       running: s.running,
       recovering: s.recovering,
       working: isWorking,
@@ -7243,6 +7636,7 @@ export class SessionManager {
       this.cachedPumpDeps = {
         historyCap: this.historyCap,
         subagentHistoryCap: this.subagentHistoryCap,
+        onTurnSettling: (s) => this.drainAndRequeueSteered(s),
         persist: (s) => this.persist(s),
         denyPendingPermissions: (s) => {
           this.permBroker.denyAll(s)
@@ -7385,13 +7779,78 @@ export class SessionManager {
    *  caller await the SAME spawn. */
   private readonly resumeInFlight = new Map<string, Promise<SessionInfo>>()
 
-  /** Ids whose resume() holds the meta-write lock. SessionMeta writers
-   *  (setCwd / rename) refuse while a resume is in flight: spawn()'s
-   *  writeStore is a wholesale replace from a snapshot taken at the start
-   *  of resume, so any interleaved field update is reverted — the PATCH
-   *  cwd vs in-flight resume TOCTOU. Held for the whole doResume span,
-   *  which is a strict superset of the spawn/writeStore window. */
-  private readonly metaWriteInFlight = new Set<string>()
+  /** Per-session operation lock (keyed by session id). Lifecycle operations
+   *  and meta-persisting setters are serialized per session so they can't
+   *  interleave across their awaits — e.g. a clear() and a fork() of the same
+   *  session, a setProfile() racing a restart(), or a rename() landing inside
+   *  resume()'s probe window (spawn's writeStore is a wholesale replace from a
+   *  snapshot, so an interleaved field update would be reverted). Re-entrant
+   *  per async context with released tokens — see session-op-lock.ts — so the
+   *  nested public→public chains below just work.
+   *
+   *  Classification of every public method that reaches persist() /
+   *  writeStore() / store.upsert() / store.patch():
+   *
+   *  LOCKED (body runs under opLock.run(id)):
+   *    resume            — via resumeInFlight coalescing (concurrent calls get
+   *                        the SAME promise; only the first takes the lock)
+   *    fork              — key = SOURCE id. Takes the NEW id's lock briefly
+   *                        (setFastMode re-apply); nothing holding a new id
+   *                        ever waits on its source, so no ordering cycle.
+   *    discard           — nests fork (re-entrant)
+   *    clear             — a concurrent clear while one is in flight still
+   *                        returns the current info at once (s.clearing fast
+   *                        path, checked before queueing)
+   *    restart, sleep, setCwd, rename
+   *    delete            — queueing bounded by deleteLockMaxWaitMs, then runs
+   *                        anyway (escape hatch vs a setter wedged on an SDK
+   *                        control request that never answers)
+   *    setProfile        — nests setModel / setModelGroup / restart (re-entrant)
+   *    setModel, setModelGroup, setPermissionMode, setThinking, setPrefs,
+   *    setCliDebug, setFirstPartyTool (setAppTools nests it), setMcpServers,
+   *    setSkillOverride
+   *    applyFlagSettingAndPersist — the sole persist path of setAgent,
+   *                        applySettings, applyHooks, setFastMode,
+   *                        setMemorySettings, setSandbox, setEffortLevel,
+   *                        setAutoCompactWindow, togglePlugin; locked there.
+   *
+   *  NOT LOCKED:
+   *    compact           — its summary is a long outbound model call; holding
+   *                        the lock across it would stall Shift+Tab / rename
+   *                        for seconds and serialize a mode change made during
+   *                        compact BEHIND it (today it is carried to Y). Its
+   *                        only mutation is the final clear(), which locks.
+   *    autoGenerateTitle — same shape: outbound title call, then a synchronous
+   *                        mutation of the live object.
+   *    send, sendContent, interrupt, backgroundTasks, stopTask — turn traffic;
+   *                        they only persist the activity stamp, and interrupt
+   *                        must never queue behind a parked restart / clear.
+   *    decide, answerQuestion, clarifyQuestion, decideElicitation,
+   *    decideDialog      — resolve SDK awaiters; must not queue. (decide's
+   *                        plan-approval mode switch goes through the locked
+   *                        setPermissionMode AFTER the permission resolved.)
+   *    reads / queries / subscriptions (list, get, subscribe*, contextUsage, …)
+   *    create, createSideChat — fresh random id, nothing to contend with.
+   *                        (createSideChat's transcript-missing mark on the
+   *                        PARENT is a field-scoped store.patch.)
+   *    unload            — internal primitive used under locks (clear, discard,
+   *                        sleep, delete, resume) and by the health monitor /
+   *                        shutdown; delete is its locked public entry.
+   *    CLI-event-driven  — autoResume, attemptCrashRecovery, crashRecoveryStep1,
+   *                        respawnInPlace, handleProcessExit, unloadSpawnFailed,
+   *                        terminateCrashedSession, reconcileTasksFromStopHook:
+   *                        driven by the process and already guarded by
+   *                        `clearing` / `terminated` / identity checks.
+   *
+   *  DEADLOCK RULE: a locked op must never await work that runs in a
+   *  DIFFERENT async context and itself takes the same session's lock (the
+   *  token is per context, so that work would queue behind its own waiter).
+   *  The one cross-context await is unload({ terminated: true }) awaiting the
+   *  pump (delete, discard with deleteOriginal); the pump's teardown only
+   *  reaches unlocked methods (PumpDeps: persist, autoResume,
+   *  attemptCrashRecovery, broadcasters, recorders), and that await is
+   *  additionally capped at 1 s by raceWithFallback. */
+  private readonly opLock = new SessionOpLock()
 
   /** Re-spawn a session's Query after a clean exit (idle timeout).
    *  Returns true if the session was successfully re-spawned. */
@@ -7550,6 +8009,7 @@ export class SessionManager {
   private baseSpawnOptions(source: {
     provider?: string
     cwd?: string
+    worktree?: WorktreeInfo
     model?: string
     modelGroupId?: string
     permissionMode?: PermissionMode
@@ -7561,10 +8021,15 @@ export class SessionManager {
     hooks?: SessionHooksConfig
     enabledPlugins?: string[]
     cliDebug?: boolean
-  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number; cliDebug?: boolean } {
+  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number; cliDebug?: boolean; worktree?: WorktreeInfo } {
     return {
       provider: source.provider,
       cwd: source.cwd,
+      // Worktree isolation metadata — snapshotMeta reads it off the Options
+      // object handed to spawn(). Call sites that don't pass it (respawnFresh/
+      // fork) leave undefined; spawn's existingMeta?.worktree ?? snapshot
+      // merge keeps the persisted value alive there.
+      worktree: source.worktree,
       model: source.model,
       modelGroupId: source.modelGroupId,
       permissionMode: source.permissionMode,
@@ -7694,11 +8159,16 @@ export class SessionManager {
       enabledPlugins: session.enabledPlugins,
       includeHookEvents: true,
       inProcessHookForward: (_sid, event) => this.recordHookRun(session.id, event),
-      inProcessTaskSnapshot: (_sid, tasks) => this.reconcileTasksFromStopHook(session.id, tasks),
+      inProcessTaskSnapshot: (_sid, tasks) => {
+        void this.reconcileTasksFromStopHook(session.id, tasks).catch((err) => {
+          log.warn(`[session ${session.id}] Stop-hook task reconcile failed:`, err)
+        })
+      },
       inProcessSubagentStop: (_sid, info) => this.settleBackgroundSubagentFromHook(session.id, info),
       forwardSubagentText: this.forwardSubagentText,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
+      onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(session.id, uuid, outcome),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,

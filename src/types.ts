@@ -62,6 +62,9 @@ export interface ResumableSession {
   sessionId: string
   title?: string
   firstPrompt?: string
+  /** Last user prompt — server tail-reads it from the transcript, condensed
+   *  to 120 chars. Display-only preview in the /resume picker. */
+  lastPrompt?: string
   cwd?: string
   createdAt?: number
   lastModified: number
@@ -128,12 +131,20 @@ export interface NewSessionForm {
   /** Compound keys of globally-enabled plugins to carry into this session.
    *  Omitted when all enabled plugins are selected (default); `[]` when none. */
   enabledPlugins?: string[]
+  /** Opt-in: run this session in its own git worktree (server provisions
+   *  <stateDir>/worktrees/<sessionId> off the repo HEAD). */
+  isolateWorktree?: boolean
   // Advanced (JSON blobs — rendered as <textarea> and parsed on submit)
   mcpServers?: unknown
   /** Custom environment variables merged into the subprocess environment. */
   env?: Record<string, string>
   /** Frontend-only: target group for the new session. Required. */
   groupId?: string
+  /** Frontend-only: create a NEW group with this name at submit time and put
+   *  the session in it. Mutually exclusive with `groupId` — set by the
+   *  dialog's inline "Create group …" row; App mints the group once the
+   *  create POST lands, so cancelling the dialog leaves nothing behind. */
+  newGroupName?: string
 }
 
 /** Wire shape of a supported model entry. Defined in shared/model-info.ts

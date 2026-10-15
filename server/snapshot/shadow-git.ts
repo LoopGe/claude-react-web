@@ -1,13 +1,14 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { promises as fs } from 'node:fs'
 import { join, relative, sep, isAbsolute } from 'node:path'
 import { createLogger } from '../log.js'
-import { trimGitErrorOutput, parseNumstatZ } from '../git.js'
-import { MAX_BUFFER_BYTES, MAX_DIFF_LINES, DEFAULT_MAX_UNTRACKED_BYTES } from '../constants.js'
+import { runGit, parseNumstatZ } from '../git.js'
+import { MAX_DIFF_LINES, DEFAULT_MAX_UNTRACKED_BYTES } from '../constants.js'
 
 const log = createLogger('snapshot-git')
-const execFileAsync = promisify(execFile)
+
+/** Shadow-repo commands get a longer budget than runGit's 10 s default:
+ *  the first `add` of a big scope can hash a lot of files. */
+const SHADOW_GIT_TIMEOUT_MS = 30_000
 
 export interface ShadowRepo {
   gitDir: string
@@ -43,50 +44,20 @@ function args(repo: ShadowRepo, cmd: string[]): string[] {
   return ['--git-dir', repo.gitDir, '--work-tree', repo.worktree, ...cmd]
 }
 
-async function run(cwd: string, argv: string[], opts?: { stdin?: string; allowExit?: ReadonlySet<number> }) {
-  try {
-    const { stdout, stderr } = await execFileAsync('git', argv, {
-      cwd,
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 30_000,
-      maxBuffer: MAX_BUFFER_BYTES,
-    })
-    return { stdout, stderr, code: 0 }
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException & { code?: string | number; stdout?: string; stderr?: string }
-    if (typeof e.code === 'number') {
-      if (opts?.allowExit?.has(e.code)) return { stdout: e.stdout ?? '', stderr: e.stderr ?? '', code: e.code }
-      // Head+tail trim (was head-only slice(0, 300)): a bad revision error
-      // embeds the offending rev after the "fatal: bad revision" prefix, so
-      // head-only truncation beheaded the rev's tail and hid which rev was
-      // bad. Cap moves 300 → 500 to match runGit.
-      throw new Error(
-        `git ${argv[argv.length - 1]} exited ${e.code}: ${trimGitErrorOutput((e.stderr || e.message).trim())}`,
-      )
-    }
-    throw err
-  }
+/** Thin adapter over runGit (the single git choke point, see AGENTS.md).
+ *  A non-allowed non-zero exit throws runGit's HttpError(500, 'git exited
+ *  N: <head+tail-trimmed stderr>') — the tail trim keeps the offending rev
+ *  of a `bad revision` error visible. */
+async function run(cwd: string, argv: string[], opts?: { allowExit?: ReadonlySet<number> }) {
+  const r = await runGit(cwd, argv, { timeoutMs: SHADOW_GIT_TIMEOUT_MS, allowExitCodes: opts?.allowExit })
+  return { stdout: r.stdout, stderr: r.stderr, code: r.exitCode }
 }
 
+/** runGit with `stdin` piped in; resolves on ANY numeric exit code (callers
+ *  branch on it — `check-ignore` uses 0/1). Spawn-level failures throw. */
 async function runStdin(cwd: string, argv: string[], stdin: string) {
-  return new Promise<{ stdout: string; stderr: string; code: number }>((resolve, reject) => {
-    const child = execFile(
-      'git',
-      argv,
-      { cwd, encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: MAX_BUFFER_BYTES },
-      (err, stdout, stderr) => {
-        if (!err) return resolve({ stdout, stderr, code: 0 })
-        const e = err as NodeJS.ErrnoException & { code?: string | number }
-        if (typeof e.code === 'number') return resolve({ stdout, stderr, code: e.code })
-        reject(err)
-      },
-    )
-    // Ignore EPIPE from git exiting early — the execFile callback
-    // already reports the real exit code.
-    child.stdin?.on('error', () => {})
-    child.stdin?.end(stdin)
-  })
+  const r = await runGit(cwd, argv, { timeoutMs: SHADOW_GIT_TIMEOUT_MS, allowAnyExitCode: true, stdin })
+  return { stdout: r.stdout, stderr: r.stderr, code: r.exitCode }
 }
 
 /** Seed alternates + copy source index so first add does not rehash the world. */
@@ -106,10 +77,7 @@ export async function initShadowRepo(opts: {
   if (!exists) {
     // Must pass --git-dir and --work-tree to init so git creates the repo
     // at the correct location (not in worktree/.git).
-    await execFileAsync('git', ['--git-dir', opts.gitDir, '--work-tree', opts.worktree, 'init'], {
-      cwd: opts.worktree,
-      windowsHide: true,
-    })
+    await run(opts.worktree, ['--git-dir', opts.gitDir, '--work-tree', opts.worktree, 'init'])
     for (const [k, v] of BASE_CONFIG) {
       await run(opts.worktree, ['--git-dir', opts.gitDir, 'config', k, v]).catch(() => {})
     }

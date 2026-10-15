@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import type { HookEvent, HookRuntimeEvent } from '../../../shared/hooks.js'
+import type { SteerBoundary, SupplementSession } from './steering.js'
 
 /** Called by an in-process read+react callback to surface structured input
  *  into the existing hook run-log channel. Fire-and-forget; never blocks. */
@@ -176,16 +177,67 @@ function buildStop(
  *    CLI's stdin and that turn's Stop is skipped (probe-verified).
  *  - `SubagentStop` — carries `agent_id` + `agent_transcript_path`, the
  *    earliest authoritative completion edge for a background subagent (arrives
- *    before the CLI's own task_notification), routed to `onSubagentStop`. */
+ *    before the CLI's own task_notification), routed to `onSubagentStop`.
+ *
+ *  Steering (4th param, spec §5.3): the Stop matcher stays a SINGLE callback —
+ *  snapshot/run-log logic plus the steering drain merged into one function,
+ *  because parallel hooks in one matcher have undefined decision-merge
+ *  behavior (probe 3 verified the merged form works). The three tool
+ *  boundaries (`PreToolUse`/`PostToolUse`/`PostToolUseFailure`) get their own
+ *  matchers that only exist when steering is present. */
 export function buildInProcessHooks(
   forward?: InProcessHookForward,
   onTaskSnapshot?: InProcessTaskSnapshot,
   onSubagentStop?: InProcessSubagentStop,
+  steering?: SupplementSession,
 ): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
   return {
-    Stop: [{ hooks: [defensiveHook(buildStop(forward, onTaskSnapshot))] }],
+    Stop: [{ hooks: [stopHook(buildStop(forward, onTaskSnapshot), steering)] }],
     ...(onSubagentStop
       ? { SubagentStop: [{ hooks: [defensiveHook(buildSubagentStop(onSubagentStop))] }] }
       : {}),
+    ...(steering
+      ? {
+          PreToolUse: [{ hooks: [boundaryHook('PreToolUse', steering)] }],
+          PostToolUse: [{ hooks: [boundaryHook('PostToolUse', steering)] }],
+          PostToolUseFailure: [{ hooks: [boundaryHook('PostToolUseFailure', steering)] }],
+        }
+      : {}),
   } as Partial<Record<HookEvent, HookCallbackMatcher[]>>
+}
+
+/** Stop 单回调（spec §5.3 合并）：现有快照/运行日志逻辑（保持 defensiveHook
+ *  的 abort 检查与吞异常语义）在前，steering drain 在后——有 pending 时返回
+ *  {decision:'block', reason} 续跑，无 pending 返回 undefined 放行。 */
+function stopHook(
+  logic: (input: unknown) => void,
+  steering?: SupplementSession,
+): (input: unknown, toolUseID: string | undefined, deps?: { signal?: AbortSignal }) => Promise<unknown> {
+  return async (input: unknown, _toolUseID?: string, deps?: { signal?: AbortSignal }): Promise<unknown> => {
+    if (deps?.signal?.aborted) return undefined
+    try {
+      logic(input)
+    } catch {
+      // In-process hook observed input; a malformed/throwy input must not crash the pump.
+    }
+    if (!steering) return undefined
+    const agentId = (input as { agent_id?: string } | null | undefined)?.agent_id
+    const out = steering.handleBoundary('Stop', { agent_id: agentId })
+    return Object.keys(out).length > 0 ? out : undefined
+  }
+}
+
+/** steering 工具边界回调：透传 handleBoundary 的输出（agent_id 过滤在状态机
+ *  内做——子代理继承的 hook 不消费主线程 steering）；空输出归一为 undefined，
+ *  与 defensiveHook 的无操作语义一致。 */
+function boundaryHook(
+  event: SteerBoundary,
+  steering: SupplementSession,
+): (input: unknown, toolUseID: string | undefined, deps?: { signal?: AbortSignal }) => Promise<unknown> {
+  return async (input: unknown, _toolUseID?: string, deps?: { signal?: AbortSignal }): Promise<unknown> => {
+    if (deps?.signal?.aborted) return undefined
+    const agentId = (input as { agent_id?: string } | null | undefined)?.agent_id
+    const out = steering.handleBoundary(event, { agent_id: agentId })
+    return Object.keys(out).length > 0 ? out : undefined
+  }
 }

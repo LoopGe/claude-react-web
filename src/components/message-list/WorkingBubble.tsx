@@ -9,17 +9,139 @@
 // composer bar — the bar only mounts mid-turn, so the Tasks overlay had no
 // entry point while idle.)
 
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import type { ActiveSubagent } from '../../session-store/types'
+import type { SdkMessage } from '../../types'
 import { formatTokens } from '../../utils/format'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { useCountUp } from '../../hooks/useCountUp'
-import { IconZap } from '../icons/ToolIcons'
+import { IconClock, IconZap } from '../icons/ToolIcons'
 import { SubagentSwarmPill } from './SubagentSwarm'
 
 /** Stable empty fallback so the `activeSubagents ?? …` default doesn't hand a
  *  fresh array identity to the memoized pill on every render. */
 const EMPTY_SUBAGENTS: ActiveSubagent[] = []
+
+/** Wire shape of an `api_retry` system frame. The fields are all optional
+ *  from the renderer's perspective — older / partial frames may omit any of
+ *  them — but the cast lives here once instead of at every read site.
+ *  `receivedAt` is host-stamped (server pump), not SDK wire shape. */
+interface ApiRetryMessage {
+  attempt?: number
+  max_retries?: number
+  retry_delay_ms?: number
+  error_status?: number | null
+  error?: string
+  receivedAt?: number
+}
+
+/** The retrying label content for the working bar — the transient
+ *  `mirror.apiRetry` slot rendered as text (moved here from the old
+ *  ApiRetryView transcript divider). Isolated in its own component so the
+ *  1Hz countdown tick re-renders only this subtree, not the whole memoized
+ *  bubble (timer, countUp, swarm pill stay untouched).
+ *
+ *  The SDK emits one `api_retry` frame per retry attempt with
+ *  `retry_delay_ms` set, but no follow-up when the delay elapses — so a
+ *  static render would freeze the countdown at e.g. "9s" until the next
+ *  attempt landed. This component runs a local 1Hz clock so the user
+ *  actually sees the seconds tick down.
+ *
+ *  Anchor strategy: we derive an absolute `deadline` (wall-clock ms at
+ *  which the retry will fire) by combining the frame's arrival time with
+ *  `retry_delay_ms`. The deadline is held in state and reset whenever a
+ *  fresh frame lands — the reducer routes consecutive `api_retry` frames
+ *  to the `mirror.apiRetry` slot (overwriting the previous), so every
+ *  frame is a new `msg` identity and the effect re-anchors on it. That
+ *  identity (not a delayMs comparison) is the reset trigger: consecutive
+ *  attempts after a fixed server Retry-After carry the SAME delay, and
+ *  keying on the value would freeze the follow-up countdown at "retrying
+ *  now" (the first interval already self-cleared at zero).
+ *
+ *  We stop the interval at remainingMs → 0 — the next attempt is in
+ *  flight; either it succeeds (no more frames) or a new frame arrives and
+ *  the effect restarts the timer. */
+function RetryLabel({ msg }: { msg: SdkMessage }) {
+  const m = msg as unknown as ApiRetryMessage
+  const attempt = m.attempt ?? 0
+  const maxRetries = m.max_retries ?? 0
+  const delayMs = m.retry_delay_ms ?? 0
+  const errorStatus = m.error_status
+  const errorKind = m.error ?? 'unknown'
+
+  // We hold an absolute `deadline` and a ticking `now` in a single state
+  // object so a fresh frame updates both together — no render where
+  // deadline is "new" but now is from the previous frame. The deadline
+  // anchors at the frame's `receivedAt` when present so a reconnecting
+  // tab's replay-re-armed countdown shows the true remaining wait (see the
+  // effect).
+  const [state, setState] = useState(() => {
+    const now = Date.now()
+    const anchor = typeof m.receivedAt === 'number' && Number.isFinite(m.receivedAt) ? m.receivedAt : now
+    return { deadline: anchor + delayMs, now }
+  })
+
+  useEffect(() => {
+    // Derive the delay and anchor from the frame INSIDE the effect so `msg`
+    // is the dep: the reducer stores each incoming frame object as-is, so a
+    // new frame always re-runs this (new identity), even when retry_delay_ms
+    // is unchanged.
+    const frame = msg as unknown as ApiRetryMessage
+    const delay = frame.retry_delay_ms ?? 0
+    // `receivedAt` is stamped by the server pump and travels unchanged
+    // through both the live broadcast and the history-ring replay (same
+    // object), so anchoring there keeps a re-armed countdown honest after a
+    // reconnect. Frames that predate the stamp (or foreign-built test
+    // frames) fall back to now.
+    const now = Date.now()
+    const anchor = typeof frame.receivedAt === 'number' && Number.isFinite(frame.receivedAt) ? frame.receivedAt : now
+    const deadline = anchor + delay
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing the frame's retry_delay_ms into the local deadline is the explicit purpose of this effect, not an anti-pattern.
+    setState({ deadline, now })
+    if (delay <= 0) return
+    // Clear the interval the first tick that crosses the deadline, so a
+    // long-lived api_retry message that's already counted to "retrying now"
+    // stops costing us a render per second forever. The next api_retry
+    // frame re-runs this effect (msg identity changed) and starts a fresh
+    // interval.
+    const id = window.setInterval(() => {
+      const now = Date.now()
+      setState((prev) => ({ ...prev, now }))
+      if (now >= deadline) window.clearInterval(id)
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [msg])
+
+  const remainingMs = Math.max(0, state.deadline - state.now)
+  const seconds = Math.ceil(remainingMs / 1000)
+
+  const label = errorStatus === 429
+    ? 'rate limited'
+    : errorStatus === 529
+      ? 'overloaded'
+      : errorKind === 'server_error'
+        ? 'server error'
+        : 'retrying'
+  // Once we've ticked down to 0 the next attempt is mid-flight; "now" is
+  // more honest than "in 0s".
+  const phase = seconds > 0 ? `retrying in ${seconds}s` : 'retrying now'
+  // Suppress the "/0" tail when max_retries is missing — better to show
+  // just the attempt number than a nonsense fraction.
+  const attemptText =
+    maxRetries > 0 ? `attempt ${attempt}/${maxRetries}` : `attempt ${attempt}`
+  return (
+    <>
+      {/* The working bar is an aria-live region: the ticking phase span is
+          aria-hidden so a mutating "retrying in 30s" → "29s" → … doesn't
+          re-announce the whole label once per second for the entire backoff
+          window. The static parts (kind, attempt) still announce once on
+          state entry, and the bar's own aria-label carries the state for
+          direct queries. */}
+      <IconClock size={12} aria-hidden /> {label}{' '}
+      <span aria-hidden="true">— {phase} ·</span> {attemptText}
+    </>
+  )
+}
 
 export const WorkingBubble = memo(function WorkingBubble({
   startedAt,
@@ -29,6 +151,7 @@ export const WorkingBubble = memo(function WorkingBubble({
   activePhase,
   recapping,
   waiting,
+  apiRetry,
   onOpenSubagent,
   active: _active,
 }: {
@@ -43,11 +166,18 @@ export const WorkingBubble = memo(function WorkingBubble({
   activePhase?: import('../../hooks/useChatStream').ActivePhase
   /** True while the CLI is compacting the transcript mid-turn (SDK
    *  `system/status` `status: 'compacting'`, mirrored from
-   *  `session.compacting`). Overrides the phase label with a "Recap (auto)…"
+   *  `session.compacting`). Overrides the phase label with a "Recap…"
    *  cue — the compaction produces no stream events, so without this the
    *  bubble would sit on a stale phase while the context window is
-   *  compressed. */
+   *  compressed. Probe-verified to fire for MANUAL /compact pass-throughs
+   *  too, not just CLI auto-compact — hence the trigger-neutral label. */
   recapping?: boolean
+  /** Transient `api_retry` frame (rate-limit retry indicator) from the
+   *  `mirror.apiRetry` slot, or null when no retry is in flight. While set
+   *  (and not `waiting`) it REPLACES the phase label with the retry state —
+   *  during a retry wait nothing streams, so the phase label is stale and
+   *  the retry countdown (RetryLabel) is the bubble's only true state. */
+  apiRetry?: SdkMessage | null
   /** True when the parent turn has ended but `pending` background subagents
    *  are still in flight. The bubble stays mounted and shows "Waiting..."
    *  with calmed visuals instead of unmounting — surfacing that background
@@ -69,6 +199,12 @@ export const WorkingBubble = memo(function WorkingBubble({
   const hasSubagents = subagents.length > 0
   const active = _active ?? true
   const idle = !active && !waiting
+  // A retry is in flight. Waiting outranks it (the parent turn ended — the
+  // result frame already cleared the slot, so the two can't genuinely
+  // co-occur); retrying in turn outranks recapping (a 429'd auto-compact
+  // fires api_retry while compacting is still set — the retry is the newer,
+  // more specific state) and the phase label (stale during the wait).
+  const retrying = apiRetry != null && !waiting
 
   // MCP tool names are `mcp__<server>__<tool>` — unbounded length, and in this
   // mono-font status bar a long server name overflows the row. Every MCP call
@@ -88,19 +224,21 @@ export const WorkingBubble = memo(function WorkingBubble({
   // the label text so e.g. "Calling <tool>" tool swaps also retrigger.
   const labelKey = waiting
     ? 'waiting'
-    : recapping
-      ? 'recap'
-      : activePhase === 'thinking'
-        ? 'thinking'
-        : activePhase === 'writing'
-          ? 'writing'
-          : phaseKey
-            ? `tool:${phaseKey}`
-            : 'working'
+    : retrying
+      ? 'retrying'
+      : recapping
+        ? 'recap'
+        : activePhase === 'thinking'
+          ? 'thinking'
+          : activePhase === 'writing'
+            ? 'writing'
+            : phaseKey
+              ? `tool:${phaseKey}`
+              : 'working'
   const labelText = waiting
     ? 'Waiting...'
     : recapping
-      ? 'Recap (auto)...'
+      ? 'Recap...'
       : activePhase === 'thinking'
         ? 'Thinking...'
         : activePhase === 'writing'
@@ -125,9 +263,9 @@ export const WorkingBubble = memo(function WorkingBubble({
 
   return (
     <div
-      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}${waiting ? ' working-bar-waiting' : ''}${idle ? ' working-bar-idle' : ''}`}
+      className={`working-bar${hasSubagents ? ' working-bar-with-agents' : ''}${waiting ? ' working-bar-waiting' : ''}${idle ? ' working-bar-idle' : ''}${retrying ? ' working-bar-retry' : ''}`}
       aria-live="polite"
-      aria-label={waiting ? 'Waiting for background tasks' : idle ? 'Background tasks running' : 'Assistant is working'}
+      aria-label={waiting ? 'Waiting for background tasks' : idle ? 'Background tasks running' : retrying ? 'Assistant is working, retrying' : 'Assistant is working'}
     >
       {!idle && (
         <div className="working-dots" aria-hidden>
@@ -138,7 +276,7 @@ export const WorkingBubble = memo(function WorkingBubble({
       )}
       {!idle && (
         <span key={labelKey} className="working-bar-label">
-          {labelText}
+          {retrying && apiRetry ? <RetryLabel msg={apiRetry} /> : labelText}
         </span>
       )}
       {/* The turn timer is only meaningful while the turn is active; hide it

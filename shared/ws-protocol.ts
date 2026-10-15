@@ -339,6 +339,24 @@ export interface WsMessagesWithdrawn {
   uuids: string[]
 }
 
+/** A steered message's delivery-state transition (spec §7). 'injecting'
+ *  needs no frame — the `steeredAt` stamp on the initial broadcast IS it.
+ *  The durable half is the ring entry's `injectedAt` / `requeuedAt` stamps,
+ *  so a reconnecting tab self-heals via replay; live tabs flip the bubble
+ *  chip on this frame. Rides the same per-session input-queue-status channel
+ *  as `message-consumed` / `messages-withdrawn`. */
+export interface WsMessageSteered {
+  kind: 'message-steered'
+  sessionId: string
+  /** UUID of the steered user message. */
+  uuid: string
+  /** 'injected' — a tool-hook boundary delivered it into the current turn
+   *  (ring entry stamped injectedAt). 'requeued' — the turn ended with it
+   *  undelivered and it was re-routed to the SDK input queue as a normal
+   *  next-turn prompt (ring entry stamped requeuedAt). */
+  state: 'injected' | 'requeued'
+}
+
 /** Per-session recap state mutation (pending / ready / error / cleared).
  *  Carries the full SessionRecap shape (or undefined to mean "cleared by
  *  invalidate"). The same shape rides on SessionInfo for full session
@@ -535,6 +553,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsMessageConsumed
   | WsMessagesWithdrawn
   | WsAttached
+  | WsMessageSteered
   | WsMessagesEvicted
   | WsSessionRecapUpdate<Recap>
   | WsSessionCleared

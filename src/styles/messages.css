@@ -58,15 +58,6 @@
 .msg.result.interrupted::after { background: color-mix(in srgb, var(--warn, var(--danger)) 45%, var(--border)); }
 .msg.result.interrupted .result-mark { color: var(--warn-text, var(--danger)); }
 
-/* Transient API retry: amber divider, same vocabulary as .interrupted.
-   Replaces the old filled .msg.api-retry card. The mark (⏳ + label) is
-   bold amber; the meta (retrying in Ns · attempt X/Y) is muted amber,
-   tabular, nowrap — it's always short, so no truncation is needed. */
-.msg.result.retry { color: var(--msg-rate-limit-fg); }
-.msg.result.retry::before,
-.msg.result.retry::after { background: color-mix(in srgb, var(--warn) 45%, var(--border)); }
-.msg.result.retry .result-mark { color: var(--warn-text); }
-
 /* Fatal system error: red divider. Replaces the old filled .msg.error /
    .msg.error.rate-limit cards. The meta carries the raw error string,
    which is unbounded — so it shrinks and ellipsis-truncates, with the
@@ -2495,6 +2486,28 @@
   padding-bottom: calc(var(--space-2-5) + 18px);
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
+}
+/* Un-dock while the dock shows an error. The dock-fold pull lifts the NEXT
+   sibling (.chat-dock) 18px over the card's reserved glass band, and the
+   design assumes the composer is what covers that band. But .chat-dock's
+   first child is the always-mounted .error-bar — when an error is visible
+   ('Stream reconnecting…' during a WS reconnect, a panel error, …) the RED
+   error card is what lands in the overlap zone, smeared across the docked
+   card's squared glass band with its text riding the glass line. So while a
+   visible error-bar exists in the dock, both collapsed cards release the
+   tuck and sit as ordinary header-only cards above the error card: the
+   values below revert EXACTLY to the base geometry (base margin/padding
+   shorthands + glass.css's --radius-xl), and since the transition lives on
+   the base rules, the release and the re-dock when the error clears both
+   animate. :has() keys off the dock itself — no JS, and the empty
+   error-bar (error-bar-empty, 1×1 absolute) never matches. Pinned by
+   styles/bottom-dock.test.ts (lockstep with the geometry pins above). */
+.chat-bottom-overlay:has(.chat-dock > .error-bar:not(.error-bar-empty)) .todo-panel.todo-panel-collapsed,
+.chat-bottom-overlay:has(.chat-dock > .error-bar:not(.error-bar-empty)) .monitor-bar.monitor-bar-collapsed {
+  margin-bottom: var(--chat-row-gap);
+  padding-bottom: var(--space-2-5);
+  border-bottom-left-radius: var(--radius-xl);
+  border-bottom-right-radius: var(--radius-xl);
 }
 /* The collapsed-header rotor's STRUCTURE is the shared .dock-rotor* block in
    the TaskList section above (rendered by src/components/DockRotor.tsx) —

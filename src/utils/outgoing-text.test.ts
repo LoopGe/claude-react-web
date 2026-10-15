@@ -64,4 +64,28 @@ describe('composeOutgoing', () => {
     )
     expect(text).toBe('  kept  ')
   })
+
+  it('rewrites the /summarize legacy alias to /compact', () => {
+    // The CLI has no /summarize builtin — without the rewrite the literal
+    // text would reach the model as a plain prompt (see outgoing-text.ts).
+    const { text } = composeOutgoing('/summarize', [], expand)
+    expect(text).toBe('/compact')
+  })
+
+  it('rewrites the alias case-insensitively and keeps trailing args', () => {
+    const { text } = composeOutgoing('/SUMMARIZE focus on the bug fix', [], expand)
+    expect(text).toBe('/compact focus on the bug fix')
+  })
+
+  it('leaves /summarize-x (never an alias) passing through verbatim', () => {
+    const { text } = composeOutgoing('/summarize-x keep', [], expand)
+    expect(text).toBe('/summarize-x keep')
+  })
+
+  it('rewrites the alias in the scheduled-send path too (same chokepoint)', () => {
+    // The scheduled-send composition calls this same function — a deliberate
+    // regression guard: the rewrite must not exist only in Chat.send().
+    const { full } = composeOutgoing(' /summarize  ', [], expand)
+    expect(full).toBe('/compact')
+  })
 })

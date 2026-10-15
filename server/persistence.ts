@@ -19,7 +19,7 @@ import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import type { JsonFileStoreOptions } from './json-file-store.js'
 import { createLogger } from './log.js'
 import { validateSessionHooksConfig, type SessionHooksConfig } from '../shared/hooks.js'
-import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting } from '../shared/session-info.js'
+import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting, type WorktreeInfo } from '../shared/session-info.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { validateSandboxSetting } from '../shared/sandbox.js'
 import { migrateLegacyGitToolsKey } from '../shared/first-party.js'
@@ -97,6 +97,9 @@ export interface SessionMeta {
   gitStartSha?: string
   /** Work-tree top level captured at spawn. See Session.repoRoot. */
   repoRoot?: string
+  /** Worktree isolation metadata. Undefined = the session runs in the user's
+   *  own checkout. Persisted; survives resume/restart. */
+  worktree?: WorktreeInfo
   /** When present, this session is a Side Chat forked from the
    *  indicated parent session. Undefined for normal sessions. */
   parentId?: string
@@ -265,6 +268,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
     lastTurnAt: typeof r.lastTurnAt === 'number' ? r.lastTurnAt : undefined,
     gitStartSha: typeof r.gitStartSha === 'string' ? r.gitStartSha : undefined,
     repoRoot: typeof r.repoRoot === 'string' ? r.repoRoot : undefined,
+    worktree: coerceWorktree(r.worktree),
     parentId: typeof r.parentId === 'string' ? r.parentId : undefined,
     forkBoundaryUuid: typeof r.forkBoundaryUuid === 'string' ? r.forkBoundaryUuid : undefined,
     mcpServerNames: Array.isArray(r.mcpServerNames) && r.mcpServerNames.every((n: unknown) => typeof n === 'string')
@@ -328,4 +332,12 @@ export function coerceMemory(raw: unknown): SessionMemorySettings | undefined {
     out.autoMemoryDirectory = r.autoMemoryDirectory.trim()
   }
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+/** Narrow untrusted JSON into a WorktreeInfo. Absent/malformed → undefined. */
+function coerceWorktree(raw: unknown): WorktreeInfo | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const w = raw as Record<string, unknown>
+  if (typeof w.mainRepoPath !== 'string' || typeof w.branch !== 'string' || typeof w.baseSha !== 'string') return undefined
+  return { mainRepoPath: w.mainRepoPath, branch: w.branch, baseSha: w.baseSha }
 }

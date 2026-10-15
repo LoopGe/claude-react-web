@@ -69,6 +69,7 @@ import { DesktopTitlebarTabs } from './components/DesktopTitlebarTabs'
 import { TITLEBAR_HEIGHT_PX } from '../shared/desktop-bridge'
 import { useUiState } from './hooks/useUiState'
 import { sessionStoreRegistry } from './session-store/registry'
+import { deleteDraftImagesForRemovedSession } from './state/inputHistoryImages'
 import { useAppOverlays } from './app/useAppOverlays'
 import { useExitPresence } from './hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
@@ -126,6 +127,7 @@ import { buildNewLikeThisForm } from './utils/new-like-this'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
+import { groupNameIssue } from './utils/group-name'
 import { escapeAction } from './utils/escape-action'
 import { prepareGroupFlip } from './utils/flip'
 import { clamp } from './utils/clamp'
@@ -681,9 +683,9 @@ export function App() {
   // State mirror of clearingIdsRef so the panel can re-render to show the
   // clearing blur (view-only — does NOT gate the data swap). The WS guard
   // reads the ref; the UI reads the state. NOT an exact mirror of the ref's
-  // key set: /clear and /discard populate it; /compact and /restart arm only
-  // the ref (they swap X→Y without the blur). Same state+ref-mirror pattern
-  // as openIds/openIdsRef.
+  // key set: /clear and /discard populate it; /restart arms only the ref (it
+  // swaps X→Y without the blur; /compact is a CLI pass-through and touches
+  // neither). Same state+ref-mirror pattern as openIds/openIdsRef.
   const [clearingIds, setClearingIds] = useState<Set<string>>(new Set())
   // Set by the guarded `session-removed` handler when the server has confirmed
   // X's removal during a /clear. Read by handleClear's catch to distinguish
@@ -1525,6 +1527,13 @@ export function App() {
         return next
       })
       pruneSession(id)
+      // The session is gone server-side (another tab's delete or /clear, a
+      // server GC) — purge its persisted draft images so the IDB record
+      // doesn't leak. Tombstoned: this tab's closing panel for X flushes its
+      // draft at unmount, AFTER this delete was issued. The SAME-tab /clear
+      // and /discard swaps skip this teardown (clearing guard) and purge at
+      // their own swap sites instead.
+      void deleteDraftImagesForRemovedSession(id)
       setDeletingSessionIds((prev) => (prev.has(id) ? new Set([...prev].filter((x) => x !== id)) : prev))
       interruptFnsRef.current.delete(id)
       recapFnsRef.current.delete(id)
@@ -1787,10 +1796,51 @@ export function App() {
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as openIdsRef etc.)
   activeGroupIdRef.current = activeGroupId
 
+  /** Validate a group name. Returns `{ ok: true, name }` (trimmed) on
+   *  success or `{ ok: false, error }` with a user-facing message on
+   *  failure. Pure rules (empty / over-length) live in
+   *  utils/group-name.ts; the case-insensitive duplicate scan stays here
+   *  because it needs the live group list. `ignoreId` skips one group when
+   *  checking duplicates so rename-to-same-name is a no-op, not an error. */
+  const validateGroupName = useCallback(
+    (raw: string, ignoreId?: string): { ok: true; name: string } | { ok: false; error: string } => {
+      const issue = groupNameIssue(raw)
+      if (issue) return { ok: false, error: issue }
+      const name = raw.trim()
+      const lower = name.toLowerCase()
+      const dup = groups.some((g) => g.id !== ignoreId && g.name.trim().toLowerCase() === lower)
+      if (dup) return { ok: false, error: `A group named "${name}" already exists.` }
+      return { ok: true, name }
+    },
+    [groups],
+  )
+
+  /** `initialSessionId` slots a session straight into the fresh group — the
+   *  dialog's inline "Create group …" pick uses it so the new session joins
+   *  by CREATION (one membership write) instead of a create-then-add pair
+   *  that would need handleAddToGroup's stale groupsRef worked around. */
+  const handleCreateGroup = useCallback(
+    (name: string, initialSessionId?: string) => {
+      const res = validateGroupName(name)
+      if (!res.ok) {
+        toast.error(res.error)
+        return ''
+      }
+      const id = randomId()
+      setGroups((prev) => [
+        ...prev,
+        { id, name: res.name, sessionIds: initialSessionId ? [initialSessionId] : [] },
+      ])
+      return id
+    },
+    [setGroups, validateGroupName, toast],
+  )
+
   const handleCreate = useCallback(
     async (form: NewSessionForm) => {
-      // `groupId` is a frontend-only field — don't forward it to the SDK.
-      const { groupId, ...rest } = form
+      // `groupId` / `newGroupName` are frontend-only fields — don't forward
+      // them to the SDK.
+      const { groupId, newGroupName, ...rest } = form
       try {
         const res = await api.post<{ session: SessionInfo }>('/sessions', rest)
         // Add Y to `sessions` locally so openSessions resolves it the instant
@@ -1809,12 +1859,24 @@ export function App() {
         const joinsGroup = targetGroup != null && targetGroup.sessionIds.length < maxGroupSizeRef.current
         if (groupId) handleAddToGroup(res.session.id, groupId)
 
+        // Inline "Create group «name»" pick from the dialog: mint the group
+        // with the session as its initial member (validation + toast live in
+        // handleCreateGroup). '' = invalid name (toast already shown) → the
+        // session stays ungrouped. Not handleAddToGroup: it reads groupsRef,
+        // which won't contain the new group until React commits the append —
+        // and a brand-new group can't be full and can never be the active
+        // group view, so the view logic below reduces to the plain create
+        // path.
+        const newGroupId = newGroupName
+          ? handleCreateGroup(newGroupName, res.session.id) || undefined
+          : undefined
+
         // When viewing a group, only open the new session in the grid if it
         // actually joined that group. A refused add (full group) leaves it in
         // the sidebar so the group view is neither collapsed nor mixed with an
         // ungrouped panel. Otherwise it stays out of the grid too (different
         // group than the one being viewed).
-        const effectiveGroupId = groupId || null
+        const effectiveGroupId = newGroupId ?? groupId ?? null
         if (activeGroupId && (effectiveGroupId !== activeGroupId || !joinsGroup)) {
           setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
         } else if (activeGroupId && effectiveGroupId === activeGroupId && joinsGroup) {
@@ -1831,7 +1893,7 @@ export function App() {
         toast.error(`Couldn't create session: ${(e as Error).message}`)
       }
     },
-    [handleAddToGroup, activeGroupId, openSession, setLastSeenTurn, toast],
+    [handleAddToGroup, handleCreateGroup, activeGroupId, openSession, setLastSeenTurn, toast],
   )
 
   const handleFork = useCallback(
@@ -1994,6 +2056,11 @@ export function App() {
         // whose writes then fail. Going through the registry destroys the
         // in-memory store first so the idle sweep can't re-persist it.
         sessionStoreRegistry.delete(id)
+        // Same lifecycle for the session's persisted draft images (IDB —
+        // which, unlike sessionStorage drafts, outlives the tab). The
+        // removed-session variant tombstones the id so the closing panel's
+        // unmount draft-flush can't resurrect the record.
+        void deleteDraftImagesForRemovedSession(id)
         // Remove deleted session from any group it belongs to so the
         // group's session count stays accurate.
         setGroups((prev) =>
@@ -2070,7 +2137,10 @@ export function App() {
         // group the instant Y appears — no "Ungrouped" flash before this POST
         // resolves and swapSession runs (swapSession then evicts X).
         const res = await api.post<{ session: SessionInfo }>('/sessions', {
-          cwd: source.cwd,
+          // An isolated source runs inside its worktree; restart Y must land in
+          // the main repo (X's delete removes the worktree dir Y would otherwise
+          // be spawned into). Mirrors the server fork rule.
+          cwd: source.worktree?.mainRepoPath ?? source.cwd,
           model: source.model,
           permissionMode: source.permissionMode,
           // Preserve beta flags (notably `context-1m-...`) so restart
@@ -3375,40 +3445,6 @@ export function App() {
 
   // --- Session group management ----------------------------------------------
 
-  /** Validate a group name. Returns a user-facing error message on failure
-   *  or null on success. Empty / whitespace-only is rejected, names are
-   *  capped at 40 chars (sidebar pill layout breaks past that), and
-   *  case-insensitive duplicates are blocked because the only way to tell
-   *  them apart in the pill row is to count them. `ignoreId` skips one
-   *  group when checking duplicates so rename-to-same-name is a no-op,
-   *  not an error. */
-  const validateGroupName = useCallback(
-    (raw: string, ignoreId?: string): { ok: true; name: string } | { ok: false; error: string } => {
-      const name = raw.trim()
-      if (!name) return { ok: false, error: 'Group name cannot be empty.' }
-      if (name.length > 40) return { ok: false, error: 'Group name is too long (max 40 chars).' }
-      const lower = name.toLowerCase()
-      const dup = groups.some((g) => g.id !== ignoreId && g.name.trim().toLowerCase() === lower)
-      if (dup) return { ok: false, error: `A group named "${name}" already exists.` }
-      return { ok: true, name }
-    },
-    [groups],
-  )
-
-  const handleCreateGroup = useCallback(
-    (name: string) => {
-      const res = validateGroupName(name)
-      if (!res.ok) {
-        toast.error(res.error)
-        return ''
-      }
-      const id = randomId()
-      setGroups((prev) => [...prev, { id, name: res.name, sessionIds: [] }])
-      return id
-    },
-    [setGroups, validateGroupName, toast],
-  )
-
   /** Delete a group. Orphaned sessions automatically become ungrouped
    *  (they'll appear in the sidebar's "Ungrouped" section). Offers an
    *  Undo affordance so an accidental click on the destructive menu item
@@ -4317,29 +4353,22 @@ export function App() {
    *  confirmations (the clearingIdsRef guard keeps X fully alive until the
    *  swap). X's transcript survives on disk, recoverable via the resume
    *  picker. The cleared panel blurs (view-only, via `clearingIds`) during the
-   *  POST — /clear only; compact shares this function but skips the state
-   *  mirror, so it swaps X→Y without the blur. Y mounts fresh and plays
-   *  `.entering`. */
+   *  POST. Y mounts fresh and plays `.entering`. */
 
   const resetSession = useCallback(
-    async (id: string, kind: 'clear' | 'compact') => {
-      // Guard: the server broadcasts session-removed(X) during the reset (a
-      // clear, or a compact — which is clear-with-summary-seed); the
+    async (id: string) => {
+      // Guard: the server broadcasts session-removed(X) during the reset; the
       // guarded handler skips ALL teardown (incl. setSessions) so X stays
       // fully alive until swapSession replaces it — no sidebar churn, no
       // panel compaction across the WS-vs-POST race.
       clearingIdsRef.current.add(id)
-      // The blur is a /clear affordance: the reset path mirrors into state
-      // only for /clear — compact keeps the WS guard (ref) but no state
-      // mirror, so it swaps X→Y silently (handleRestart takes the same
-      // ref-only route). /discard is a separate flow and does mirror.
-      if (kind === 'clear') {
-        setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
-      }
+      // The blur is a /clear affordance: mirror the reset into state.
+      // (/discard is a separate flow and does the same.)
+      setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
       clearingInFlightRef.current.set(id, (clearingInFlightRef.current.get(id) ?? 0) + 1)
       try {
         // POST only — no 180 ms veil gate. Data swaps the instant Y is known.
-        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/${kind}`, {})
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {})
         const newId = res.session.id
         if (newId !== id) {
           // X hosted a Side Chat? Tear it down (the guarded session-removed
@@ -4350,8 +4379,11 @@ export function App() {
           await swapSession(id, newId, res.session)
           // X is gone — prune its notification edge-detector entry (the
           // guarded session-removed skipped pruneSession; swapSession
-          // doesn't touch it; <Chat> unmount has no backstop for it).
+          // doesn't touch it; <Chat> unmount has no backstop for it), and
+          // its persisted draft images (same reason — the guarded
+          // session-removed skipped the teardown that usually deletes them).
           pruneSession(id)
+          void deleteDraftImagesForRemovedSession(id)
         }
         // else: server short-circuited (newId === id — another clear is in
         // flight, or the server's `clearing` flag is stuck). Do nothing here;
@@ -4380,7 +4412,7 @@ export function App() {
             return changed ? next : prev
           })
         }
-        toast.error(`Couldn't ${kind} session: ${(e as Error).message}`)
+        toast.error(`Couldn't clear session: ${(e as Error).message}`)
       } finally {
         // Release the guard + blur only when this is the last in-flight clear
         // for id. A short-circuited second call (same-tab double-/clear) leaves
@@ -4405,8 +4437,7 @@ export function App() {
     [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession],
   )
 
-  const handleClear = useCallback((id: string) => resetSession(id, 'clear'), [resetSession])
-  const handleCompact = useCallback((id: string) => resetSession(id, 'compact'), [resetSession])
+  const handleClear = useCallback((id: string) => resetSession(id), [resetSession])
 
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). The server forks from the anchor (inclusive) and
@@ -4427,7 +4458,10 @@ export function App() {
         if (newId !== id) {
           cleanupSideChat(id)
           await swapSession(id, newId, res.session)
+          // X is gone (replaced by Y) — same draft-image purge as /clear's
+          // swap: the guarded session-removed skipped the teardown.
           pruneSession(id)
+          void deleteDraftImagesForRemovedSession(id)
         }
       } catch (e) {
         if (clearingServerRemovedRef.current.has(id)) {
@@ -4975,7 +5009,6 @@ export function App() {
                       historyOpen={historyPanelOpen && focusedId === s.id}
                       onCloseHistory={handleCloseHistory}
                       onClearSession={handleClear}
-                      onCompactSession={handleCompact}
                       onDiscard={handleDiscard}
                       onOpenSettingsTab={openSettingsTab}
                       onShowHelp={showHelpWithCommands}

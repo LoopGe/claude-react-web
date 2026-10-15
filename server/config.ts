@@ -197,6 +197,10 @@ interface ConfigFile {
    *  captures tool-mutated files into a lightweight git sidecar so sessions
    *  can preview or rewind individual file states. Default: true. */
   fileSnapshots?: boolean
+  /** Enable mid-run steering: plain-text messages sent while a turn is
+   *  active are injected into the current turn at tool-hook boundaries
+   *  instead of queueing as next-turn prompts. Default: true. */
+  steering?: boolean
   /** Maximum bytes per untracked (new) file the snapshot sidecar will
    *  ingest per capture. Files exceeding this limit are skipped.
    *  Default: 2 MiB. */
@@ -283,6 +287,8 @@ export interface ServerConfig {
   readonly maxOutputTokens: number
   /** Enable shadow-repo file snapshots. Default: true. */
   readonly fileSnapshots: boolean
+  /** Mid-run steering global switch (spec §9). Default: true. */
+  readonly steering: boolean
   /** Maximum bytes per untracked file the sidecar ingests per capture.
    *  Default: 2 MiB. */
   readonly fileSnapshotsMaxUntrackedBytes: number
@@ -338,6 +344,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   allowSensitivePathEdits: false,
   maxOutputTokens: 0,
   fileSnapshots: true,
+  steering: true,
   fileSnapshotsMaxUntrackedBytes: DEFAULT_MAX_UNTRACKED_BYTES,
   profiles: Object.freeze([]),
   activeProfileId: 'default',
@@ -724,6 +731,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     log.info(`fileSnapshots: ${merged.fileSnapshots}`)
   }
 
+  if (typeof file_.steering === 'boolean') {
+    ;(merged as { steering: boolean }).steering = file_.steering
+  }
+
   if (typeof file_.fileSnapshotsMaxUntrackedBytes === 'number' && file_.fileSnapshotsMaxUntrackedBytes > 0) {
     ;(merged as { fileSnapshotsMaxUntrackedBytes: number }).fileSnapshotsMaxUntrackedBytes = Math.round(file_.fileSnapshotsMaxUntrackedBytes)
     log.info(`fileSnapshotsMaxUntrackedBytes: ${merged.fileSnapshotsMaxUntrackedBytes}`)
@@ -791,6 +802,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'allowSensitivePathEdits',
   'maxOutputTokens',
   'fileSnapshots',
+  'steering',
   'fileSnapshotsMaxUntrackedBytes',
 ] as const
 

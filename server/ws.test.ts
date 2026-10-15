@@ -195,8 +195,8 @@ describe('WebSocket multiplexer', () => {
   }
 
   it('emits sessions-snapshot on connect', async () => {
-    sm.create({ title: 'alpha' })
-    sm.create({ title: 'beta' })
+    await sm.create({ title: 'alpha' })
+    await sm.create({ title: 'beta' })
     const client = await connect()
     const snap = await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     if (snap.kind !== 'sessions-snapshot') throw new Error('narrowing')
@@ -207,7 +207,7 @@ describe('WebSocket multiplexer', () => {
   it('broadcasts session-created when a session is spawned after connect', async () => {
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
-    const info = sm.create({ title: 'fresh' })
+    const info = await sm.create({ title: 'fresh' })
     const ev = await waitForFrame(client.frames, (f) => f.kind === 'session-created')
     if (ev.kind !== 'session-created') throw new Error('narrowing')
     expect(ev.session.id).toBe(info.id)
@@ -215,7 +215,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('subscribe acks served and forwards live messages (no replay — history pages over REST)', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     // Seed some history through send + result.
     sm.send(info.id, 'hello')
     mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
@@ -254,7 +254,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('replays completed hook runs with completed kind and refreshes activity', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const before = sm.get(info.id).lastActivityAt
     await new Promise((r) => setTimeout(r, 5))
     mockHandles[0].emit({
@@ -288,7 +288,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('unsubscribe stops the per-session stream', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
@@ -354,7 +354,7 @@ describe('WebSocket multiplexer', () => {
     // know, so a duplicate must be answered with the already-live ack + the
     // pending-request re-broadcast rather than being swallowed — that silence
     // is what left resumed panels blank.
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'hello')
     mockHandles[0].emit({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
     mockHandles[0].emit({ type: 'result' })
@@ -391,7 +391,7 @@ describe('WebSocket multiplexer', () => {
     // the client never re-subscribed (its hub only re-subscribes on
     // reconnect) — leaving a white screen. Now the subscribe ensures the
     // session is loaded first.
-    const info = sm.create({})
+    const info = await sm.create({})
     await sm.unload(info.id) // → known-but-dormant (persisted, not in memory)
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
@@ -420,7 +420,7 @@ describe('WebSocket multiplexer', () => {
     // removed on natural teardown — a stale entry would make the next
     // subscribe a subs.has() no-op and the resumed session would never get
     // (re)wired on this connection.
-    const info = sm.create({})
+    const info = await sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
@@ -465,7 +465,7 @@ describe('WebSocket multiplexer', () => {
   it('does not answer a client-initiated unsubscribe with a closed result', async () => {
     // The client closed this channel itself; telling it the channel closed
     // would be noise on a path that runs on every panel unmount.
-    const info = sm.create({})
+    const info = await sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
@@ -498,7 +498,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('closing the WS releases all subscribers on the SessionManager side', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     const client = await connect()
     await waitForFrame(client.frames, (f) => f.kind === 'sessions-snapshot')
     client.send({ kind: 'subscribe', sessionId: info.id })
@@ -524,7 +524,7 @@ describe('WebSocket multiplexer', () => {
   })
 
   it('concurrent subscribes from two clients each get their own served ack', async () => {
-    const info = sm.create({})
+    const info = await sm.create({})
     sm.send(info.id, 'x')
     mockHandles[0].emit({ type: 'result' })
     await tick()
@@ -661,5 +661,60 @@ describe('WebSocket upgrade guard', () => {
       r.ws.send('x'.repeat(70 * 1024))
     })
     expect(code).toBe(1009)
+  })
+})
+
+describe('WebSocket upgrade guard (production)', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let server: Server
+  let port: number
+  let shutdownWs: () => Promise<void>
+
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = mkdtempSync(join(tmpdir(), 'claude-rw-ws-guard-prod-'))
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+    server = createServer()
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve())
+    })
+    const addr = server.address()
+    port = typeof addr === 'object' && addr ? addr.port : 0
+    shutdownWs = attachWebSocket(server, sm, undefined, { bind: { host: '127.0.0.1', port }, trustDevOrigins: false })
+  })
+
+  afterEach(async () => {
+    await shutdownWs()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    await sm.shutdown()
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  })
+
+  function attempt(origin?: string): Promise<{ status: 'open'; ws: WebSocket } | { status: number }> {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/ws`, origin ? { origin } : {})
+    return new Promise((resolve, reject) => {
+      ws.once('open', () => resolve({ status: 'open', ws }))
+      ws.once('unexpected-response', (_req, res) => {
+        resolve({ status: res.statusCode ?? 0 })
+        ws.terminate()
+      })
+      // `on`, not `once`: terminate() during CONNECTING emits a second error.
+      ws.on('error', (err) => reject(err))
+    })
+  }
+
+  it('403s the Vite dev origin when dev origins are not trusted', async () => {
+    const r = await attempt('http://localhost:5174')
+    expect(r.status).toBe(403)
+  })
+
+  it('still accepts the bound origin', async () => {
+    const r = await attempt(`http://127.0.0.1:${port}`)
+    if (r.status !== 'open') throw new Error(`expected open, got ${r.status}`)
+    r.ws.close()
   })
 })

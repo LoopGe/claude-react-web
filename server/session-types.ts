@@ -12,6 +12,7 @@ import type {
   PermissionResult,
   PermissionUpdate,
   SDKMessage,
+  SDKUserMessage,
   UserDialogResult,
 } from '@anthropic-ai/claude-agent-sdk'
 import type { Pushable } from './pushable.js'
@@ -19,7 +20,7 @@ import type { SessionStore } from './persistence.js'
 import type { McpConfigStore } from './mcp-config.js'
 import type { MpStore } from './mp-store.js'
 import type { AgentDefinitionStore } from './agent-definition-store.js'
-import type { PluginLoadError, SessionInfoBase, SessionMemorySettings, ThinkingSetting } from '../shared/session-info.js'
+import type { PluginLoadError, SessionInfoBase, SessionMemorySettings, ThinkingSetting, WorktreeInfo } from '../shared/session-info.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
@@ -28,7 +29,7 @@ import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification, WsMessageConsumed, WsMessagesWithdrawn, WsMessagesEvicted } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 import type { FirstPartyToolDef } from '../shared/first-party.js'
 
@@ -95,6 +96,9 @@ export interface DebugSessionDetail extends DebugSessionSummary {
     consumedAt?: number
   }>
   withdrawnUuids: string[]
+  /** Uuids of in-flight steered messages (debug projection of
+   *  Session.steeredInFlight). */
+  steeredInFlight: string[]
   /** app-level uuid → SDK on-disk uuid pairs (the rewind-files mapping). */
   promptUuids: Array<{ u: string; v?: string }>
   tasks: Array<{
@@ -240,10 +244,13 @@ export type SessionInfo = SessionInfoBase<PermissionMode>
 export interface ResumableSession {
   provider?: string
   sessionId: string
-  /** Best display title: customTitle (folds in the CLI's own aiTitle) —
-   *  firstPrompt. Deliberately NOT the SDK's `summary` when a firstPrompt
-   *  exists: the SDK's display title prefers the LAST user prompt, which
-   *  made the /resume picker label sessions with their latest question. */
+  /** The session's REAL title only: customTitle (a CLI-side /rename; the SDK
+   *  folds its own aiTitle into this field). Undefined when untitled — never
+   *  derived from firstPrompt/summary. Derived names must not become the
+   *  title: adoptDiskSession persists it and the resume spawn forwards it as
+   *  Options.title, which the CLI then bakes into the transcript as
+   *  custom-title entries. The /resume picker labels untitled rows from
+   *  `firstPrompt` itself (display-only). */
   title?: string
   /** On-disk custom title (SDK customTitle, folding in the CLI's aiTitle).
    *  Carried separately from `title` so listResumable can let a CLI-side
@@ -251,6 +258,11 @@ export interface ResumableSession {
   customTitle?: string
   /** First meaningful user prompt — shown as a preview/secondary line. */
   firstPrompt?: string
+  /** Last user prompt — tail-read from the transcript (`last-prompt` entry,
+   *  falling back to the newest string-content user message). Display-only
+   *  preview for the /resume picker; whitespace-condensed and capped at 120
+   *  chars. Undefined when the transcript is missing or has no prompt. */
+  lastPrompt?: string
   cwd?: string
   /** The CLI's permission mode (default/acceptEdits/bypassPermissions/plan),
    *  from the SDK's getSessionInfo `mode` field. Only set for CLI-created
@@ -333,7 +345,7 @@ export interface Session {
   fastModeState?: FastModeState
   /** SDK-reported runtime compaction state — true while the CLI is compacting
    *  the transcript (`system/status` frames with `status: 'compacting'`), so
-   *  the WorkingBubble can show "Recap (auto)…" instead of a stale phase.
+   *  the WorkingBubble can show "Recap…" instead of a stale phase.
    *  Mirrors fastModeState: read-only, transient, not persisted; the SDK
    *  re-reports it via a later status frame after respawn. Cleared at turn
    *  end as a lifecycle bound (compaction is a mid-turn phenomenon). */
@@ -491,6 +503,9 @@ export interface Session {
    *  cwd) and for sessions spawned before this field existed (until their
    *  next respawn). Persisted via SessionMeta. */
   repoRoot?: string
+  /** Worktree isolation metadata. Undefined = the session runs in the user's
+   *  own checkout. Persisted; survives resume/restart. */
+  worktree?: WorktreeInfo
   /** When present, this session is a Side Chat forked from the
    *  indicated parent session. Set by createSideChat(), persisted via
    *  SessionMeta, and mirrored into SessionInfo. */
@@ -611,7 +626,7 @@ export interface Session {
    *  SessionManager.interrupt). Mirrors gitStatusSubscribers (signal-shaped,
    *  small payload). Each WS subscriber gets its own pushable so a slow tab
    *  can't block another tab's updates. */
-  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted>>
+  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>>
   /** Server-minted uuids of user turns withdrawn by cancelQueued interrupts
    *  (most recent last, capped). Replayed to each NEW message-status
    *  subscriber as a synthetic `messages-withdrawn` frame so a tab that was
@@ -747,6 +762,12 @@ export interface Session {
    *  sessions spawned before this field existed (treated as empty → no bridge,
    *  signature fallback handles dedup). */
   promptUuids?: PromptUuidEntry[]
+  /** In-flight steered messages (uuid → ring message object), populated by
+   *  SessionManager.trySteerMessage and cleared on injected / requeued /
+   *  withdrawn (spec §6.1). Kept as a Map rather than a ring scan so the
+   *  turn-end fallback can recover the original message even after ring
+   *  eviction (historyCap). */
+  steeredInFlight: Map<string, SDKUserMessage>
   /** Snapshot anchor captures deferred because send() fired while the
    *  session was working (pendingTurns>0, queueDepth>0, etc). Each uuid
    *  is a user message that needs capture+recordAnchor when the turn
@@ -844,6 +865,9 @@ export interface SessionManagerOptions {
    *  user Resume / Fork-from-last-completed. Default 2 (two in-place resumes,
    *  third crash shows the banner); raising it adds more in-place resumes. */
   maxCrashRecovery?: number
+  /** How long delete() waits for the session's op lock before running
+   *  anyway. Default DELETE_LOCK_MAX_WAIT_MS; tests shorten it. */
+  deleteLockMaxWaitMs?: number
 }
 
 /** Global session-list update event. Broadcast whenever a session's
@@ -971,7 +995,7 @@ export interface SessionBroadcaster {
    *  full frames, not bare payloads). Returns null when the session is
    *  unknown (callers short-circuit). Mirrors subscribeGitStatus. */
   subscribeMessageStatus(sessionId: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessagesWithdrawn | WsMessagesEvicted>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>
     unsubscribe: () => void
   } | null
   subscribeCommandChanges(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null

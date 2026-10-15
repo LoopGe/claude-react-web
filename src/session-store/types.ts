@@ -34,9 +34,14 @@ export interface TranscriptItem {
    *                  behind an in-flight turn.
    *   - 'consumed' — the SDK has read it (consumedAt set); the turn is being
    *                  processed.
+   *   - 'injecting' — mid-run steering: the message was accepted into the
+   *                  supplement queue (steeredAt set, no terminal stamp) and
+   *                  is waiting for the next tool-hook boundary.
+   *   - 'injected' — a hook boundary delivered it into the current turn
+   *                  (injectedAt set).
    *  Derived purely from the message's receivedAt/consumedAt in
    *  toTranscriptItem so it stays correct across replay without extra state. */
-  deliveryStatus?: 'queued' | 'consumed'
+  deliveryStatus?: 'queued' | 'consumed' | 'injecting' | 'injected'
 }
 
 export type SubagentStatus = 'running' | 'background' | 'pending' | 'dismissed' | 'done' | 'rejected' | 'interrupted'
@@ -677,6 +682,12 @@ export type SessionAction =
   /** The SDK read a queued user turn off its input queue. Flips the
    *  matching message's deliveryStatus from 'queued' to 'consumed'. */
   | { type: 'MESSAGE_CONSUMED'; uuid: string; consumedAt: number }
+  /** A steered message's delivery transition (server `message-steered`
+   *  frame): 'injected' — a tool-hook boundary delivered it into the current
+   *  turn; 'requeued' — the turn ended undelivered and it was re-routed to
+   *  the SDK input queue (deliveryStatus falls back to the normal
+   *  queued→consumed flow from there). */
+  | { type: 'MESSAGE_STEERED'; uuid: string; state: 'injected' | 'requeued' }
   | { type: 'ERROR'; message: string | null }
   | { type: 'LIVE_TURN_FLUSH' }
   /** User dismissed an in-flight subagent (running/background/pending) from

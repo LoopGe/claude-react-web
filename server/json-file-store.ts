@@ -95,6 +95,24 @@ export abstract class JsonFileStore<T> {
     this.schedule()
   }
 
+  /** Merge `partial` into the CURRENT entry for `key` (field-scoped write,
+   *  unlike `upsert`'s wholesale replace from a caller-held snapshot). An
+   *  explicit `undefined` value clears that field. Returns the merged entry,
+   *  or `undefined` — inserting nothing — when `key` is absent. Triggers a
+   *  debounced flush. */
+  patch(key: string, partial: Partial<T>): T | undefined {
+    const prev = this.index.get(key)
+    if (prev === undefined) return undefined
+    const next = { ...prev } as Record<string, unknown>
+    for (const [field, value] of Object.entries(partial)) {
+      if (value === undefined) delete next[field]
+      else next[field] = value
+    }
+    this.index.set(key, next as T)
+    this.schedule()
+    return next as T
+  }
+
   remove(key: string): void {
     if (this.index.delete(key)) this.schedule()
   }

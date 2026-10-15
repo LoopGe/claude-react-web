@@ -4,16 +4,47 @@ import type { Session } from './session-types.js'
 import type { WsGitSnapshot } from './ws-protocol.js'
 import type { GitStatus } from '../shared/git-types.js'
 
-vi.mock('./git.js', () => ({
-  getStatus: vi.fn(async () => ({
-    isRepo: true as const, repoRoot: '/repo', branch: 'main', detached: false,
+vi.mock('./git.js', () => {
+  const repoStatus = (branch = 'main') => ({
+    isRepo: true as const, repoRoot: '/repo', branch, detached: false,
     ahead: 0, behind: 0, upstream: null, state: 'clean' as const,
     linkedWorktrees: [], staged: [], unstaged: [], untracked: [],
-  })),
-  listBranches: vi.fn(async () => [{ name: 'main', current: true, upstream: null }]),
-  listStashes: vi.fn(async () => []),
-}))
-import { getStatus, listBranches, listStashes } from './git.js'
+  })
+  return {
+    // Default: honour `partial` field-by-field like the real one, so the
+    // opts.snapshot assertions can check what reached the frame.
+    getGitSnapshot: vi.fn(async (_cwd: string, partial?: Record<string, unknown>) => ({
+      status: partial?.status ?? repoStatus(),
+      branches: partial?.branches ?? [{ name: 'main', current: true, upstream: null }],
+      stashes: partial?.stashes ?? [],
+    })),
+  }
+})
+import { getGitSnapshot, type GitSnapshotPayload } from './git.js'
+
+function repoStatus(branch: string): GitStatus {
+  return {
+    isRepo: true, repoRoot: '/repo', branch, detached: false,
+    ahead: 0, behind: 0, upstream: null, state: 'clean',
+    linkedWorktrees: [], staged: [], unstaged: [], untracked: [],
+  }
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void
+  const promise = new Promise<T>((r) => { resolve = r })
+  return { promise, resolve }
+}
+
+/** Queue controllable getGitSnapshot results: call N resolves only when
+ *  the test resolves the N-th deferred. */
+function queueSnapshots(n: number): Array<{ promise: Promise<GitSnapshotPayload>; resolve: (v: GitSnapshotPayload) => void }> {
+  const ds = Array.from({ length: n }, () => deferred<GitSnapshotPayload>())
+  for (const d of ds) vi.mocked(getGitSnapshot).mockImplementationOnce(() => d.promise)
+  return ds
+}
+
+const snap = (branch: string): GitSnapshotPayload => ({ status: repoStatus(branch), branches: [], stashes: [] })
 
 vi.mock('./tasklist-state.js', () => ({
   deriveTaskListForSession: vi.fn(async () => ({ rev: 2, tasks: [{ id: '1', subject: 'S', status: 'in_progress', stale: false }] })),
@@ -57,9 +88,7 @@ describe('SessionEventBroadcaster git-snapshot', () => {
     bc.broadcastGitStatusChanged('a')
     // Wait for the compute to land (fire-and-forget async).
     await vi.waitFor(() => {
-      expect(getStatus).toHaveBeenCalledTimes(1)
-      expect(listBranches).toHaveBeenCalledTimes(1)
-      expect(listStashes).toHaveBeenCalledTimes(1)
+      expect(getGitSnapshot).toHaveBeenCalledTimes(1)
     })
 
     const rA = await pA
@@ -84,7 +113,7 @@ describe('SessionEventBroadcaster git-snapshot', () => {
     const subB = bc.subscribeGitStatus('b')!
     const pB = subB.iterable[Symbol.asyncIterator]().next()
     bc.broadcastGitStatusChanged('a')
-    await vi.waitFor(() => expect(getStatus).toHaveBeenCalled())
+    await vi.waitFor(() => expect(getGitSnapshot).toHaveBeenCalled())
     const frame = await pB
     expect((frame.value as WsGitSnapshot).repoRoot).toBe('/same')
   })
@@ -100,15 +129,19 @@ describe('SessionEventBroadcaster git-snapshot', () => {
       linkedWorktrees: [], staged: [], unstaged: [], untracked: [],
     }
     bc.broadcastGitStatusChanged('a', { snapshot: { status: preStatus } })
-    await vi.waitFor(() => expect(listBranches).toHaveBeenCalled())
-    expect(getStatus).not.toHaveBeenCalled() // status was provided via opts — not recomputed
+    await vi.waitFor(() => expect(getGitSnapshot).toHaveBeenCalled())
+    // The provided status is handed to getGitSnapshot as `partial`, which
+    // computes only the missing fields (git-snapshot-spawns.test.ts pins
+    // that a provided status spawns no rev-parse / status).
+    expect(getGitSnapshot).toHaveBeenCalledTimes(1)
+    expect(getGitSnapshot).toHaveBeenCalledWith('/repo', { status: preStatus })
     const frame = await p
     expect(((frame.value as WsGitSnapshot).status as GitStatus).branch).toBe('dev')
     expect((frame.value as WsGitSnapshot).branches).toEqual([{ name: 'main', current: true, upstream: null }])
   })
 
   it('does not push and does not throw when computation fails', async () => {
-    vi.mocked(getStatus).mockRejectedValueOnce(new Error('git exploded'))
+    vi.mocked(getGitSnapshot).mockRejectedValueOnce(new Error('git exploded'))
     const a = makeSession('a', '/repo', '/repo')
     const bc = new SessionEventBroadcaster(new Map([['a', a]]))
     const sub = bc.subscribeGitStatus('a')!
@@ -127,7 +160,7 @@ describe('SessionEventBroadcaster git-snapshot', () => {
     const bc = new SessionEventBroadcaster(new Map([['a', a]]))
     // First broadcast populates the cache.
     bc.broadcastGitStatusChanged('a')
-    await vi.waitFor(() => expect(getStatus).toHaveBeenCalled())
+    await vi.waitFor(() => expect(getGitSnapshot).toHaveBeenCalled())
     // Let the async fire-and-forget path settle.
     await new Promise((r) => setTimeout(r, 20))
     // A NEW subscriber (late tab) should be seeded with the cached frame
@@ -158,19 +191,19 @@ describe('SessionEventBroadcaster git-snapshot', () => {
     expect(bc2.gitGroupLivePeer('x')).toBeNull()
   })
 
-  it('pushes isRepo:false with empty lists for a non-repo cwd without calling listBranches/listStashes', async () => {
-    vi.mocked(getStatus).mockResolvedValueOnce({ isRepo: false } as unknown as Awaited<ReturnType<typeof getStatus>>)
+  it('pushes isRepo:false with empty lists for a non-repo cwd', async () => {
+    // (That a non-repo snapshot spawns only the probe is pinned against the
+    // real getGitSnapshot in git-snapshot-spawns.test.ts.)
+    vi.mocked(getGitSnapshot).mockResolvedValueOnce({ status: { isRepo: false }, branches: [], stashes: [] })
     const a = makeSession('a', '/not-a-repo', undefined)
     const bc = new SessionEventBroadcaster(new Map([['a', a]]))
     const sub = bc.subscribeGitStatus('a')!
     const it = sub.iterable[Symbol.asyncIterator]()
     void it.next() // park waiter
     bc.broadcastGitStatusChanged('a')
-    await vi.waitFor(() => expect(getStatus).toHaveBeenCalled())
+    await vi.waitFor(() => expect(getGitSnapshot).toHaveBeenCalled())
     // give the async path time to NOT throw
     await new Promise((r) => setTimeout(r, 20))
-    expect(listBranches).not.toHaveBeenCalled()
-    expect(listStashes).not.toHaveBeenCalled()
     // seed now holds the frame — a fresh subscriber gets it
     const fresh = bc.subscribeGitStatus('a')!
     const first = await fresh.iterable[Symbol.asyncIterator]().next()
@@ -179,6 +212,117 @@ describe('SessionEventBroadcaster git-snapshot', () => {
     expect(frame.status.isRepo).toBe(false)
     expect(frame.branches).toEqual([])
     expect(frame.stashes).toEqual([])
+  })
+
+  const branchOf = (v: unknown): string | null => ((v as WsGitSnapshot).status as GitStatus).branch
+
+  it('drops an auto compute that resolves after a newer user write: neither pushed nor cached', async () => {
+    const a = makeSession('a', '/repo', '/repo')
+    const bc = new SessionEventBroadcaster(new Map([['a', a]]))
+    const sub = bc.subscribeGitStatus('a')!
+    const iter = sub.iterable[Symbol.asyncIterator]()
+    const [auto, write] = queueSnapshots(2)
+
+    bc.broadcastGitStatusChanged('a') // auto compute #1 — in flight
+    const written = repoStatus('after-write')
+    bc.broadcastGitStatusChanged('a', { snapshot: { status: written } }) // user write — starts immediately
+    expect(getGitSnapshot).toHaveBeenCalledTimes(2)
+
+    write.resolve({ status: written, branches: [], stashes: [] })
+    const first = await iter.next()
+    expect(branchOf(first.value)).toBe('after-write')
+
+    // The older compute lands last with pre-write data.
+    auto.resolve(snap('stale'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(await Promise.race([iter.next(), timeout(50)])).toBe('timeout')
+
+    // The seed cache still holds the write's frame.
+    const fresh = bc.subscribeGitStatus('a')!
+    const seeded = await fresh.iterable[Symbol.asyncIterator]().next()
+    expect(branchOf(seeded.value)).toBe('after-write')
+  })
+
+  it('collapses triggers during an in-flight auto compute into exactly one recompute', async () => {
+    const a = makeSession('a', '/repo', '/repo')
+    const b = makeSession('b', '/repo/sub', '/repo')
+    const bc = new SessionEventBroadcaster(new Map([['a', a], ['b', b]]))
+    const sub = bc.subscribeGitStatus('a')!
+    const iter = sub.iterable[Symbol.asyncIterator]()
+    const [one, two] = queueSnapshots(2)
+
+    bc.broadcastGitStatusChanged('a')
+    bc.broadcastGitStatusChanged('a') // in flight → dirty
+    bc.broadcastGitStatusChanged('b') // same group → dirty, latest origin = b
+    expect(getGitSnapshot).toHaveBeenCalledTimes(1)
+
+    one.resolve(snap('one'))
+    const f1 = await iter.next()
+    expect(branchOf(f1.value)).toBe('one')
+    await vi.waitFor(() => expect(getGitSnapshot).toHaveBeenCalledTimes(2))
+    // The recompute runs for the latest trigger.
+    expect(vi.mocked(getGitSnapshot).mock.calls[1][0]).toBe('/repo/sub')
+
+    two.resolve(snap('two'))
+    const f2 = await iter.next()
+    expect(branchOf(f2.value)).toBe('two')
+    expect((f2.value as WsGitSnapshot).sessionId).toBe('b')
+
+    await new Promise((r) => setTimeout(r, 20))
+    expect(getGitSnapshot).toHaveBeenCalledTimes(2) // no further recompute
+  })
+
+  it('re-points the dirty recompute to a live peer when the dirty origin unloads mid-compute', async () => {
+    const a = makeSession('a', '/repo', '/repo')
+    const b = makeSession('b', '/repo/sub', '/repo')
+    const sessions = new Map([['a', a], ['b', b]])
+    const bc = new SessionEventBroadcaster(sessions)
+    const sub = bc.subscribeGitStatus('b')!
+    const iter = sub.iterable[Symbol.asyncIterator]()
+    const [one, two] = queueSnapshots(2)
+
+    bc.broadcastGitStatusChanged('a')
+    bc.broadcastGitStatusChanged('a') // in flight → dirty, origin = a
+    sessions.delete('a') // a unloads while the compute runs
+
+    one.resolve(snap('one'))
+    expect(branchOf((await iter.next()).value)).toBe('one')
+    // The recompute still runs, now on behalf of peer b.
+    await vi.waitFor(() => expect(getGitSnapshot).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(getGitSnapshot).mock.calls[1][0]).toBe('/repo/sub')
+
+    two.resolve(snap('two'))
+    const f2 = await iter.next()
+    expect(branchOf(f2.value)).toBe('two')
+    expect((f2.value as WsGitSnapshot).sessionId).toBe('b')
+  })
+
+  it('drops the dirty recompute when no member of the group is left', async () => {
+    const a = makeSession('a', '/repo', '/repo')
+    const sessions = new Map([['a', a]])
+    const bc = new SessionEventBroadcaster(sessions)
+    const [one] = queueSnapshots(1)
+    bc.broadcastGitStatusChanged('a')
+    bc.broadcastGitStatusChanged('a') // dirty
+    sessions.delete('a')
+    one.resolve(snap('one'))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(getGitSnapshot).toHaveBeenCalledTimes(1)
+  })
+
+  it('an auto compute that starts after a write supersedes the write if it lands first', async () => {
+    const a = makeSession('a', '/repo', '/repo')
+    const bc = new SessionEventBroadcaster(new Map([['a', a]]))
+    const [write, auto] = queueSnapshots(2)
+    bc.broadcastGitStatusChanged('a', { snapshot: { status: repoStatus('write') } }) // seq 1
+    bc.broadcastGitStatusChanged('a') // seq 2 — started later, fresher
+    auto.resolve(snap('auto'))
+    await new Promise((r) => setTimeout(r, 10))
+    write.resolve(snap('write'))
+    await new Promise((r) => setTimeout(r, 10))
+    const fresh = bc.subscribeGitStatus('a')!
+    const seeded = await fresh.iterable[Symbol.asyncIterator]().next()
+    expect(branchOf(seeded.value)).toBe('auto')
   })
 })
 

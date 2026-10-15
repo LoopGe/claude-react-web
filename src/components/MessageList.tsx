@@ -16,7 +16,6 @@ import { McpAppsProvider } from '../hooks/useMcpApps'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
-import type { SdkMessage } from '../types'
 import { buildTaskStateMapFromItems, mergeTaskList, type TasklistSnapshotPayload } from '../utils/task-events'
 import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
@@ -25,7 +24,7 @@ import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/nor
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { OlderHistoryHeader, StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
+import { StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
 import { ChatEmptyState } from './ChatEmptyState'
 import { EasterEggGame } from './EasterEggGame'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
@@ -178,11 +177,6 @@ interface Props {
    *  force either mode and a future UI setting can thread through without
    *  touching internals. */
   streamingMode?: StreamingRenderMode
-  /** Transient `api_retry` frame (rate-limit retry indicator), or null when
-   *  no retry is in flight. Rendered as a tail divider via ApiRetryView (it
-   *  lives outside items/messages/IDB — a dedicated transient slot — so this
-   *  synthesizes a tail item for rendering only). */
-  apiRetry?: SdkMessage | null
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
   /** Plan body text extracted from ExitPlanMode tool_result outputs. */
@@ -234,10 +228,12 @@ interface Props {
   subagent?: ActiveSubagent | null
   /** Lazy-load the previous page of history from disk and prepend it.
    *  Only wired for the main transcript (not subagent overlays). When
-   *  provided AND `hasOlder` is true, scrolling to the top triggers it. */
+   *  provided AND `hasOlder` is true, scrolling to the top triggers it.
+   *  Also the Retry action on the float's failure pill. */
   loadOlder?: () => Promise<number>
   /** Whether older history may exist on disk before the first shown message.
-   *  Gates the scroll-to-top trigger and the "loading older" affordance. */
+   *  Gates the scroll-to-top trigger (the float renders from loading/error
+   *  alone, so this no longer gates any UI). */
   hasOlder?: boolean
   /** Seq of the oldest message in the store's seq window (null while the
    *  window is empty) — the render anchor of the seq protocol. Task 9
@@ -246,7 +242,8 @@ interface Props {
    *  prepended page and its anchor commit in the same render. Overlays pass
    *  nothing and keep the legacy 1e6 anchor. */
   oldestSeq?: number | null
-  /** True while a loadOlder() request is in flight (drives the top spinner). */
+  /** True while a loadOlder() request is in flight (gates the scroll-up
+   *  trigger against double-fires; drives the top loading pill). */
   loadingOlder?: boolean
   /** Register a navigator that scrolls the transcript to the previous /
    *  next real user message relative to the current viewport top. Wired up
@@ -372,7 +369,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, apiRetry, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -588,10 +585,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       isResultConsumed,
       leadingItems,
       trailingItems,
-      apiRetry,
       toolGroupCards,
     }),
-    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, apiRetry, toolGroupCards],
+    [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards],
   )
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
@@ -1234,10 +1230,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   //
   // Keying by id makes React preserve each row's node across mid-list
   // mutations, so only the removed row's DOM goes away and the surviving
-  // rows keep their measured heights. `item.id` is the SdkMessage uuid (or a
-  // synthetic id for the api_retry divider / SubagentOverlay's injected
-  // prompt+result rows) and is unique within a list — the same id the
-  // entrance-animation gate and `nextItemTypeMap` already rely on.
+  // rows keep their measured heights. `item.id` is the SdkMessage uuid (or
+  // a synthetic id for SubagentOverlay's injected prompt+result rows) and
+  // is unique within a list — the same id the entrance-animation gate and
+  // `nextItemTypeMap` already rely on.
   const computeItemKey = useCallback(
     (_index: number, item: VirtuosoItem) => ('kind' in item ? STREAMING_ROW_KEY : item.id),
     [],
@@ -1287,24 +1283,14 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // cards) is an overlay, so the spacer lets settled messages scroll underneath
   // it instead of being obscured.
   const virtuosoComponents = useMemo(() => {
-    // The Header slot shows a "loading older history" affordance pinned to
-    // the top. Only relevant for the main transcript (loadOlder provided).
-    // `renderableItems.length > 0` gate: with Virtuoso always mounted, the
-    // Header slot would otherwise render even over the empty-state overlay
-    // (hasOlder defaults true on every session). There is nothing to "scroll
-    // up" for until at least one message exists.
-    const showOlderHeader = loadOlder != null && (loadingOlder || hasOlder) && renderableItems.length > 0
     const components: Record<string, () => React.ReactElement> = {}
-    if (showOlderHeader) {
-      components.Header = () => <OlderHistoryHeader loading={loadingOlder} />
-    }
     if (bottomStackHeight > 0) {
       components.Footer = () => (
         <BottomOverlaySpacer height={bottomStackHeight} />
       )
     }
     return components
-  }, [bottomStackHeight, loadOlder, loadingOlder, hasOlder, renderableItems.length])
+  }, [bottomStackHeight])
 
   // Fold the TaskCreate/TaskUpdate stream into a Map<taskId, TaskState> so
   // the inline TaskMutationView card can resolve a TaskUpdate's subject
@@ -1431,4 +1417,3 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     </SessionCwdProvider>
   )
 })
-

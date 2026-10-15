@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, render, fireEvent } from '@testing-library/react'
+import { render, act, fireEvent, waitFor } from '@testing-library/react'
 import { SessionCard, type SessionCardProps } from './SessionCard'
 import type { SessionInfo } from '../../types'
+
+vi.mock('../../hooks/useApi', () => ({
+  api: { get: vi.fn(), post: vi.fn() },
+}))
+
+import { api } from '../../hooks/useApi'
 
 // jsdom doesn't implement window.matchMedia; usePresenceValue probes it on
 // each exit. Report "no reduced motion" so the animate-exit path is exercised
@@ -428,5 +434,65 @@ describe('SessionCard', () => {
     const slot = container.querySelector('.session-item-slot')
     expect(slot?.classList.contains('pending')).toBe(true)
     expect(slot?.classList.contains('focused')).toBe(true)
+  })
+})
+
+describe('SessionCard worktree delete warning', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const wtSession = () =>
+    makeSession({
+      worktree: { mainRepoPath: '/home/user/main-repo', branch: 'crw/abc12345', baseSha: 'deadbeef' },
+    })
+
+  /** The confirm message is a ReactNode — mount it to assert its text. */
+  const messageText = (message: React.ReactNode) => {
+    const { container } = render(<>{message}</>)
+    return container.textContent
+  }
+
+  const clickDelete = async (root: HTMLElement, onAskConfirm: ReturnType<typeof vi.fn>) => {
+    fireEvent.click(root.querySelector('.session-item-delete')!)
+    await waitFor(() => expect(onAskConfirm).toHaveBeenCalled())
+  }
+
+  it('appends the dirty-worktree warning to the confirm message', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      available: true,
+      dirty: true,
+      branch: 'crw/abc12345',
+    })
+    const onAskConfirm = vi.fn()
+    const { container } = render(<SessionCard {...baseProps} session={wtSession()} onAskConfirm={onAskConfirm} />)
+    await clickDelete(container, onAskConfirm)
+
+    expect(api.get).toHaveBeenCalledWith('/sessions/abc12345-xxxx/worktree-status')
+    const text = messageText(onAskConfirm.mock.calls[0][0].message)
+    expect(text).toContain('uncommitted changes')
+    expect(text).toContain('crw/abc12345')
+  })
+
+  it('omits the warning when the worktree is clean', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      available: true,
+      dirty: false,
+      branch: 'crw/abc12345',
+    })
+    const onAskConfirm = vi.fn()
+    const { container } = render(<SessionCard {...baseProps} session={wtSession()} onAskConfirm={onAskConfirm} />)
+    await clickDelete(container, onAskConfirm)
+
+    expect(messageText(onAskConfirm.mock.calls[0][0].message)).not.toContain('uncommitted changes')
+  })
+
+  it('does not probe worktree status for a non-isolated session', async () => {
+    const onAskConfirm = vi.fn()
+    const { container } = render(<SessionCard {...baseProps} onAskConfirm={onAskConfirm} />)
+    await clickDelete(container, onAskConfirm)
+
+    expect(api.get).not.toHaveBeenCalled()
+    expect(messageText(onAskConfirm.mock.calls[0][0].message)).not.toContain('uncommitted changes')
   })
 })

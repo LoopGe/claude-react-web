@@ -13,7 +13,7 @@ import { AnsiText } from '../../AnsiText'
 import { Tooltip } from '../../Tooltip'
 import type { SdkMessage } from '../../../types'
 import { formatClockTime, formatFullTimestamp, formatTokens } from '../../../utils/format'
-import { IconSquare, IconClock } from '../../icons/ToolIcons'
+import { IconSquare } from '../../icons/ToolIcons'
 import { countMatches } from '../../../search'
 import { extractTag } from '../rendering'
 /** Inline message timestamp shown in the header. Renders the clock time
@@ -210,7 +210,7 @@ export function CompactBoundary({ msg }: { msg: SdkMessage }) {
  *    • `system/error` frames whose body matches `/429|rate.?limit/i`
  *    • assistant messages with `error: 'rate_limit'` (hard account-level 429
  *      that the SDK did NOT auto-retry — the auto-retry path surfaces as the
- *      transient `api_retry` amber divider instead).
+ *      transient `api_retry` retry label in the WorkingBubble instead).
  *  `title` carries the raw error text for debugging (hover); each caller
  *  decides what that should be (the system path uses the canned copy; the
  *  assistant path uses the extracted body, falling back to the `error` enum). */
@@ -219,108 +219,6 @@ export function RateLimitErrorDivider({ title }: { title: string }) {
     <div className="msg result error" title={title} aria-label="rate limit error">
       <span className="result-mark" aria-hidden="true">✕ rate limited</span>
       <span className="result-meta">too many requests — message saved, send again</span>
-    </div>
-  )
-}
-
-/** Wire shape of an `api_retry` system frame. The fields are all
- *  optional from the renderer's perspective —older / partial frames
- *  may omit any of them —but the cast lives here once instead of at
- *  every read site. */
-interface ApiRetryMessage {
-  attempt?: number
-  max_retries?: number
-  retry_delay_ms?: number
-  error_status?: number | null
-  error?: string
-}
-
-/** Inline retry indicator. The server emits one `api_retry` frame per
- *  attempt with a snapshot of `retry_delay_ms`; rendering that number
- *  directly froze the countdown at e.g. "9s" until the next attempt
- *  landed. This component runs a local 1Hz clock so the user actually
- *  sees the seconds tick down.
- *
- *  Anchor strategy: we derive an absolute `deadline` (wall-clock ms at
- *  which the retry will fire) by combining the message's mount time
- *  with `retry_delay_ms`. The deadline is held in state and reset only
- *  when a fresh frame lands with a different `retry_delay_ms` — the
- *  reducer routes consecutive `api_retry` frames to the `mirror.apiRetry`
- *  slot (overwriting the previous), and MessageList renders that slot as a
- *  synthetic tail item with a stable id, so this component gets new props
- *  rather than remounting. Reading deadline-now is monotonic across that prop
- *  change; the previous baseline+delay split could briefly show a
- *  garbled number for one render after a new frame.
- *
- *  We stop the interval at remainingMs → 0 — the next attempt is in
- *  flight; either it succeeds (no more frames) or a new frame arrives
- *  and the effect restarts the timer. */
-export function ApiRetryView({ msg }: { msg: SdkMessage }) {
-  const m = msg as unknown as ApiRetryMessage
-  const attempt = m.attempt ?? 0
-  const maxRetries = m.max_retries ?? 0
-  const delayMs = m.retry_delay_ms ?? 0
-  const errorStatus = m.error_status
-  const errorKind = m.error ?? 'unknown'
-
-  // We hold an absolute `deadline` (wall-clock ms at which the retry
-  // fires) and a ticking `now`. Combining the two in a single state
-  // object means a delayMs prop change updates both together —no
-  // render where deadline is "new" but now is from the previous frame.
-  //
-  // Caveat: when `delayMs` changes mid-component-life (the reducer
-  // overwrites the `apiRetry` slot with the new frame —see
-  // `reducer.ts` applyMessage), there's a single render between prop change
-  // and effect-firing where we still use the old deadline. React
-  // batches the effect's setState into the same microtask, so visually
-  // it's a flash at most a frame long. Building a "fresh deadline in
-  // render" fallback would need `Date.now()` inside render, which
-  // violates the pure-render rule.
-  const [state, setState] = useState(() => {
-    const now = Date.now()
-    return { deadline: now + delayMs, now }
-  })
-
-  useEffect(() => {
-    const start = Date.now()
-    const deadline = start + delayMs
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing the message's delayMs prop into the local deadline is the explicit purpose of this effect, not an anti-pattern.
-    setState({ deadline, now: start })
-    if (delayMs <= 0) return
-    // Clear the interval the first tick that crosses the deadline, so a
-    // long-lived api_retry message that's already counted to "retrying
-    // now— stops costing us a render per second forever. A new
-    // api_retry frame with a different delayMs re-runs this effect
-    // (deps include delayMs) and starts a fresh interval.
-    const id = window.setInterval(() => {
-      const now = Date.now()
-      setState((prev) => ({ ...prev, now }))
-      if (now >= deadline) window.clearInterval(id)
-    }, 1000)
-    return () => window.clearInterval(id)
-  }, [delayMs])
-
-  const remainingMs = Math.max(0, state.deadline - state.now)
-  const seconds = Math.ceil(remainingMs / 1000)
-
-  const label = errorStatus === 429
-    ? 'rate limited'
-    : errorStatus === 529
-      ? 'overloaded'
-      : errorKind === 'server_error'
-        ? 'server error'
-        : 'retrying'
-  // Once we've ticked down to 0 the next attempt is mid-flight; "now"
-  // is more honest than "in 0s".
-  const phase = seconds > 0 ? `retrying in ${seconds}s` : 'retrying now'
-  // Suppress the "/0" tail when max_retries is missing —better to
-  // show just the attempt number than a nonsense fraction.
-  const attemptText =
-    maxRetries > 0 ? `attempt ${attempt}/${maxRetries}` : `attempt ${attempt}`
-  return (
-    <div className="msg result retry" aria-label="api retry">
-      <span className="result-mark" aria-hidden="true"><IconClock size={12} /> {label}</span>
-      <span className="result-meta">{phase} · {attemptText}</span>
     </div>
   )
 }
@@ -659,10 +557,10 @@ function rateLimitResetMs(value: unknown): number | null {
 
 /** Inline card for `rate_limit_event` frames — a plan rate-limit state
  *  transition (`allowed` → `allowed_warning` → `rejected`). Static by
- *  design (unlike ApiRetryView): these windows reset on hour scales, so
- *  there is nothing meaningful to tick. `resetsAt` / `overageResetsAt`
- *  units are undocumented — pass them through rateLimitResetMs, never
- *  multiply by hand. */
+ *  design (unlike the WorkingBubble's RetryLabel): these windows reset on
+ *  hour scales, so there is nothing meaningful to tick. `resetsAt` /
+ *  `overageResetsAt` units are undocumented — pass them through
+ *  rateLimitResetMs, never multiply by hand. */
 export function RateLimitView({ msg }: { msg: SdkMessage }) {
   const info = msg.rate_limit_info ?? {}
   const status = info.status ?? 'allowed'

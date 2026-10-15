@@ -367,6 +367,119 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
     expect(form.groupId).toBe('g1')
   })
 
+  it('offers a "Create group …" row for a new name and submits it as newGroupName', async () => {
+    const onSubmit = vi.fn()
+    render(
+      <NewSessionDialog
+        {...baseProps}
+        onSubmit={onSubmit}
+        groups={[{ id: 'g1', name: 'Sprint', sessionIds: [] }]}
+        maxGroupSize={10}
+      />,
+    )
+    fireEvent.click(groupTrigger())
+    const search = screen.getByRole('textbox', { name: 'Search groups' })
+    fireEvent.change(search, { target: { value: 'Fresh Team' } })
+    const create = fieldItems().find((el) => el.textContent?.includes('Create group'))!
+    expect(create.textContent).toContain('Fresh Team')
+    fireEvent.click(create)
+    // Trigger shows the pending name once the menu closes.
+    expect(groupTrigger().textContent).toContain('Fresh Team')
+
+    const form = await clickCreate(onSubmit)
+    expect(form.newGroupName).toBe('Fresh Team')
+    // The pending group replaces any concrete group pick — don't send both.
+    expect(form.groupId).toBeUndefined()
+  })
+
+  it('does not offer group creation when the typed name matches an existing group', async () => {
+    render(
+      <NewSessionDialog
+        {...baseProps}
+        groups={[{ id: 'g1', name: 'Sprint', sessionIds: [] }]}
+        maxGroupSize={10}
+      />,
+    )
+    fireEvent.click(groupTrigger())
+    const search = screen.getByRole('textbox', { name: 'Search groups' })
+    fireEvent.change(search, { target: { value: 'Sprint' } })
+    // Exact existing-name match suppresses the create row (FieldPicker's
+    // exact-label rule) — the real group is the only offer.
+    expect(fieldItems().some((el) => el.textContent?.includes('Create group'))).toBe(false)
+    expect(fieldItems().some((el) => el.textContent?.includes('Sprint'))).toBe(true)
+  })
+
+  it('clears the pending new group when an existing group is picked', async () => {
+    const onSubmit = vi.fn()
+    render(
+      <NewSessionDialog
+        {...baseProps}
+        onSubmit={onSubmit}
+        groups={[{ id: 'g1', name: 'Sprint', sessionIds: [] }]}
+        maxGroupSize={10}
+      />,
+    )
+    fireEvent.click(groupTrigger())
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search groups' }), {
+      target: { value: 'Fresh Team' },
+    })
+    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Create group'))!)
+
+    // User changes their mind and picks the existing group instead.
+    fireEvent.click(groupTrigger())
+    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Sprint'))!)
+
+    const form = await clickCreate(onSubmit)
+    expect(form.groupId).toBe('g1')
+    expect(form.newGroupName).toBeUndefined()
+  })
+
+  it('clears the pending new group when None is picked', async () => {
+    const onSubmit = vi.fn()
+    render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.click(groupTrigger())
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search groups' }), {
+      target: { value: 'Fresh Team' },
+    })
+    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Create group'))!)
+
+    fireEvent.click(groupTrigger())
+    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('None (Ungrouped)'))!)
+
+    const form = await clickCreate(onSubmit)
+    expect(form.groupId).toBeUndefined()
+    expect(form.newGroupName).toBeUndefined()
+  })
+
+  it('does not offer group creation for a name App would reject (over-length)', async () => {
+    render(<NewSessionDialog {...baseProps} />)
+    fireEvent.click(groupTrigger())
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search groups' }), {
+      // 45 chars — over validateGroupName's 40-char cap. Offering the row
+      // would only fail AFTER the session POST landed, stranding the
+      // session ungrouped, so it must not be offered at all.
+      target: { value: 'x'.repeat(45) },
+    })
+    expect(fieldItems().some((el) => el.textContent?.includes('Create group'))).toBe(false)
+  })
+
+  it('shows the pending new group as the selected row when the menu reopens', async () => {
+    render(<NewSessionDialog {...baseProps} />)
+    fireEvent.click(groupTrigger())
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search groups' }), {
+      target: { value: 'Fresh Team' },
+    })
+    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Create group'))!)
+
+    // Reopen: the pending pick must be visible and CHECKED in the listbox —
+    // same contract as the Model picker's current-value row.
+    fireEvent.click(groupTrigger())
+    const pending = fieldItems().find(
+      (el) => el.querySelector('.field-picker-item-name')?.textContent === 'Fresh Team',
+    )!
+    expect(pending.getAttribute('aria-selected')).toBe('true')
+  })
+
   it('drops a stale group id instead of submitting it as None', async () => {
     const onSubmit = vi.fn()
     const { rerender } = render(
@@ -617,6 +730,55 @@ describe('NewSessionDialog field pickers (model / permission mode / group)', () 
 
     const form = await clickCreate(onSubmit)
     expect(form.modelGroupId).toBeUndefined()
+  })
+})
+
+describe('NewSessionDialog worktree isolation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  })
+  afterEach(() => window.localStorage.clear())
+
+  const isolateRow = (root: HTMLElement) => {
+    const label = Array.from(root.querySelectorAll('label')).find((l) =>
+      l.textContent?.includes('Isolate in its own worktree'),
+    )
+    expect(label, 'worktree isolation row').toBeDefined()
+    return label!.querySelector('input[type="checkbox"]') as HTMLInputElement
+  }
+
+  const clickCreate = async (onSubmit: ReturnType<typeof vi.fn>) => {
+    const createBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    )!
+    fireEvent.click(createBtn)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    return onSubmit.mock.calls[0][0] as NewSessionForm
+  }
+
+  it('submits isolateWorktree: true when the checkbox is checked', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.click(isolateRow(baseElement))
+    expect(isolateRow(baseElement).checked).toBe(true)
+
+    const form = await clickCreate(onSubmit)
+    expect(form.isolateWorktree).toBe(true)
+  })
+
+  it('omits isolateWorktree when the checkbox is left unchecked', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    expect(isolateRow(baseElement).checked).toBe(false)
+
+    const form = await clickCreate(onSubmit)
+    expect(form.isolateWorktree).toBeUndefined()
   })
 })
 

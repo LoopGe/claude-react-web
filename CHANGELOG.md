@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`api_retry` moved from a transcript divider into the WorkingBubble** — a
+  rate-limit retry (429/529 auto-retry) no longer renders as an amber
+  `.msg.result.retry` tail divider in the message list; the WorkingBubble's
+  phase label is REPLACED by the retry state instead (`⏳ rate limited —
+  retrying in 9s · attempt 1/3`, amber, ticking at 1 Hz). Label precedence:
+  `waiting` still outranks it, it outranks `recapping` and the phase label —
+  during a retry wait nothing streams, so the phase is stale and the retry
+  countdown is the bubble's only true state. The countdown logic (deadline
+  anchoring, stop-at-zero) moved from the deleted `ApiRetryView` into a
+  `RetryLabel` child isolated inside the memoized bubble so the tick
+  re-renders only that subtree. The side-chat drawer's WorkingBubble now gets
+  the frame too (it previously showed nothing during a retry). Two countdown
+  defects were fixed in the move: a follow-up frame carrying the SAME
+  `retry_delay_ms` (a fixed server Retry-After) now restarts the timer
+  instead of freezing at "retrying now", and the deadline anchors at the
+  frame's pump-stamped `receivedAt` so a reconnecting tab's replay-re-armed
+  countdown shows the true remaining wait rather than restarting from the
+  full delay. Nothing changed on the wire or in the store: the transient
+  `mirror.apiRetry` slot remains the single source, and the frame stays
+  durable in the server ring so a reconnecting tab's incremental replay
+  re-arms the slot. The dead `shouldHideByDefault` entry (the slot never
+  produces an item to hide) and the synthetic tail row (`API_RETRY_ROW_ID`)
+  were removed with it.
+
 ### Removed
 
 - **Per-session accent colour** — the ability to give an individual session its
