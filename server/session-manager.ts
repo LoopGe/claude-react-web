@@ -3484,6 +3484,17 @@ export class SessionManager {
           s.withdrawnUuids.splice(0, s.withdrawnUuids.length - WITHDRAWN_UUIDS_CAP)
         }
         this.pushMessageStatus(id, { kind: 'messages-withdrawn', sessionId: id, uuids: [...uuids] })
+        // Tombstone the seq store for the withdrawn prompts (same funnel as
+        // the retraction paths): queued-only prompts never reach the SDK
+        // JSONL, so the sidecar row recorded at send time is their ONLY
+        // durable copy — without this a restart's reconcile resurrects them.
+        // Fire-and-forget like every other eviction call site; the
+        // `messages-evicted` frame rides the resolved seqs (broadcast from
+        // within so the seqs are known), keeping connected tabs' windows in
+        // lockstep via WINDOW_EVICT. Client-side both frames are idempotent
+        // in either arrival order (evictMessages no-ops on already-evicted
+        // uuids; evictSeqs returns the input untouched when nothing deletes).
+        this.evictTranscriptAndBroadcast(id, [...uuids])
       }
       // If the interrupt left the session in a DEAD working state — nothing
       // queued (no unpaired promptUuids, empty input queue) and no turn in

@@ -7605,6 +7605,63 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sub!.unsubscribe()
     })
 
+    it('tombstones the withdrawn prompts in the seq store, broadcasts messages-evicted, and does not resurrect them after a restart', async () => {
+      // A queued-only prompt never reaches the SDK JSONL — the sidecar row
+      // recorded at send time (pushToSession → recordTranscriptFor) is its
+      // ONLY durable copy. interrupt(cancelQueued) must tombstone it, or the
+      // restart reconcile hydrates the withdrawal right back.
+      const { info, queuedUuids } = setupQueued(1)
+      const frames: Array<{ kind?: string; uuids?: string[]; seqs?: number[]; generation?: number }> = []
+      const sub = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of sub!.iterable) {
+          frames.push(v as { kind?: string; uuids?: string[]; seqs?: number[]; generation?: number })
+        }
+      })()
+
+      await sm.interrupt(info.id, { cancelQueued: true })
+
+      // (a) The seq store's window no longer contains the withdrawn prompt
+      // (seq space: in-flight seed = 0, queued-0 = 1).
+      await sm.getTranscriptWindow(info.id) // ensure reconcile completed
+      const win = await sm.getTranscriptWindow(info.id)
+      const winUuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+      expect(winUuids).not.toContain(queuedUuids[0])
+      expect(win.totalCount).toBe(1)
+
+      // (b) A tombstone row landed in the sidecar file.
+      const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
+      expect(existsSync(sidecarFile)).toBe(true)
+      const hasTombstoneRow = async (): Promise<boolean> => {
+        const rows = readFileSync(sidecarFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { seq?: number; evicted?: boolean })
+        return rows.some((r) => r.evicted === true && typeof r.seq === 'number')
+      }
+      expect(await waitFor(hasTombstoneRow)).toBe(true)
+
+      // (c) The messages-evicted frame carries the withdrawn prompt's seq
+      // (after the messages-withdrawn frame, same channel).
+      await waitFor(() => frames.some((f) => f.kind === 'messages-evicted'))
+      expect(frames.map((f) => f.kind)).toEqual(['messages-withdrawn', 'messages-evicted'])
+      const evicted = frames.find((f) => f.kind === 'messages-evicted')!
+      expect(evicted.seqs).toEqual([1])
+      expect(evicted.generation).toBe(0)
+
+      // Restart shape: a fresh manager over the same state dir rehydrates
+      // from the sidecar — the withdrawn prompt must NOT reappear.
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        const reloaded = await sm2.getTranscriptWindow(info.id)
+        const reloadedUuids = reloaded.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+        expect(reloadedUuids).not.toContain(queuedUuids[0])
+        expect(reloaded.totalCount).toBe(1)
+      } finally {
+        await sm2.shutdown()
+      }
+      sub!.unsubscribe()
+    })
+
     it('a plain interrupt leaves the queue intact (queued turns start the next turn)', async () => {
       const { info, h, queuedUuids } = setupQueued(1)
       const removed = await sm.interrupt(info.id)
