@@ -49,7 +49,7 @@ import {
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from './ws-protocol.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
-import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession } from './session-worktree.js'
+import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees, worktreePathFor } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
@@ -893,6 +893,7 @@ export class SessionManager {
       sessions: this.sessions,
       workingStuckMs: opts.workingStuckMs ?? defaultConfig.workingStuckMs,
       unload: (id, opts) => this.unload(id, opts),
+      sweepOrphanWorktrees: () => this.sweepOrphansTick(),
     })
 
     // RecapManager — owns the lifecycle (pending — ready/error) for the
@@ -6380,6 +6381,25 @@ export class SessionManager {
         s.subscribers.delete(subId)
       },
     }
+  }
+
+  /** One orphan-worktree sweep, invoked by the health monitor's 60s GC
+   *  tick (fire-and-forget — the sweep is best-effort and never throws).
+   *  A dir under <stateDir>/worktrees is orphaned when no live session and
+   *  no persisted meta claims its id — EXCEPT /clear inheritance, where the
+   *  successor Y (new id) claims the predecessor-named dir via
+   *  worktree.path, so claimed-path metas count as owners too. */
+  private sweepOrphansTick(): void {
+    const store = this.store
+    if (!store) return
+    void sweepOrphanWorktrees(store.getDir(), {
+      hasSession: (id) => {
+        if (this.sessions.has(id) || store.has(id)) return true
+        const dir = worktreePathFor(store.getDir(), id)
+        return store.list().some((m) => m.worktree?.path === dir)
+      },
+      log,
+    })
   }
 
   /** Delete a session for good: close its Query AND erase its persistence

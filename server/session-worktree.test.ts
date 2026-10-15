@@ -8,7 +8,8 @@ import { HttpError } from './errors.js'
 import { branchExists, commitExists } from './git.js'
 import {
   branchFor, ensureWorktreeForResume, provisionWorktree,
-  removeWorktreeForSession, withRepoLock, worktreePathFor, worktreePathOf,
+  removeWorktreeForSession, sweepOrphanWorktrees, withRepoLock,
+  worktreePathFor, worktreePathOf,
 } from './session-worktree.js'
 import type { WorktreeInfo } from '../shared/session-info.js'
 import {
@@ -248,6 +249,93 @@ describe('removeWorktreeForSession', () => {
     ).resolves.toBeUndefined()
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain('rm-cccc-1')
+  })
+})
+
+describe('sweepOrphanWorktrees', () => {
+  /** Backdate a dir's mtime past the sweep's grace window. */
+  const backdate = async (dir: string, ms = 11 * 60_000) => {
+    const t = new Date(Date.now() - ms)
+    await fsPromises.utimes(dir, t, t)
+  }
+  const makeLog = () => {
+    const warns: string[] = []
+    const log = { warn: (m: string) => warns.push(m), info: (_m: string) => {} }
+    return { warns, log }
+  }
+
+  it('returns 0 when the worktrees root is missing', async () => {
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    const { log } = makeLog()
+    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(0)
+  })
+
+  it('sweeps an old unclaimed orphan with a valid registration, keeping the branch', async () => {
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    const p = await provisionWorktree(stateDir, 'swp-aaaa-1', repo)
+    await backdate(p.worktreePath)
+    const { warns, log } = makeLog()
+
+    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(1)
+
+    await expect(fsPromises.access(p.worktreePath)).rejects.toThrow()
+    // Branch survives (delete-keeps-branch rule) and the registration in the
+    // common dir is gone (basename of the dir = session id).
+    expect(await branchExists(repo, p.branch)).toBe(true)
+    await expect(fsPromises.access(join(repo, '.git', 'worktrees', 'swp-aaaa-1'))).rejects.toThrow()
+    expect(warns).toEqual([])
+  })
+
+  it('does not sweep an old dir a session still claims (hasSession true)', async () => {
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    const p = await provisionWorktree(stateDir, 'swp-bbbb-1', repo)
+    await backdate(p.worktreePath)
+    const { log } = makeLog()
+
+    await expect(sweepOrphanWorktrees(stateDir, { hasSession: (id) => id === 'swp-bbbb-1', log })).resolves.toBe(0)
+
+    await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
+  })
+
+  it('does not sweep a fresh unclaimed dir (mtime grace window)', async () => {
+    const repo = await makeRepo()
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    const p = await provisionWorktree(stateDir, 'swp-cccc-1', repo)
+    const { log } = makeLog()
+
+    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(0)
+
+    await expect(fsPromises.access(p.worktreePath)).resolves.toBeUndefined()
+  })
+
+  it('removes a corrupted orphan dir (no valid .git) without throwing and warns', async () => {
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    const dir = join(stateDir, 'worktrees', 'swp-dddd-1')
+    await fsPromises.mkdir(dir, { recursive: true })
+    // Garbage registration: the .git file points nowhere real.
+    await fsPromises.writeFile(join(dir, '.git'), 'gitdir: /nonexistent/nowhere/xyz\n')
+    await backdate(dir)
+    const { warns, log } = makeLog()
+
+    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(1)
+
+    await expect(fsPromises.access(dir)).rejects.toThrow()
+    expect(warns.length).toBeGreaterThan(0)
+  })
+
+  it('removes an unregistered orphan dir (no .git file at all) without throwing', async () => {
+    const stateDir = await mkdtempUnderTmp('crw-swt-')
+    const dir = join(stateDir, 'worktrees', 'swp-eeee-1')
+    await fsPromises.mkdir(dir, { recursive: true })
+    await backdate(dir)
+    const { warns, log } = makeLog()
+
+    await expect(sweepOrphanWorktrees(stateDir, { hasSession: () => false, log })).resolves.toBe(1)
+
+    await expect(fsPromises.access(dir)).rejects.toThrow()
+    expect(warns.length).toBeGreaterThan(0)
   })
 })
 

@@ -7,12 +7,12 @@
 // an in-process mutex keyed on `getGitCommonDir(mainRepoCwd)`, so two
 // sessions sharing a repo never interleave their git mutations.
 
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, promises as fsPromises } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { HttpError } from './errors.js'
 import {
   branchExists, commitExists, createWorktree, getGitCommonDir,
-  pruneWorktrees, removeWorktreeDir, tryCaptureGitHead,
+  pruneWorktrees, removeWorktreeDir, runGit, tryCaptureGitHead,
 } from './git.js'
 import type { WorktreeInfo } from '../shared/session-info.js'
 
@@ -131,4 +131,90 @@ export async function removeWorktreeForSession(
   } catch (err) {
     log.warn(`[${sessionId}] worktree cleanup failed (branch ${wt.branch} kept): ${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+/** Grace window before the sweep considers an unclaimed dir orphaned:
+ *  provisionWorktree mkdirs first and the WorktreeInfo lands in the store
+ *  seconds later — mtime grace protects that window. */
+const SWEEP_GRACE_MS = 10 * 60_000
+
+const SWEEP_GIT_TIMEOUT_MS = 30_000
+
+/** Sweep orphaned worktree dirs: directories under <stateDir>/worktrees/
+ *  that no persisted-or-live session claims, older than the grace window
+ *  (provision lands in the store seconds after mkdir — mtime grace protects
+ *  that window). Branches are NEVER touched (delete-keeps-branch rule).
+ *  Best-effort per directory; never throws. */
+export async function sweepOrphanWorktrees(
+  stateDir: string,
+  opts: { hasSession: (sessionId: string) => boolean; log: { warn(msg: string): void; info(msg: string): void } },
+): Promise<number> {
+  const root = join(stateDir, 'worktrees')
+  let names: string[]
+  try {
+    names = await fsPromises.readdir(root)
+  } catch {
+    // Missing (or unreadable) root — nothing was ever provisioned here.
+    return 0
+  }
+  let removed = 0
+  for (const name of names) {
+    const dir = join(root, name)
+    try {
+      const st = await fsPromises.stat(dir)
+      if (!st.isDirectory()) continue
+      if (Date.now() - st.mtimeMs < SWEEP_GRACE_MS) continue
+      if (opts.hasSession(name)) continue
+      await removeOrphanWorktree(dir, opts.log)
+      removed++
+    } catch (err) {
+      opts.log.warn(`worktree sweep: failed handling ${dir}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  return removed
+}
+
+/** Teardown for ONE orphan dir. A valid `.git` registration → clean
+ *  `git worktree remove --force` (clears the registration in the common
+ *  dir); anything else → plain rm + best-effort `worktree prune`.
+ *  Branches are never touched. Never throws. */
+async function removeOrphanWorktree(
+  dir: string, log: { warn(msg: string): void; info(msg: string): void },
+): Promise<void> {
+  const commonDir = await worktreeCommonDir(dir)
+  if (!commonDir) {
+    log.warn(`worktree sweep: ${dir} has no valid .git registration; removing the directory directly`)
+  } else {
+    try {
+      await withRepoLock(commonDir, () =>
+        runGit(commonDir, ['worktree', 'remove', '--force', dir], { timeoutMs: SWEEP_GIT_TIMEOUT_MS }))
+      return
+    } catch (err) {
+      log.warn(`worktree sweep: git worktree remove failed for ${dir}, removing the directory directly: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  await fsPromises.rm(dir, { recursive: true, force: true })
+  if (commonDir) {
+    try {
+      await runGit(commonDir, ['worktree', 'prune'], { timeoutMs: SWEEP_GIT_TIMEOUT_MS })
+    } catch {
+      // Best-effort — a stale registration is harmless once the dir is gone.
+    }
+  }
+}
+
+/** Read a linked worktree's `.git` file
+ *  (`gitdir: <mainRepo>/.git/worktrees/<name>`) and derive the common git
+ *  dir (`<mainRepo>/.git`). Null when the file is missing or malformed. */
+async function worktreeCommonDir(dir: string): Promise<string | null> {
+  let raw: string
+  try {
+    raw = await fsPromises.readFile(join(dir, '.git'), 'utf8')
+  } catch {
+    return null
+  }
+  // Rest-of-line capture: git writes the raw path and it may contain spaces.
+  const m = /^gitdir:[ \t]*(.+?)[ \t]*$/m.exec(raw)
+  if (!m) return null
+  return dirname(dirname(m[1]))
 }

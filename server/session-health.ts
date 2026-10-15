@@ -30,6 +30,9 @@ export interface HealthMonitorDeps {
   workingStuckMs: number
   /** Escalate: force-unload a session that couldn't be unstuck. */
   unload(id: string, opts: { terminate: boolean; reason: string }): Promise<void>
+  /** Fire-and-forget orphan-worktree sweep, invoked once per GC tick.
+   *  Optional — absent when there is no state dir. */
+  sweepOrphanWorktrees?: () => void
 }
 
 export class SessionHealthMonitor {
@@ -60,6 +63,9 @@ export class SessionHealthMonitor {
     for (const [id, s] of this.deps.sessions) {
       this.checkStuck(id, s, now)
     }
+    // Orphan worktree GC rides the same tick — fire-and-forget, once per
+    // tick (the sweep itself is best-effort and never throws).
+    this.deps.sweepOrphanWorktrees?.()
   }
 
   /** Detect sessions that have made no progress for too long and try to

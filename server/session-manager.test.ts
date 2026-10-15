@@ -8673,6 +8673,70 @@ describe('clear() worktree isolation', () => {
   })
 })
 
+describe('orphan worktree sweep (health-tick wiring)', () => {
+  let dir: string
+  let store: SessionStore
+  let sm: SessionManager
+  let repo: string
+
+  beforeAll(async () => {
+    repo = await makeRepo()
+  })
+  afterAll(async () => {
+    await cleanupGitFixtures()
+  })
+  beforeEach(async () => {
+    mockHandles.length = 0
+    dir = makeTmpDir()
+    store = new SessionStore({ stateDir: dir })
+    await store.load()
+    sm = new SessionManager({ store })
+  })
+  afterEach(async () => {
+    await sm.shutdown()
+    rmRf(dir)
+  })
+
+  /** Fire the manager's per-tick sweep (what the 60s health monitor calls)
+   *  and give the async fire-and-forget sweep time to settle. */
+  const sweepTick = async () => {
+    ;(sm as unknown as { sweepOrphansTick(): void }).sweepOrphansTick()
+    await new Promise((r) => setTimeout(r, 100))
+  }
+
+  it('removes an old orphaned dir no session claims', async () => {
+    const orphan = join(dir, 'worktrees', 'orphan-id-1')
+    await nodeFs.mkdir(orphan, { recursive: true })
+    const old = new Date(Date.now() - 11 * 60_000)
+    await nodeFs.utimes(orphan, old, old)
+
+    await sweepTick()
+
+    await waitForIo(() => !existsSync(orphan))
+    expect(existsSync(orphan)).toBe(false)
+  })
+
+  it('keeps an old dir claimed by a live successor via worktree.path (/clear inheritance)', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    const wtPath = join(dir, 'worktrees', info.id)
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    // Backdate BEFORE clear: /clear never touches the dir, so without the
+    // worktree.path guard the sweep would see an old dir whose NAME matches
+    // no persisted-or-live session (X was removed from both; Y has a new id).
+    const old = new Date(Date.now() - 11 * 60_000)
+    await nodeFs.utimes(wtPath, old, old)
+
+    await sm.clear(info.id)
+    expect(existsSync(wtPath)).toBe(true)
+
+    await sweepTick()
+
+    expect(existsSync(wtPath)).toBe(true)
+  })
+})
+
 describe('delete() / setCwd() worktree cleanup', () => {
   let dir: string
   let store: SessionStore
