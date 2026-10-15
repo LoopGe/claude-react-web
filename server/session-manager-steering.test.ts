@@ -103,7 +103,7 @@ async function makeSteeringSession() {
   const registry = new ProviderRegistry()
   registry.register(provider)
   const sm = new SessionManager({ store, providers: registry })
-  const info = sm.create({ cwd: undefined, model: 'test-model', provider: 'fake' })
+  const info = await sm.create({ cwd: undefined, model: 'test-model', provider: 'fake' })
   const s = (sm as unknown as { sessions: Map<string, { pendingTurns: number; turnActive?: boolean; steeredInFlight: Map<string, AgentUserMessage>; promptUuids?: Array<{ u: string; v?: string }>; history: AgentUserMessage[]; id: string; handle: FakeHandle }> }).sessions.get(info.id)!
   return { sm, s, handle: s.handle, info, dir, provider }
 }
