@@ -10,7 +10,7 @@
 .chat,
 .side-chat-drawer {
   --chat-reading-max-width: 900px;
-  --chat-reading-min-inset: 20px;
+  --chat-reading-min-inset: 12px;
   --chat-reading-inset: max(var(--chat-reading-min-inset), calc((100% - var(--chat-reading-max-width)) / 2));
 }
 
