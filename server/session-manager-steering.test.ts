@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SessionStore } from './persistence.js'
@@ -453,6 +454,57 @@ describe('steering config toggle', () => {
     } finally {
       __setConfigForTest(before)
       await sm.shutdown()
+    }
+  })
+})
+
+// ── seq 窗口集成（merge pinning test）────────────────────────────────────
+// Steered 消息在 dispatch 时由 pushToSession → recordTranscriptFor 打上 seq，
+// 自动进入 transcript seq store；重启后的 reconcile 从 sidecar 还原整窗，
+// steered 行必须随窗口一起回来（GET /sessions/:id/messages 的服务端事实源）。
+
+describe('steered messages ride the transcript seq window', () => {
+  const waitForFileContent = async (file: string, needle: string): Promise<boolean> => {
+    for (let i = 0; i < 100; i++) {
+      if (existsSync(file) && readFileSync(file, 'utf8').includes(needle)) return true
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    return existsSync(file) && readFileSync(file, 'utf8').includes(needle)
+  }
+
+  it('a steered message is seq-assigned at dispatch and reappears via getTranscriptWindow after a restart-shaped reconcile', async () => {
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, handle, info, dir } = ctx
+    // 第一条正常排队 → mid-turn；第二条 mid-turn 纯文本 → steer
+    sm.send(info.id, 'first message')
+    const steered = sm.send(info.id, 'pivot to python')
+    expect(handle.enqueueSupplement).toHaveBeenCalledWith({ uuid: steered.uuid, text: 'pivot to python' })
+
+    // Dispatch 即打 seq（recordTranscriptFor 在 pushToSession 内同步执行）。
+    const liveWin = await sm.getTranscriptWindow(info.id)
+    const liveRow = liveWin.messages.find((m) => (m.msg as { uuid?: string }).uuid === steered.uuid)
+    expect(liveRow).toBeDefined()
+    expect((liveRow!.msg as { message?: { content?: string } }).message?.content).toBe('pivot to python')
+
+    // 等侧面 ndjson sidecar 落盘（重启 reconcile 的唯一数据源）。
+    const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
+    expect(await waitForFileContent(sidecarFile, steered.uuid!)).toBe(true)
+
+    // Restart-shaped reconcile：同 state dir 上的全新 manager，冷 seq store
+    // 从 sidecar 对账 —— steered 行必须随窗口回来。
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    const sm2 = new SessionManager({ store: store2 })
+    try {
+      const reloaded = await sm2.getTranscriptWindow(info.id)
+      const row = reloaded.messages.find((m) => (m.msg as { uuid?: string }).uuid === steered.uuid)
+      expect(row).toBeDefined()
+      expect((row!.msg as { message?: { content?: string } }).message?.content).toBe('pivot to python')
+      // seq 空间跨重启连续：steered 的 seq 不变。
+      expect(row!.seq).toBe(liveRow!.seq)
+    } finally {
+      await sm2.shutdown()
     }
   })
 })

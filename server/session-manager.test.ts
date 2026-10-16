@@ -1,12 +1,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
-import type { Options } from '@anthropic-ai/claude-agent-sdk'
+import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rmRf } from './__test-utils__/index.js'
-import { subagentTranscriptPath } from './subagent-watcher.js'
+import { encodeCwd, subagentTranscriptPath } from './subagent-watcher.js'
 
 // Wrap node:fs/promises so `stat` is a controllable mock that defaults to the
 // real implementation (preexisting stat users keep working) but individual
@@ -1484,14 +1484,15 @@ describe('SessionManager', () => {
     expect(sm.get(info.id).working).toBe(false)
   })
 
-  it('subscribe() replays history and streams live messages', async () => {
+  it('subscribe() streams live messages (history read via getHistory)', async () => {
     const info = await sm.create({})
     mockHandles[0].emit({ type: 'assistant', message: { content: 'hello' } })
     await tick()
 
     const sub = sm.subscribe(info.id)
-    expect(sub.history).toHaveLength(1)
-    expect(sub.history[0]).toMatchObject({ type: 'assistant' })
+    const ring = sm.getHistory(info.id) as Array<{ type?: string }>
+    expect(ring).toHaveLength(1)
+    expect(ring[0]).toMatchObject({ type: 'assistant' })
 
     const it = sub.iterable[Symbol.asyncIterator]()
     const pending = it.next()
@@ -1551,7 +1552,7 @@ describe('SessionManager', () => {
       mockHandles[0].emit({ type: 'assistant', uuid: 'm2', parent_tool_use_id: null, receivedAt: 3, message: { content: 'x' } })
       await tick()
       const sub = sm.subscribe(info.id)
-      expect(uuids(sub.history as Array<{ uuid?: string }>)).toEqual(['m1', 's1', 'm2'])
+      expect(uuids(sm.getHistory(info.id) as Array<{ uuid?: string }>)).toEqual(['m1', 's1', 'm2'])
       sub.unsubscribe()
     })
 
@@ -1579,9 +1580,9 @@ describe('SessionManager', () => {
       expect(mainUuids).toHaveLength(2)
       expect(mainUuids[mainUuids.length - 1]).toBe('asst-1')
       expect(uuids(sY.subagentHistory)).toEqual(['s1'])
-      // Merged replay of Y shows the subagent frame in its chronological slot.
+      // Merged view of Y shows the subagent frame in its chronological slot.
       const sub = sm.subscribe(y.id)
-      const merged = uuids(sub.history as Array<{ uuid?: string }>)
+      const merged = uuids(sm.getHistory(y.id) as Array<{ uuid?: string }>)
       expect(merged).toHaveLength(3)
       expect(merged[1]).toBe('s1')
       expect(merged[2]).toBe('asst-1')
@@ -5536,6 +5537,476 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('transcript seq store (Task 3 wiring)', () => {
+    const waitFor = async (cond: () => boolean, ticks = 60): Promise<boolean> => {
+      for (let i = 0; i < ticks; i++) {
+        if (cond()) return true
+        await tick()
+      }
+      return cond()
+    }
+
+    const emitAssistant = (uuid: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+
+    it('seq-assigns sent prompts and pump-ingested messages; window reads back by seq', async () => {
+      const info = await sm.create({ cwd: '/tmp' })
+      sm.send(info.id, 'hello')
+      emitAssistant('a1', 'hi there')
+      mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'init1' })
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+
+      const win = await sm.getTranscriptWindow(info.id)
+      // Durable rows only: the user prompt, the assistant reply, the result
+      // frame. system/init stays out of the seq space (non-broadcast system).
+      expect(win.messages.map((m) => [(m.msg as { uuid?: string }).uuid, m.seq])).toEqual([
+        [expect.any(String), 0],
+        ['a1', 1],
+        ['r1', 2],
+      ])
+      expect((win.messages[0].msg as { message?: { content?: string } }).message?.content).toBe('hello')
+      expect(win.totalCount).toBe(3)
+      expect(win.headSeq).toBe(3)
+      expect(win.hasMore).toBe(false)
+      expect(sm.transcriptHead(info.id)).toEqual({ generation: 0, headSeq: 3 })
+    })
+
+    it('pages backwards by exclusive seq bound', async () => {
+      const info = await sm.create({ cwd: '/tmp' })
+      for (let i = 0; i < 5; i++) emitAssistant(`a${i}`, `m${i}`)
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r', session_id: info.id })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 6)).toBe(true)
+
+      const page = await sm.getTranscriptWindow(info.id, 3, 2)
+      expect(page.messages.map((m) => m.seq)).toEqual([1, 2])
+      expect(page.hasMore).toBe(true)
+      const first = await sm.getTranscriptWindow(info.id, 1, 2)
+      expect(first.messages.map((m) => m.seq)).toEqual([0])
+      expect(first.hasMore).toBe(false)
+    })
+
+    it('persists an ndjson sidecar; evictTranscript tombstones flow through the window and survive a reload', async () => {
+      const info = await sm.create({ cwd: '/tmp' })
+      sm.send(info.id, 'evict me')
+      emitAssistant('a1', 'reply')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+      await sm.getTranscriptWindow(info.id) // ensure reconcile completed
+
+      const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
+      expect(existsSync(sidecarFile)).toBe(true)
+
+      const userUuid = ((await sm.getTranscriptWindow(info.id)).messages[0].msg as { uuid?: string }).uuid as string
+      expect(await sm.evictTranscript(info.id, [userUuid, 'unknown-uuid'])).toEqual([0])
+      // Idempotent: a repeat evict returns nothing and appends nothing.
+      expect(await sm.evictTranscript(info.id, [userUuid])).toEqual([])
+
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => m.seq)).toEqual([1, 2])
+      expect(win.totalCount).toBe(2)
+      expect(win.headSeq).toBe(3) // seqs are not recycled
+
+      // Simulate a process restart: a fresh manager over the same state dir
+      // rehydrates the store from the sidecar, tombstone included.
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        const reloaded = await sm2.getTranscriptWindow(info.id)
+        expect(reloaded.messages.map((m) => m.seq)).toEqual([1, 2])
+        expect(reloaded.totalCount).toBe(2)
+        expect(reloaded.generation).toBe(0)
+      } finally {
+        await sm2.shutdown()
+      }
+    })
+
+    it('unknown sessions read as empty: transcriptHead null, window empty', async () => {
+      expect(sm.transcriptHead('no-such-session')).toBeNull()
+      expect(await sm.evictTranscript('no-such-session', ['u1'])).toEqual([])
+      const win = await sm.getTranscriptWindow('no-such-session')
+      expect(win.messages).toEqual([])
+      expect(win.totalCount).toBe(0)
+    })
+
+    it('fork pre-seeds the seq space: a post-fork live message seq exceeds every pre-fork row (chronology holds)', async () => {
+      // Give the SOURCE a completed turn so fork() allows the branch.
+      const sourceCwd = '/tmp/fork-seq-src'
+      const source = await sm.create({ cwd: sourceCwd })
+      sm.send(source.id, 'before fork')
+      emitAssistant('live-pre-1', 'prefork reply')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'live-pre-r', session_id: source.id })
+      expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
+
+      // Write the source's transcript JSONL where findTranscriptFile looks
+      // for it — the fork's pre-seed composes its pre-fork rows from the
+      // SOURCE's on-disk transcript (the fork's own file only materializes
+      // when its CLI copies it at subprocess start).
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      let forked: Awaited<ReturnType<typeof sm.fork>>
+      try {
+        const jsonlPath = join(dir, 'projects', encodeCwd(sourceCwd), `${source.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(
+          jsonlPath,
+          [
+            JSON.stringify({ type: 'user', uuid: 'disk-u1', sessionId: source.id, parent_tool_use_id: null, message: { role: 'user', content: 'before fork' } }),
+            JSON.stringify({ type: 'assistant', uuid: 'disk-a1', sessionId: source.id, message: { role: 'assistant', content: [{ type: 'text', text: 'prefork reply' }] } }),
+            '',
+          ].join('\n'),
+        )
+        forked = await sm.fork(source.id)
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+
+      // The fork is LIVE with its own pump — ingest a message into it.
+      const forkHandle = mockHandles[mockHandles.length - 1]
+      forkHandle.emit({
+        type: 'assistant',
+        uuid: 'post-fork-1',
+        parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'text', text: 'live after fork' }] },
+      })
+      forkHandle.emit({ type: 'result', subtype: 'success', uuid: 'post-fork-r', session_id: forked.id })
+      expect(await waitFor(() => sm.get(forked.id).lastTurnAt !== undefined)).toBe(true)
+
+      const win = await sm.getTranscriptWindow(forked.id)
+      const byUuid = new Map(win.messages.map((m) => [(m.msg as { uuid?: string }).uuid, m.seq]))
+      // The pre-fork rows were assigned first, dense from 0.
+      expect(byUuid.get('disk-u1')).toBe(0)
+      expect(byUuid.get('disk-a1')).toBe(1)
+      // The post-fork live message and its result came AFTER every
+      // pre-fork seq — the regression would put them at 0..k ahead of the
+      // back-filled pre-fork rows.
+      expect(byUuid.get('post-fork-1')).toBe(2)
+      expect(byUuid.get('post-fork-r')).toBe(3)
+      expect(win.totalCount).toBe(4)
+    })
+
+    it('fork restart reconcile never re-appends an inherited prompt (v→u bridge)', async () => {
+      const sourceCwd = '/tmp/fork-bridge-src'
+      const source = await sm.create({ cwd: sourceCwd })
+      sm.send(source.id, 'hello world')
+      // SDK echo: pairs the server-minted `u` with the SDK's on-disk `v` and
+      // persists the mapping into the source's prompt-uuid sidecar (the pump
+      // drops this frame as an input echo — it never enters the seq store).
+      mockHandles[0].emit({
+        type: 'user',
+        uuid: 'sdk-v-1',
+        parent_tool_use_id: null,
+        message: { role: 'user', content: 'hello world' },
+      })
+      const promptUuidFile = join(dir, 'prompt-uuids', `${source.id}.json`)
+      expect(await waitFor(() => existsSync(promptUuidFile))).toBe(true)
+      const sourceMappings = JSON.parse(readFileSync(promptUuidFile, 'utf8')) as Array<{ u: string; v?: string }>
+      const serverU = sourceMappings.find((e) => e.v === 'sdk-v-1')!.u
+      // fork() gates on a completed turn — settle one.
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'pre-r', session_id: source.id })
+      expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
+
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      let forked: Awaited<ReturnType<typeof sm.fork>>
+      try {
+        // The source's transcript on disk carries the SDK uuid `v`.
+        const srcJsonl = join(dir, 'projects', encodeCwd(sourceCwd), `${source.id}.jsonl`)
+        mkdirSync(dirname(srcJsonl), { recursive: true })
+        const rows = [
+          JSON.stringify({ type: 'user', uuid: 'sdk-v-1', sessionId: source.id, parent_tool_use_id: null, message: { role: 'user', content: 'hello world' } }),
+          JSON.stringify({ type: 'assistant', uuid: 'sdk-a1', sessionId: source.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
+          '',
+        ].join('\n')
+        writeFileSync(srcJsonl, rows)
+        forked = await sm.fork(source.id)
+        // Simulate the forkSession copy: the fork's own JSONL is the source
+        // conversation under the SAME SDK uuids. (The real CLI performs this
+        // copy at subprocess start; the mock doesn't, so write it by hand.)
+        const forkJsonl = join(dir, 'projects', encodeCwd(sourceCwd), `${forked.id}.jsonl`)
+        writeFileSync(forkJsonl, rows)
+
+        // LIVE USE between fork and restart (the round-3 regression): the
+        // fork's first post-fork prompt + echo + result. onPromptEcho saves
+        // the WHOLE in-memory promptUuids list with writeAtomic REPLACE —
+        // the live session must carry the bridged inherited mappings or the
+        // save wipes them off disk right here.
+        sm.send(forked.id, 'after fork')
+        const forkHandle = mockHandles[mockHandles.length - 1]
+        forkHandle.emit({
+          type: 'user',
+          uuid: 'sdk-v-fork-1',
+          parent_tool_use_id: null,
+          message: { role: 'user', content: 'after fork' },
+        })
+        forkHandle.emit({ type: 'result', subtype: 'success', uuid: 'post-fork-r', session_id: forked.id })
+        expect(await waitFor(() => sm.get(forked.id).lastTurnAt !== undefined)).toBe(true)
+
+        const forkMappingFile = join(dir, 'prompt-uuids', `${forked.id}.json`)
+        const readForkMappings = (): Array<{ u: string; v?: string }> =>
+          existsSync(forkMappingFile) ? (JSON.parse(readFileSync(forkMappingFile, 'utf8')) as Array<{ u: string; v?: string }>) : []
+        // The echo's REPLACE save kept the inherited mapping AND added the
+        // new prompt's pairing.
+        expect(await waitFor(() => readForkMappings().some((e) => e.v === 'sdk-v-fork-1'))).toBe(true)
+        const forkMappings = readForkMappings()
+        expect(forkMappings.some((e) => e.v === 'sdk-v-1' && e.u === serverU)).toBe(true)
+        const forkNewU = forkMappings.find((e) => e.v === 'sdk-v-fork-1')!.u
+
+        // The live fork's seq space: pre-seeded rows + the live prompt + its
+        // result (the echo frame is dropped by the pump — no seq).
+        const liveWin = await sm.getTranscriptWindow(forked.id)
+        expect(liveWin.totalCount).toBe(4)
+        expect(liveWin.messages.map((m) => [(m.msg as { uuid?: string }).uuid, m.seq])).toEqual([
+          [serverU, 0],
+          ['sdk-a1', 1],
+          [forkNewU, 2],
+          ['post-fork-r', 3],
+        ])
+
+        // The SDK appends the new prompt to the fork's JSONL — extend the
+        // copy before the restart reconcile.
+        writeFileSync(
+          forkJsonl,
+          [
+            ...rows.split('\n').filter((l) => l.trim() !== ''),
+            JSON.stringify({ type: 'user', uuid: 'sdk-v-fork-1', sessionId: forked.id, parent_tool_use_id: null, message: { role: 'user', content: 'after fork' } }),
+            '',
+          ].join('\n'),
+        )
+
+        // Fork restart: a fresh manager over the same state dir reconciles
+        // the fork's seq store from its sidecar + its own JSONL, rewriting
+        // the copied `v` rows through the FORK's (bridged) prompt-uuid store.
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(forked.id)
+          // The regression: without the bridge (or with the live echo wiping
+          // it) the copied `sdk-v-1` uuid misses dedup and the inherited
+          // prompt is appended AGAIN at a fresh tail seq (totalCount 5, two
+          // user rows carrying `sdk-v-1` / `serverU` respectively).
+          expect(win.totalCount).toBe(4)
+          expect(win.messages.map((m) => m.seq)).toEqual([0, 1, 2, 3])
+          const users = win.messages.filter((m) => (m.msg as { type?: string }).type === 'user')
+          expect(users.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([serverU, forkNewU])
+          // No raw SDK uuid may survive the rewrite.
+          expect(win.messages.some((m) => (m.msg as { uuid?: string }).uuid === 'sdk-v-1')).toBe(false)
+          expect(win.messages.some((m) => (m.msg as { uuid?: string }).uuid === 'sdk-v-fork-1')).toBe(false)
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+
+    it('discard-style fork (explicit historySeed) bridges only the seed’s prompt mappings', async () => {
+      const sourceCwd = '/tmp/fork-bridge-seed'
+      const source = await sm.create({ cwd: sourceCwd })
+      // Two mapped prompts; the seed (discard's kept prefix) contains only
+      // the FIRST — the bridge must not copy the second's mapping.
+      sm.send(source.id, 'first')
+      mockHandles[0].emit({
+        type: 'user', uuid: 'sdk-v-1', parent_tool_use_id: null,
+        message: { role: 'user', content: 'first' },
+      })
+      await tick()
+      sm.send(source.id, 'second')
+      mockHandles[0].emit({
+        type: 'user', uuid: 'sdk-v-2', parent_tool_use_id: null,
+        message: { role: 'user', content: 'second' },
+      })
+      const promptUuidFile = join(dir, 'prompt-uuids', `${source.id}.json`)
+      // Wait for BOTH echoes to be persisted (the file appears after the
+      // first save; existence alone races the second).
+      const readMappings = (): Array<{ u: string; v?: string }> =>
+        existsSync(promptUuidFile) ? (JSON.parse(readFileSync(promptUuidFile, 'utf8')) as Array<{ u: string; v?: string }>) : []
+      expect(await waitFor(() => readMappings().filter((e) => e.v != null).length >= 2)).toBe(true)
+      const sourceMappings = readMappings()
+      const serverU1 = sourceMappings.find((e) => e.v === 'sdk-v-1')!.u
+      // fork() gates on a completed turn — settle one.
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'pre-r', session_id: source.id })
+      expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
+
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      let forked: Awaited<ReturnType<typeof sm.fork>>
+      try {
+        // historySeed is what discard() passes: the kept prefix with
+        // rewriteSeedPromptUuids ALREADY applied (server `u` uuids).
+        const seed = [
+          { type: 'user', uuid: serverU1, parent_tool_use_id: null, session_id: source.id, message: { role: 'user', content: 'first' } },
+          { type: 'assistant', uuid: 'sdk-a1', session_id: source.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } },
+        ] as SDKMessage[]
+        forked = await sm.fork(source.id, { historySeed: seed })
+
+        // Bridge selection: only the seed's mapping is copied.
+        const forkMappingFile = join(dir, 'prompt-uuids', `${forked.id}.json`)
+        expect(existsSync(forkMappingFile)).toBe(true)
+        const forkMappings = JSON.parse(readFileSync(forkMappingFile, 'utf8')) as Array<{ u: string; v?: string }>
+        expect(forkMappings).toEqual([{ u: serverU1, v: 'sdk-v-1' }])
+
+        // The truncated fork JSONL copy (kept turn only, SDK `v` uuids);
+        // restart reconcile must rewrite and dedup, not re-append.
+        const forkJsonl = join(dir, 'projects', encodeCwd(sourceCwd), `${forked.id}.jsonl`)
+        mkdirSync(dirname(forkJsonl), { recursive: true })
+        writeFileSync(
+          forkJsonl,
+          [
+            JSON.stringify({ type: 'user', uuid: 'sdk-v-1', sessionId: forked.id, parent_tool_use_id: null, message: { role: 'user', content: 'first' } }),
+            JSON.stringify({ type: 'assistant', uuid: 'sdk-a1', sessionId: forked.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
+            '',
+          ].join('\n'),
+        )
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const win = await sm2.getTranscriptWindow(forked.id)
+          expect(win.totalCount).toBe(2)
+          const users = win.messages.filter((m) => (m.msg as { type?: string }).type === 'user')
+          expect(users).toHaveLength(1)
+          expect((users[0].msg as { uuid?: string }).uuid).toBe(serverU1)
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+  })
+  describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {
+    const waitFor = async (cond: () => boolean, ticks = 60): Promise<boolean> => {
+      for (let i = 0; i < ticks; i++) {
+        if (cond()) return true
+        await tick()
+      }
+      return cond()
+    }
+
+    const emitAssistant = (uuid: string, text: string) => {
+      mockHandles[0].emit({
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      })
+    }
+
+    /** Complete a turn so the seq space has: user prompt (seq 0), assistant
+     *  reply (seq 1), result frame (seq 2). Returns the prompt's uuid. */
+    const seedTurn = async () => {
+      const info = await sm.create({ cwd: '/tmp' })
+      sm.send(info.id, 'refuse me')
+      emitAssistant('a1', 'refused leg')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
+      await sm.getTranscriptWindow(info.id) // ensure reconcile completed
+      const win = await sm.getTranscriptWindow(info.id)
+      return { info, userUuid: win.messages[0].uuid as string }
+    }
+
+    const collectMsgStatus = (id: string): Array<Record<string, unknown>> => {
+      const sub = sm.subscribeMessageStatus(id)
+      if (!sub) throw new Error('no message-status channel')
+      const frames: Array<Record<string, unknown>> = []
+      void (async () => {
+        for await (const f of sub.iterable) frames.push(f as unknown as Record<string, unknown>)
+      })()
+      return frames
+    }
+
+    const sessionOf = (id: string) => {
+      const internals = sm as unknown as {
+        sessions: Map<string, { dialogPending: Map<string, unknown> }>
+      }
+      const s = internals.sessions.get(id)
+      if (!s) throw new Error('session not live')
+      return s
+    }
+
+    it('broadcasts messages-evicted (seqs + generation) when the pump sees a refusal retraction', async () => {
+      const { info, userUuid } = await seedTurn()
+
+      const frames = collectMsgStatus(info.id)
+      mockHandles[0].emit({
+        type: 'system',
+        subtype: 'model_refusal_fallback',
+        retracted_message_uuids: [userUuid, 'uuid-never-seen'],
+      })
+      expect(await waitFor(() => frames.some((f) => f.kind === 'messages-evicted'))).toBe(true)
+      const ev = frames.find((f) => f.kind === 'messages-evicted') as {
+        seqs: number[]
+        generation: number
+      }
+      // Unknown uuids contribute nothing; the tombstoned seq matches the
+      // store, and the frame carries the store's generation.
+      expect(ev.seqs).toEqual([0])
+      expect(ev.generation).toBe(0)
+
+      // The tombstone reached the window: seq 0 gone, later rows kept.
+      const after = await sm.getTranscriptWindow(info.id)
+      expect(after.messages.map((m) => m.seq)).not.toContain(0)
+      expect(after.messages.map((m) => m.seq)).toEqual(expect.arrayContaining([1, 2]))
+    })
+
+    it('evicts on dialog resolution carrying retractedMessageUuids (any resolution path)', async () => {
+      const { info, userUuid } = await seedTurn()
+      const opts = mockHandles.at(-1)!.options as {
+        onUserDialog?: (
+          req: { dialogKind: string; payload: Record<string, unknown> },
+          ctx: { signal: AbortSignal },
+        ) => Promise<{ behavior: string; result?: unknown }>
+      }
+      const promise = opts.onUserDialog!(
+        { dialogKind: 'refusal_fallback_prompt', payload: { retractedMessageUuids: [userUuid] } },
+        { signal: new AbortController().signal },
+      )
+      const frames = collectMsgStatus(info.id)
+      const s = sessionOf(info.id)
+      const did = [...s.dialogPending.keys()][0]!
+      sm.decideDialog(info.id, did, { behavior: 'completed', result: 'retry_fallback' })
+      await promise
+
+      expect(await waitFor(() => frames.some((f) => f.kind === 'messages-evicted'))).toBe(true)
+      const ev = frames.find((f) => f.kind === 'messages-evicted') as { seqs: number[] }
+      expect(ev.seqs).toEqual([0])
+    })
+
+    it('evictTranscript reconciles a COLD store before tombstoning (reconcile-first)', async () => {
+      const { info, userUuid } = await seedTurn()
+
+      // Simulate a restart: a fresh manager over the same state dir. The
+      // session is persisted but never loaded — its seq store is cold, and
+      // eviction keyed by uuid would silently miss against a half-empty
+      // index. Reconcile-first must rebuild the index from the sidecar,
+      // then tombstone the right seq.
+      await sm.shutdown()
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        expect(await sm2.evictTranscript(info.id, [userUuid])).toEqual([0])
+        const win = await sm2.getTranscriptWindow(info.id)
+        expect(win.messages.map((m) => m.seq)).toEqual([1, 2])
+        expect(win.totalCount).toBe(2)
+      } finally {
+        await sm2.shutdown()
+      }
+    })
+  })
+
   describe('per-session op lock', () => {
     function deferred(): { promise: Promise<void>; resolve: () => void } {
       let resolve!: () => void
@@ -7446,6 +7917,63 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sub!.unsubscribe()
     })
 
+    it('tombstones the withdrawn prompts in the seq store, broadcasts messages-evicted, and does not resurrect them after a restart', async () => {
+      // A queued-only prompt never reaches the SDK JSONL — the sidecar row
+      // recorded at send time (pushToSession → recordTranscriptFor) is its
+      // ONLY durable copy. interrupt(cancelQueued) must tombstone it, or the
+      // restart reconcile hydrates the withdrawal right back.
+      const { info, queuedUuids } = await setupQueued(1)
+      const frames: Array<{ kind?: string; uuids?: string[]; seqs?: number[]; generation?: number }> = []
+      const sub = sm.subscribeMessageStatus(info.id)
+      void (async () => {
+        for await (const v of sub!.iterable) {
+          frames.push(v as { kind?: string; uuids?: string[]; seqs?: number[]; generation?: number })
+        }
+      })()
+
+      await sm.interrupt(info.id, { cancelQueued: true })
+
+      // (a) The seq store's window no longer contains the withdrawn prompt
+      // (seq space: in-flight seed = 0, queued-0 = 1).
+      await sm.getTranscriptWindow(info.id) // ensure reconcile completed
+      const win = await sm.getTranscriptWindow(info.id)
+      const winUuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+      expect(winUuids).not.toContain(queuedUuids[0])
+      expect(win.totalCount).toBe(1)
+
+      // (b) A tombstone row landed in the sidecar file.
+      const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
+      expect(existsSync(sidecarFile)).toBe(true)
+      const hasTombstoneRow = async (): Promise<boolean> => {
+        const rows = readFileSync(sidecarFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { seq?: number; evicted?: boolean })
+        return rows.some((r) => r.evicted === true && typeof r.seq === 'number')
+      }
+      expect(await waitFor(hasTombstoneRow)).toBe(true)
+
+      // (c) The messages-evicted frame carries the withdrawn prompt's seq
+      // (after the messages-withdrawn frame, same channel).
+      await waitFor(() => frames.some((f) => f.kind === 'messages-evicted'))
+      expect(frames.map((f) => f.kind)).toEqual(['messages-withdrawn', 'messages-evicted'])
+      const evicted = frames.find((f) => f.kind === 'messages-evicted')!
+      expect(evicted.seqs).toEqual([1])
+      expect(evicted.generation).toBe(0)
+
+      // Restart shape: a fresh manager over the same state dir rehydrates
+      // from the sidecar — the withdrawn prompt must NOT reappear.
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        const reloaded = await sm2.getTranscriptWindow(info.id)
+        const reloadedUuids = reloaded.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+        expect(reloadedUuids).not.toContain(queuedUuids[0])
+        expect(reloaded.totalCount).toBe(1)
+      } finally {
+        await sm2.shutdown()
+      }
+      sub!.unsubscribe()
+    })
+
     it('a plain interrupt leaves the queue intact (queued turns start the next turn)', async () => {
       const { info, h, queuedUuids } = await setupQueued(1)
       const removed = await sm.interrupt(info.id)
@@ -7664,11 +8192,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
      *  `message-consumed` frame reaches attached tabs only, so a replay-only
      *  client would otherwise render an already-processed turn as
      *  permanently 'queued'. */
-    const replayOf = (sid: string): Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }> => {
-      const sub = sm.subscribe(sid)
-      sub.unsubscribe()
-      return sub.history as unknown as Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }>
-    }
+    const replayOf = (sid: string): Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }> =>
+      sm.getHistory(sid) as unknown as Array<{ uuid?: string; receivedAt?: number; consumedAt?: number }>
 
     it('stamps consumedAt on the replayed copy for the idle direct-handoff path', async () => {
       const info = await sm.create({ cwd: dir })

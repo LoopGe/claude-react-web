@@ -39,7 +39,7 @@
 import { open, readFile, readdir, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { claudeConfigDir } from './claude-config-dir.js'
-import { BROADCAST_SYSTEM_SUBTYPES, trimLargeToolResults } from './history-utils.js'
+import { isRenderableSdkMessage, trimLargeToolResults } from './history-utils.js'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
 import { condensePromptPreview } from '../shared/prompt-preview.js'
@@ -76,36 +76,6 @@ export interface RawLine {
   isCompactSummary?: boolean
   message?: { role?: string; content?: unknown }
   [k: string]: unknown
-}
-
-/** SDK interrupt placeholder. When the user interrupts a turn, the CLI
- *  writes a synthetic `user` text message into the transcript ?e.g.
- *  "[Request interrupted by user]" or "[Request interrupted by user for
- *  tool use]". The live pump never surfaces it (it's a null-parent user
- *  frame with no tool_result, so the echo-drop filter in session-pump.ts
- *  removes it), and the SDK itself skips it when deriving session titles
- *  (regex `wk` in sdk.mjs). The disk-history path must filter it too, or
- *  resume / lazy-load would render it as a bare user bubble. Mirrors the
- *  SDK's own pattern: anchored at line start, optional trailing text
- *  inside the brackets. */
-const INTERRUPT_PLACEHOLDER_RE = /^\s*\[Request interrupted by user[^\]]*\]\s*$/
-
-/** True when a user message's content is *only* the SDK interrupt
- *  placeholder text. Handles both string content and the text-block array
- *  shape; any non-text/tool_result block or extra text means it's a real
- *  message and we keep it. */
-function isInterruptPlaceholder(content: unknown): boolean {
-  if (typeof content === 'string') return INTERRUPT_PLACEHOLDER_RE.test(content)
-  if (!Array.isArray(content)) return false
-  let sawText = false
-  for (const block of content) {
-    if (!block || typeof block !== 'object') return false
-    const b = block as { type?: unknown; text?: unknown }
-    if (b.type !== 'text' || typeof b.text !== 'string') return false
-    if (!INTERRUPT_PLACEHOLDER_RE.test(b.text)) return false
-    sawText = true
-  }
-  return sawText
 }
 
 export interface TranscriptFile {
@@ -217,6 +187,35 @@ const LAST_PROMPT_CACHE_CAP = 512
  *  a broad any-XML-tag rule. */
 const SYNTHETIC_FRAME_PREFIX_RE =
   /^\s*<(command-name|command-message|command-args|bash-input|bash-stdout|bash-stderr|local-command-stdout|local-command-stderr)>/
+
+/** The SDK's interrupt placeholder text ("[Request interrupted by user…]") is
+ *  a user-role frame the CLI writes for an aborted turn — not a real prompt
+ *  (it has no matching user echo the pump could pair, and the result-frame
+ *  with no tool_result, so the echo-drop filter in session-pump.ts
+ *  removes it), and the SDK itself skips it when deriving session titles
+ *  (regex `wk` in sdk.mjs). The disk-history path must filter it too, or
+ *  resume / lazy-load would render it as a bare user bubble. Mirrors the
+ *  SDK's own pattern: anchored at line start, optional trailing text
+ *  inside the brackets. */
+const INTERRUPT_PLACEHOLDER_RE = /^\s*\[Request interrupted by user[^\]]*\]\s*$/
+
+/** True when a user message's content is *only* the SDK interrupt
+ *  placeholder text. Handles both string content and the text-block array
+ *  shape; any non-text/tool_result block or extra text means it's a real
+ *  message and we keep it. */
+function isInterruptPlaceholder(content: unknown): boolean {
+  if (typeof content === 'string') return INTERRUPT_PLACEHOLDER_RE.test(content)
+  if (!Array.isArray(content)) return false
+  let sawText = false
+  for (const block of content) {
+    if (!block || typeof block !== 'object') return false
+    const b = block as { type?: unknown; text?: unknown }
+    if (b.type !== 'text' || typeof b.text !== 'string') return false
+    if (!INTERRUPT_PLACEHOLDER_RE.test(b.text)) return false
+    sawText = true
+  }
+  return sawText
+}
 
 /** Parse a transcript tail window into the session's last user prompt.
  *
@@ -414,27 +413,15 @@ function toolResultParentId(content: unknown): string | null {
   return null
 }
 
-/** True if a raw JSONL line should appear in the rendered transcript. */
+/** True if a raw JSONL line should appear in the rendered transcript.
+ *  Delegates to the shared isRenderableSdkMessage predicate in
+ *  history-utils.ts (BROADCAST_SYSTEM_SUBTYPES + tool_use_summary +
+ *  interrupt-placeholder + isMeta/isSidechain gates) — the SAME judgment the
+ *  live seq-store ingest uses, so disk pages and the seq window can't drift
+ *  apart. `result` lines don't exist on disk (the SDK never writes them);
+ *  they re-enter the transcript via mergeResultFrames. */
 function isRenderable(o: RawLine): boolean {
-  if (o.isMeta || o.isSidechain) return false
-  if (o.type === 'user') {
-    // Drop the SDK's interrupt placeholder (see INTERRUPT_PLACEHOLDER_RE).
-    // The live pump already filters it; mirror that here so resume /
-    // lazy-load don't render it as a stray user bubble.
-    return !isInterruptPlaceholder(o.message?.content)
-  }
-  if (o.type === 'assistant') return true
-  if (o.type === 'system' && typeof o.subtype === 'string' && BROADCAST_SYSTEM_SUBTYPES.has(o.subtype)) {
-    return true
-  }
-  // `tool_use_summary` is a top-level type (not a system subtype): a compact
-  // "what just happened" summary the CLI emits after a tool cascade, meant
-  // for transcript display. The live path broadcasts it unconditionally
-  // (shouldBroadcastMessage only gates `system` frames); mirror that here so
-  // disk pages render it the same way. `tool_progress` lines (per-tool
-  // liveness pings) stay non-renderable on both paths.
-  if (o.type === 'tool_use_summary') return true
-  return false
+  return isRenderableSdkMessage(o)
 }
 
 /** Copy whitelisted TOP-LEVEL fields from a raw line through to the wire

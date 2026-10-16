@@ -17,6 +17,8 @@ import { coerceToolProfile } from '../../shared/tool-profile.js'
 import { isBlockedEnvVar } from '../session-env.js'
 import { createLogger } from '../log.js'
 import { validateSendBody } from '../send-body.js'
+import { HttpError } from '../errors.js'
+import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
 import { worktreeIsDirty } from '../git.js'
 import { worktreePathOf } from '../session-worktree.js'
 
@@ -526,24 +528,93 @@ export function buildSessionRouter(
     return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
   })
 
-  // Paginated history (lazy-load older messages from disk).
-  //
-  // Query params:
-  //   before — disk index to page backwards from (exclusive). Omit for the
-  //            newest page. Pass the previous response's `startIndex` to walk
-  //            further back.
-  //   limit  — page size (default 200, clamped server-side to [1, 1000]).
-  //
-  // Returns { messages, totalCount, startIndex, hasMore }. Messages are in
-  // chronological order and shape-compatible with live SDK messages.
+  // Legacy history shim — kept one version period for old clients (spec §3:
+  // "现有 /history 保留一个版本期，内部转发新端点，随后删除"). The response
+  // shape { messages, totalCount, startIndex, hasMore } is unchanged, but the
+  // paging space is now the seq store (append-stable seqs, tombstones
+  // filtered out) via sm.getTranscriptWindow — the same read path
+  // GET /sessions/:id/messages serves. Legacy params translate as follows:
+  //   before     — was a disk renderable index, now passed through as a seq
+  //                bound (exclusive). Both spaces chain identically for the
+  //                only legal old-client pattern: the previous response's
+  //                `startIndex` becomes the next request's `before`.
+  //   beforeUuid — translated to its seq via the store's uuid index
+  //                (sm.transcriptSeqOfUuid); an unknown uuid can only mean a
+  //                stale client, so it 400s (the legacy disk reader silently
+  //                served the newest page for an unmatched uuid — the plan
+  //                rules that the shim rejects instead).
+  // A `before` beyond headSeq is NOT an error here (unlike /messages): it is
+  // clamped to headSeq and serves the newest page — exactly the legacy
+  // reader's clamp (`end = min(before, total)`).
+  // `messages` entries are TOP-LEVEL flattened `{ ...msg, seq }`: old clients
+  // read m.uuid / m.type / m.message directly, and the store's msg is the
+  // same normalize() output the legacy reader produced (Task 6 dual-read
+  // parity gate proved the two paths emit identical messages).
   app.get('/sessions/:id/history', async (c) => {
     const id = c.req.param('id')
+    sm.get(id) // live-or-persisted existence check; unknown → HttpError 404
     const beforeRaw = c.req.query('before')
     const beforeUuid = c.req.query('beforeUuid') || undefined
     const limitRaw = c.req.query('limit')
     const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : undefined
-    const limit = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : 200
-    const page = await sm.getHistoryPage(id, { before, beforeUuid, limit })
+    if (beforeRaw != null && before === undefined) {
+      throw new HttpError(400, 'before must be a non-negative integer')
+    }
+    const limitNum = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : undefined
+    const limit = Math.min(1000, Math.max(1, limitNum ?? 200))
+    let beforeSeq: number | undefined
+    if (beforeUuid !== undefined) {
+      const seq = await sm.transcriptSeqOfUuid(id, beforeUuid)
+      if (seq === undefined) {
+        throw new HttpError(400, `beforeUuid ${beforeUuid} is not a known message uuid`)
+      }
+      beforeSeq = seq
+    } else if (before !== undefined) {
+      // Legacy clamp: sliceWindow computed end = min(before, total), so a
+      // stale or oversized `before` served the newest page. The seq window
+      // would land on the same page too, but only after scanning every
+      // missing seq down from the bound — clamp to headSeq first (the cheap
+      // probe read also forces the cold-session reconcile).
+      const head = await sm.getTranscriptWindow(id, undefined, 1)
+      beforeSeq = Math.min(before, head.headSeq)
+    }
+    const page = await sm.getTranscriptWindow(id, beforeSeq, limit)
+    return c.json({
+      messages: page.messages.map((m) => ({ ...(m.msg as object), seq: m.seq })),
+      totalCount: page.totalCount,
+      startIndex: page.startIndex,
+      hasMore: page.hasMore,
+    })
+  })
+
+  // Seq-paginated transcript read — the single transcript read entry of the
+  // seq-window protocol. Unlike /history (disk-paged, uuid-anchored), this
+  // pages the SessionManager's seq store: append-stable seqs, tombstones
+  // filtered out, exclusive `before` bound, cold sessions reconciled on
+  // first read. Query params:
+  //   before — exclusive upper seq bound; omit for the newest page. Pass the
+  //            previous response's `startIndex` to walk further back.
+  //   limit  — page size (default 200, clamped to [1, 1000] like /history).
+  // Errors: unknown session 404 (sm.get); structurally invalid `before`
+  // (non-numeric / negative) 400 — `limit` is clamped, not rejected;
+  // `before > headSeq` 400, because a cursor past the head can only mean a
+  // stale client (e.g. across a generation reset) that must re-attach, not
+  // page an empty tail forever.
+  app.get('/sessions/:id/messages', async (c) => {
+    const id = c.req.param('id')
+    sm.get(id) // live-or-persisted existence check; unknown → HttpError 404
+    const beforeRaw = c.req.query('before')
+    const limitRaw = c.req.query('limit')
+    const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : undefined
+    if (beforeRaw != null && before === undefined) {
+      throw new HttpError(400, 'before must be a non-negative integer')
+    }
+    const limitNum = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : undefined
+    const limit = Math.min(1000, Math.max(1, limitNum ?? 200))
+    const page: TranscriptPageResponse = await sm.getTranscriptWindow(id, before, limit)
+    if (before !== undefined && before > page.headSeq) {
+      throw new HttpError(400, `before (${before}) is beyond headSeq (${page.headSeq})`)
+    }
     return c.json(page)
   })
 

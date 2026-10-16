@@ -47,7 +47,7 @@ import {
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
-import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from './ws-protocol.js'
+import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
@@ -129,7 +129,15 @@ import {
   subagentTranscriptPath,
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
-import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, stampRequeuedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId } from './history-utils.js'
+import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, stampRequeuedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId, trimLargeToolResults } from './history-utils.js'
+import { TranscriptStore, type TranscriptWindow } from './transcript-store.js'
+import {
+  TranscriptSidecar,
+  backfillFromEntries,
+  foldSidecarRows,
+  recordTranscriptMessage,
+  type TranscriptHolder,
+} from './transcript-sidecar.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -830,6 +838,22 @@ export class SessionManager {
   /** Cached PumpDeps — all fields reference stable `this` members,
    *  so the object is built once and reused. */
   private cachedPumpDeps?: PumpDeps
+  /** Per-session transcript seq stores (transcript seq refactor, Task 3).
+   *  Lazy: created on first ingest (pump / direct ring append) or first
+   *  window read; `reconciled` flips once the store has been hydrated from
+   *  the ndjson sidecar AND back-filled against the on-disk JSONL, so live
+   *  ingests only record into a complete seq space. Dropped on unload —
+   *  the sidecar file survives, so a later resume re-hydrates from it. */
+  private readonly transcriptStores = new Map<string, TranscriptHolder>()
+  /** In-flight transcript reconciles, keyed by session id — getTranscriptWindow
+   *  and resume() can both trigger one; they must share the same promise. */
+  private readonly transcriptReconciles = new Map<string, Promise<TranscriptHolder>>()
+  /** Message → seq association for messages that entered the history ring
+   *  AFTER seq assignment (pump ingest + direct ring appends). A WeakMap
+   *  keyed by the message OBJECT (not a ring index) so later tasks can read
+   *  a frame's seq without index drift after ring trimming, and without
+   *  mutating the SDKMessage shape. */
+  private readonly seqByMessage = new WeakMap<object, number>()
   constructor(opts: SessionManagerOptions = {}) {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.subagentHistoryCap = opts.subagentHistoryCap ?? defaultConfig.subagentHistoryCap
@@ -839,7 +863,15 @@ export class SessionManager {
     // a resolver rather than the raw session model.
     this.permBroker = new PermissionBroker((id) => this.auxTargetFor(id, 'classifier'))
     this.elicitBroker = new ElicitationBroker()
-    this.dialogBroker = new DialogBroker()
+    // Retraction eviction for user dialogs (Task 5): a resolved
+    // refusal_fallback dialog retracts the refused leg
+    // (retractedMessageUuids). The broker funnels EVERY resolution path
+    // (user decision, interrupt abort, unload cancelAll) through
+    // broadcastDialogResolved, so the hook there covers them all — the CLI
+    // contract is evict on ANY resolution, never on receipt.
+    this.dialogBroker = new DialogBroker((s, _did, _decision, retracted) => {
+      if (retracted && retracted.length > 0) this.evictTranscriptAndBroadcast(s.id, retracted)
+    })
     this.clientDebugBroker = new ClientDebugBroker((frame) => {
       // Only real WS connections subscribe to this channel (see the field
       // doc), so its size IS the browser-tab count. Zero live tabs → report
@@ -1871,6 +1903,14 @@ export class SessionManager {
         historySeed = [...historySeed, ...extra]
       }
     }
+    // Transcript seq reconciliation BEFORE spawn starts the pump (Task 3):
+    // the seq store must cover the full pre-restart history before any live
+    // ingest can allocate seqs into it, or a first-turn message would land
+    // at seq 0 ahead of hundreds of older messages. (The fresh-id fork /
+    // Side-Chat paths have the same ordering guarantee via
+    // preseedForkTranscript — their JSONL is non-empty from birth because
+    // forkSession copies the source transcript into the new id's file.)
+    await this.ensureTranscriptReconciled(id)
     return this.spawn(id, resumeOpts, undefined, historySeed, undefined, undefined, undefined, undefined, promptUuids ?? [])
   }
 
@@ -2228,8 +2268,20 @@ export class SessionManager {
     // below can re-pin the same map at the flag layer if the parent had
     // moved away from `inherit`.
     const parentOverride = live?.skillOverride
+    // Seq-space ordering guarantee (Task 3, review round 1): pre-seed the
+    // fork's store from the source's composition BEFORE spawn starts the
+    // fork's pump — same contract as resume()'s pre-spawn reconcile.
+    // forkSession makes the CLI copy the source transcript into the fork's
+    // own JSONL only when its subprocess starts, so a post-spawn reconcile
+    // could never see the pre-fork rows before the first live ingest.
+    // discard() passes its finalized historySeed (the kept prefix, with
+    // result frames merged and prompt uuids rewritten); a plain fork composes
+    // the source's full renderable transcript, which is what the copy will
+    // contain.
+    const forkId = randomUUID()
+    const bridgedPromptUuids = await this.preseedForkTranscript(forkId, id, { seed: opts?.historySeed })
     const forkInfo = this.spawn(
-      randomUUID(),
+      forkId,
       forkOpts,
       undefined,
       opts?.historySeed,
@@ -2247,7 +2299,13 @@ export class SessionManager {
       // slot, never overflowing the cap.
       id,
       undefined, // evictingSource
-      undefined, // promptUuids
+      // promptUuids: seed the live fork's in-memory list with the bridged
+      // inherited mappings (round 3). onPromptEcho persists the WHOLE
+      // in-memory list with writeAtomic REPLACE semantics, so without this
+      // seed the fork's first post-fork echo would overwrite the sidecar
+      // file and wipe the bridged mappings off disk — reintroducing the
+      // restart duplication on the normal fork→send→restart flow.
+      bridgedPromptUuids,
       opts?.replacesSource,
       // Carry the parent's tool-surface profile so a fork doesn't silently
       // drop a configured built-in tool set (RAM-only, like skillOverride).
@@ -2528,6 +2586,10 @@ export class SessionManager {
       await this.unload(id, { terminated: true, reason: 'discarded', removeFromStore: true })
       await deleteTranscriptFile(id)
       jsonlPageCache.invalidate(id)
+      // The transcript is gone — its seq sidecar must go too (a stale
+      // sidecar surviving the jsonl would rehydrate seqs for messages
+      // that no longer exist).
+      await this.removeTranscriptState(id)
       // Await the sidecar removals (not fire-and-forget): callers — the REST
       // route and tests — read them immediately after discard returns, so a
       // pending remove races the read (observed as a flaky "sidecar gone"
@@ -2733,7 +2795,28 @@ export class SessionManager {
     }
     // Re-apply the parent's OWN MCP selection (same as fork).
     await this.applySessionMcpServers(sideChatOpts, meta.mcpServerNames, parentId)
-    return this.spawn(randomUUID(), sideChatOpts)
+    // Seq-space ordering guarantee (Task 3, review round 1) — same forkSession
+    // hazard as fork(): the Side Chat's own JSONL is a copy of the parent's
+    // that only materializes when its CLI starts, so the inherited tail is
+    // pre-seeded from the PARENT's JSONL bounded by the fork boundary (the
+    // same afterUuid filter every Side-Chat history read applies). Without
+    // this, a first live message would take seq 0 ahead of the inherited rows.
+    const sideChatId = randomUUID()
+    const bridgedPromptUuids = await this.preseedForkTranscript(sideChatId, parentId, { afterUuid: forkBoundaryUuid })
+    // promptUuids (round 3): seed the live Side Chat's in-memory list with
+    // the bridged mappings — same onPromptEcho writeAtomic-REPLACE rationale
+    // as fork().
+    return this.spawn(
+      sideChatId,
+      sideChatOpts,
+      undefined, // customEnv
+      undefined, // historySeed
+      undefined, // skillOverride
+      undefined, // prefs
+      undefined, // joinGroupOf
+      undefined, // evictingSource
+      bridgedPromptUuids,
+    )
   }
 
   /** Fire-and-forget capture of git anchors at session spawn: the
@@ -2793,8 +2876,12 @@ export class SessionManager {
     /** On resume: the promptUuids sidecar loaded from disk, used to seed
      *  `session.promptUuids` (so subsequent sends append to the pre-restart
      *  list) AND — at the resume() call site — to rewrite the historySeed's
-     *  prompt uuids (SDK V → server U). Undefined for every other caller
-     *  (fresh spawn / fork / clear start with an empty list). */
+     *  prompt uuids (SDK V → server U). On fork / Side Chat: the mappings
+     *  preseedForkTranscript bridged from the source — seeding the live
+     *  session's in-memory list is what keeps onPromptEcho's whole-list
+     *  writeAtomic save from wiping the bridged sidecar file on the fork's
+     *  first post-fork echo. Undefined for every other caller (fresh spawn /
+     *  clear start with an empty list). */
     promptUuids?: PromptUuidEntry[],
     /** Set by the crash-recovery "Fork from last completed turn" button: the
      *  source session X is dead and the fork Y is its continuation, so the
@@ -3515,6 +3602,11 @@ export class SessionManager {
     // see its own sent text.
     stampReceivedAt(userMsg)
     pushBounded(s.history, userMsg, this.historyCap)
+    // Seq-assign the prompt at ingestion, BEFORE the subscriber broadcast
+    // (Task 3). The pump drops the SDK's echo of top-level user input, so
+    // this ring append is the only copy — without recording here, user
+    // prompts would never enter the seq space.
+    this.recordTranscriptFor(s.id, userMsg)
     for (const sub of s.subscribers.values()) sub.push(userMsg)
     s.lastActivityAt = Date.now()
     // Mark the session as mid-turn. We cap at 1 (not a true counter)
@@ -3635,14 +3727,25 @@ export class SessionManager {
         // persists at echo time), so no save is needed here.
         s.promptUuids = (s.promptUuids ?? []).filter((e) => !(e.v == null && uuids.has(e.u)))
         // Remember the withdrawal (capped) so a tab that reconnects after the
-        // stop still evicts its bubbles — incremental sinceUuid replay can
-        // never heal this, because the withdrawn messages are gone from the
-        // ring and so are never re-sent to compare against.
+        // stop still evicts its bubbles — no later frame or page ever re-sends
+        // the withdrawn messages, so the synthetic replay of withdrawnUuids is
+        // the only signal a reconnecting tab gets.
         s.withdrawnUuids.push(...uuids)
         if (s.withdrawnUuids.length > WITHDRAWN_UUIDS_CAP) {
           s.withdrawnUuids.splice(0, s.withdrawnUuids.length - WITHDRAWN_UUIDS_CAP)
         }
         this.pushMessageStatus(id, { kind: 'messages-withdrawn', sessionId: id, uuids: [...uuids] })
+        // Tombstone the seq store for the withdrawn prompts (same funnel as
+        // the retraction paths): queued-only prompts never reach the SDK
+        // JSONL, so the sidecar row recorded at send time is their ONLY
+        // durable copy — without this a restart's reconcile resurrects them.
+        // Fire-and-forget like every other eviction call site; the
+        // `messages-evicted` frame rides the resolved seqs (broadcast from
+        // within so the seqs are known), keeping connected tabs' windows in
+        // lockstep via WINDOW_EVICT. Client-side both frames are idempotent
+        // in either arrival order (evictMessages no-ops on already-evicted
+        // uuids; evictSeqs returns the input untouched when nothing deletes).
+        this.evictTranscriptAndBroadcast(id, [...uuids])
       }
       // If the interrupt left the session in a DEAD working state — nothing
       // queued (no unpaired promptUuids, empty input queue) and no turn in
@@ -3741,13 +3844,14 @@ export class SessionManager {
     return { msgs, uuids }
   }
 
-  /** Push a message-status frame (`message-consumed` / `messages-withdrawn`)
-   *  to every subscriber of the session. No-op when the session is unknown or
-   *  has no subscribers. The durable state lives outside these frames — the
-   *  message's `consumedAt` (replayed on reconnect) for consumed flips, the
-   *  ring removal + `withdrawnUuids` subscribe replay for withdrawals — so a
-   *  dropped live frame self-heals. */
-  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn): void {
+  /** Push a message-status frame (`message-consumed` / `messages-withdrawn`
+   *  / `messages-evicted`) to every subscriber of the session. No-op when
+   *  the session is unknown or has no subscribers. The durable state lives
+   *  outside these frames — the message's `consumedAt` (replayed on
+   *  reconnect) for consumed flips, the ring removal + `withdrawnUuids`
+   *  subscribe replay for withdrawals, the sidecar tombstone rows for
+   *  evictions — so a dropped live frame self-heals. */
+  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted): void {
     const s = this.sessions.get(id)
     if (!s || s.messageStatusSubscribers.size === 0) return
     for (const sub of s.messageStatusSubscribers) {
@@ -4249,6 +4353,10 @@ export class SessionManager {
     }
     stampReceivedAt(boundary)
     pushBounded(s.history, boundary, this.historyCap)
+    // Seq-assign the synthetic divider before broadcast (Task 3) — it is a
+    // renderable system frame (compact_boundary) the client shows as a
+    // top-level transcript row.
+    this.recordTranscriptFor(s.id, boundary)
     for (const sub of s.subscribers.values()) {
       try { sub.push(boundary) } catch { /* dropped */ }
     }
@@ -4270,6 +4378,8 @@ export class SessionManager {
     control.call(s.handle, seed)
     stampReceivedAt(seed)
     pushBounded(s.history, seed, this.historyCap)
+    // Seq-assign the hand-off seed before broadcast (Task 3).
+    this.recordTranscriptFor(s.id, seed)
     for (const sub of s.subscribers.values()) {
       try { sub.push(seed) } catch { /* dropped */ }
     }
@@ -6123,7 +6233,7 @@ export class SessionManager {
   }
 
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>
     unsubscribe: () => void
   } | null {
     return this.broadcaster.subscribeMessageStatus(id)
@@ -6370,11 +6480,11 @@ export class SessionManager {
   }
 
   /**
-   * Subscribe to live events. Returns (1) an AsyncIterable the caller can
-   * stream to clients, and (2) a snapshot of history so the caller can replay
-   * past messages before entering the live loop.
+   * Subscribe to live events. Returns the AsyncIterable the caller streams
+   * to clients. Transcript history is NOT attached — the seq-window
+   * protocol pages it over REST (GET /sessions/:id/messages).
    */
-  subscribe(id: string): { iterable: AsyncIterable<SDKMessage>; history: SDKMessage[]; unsubscribe: () => void } {
+  subscribe(id: string): { iterable: AsyncIterable<SDKMessage>; unsubscribe: () => void } {
     const s = this.require(id)
     const subId = randomUUID()
     const sub = createAsyncSubscription<SDKMessage>(() => {
@@ -6390,7 +6500,6 @@ export class SessionManager {
 
     return {
       iterable: sub.iterable,
-      history: this.mergedHistory(s),
       unsubscribe: () => {
         sub.end()
         s.subscribers.delete(subId)
@@ -6421,6 +6530,324 @@ export class SessionManager {
     void sweepOrphanWorktrees(store.getDir(), { claimedDirs, log }).then((n) => {
       if (n > 0) log.info(`[worktree-gc] swept ${n} orphaned worktree dir(s)`)
     })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Transcript seq store (transcript seq refactor, Task 3)
+  //
+  // The seq space is the server-authoritative transcript cursor: every
+  // durable (renderable) message gets a monotonically increasing seq at
+  // ingestion, persisted to an append-only ndjson sidecar so the numbering
+  // survives restarts. Three ingestion points feed it, all converging on
+  // recordTranscriptFor:
+  //   1. the pump's ring-append (PumpDeps.onDurableMessage) — assistant /
+  //      result / broadcast-system / tool_use_summary frames;
+  //   2. pushToSession — top-level user prompts (the pump drops the SDK's
+  //      echo of those, so the pushToSession copy is the only one);
+  //   3. seedCompactSummary — the synthetic compact boundary + hand-off seed.
+  // Reads go through getTranscriptWindow (page) / transcriptHead (cursor).
+  // ---------------------------------------------------------------------------
+
+  /** Get (or lazily create) a session's seq-store holder. Synchronous and
+   *  I/O-free: the store starts EMPTY and unreconciled — reconciling against
+   *  the sidecar + on-disk JSONL happens in ensureTranscriptReconciled. */
+  private getOrCreateTranscript(id: string): TranscriptHolder {
+    let t = this.transcriptStores.get(id)
+    if (!t) {
+      t = {
+        store: new TranscriptStore(id),
+        sidecar: new TranscriptSidecar(this.store?.getDir(), id),
+        reconciled: false,
+      }
+      this.transcriptStores.set(id, t)
+    }
+    return t
+  }
+
+  /** Seq-assign one message at ring-ingestion time. Runs the shared
+   *  renderability gate (isRenderableSdkMessage inside
+   *  recordTranscriptMessage): durable frames get a store seq + a
+   *  fire-and-forget sidecar append; ephemeral / sidechain / non-broadcast
+   *  system frames allocate nothing. The seq→message association lands in
+   *  seqByMessage so the WS frame path (Task 5) can stamp it onto live
+   *  frames without re-walking the store. */
+  private recordTranscriptFor(sessionId: string, msg: SDKMessage): void {
+    const seq = recordTranscriptMessage(this.getOrCreateTranscript(sessionId), msg)
+    if (seq !== null) this.seqByMessage.set(msg, seq)
+  }
+
+  /** Compose the authoritative "what should be in the seq store" list from
+   *  disk for one session: every renderable JSONL line (history-reader's
+   *  gate — the SAME isRenderableSdkMessage the live ingest uses), with the
+   *  result frames the SDK never persists merged back in and the prompt
+   *  uuid bridge applied — i.e. exactly the finalization resume() gives its
+   *  ring seed, but over the FULL history rather than the ring-cap tail.
+   *  Mirroring resume() here is what keeps a rebuilt seq space aligned with
+   *  what the live path assigned (same set, same order).
+   *  `afterUuidOverride` re-points the boundary filter at an explicit uuid —
+   *  preseedForkTranscript uses it to compose a Side Chat's inherited-tail
+   *  view from the PARENT's JSONL (the Side Chat's own file doesn't exist
+   *  until its CLI subprocess copies it). Undefined = the session's own
+   *  meta.forkBoundaryUuid (the normal readHistoryPage semantics). */
+  private async composeTranscriptEntries(id: string, afterUuidOverride?: string): Promise<SDKMessage[]> {
+    const meta = this.sessions.get(id) ?? this.store?.get(id)
+    const provider = this.providers.get(meta?.provider ?? this.defaultProvider)
+    if (!provider?.readHistoryEntries) return []
+    const afterUuid = afterUuidOverride ?? meta?.forkBoundaryUuid
+    const entries = await provider.readHistoryEntries(id, afterUuid ? { afterUuid } : {})
+    const messages = entries.map((e) => e.message) as SDKMessage[]
+    // readHistoryEntries normalizes untrimmed (it feeds search recall);
+    // the live ingest path trims, so apply the same cap here or a rebuilt
+    // store would hold multi-MB tool_results the live path never kept.
+    for (const m of messages) trimLargeToolResults(m)
+    const resultFrames = await this.resultFrameStore.load(id)
+    let composed = mergeResultFrames(messages, resultFrames)
+    composed = rewriteSeedPromptUuids(composed, await this.promptUuidStore.load(id))
+    // Background-subagent completions the JSONL lacks (same backfill the
+    // resume seed gets) — without it those turns' completion cards would
+    // vanish from the seq window after a restart.
+    const extra = await backfillSubagentCompletions(composed, { cwd: meta?.cwd, sessionId: id })
+    if (extra.length > 0) composed = [...composed, ...extra]
+    return composed
+  }
+
+  /** Reconcile a session's seq store with its persisted state and mark it
+   *  ready: hydrate from the ndjson sidecar (seq authority), then walk the
+   *  composed disk list appending everything the store doesn't already know
+   *  (uuid-dedup; uuid-less entries positionally) so a missing or short
+   *  sidecar catches up (spec §2). Idempotent — after the first run the
+   *  holder is `reconciled` and later calls return immediately.
+   *
+   *  Timing contract: resume() awaits this BEFORE spawn() starts the pump,
+   *  and the remaining fresh-id spawn paths (fork / Side Chat) pre-seed
+   *  their store via preseedForkTranscript before spawn — so by the time
+   *  any ingest can race here, the seq space is complete. */
+  private async ensureTranscriptReconciled(id: string): Promise<TranscriptHolder> {
+    const t = this.getOrCreateTranscript(id)
+    if (t.reconciled) return t
+    const inFlight = this.transcriptReconciles.get(id)
+    if (inFlight) return inFlight
+    const p = (async () => {
+      try {
+        t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
+        backfillFromEntries(t, await this.composeTranscriptEntries(id))
+      } catch (err) {
+        // Degraded but usable: the store keeps whatever hydrated/appended
+        // before the failure; the sidecar's append queue is unbroken.
+        log.warn(`[session ${id}] transcript reconcile failed: ${(err as Error).message ?? err}`)
+      } finally {
+        t.reconciled = true
+        this.transcriptReconciles.delete(id)
+      }
+      return t
+    })()
+    this.transcriptReconciles.set(id, p)
+    return p
+  }
+
+  /** Pre-seed a FORK's seq store from its source's transcript BEFORE the
+   *  fork's pump starts — the fork-path counterpart of resume()'s
+   *  pre-spawn reconcile, closing the same chronology hole.
+   *
+   *  The hole: fork()/createSideChat() spawn a NEW id with
+   *  `resume: sourceId, forkSession: true`, and the CLI copies the source
+   *  conversation into the fork's own JSONL only when its subprocess
+   *  starts — so a generic jsonl reconcile can never see the pre-fork
+   *  rows in time. Without pre-seeding, a post-fork live message ingested
+   *  before any reconcile takes seqs 0..k and the pre-fork back-fill
+   *  would land at k+1.. — chronological, append-stable ordering
+   *  permanently broken for that session. Pre-seeding assigns the
+   *  pre-fork rows seqs 0..n-1 FIRST (from the source's composition, or
+   *  the caller's finalized seed — discard passes its truncated
+   *  historySeed, which is exactly the kept prefix), so every live
+   *  message the fork's pump ingests lands at n or above.
+   *
+   *  Prefix-property guarantee: for a truncated fork the seed is a prefix
+   *  of the source composition in the same order, so a later restart
+   *  rebuild from the fork's (truncated-copy) JSONL yields the SAME seqs
+   *  for the surviving rows.
+   *
+   *  The prompt-uuid bridge (review round 2) closes the restart half:
+   *  pre-seeded rows carry server-minted `u` uuids (composeTranscriptEntries
+   *  rewrote them with the SOURCE's mappings), but the fork's own promptUuid
+   *  store starts empty — a fork restart's reconcile backfills from the
+   *  fork's JSONL copy (SDK `v` uuids) and, with no mappings to rewrite
+   *  them, uuid dedup misses and every inherited user prompt is re-appended
+   *  at a fresh tail seq. bridgeInheritedPromptUuids copies exactly the
+   *  mappings the composed rows used, so the restart reconcile rewrites the
+   *  copied `v` rows back to the same `u` and dedups against the sidecar.
+   *  Mechanism choice: COPY the mappings (not "keep raw v uuids in
+   *  pre-seeded rows") because the server's canonical identity for a user
+   *  prompt is `u` everywhere else (ring, withdraw/evict, rewindFiles) —
+   *  keeping `v` would mix identity spaces across the fork's transcript and
+   *  break uuid-keyed eviction for inherited rows.
+   *
+   *  Returns the bridged entries so the caller can ALSO seed the live
+   *  session's in-memory `promptUuids` at spawn (round 3): onPromptEcho
+   *  persists the whole in-memory list with writeAtomic REPLACE semantics,
+   *  so without the in-memory seed the fork's first post-fork echo would
+   *  overwrite the sidecar file and wipe the bridged mappings off disk —
+   *  reintroducing the very duplication this pre-seed exists to prevent,
+   *  on the normal fork→send→restart flow. */
+  private async preseedForkTranscript(
+    forkId: string,
+    sourceId: string,
+    opts: { seed?: SDKMessage[]; afterUuid?: string } = {},
+  ): Promise<PromptUuidEntry[]> {
+    const t = this.getOrCreateTranscript(forkId)
+    if (t.reconciled) return []
+    try {
+      t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
+      const entries = opts.seed ?? (await this.composeTranscriptEntries(sourceId, opts.afterUuid))
+      backfillFromEntries(t, entries)
+      return await this.bridgeInheritedPromptUuids(forkId, sourceId, entries)
+    } catch (err) {
+      // Degraded but usable — same posture as ensureTranscriptReconciled.
+      log.warn(`[session ${forkId}] transcript pre-seed failed: ${(err as Error).message ?? err}`)
+      return []
+    } finally {
+      t.reconciled = true
+    }
+  }
+
+  /** Copy the source's promptUuid mappings for the INHERITED rows into the
+   *  fork's own promptUuid sidecar, so a fork restart's reconcile backfill
+   *  (which reads the fork's JSONL copy under SDK `v` uuids and rewrites via
+   *  the FORK's store) restores the same server `u` uuids the pre-seeded
+   *  rows carry — see preseedForkTranscript. Selection is by row uuid: only
+   *  mappings whose `u` actually appears in the composed rows are bridged,
+   *  so a discard-style truncated seed inherits only the kept prompts'
+   *  mappings. The fork is not live yet (pre-seed runs before spawn), so
+   *  load+save cannot race a concurrent send-append. Returns the bridged
+   *  mappings for the caller to seed the live session's `promptUuids`
+   *  with (see preseedForkTranscript's round-3 note). */
+  private async bridgeInheritedPromptUuids(
+    forkId: string,
+    sourceId: string,
+    entries: readonly SDKMessage[],
+  ): Promise<PromptUuidEntry[]> {
+    const sourceMappings = await this.promptUuidStore.load(sourceId)
+    if (!sourceMappings || sourceMappings.length === 0) return []
+    const rowUuids = new Set<string>()
+    for (const m of entries) {
+      const u = (m as { uuid?: unknown } | undefined)?.uuid
+      if (typeof u === 'string') rowUuids.add(u)
+    }
+    if (rowUuids.size === 0) return []
+    const inherited = sourceMappings.filter((e) => rowUuids.has(e.u))
+    if (inherited.length === 0) return []
+    const existing = (await this.promptUuidStore.load(forkId)) ?? []
+    await this.promptUuidStore.save(
+      forkId,
+      retainPromptUuidEntries([...existing, ...inherited], this.historyCap),
+    )
+    log.info(
+      `[session ${forkId}] bridged ${inherited.length} inherited prompt uuid mapping(s) from ${sourceId}`,
+    )
+    return inherited
+  }
+
+  /** Page the session's durable transcript by seq. `before` is an exclusive
+   *  upper bound (omitted = newest page); `limit` defaults to 200 (the
+   *  client's page size in the seq-window protocol). Cold / dormant sessions
+   *  reconcile on first read, so a page served here always covers the full
+   *  history the JSONL carries, not just the in-memory tail. */
+  async getTranscriptWindow(id: string, before?: number, limit = 200): Promise<TranscriptWindow & { totalCount: number }> {
+    const t = await this.ensureTranscriptReconciled(id)
+    const win = t.store.window(before, limit)
+    return { ...win, totalCount: t.store.visibleCount }
+  }
+
+  /** Resolve one message uuid to its seq in the session's seq store — the
+   *  legacy /history shim's `beforeUuid` translation. A cold store is
+   *  reconciled first (an old client's uuid can only resolve against the FULL
+   *  history, not whatever tail is in memory). Undefined when the uuid is
+   *  unknown to the store. */
+  async transcriptSeqOfUuid(id: string, uuid: string): Promise<number | undefined> {
+    const t = await this.ensureTranscriptReconciled(id)
+    return t.store.seqOf(uuid)
+  }
+
+  /** Current seq-space cursor for a session, or null when no store exists
+   *  yet (never ingested, never read). Cheap snapshot for the WS `attached`
+   *  frame (Task 5) and reconnect hole-detection. */
+  transcriptHead(id: string): { generation: number; headSeq: number } | null {
+    const t = this.transcriptStores.get(id)
+    if (!t) return null
+    return { generation: t.store.generation, headSeq: t.store.headSeq }
+  }
+
+  /** Tombstone the given message uuids in the session's seq store and
+   *  persist one `{ seq, evicted: true }` row per newly-tombstoned seq so
+   *  the eviction survives a cold rehydrate (foldSidecarRows re-applies
+   *  it). Returns the tombstoned seqs. Unknown uuids contribute nothing.
+   *  Idempotent: an already-evicted uuid is not re-tombstoned nor
+   *  re-persisted.
+   *
+   *  Reconcile-first (Task 5 review ruling): eviction keyed by uuid is only
+   *  correct against a COMPLETE uuid→seq index, so a cold store is
+   *  reconciled (awaited) before the tombstones land — an eviction against
+   *  a half-hydrated index would tombstone the tail the store happens to
+   *  know and silently miss the rest. A session that is neither live nor
+   *  persisted has no transcript to reconcile against; its seq space is
+   *  gone, so the call is a no-op (returning [] rather than resurrecting a
+   *  ghost holder for a deleted id). */
+  async evictTranscript(id: string, uuids: string[]): Promise<number[]> {
+    if (!this.sessions.has(id) && !this.store?.get(id)) return []
+    const t = await this.ensureTranscriptReconciled(id)
+    const seqs = t.store.evict(uuids)
+    for (const seq of seqs) void t.sidecar.appendRow({ seq, evicted: true })
+    return seqs
+  }
+
+  /** Evict + broadcast in one step — the entry point for the two retraction
+   *  paths (pump `model_refusal_fallback.retracted_message_uuids`, and the
+   *  dialog broker's resolved-with-`retractedMessageUuids` hook). Fires the
+   *  `messages-evicted` frame on the per-session message-status channel
+   *  (same channel as `messages-withdrawn`: server-removed-messages signals,
+   *  typed frame union, per-subscriber pushable). An empty seq list (all
+   *  uuids unmapped, or idempotent re-resolution) broadcasts nothing — there
+   *  is no state change to announce. Fire-and-forget at the call sites:
+   *  eviction is durable via the sidecar regardless of whether a frame
+   *  reaches a live tab. */
+  private evictTranscriptAndBroadcast(id: string, uuids: string[]): void {
+    void this.evictTranscript(id, uuids)
+      .then((seqs) => {
+        if (seqs.length === 0) return
+        const head = this.transcriptHead(id)
+        this.pushMessageStatus(id, {
+          kind: 'messages-evicted',
+          sessionId: id,
+          seqs,
+          generation: head?.generation ?? 0,
+        })
+      })
+      .catch((err: unknown) => {
+        log.warn(`[session ${id}] transcript eviction failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
+  }
+
+  /** WeakMap accessor for the WS frame path (Task 5): the seq stamped onto
+   *  a live `message` frame is read here at serialization time, so the
+   *  message objects themselves stay untouched (no enumerable `seq` property
+   *  leaking into ring entries, replay JSON, or equality checks). Undefined
+   *  for messages outside the durable transcript. */
+  transcriptSeqOf(_sessionId: string, message: object): number | undefined {
+    return this.seqByMessage.get(message)
+  }
+
+  /** Drop a session's in-memory seq-store state and delete its sidecar
+   *  file. Called where the session's durable identity ends: explicit
+   *  delete() and the discard path that unlinks the transcript. /clear is
+   *  deliberately NOT here — it keeps the session resumable (transcript on
+   *  disk), spawns the fresh conversation under a NEW id whose seq space
+   *  starts at zero, so the "generation reset" is the new session itself. */
+  private async removeTranscriptState(id: string): Promise<void> {
+    this.transcriptStores.delete(id)
+    this.transcriptReconciles.delete(id)
+    // Construct (not fetch) the sidecar: the file may outlive the in-memory
+    // holder across a server restart, and removal must still reach it.
+    await new TranscriptSidecar(this.store?.getDir(), id).remove()
   }
 
   /** Delete a session for good: close its Query AND erase its persistence
@@ -6454,6 +6881,9 @@ export class SessionManager {
       void this.resultFrameStore.remove(id)
       // And the snapshot sidecar (shadow-repo file snapshots + anchors).
       void this.snapshotStore.remove(id)
+      // And the transcript seq store (in-memory holder + ndjson sidecar) —
+      // the session is gone for good, so its seq space goes with it.
+      void this.removeTranscriptState(id)
       // Drop any stored recap — otherwise a new session that happens to
       // reuse this id (rare, but possible under --state-dir swaps) would
       // see the old summary. unload() already calls invalidate() but we
@@ -6522,6 +6952,12 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     this.sessions.delete(id)
+    // Drop the in-memory transcript seq store with the session. The ndjson
+    // sidecar file is deliberately KEPT: unload() (unlike delete()) leaves
+    // the session resumable, so a later resume re-hydrates the seq space
+    // from the sidecar + JSONL instead of rebuilding it.
+    this.transcriptStores.delete(id)
+    this.transcriptReconciles.delete(id)
     metrics.gauge('sessions_active', this.sessions.size)
     // Clear the recap state. The session is no longer in the manager's
     // map so getPhase will return 'unknown' from inside the manager —
@@ -7329,6 +7765,16 @@ export class SessionManager {
         // the init handshake as a free retry when the spawn-time probe
         // timed out (the cache/in-flight guards make it a no-op otherwise).
         seedContextUsage: (s) => this.seedContextUsage(s),
+        // Transcript seq assignment (Task 3): seq-assign every durable
+        // message at its ring-append point, before the broadcast.
+        onDurableMessage: (s, msg) => this.recordTranscriptFor(s.id, msg),
+        // Retraction eviction (Task 5): the CLI retracted already-streamed
+        // messages (model_refusal_fallback). Tombstone them in the seq
+        // store and broadcast messages-evicted. Fire-and-forget: the pump
+        // loop must not block on the reconcile/append, and eviction is
+        // durable via the sidecar even if no tab is attached to see the
+        // frame.
+        onTranscriptEvict: (id, uuids) => this.evictTranscriptAndBroadcast(id, uuids),
       }
     }
     return this.cachedPumpDeps

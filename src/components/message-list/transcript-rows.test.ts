@@ -9,6 +9,7 @@ import {
   advanceRowAnchor,
   buildTranscriptRows,
   initialRowAnchor,
+  shouldLoadOlder,
   type TranscriptRow,
 } from './transcript-rows'
 
@@ -673,5 +674,173 @@ describe('buildTranscriptRows: tool-group fold', () => {
     const byDefault = buildTranscriptRows(input)
     expect(ids(explicit.rows)).toEqual(ids(byDefault.rows))
     expect(explicit.rows[0]!.toolGroup!.memberIds).toEqual(['t1', 't2'])
+  })
+})
+
+describe('shouldLoadOlder', () => {
+  const base = { hasOlder: true, loadingOlder: false, itemCount: 500 }
+  it('fires when visible range is within threshold of the window top', () => {
+    // firstItemIndex=1_000_000（1e6 锚定），可视顶 1_000_003 → 距顶 3 行 ≤ 阈值 5
+    expect(shouldLoadOlder({ ...base, rangeStart: 1_000_003, firstItemIndex: 1_000_000 })).toBe(true)
+  })
+  it('does not fire when far from the top', () => {
+    expect(shouldLoadOlder({ ...base, rangeStart: 1_000_300, firstItemIndex: 1_000_000 })).toBe(false)
+  })
+  it('does not fire when already at true start (nothing older)', () => {
+    // firstItemIndex === 0 且已到顶 → hasOlder 为 false 由调用方保证；这里验证函数不做多余触发
+    expect(shouldLoadOlder({ ...base, hasOlder: false, rangeStart: 0, firstItemIndex: 0 })).toBe(false)
+  })
+  it('does not fire while a load is in flight', () => {
+    expect(shouldLoadOlder({ ...base, loadingOlder: true, rangeStart: 1_000_001, firstItemIndex: 1_000_000 })).toBe(false)
+  })
+  it('does not fire on empty list', () => {
+    expect(shouldLoadOlder({ ...base, itemCount: 0, rangeStart: 0, firstItemIndex: 0 })).toBe(false)
+  })
+})
+
+// ─── Task 9: the render index space = the server seq space ──────────────
+//
+// firstItemIndex is anchored on the store's oldestSeq (the seq of the first
+// message that reached the ordered log — see seq-window.ts's slot-routed
+// skip) instead of the legacy 1e6 constant. Two properties must hold
+// together:
+//
+//  1. INITIAL/RE-ANCHOR: a fresh or rebuilt row list adopts the external
+//     anchor verbatim (null/undefined → the 1e6 fallback, e.g. an empty
+//     window or an overlay caller that has no seq window).
+//  2. ORDINARY PREPEND: the anchor moves by the RENDERED ROW count
+//     (frontShift), NEVER by the seq delta. The server seq space is wider
+//     than the row grid — api_retry frames are slot-routed and empty result
+//     frames are suppressed, and rows can fold/drop for render reasons — so
+//     re-deriving the anchor from oldestSeq on every prepend would shift
+//     Virtuoso's index-keyed size tree by exactly the number of seqs that
+//     didn't become rows. THE INVARIANT: after any prepend, firstItemIndex
+//     decreases by exactly the number of newly rendered rows.
+describe('advanceRowAnchor: external seq anchor (Task 9)', () => {
+  const rowsFor = (idList: string[]) =>
+    buildTranscriptRows({
+      items: idList.map((id) => assistant(id, id)),
+      isResultConsumed: never,
+    }).rows
+
+  /** Rows where some seqs deliberately never become rows (hiddenByDefault —
+   *  the same pushRow drop slot-routed api_retry / suppressed empty-result
+   *  frames take). Models a head page whose seq count exceeds its row count. */
+  const rowsForWindow = (entries: Array<{ id: string; hidden?: boolean }>) =>
+    buildTranscriptRows({
+      items: entries.map(({ id, hidden }) => ({ ...assistant(id, id), hiddenByDefault: hidden === true })),
+      isResultConsumed: never,
+    }).rows
+
+  const bigIds = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => `m-${from + i}`)
+
+  it('anchors the first build at the external anchor (= the first log row’s seq)', () => {
+    const next = advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']), 300)
+    expect(next.index).toBe(300)
+    expect(next.rowIds).toEqual(['a', 'b'])
+    expect(next.frontShift).toBe(0)
+  })
+
+  it('falls back to INITIAL_FIRST_ITEM_INDEX when the external anchor is null (empty window)', () => {
+    expect(advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']), null).index).toBe(
+      INITIAL_FIRST_ITEM_INDEX,
+    )
+    // Overlay callers pass nothing at all — same fallback.
+    expect(advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b'])).index).toBe(
+      INITIAL_FIRST_ITEM_INDEX,
+    )
+  })
+
+  it('re-anchors an unrelated rebuild at the external anchor, not 1e6', () => {
+    const first = advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']), 300)
+    const rebuilt = advanceRowAnchor(first, rowsFor(['q', 'r']), 120)
+    expect(rebuilt.index).toBe(120)
+    expect(rebuilt.frontShift).toBeNull()
+  })
+
+  it('falls back to INITIAL_FIRST_ITEM_INDEX when the list empties (window empty → oldestSeq null)', () => {
+    const first = advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']), 300)
+    const cleared = advanceRowAnchor(first, [], null)
+    expect(cleared.index).toBe(INITIAL_FIRST_ITEM_INDEX)
+    expect(cleared.rowIds).toEqual([])
+    expect(cleared.frontShift).toBeNull()
+  })
+
+  it('prepend of 200 rendered rows moves the anchor by 200 (300 → 100), not by the new oldestSeq', () => {
+    const first = advanceRowAnchor(initialRowAnchor(), rowsFor(bigIds(300, 499)), 300)
+    // Head page [100..299) prepends: oldestSeq drops 300 → 100, and the
+    // anchor lands on 100 BECAUSE 200 rows were prepended (frontShift),
+    // not because the external anchor said so.
+    const next = advanceRowAnchor(first, rowsFor([...bigIds(100, 299), ...bigIds(300, 499)]), 100)
+    expect(next.frontShift).toBe(200)
+    expect(next.index).toBe(100)
+  })
+
+  it('IGNORES a stale external anchor on an ordinary prepend (never re-derives from seq mid-window)', () => {
+    // The drift-bug guard: oldestSeq changed to 50 here, but the prepend
+    // inserted only 2 rows. firstItemIndex must move by 2 (the row count),
+    // or Virtuoso's size tree shifts relative to the data. The external
+    // anchor applies ONLY on the initial build and on re-anchors.
+    const first = advanceRowAnchor(initialRowAnchor(), rowsFor(['c', 'd']), 300)
+    const next = advanceRowAnchor(first, rowsFor(['a', 'b', 'c', 'd']), 50)
+    expect(next.index).toBe(298)
+    expect(next.frontShift).toBe(2)
+  })
+
+  it('slot-routed frames: a 200-seq page holding 3 non-rendering frames moves the anchor by exactly 197', () => {
+    // Window [300..302], anchored on the first log row's seq (300).
+    const prevRows = rowsForWindow([{ id: 'm-300' }, { id: 'm-301' }, { id: 'm-302' }])
+    const first = advanceRowAnchor(initialRowAnchor(), prevRows, 300)
+    expect(first.index).toBe(300)
+
+    // Head page [100..299]: 200 seqs, 3 of them slot-routed/suppressed
+    // (modelled as hiddenByDefault) → only 197 rendered rows prepended.
+    // After the prepend firstItemIndex must have decreased by EXACTLY 197
+    // — not by the 200-seq delta.
+    const page = bigIds(100, 299).map((id) => ({
+      id,
+      hidden: id === 'm-105' || id === 'm-150' || id === 'm-290',
+    }))
+    const nextRows = rowsForWindow([...page, { id: 'm-300' }, { id: 'm-301' }, { id: 'm-302' }])
+    const next = advanceRowAnchor(first, nextRows, 100)
+    expect(next.frontShift).toBe(197)
+    expect(next.index).toBe(300 - 197)
+  })
+
+  it('invariant across mixed prepends: anchor tracks the row grid, surviving a later front removal', () => {
+    const first = advanceRowAnchor(initialRowAnchor(), rowsForWindow([{ id: 'm-300' }]), 300)
+    // Prepend a 3-seq page where 1 seq is slot-routed → 2 rendered rows.
+    const prepended = advanceRowAnchor(
+      first,
+      rowsForWindow([{ id: 'm-297' }, { id: 'm-298', hidden: true }, { id: 'm-299' }, { id: 'm-300' }]),
+      297,
+    )
+    expect(prepended.index).toBe(298)
+    // Front removal of one row mirrors the prepend: anchor moves back UP by 1.
+    const removed = advanceRowAnchor(
+      prepended,
+      rowsForWindow([{ id: 'm-299' }, { id: 'm-300' }]),
+      297,
+    )
+    expect(removed.index).toBe(299)
+    expect(prepended.frontShift).toBe(2)
+    expect(removed.frontShift).toBe(-1)
+  })
+})
+
+describe('shouldLoadOlder: seq-anchored startReached equivalence (Task 9)', () => {
+  const base = { hasOlder: true, loadingOlder: false, itemCount: 200 }
+  it('fires at rangeStart === firstItemIndex when the anchor is seq-anchored (true-start semantics)', () => {
+    // firstItemIndex = oldestSeq = 100; the viewport sitting on data[0]
+    // reports rangeStart 100 — the same condition the (dead) startReached
+    // emitter used to require (items[0].index === 0 in the 1e6 space).
+    expect(shouldLoadOlder({ ...base, rangeStart: 100, firstItemIndex: 100 })).toBe(true)
+  })
+  it('keeps the legacy 1e6-anchor case passing unchanged', () => {
+    expect(shouldLoadOlder({ ...base, rangeStart: 1_000_000, firstItemIndex: 1_000_000 })).toBe(true)
+  })
+  it('does not fire while the seq-anchored viewport is above the threshold', () => {
+    expect(shouldLoadOlder({ ...base, rangeStart: 106, firstItemIndex: 100 })).toBe(false)
   })
 })

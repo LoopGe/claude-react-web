@@ -29,7 +29,7 @@ import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
 import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
-import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn } from '../shared/ws-protocol.js'
+import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
 import type { FirstPartyToolDef } from '../shared/first-party.js'
 
@@ -626,13 +626,13 @@ export interface Session {
    *  SessionManager.interrupt). Mirrors gitStatusSubscribers (signal-shaped,
    *  small payload). Each WS subscriber gets its own pushable so a slow tab
    *  can't block another tab's updates. */
-  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>>
+  messageStatusSubscribers: Set<Pushable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>>
   /** Server-minted uuids of user turns withdrawn by cancelQueued interrupts
    *  (most recent last, capped). Replayed to each NEW message-status
    *  subscriber as a synthetic `messages-withdrawn` frame so a tab that was
-   *  disconnected during the stop still evicts its bubbles: incremental
-   *  sinceUuid replay can never heal this, because the withdrawn messages
-   *  are gone from the ring and so are never re-sent to compare against. */
+   *  disconnected during the stop still evicts its bubbles: no later frame
+   *  or page ever re-sends the withdrawn messages, so this synthetic frame
+   *  is the only signal a reconnecting tab gets. */
   withdrawnUuids: string[]
   commandSubscribers: Set<Pushable<unknown>>
   /** Recent hook lifecycle events, kept outside chat history so the UI can
@@ -931,12 +931,23 @@ export interface SessionBroadcaster {
   resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo>
   /** Snapshot of the live session's message history (main + sidechain,
    *  ordered), or null when the session is dormant. Read-only — the
-   *  duplicate-subscribe path uses it to re-serve a replay on a channel
-   *  this connection already holds, without wiring new subscribers. */
+   *  duplicate-subscribe path uses it to distinguish an already-live
+   *  channel from one the manager no longer serves, without wiring new
+   *  subscribers. */
   getHistory(id: string): SDKMessage[] | null
+  /** Current seq-space cursor for a session, or null when no store exists
+   *  (never ingested, never read). Cheap snapshot; backs the WS `attached`
+   *  handshake frame (transcript seq refactor, Task 5). Optional so test
+   *  broadcaster fixtures without a seq store stay valid — the frame bridge
+   *  treats absence as "no attached frame". */
+  transcriptHead?(sessionId: string): { generation: number; headSeq: number } | null
+  /** Transcript seq of one live message object (the manager's WeakMap
+   *  accessor), or undefined when the message is not part of the durable
+   *  transcript. Backs the seq field on live `message` frames. Optional for
+   *  the same fixture reason as transcriptHead. */
+  transcriptSeqOf?(sessionId: string, message: object): number | undefined
   subscribe(sessionId: string): {
     iterable: AsyncIterable<SDKMessage>
-    history: SDKMessage[]
     unsubscribe: () => void
   }
   subscribePermissions(sessionId: string): {
@@ -980,11 +991,11 @@ export interface SessionBroadcaster {
   /** Derive + push the tasklist snapshot (pump trigger + future call sites). */
   broadcastTaskListChanged(sessionId: string): void
   /** Per-session subscription for `message-consumed` / `messages-withdrawn`
-   *  signal frames (typed union — the channel carries full frames, not bare
-   *  payloads). Returns null when the session is unknown (callers
-   *  short-circuit). Mirrors subscribeGitStatus. */
+   *  / `messages-evicted` signal frames (typed union — the channel carries
+   *  full frames, not bare payloads). Returns null when the session is
+   *  unknown (callers short-circuit). Mirrors subscribeGitStatus. */
   subscribeMessageStatus(sessionId: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>
     unsubscribe: () => void
   } | null
   subscribeCommandChanges(sessionId: string): { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null

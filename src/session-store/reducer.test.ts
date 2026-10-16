@@ -1,6 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { reduceSessionState, splitReplayAgainstCache, rebuildIndexesFromMessages, reapplyDismissed, settleStaleLiveSubagents, dedupeReplayPayload } from './reducer'
-import { projectMessage } from './project'
+/** Local stand-in for the deleted persist projection (project.ts): degrades
+ *  a message the way the old cache did — strips image blocks, substituting a
+ *  text marker when nothing else remains. The replay-restore tests only need
+ *  a same-uuid copy whose content differs from the full wire message. */
+function degradedProjection(msg: SdkMessage): SdkMessage {
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (!Array.isArray(content)) return msg
+  const kept = content.filter((b) => (b as { type?: string }).type !== 'image')
+  const nextContent = kept.length > 0 ? kept : [{ type: 'text', text: '[media removed]' }]
+  return {
+    ...msg,
+    message: { ...(msg as { message: object }).message, content: nextContent },
+  } as SdkMessage
+}
 import { createInitialSessionState, type SessionState, type ServerMirror } from './types'
 import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
@@ -5066,7 +5079,7 @@ describe('reducer: replay restores projected cached copies', () => {
 
   it('replaces a projected (image-stripped) cached prompt with the full replay copy', () => {
     const full = richPromptMsg('u-img')
-    const cached = projectMessage(full) // persist path: image dropped
+    const cached = degradedProjection(full) // degraded cache copy: image dropped
     expect(hasImage(itemContent(seedCache([cached]), 'u-img'))).toBe(false)
 
     // Cold load: the hydrated cache meets the server's full replay (restart
@@ -5090,7 +5103,7 @@ describe('reducer: replay restores projected cached copies', () => {
   it('replaces only the degraded copy; identical siblings stay untouched', () => {
     const full = richPromptMsg('u-img')
     const a1 = asstMsg('a1', 'ok')
-    const cache = seedCache([projectMessage(full), a1])
+    const cache = seedCache([degradedProjection(full), a1])
     const after = replay(cache, [full, a1])
     expect(ids(after)).toEqual(['u-img', 'a1'])
     // The identical assistant frame's item object survives by reference.
@@ -5100,7 +5113,7 @@ describe('reducer: replay restores projected cached copies', () => {
 
   it('restores an image-only prompt whose cache copy is the omission marker', () => {
     const full = imageMsg('u-pic', 'B'.repeat(500))
-    const cached = projectMessage(full) // all blocks dropped → text marker
+    const cached = degradedProjection(full) // all blocks dropped → text marker
     const cacheText = itemContent(seedCache([cached]), 'u-pic')
     expect(cacheText?.length).toBe(1)
     expect(cacheText?.[0].type).toBe('text')
@@ -5135,7 +5148,7 @@ describe('reducer: no-anchor fallback with a degraded (marker) cached prompt', (
     // The cache holds the projection under the SERVER-minted uuid; the replay
     // carries the SDK uuid — a true un-bridged split, so uuid matching cannot
     // connect them and the fingerprint fallback decides.
-    const cached = { ...projectMessage(full), uuid: 'u-pic-ring' } as unknown as SdkMessage
+    const cached = { ...degradedProjection(full), uuid: 'u-pic-ring' } as unknown as SdkMessage
     const cache = seedCache([cached])
 
     const first = replay(cache, [full])

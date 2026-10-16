@@ -38,6 +38,7 @@ import {
   advanceRowAnchor,
   buildTranscriptRows,
   initialRowAnchor,
+  shouldLoadOlder,
   type RowAnchor,
   type TranscriptRow,
 } from './message-list/transcript-rows'
@@ -234,9 +235,15 @@ interface Props {
    *  Gates the scroll-to-top trigger (the float renders from loading/error
    *  alone, so this no longer gates any UI). */
   hasOlder?: boolean
+  /** Seq of the oldest message in the store's seq window (null while the
+   *  window is empty) — the render anchor of the seq protocol. Task 9
+   *  consumes it: virtuoso's `firstItemIndex` starts at this value and is
+   *  then moved by rendered-row counts (advanceRowAnchor's frontShift), so a
+   *  prepended page and its anchor commit in the same render. Overlays pass
+   *  nothing and keep the legacy 1e6 anchor. */
+  oldestSeq?: number | null
   /** True while a loadOlder() request is in flight (gates the scroll-up
-   *  trigger against double-fires; the loading/error UI itself is rendered
-   *  by the Chat panel / side drawer, not here). */
+   *  trigger against double-fires; drives the top loading pill). */
   loadingOlder?: boolean
   /** Register a navigator that scrolls the transcript to the previous /
    *  next real user message relative to the current viewport top. Wired up
@@ -362,7 +369,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, sessionId, streamingContent, streamingMode, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -637,7 +644,15 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // `onUserScrollIntent`) or the list is rebuilt.
   const navCursorRef = useRef<number | null>(null)
   /* eslint-disable react-hooks/refs */
-  const nextRowAnchor = advanceRowAnchor(rowAnchorRef.current, renderableItems)
+  // Task 9: the anchor lives in the server seq space. `oldestSeq` (the seq of
+  // the first message that reached the ordered log — slot-routed frames are
+  // skipped in the window's derivation) seeds the anchor on the initial build
+  // and on re-anchors; ordinary prepends move it by RENDERED ROW count inside
+  // advanceRowAnchor, never by the seq delta. `firstItemIndex = nextRowAnchor.index`
+  // below therefore starts at oldestSeq and stays exact against the row grid
+  // from then on — which is what makes `rangeStart - firstItemIndex` the true
+  // row distance to the window top (shouldLoadOlder's arithmetic).
+  const nextRowAnchor = advanceRowAnchor(rowAnchorRef.current, renderableItems, oldestSeq ?? null)
   rowAnchorRef.current = nextRowAnchor
   if (nextRowAnchor.frontShift != null) {
     topVisibleIdxRef.current += nextRowAnchor.frontShift
@@ -670,16 +685,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     replayReady,
     transcriptRevealKey,
   })
-  // Fires when the user scrolls to the top. Pull the previous page of
-  // history from disk if there's more and we're not already loading.
-  const startReached = useCallback(() => {
-    // With Virtuoso always mounted, startReached can fire on the empty-list
-    // mount (scroller at top, no items). Skip the network page in that case —
-    // there is nothing older to load until at least one message is present.
-    if (!loadOlder || !hasOlder || loadingOlder || renderableItems.length === 0) return
-    void loadOlder()
-  }, [loadOlder, hasOlder, loadingOlder, renderableItems.length])
-
   // Reverse map: full items[] index —Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
   //
@@ -953,6 +958,31 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   }, [emitVisibleTop])
   const handleRangeChanged = useCallback(
     (range: { startIndex: number; endIndex: number }) => {
+      // Pull the previous page of history when the visible window rides close
+      // to the top of the list. (Virtuoso's `startReached` requires
+      // items[0].index === 0 in offset space, which only holds at the true
+      // transcript start — the anchor is `oldestSeq`, so mid-history
+      // scroll-ups never trip it.) `range.startIndex` is in offset
+      // space already, so it compares against `firstItemIndex` directly.
+      // Main-transcript views only — sub-views (SubagentOverlay /
+      // WorkflowOverlay drill-ins) render a slice of the same already-paged
+      // window and must not re-trigger paging on their own. The discriminators
+      // are the subview markers themselves (`parentToolUseIdFilter` /
+      // `subagent`), NOT `sessionId`: the main transcript and the Side Chat
+      // drawer both pass a sessionId AND a working `loadOlder`.
+      if (
+        parentToolUseIdFilter == null &&
+        !subagent &&
+        shouldLoadOlder({
+          rangeStart: range.startIndex,
+          firstItemIndex: firstItemIndexValRef.current,
+          hasOlder,
+          loadingOlder,
+          itemCount: renderableItems.length,
+        })
+      ) {
+        void loadOlder?.()
+      }
       // `range.startIndex` is the first RENDERED row, and
       // `increaseViewportBy.top` deliberately renders ~600px above the fold —
       // so it is NOT the visible top. Measure the real one and keep the
@@ -960,7 +990,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       // (no scroller, or an empty list).
       emitVisibleTop(getVisibleTopIndex() ?? range.startIndex)
     },
-    [emitVisibleTop, getVisibleTopIndex],
+    [parentToolUseIdFilter, subagent, emitVisibleTop, getVisibleTopIndex, hasOlder, loadingOlder, loadOlder, renderableItems.length],
   )
   // Recompute when the rendered list changes without a range event (e.g. a
   // new turn arrives while parked at a scroll offset) so the pin tracks the
@@ -1321,7 +1351,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           initialTopMostItemIndex={virtuosoData.length > 0 ? virtuosoData.length - 1 : 0}
           followOutput={followOutput}
           atBottomStateChange={atBottomStateChange}
-          startReached={startReached}
           rangeChanged={handleRangeChanged}
           itemContent={itemContent}
           computeItemKey={computeItemKey}
@@ -1389,4 +1418,3 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     </SessionCwdProvider>
   )
 })
-

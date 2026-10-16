@@ -278,6 +278,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           toolResults={stream.toolResults}
           loadOlder={stream.loadOlder}
           hasOlder={stream.hasOlder}
+          oldestSeq={stream.oldestSeq}
           loadingOlder={stream.loadingOlder}
           toolGroupCards={toolGroupCards}
           autoExpandRunningGroups={autoExpandRunningGroups}

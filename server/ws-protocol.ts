@@ -33,15 +33,13 @@ export type WsSessionUpdate = shared.WsSessionUpdate<SessionInfo>
 export type WsSessionCreated = shared.WsSessionCreated<SessionInfo>
 export type { WsSessionRemoved } from '../shared/ws-protocol.js'
 export type WsGlobalPermissionRequest = shared.WsGlobalPermissionRequest<PermissionRequestSnapshot>
-export type WsReplay = shared.WsReplay<SDKMessage, PermissionRequestSnapshot>
-export type WsReplayDone = shared.WsReplayDone<PermissionRequestSnapshot>
 export type WsMessage = shared.WsMessage<SDKMessage>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequestSnapshot>
 export type WsPermissionResolved = shared.WsPermissionResolved<PermissionDecisionSummary>
 export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
 export type WsHookRunEvent = shared.WsHookRunEvent<HookRuntimeEvent>
 export type { WsSubscribeResult, WsSubscribeResultReason } from '../shared/ws-protocol.js'
-export type { WsContextUsage, WsGitSnapshot, WsTasklistSnapshot, WsMessageConsumed, WsMessagesWithdrawn, WsMessageSteered, WsSessionCleared, WsCommandsChanged, WsPong, WsError, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsClientDebugRequest } from '../shared/ws-protocol.js'
+export type { WsContextUsage, WsGitSnapshot, WsTasklistSnapshot, WsMessageConsumed, WsMessagesWithdrawn, WsAttached, WsMessagesEvicted, WsMessageSteered, WsSessionCleared, WsCommandsChanged, WsPong, WsError, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsClientDebugRequest } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,

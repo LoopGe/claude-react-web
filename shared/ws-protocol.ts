@@ -15,44 +15,16 @@ import type { GitStatusResponse, GitBranch, GitStashEntry } from './git-types.js
 // --- inbound (client → server) -----------------------------------------------
 
 /** Ask the server to start streaming events for `sessionId` on this
- *  connection. The server responds with a `replay` frame (possibly empty)
- *  followed by a `replay-done`, then live frames as they arrive.
- *
- *  When `sinceUuid` is set, the server sends only messages after the one
- *  with that UUID (incremental sync). If the UUID is not found in the
- *  session's history ring (too old / evicted), the server falls back to
- *  a full replay. Clients should omit `sinceUuid` on reconnects where
- *  they cannot guarantee cache continuity.
- *
- *  `replayMode: 'tail-backfill'` opts into tail-first replay for the
- *  NO-cache cold start: the server sends one `tail`-marked replay frame
- *  with the newest chunk, then `backfill`-marked frames newest→oldest,
- *  then `replay-done`. An opt-in capability field rather than a
- *  server-side default because a stale client bundle (open tab across an
- *  upgrade) would otherwise buffer the out-of-order frames and
- *  concatenate them in ARRIVAL order into one replay-done — a garbled
- *  transcript. Older servers ignore the unknown field, so it is safe to
- *  always send.
- *
- *  `hasCachedTranscript` STATES the precondition tail-first requires —
- *  "the client has no transcript on screen" — rather than leaving the
- *  server to infer it from an absent `sinceUuid`. The two come apart:
- *  a client can hold cached rows with no cursor (an IDB cold-load
- *  prepends rows without setting one), and a `sinceUuid` is also absent
- *  on a genuine cold start. Since backfill chunks are NEWER than a
- *  stale cache and the client prepends them to the FRONT, serving them
- *  to a client with rows on screen corrupts the ordering — so the
- *  server requires this field to be absent/false, not merely a missing
- *  cursor. Omitting it is the safe default (no tail-first). */
+ *  connection. The server answers with a `subscribe-result` frame and — on
+ *  success — an `attached` seq-space handshake, then live frames as they
+ *  arrive. Transcript history is NOT served here: the client pages it over
+ *  REST (`GET /sessions/:id/messages`, seq window). Still-outstanding
+ *  permission / elicitation / dialog requests ARE re-broadcast on subscribe
+ *  (as their ordinary request frames) so a reconnecting tab relearns state
+ *  that predates the connection. */
 export interface WsSubscribe {
   kind: 'subscribe'
   sessionId: string
-  sinceUuid?: string
-  replayMode?: 'tail-backfill'
-  /** True when this client already holds transcript rows for the
-   *  session (a hydrated cache, paged history, or anything on screen).
-   *  Disables tail-first replay. */
-  hasCachedTranscript?: boolean
 }
 
 /** Stop streaming events for `sessionId`. Safe to call even if not
@@ -150,65 +122,50 @@ export interface WsCliNotification {
   notification: CliNotification
 }
 
-/** Beginning of a per-session replay burst. Contains the full message
- *  history + any pending permissions, then a terminator frame.
- *
- *  Tail-first replay (see WsSubscribe.replayMode): the burst is
- *  exactly ONE `tail: true` frame (the newest chunk — apply
- *  immediately), followed by `backfill: true` frames (newest→oldest —
- *  prepend each on arrival), followed by `replay-done`. Frames without
- *  either marker follow the ordinary buffered semantics. */
-export interface WsReplay<Msg, Perm> {
-  kind: 'replay'
-  sessionId: string
-  /** SDK messages already emitted to the session, in order. */
-  messages: Msg[]
-  /** Still-outstanding permission requests for this session. */
-  permissions: Perm[]
-  /** Still-outstanding MCP elicitation (auth) requests. Optional so older
-   *  payloads / clients without elicitation support simply omit it. */
-  elicitations?: ElicitationRequestUi[]
-  /** Still-outstanding user dialogs (e.g. refusal fallback). Optional for
-   *  the same forward-compat reason as `elicitations`. */
-  dialogs?: UserDialogRequestUi[]
-  /** Tail-first replay: this frame is the newest chunk and the only
-   *  frame of the initial paint. Absent on ordinary replay frames. */
-  tail?: boolean
-  /** Tail-first replay: this frame is a backfill chunk, strictly older
-   *  than everything already on screen. Absent on ordinary frames. */
-  backfill?: boolean
-  /** Identity of the replay burst this frame belongs to — one id per
-   *  sendReplay call, monotonic per server process. The client's
-   *  ReplayAssembler (src/session-store/replay-assembly.ts) keys burst
-   *  assembly and supersede on it: frames of a newer burst discard the open
-   *  assembly of an older one, mirroring the server-side burst supersede
-   *  (server/replay-bursts.ts), and a replay-done flushes only the burst it
-   *  names. Frames from a server old enough to predate the field simply omit
-   *  it — the assembler degrades to the legacy anonymous-single-burst mode. */
-  burstId?: number
-}
-export interface WsReplayDone<Perm> {
-  kind: 'replay-done'
-  sessionId: string
-  /** See WsReplay.burstId. */
-  burstId?: number
-  /** When the server uses chunked replay (>50 messages), permissions
-   *  ride on the final replay-done frame instead of the first replay
-   *  chunk. Older clients ignore unknown fields, so this is safe. */
-  permissions?: Perm[]
-  /** Same chunked-replay rule as `permissions`: elicitations ride on the
-   *  final replay-done frame when the replay is chunked. */
-  elicitations?: ElicitationRequestUi[]
-  /** Same chunked-replay rule: pending user dialogs ride the final
-   *  replay-done frame when the replay is chunked. */
-  dialogs?: UserDialogRequestUi[]
-}
-
-/** Live SDK message. */
+/** Live SDK message. Durable transcript messages carry `seq` + `generation`
+ *  (the seq-window protocol); the server omits both on ephemeral / synthetic
+ *  frames (stream events, thinking tokens, pump errors), which the client
+ *  appends through the legacy ordered-log path. */
 export interface WsMessage<Msg> {
   kind: 'message'
   sessionId: string
   message: Msg
+  /** Transcript seq of the message — the server-authoritative position in
+   *  the session's seq space (append-stable, tombstone-preserving). */
+  seq: number
+  /** Seq-space generation the message's seq belongs to. */
+  generation: number
+}
+/** Sent immediately after a successful `subscribe-result` (ok:true): the
+ *  current state of the session's transcript seq space. The client (P2)
+ *  uses it as the cursor anchor for seq-window paging and hole detection —
+ *  everything with seq < headSeq is either on screen, paged, or evicted.
+ *  Absent when the session has no seq store yet (never ingested / never
+ *  read): a client treats "no attached" as "seq unknown, uuid semantics
+ *  only". */
+export interface WsAttached {
+  kind: 'attached'
+  sessionId: string
+  /** Seq-space generation (bumped by /clear's reset). */
+  generation: number
+  /** Next seq the server will allocate — the exclusive upper bound of the
+   *  assigned space. */
+  headSeq: number
+}
+/** Server-authoritative eviction notice: the named seqs were tombstoned in
+ *  the session's transcript seq store (refusal-fallback retraction or a
+ *  resolved user dialog's retracted uuids). Complements the uuid-based
+ *  eviction the client already performs from `model_refusal_fallback` /
+ *  `dialog-resolved` frames: a client tracking seq (P2 seq-window store)
+ *  evicts by position instead of by uuid. Idempotent — re-tombstoning the
+ *  same uuids produces no frame (empty seq lists are never broadcast). */
+export interface WsMessagesEvicted {
+  kind: 'messages-evicted'
+  sessionId: string
+  /** The tombstoned seqs (uuids with no seq mapping are silently ignored). */
+  seqs: number[]
+  /** Seq-space generation the seqs belong to. */
+  generation: number
 }
 /** New tool-permission request. */
 export interface WsPermissionRequest<Perm> {
@@ -345,9 +302,9 @@ export interface WsTasklistSnapshot {
  *  flips the corresponding message bubble from "queued" to "consumed".
  *
  *  This is a live-only convenience: the durable truth is the `consumedAt`
- *  field stamped onto the message itself, which rides along on replay. A
- *  client that misses this frame (slow tab, drop) self-heals on the next
- *  reconnect/replay. */
+ *  field stamped onto the ring entry itself, which any fresh transcript read
+ *  (seq-window page) already carries. A client that misses this frame (slow
+ *  tab, drop) self-heals on the next page read. */
 export interface WsMessageConsumed {
   kind: 'message-consumed'
   sessionId: string
@@ -474,30 +431,31 @@ export interface WsError {
  *  A subscription is per-connection, and only the server knows whether this
  *  connection holds a live channel for a session. Without this frame the
  *  client had to infer it from ambient signals, and every inference was a
- *  guess: a `replay` was the only positive one while `error` is emitted for
- *  unrelated failures too, and the negative ones (`session-update` /
- *  `session-removed`) are connection-agnostic global broadcasts. The inference
- *  that mattered is the one that stranded a resumed session: a refused
- *  subscribe still counted a holder, so the panel's `<Chat>` — which mounts
- *  only AFTER the resume lands — had its subscribe suppressed as a duplicate
- *  and the server was never asked for a replay.
+ *  guess: the positive ones were indistinguishable from noise while `error`
+ *  is emitted for unrelated failures too, and the negative ones
+ *  (`session-update` / `session-removed`) are connection-agnostic global
+ *  broadcasts. The inference that mattered is the one that stranded a resumed
+ *  session: a refused subscribe still counted a holder, so the panel's
+ *  `<Chat>` — which mounts only AFTER the resume lands — had its subscribe
+ *  suppressed as a duplicate and the server was never asked for the channel.
  *
  *  Exactly one of these is sent per accepted `subscribe` frame on a live
  *  socket, so a client never has to guess whether it will be served (the one
  *  exception is a socket that closes mid-handshake — the client's own close
  *  handling discards its state, so nothing is owed):
- *   • `served`       — the channel was established by this frame (a replay
- *                      burst precedes this ack).
- *   • `already-live` — a channel was already up, and the replay burst for the
- *                      caller's `sinceUuid` was RE-SERVED (a listener may
- *                      have attached after the original one). Answered with
- *                      `ok:false` when the manager can no longer serve the
- *                      session, so it never claims what it did not deliver.
+ *   • `served`       — the channel was established by this frame (the
+ *                      `attached` handshake follows it).
+ *   • `already-live` — a channel was already up, and the caller's listener
+ *                      was re-attached (pending requests re-broadcast — a
+ *                      listener may have attached after the original one).
+ *                      Answered with `ok:false` when the manager can no
+ *                      longer serve the session, so it never claims what it
+ *                      did not deliver.
  *   • `starting`     — an attempt is already in flight; its own outcome
  *                      follows.
  *   • `refused`      — nothing was established (a sleeping / unknown session
- *                      is not woken by a subscribe). Rides with the `error` +
- *                      `replay-done` pair the panel's error band renders.
+ *                      is not woken by a subscribe). Rides with the `error`
+ *                      frame the panel's error band renders.
  *   • `closed`       — a channel this connection held has ended, or a
  *                      duplicate subscribe found nothing left to serve (the
  *                      session was unloaded / put to sleep / terminated). */
@@ -579,8 +537,6 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsSessionRemoved
   | WsGlobalPermissionRequest<Perm>
   | WsCliNotification
-  | WsReplay<Msg, Perm>
-  | WsReplayDone<Perm>
   | WsSubscribeResult
   | WsMessage<Msg>
   | WsPermissionRequest<Perm>
@@ -596,7 +552,9 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsTasklistSnapshot
   | WsMessageConsumed
   | WsMessagesWithdrawn
+  | WsAttached
   | WsMessageSteered
+  | WsMessagesEvicted
   | WsSessionRecapUpdate<Recap>
   | WsSessionCleared
   | WsCommandsChanged<Command>

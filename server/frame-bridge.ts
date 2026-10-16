@@ -6,7 +6,8 @@
 // socket, …) can drive the exact same behavior. It owns:
 //   - the global session-list channel + global permission/notification mirror
 //   - the app-plugin channel
-//   - per-session subscribe/unsubscribe: replay, ack, live drivers, teardown
+//   - per-session subscribe/unsubscribe: ack + attached handshake, pending
+//     request re-broadcast, live drivers, teardown
 //   - client-frame validation (subscribe / unsubscribe / ping)
 // and it writes through a {@link FrameSink}, which owns queueing/backpressure.
 //
@@ -14,24 +15,21 @@
 // `subscribeGlobal / subscribe / subscribePermissions / …` iterables; this
 // module is a thin fan-out bridge and never calls a SessionManager mutator.
 //
-// History replay on subscribe is transactional: we fetch the snapshot, then
+// Subscribe is transactional: we fetch the pending-request snapshots, then
 // the live iterable — in that order, synchronously — so there's no gap during
-// which a newly-produced event could be missed.
+// which a newly-produced event could be missed. Transcript history is NOT
+// served here (the seq-window protocol pages it over REST).
 
-import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
-import { shouldBroadcastMessage } from './history-utils.js'
-import { planTailBackfillReplay } from './replay-plan.js'
-import { createReplayBurstToken, type ReplayBurstToken } from './replay-bursts.js'
 import { createLogger } from './log.js'
-import { metrics } from './metrics.js'
 import type {
   WsClientFrame,
   WsGitSnapshot,
   WsMessageConsumed,
+  WsMessageSteered,
+  WsMessagesEvicted,
   WsMessagesWithdrawn,
-  WsReplay,
   WsServerFrame,
   WsSubscribeResultReason,
   WsTasklistSnapshot,
@@ -42,12 +40,6 @@ import type { TaskRecordUi } from '../shared/tasks.js'
 // Same scope as the old ws.ts logger so log output is unchanged.
 const log = createLogger('ws')
 
-// Monotonic burst id source for sendReplay — stamped on every replay /
-// replay-done frame (shared/ws-protocol.ts burstId) and consumed by the
-// client's ReplayAssembler. Process-wide so ids are unique across
-// connections.
-let burstIdCounter = 0
-
 /** Write endpoint for one client connection.
  *
  *  `send` takes a frame object; `sendRaw` takes an already-serialized frame
@@ -55,24 +47,13 @@ let burstIdCounter = 0
  *  subscribed connection). Implementations own their own queueing,
  *  backpressure and overflow policy — the bridge only ever calls these.
  *
- *  `burst` tags a frame as a member of one replay burst (one `sendReplay`
- *  call). Sinks use it to supersede an older same-session burst still
- *  queued unsent — see server/replay-bursts.ts. `sendRaw` (the broadcast
- *  hot path) is never tagged.
- *
- *  `dropQueuedReplays` drops the session's queued replay remainder (the
- *  client-unsubscribe path — the panel is gone, nobody will read it).
- *
  *  `close` stops accepting frames and releases resources; the bridge calls it
  *  exactly once on teardown. */
 export interface FrameSink {
-  send(frame: WsServerFrame, burst?: ReplayBurstToken): void
+  send(frame: WsServerFrame): void
   sendRaw(data: string, kind?: string): void
-  dropQueuedReplays(sessionId: string): void
   close(): void
 }
-
-export type { ReplayBurstToken } from './replay-bursts.js'
 
 export interface FrameBridgeDeps {
   sm: SessionBroadcaster
@@ -98,10 +79,33 @@ function hookSnapshotEvent(run: HookRunRecord): HookRuntimeEvent {
  *  evicts the message object. */
 const messageFrameJsonCache = new WeakMap<object, string>()
 
-function messageFrameJson(sessionId: string, message: object): string {
+function messageFrameJson(
+  sessionId: string,
+  message: object,
+  seq: number | undefined,
+  generation: number | undefined,
+): string {
   let json = messageFrameJsonCache.get(message)
   if (json === undefined) {
-    json = JSON.stringify({ kind: 'message', sessionId, message })
+    // seq + generation ride INSIDE the cached string rather than on the
+    // message object: stamping a property on the SDK message would leak it
+    // into the ring entry, paged-history JSON and any equality/identity checks; a
+    // NON-enumerable property would not work at all (JSON.stringify only
+    // serializes enumerable own properties). Seq is append-stable and
+    // assigned BEFORE the pump broadcasts (recordTranscriptFor runs ahead of
+    // every subscriber push), so the first serialization already sees the
+    // final value — caching it per message object is safe. The same holds
+    // for `generation` only under an invariant: the generation can change
+    // solely via TranscriptStore.reset() (the /clear path), which has no
+    // live caller today — a future reset() caller that keeps the session
+    // broadcasting MUST invalidate messageFrameJsonCache (or re-derive the
+    // generation per serialization), or cached frames would carry a stale
+    // generation and clients would misjudge the seq-space handshake.
+    json = JSON.stringify(
+      seq === undefined
+        ? { kind: 'message', sessionId, message }
+        : { kind: 'message', sessionId, seq, generation, message },
+    )
     messageFrameJsonCache.set(message, json)
   }
   return json
@@ -113,13 +117,6 @@ function messageFrameJson(sessionId: string, message: object): string {
 interface SessionSub {
   sessionId: string
   cleanup: () => void
-  /** The replay shape this channel was ESTABLISHED with. A later subscribe on
-   *  the same connection is re-served the replay (see startSession), and the
-   *  re-serve must keep the channel's shape rather than adopt the newcomer's:
-   *  a second consumer subscribing without opts (useGitStatus mounts beside
-   *  useChatStream) would otherwise re-send the whole ring in the ordinary
-   *  oldest-first form — exactly the cost tail-first replay exists to avoid. */
-  replayMode?: 'tail-backfill'
 }
 
 /**
@@ -267,12 +264,7 @@ export class SessionConnection {
     switch (frame.kind) {
       case 'subscribe':
         if (typeof frame.sessionId === 'string' && frame.sessionId) {
-          void this.startSession(
-            frame.sessionId,
-            frame.sinceUuid,
-            frame.replayMode === 'tail-backfill' ? 'tail-backfill' : undefined,
-            frame.hasCachedTranscript === true,
-          )
+          void this.startSession(frame.sessionId)
         }
         break
       case 'unsubscribe':
@@ -307,7 +299,7 @@ export class SessionConnection {
   /** Answer one `subscribe` frame with the state of this connection's
    *  per-session channel. See WsSubscribeResult — the client keys its
    *  "do I need to ask again?" decision on this instead of inferring it
-   *  from `replay` / `error` / the global session-update feed. */
+   *  from `subscribe-result` / `error` / the global session-update feed. */
   private ackSubscribe(
     sessionId: string,
     ok: boolean,
@@ -316,203 +308,80 @@ export class SessionConnection {
     this.sink.send({ kind: 'subscribe-result', sessionId, ok, reason })
   }
 
-  /** Build and send one replay burst for a session on THIS connection:
-   *  the `sinceUuid`-sliced ring, filtered to what the live broadcast would
-   *  send (shouldBroadcastMessage, matching session-pump.ts), chunked, then
-   *  terminated by `replay-done`.
-   *
-   *  Shared by the establish path and the duplicate-subscribe path so the
-   *  two can never drift. A duplicate IS re-served rather than dropped: the
-   *  replay is per-connection and a listener may have attached after the
-   *  first burst (a panel remount, StrictMode's double mount, or a resume
-   *  whose replay landed before <Chat> existed), and only the server can
-   *  know — so "I asked for this channel" always produces a replay.
-   *  `pending` carries the permission/elicitation/dialog snapshots, on BOTH
-   *  paths: in tail mode the tail frame is their only carrier (the terminator
-   *  is payload-free by contract), so a re-serve that omitted them would
-   *  leave a listener attaching to an already-live channel with no permission
-   *  / elicitation / dialog card on its first paint. The re-serve path reads
-   *  them FRESH from the brokers rather than reusing a cached snapshot — a
-   *  stale one could resurrect an already resolved request. */
-  private sendReplay(
-    sessionId: string,
-    history: SDKMessage[],
-    sinceUuid: string | undefined,
-    pending: Pick<WsReplay, 'permissions' | 'elicitations' | 'dialogs'> | null,
-    replayMode?: 'tail-backfill',
-    hasCachedTranscript = false,
-  ): void {
-    let replayHistory = history
-    // If the client supplied `sinceUuid`, try to send only messages after
-    // that point (incremental sync). Fall back to a full replay if the UUID
-    // isn't in the ring (evicted by historyCap or the client cache is stale).
-    if (sinceUuid) {
-      const idx = history.findIndex((m) => (m as { uuid?: string }).uuid === sinceUuid)
-      if (idx >= 0) {
-        replayHistory = history.slice(idx + 1)
-        log.info(
-          `incremental sync for ${sessionId}: ` +
-          `skipped ${idx + 1} msgs, sending ${replayHistory.length} new`,
-        )
-      } else {
-        log.info(
-          `sinceUuid ${sinceUuid} not found in ${sessionId} history ` +
-          `(${history.length} msgs) — full replay`,
-        )
-      }
+  /** Seq-space handshake (transcript seq refactor, Task 5): right after a
+   *  successful subscribe-result, hand the client the session's current seq
+   *  cursor ({generation, headSeq}) so it can anchor seq-window paging and
+   *  hole detection. Sent on BOTH success paths ('served' and
+   *  'already-live') — a re-serve re-attaches the listener just as much.
+   *  Absent when the session has no seq store yet (never ingested / never
+   *  read); clients treat that as "uuid semantics only". Server-side the
+   *  frame has no side effects — the client (P2) starts consuming it. */
+  private sendAttached(sessionId: string): void {
+    const head = this.sm.transcriptHead?.(sessionId)
+    if (head) {
+      this.sink.send({ kind: 'attached', sessionId, generation: head.generation, headSeq: head.headSeq })
     }
-
-    const replayStart = performance.now()
-    // Filter out system messages that the frontend doesn't need. Matches
-    // the live broadcast filter in session-pump.ts.
-    replayHistory = replayHistory.filter(
-      (m) => shouldBroadcastMessage(m as { type?: string; subtype?: string }),
-    )
-    const REPLAY_CHUNK_SIZE = 50
-    // One id per sendReplay, stamped on every frame of the burst.
-    const burstId = ++burstIdCounter
-    // Key diagnostic: pairs with the client's replay-done handling. If the
-    // server logs a non-zero count here but the client renders blank, the
-    // loss is client-side (effect re-run discarded the buffer, or
-    // REPLAY_REPLACE merge dropped everything).
-    log.info(
-      `replay for ${sessionId}: burst=${burstId} sending ${replayHistory.length} msgs ` +
-      `(ring=${history.length}, sinceUuid=${sinceUuid ?? 'none'})`,
-    )
-    // Tail-first replay plan (no-cache cold start): the newest chunk is a
-    // complete first screen, so send it first (tail: true — the client
-    // applies it immediately) and the older chunks after it newest→oldest
-    // (backfill: true — the client prepends each one, the same machinery the
-    // scroll-up disk pager uses). Gated on the client opting in via
-    // replayMode AND an absent sinceUuid: a sinceUuid implies a cached
-    // client transcript, and backfill chunks are NEWER than a stale cache,
-    // which would land above it on prepend, corrupting the ordering (see
-    // replay-plan.ts). The plan doubles as the branch decider — a null plan
-    // (payload fits one chunk) falls through to the ordinary paths below,
-    // which is also the safe behavior should the planner's null contract
-    // ever drift from the chunk-size check.
-    const tailPlan =
-      replayMode === 'tail-backfill' && !sinceUuid && !hasCachedTranscript
-        ? planTailBackfillReplay(replayHistory, REPLAY_CHUNK_SIZE)
-        : null
-    // ONE token per serve: the sink supersedes the previous same-session
-    // burst's queued frames when this token's first frame lands, so a
-    // StrictMode/multi-holder storm of re-serves collapses to ~one burst's
-    // bytes per session on the wire (see server/replay-bursts.ts).
-    const burst = createReplayBurstToken(sessionId, burstId)
-    if (tailPlan) {
-      log.info(
-        `tail-first replay for ${sessionId}: burst=${burstId} tail=${tailPlan.tail.length} ` +
-        `+ ${tailPlan.backfill.length} backfill chunks (${replayHistory.length} total)`,
-      )
-      // The pending-request snapshots ride the TAIL frame (same shape as the
-      // ordinary single-frame replay), so a permission card appears with the
-      // first paint instead of after the backfill drains — and a mid-burst
-      // client effect re-run can never lose them at the terminator. The
-      // trailing replay-done carries no payload; it only closes the burst.
-      this.sink.send({
-        kind: 'replay',
-        sessionId,
-        messages: tailPlan.tail,
-        permissions: pending?.permissions ?? [],
-        ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
-        ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
-        tail: true,
-        burstId,
-      }, burst)
-      for (const chunk of tailPlan.backfill) {
-        this.sink.send({
-          kind: 'replay',
-          sessionId,
-          messages: chunk,
-          permissions: [],
-          backfill: true,
-          burstId,
-        }, burst)
-      }
-      this.sink.send({ kind: 'replay-done', sessionId, burstId }, burst)
-    } else if (replayHistory.length <= REPLAY_CHUNK_SIZE) {
-      this.sink.send({
-        kind: 'replay',
-        sessionId,
-        messages: replayHistory,
-        permissions: pending?.permissions ?? [],
-        ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
-        ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
-        burstId,
-      }, burst)
-      this.sink.send({ kind: 'replay-done', sessionId, burstId }, burst)
-    } else {
-      for (let i = 0; i < replayHistory.length; i += REPLAY_CHUNK_SIZE) {
-        this.sink.send({
-          kind: 'replay',
-          sessionId,
-          messages: replayHistory.slice(i, i + REPLAY_CHUNK_SIZE),
-          permissions: [],
-          burstId,
-        }, burst)
-      }
-      // Permissions arrive with the final replay-done frame. The
-      // client merges them from whichever frame carries them.
-      this.sink.send({
-        kind: 'replay-done',
-        sessionId,
-        burstId,
-        permissions: pending?.permissions ?? [],
-        ...(pending?.elicitations ? { elicitations: pending.elicitations } : {}),
-        ...(pending?.dialogs ? { dialogs: pending.dialogs } : {}),
-      }, burst)
-    }
-    metrics.observe('replay_build_ms', performance.now() - replayStart)
-    metrics.count('replay_messages', undefined, replayHistory.length)
   }
 
-  private async startSession(
+  /** Re-broadcast the session's still-outstanding permission / elicitation /
+   *  dialog requests to THIS connection as their ordinary request frames.
+   *
+   *  Formerly the replay burst carried these as payload snapshots; with
+   *  replay retired (the seq-window protocol serves transcript history over
+   *  REST) the pending-request re-broadcast is the one piece of subscribe-
+   *  time state that must survive: a reconnecting tab whose panel stayed
+   *  mounted has no other way to relearn a request that was broadcast before
+   *  the connection dropped (the REST seeds in usePermissionChannel /
+   *  useElicitationChannel / useUserDialogChannel run once per mount).
+   *  Duplicate-tolerant by construction: the client-side merge keys on the
+   *  request id, so a re-broadcast that races a REST seed folds into it.
+   *  Shared by the establish path and the duplicate-subscribe path so the
+   *  two can never drift; the re-serve path reads them FRESH from the
+   *  brokers rather than reusing a cached snapshot — a stale one could
+   *  resurrect an already resolved request. */
+  private sendPendingRequests(
     sessionId: string,
-    sinceUuid?: string,
-    replayMode?: 'tail-backfill',
-    hasCachedTranscript = false,
-  ): Promise<void> {
+    permissions: ReturnType<SessionBroadcaster['listPending']>,
+    elicitations: ReturnType<SessionBroadcaster['listPendingElicitation']>,
+    dialogs: ReturnType<SessionBroadcaster['listPendingDialogs']>,
+  ): void {
+    for (const req of permissions) {
+      this.sink.send({ kind: 'permission-request', sessionId, payload: req })
+    }
+    for (const req of elicitations) {
+      this.sink.send({ kind: 'elicitation-request', sessionId, payload: req })
+    }
+    for (const req of dialogs) {
+      this.sink.send({ kind: 'dialog-request', sessionId, payload: req })
+    }
+  }
+
+  private async startSession(sessionId: string): Promise<void> {
     // A second subscribe on a connection that already holds this channel:
-    // re-serve the replay rather than swallowing the frame. The replay is
-    // per-connection and the caller's listener may have attached after the
-    // first burst (panel remount, StrictMode's double mount, a resume whose
-    // replay landed before <Chat> existed) — only the server can know, so
-    // "I asked for the channel" must always produce one. No session
-    // subscribers are wired here: the existing channel keeps streaming.
+    // re-attach the caller's listener rather than swallowing the frame. The
+    // channel is per-connection and the caller's listener may have mounted
+    // after the first subscribe (panel remount, StrictMode's double mount, a
+    // resume whose ack landed before <Chat> existed) — only the server can
+    // know, so "I asked for this channel" always gets the handshake + the
+    // pending-request re-broadcast. No session subscribers are wired here:
+    // the existing channel keeps streaming.
     if (this.subs.has(sessionId)) {
       // Wrapped because this branch runs before `starting.add` and outside
-      // the try below: a throw here (a non-serializable ring entry reaching
-      // JSON.stringify, say) would reject this un-awaited call instead of
-      // being reported as a refusal, and nothing would answer the frame.
+      // the try below: a throw here would reject this un-awaited call
+      // instead of being reported as a refusal, and nothing would answer
+      // the frame.
       try {
-        const history = this.sm.getHistory(sessionId)
-        if (history) {
-          // The channel's own shape wins over the newcomer's (see SessionSub):
-          // re-serving the ring oldest-first would defeat tail-first for the
-          // listener that asked for it. A caller that declares a cached
-          // transcript still gets the ordinary form — sendReplay's gate blocks
-          // tail-first for it, because backfill chunks prepend above its rows.
-          const channel = this.subs.get(sessionId)
-          const channelMode = channel?.replayMode ?? replayMode
-          // Pending-request snapshots, read fresh rather than passed as null:
-          // in tail mode the TAIL frame is the only carrier of them (the
-          // terminator is payload-free), so a re-serve that omits them leaves
-          // a listener attaching to a live channel with no permission /
-          // elicitation / dialog card on its first paint.
-          this.sendReplay(
+        if (this.sm.getHistory(sessionId)) {
+          // Pending requests read FRESH, not from a cached snapshot — a
+          // stale one could resurrect an already resolved request.
+          this.sendPendingRequests(
             sessionId,
-            history,
-            sinceUuid,
-            {
-              permissions: this.sm.listPending(sessionId),
-              elicitations: this.sm.listPendingElicitation(sessionId),
-              dialogs: this.sm.listPendingDialogs(sessionId),
-            },
-            channelMode,
-            hasCachedTranscript,
+            this.sm.listPending(sessionId),
+            this.sm.listPendingElicitation(sessionId),
+            this.sm.listPendingDialogs(sessionId),
           )
           this.ackSubscribe(sessionId, true, 'already-live')
+          this.sendAttached(sessionId)
         } else {
           // The connection still lists this session but the manager no
           // longer serves it — the window between a teardown ending the
@@ -570,7 +439,7 @@ export class SessionConnection {
       // which subscribes immediately, while POST /resume is still in
       // flight. For a session absent from the in-memory map, sm.subscribe()
       // throws HttpError(404, "session X not found"); relaying that as an
-      // `error` + empty `replay-done` left the client stuck — its hub only
+      // `error` frame left the client stuck — its hub only
       // re-subscribes on reconnect, so the resumed session's messages never
       // loaded (the reported white screen). Resume known-but-dormant
       // sessions first: sm.resume() is idempotent per session (concurrent
@@ -598,10 +467,9 @@ export class SessionConnection {
         throw new Error(known.error || `session ${sessionId} failed to spawn`)
       }
       if (!known.running && !known.slept) {
-        // Key diagnostic: this auto-resume runs BEFORE the replay is
-        // built (the ring only exists after spawn seeds it). A slow
-        // resume here delays replay-done, which widens the client-side
-        // effect-rerun window that can discard an in-flight replay.
+        // Key diagnostic: this auto-resume runs BEFORE the subscribe ack.
+        // A slow resume here delays the `attached` handshake, which widens
+        // the client-side window before the transcript settles.
         const resumeStartedAt = Date.now()
         await this.sm.resume(sessionId)
         log.info(
@@ -653,22 +521,11 @@ export class SessionConnection {
       tasklistSub = this.sm.subscribeTaskList(sessionId)
       tasklistIter = tasklistSub?.iterable[Symbol.asyncIterator]() ?? null
 
-      // 1) Send replay. If the client supplied `sinceUuid`, try to
-      //    send only messages after that point (incremental sync).
-      //    Fall back to full replay if the UUID isn't in the ring
-      //    (evicted by historyCap or client cache is stale).
-      this.sendReplay(
-        sessionId,
-        msg.history,
-        sinceUuid,
-        {
-          permissions: perms.snapshot,
-          elicitations: elicits.snapshot,
-          dialogs: dialogs.snapshot,
-        },
-        replayMode,
-        hasCachedTranscript,
-      )
+      // 1) Re-broadcast still-outstanding permission / elicitation / dialog
+      //    requests so a reconnecting tab relearns state that predates the
+      //    connection (transcript history itself is NOT served here — the
+      //    seq-window protocol pages it over REST).
+      this.sendPendingRequests(sessionId, perms.snapshot, elicits.snapshot, dialogs.snapshot)
 
       // 2.5) Send the current recap snapshot if there is one. The
       //      live iterable picks up future transitions; the snapshot
@@ -790,9 +647,22 @@ export class SessionConnection {
         // frame once and reuse across all of them (see
         // messageFrameJson). Falls back to send() if the value
         // isn't an object (defensive — it always is in practice).
+        const msgObj = typeof value === 'object' && value !== null
+          ? (value as object)
+          : null
+        const seq = msgObj ? this.sm.transcriptSeqOf?.(sessionId, msgObj) : undefined
+        // Generation rides alongside seq (spec §4: live `message`
+        // frames carry { seq, generation } — the client's WINDOW_LIVE
+        // path requires BOTH non-null). Same source as the attached
+        // handshake. Only stamped when a seq exists, matching the
+        // wire contract (`generation` is omitted when `seq` is) and
+        // the frame-cache invariant documented in messageFrameJson.
+        const generation = seq !== undefined
+          ? this.sm.transcriptHead?.(sessionId)?.generation
+          : undefined
         this.sink.sendRaw(
-          typeof value === 'object' && value !== null
-            ? messageFrameJson(sessionId, value as object)
+          msgObj
+            ? messageFrameJson(sessionId, msgObj, seq, generation)
             : JSON.stringify({ kind: 'message', sessionId, message: value as never }),
           'message',
         )
@@ -841,15 +711,20 @@ export class SessionConnection {
         this.sink.send(value as WsGitSnapshot)
       })
       drive(msgStatIter, (value) => {
-        // Input-queue message status: either a consumed stamp
-        // (queued → consumed flip) or a withdrawal batch (queued
-        // messages removed by an interrupt with cancelQueued).
+        // Input-queue message status: a consumed stamp (queued → consumed
+        // flip), a steering delivery transition (injected/requeued), a
+        // withdrawal batch (queued messages removed by an interrupt with
+        // cancelQueued) or an eviction batch (seq-window tombstones).
         // The channel is typed at the source (see
         // SessionManager.subscribeMessageStatus), so this is a
         // plain discriminated-union switch, not a defensive parse.
-        const v = value as WsMessageConsumed | WsMessagesWithdrawn
+        const v = value as WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted
         if (v.kind === 'messages-withdrawn') {
           this.sink.send({ kind: 'messages-withdrawn', sessionId, uuids: v.uuids })
+        } else if (v.kind === 'messages-evicted') {
+          this.sink.send({ kind: 'messages-evicted', sessionId, seqs: v.seqs, generation: v.generation })
+        } else if (v.kind === 'message-steered') {
+          this.sink.send({ kind: 'message-steered', sessionId, uuid: v.uuid, state: v.state })
         } else {
           this.sink.send({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
         }
@@ -880,8 +755,9 @@ export class SessionConnection {
         this.sink.send(value as WsTasklistSnapshot)
       })
 
-      this.subs.set(sessionId, { sessionId, cleanup: stop, replayMode })
+      this.subs.set(sessionId, { sessionId, cleanup: stop })
       this.ackSubscribe(sessionId, true, 'served')
+      this.sendAttached(sessionId)
     } catch (err) {
       // SessionManager.require() throws HttpError for unknown sessions.
       // Relay that to the client rather than killing the connection;
@@ -903,10 +779,6 @@ export class SessionConnection {
       taskSub?.unsubscribe()
       tasklistSub?.unsubscribe()
       this.sink.send({ kind: 'error', sessionId, message: (err as Error).message })
-      // Always send replay-done so the client's replay state machine
-      // terminates — without this, replayReady stays false forever and
-      // the UI shows "Loading messages..." indefinitely.
-      this.sink.send({ kind: 'replay-done', sessionId, permissions: [] })
       // …and the machine-readable half: nothing was established here, so
       // the client may ask again once the session is servable (`error`
       // above is prose, and is emitted for unrelated failures too).
@@ -942,8 +814,5 @@ export class SessionConnection {
     // is closing itself (it already knows).
     this.subs.delete(sessionId)
     s.cleanup()
-    // The panel is gone — a replay burst still queued unsent for this
-    // session would never be read. Drop it (WsWriteQueue supersedes).
-    this.sink.dropQueuedReplays(sessionId)
   }
 }

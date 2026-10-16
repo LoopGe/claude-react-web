@@ -27,17 +27,13 @@ export type WsSessionUpdate = shared.WsSessionUpdate<SessionInfo>
 export type WsSessionCreated = shared.WsSessionCreated<SessionInfo>
 export type { WsSessionRemoved } from '../shared/ws-protocol.js'
 export type WsGlobalPermissionRequest = shared.WsGlobalPermissionRequest<PermissionRequest>
-/** `messages` is `unknown[]` because SDK message shapes are opaque to
- *  the browser (SdkMessage is a loose Record). */
-export type WsReplay = shared.WsReplay<unknown, PermissionRequest>
-export type WsReplayDone = shared.WsReplayDone<PermissionRequest>
 export type { WsSubscribeResult, WsSubscribeResultReason } from '../shared/ws-protocol.js'
 export type WsMessage = shared.WsMessage<unknown>
 export type WsPermissionRequest = shared.WsPermissionRequest<PermissionRequest>
 export type WsPermissionResolved = shared.WsPermissionResolved<shared.PermissionDecision>
 export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
 export type WsHookRunEvent = shared.WsHookRunEvent<HookRuntimeEvent>
-export type { WsContextUsage, WsPromptSuggestion, WsTasksSnapshot, WsTasklistSnapshot, WsGitSnapshot, WsMessageConsumed, WsMessagesWithdrawn, WsMessageSteered, WsSessionCleared, WsCommandsChanged, WsPong, WsError, PermissionDecision, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsWidgetPayload, WsCliNotification, CliNotification, WsClientDebugRequest } from '../shared/ws-protocol.js'
+export type { WsContextUsage, WsPromptSuggestion, WsTasksSnapshot, WsTasklistSnapshot, WsGitSnapshot, WsMessageConsumed, WsMessagesWithdrawn, WsAttached, WsMessagesEvicted, WsMessageSteered, WsSessionCleared, WsCommandsChanged, WsPong, WsError, PermissionDecision, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsWidgetPayload, WsCliNotification, CliNotification, WsClientDebugRequest } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,

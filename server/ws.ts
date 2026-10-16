@@ -30,8 +30,8 @@ const log = createLogger('ws')
 
 /** Inbound frame cap. The only client → server frames are
  *  `subscribe | unsubscribe | ping` (shared/ws-protocol.ts WsClientFrame):
- *  a session id, an optional uuid, a mode literal and a boolean — well under
- *  1 KiB. Anything larger is closed with 1009 before it is buffered. */
+ *  a session id and a mode literal — well under 1 KiB. Anything larger is
+ *  closed with 1009 before it is buffered. */
 export const WS_MAX_INBOUND_BYTES = 64 * 1024
 
 /** Attach a WebSocket endpoint to an existing Node HTTP server. Returns
