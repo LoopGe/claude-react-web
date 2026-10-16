@@ -16,8 +16,9 @@
 // Empty lines or unregistered languages return `null`; the caller is
 // expected to fall back to plain text.
 
-import type { ReactNode } from 'react'
-import { lowlight, isRegisteredLanguage } from './lowlight-instance'
+import { useSyncExternalStore, type ReactNode } from 'react'
+import { lowlight, isRegisteredLanguage, lazyGrammarFor, requestGrammar } from './lowlight-instance'
+import { subscribeMarkdownFeatures } from './markdown-features'
 import { rehypeHighlightQuery } from '../search'
 
 /** Loose hast-like node so we can walk lowlight's output without pulling
@@ -97,7 +98,15 @@ export function highlightLineHast(
   const q = query?.trim()
   // `language && isRegisteredLanguage(language)` narrows language to string
   // for the lowlight calls below (lowlight.highlight requires a string).
-  const lang = language != null && isRegisteredLanguage(language) ? language : null
+  const known = language != null && isRegisteredLanguage(language) ? language : null
+  // An on-demand grammar that has not loaded yet is treated like an unknown
+  // language for this render (plain text; search marks still apply through the
+  // plain-text path below) and, crucially, never reaches HIGHLIGHT_CACHE: the
+  // line re-renders highlighted once the grammar lands (DiffLine subscribes
+  // through useHighlightLanguageReady).
+  const pending = known != null ? lazyGrammarFor(known) : undefined
+  if (pending) void requestGrammar(pending)
+  const lang = pending ? null : known
 
   if (!q) {
     // No search query — syntax-only, cached. No marks for unknown languages.
@@ -146,4 +155,13 @@ export function highlightLineHast(
   }
   const children = (tree.children ?? []) as HastNode[]
   return children.length === 0 ? line : <>{renderHast(children)}</>
+}
+
+/** Subscribe a diff line to its language's on-demand grammar: false while the
+ *  grammar is still loading (highlightLineHast renders the line plain), and the
+ *  flip to true re-renders the caller once it is registered. Constant true for
+ *  core, unknown and null languages, so those lines never re-render here. */
+export function useHighlightLanguageReady(language: string | null): boolean {
+  const isReady = () => language == null || !isRegisteredLanguage(language) || lazyGrammarFor(language) === undefined
+  return useSyncExternalStore(subscribeMarkdownFeatures, isReady, isReady)
 }

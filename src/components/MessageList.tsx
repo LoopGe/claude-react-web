@@ -7,7 +7,7 @@
 // Filters out `stream_event` partials (the final assistant message
 // carries the complete content, so showing both just flickers).
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
@@ -27,7 +27,6 @@ import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
 import { OverlayStreamingRegion } from './message-list/OverlayStreamingRegion'
 import { ChatEmptyState } from './ChatEmptyState'
-import { EasterEggGame } from './EasterEggGame'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
@@ -46,6 +45,29 @@ import {
 import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRows'
 import { TRANSCRIPT_REVEAL_ROW_CLASS, TRANSCRIPT_ROW_CLASS, useTranscriptAnimations } from './message-list/useTranscriptAnimations'
 import { useTranscriptScroll } from './message-list/useTranscriptScroll'
+import { prefetchMarkdownFeaturesForItems } from '../utils/markdown-prefetch'
+/** The easter-egg game only mounts after a triple-click on the empty state's
+ *  icon, so it is not shipped in the entry chunk: its chunk is fetched once
+ *  the empty state is on screen (see the prefetch effect in MessageList). */
+type EasterEggModule = typeof import('./EasterEggGame')
+let easterEggModule: EasterEggModule | null = null
+const loadEasterEggGame = (): Promise<EasterEggModule> =>
+  import('./EasterEggGame').then((mod) => {
+    easterEggModule = mod
+    return mod
+  })
+const EasterEggGame = lazy(() => {
+  const loaded = easterEggModule
+  if (loaded) {
+    // Already fetched: a thenable that resolves synchronously lets React.lazy
+    // render the game in this very commit (its initializer re-checks the
+    // status right after `.then`). A real promise would suspend first, and
+    // React then holds the empty fallback for its ~300 ms reveal throttle.
+    const ready = { default: loaded.EasterEggGame }
+    return { then: (resolve: (value: typeof ready) => void) => resolve(ready) } as unknown as Promise<typeof ready>
+  }
+  return loadEasterEggGame().then((mod) => ({ default: mod.EasterEggGame }))
+})
 
 /** Re-export type for backward compatibility (types don't affect Fast Refresh). */
 export type { ActiveSubagent } from '../session-store/types'
@@ -561,6 +583,27 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     }),
     [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards],
   )
+
+  // Warm the on-demand highlight grammars for the whole transcript, not just
+  // the mounted rows: items that reach the store without passing
+  // useChatStream's page / frame scan (prop-fed transcripts) are covered
+  // here, and a row the user
+  // scrolls to later should paint highlighted on its first render. Each
+  // message is scanned once
+  // (markdown-prefetch.ts), so this stays cheap per append.
+  useEffect(() => {
+    prefetchMarkdownFeaturesForItems(items)
+  }, [items])
+
+  // The easter-egg game can only open from the default empty state, so fetch
+  // its lazy chunk once that state is on screen: the triple-click then swaps
+  // the game in at once, instead of showing nothing until the chunk lands.
+  const showsDefaultEmptyState = renderableItems.length === 0 && (!expectHistory || replayReady) && emptyStateContent == null
+  useEffect(() => {
+    // A failed prefetch is ignored here: opening the game runs the lazy
+    // import itself.
+    if (showsDefaultEmptyState) loadEasterEggGame().catch(() => {})
+  }, [showsDefaultEmptyState])
 
   // --- Reverse infinite scroll: keep the viewport anchored on prepend ----
   // The offset arithmetic lives in `advanceRowAnchor` (see transcript-rows.ts
@@ -1387,7 +1430,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         {renderableItems.length === 0 && (!expectHistory || replayReady) && (
           <div className="chat-messages-empty">
             {emptyStateContent ?? (gameOpen
-                ? <EasterEggGame onExit={closeEasterEgg} />
+                ? <Suspense fallback={null}><EasterEggGame onExit={closeEasterEgg} /></Suspense>
                 : <ChatEmptyState onUnlockEasterEgg={openEasterEgg} env={emptyStateExtra} />)}
           </div>
         )}

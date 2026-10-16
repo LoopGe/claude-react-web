@@ -34,9 +34,20 @@ export default defineConfig({
         // browser caching works across deploys.  React + react-dom are
         // the biggest single slice and change least often; the markdown
         // pipeline and virtualiser are independent feature domains.
-        manualChunks(id) {
+        //
+        // On-demand highlight.js grammars stay OUT of markdown-vendor (which
+        // is modulepreloaded): each grammar lowlight-instance.ts loads with
+        // import() gets a chunk of its own. It needs an explicit name: Rollup
+        // adds every static dependency of a manual-chunk module to the chunk,
+        // and lowlight's grammar index (lib/all.js) statically imports every
+        // grammar, so an unnamed one would be dragged back into
+        // markdown-vendor. Keyed on dynamicImporters, so the eager core
+        // (statically imported) stays in markdown-vendor with no second list.
+        manualChunks(id, { getModuleInfo }) {
           if (id.includes('node_modules')) {
             if (/[/\\]react-dom[/\\]/.test(id) || /[/\\]react[/\\]/.test(id)) return 'react-vendor'
+            const grammar = /[/\\]highlight\.js[/\\](?:es|lib)[/\\]languages[/\\]([\w-]+)\.js$/.exec(id)
+            if (grammar && (getModuleInfo(id)?.dynamicImporters.length ?? 0) > 0) return `hljs-${grammar[1]}`
             if (/[/\\](react-markdown|remark-gfm|remark-breaks|remark-math|rehype-katex|katex|highlight\.js|lowlight|unified|micromark|mdast-util|hast-util|unist-util|bail|trough|vfile|property-information|comma-separated-tokens|space-separated-tokens|decode-named-character-reference|character-entities|trim-lines|ccount|escape-string-regexp|markdown-table|zwitch|direction|is-plain-obj)[/\\]/.test(id)) return 'markdown-vendor'
             if (/[/\\]react-virtuoso[/\\]/.test(id)) return 'virtuoso-vendor'
           }

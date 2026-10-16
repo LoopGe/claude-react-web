@@ -9,7 +9,7 @@ import { memo, useMemo, type ReactNode } from 'react'
 import { AnimatedDetails } from '../AnimatedCollapse'
 import type { EditDiffHunk, EditDiffInfo } from '../../hooks/useEditDiffInfo'
 import { detectLanguage } from '../../utils/file-display'
-import { highlightLineHast } from '../../utils/diff-highlight'
+import { highlightLineHast, useHighlightLanguageReady } from '../../utils/diff-highlight'
 import { lineDiff, countMatches } from '../../search'
 import { MAX_PREVIEW_LINES } from './shared'
 
@@ -124,6 +124,9 @@ export const DiffLine = memo(function DiffLine({
   /** Index of the active match within THIS line's own match list (0-based). */
   activeMatchIdx?: number
 }) {
+  // An on-demand grammar (lowlight-instance.ts) renders this line plain until
+  // it loads; this subscription re-renders the line once it has.
+  useHighlightLanguageReady(language)
   // Empty lines: skip highlighting for a tiny perf win. highlightLineHast now
   // accepts a null language (renders plain-text search marks via the
   // unregistered-language path), so the guard is `line` only — a null language

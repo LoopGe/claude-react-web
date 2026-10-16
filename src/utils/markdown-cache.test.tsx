@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll } from 'vitest'
 import { render, cleanup } from '@testing-library/react'
 import {
   compileMarkdown,
@@ -6,6 +6,7 @@ import {
   markdownCacheSize,
   markdownSearchBucketCount,
 } from './markdown-cache'
+import { requestGrammar } from './lowlight-instance'
 
 afterEach(() => {
   cleanup()
@@ -57,6 +58,13 @@ describe('compileMarkdown cache', () => {
   // tag that wasn't already lowercase. `js` (the case above) is in that Set, so
   // it could not catch either regression — hence these.
   describe('language gate breadth', () => {
+    // `kt` is an on-demand grammar (lowlight-instance.ts): this block pins the
+    // gate as it stands once a grammar has loaded. The not-yet-loaded path is
+    // covered in markdown-lazy.test.tsx.
+    beforeAll(async () => {
+      await requestGrammar('kotlin')
+    })
+
     const highlighted = (md: string) => {
       const { container } = render(<>{compileMarkdown(md, {})}</>)
       return container.querySelector('span[class*="hljs"]') != null

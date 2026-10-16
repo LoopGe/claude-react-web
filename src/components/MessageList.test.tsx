@@ -406,7 +406,23 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-messages-empty')).toBeTruthy()
   })
 
-  it('swaps the empty state for the easter-egg game after triple-clicking the icon', () => {
+  // Keep this the FIRST test that opens the game: the lazy component's payload
+  // is module-level, so after any earlier open it would be resolved already
+  // and this would pass without exercising the prefetched path.
+  it('opens the easter-egg game in the same commit once the empty state has prefetched its chunk', async () => {
+    const { container } = render(<MessageList items={[]} />)
+    // The empty state's prefetch effect started the import; wait for the same
+    // module, then one more macrotask so MessageList's own handler has run.
+    await import('./EasterEggGame')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const icon = container.querySelector('.chat-empty-icon') as HTMLElement
+    fireEvent.click(icon); fireEvent.click(icon); fireEvent.click(icon)
+    // No waitFor: a prefetched lazy game must not suspend (React would hold
+    // the empty fallback for its reveal throttle).
+    expect(container.querySelector('.easter-egg-game')).toBeTruthy()
+  })
+
+  it('swaps the empty state for the easter-egg game after triple-clicking the icon', async () => {
     const { container } = render(<MessageList items={[]} />)
     // game not present initially
     expect(container.querySelector('.easter-egg-game')).toBeNull()
@@ -415,18 +431,19 @@ describe('MessageList', () => {
     fireEvent.click(icon)
     fireEvent.click(icon)
     fireEvent.click(icon)
-    expect(container.querySelector('.easter-egg-game')).toBeTruthy()
+    // React.lazy: the game mounts once its chunk has resolved.
+    await waitFor(() => expect(container.querySelector('.easter-egg-game')).toBeTruthy())
     // exit returns to the empty state
     fireEvent.click(container.querySelector('[aria-label="Exit game"]') as HTMLElement)
     expect(container.querySelector('.easter-egg-game')).toBeNull()
     expect(container.querySelector('.chat-empty')).toBeTruthy()
   })
 
-  it('closes the easter-egg game when messages arrive', () => {
+  it('closes the easter-egg game when messages arrive', async () => {
     const { container, rerender } = render(<MessageList items={[]} />)
     const icon = container.querySelector('.chat-empty-icon') as HTMLElement
     fireEvent.click(icon); fireEvent.click(icon); fireEvent.click(icon)
-    expect(container.querySelector('.easter-egg-game')).toBeTruthy()
+    await waitFor(() => expect(container.querySelector('.easter-egg-game')).toBeTruthy())
     // messages arrive (non-empty items) → game closes
     rerender(<MessageList items={toItems([
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'hi' }] } }),
