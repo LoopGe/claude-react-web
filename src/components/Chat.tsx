@@ -327,6 +327,11 @@ interface Props {
    *  of opening the resume picker; Alt+B uses the same signal as its
    *  guard. */
   onRegisterTurnActive?: (sessionId: string, fn: () => boolean) => () => void
+  /** Called when MessageList registers its transcript navigator, so the
+   *  parent can route the Alt+↑ / Alt+↓ shortcuts to the focused panel's
+   *  prev/next user-message jumps. Re-invoked whenever the navigator's
+   *  identity changes; the returned unregister runs on unmount. */
+  onRegisterScrollNav?: (sessionId: string, nav: ScrollNavigator) => () => void
   /** Called whenever this panel fires an interrupt (the single funnel
    *  covers the Composer button and App's Esc path). Lets App arm the
    *  post-interrupt Esc suppression window for EVERY interrupt path, not
@@ -431,7 +436,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -1833,12 +1838,22 @@ export const Chat = memo(function Chat({
   }, [setInput, recallHistoryEntryImages, history, setComposerFocusSignal])
 
   // MessageList registers its prev/next-user-message navigator here so the
-  // chat-area right-click menu ("Scroll to previous/next user message") can
-  // drive it without prop-threading through the message list.
+  // chat-area right-click menu ("Scroll to previous/next user message") and
+  // App's Alt+↑ / Alt+↓ shortcuts can drive it without prop-threading
+  // through the message list. The navigator is also forwarded to App's
+  // per-session registry (keyed by session id, same shape as the
+  // recap/background registrations). MessageList re-invokes this whenever
+  // the navigator's identity changes, so the registry entry is refreshed in
+  // lockstep; the disposer ref plus the unmount effect below keep the
+  // registry free of entries for closed panels.
   const scrollNavRef = useRef<ScrollNavigator | null>(null)
+  const scrollNavDisposeRef = useRef<(() => void) | null>(null)
   const registerNavigate = useCallback((nav: ScrollNavigator) => {
     scrollNavRef.current = nav
-  }, [])
+    scrollNavDisposeRef.current?.()
+    scrollNavDisposeRef.current = onRegisterScrollNav?.(session.id, nav) ?? null
+  }, [session.id, onRegisterScrollNav])
+  useEffect(() => () => { scrollNavDisposeRef.current?.() }, [])
 
   // Stable wrapper so MessageList's `itemContent` useCallback (whose dep
   // array includes onSwitchModel) keeps a stable identity across streaming

@@ -2137,6 +2137,92 @@ describe('MessageList', () => {
     expect(Math.round(virtuosoMockState.scrollTop)).toBe(800)
   })
 
+  // Shared harness for the Alt+↑/↓ shortcut-vs-scroller tests below: 16
+  // rows — 6 user/assistant pairs (user rows at even indices 0..10) plus a
+  // 4-assistant tail (rows 12..15) so the bottom-parked viewport top sits
+  // well below the last user message and prev() makes a LONG seek. A
+  // clamping scrollTo wired to the mock's scrollTop, rows that measure from
+  // the live scroll position, viewport parked at the bottom (following).
+  function renderParkedAtBottom() {
+    const msgs: SdkMessage[] = []
+    for (let i = 0; i < 6; i++) {
+      msgs.push(makeMsg('user', { uuid: `q-${i}`, message: { content: [{ type: 'text', text: `q${i}` }] } }))
+      msgs.push(makeMsg('assistant', { uuid: `a-${i}`, message: { content: [{ type: 'text', text: `a${i}` }] } }))
+    }
+    for (let i = 0; i < 4; i++) {
+      msgs.push(makeMsg('assistant', { uuid: `tail-${i}`, message: { content: [{ type: 'text', text: `tail${i}` }] } }))
+    }
+    const nav: { current: ScrollNavigator | null } = { current: null }
+    const { container } = render(
+      <MessageList items={toItems(msgs)} onRegisterNavigate={(n) => { nav.current = n }} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    Object.defineProperty(scroller, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 0, bottom: 600, left: 0, right: 800, height: 600, width: 800 }),
+    })
+    const stubRows = () => {
+      Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]')).forEach((row, i) => {
+        Object.defineProperty(row, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => {
+            const top = i * 200 - virtuosoMockState.scrollTop
+            return { top, bottom: top + 200, left: 0, right: 800, height: 200, width: 800 }
+          },
+        })
+      })
+    }
+    ;(scroller as unknown as { scrollTo: (o: { top: number }) => void }).scrollTo = (o) => {
+      const max = virtuosoMockState.scrollHeight - virtuosoMockState.clientHeight
+      virtuosoMockState.scrollTop = Math.max(0, Math.min(o.top, max))
+      fireEvent.scroll(scroller)
+    }
+    virtuosoMockState.scrollHeight = 16 * 200
+    virtuosoMockState.clientHeight = 600
+    act(() => { stubRows(); virtuosoMockState.scrollTop = 16 * 200 - 600; fireEvent.scroll(scroller) })
+    return { container, scroller, nav }
+  }
+
+  it('modifier-held ArrowUp on the focused scroller is not a user scroll-away (Alt+↑ is the app-level prev-shortcut)', () => {
+    // The Virtuoso scroller is tabIndex 0, so clicking a message focuses it —
+    // and a keydown bubbles element-first: the scroller's own scroll-key
+    // handler runs BEFORE the window-level shortcut dispatcher. Alt+ArrowUp
+    // must therefore not be classified as a plain scroll key there, or the
+    // shortcut's seek is preceded by a follow-drop on every press.
+    vi.useFakeTimers()
+    const { container, scroller } = renderParkedAtBottom()
+    expect(followingOf(container)).toBe('true')
+
+    act(() => { fireEvent.keyDown(scroller, { key: 'ArrowUp', altKey: true }) })
+    expect(followingOf(container)).toBe('true')
+  })
+
+  it('Alt+↑ presses with the focused scroller advance one user message per press', () => {
+    // Same root cause, cursor symptom: without the modifier guard the
+    // scroller's key handler resets the navigation cursor (user-scroll
+    // intent) before each dispatcher-driven jump, so a second press
+    // mid-seek re-anchors on the lagging live top and re-targets the SAME
+    // message the first press already aimed at.
+    vi.useFakeTimers()
+    const { scroller, nav } = renderParkedAtBottom()
+    if (!nav.current) throw new Error('navigator not registered')
+
+    act(() => { fireEvent.keyDown(scroller, { key: 'ArrowUp', altKey: true }) })
+    act(() => { nav.current!.prev() })
+    act(() => { vi.advanceTimersByTime(32) })
+    act(() => { fireEvent.keyDown(scroller, { key: 'ArrowUp', altKey: true }) })
+    act(() => { nav.current!.prev() })
+    for (let f = 0; f < 200; f++) act(() => { vi.advanceTimersByTime(16) })
+
+    // Parked at the bottom (top visible = row 13): press 1 makes the LONG
+    // seek to the last user message (row 10 → 2000px). Press 2, issued
+    // mid-seek with the cursor held, must advance to the second-to-last
+    // user message (row 8 → 1600px). With the cursor reset by the keydown
+    // it re-anchors on the lagging live top (still ~row 11) and re-targets
+    // row 10 — the walk stalls at 2000px.
+    expect(Math.round(virtuosoMockState.scrollTop)).toBe(1600)
+  })
+
   it('animates jump-to-bottom and lands at the real bottom when content grows mid-flight', () => {
     // Regression guard for the "click scroll-to-bottom sometimes lands short"
     // bug. Native `behavior: 'smooth'` captured scrollHeight once at click

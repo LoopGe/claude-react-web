@@ -6,6 +6,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
+import type { ScrollNavigator } from './MessageList'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -266,6 +267,9 @@ export interface ChatPanelProps {
    *  send (before the server flips working=true) interrupts the turn
    *  instead of opening the resume picker. */
   onRegisterTurnActive?: (sessionId: string, fn: () => boolean) => () => void
+  /** Forwarded to <Chat> so it can register its transcript navigator.
+   *  Enables the Alt+↑ / Alt+↓ prev/next user-message shortcuts in App. */
+  onRegisterScrollNav?: (sessionId: string, nav: ScrollNavigator) => () => void
   /** Forwarded to <Chat>. Chat calls it whenever it fires an interrupt
    *  (its own funnel covers the Composer button), so App can arm the
    *  post-interrupt Esc suppression window for every interrupt path —
@@ -338,6 +342,7 @@ export const ChatPanel = memo(function ChatPanel({
   onRegisterRecap,
   onRegisterBackground,
   onRegisterTurnActive,
+  onRegisterScrollNav,
   onInterruptFired,
   isResuming,
   snippets,
@@ -1302,6 +1307,7 @@ export const ChatPanel = memo(function ChatPanel({
             onRegisterRecap={onRegisterRecap}
             onRegisterBackground={onRegisterBackground}
             onRegisterTurnActive={onRegisterTurnActive}
+            onRegisterScrollNav={onRegisterScrollNav}
             onInterruptFired={onInterruptFired}
             onOpenSettingsPanel={onOpenSettings}
             snippets={snippets}

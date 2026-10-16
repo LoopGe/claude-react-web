@@ -71,6 +71,8 @@ import { useUiState } from './hooks/useUiState'
 import { sessionStoreRegistry } from './session-store/registry'
 import { deleteDraftImagesForRemovedSession } from './state/inputHistoryImages'
 import { useAppOverlays } from './app/useAppOverlays'
+import { scrollNavShortcuts } from './app/scroll-nav-shortcuts'
+import type { ScrollNavigator } from './components/MessageList'
 import { useExitPresence } from './hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
 import { createCallbackRegistry, type CallbackRegistry } from './utils/callbackRegistry'
@@ -747,6 +749,20 @@ export function App() {
   const registerTurnActive = useCallback((sessionId: string, fn: () => boolean) => {
     return turnActiveFnsRef.current.register(sessionId, fn)
   }, [])
+  // Per-session transcript navigators registered by <Chat> components.
+  // Enables the Alt+↑ / Alt+↓ shortcuts to jump the focused panel's
+  // transcript to the previous / next user message. The entries themselves
+  // live in scroll-nav-shortcuts.ts (unit-tested against the real
+  // dispatcher). Unlike the sibling registries above this one is created
+  // via a lazy useState initializer rather than useRef: the shortcuts
+  // factory consumes it DURING RENDER (the shortcuts array is built in a
+  // useMemo), and react-hooks/refs forbids reading a ref there. The
+  // initializer never re-runs and the state is never set, so the instance
+  // is as stable as a ref for the app's lifetime.
+  const [scrollNavRegistry] = useState(() => createCallbackRegistry<ScrollNavigator>())
+  const registerScrollNav = useCallback((sessionId: string, nav: ScrollNavigator) => {
+    return scrollNavRegistry.register(sessionId, nav)
+  }, [scrollNavRegistry])
   // Stamp the post-interrupt suppression window (see lastInterruptRef).
   // Called by the Escape handler's interrupt path and by <Chat>'s own
   // interrupt funnel (the Composer button) via onInterruptFired, so every
@@ -1539,6 +1555,7 @@ export function App() {
       recapFnsRef.current.delete(id)
       backgroundFnsRef.current.delete(id)
       turnActiveFnsRef.current.delete(id)
+      scrollNavRegistry.delete(id)
       setSidebarOrder((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev))
       setGroups((prev) => {
         let changed = false
@@ -1559,7 +1576,7 @@ export function App() {
         sessionStoreRegistry.delete(sideId)
       }
     },
-    [cleanupSideChat, pendingGroupInheritance, pruneSession, setGroups, setLastSeenTurn, setSidebarOrder],
+    [cleanupSideChat, pendingGroupInheritance, pruneSession, setGroups, setLastSeenTurn, setSidebarOrder, scrollNavRegistry],
   )
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as animatePanelsRef): the WS session-removed handler (in an effect above) calls teardownRemovedSession via this ref.
   teardownRemovedSessionRef.current = teardownRemovedSession
@@ -3086,6 +3103,23 @@ export function App() {
           allowInInput: true,
           description: 'Background current tasks',
         },
+        // Jump the focused panel's transcript to the previous / next user
+        // message. Built by the tested factory; both args are plain values
+        // (react-hooks/refs — no ref reads during render): focusedId is
+        // baked in and rebuilt on focus change via the useMemo deps below,
+        // and the stable registry instance is read live inside the handlers.
+        // Null-suppressed while the focused panel's side-chat drawer is
+        // expanded: the drawer covers the parent transcript and its own
+        // MessageList never registers a navigator, but clicking inside it
+        // focuses the PARENT panel (ChatPanel's mousedown capture) — without
+        // the suppression the shortcut would scroll the hidden transcript
+        // behind the drawer. A collapsed drawer reveals the parent again.
+        ...scrollNavShortcuts(
+          scrollNavRegistry,
+          sideChat != null && !sideChat.collapsed && sideChat.parentId === focusedId
+            ? null
+            : focusedId,
+        ),
         {
           combo: 'escape',
           handler: () => {
@@ -3156,7 +3190,7 @@ export function App() {
       // [handleCloseSettings, handleCloseGitPanel]), so the omission only
       // affects eslint's static analysis, not runtime behaviour.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed],
+      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed, focusedId, scrollNavRegistry, sideChat],
     )
   useKeyboardShortcuts(shortcuts)
 
@@ -5001,6 +5035,7 @@ export function App() {
                       onRegisterRecap={registerRecap}
                       onRegisterBackground={registerBackground}
                       onRegisterTurnActive={registerTurnActive}
+                      onRegisterScrollNav={registerScrollNav}
                       onInterruptFired={handleInterruptFired}
                       onRequestResumeForPanel={requestResumeForPanel}
                       resumeOpen={resumeDialogOpen && resumeTargetPanelId === s.id}

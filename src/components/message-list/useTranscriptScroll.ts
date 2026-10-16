@@ -1003,8 +1003,14 @@ export function useTranscriptScroll({
     // requiring the scroller itself as the target is what keeps ArrowUp/Home
     // pressed inside a nested block (or a message's own control) from being
     // read as a transcript leave. Shift+Space is Chromium's other page-up.
+    // Modifier-held arrows are NOT plain scroll keys: Alt+↑/↓ is the app-level
+    // prev/next user-message shortcut (whose window-level dispatcher runs
+    // AFTER this element handler) and Alt+Shift+↑/↓ moves sidebar groups —
+    // classifying either as scroll intent drops follow and resets the
+    // navigation cursor right before the shortcut's own seek.
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.target !== el) return
+      if (e.altKey || e.ctrlKey || e.metaKey) return
       if (!SCROLL_UP_KEYS.has(e.key) && !(e.key === ' ' && e.shiftKey)) return
       markUserScrollIntent()
       leaveOnUpwardGesture()
