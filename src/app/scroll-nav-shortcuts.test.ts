@@ -1,5 +1,6 @@
-// scrollNavShortcuts: the Alt+↑ / Alt+↓ shortcut entries that drive the
-// focused panel's transcript to the previous / next user message.
+// scrollNavShortcuts: the Alt+↑ / Alt+↓ (previous / next USER message) and
+// Ctrl/⌘+↑ / ↓ (previous / next TURN-FINAL assistant message) shortcut
+// entries that drive the focused panel's transcript.
 //
 // These tests run against the REAL useKeyboardShortcuts dispatcher and the
 // REAL createCallbackRegistry — only the ScrollNavigator itself is a test
@@ -19,7 +20,14 @@ function press(key: string, opts: Partial<KeyboardEventInit> = {}) {
 }
 
 function fakeNav(): ScrollNavigator {
-  return { prev: vi.fn(), next: vi.fn(), to: vi.fn(), toBottom: vi.fn() }
+  return {
+    prev: vi.fn(),
+    next: vi.fn(),
+    prevTurn: vi.fn(),
+    nextTurn: vi.fn(),
+    to: vi.fn(),
+    toBottom: vi.fn(),
+  }
 }
 
 /** Mount the dispatcher with entries built for `focusedId`, mirroring how
@@ -123,5 +131,51 @@ describe('scrollNavShortcuts', () => {
     press('ArrowUp', { altKey: true })
     expect(navA.prev).not.toHaveBeenCalled()
     expect(navB.prev).toHaveBeenCalledOnce()
+  })
+
+  it('mod+arrowup (ctrl) calls prevTurn() on the focused session’s navigator', () => {
+    const nav = fakeNav()
+    const registry = setup('s1')
+    registry.register('s1', nav)
+    press('ArrowUp', { ctrlKey: true })
+    expect(nav.prevTurn).toHaveBeenCalledOnce()
+    expect(nav.prev).not.toHaveBeenCalled()
+  })
+
+  it('mod+arrowdown (meta) calls nextTurn() on the focused session’s navigator', () => {
+    const nav = fakeNav()
+    const registry = setup('s1')
+    registry.register('s1', nav)
+    // metaKey, not ctrlKey: 'mod' maps to Cmd on macOS, and this pair must
+    // fire under both spellings like every other mod combo.
+    press('ArrowDown', { metaKey: true })
+    expect(nav.nextTurn).toHaveBeenCalledOnce()
+    expect(nav.next).not.toHaveBeenCalled()
+  })
+
+  it('mod+arrows fire while a textarea holds focus (allowInInput)', () => {
+    const nav = fakeNav()
+    const registry = setup('s1')
+    registry.register('s1', nav)
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    textarea.focus()
+    const event = new KeyboardEvent('keydown', { key: 'ArrowUp', ctrlKey: true })
+    Object.defineProperty(event, 'target', { value: textarea })
+    window.dispatchEvent(event)
+    expect(nav.prevTurn).toHaveBeenCalledOnce()
+    document.body.removeChild(textarea)
+  })
+
+  it('plain arrows fire nothing (no modifier is not a combo)', () => {
+    const nav = fakeNav()
+    const registry = setup('s1')
+    registry.register('s1', nav)
+    press('ArrowUp')
+    press('ArrowDown')
+    expect(nav.prev).not.toHaveBeenCalled()
+    expect(nav.next).not.toHaveBeenCalled()
+    expect(nav.prevTurn).not.toHaveBeenCalled()
+    expect(nav.nextTurn).not.toHaveBeenCalled()
   })
 })

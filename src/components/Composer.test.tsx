@@ -269,6 +269,54 @@ describe('Composer', () => {
     expect(active()?.textContent).toContain('clear')
   })
 
+  // Ctrl/Cmd+↑ and Ctrl/Cmd+↓ are the app-level prev/next-turn transcript
+  // shortcuts (scroll-nav-shortcuts.ts, allowInInput). The composer's own
+  // plain-arrow behaviours — history recall at line edges, slash-picker
+  // selection — must not ALSO act on the modifier-held variant, or one
+  // keypress both mutates the draft and jumps the transcript behind it.
+  it('Ctrl+ArrowUp does not recall history (modifier-held arrows belong to the app-level turn jump)', () => {
+    const setInput = vi.fn()
+    const prev = vi.fn(() => ({ text: 'older prompt', id: null, isDraft: false }))
+    const { container } = render(
+      <Composer
+        {...defaultProps}
+        setInput={setInput}
+        history={{ add: noop, prev, next: () => null, isBrowsing: () => false, reset: () => {} }}
+      />,
+    )
+    const editor = getEditor(container)
+    editor.focus()
+    // Empty input, caret on the (only) line: an unguarded ArrowUp hits the
+    // caretOnFirstLine branch and recalls the previous draft.
+    fireEvent.keyDown(editor, { key: 'ArrowUp', ctrlKey: true })
+    expect(prev).not.toHaveBeenCalled()
+    expect(setInput).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+ArrowUp with the slash picker open does not move the picker', () => {
+    Element.prototype.scrollIntoView = vi.fn()
+    const commands: SlashCommand[] = [
+      { name: 'clear', description: 'Clear chat', argumentHint: '' },
+      { name: 'help', description: 'Show help', argumentHint: '' },
+      { name: 'usage', description: 'Show usage', argumentHint: '' },
+    ]
+    function Harness() {
+      const [input, setInput] = useState('')
+      return <Composer {...defaultProps} input={input} setInput={setInput} commands={commands} />
+    }
+    const { container } = render(<Harness />)
+    const editor = getEditor(container)
+
+    setEditorText(editor, '/')
+    const active = () => document.querySelector<HTMLButtonElement>('.cmd-picker-item.active')
+    expect(active()?.textContent).toContain('clear')
+
+    // Unguarded this wraps the selection to 'usage' AND (bubbled to window)
+    // jumps the transcript — a double action. The picker must stay put.
+    fireEvent.keyDown(editor, { key: 'ArrowUp', ctrlKey: true })
+    expect(active()?.textContent).toContain('clear')
+  })
+
   it('shows session ended instead of the editor when terminated', () => {
     const { container } = render(
       <Composer {...defaultProps} terminated />,

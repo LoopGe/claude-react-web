@@ -921,8 +921,11 @@ export const Composer = memo(function Composer({
               }
               // When the slash command picker is open, route arrow/enter/escape
               // to the picker instead of the existing history/send handlers.
+              // Modifier-held arrows are excluded: Ctrl/Cmd+↑/↓ are the
+              // app-level prev/next-turn transcript jumps, and the picker must
+              // not ALSO move on them.
               if (pickerOpen) {
-                if (e.key === 'ArrowUp') {
+                if (e.key === 'ArrowUp' && !e.ctrlKey && !e.metaKey) {
                   e.preventDefault()
                   setPickerIndex((i) => {
                     const n = pickerCommands.length
@@ -931,7 +934,7 @@ export const Composer = memo(function Composer({
                   })
                   return
                 }
-                if (e.key === 'ArrowDown') {
+                if (e.key === 'ArrowDown' && !e.ctrlKey && !e.metaKey) {
                   e.preventDefault()
                   setPickerIndex((i) => {
                     const n = pickerCommands.length
@@ -969,14 +972,17 @@ export const Composer = memo(function Composer({
                 recallHistory(e.key === 'p' ? 'prev' : 'next')
                 return
               }
-              // Bare ↑ / ↓ recall history at line edges.
+              // Bare ↑ / ↓ recall history at line edges. Modifier-held arrows
+              // are excluded: Ctrl/Cmd+↑/↓ are the app-level prev/next-turn
+              // transcript jumps, and a history recall must not ALSO mutate
+              // the draft on the same keypress.
               const h = editorRef.current as unknown as RichPromptHandle | null
               if (!h) return
-              if (e.key === 'ArrowUp' && !e.shiftKey && !e.altKey) {
+              if (e.key === 'ArrowUp' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
                 if (h.caretOnFirstLine()) {
                   if (recallHistory('prev')) e.preventDefault()
                 }
-              } else if (e.key === 'ArrowDown' && !e.shiftKey && !e.altKey) {
+              } else if (e.key === 'ArrowDown' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
                 const offsets = h.selectionOffsets()
                 const caretAtBottom = offsets
                   ? (offsets.end === input.length || !input.slice(offsets.end).includes('\n'))

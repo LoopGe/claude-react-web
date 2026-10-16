@@ -2152,6 +2152,12 @@ describe('MessageList', () => {
     for (let i = 0; i < 4; i++) {
       msgs.push(makeMsg('assistant', { uuid: `tail-${i}`, message: { content: [{ type: 'text', text: `tail${i}` }] } }))
     }
+    return renderTranscriptAtBottom(msgs)
+  }
+
+  // Parameterised core of renderParkedAtBottom: mounts `msgs` (200px rows)
+  // and parks the viewport at the bottom, following.
+  function renderTranscriptAtBottom(msgs: SdkMessage[]) {
     const nav: { current: ScrollNavigator | null } = { current: null }
     const { container } = render(
       <MessageList items={toItems(msgs)} onRegisterNavigate={(n) => { nav.current = n }} />,
@@ -2177,24 +2183,56 @@ describe('MessageList', () => {
       virtuosoMockState.scrollTop = Math.max(0, Math.min(o.top, max))
       fireEvent.scroll(scroller)
     }
-    virtuosoMockState.scrollHeight = 16 * 200
+    // Derive the geometry from the ROWS the mock actually rendered, not from
+    // msgs.length: buildTranscriptRows drops frames MessageView would render
+    // as null (tool_results merged into their owning tool card), so e.g. a
+    // 13-message fixture with two tool hops renders 11 rows.
+    const rowCount = container.querySelectorAll('[data-item-index]').length
+    virtuosoMockState.scrollHeight = rowCount * 200
     virtuosoMockState.clientHeight = 600
-    act(() => { stubRows(); virtuosoMockState.scrollTop = 16 * 200 - 600; fireEvent.scroll(scroller) })
+    act(() => { stubRows(); virtuosoMockState.scrollTop = rowCount * 200 - 600; fireEvent.scroll(scroller) })
     return { container, scroller, nav }
   }
 
-  it('modifier-held ArrowUp on the focused scroller is not a user scroll-away (Alt+↑ is the app-level prev-shortcut)', () => {
+  // Fixture builders for the turn-final navigation tests: a human user
+  // message, a top-level assistant message, a tool_result user frame
+  // (parent_tool_use_id set — NOT a human turn boundary), and an SDK
+  // auto-continuation user frame (origin.kind ≠ 'human' — not a boundary
+  // either, so an auto-continued chain counts as one round).
+  const turnMsg = {
+    user: (uuid: string) => makeMsg('user', { uuid, message: { content: [{ type: 'text', text: uuid }] } }),
+    assistant: (uuid: string) => makeMsg('assistant', { uuid, message: { content: [{ type: 'text', text: uuid }] } }),
+    toolUse: (uuid: string, toolUseId: string) => makeMsg('assistant', {
+      uuid,
+      message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command: 'ls' } }] },
+    }),
+    toolResult: (uuid: string, toolUseId: string) => makeMsg('user', {
+      uuid,
+      parent_tool_use_id: toolUseId,
+      message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'ok' }] },
+    }),
+    autoContinuation: (uuid: string) => makeMsg('user', {
+      uuid,
+      origin: { kind: 'auto-continuation' },
+      message: { content: [{ type: 'text', text: uuid }] },
+    }),
+  }
+
+  it('modifier-held ArrowUp on the focused scroller is not a user scroll-away (Alt+↑ / Ctrl+↑ are app-level shortcuts)', () => {
     // The Virtuoso scroller is tabIndex 0, so clicking a message focuses it —
     // and a keydown bubbles element-first: the scroller's own scroll-key
-    // handler runs BEFORE the window-level shortcut dispatcher. Alt+ArrowUp
-    // must therefore not be classified as a plain scroll key there, or the
-    // shortcut's seek is preceded by a follow-drop on every press.
+    // handler runs BEFORE the window-level shortcut dispatcher. Alt+↑
+    // (prev user message) and Ctrl/⌘+↑ (prev turn reply) must therefore not
+    // be classified as plain scroll keys there, or each shortcut's seek is
+    // preceded by a follow-drop and a navigation-cursor reset.
     vi.useFakeTimers()
     const { container, scroller } = renderParkedAtBottom()
     expect(followingOf(container)).toBe('true')
 
-    act(() => { fireEvent.keyDown(scroller, { key: 'ArrowUp', altKey: true }) })
-    expect(followingOf(container)).toBe('true')
+    for (const mods of [{ altKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+      act(() => { fireEvent.keyDown(scroller, { key: 'ArrowUp', ...mods }) })
+      expect(followingOf(container), JSON.stringify(mods)).toBe('true')
+    }
   })
 
   it('Alt+↑ presses with the focused scroller advance one user message per press', () => {
@@ -2221,6 +2259,86 @@ describe('MessageList', () => {
     // it re-anchors on the lagging live top (still ~row 11) and re-targets
     // row 10 — the walk stalls at 2000px.
     expect(Math.round(virtuosoMockState.scrollTop)).toBe(1600)
+  })
+
+  it('prevTurn/nextTurn target each turn’s LAST assistant message; tool hops don’t split turns', () => {
+    vi.useFakeTimers()
+    // 13 messages / 11 rendered rows (each tool_result merges into its
+    // owning tool card) / 4 turns. Turn finals — the LAST assistant before
+    // the next human message: a0b (row 2), a1b (row 5, after a
+    // tool_use→tool_result hop), a2b (row 8, same), a3 (row 10). The
+    // non-final assistant frames (a0a and the tool cards) must never be
+    // targets.
+    const msgs = [
+      turnMsg.user('q0'), turnMsg.assistant('a0a'), turnMsg.assistant('a0b'),
+      turnMsg.user('q1'), turnMsg.toolUse('a1a', 't1'), turnMsg.toolResult('tr1', 't1'), turnMsg.assistant('a1b'),
+      turnMsg.user('q2'), turnMsg.toolUse('a2a', 't2'), turnMsg.toolResult('tr2', 't2'), turnMsg.assistant('a2b'),
+      turnMsg.user('q3'), turnMsg.assistant('a3'),
+    ]
+    const { nav } = renderTranscriptAtBottom(msgs)
+    if (!nav.current) throw new Error('navigator not registered')
+    const runSeek = () => { for (let f = 0; f < 200; f++) act(() => { vi.advanceTimersByTime(16) }) }
+
+    // Parked at the bottom (top visible = row 8): prevTurn seeks the last
+    // final above it — turn 1's a1b (row 5 → 1000px).
+    act(() => { nav.current!.prevTurn() })
+    runSeek()
+    expect(Math.round(virtuosoMockState.scrollTop)).toBe(1000)
+
+    // Second prevTurn advances to turn 0's final a0b (row 2 → 400px) —
+    // skipping a0a (row 1), which is not a turn final.
+    act(() => { nav.current!.prevTurn() })
+    runSeek()
+    expect(Math.round(virtuosoMockState.scrollTop)).toBe(400)
+
+    // nextTurn walks back down to turn 1's final.
+    act(() => { nav.current!.nextTurn() })
+    runSeek()
+    expect(Math.round(virtuosoMockState.scrollTop)).toBe(1000)
+  })
+
+  it('auto-continuation frames don’t split a turn — the chain’s true last assistant is the target', () => {
+    vi.useFakeTimers()
+    // 8 rows: turn 0 runs q0 → a0a → (auto-continuation) → a0b, so its
+    // final is a0b (row 3 → 600px), NOT a0a (row 1). Turn 1 final a1
+    // (row 5), turn 2 final a2 (row 7).
+    const msgs = [
+      turnMsg.user('q0'), turnMsg.assistant('a0a'), turnMsg.autoContinuation('ac0'), turnMsg.assistant('a0b'),
+      turnMsg.user('q1'), turnMsg.assistant('a1'),
+      turnMsg.user('q2'), turnMsg.assistant('a2'),
+    ]
+    const { nav } = renderTranscriptAtBottom(msgs)
+    if (!nav.current) throw new Error('navigator not registered')
+
+    // Parked at the bottom (top visible = row 5): prevTurn → a0b (600px).
+    act(() => { nav.current!.prevTurn() })
+    for (let f = 0; f < 200; f++) act(() => { vi.advanceTimersByTime(16) })
+    expect(Math.round(virtuosoMockState.scrollTop)).toBe(600)
+
+    // No turn final exists above a0b (a0a is not one) → second prevTurn is a
+    // no-op and the viewport stays put.
+    act(() => { nav.current!.prevTurn() })
+    for (let f = 0; f < 200; f++) act(() => { vi.advanceTimersByTime(16) })
+    expect(Math.round(virtuosoMockState.scrollTop)).toBe(600)
+  })
+
+  it('a turn with no assistant reply yields no navigation target', () => {
+    vi.useFakeTimers()
+    // 5 rows: q0→a0 (final row 1), then q1 gets no reply before q2 arrives
+    // (queued send), q2→a2 (final row 4). The q1 segment must not produce a
+    // phantom target.
+    const msgs = [
+      turnMsg.user('q0'), turnMsg.assistant('a0'),
+      turnMsg.user('q1'),
+      turnMsg.user('q2'), turnMsg.assistant('a2'),
+    ]
+    const { nav } = renderTranscriptAtBottom(msgs)
+    if (!nav.current) throw new Error('navigator not registered')
+
+    // Parked at the bottom (top visible = row 2): prevTurn → a0 (200px).
+    act(() => { nav.current!.prevTurn() })
+    for (let f = 0; f < 200; f++) act(() => { vi.advanceTimersByTime(16) })
+    expect(Math.round(virtuosoMockState.scrollTop)).toBe(200)
   })
 
   it('animates jump-to-bottom and lands at the real bottom when content grows mid-flight', () => {

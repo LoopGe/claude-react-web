@@ -95,13 +95,19 @@ type VirtuosoItem = TranscriptRow | StreamingRowItem
 const isStreamingRowItem = (item: VirtuosoItem): item is StreamingRowItem => 'kind' in item
 
 /** Scroll-navigation surface registered by MessageList and held by the parent
- *  (Chat) for the pinned-header dropdown + right-click menu. `to(index)`
- *  jumps to a specific renderable item (used by the dropdown); `prev`/`next`
- *  step to the adjacent user message; `toBottom` re-pins the viewport to the
+ *  (Chat) for the pinned-header dropdown, the right-click menu, and the
+ *  App-level Alt+↑/↓ and Ctrl/⌘+↑/↓ shortcuts. `to(index)` jumps to a
+ *  specific renderable item (used by the dropdown); `prev`/`next` step to
+ *  the adjacent user message; `prevTurn`/`nextTurn` step to the adjacent
+ *  turn's final assistant message; `toBottom` re-pins the viewport to the
  *  live bottom and re-arms follow. */
 export interface ScrollNavigator {
   prev: () => void
   next: () => void
+  /** Jump to the previous turn's final assistant message (Ctrl/⌘+↑). */
+  prevTurn: () => void
+  /** Jump to the next turn's final assistant message (Ctrl/⌘+↓). */
+  nextTurn: () => void
   to: (index: number) => void
   toBottom: () => void
 }
@@ -814,33 +820,60 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     return () => ro.disconnect()
   }, [])
 
-  // --- Scroll to previous / next user message ----------------------------
-  // Data-array (0-based, Virtuoso `scrollToIndex` space) indices of every
-  // *real* user message — the same discriminator MessageView uses to pick
-  // the "msg user" bubble branch: a genuine human-typed top-level turn
-  // (no parent_tool_use_id, no tool_result, not synthetic). Recomputed only
-  // when the rendered list changes. Synthetic user-role frames (task
-  // notifications, peer messages, …) are excluded so the pin header and
-  // navigate-to-user-message never target an injection.
-  const userMsgIndices = useMemo(() => {
-    const out: number[] = []
+  // --- Scroll to previous / next user message / turn-final reply ----------
+  // ONE pass over the rows derives BOTH navigation target lists, so the
+  // "a human user message ends a turn" boundary rule lives in exactly one
+  // place (a second copy would drift):
+  //   - userMsgIndices: data-array (0-based, Virtuoso `scrollToIndex` space)
+  //     indices of every *real* user message — the same discriminator
+  //     MessageView uses to pick the "msg user" bubble branch: a genuine
+  //     human-typed top-level turn (no parent_tool_use_id, no tool_result,
+  //     not synthetic). Synthetic user-role frames (task notifications, peer
+  //     messages, …) are excluded so the pin header and
+  //     navigate-to-user-message never target an injection.
+  //   - turnFinalAssistantIndices: each turn's LAST top-level assistant
+  //     message — the agent's final reply of each round, the target of
+  //     prevTurn/nextTurn. A turn is the run between two HUMAN user
+  //     messages: tool_result frames don't end it (the model keeps replying
+  //     after tool output), and SDK auto-continuation user frames aren't
+  //     human, so an auto-continued chain counts as one round ending at its
+  //     true last assistant message. Sidechain frames (parent_tool_use_id
+  //     set — subagent / Skill-fork output) are skipped the same way. A
+  //     trailing in-progress turn commits its current last assistant
+  //     message — the best available target while it streams.
+  const { userMsgIndices, turnFinalAssistantIndices } = useMemo(() => {
+    const users: number[] = []
+    const turnFinals: number[] = []
+    let lastAssistant: number | null = null
     for (let i = 0; i < renderableItems.length; i++) {
       const it = renderableItems[i]
-      const msg = it.msg
-      if (msg.type !== 'user') continue
       if (it.isCompactSummary) continue
-      if (!isHumanUserMessage(msg)) continue
-      out.push(i)
+      const msg = it.msg
+      if (msg.type === 'user') {
+        if (!isHumanUserMessage(msg)) continue
+        users.push(i)
+        if (lastAssistant != null) {
+          turnFinals.push(lastAssistant)
+          lastAssistant = null
+        }
+        continue
+      }
+      if (msg.type === 'assistant' && msg.parent_tool_use_id == null) lastAssistant = i
     }
-    return out
+    if (lastAssistant != null) turnFinals.push(lastAssistant)
+    return { userMsgIndices: users, turnFinalAssistantIndices: turnFinals }
   }, [renderableItems])
-  // Mirror in a ref so the (stable) navigate callback reads the latest list
+  // Mirrors in refs so the (stable) navigate callback reads the latest lists
   // without being re-created — keeps its registered identity constant. Synced
   // in an effect (not during render) to respect the refs-in-render rule.
   const userMsgIndicesRef = useRef<number[]>(userMsgIndices)
   useEffect(() => {
     userMsgIndicesRef.current = userMsgIndices
   }, [userMsgIndices])
+  const turnFinalAssistantIndicesRef = useRef<number[]>(turnFinalAssistantIndices)
+  useEffect(() => {
+    turnFinalAssistantIndicesRef.current = turnFinalAssistantIndices
+  }, [turnFinalAssistantIndices])
   // Cache of the last lifted user-message list, for dedup (see the effect
   // below). Declared before the effect that reads it.
   const userMsgListRef = useRef<{ id: string; text: string; index: number }[]>([])
@@ -1014,25 +1047,28 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     seekToIndex(target, 'start')
   }, [seekToIndex])
 
-  const navigate = useCallback((dir: 'prev' | 'next') => {
-    const indices = userMsgIndicesRef.current
+  const navigate = useCallback((dir: 'prev' | 'next', kind: 'user' | 'turn' = 'user') => {
+    // 'user' walks human user messages (Alt+↑/↓); 'turn' walks each turn's
+    // final assistant message (Ctrl/⌘+↑/↓). Both share one cursor and one
+    // anchoring rule — see navigateToIndex's comment.
+    const indices = kind === 'turn' ? turnFinalAssistantIndicesRef.current : userMsgIndicesRef.current
     if (indices.length === 0) return
     // Anchor on the furthest-progressed of the live top and the last target:
     // while a seek is in flight the live top lags, so a naive `index < top`
     // re-selects the message the previous press already aimed at. `min`/`max`
-    // by direction keeps each press advancing one user message.
+    // by direction keeps each press advancing one target.
     const cursor = navCursorRef.current
     const anchor = cursor == null
       ? topVisibleIdxRef.current
       : dir === 'prev' ? Math.min(topVisibleIdxRef.current, cursor) : Math.max(topVisibleIdxRef.current, cursor)
     let target: number | undefined
     if (dir === 'prev') {
-      // Last user message strictly above the anchor.
+      // Last target strictly above the anchor.
       for (let i = indices.length - 1; i >= 0; i--) {
         if (indices[i] < anchor) { target = indices[i]; break }
       }
     } else {
-      // First user message strictly below the anchor.
+      // First target strictly below the anchor.
       for (let i = 0; i < indices.length; i++) {
         if (indices[i] > anchor) { target = indices[i]; break }
       }
@@ -1042,10 +1078,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   }, [navigateToIndex])
 
   // Expose the navigator to the parent (Chat —App — session context menu +
-  // pinned-header dropdown). Object form so callers get prev/next/to/toBottom
-  // in one stable registration.
+  // pinned-header dropdown + Alt/Ctrl+arrows shortcuts). Object form so
+  // callers get every jump in one stable registration.
   useEffect(() => {
-    onRegisterNavigate?.({ prev: () => navigate('prev'), next: () => navigate('next'), to: navigateToIndex, toBottom: jumpToBottom })
+    onRegisterNavigate?.({
+      prev: () => navigate('prev'),
+      next: () => navigate('next'),
+      prevTurn: () => navigate('prev', 'turn'),
+      nextTurn: () => navigate('next', 'turn'),
+      to: navigateToIndex,
+      toBottom: jumpToBottom,
+    })
   }, [onRegisterNavigate, navigate, navigateToIndex, jumpToBottom])
 
   const itemContent = useCallback((_index: number, virtuosoItem: VirtuosoItem) => {

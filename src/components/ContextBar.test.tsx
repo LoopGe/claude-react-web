@@ -347,4 +347,34 @@ describe('ContextBar', () => {
     expect(until?.classList.contains('ctx-bar-stat-warn')).toBe(false)
     expect(until?.classList.contains('ctx-bar-stat-danger')).toBe(false)
   })
+
+  // Ctrl/Cmd+↑ and Ctrl/Cmd+↓ are the app-level prev/next-turn transcript
+  // jumps (scroll-nav-shortcuts.ts, allowInInput). The threshold marker's own
+  // arrow handling must not ALSO act on the modifier-held variant — one
+  // keypress must not both bump the threshold and jump the transcript.
+  it('does not bump the threshold on Ctrl+ArrowUp (modifier-held arrows are the transcript turn jump)', () => {
+    const onSetWindow = vi.fn()
+    const { container } = render(
+      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
+    )
+    const marker = container.querySelector('.ctx-bar-marker') as HTMLElement
+    const before = marker.getAttribute('aria-valuenow')
+
+    fireEvent.keyDown(marker, { key: 'ArrowUp', ctrlKey: true })
+    expect(marker.getAttribute('aria-valuenow')).toBe(before)
+    fireEvent.keyUp(marker, { key: 'ArrowUp', ctrlKey: true })
+    expect(onSetWindow).not.toHaveBeenCalled()
+  })
+
+  it('still bumps the threshold on a plain ArrowUp', () => {
+    const onSetWindow = vi.fn()
+    const { container } = render(
+      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
+    )
+    const marker = container.querySelector('.ctx-bar-marker') as HTMLElement
+    const before = Number(marker.getAttribute('aria-valuenow'))
+
+    fireEvent.keyDown(marker, { key: 'ArrowUp' })
+    expect(Number(marker.getAttribute('aria-valuenow'))).toBeGreaterThan(before)
+  })
 })

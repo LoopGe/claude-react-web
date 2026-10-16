@@ -264,6 +264,11 @@ export const ContextBar = memo(function ContextBar({
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!interactive) return
+    // Modifier-held ↑/↓ are the app-level prev/next-turn transcript jumps
+    // (scroll-nav-shortcuts.ts) — the stepper must not ALSO bump the
+    // threshold on the same keypress. ←/→ are left alone: no global combo
+    // binds them.
+    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && (e.ctrlKey || e.metaKey)) return
     const current = draftPct ?? thresholdPct ?? MIN_PCT
     let next: number | null
     switch (e.key) {
