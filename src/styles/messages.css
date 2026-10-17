@@ -3641,11 +3641,24 @@ details.plan-card-minimized {
   border-left-width: 3px;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);
 }
-.question-inline-body {
+/* Compound selector on purpose (precedent: `.composer-rows >
+   .animated-collapse-content`, `.todo-panel .animated-collapse-content`):
+   `.animated-collapse-content` (utilities.css) sets `display: flow-root` at
+   the same specificity (0,1,0) and is imported later, so a bare
+   `.question-inline-body` loses the cascade — the flex `gap` between
+   questions was inert and multi-question cards stacked their questions with
+   ZERO separation (the "DevTools question glued to the previous question's
+   last option" bug). A flex container establishes the same BFC the
+   flow-root existed for, so AnimatedCollapse's height measurement is
+   unaffected. */
+details.question-inline-card .question-inline-body {
   padding: var(--space-2-5) var(--space-3-5) var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  /* Matches the QuestionDialog's .question-body rhythm: boxed
+     .question-block rows at a 14px gap. The item boxes carry the structural
+     boundary between questions; this gap keeps the boxes apart. */
+  gap: var(--space-3-5);
 }
 .question-inline-empty {
   color: var(--fg-muted);
@@ -3656,6 +3669,13 @@ details.plan-card-minimized {
   display: flex;
   flex-direction: column;
   gap: var(--space-1-5);
+  /* Boxed like the QuestionDialog's .question-block (bg + border + padding +
+   * radius). The box edge is the structural separator between questions in
+   * multi-question cards; without it the boundary was bare whitespace. */
+  padding: var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 .question-inline-item.skipped {
   opacity: 0.65;
@@ -3694,7 +3714,10 @@ details.plan-card-minimized {
   align-items: flex-start;
   gap: var(--space-2-5);
   padding: var(--space-1-5) var(--space-2-5);
-  background: var(--bg);
+  /* One elevation step above the boxed .question-inline-item (--bg), so the
+     option keeps its contrast inside the item box — same step the
+     QuestionDialog uses (block --bg, option --bg-elev). */
+  background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   font-size: var(--fs-sm);
