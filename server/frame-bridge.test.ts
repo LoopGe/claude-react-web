@@ -979,12 +979,16 @@ describe('SessionConnection: subagent-transcript channel', () => {
   it('answers subscribe with an error frame when no hub is wired', async () => {
     const { sink, conn } = setup()
     send(conn, { kind: 'subagent-transcript-subscribe', sessionId: 's1', agentId: 'a1' })
-    await waitForFrame(sink, (f) => f.kind === 'error')
+    // Narrowed by message: a generic "unknown kind" error from the default
+    // branch must NOT satisfy this — the no-hub guard is what's under test.
+    await waitForFrame(sink, (f) => f.kind === 'error' && String(f.message).includes('streaming unavailable'))
   })
 
   it('rejects malformed subscribe frames', async () => {
     const { sink, conn } = setup()
     send(conn, { kind: 'subagent-transcript-subscribe', sessionId: '', agentId: 'a1' })
-    await waitForFrame(sink, (f) => f.kind === 'error')
+    // Narrowed by message: pins the malformed-input guard, not the
+    // default "unknown kind" fallback.
+    await waitForFrame(sink, (f) => f.kind === 'error' && String(f.message).includes('sessionId/agentId required'))
   })
 })
