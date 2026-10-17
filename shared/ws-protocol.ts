@@ -41,7 +41,32 @@ export interface WsPing {
   nonce?: number
 }
 
-export type WsClientFrame = WsSubscribe | WsUnsubscribe | WsPing
+/** Ask the server to stream one subagent's on-disk transcript to this
+ *  connection. Independent of the per-session channel: the dialog opens
+ *  without subscribing to the session's message stream (dormant sessions
+ *  work — the hub reads disk only). The server answers with an initial
+ *  full snapshot frame (`reset: true`), then incremental frames as the
+ *  JSONL grows. */
+export interface WsSubagentTranscriptSubscribe {
+  kind: 'subagent-transcript-subscribe'
+  sessionId: string
+  agentId: string
+}
+
+/** Stop streaming the subagent transcript. Safe to call when not
+ *  subscribed. */
+export interface WsSubagentTranscriptUnsubscribe {
+  kind: 'subagent-transcript-unsubscribe'
+  sessionId: string
+  agentId: string
+}
+
+export type WsClientFrame =
+  | WsSubscribe
+  | WsUnsubscribe
+  | WsPing
+  | WsSubagentTranscriptSubscribe
+  | WsSubagentTranscriptUnsubscribe
 
 // --- outbound (server → client) ----------------------------------------------
 
@@ -530,6 +555,22 @@ export interface WsClientDebugRequest {
   params: Record<string, unknown>
 }
 
+/** One batch of a subagent's on-disk transcript frames (server → client).
+ *  `reset: true` is a FULL snapshot — the client must replace its store
+ *  contents (`REPLAY_REPLACE`); `reset: false` is an append-only
+ *  increment (apply each frame via `MESSAGE`). Emitted once on subscribe
+ *  (snapshot) and then on fs.watch-detected growth of the underlying
+ *  `subagents/agent-<id>.jsonl`. */
+export interface WsSubagentTranscript {
+  kind: 'subagent-transcript'
+  sessionId: string
+  agentId: string
+  reset: boolean
+  /** Normalized wire frames (`history-reader.normalize()` shape), ready
+   *  for the client reducer. */
+  frames: unknown[]
+}
+
 export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, HookEvent = never> =
   | WsSessionsSnapshot<Session>
   | WsSessionUpdate<Session>
@@ -563,6 +604,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsAppPluginStateChanged
   | WsAppPluginContributionsChanged
   | WsAppPluginEvent
+  | WsSubagentTranscript
   | WsClientDebugRequest
   | WsPong
   | WsError
