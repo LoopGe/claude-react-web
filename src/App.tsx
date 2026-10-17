@@ -12,7 +12,7 @@ import { ContextMenu } from './components/ContextMenu'
 import { DialogHosts } from './components/DialogHosts'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
-import { PANEL_CACHE_EXTRA, ghostableIds, mergeOpenIntoCache, renderedPanelIds } from './utils/panel-cache'
+import { PANEL_CACHE_EXTRA, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshotTop } from './utils/panel-cache'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -2753,7 +2753,11 @@ export function App() {
       const id = panel.dataset.panelId
       if (!id) continue
       const scroller = panel.querySelector<HTMLElement>('.chat-virtuoso-scroller')
-      if (scroller) map.set(id, scroller.scrollTop)
+      // Visible scrollers only: a cached (display:none) panel's scroller is
+      // collapsed — scrollTop READS 0 there (snapshotting a hidden panel
+      // would clobber its restore value). Reorders only move visible panels.
+      const top = scroller != null ? scrollerSnapshotTop(scroller) : null
+      if (top != null) map.set(id, top)
     }
     pendingScrollRestoreRef.current = map
   }, [bodyRef])
@@ -2767,7 +2771,10 @@ export function App() {
     for (const [id, top] of map) {
       const panel = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
       const scroller = panel?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
-      if (scroller && Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
+      // Restore onto a visible scroller only: writing scrollTop on a
+      // collapsed (display:none) scroller clamps to 0 and could clobber the
+      // browser's pending offset restore.
+      if (scroller && scroller.clientHeight > 0 && Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
     }
   }, [openIds, bodyRef])
 
