@@ -228,6 +228,14 @@
   flex: 1;
   min-height: 0;
 }
+/* Keep-alive cache: mounted but out of the open view (PanelSlot's `hidden`
+   prop). display:none removes the slot from grid auto-placement (CSS Grid
+   skips display:none children) while keeping the subtree — and the Virtuoso
+   scroller's scroll offset, which the browser preserves across the hide and
+   restores on show — alive. */
+.panel-slot.panel-slot-cached {
+  display: none;
+}
 /* Each virtualised item is wrapped in this div so that .msg.user's
    align-self: flex-end still works (the old flex column on
    .chat-messages is gone; each item is its own flex column now).
