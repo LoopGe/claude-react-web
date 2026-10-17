@@ -104,6 +104,10 @@ export const DEFAULT_STREAMING_RENDER_MODE: StreamingRenderMode = 'overlay'
  *  can never collide in React's key space. */
 const STREAMING_ROW_KEY = 'live-turn-streaming'
 
+/** Commit band for the bottom-stack height (see the hysteresis comment on the
+ *  measuring effect): sub-4px wobble never re-fires the spacer re-pin. */
+const BOTTOM_STACK_COMMIT_HYSTERESIS_PX = 4
+
 /** The inline-mode live turn as a Virtuoso data element. NOT a TranscriptRow:
  *  it has no message, no itemIndex, no plainText — consumers that iterate
  *  rows (`renderableItems`) never see it. Narrow with `'kind' in item`
@@ -804,6 +808,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // under the 45% cap the border box is the ancestor's, while the dock/task list
   // inside can still paint taller — reserving just the clamped box would let the
   // overflow cover the last messages.
+  //
+  // Hysteresis on the commit: every committed height re-fires the spacer
+  // layout effect in useTranscriptScroll, whose re-pin is an INSTANT
+  // scrollTop write. The streaming bubble's height wobbles by 1–3px per
+  // frame (line rounding, row re-measures), so without a band those frames
+  // each hard-wrote scrollTop — the viewport was glued to the bottom with
+  // native momentum and rubber-band killed (the 吸附感 report; measured in
+  // the live app: bottomStackHeight 229→151 across ~10 frames, one pin per
+  // frame). Heights within the band are an invisible reservation error (the
+  // overlay has padding; follow-invariant corrects on the user's next
+  // scroll); a genuine stack change always clears it.
   useLayoutEffect(() => {
     const el = bottomStackRef.current
     if (!el) return
@@ -819,7 +834,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
 
     const updateHeight = () => {
       const stack = readHeight(el)
-      setBottomStackHeight((prev) => (prev === stack ? prev : stack))
+      setBottomStackHeight((prev) => {
+        if (prev === stack) return prev
+        if (Math.abs(stack - prev) < BOTTOM_STACK_COMMIT_HYSTERESIS_PX) return prev
+        return stack
+      })
     }
 
     updateHeight()

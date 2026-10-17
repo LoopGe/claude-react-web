@@ -1574,6 +1574,148 @@ describe('MessageList', () => {
     expect(scroller.scrollTop).toBe(150)
   })
 
+  it('bottom-stack wobble within the hysteresis band does not re-pin per frame', () => {
+    // The 吸附感 root cause, locked: the streaming bubble's height wobbles
+    // 1–3px per frame, and every COMMITTED height re-fires the spacer layout
+    // effect's instant scrollTop write — a per-frame hard write that glued
+    // the viewport to the bottom. Sub-band wobble must not commit; a real
+    // stack change (≥4px) must.
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+    ]
+    let contentHeight = 200
+    let stackHeight = 80
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+    )
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+
+    const readSpacer = () => {
+      const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+      return sp ? (Number.parseFloat(sp.style.height) || 0) : 0
+    }
+    let rawScrollTop = 200 + 80 - 100
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => contentHeight + readSpacer(),
+    })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        const max = Math.max(0, contentHeight + readSpacer() - 100)
+        return Math.min(rawScrollTop, max)
+      },
+      set: (v: number) => { rawScrollTop = v },
+    })
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+    })
+
+    // Commit the initial spacer (80) and pin to its bottom.
+    act(() => { fireResize(stack) })
+    expect(readSpacer()).toBe(80)
+    expect(scroller.scrollTop).toBe(180)
+
+    // 1–2px wobble — the streaming-bubble flutter shape. No commit, no
+    // spacer change, no pin.
+    stackHeight = 82
+    act(() => { fireResize(stack) })
+    expect(readSpacer()).toBe(80)
+    expect(scroller.scrollTop).toBe(180)
+
+    stackHeight = 81
+    act(() => { fireResize(stack) })
+    expect(readSpacer()).toBe(80)
+    expect(scroller.scrollTop).toBe(180)
+
+    // A real 4px+ change crosses the band and commits (and re-pins).
+    stackHeight = 84
+    act(() => { fireResize(stack) })
+    expect(readSpacer()).toBe(84)
+    expect(scroller.scrollTop).toBe(184)
+
+    // Shrink side: 84 → 83 stays (the band is absolute, not growth-only —
+    // a 1px collapse of the reservation must not write either).
+    stackHeight = 83
+    act(() => { fireResize(stack) })
+    expect(readSpacer()).toBe(84)
+    expect(scroller.scrollTop).toBe(184)
+  })
+
+  it('item-list micro-deltas (≤3px) do not hard-write scrollTop', () => {
+    // The second confirmed writer of the 吸附感 chain: row re-measures
+    // settling produce -3/-2/-1px item-list deltas per frame, and each used
+    // to fire the instant re-pin with the verify loop perpetually re-armed.
+    // Sub-band deltas are skipped (baseline still tracks); a real delta pins.
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+    ]
+    let contentHeight = 200
+    let stackHeight = 80
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+    )
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+
+    const readSpacer = () => {
+      const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+      return sp ? (Number.parseFloat(sp.style.height) || 0) : 0
+    }
+    let rawScrollTop = 200 + 80 - 100
+    let appWrites = 0
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => contentHeight + readSpacer(),
+    })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        const max = Math.max(0, contentHeight + readSpacer() - 100)
+        return Math.min(rawScrollTop, max)
+      },
+      // The browser's clamp-on-shrink happens in the GETTER simulation; only
+      // an app-level pin goes through the setter — count those.
+      set: (v: number) => { appWrites++; rawScrollTop = v },
+    })
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+    })
+    const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+
+    // Establish the baseline: committed spacer + one item-list observation.
+    act(() => { fireResize(stack) })
+    act(() => { fireResize(itemList) })
+    expect(scroller.scrollTop).toBe(180)
+
+    // Settling chain: -3, -2 — each within the band. The browser's own
+    // clamp-on-shrink still applies (that is physics, not a pin), but NO
+    // app-level scrollTop write may occur.
+    const writesAtBaseline = appWrites
+    contentHeight = 197
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline)
+    contentHeight = 195
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline)
+
+    // A real growth crosses the band and pins: raw write lands, clamped to
+    // the new bottom (195+40=235 → 235+80−100=215).
+    contentHeight = 235
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline + 1)
+    expect(scroller.scrollTop).toBe(215)
+  })
+
   it('inline mode: renders the live turn as an in-flow tail row inside the scroller', () => {
     const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
     const { container } = render(

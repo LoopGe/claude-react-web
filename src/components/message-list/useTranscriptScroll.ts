@@ -77,6 +77,12 @@ const USER_SCROLL_INTENT_MS = 1200
 /** Seek-easing snap threshold: within this many px of the target the seek
  *  stops easing and pins the final position. Small enough to read as exact. */
 const SEEK_SNAP_PX = 2
+
+/** Item-list height deltas within this band never trigger the re-pin — the
+ *  instant scrollTop write costs more (momentum cancellation) than the
+ *  invisible ≤3px drift it would fix. See the micro-delta comment in the
+ *  observer. */
+const ITEM_LIST_MICRO_DELTA_PX = 3
 /** Frames the seek loop HOLDS the anchor after landing, re-pinning if a late
  *  row re-measurement (Virtuoso measures fresh-mounted rows a frame or two
  *  after paint) shifts the content under the parked viewport. */
@@ -807,9 +813,22 @@ export function useTranscriptScroll({
       if (!scroller) return
       if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); return }
       const contentH = contentHeightOf(scroller)
-      if (Math.abs(contentH - lastContentHeight) < 1) { dbg('itemlist-RO noop', () => ({})); return }
-      dbg('itemlist-RO pin', () => ({ delta: Math.round(contentH - lastContentHeight) }))
+      const delta = contentH - lastContentHeight
+      if (Math.abs(delta) < 1) { dbg('itemlist-RO noop', () => ({})); return }
+      // Baseline always tracks past this point, INCLUDING micro-deltas we
+      // skip below — otherwise three consecutive 2px wobbles re-read as a
+      // 6px delta and defeat the band.
       lastContentHeight = contentH
+      // Micro-delta band: 1–3px height flutter (row re-measures settling,
+      // streaming line rounding) must not hard-write scrollTop. Each pin is
+      // an instant write that kills native momentum — measured live, a
+      // -3/-2/-1/-1 settling chain produced a pin per frame with the verify
+      // loop perpetually re-armed (the 吸附感 report). ≤3px of drift is
+      // invisible, and a real event (append, spacer commit, the user's next
+      // scroll — every scroll event re-checks the follow invariant) corrects
+      // any residue.
+      if (Math.abs(delta) <= ITEM_LIST_MICRO_DELTA_PX) { dbg('itemlist-RO micro-skip', () => ({ delta })); return }
+      dbg('itemlist-RO pin', () => ({ delta }))
       // Re-pin on shrink as well as growth while following. A group folding
       // ABOVE the viewport reduces scrollHeight; with the viewport pinned to
       // the old bottom, no scroll event fires to correct it (the browser only
