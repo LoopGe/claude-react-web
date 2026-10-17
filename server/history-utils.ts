@@ -289,7 +289,7 @@ const INTERRUPT_PLACEHOLDER_RE = /^\s*\[Request interrupted by user[^\]]*\]\s*$/
  *  placeholder text. Handles both string content and the text-block array
  *  shape; any non-text/tool_result block or extra text means it's a real
  *  message and we keep it. */
-function isInterruptPlaceholder(content: unknown): boolean {
+export function isInterruptPlaceholder(content: unknown): boolean {
   if (typeof content === 'string') return INTERRUPT_PLACEHOLDER_RE.test(content)
   if (!Array.isArray(content)) return false
   let sawText = false
