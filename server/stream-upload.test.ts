@@ -114,7 +114,8 @@ describe('streamUploads', () => {
 
   it('recognises only the streaming upload routes', () => {
     expect(isStreamingUploadPath('/api/background/upload')).toBe(true)
-    expect(isStreamingUploadPath('/api/sessions/abc/uploads')).toBe(true)
+    expect(isStreamingUploadPath('/api/uploads')).toBe(true)
+    expect(isStreamingUploadPath('/api/sessions/abc/uploads')).toBe(false)
     expect(isStreamingUploadPath('/api/sessions/abc/messages')).toBe(false)
     expect(isStreamingUploadPath('/api/background/files/x.png')).toBe(false)
   })

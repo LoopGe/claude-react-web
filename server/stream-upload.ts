@@ -1,6 +1,6 @@
 // Streams a multipart/form-data body to disk without ever holding the whole
-// file in memory. Shared by the global background upload and the per-session
-// file upload. Each part is written to `<final>.<index>.part` and atomically
+// file in memory. Shared by the global background upload and the unified
+// upload route. Each part is written to `<final>.<index>.part` and atomically
 // renamed on success, so a truncated upload never becomes visible at a
 // servable path.
 //
@@ -52,7 +52,7 @@ export class UploadError extends Error {
 }
 
 /** The routes served by streamUploads — exempt from the global bodyLimit. */
-const STREAM_UPLOAD_PATTERNS = [/^\/api\/background\/upload$/, /^\/api\/sessions\/[^/]+\/uploads$/]
+const STREAM_UPLOAD_PATTERNS = [/^\/api\/background\/upload$/, /^\/api\/uploads$/]
 
 export function isStreamingUploadPath(path: string): boolean {
   return STREAM_UPLOAD_PATTERNS.some((re) => re.test(path))

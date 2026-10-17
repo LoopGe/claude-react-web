@@ -67,10 +67,10 @@ export interface AppOptions {
    *  Options.agents at spawn, see agent-definition-store.ts). */
   agentDefinitionStore?: AgentDefinitionStore
   /** Uploaded-file registry store. Powered by buildUploadRouter: records
-   *  POST /sessions/:id/uploads traffic and mounts GET /uploads +
-   *  DELETE /uploads/:id for the Uploads Manager dialog. Optional —
-   *  standalone builds (tests, tooling) without it keep plain upload
-   *  working, unrecorded, and the manager routes return 404. */
+   *  POST /uploads traffic (unified upload route) and mounts GET /uploads,
+   *  DELETE /uploads/by-path, DELETE /uploads/:id for the Uploads Manager
+   *  dialog. Optional — standalone builds (tests, tooling) without it
+   *  return 404 for all upload routes. */
   uploadStore?: UploadStore
   /** UI layout state store. Mounted as /api/ui-state. Persists session
    *  groups, sidebar order, and collapsed groups to disk (previously
