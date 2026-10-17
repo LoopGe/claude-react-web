@@ -22,6 +22,7 @@ import { SessionConnection } from './frame-bridge.js'
 import { WsFrameSink } from './ws-sink.js'
 import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
+import type { SubagentTranscriptHub } from './subagent-transcript-hub.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 import { WS_PATH } from './ws-protocol.js'
@@ -45,6 +46,7 @@ export function attachWebSocket(
   httpServer: HttpServer,
   sm: SessionBroadcaster,
   appPlugins?: AppPluginBroadcaster,
+  subagentTranscripts?: SubagentTranscriptHub,
   opts?: { bind?: BindAddress; trustDevOrigins?: boolean },
 ): () => Promise<void> {
   // Same Host/Origin policy as the HTTP middleware (server/request-guard.ts).
@@ -103,7 +105,7 @@ export function attachWebSocket(
     // separate counter to drift.
     metrics.gauge('ws_connections', sockets.size)
 
-    const conn = new SessionConnection({ sm, appPlugins }, new WsFrameSink(ws))
+    const conn = new SessionConnection({ sm, appPlugins, subagentTranscripts }, new WsFrameSink(ws))
 
     ws.on('message', (raw) => {
       conn.handleClientFrame(typeof raw === 'string' ? raw : raw.toString('utf-8'))

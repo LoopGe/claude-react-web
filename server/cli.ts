@@ -23,6 +23,7 @@ import { disableFileLogging, getLogFilePath, createLogger, setLogToStderr } from
 import { defaultStateDir } from './persistence.js'
 import { createServerContext } from './bootstrap.js'
 import { attachWebSocket } from './ws.js'
+import { SubagentTranscriptHub } from './subagent-transcript-hub.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
 import { normalizeClaudeConfigDirEnv } from './claude-config-dir.js'
@@ -240,10 +241,12 @@ async function runServer(args: CliArgs): Promise<void> {
   // returned shutdown fn closes every live socket during SIGINT.
   // @hono/node-server returns a Node http.Server (same shape), so cast
   // is safe.
+  const subagentTranscriptHub = new SubagentTranscriptHub()
   const wsShutdown = attachWebSocket(
     server as unknown as Server,
     sessionManager,
     ctx.appPluginEnabled ? appPluginManager : undefined,
+    subagentTranscriptHub,
     // Same bind buildApp got, so the WS upgrade enforces the same Host/Origin policy.
     { bind: { host: args.host, port: args.port }, trustDevOrigins: ctx.trustDevOrigins },
   )
@@ -256,6 +259,7 @@ async function runServer(args: CliArgs): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(`\n[cli] received ${signal}, shutting down...`)
     elProbe.stop()
+    subagentTranscriptHub.close()
     // BEFORE any await: the same console signal that reaches us also kills
     // plugin children (no SIGINT handler) — mark their exits as expected
     // teardown, not crashes (see PluginProcessManager.shuttingDown).
