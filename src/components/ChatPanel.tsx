@@ -287,6 +287,8 @@ export interface ChatPanelProps {
   /** Active skin, forwarded to <Chat> → <TodoChecklist> so its markers can
    *  switch to square checkboxes under the High-Contrast skin. */
   skin?: Skin
+  /** Open the uploads manager dialog (App-owned state). */
+  onOpenUploads?: () => void
 }
 
 export const ChatPanel = memo(function ChatPanel({
@@ -349,6 +351,7 @@ export const ChatPanel = memo(function ChatPanel({
   onOpenSnippetsManager,
   onSaveCurrentAsSnippet,
   skin,
+  onOpenUploads,
 }: ChatPanelProps) {
   // Panel swap via drag is a multi-panel desktop affordance; mobile is
   // single-panel and touch can't drag, so disable the drag handle there
@@ -1323,6 +1326,7 @@ export const ChatPanel = memo(function ChatPanel({
             sideChatWorking={!!sideChatSession?.working}
             onToggleCollapseSideChat={onToggleCollapseSideChat}
             skin={skin}
+            onOpenUploads={onOpenUploads}
           />
         ) : (
           <div className="empty-state">

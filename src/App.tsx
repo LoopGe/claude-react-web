@@ -5069,6 +5069,7 @@ export function App() {
                       onOpenSnippetsManager={openSnippetsManager}
                       onSaveCurrentAsSnippet={saveCurrentAsSnippet}
                       skin={skin}
+                      onOpenUploads={() => setUploadsDialogOpen(true)}
                     />
                   </ErrorBoundary>
                 </PanelSlot>

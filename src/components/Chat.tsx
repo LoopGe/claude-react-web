@@ -36,7 +36,7 @@ const InputHistoryPanel = lazy(() =>
 import { RecapWindow } from './RecapWindow'
 import { PinnedUserMessage } from './PinnedUserMessage'
 import { api } from '../hooks/useApi'
-import { useAttachments, type Attachment } from '../hooks/useAttachments'
+import { startUploads } from '../hooks/useUploadQueue'
 import { useChatStream } from '../hooks/useChatStream'
 import { writeClipboard, COPY_FAILED_MESSAGE } from '../hooks/useCopy'
 import { usePastedImages } from '../hooks/usePastedImages'
@@ -197,11 +197,10 @@ function writeDraftBodies(sessionId: string, texts: PastedTextMap): void {
  *  Returns null when there is nothing to send. */
 function buildScheduledBody(
   input: string,
-  attachments: Attachment[],
   pastedImages: PastedImage[],
   expand: (text: string) => string,
 ): ScheduledSendBody | null {
-  const { full } = composeOutgoing(input, attachments, expand)
+  const { full } = composeOutgoing(input, expand)
   if (!full.trim() && pastedImages.length === 0) return null
   return buildOutgoingBody(full, pastedImages)
 }
@@ -405,6 +404,9 @@ interface Props {
   /** Active skin, forwarded to <TodoChecklist> so its pending / in-progress
    *  markers can switch to square checkboxes under the High-Contrast skin. */
   skin?: Skin
+  /** Open the uploads manager dialog (App-owned state). Called when the user
+   *  picks or drops files via the Composer. */
+  onOpenUploads?: () => void
 }
 
 interface SendMessageResponse {
@@ -440,6 +442,7 @@ export const Chat = memo(function Chat({
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
+  onOpenUploads,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
@@ -851,7 +854,7 @@ export const Chat = memo(function Chat({
   )
   const history = useInputHistory(session.id, historyFilter)
 
-  const attachments = useAttachments(session.id, session.cwd)
+  const [dragOver, setDragOver] = useState(false)
   const pastedImages = usePastedImages()
   // The draft's image half. The text half survives unmounts via
   // sessionStorage (readDraft/writeDraft above); the image half survives via
@@ -1495,23 +1498,15 @@ export const Chat = memo(function Chat({
   // render and can churn child re-renders (the composer's onChange in
   // particular ?that's what caused the "can't send / can't type" freeze).
   const { insertUserMessage, ackUserMessage, rollbackUserMessage, clearError: clearStreamError } = stream
-  const {
-    attachments: attachmentList,
-    setDragOver,
-    uploadFiles,
-    clear: clearAttachments,
-    clearError: clearAttachmentsError,
-  } = attachments
   const { clearError: clearPermissionsError } = permissions
 
   // Unified error banner: whichever subsystem reported something.
-  const error = localError ?? stream.error ?? attachments.error ?? permissions.error
+  const error = localError ?? stream.error ?? permissions.error
   const clearError = useCallback(() => {
     setLocalError(null)
     clearStreamError()
-    clearAttachmentsError()
     clearPermissionsError()
-  }, [clearStreamError, clearAttachmentsError, clearPermissionsError])
+  }, [clearStreamError, clearPermissionsError])
 
   const onDragOver = useCallback(
     (e: React.DragEvent) => {
@@ -1521,7 +1516,7 @@ export const Chat = memo(function Chat({
       e.preventDefault()
       setDragOver(true)
     },
-    [setDragOver],
+    [],
   )
 
   const onDragLeave = useCallback(
@@ -1532,7 +1527,15 @@ export const Chat = memo(function Chat({
       if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
       setDragOver(false)
     },
-    [setDragOver],
+    [],
+  )
+
+  const onFilesPicked = useCallback(
+    (files: File[]) => {
+      onOpenUploads?.()
+      void startUploads(files, { sessionId: session.id, autoClose: true })
+    },
+    [onOpenUploads, session.id],
   )
 
   const onDrop = useCallback(
@@ -1540,14 +1543,9 @@ export const Chat = memo(function Chat({
       e.preventDefault()
       setDragOver(false)
       const files = Array.from(e.dataTransfer.files)
-      if (files.length > 0) void uploadFiles(files)
+      if (files.length > 0) onFilesPicked(files)
     },
-    [setDragOver, uploadFiles],
-  )
-
-  const handleUploadFiles = useCallback(
-    (files: File[]) => void uploadFiles(files),
-    [uploadFiles],
+    [onFilesPicked],
   )
 
   const requestClearSession = useCallback((sessionId: string) => {
@@ -1624,7 +1622,7 @@ export const Chat = memo(function Chat({
     // Expanded here, after routing, so every path below works on the pasted
     // bodies instead of `[Pasted text #N]`. composeOutgoing also rewrites the
     // /summarize legacy alias to /compact (see outgoing-text.ts).
-    const { text, full } = composeOutgoing(input, attachmentList, expandPastedText)
+    const { text, full } = composeOutgoing(input, expandPastedText)
     // Client-side local commands (e.g. /resume) are intercepted here and
     // handled in-app instead of being POSTed to the SDK. Matched strictly
     // (first token only) so real SDK/plugin commands still pass through.
@@ -1641,9 +1639,7 @@ export const Chat = memo(function Chat({
       })
       return
     }
-    // Allow sending with just attachments (e.g. "here, look at these files")
-    // — the model sees only the attachments preamble in that case.
-    if (!text && attachmentList.length === 0 && pastedImages.images.length === 0) return
+    if (!text && pastedImages.images.length === 0) return
     sendingRef.current = true
     setSending(true)
     // Optimistically mark the turn active in the SAME commit as the message
@@ -1706,7 +1702,6 @@ export const Chat = memo(function Chat({
       // pastedImages BEFORE the clear() below wipes them.
       history.add(text, pastedImages.images.map(toPersistedImage))
       setInput('')
-      clearAttachments()
       clearPastedImages()
       // Delete the draft's image record IMPERATIVELY, not via the
       // useDraftImages effect: this continuation runs after the POST, and if
@@ -1740,7 +1735,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, attachmentList, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearAttachments, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, runBashCommand])
+  }, [input, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, runBashCommand])
 
   // The Overlay primitive owns the focus traps and presence for the settings
   // + git overlays; its `mounted && open` active gate reproduces the old
@@ -1901,12 +1896,11 @@ export const Chat = memo(function Chat({
   /** Schedule the current draft for a future time. Shares send()'s body
    *  construction; on success clears the composer exactly like a send. */
   const handleSendScheduled = useCallback(async (fireAtMs: number) => {
-    const built = buildScheduledBody(input, attachmentList, pastedImages.images, expandPastedText)
+    const built = buildScheduledBody(input, pastedImages.images, expandPastedText)
     if (!built) return
     try {
       await scheduled.schedule(fireAtMs, built)
       setInput('')
-      clearAttachments()
       clearPastedImages()
       // Same imperative draft-record delete as send()'s success path — the
       // schedule consumed the images, and the await above can straddle a
@@ -1916,7 +1910,7 @@ export const Chat = memo(function Chat({
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [input, attachmentList, scheduled, setInput, clearAttachments, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError, session.id])
+  }, [input, scheduled, setInput, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError, session.id])
   /** Snippets are persisted server-side and re-inserted in later sessions, so
    *  a `[Pasted text #N]` reference saved as-is would outlive the body backing
    *  it and resolve to nothing (or to a different paste). Store the text. */
@@ -2448,11 +2442,8 @@ export const Chat = memo(function Chat({
                 onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined
               }
               canAttach={!!session.cwd}
-              attachments={attachments.attachments}
-              uploading={attachments.uploading}
-              dragOver={attachments.dragOver}
-              onUploadFiles={handleUploadFiles}
-              onRemoveAttachment={attachments.removeAttachment}
+              dragOver={dragOver}
+              onFilesPicked={onFilesPicked}
               onDragOver={onDragOver}
               onDragLeave={onDragLeave}
               onDrop={onDrop}

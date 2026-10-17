@@ -7,8 +7,6 @@
 // drafts stay editable.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { formatBytes } from '../utils/format'
-import type { Attachment } from '../hooks/useAttachments'
 import type { InputHistoryApi } from '../hooks/useInputHistory'
 import { toPersistedImage, type PersistedImage } from '../state/inputHistoryImages'
 import type { HistoryImageRecallApi } from '../hooks/useHistoryImageRecall'
@@ -68,11 +66,8 @@ interface Props {
   /** True when the session has no cwd — attach button greyed with a tooltip. */
   canAttach: boolean
 
-  attachments: Attachment[]
-  uploading: boolean
   dragOver: boolean
-  onUploadFiles: (files: File[]) => void
-  onRemoveAttachment: (path: string) => void
+  onFilesPicked: (files: File[]) => void
   onDragOver: (e: React.DragEvent) => void
   onDragLeave: (e: React.DragEvent) => void
   onDrop: (e: React.DragEvent) => void
@@ -172,11 +167,8 @@ export const Composer = memo(function Composer({
   onResume,
   onForkFromLastCompleted,
   canAttach,
-  attachments,
-  uploading,
   dragOver,
-  onUploadFiles,
-  onRemoveAttachment,
+  onFilesPicked,
   onDragOver,
   onDragLeave,
   onDrop,
@@ -664,14 +656,14 @@ export const Composer = memo(function Composer({
   const pendingScheduled = scheduled?.schedules.filter((s) => s.status === 'pending') ?? []
   const failedScheduled = scheduled?.schedules.filter((s) => s.status === 'failed') ?? []
   const canSchedule =
-    !disabled && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
+    !disabled && (input.trim() !== '' || pastedImages.length > 0)
 
   const confirmScheduled = useCallback((fireAtMs: number) => {
     setScheduleAnchor(null)
     onSendScheduled?.(fireAtMs)
   }, [onSendScheduled])
 
-  const canSend = !disabled && !sending && (input.trim() !== '' || attachments.length > 0 || pastedImages.length > 0)
+  const canSend = !disabled && !sending && (input.trim() !== '' || pastedImages.length > 0)
 
   if (terminated) {
     const reasonText =
@@ -726,29 +718,6 @@ export const Composer = memo(function Composer({
   // forgot one side made the wrapper either not open or never collapse. A
   // single array removes the chance to disagree.
   const composerRows: ReactNode[] = []
-  if (attachments.length > 0) {
-    composerRows.push(
-      <div className="attachments" key="attachments">
-        {attachments.map((a) => (
-          <span key={a.path} className="attachment-chip" title={a.path}>
-            <span className="attachment-chip-name truncate">
-              <IconPaperclip size={12} aria-hidden /> {a.name}
-            </span>
-            <span className="attachment-chip-size">{formatBytes(a.size)}</span>
-            <button
-              type="button"
-              className="attachment-chip-remove"
-              onClick={() => onRemoveAttachment(a.path)}
-              aria-label={`Remove ${a.name}`}
-            >
-              <IconX size={12} />
-            </button>
-          </span>
-        ))}
-        {uploading && <span className="attachment-chip attachment-chip-ghost">uploading…</span>}
-      </div>,
-    )
-  }
   if (SCHEDULE_SEND_ENABLED && (pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled) {
     composerRows.push(
       <div className="scheduled-sends" key="scheduled-sends">
@@ -1016,7 +985,7 @@ export const Composer = memo(function Composer({
           className="btn btn-icon"
           type="button"
           onClick={openFilePicker}
-          disabled={disabled || uploading || !canAttach}
+          disabled={disabled || !canAttach}
           title={canAttach ? 'Attach files' : 'Attach disabled: session has no cwd'}
           aria-label="Attach files"
         >
@@ -1114,7 +1083,7 @@ export const Composer = memo(function Composer({
           // Reset the input so selecting the same file twice in a row
           // still triggers a change event.
           e.target.value = ''
-          if (files.length > 0) onUploadFiles(files)
+          if (files.length > 0) onFilesPicked(files)
         }}
       />
 
