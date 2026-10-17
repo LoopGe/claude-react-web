@@ -1,34 +1,16 @@
 // Read-only dialog showing a subagent's FULL on-disk transcript (the
-// `subagents/agent-<id>.jsonl` the CLI writes for Agent-launched subagents).
-// Unlike the in-memory SubagentOverlay (which filters frames the SDK forwarded
-// onto the main stream by parent_tool_use_id), this is authoritative even for
-// background / async subagents whose frames never reached the stream.
-//
-// Minimal renderer by design: flat user/assistant text turns — no tool cards.
-// Opened from a terminal subagent row in the TasksPanel.
+// `subagents/agent-<id>.jsonl` the CLI writes for Agent-launched subagents)
+// rendered through the SAME MessageList the main transcript uses. Content
+// lives in a scratch SessionStore (useSubagentTranscriptStore); the hub
+// pushes snapshot + incremental frames so a running background task's
+// transcript fills in live.
 
-import { useEffect, useState } from 'react'
+import { McpAppsProvider } from '../hooks/useMcpApps'
+import { useSubagentTranscriptStore, subagentStoreId } from '../hooks/useSubagentTranscriptStore'
+import { useSessionField } from '../session-store/selectors'
+import { MessageList } from './MessageList'
 import { Overlay } from './Overlay'
-import { useSubagentTranscripts, subagentMessageText, type SubagentSessionMessage } from '../hooks/useSubagentTranscripts'
-import { IconX, IconLoader } from './icons/ToolIcons'
-import { formatError } from '../utils/format-error'
-
-function TranscriptRow({ msg }: { msg: SubagentSessionMessage }) {
-  const text = subagentMessageText(msg)
-  const isAssistant = msg.type === 'assistant'
-  const isSystem = msg.type === 'system'
-  const label = isAssistant ? 'Claude' : isSystem ? 'system' : 'input'
-  return (
-    <div className={`subagent-transcript-row ${isAssistant ? 'subagent-transcript-row-assistant' : 'subagent-transcript-row-user'}`}>
-      <div className="subagent-transcript-role">{label}</div>
-      {text ? (
-        <pre className="subagent-transcript-text">{text}</pre>
-      ) : (
-        <div className="subagent-transcript-empty">(non-text turn — tool call / result)</div>
-      )}
-    </div>
-  )
-}
+import { IconX } from './icons/ToolIcons'
 
 export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   sessionId,
@@ -41,34 +23,24 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   label: string
   onClose: () => void
 }) {
-  const { getTranscript } = useSubagentTranscripts(sessionId)
-  const [messages, setMessages] = useState<SubagentSessionMessage[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    getTranscript(agentId)
-      .then((msgs) => {
-        if (!cancelled) setMessages(msgs)
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(formatError(err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [getTranscript, agentId])
+  const { replayReady, error } = useSubagentTranscriptStore(sessionId, agentId)
+  const storeId = subagentStoreId(sessionId, agentId)
+  const items = useSessionField(storeId, 'items')
+  const toolStatus = useSessionField(storeId, 'toolStatus')
+  const toolResults = useSessionField(storeId, 'toolResults')
+  const planStatus = useSessionField(storeId, 'planStatus')
+  const planContent = useSessionField(storeId, 'planContent')
+  const questionAnswers = useSessionField(storeId, 'questionAnswers')
 
   return (
     <Overlay
       variant="modal"
       onClose={onClose}
       ariaLabel={`Subagent transcript: ${label}`}
-      cardStyle={{ maxWidth: 620, maxHeight: '80vh' }}
-      // Portal to body: this dialog is opened from inside the TasksPanel
-      // overlay (an animated ancestor that would otherwise become the
-      // containing block for the fixed backdrop, clipping the modal to the
-      // panel). The escape/focus stacks still order it as the top overlay.
+      // ~860px: tool cards need more width than the old 620px text renderer.
+      cardStyle={{ maxWidth: 860, maxHeight: '80vh' }}
+      // Portal to body: opened from inside the TasksPanel overlay (an
+      // animated ancestor that would otherwise clip the fixed backdrop).
       portal
     >
       <div className="subagent-transcript">
@@ -85,17 +57,31 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
         <div className="subagent-transcript-body">
           {error ? (
             <div className="subagent-transcript-error">Failed to load transcript: {error}</div>
-          ) : messages === null ? (
-            <div className="subagent-transcript-loading">
-              <IconLoader size={14} className="subagent-transcript-spin" aria-hidden />
-              Loading transcript…
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="subagent-transcript-empty-state">
-              No transcript on disk for this subagent.
-            </div>
           ) : (
-            messages.map((m, i) => <TranscriptRow key={m.uuid ?? i} msg={m} />)
+            <McpAppsProvider sessionId={sessionId}>
+              <MessageList
+                items={items}
+                sessionId={sessionId}
+                replayReady={replayReady}
+                toolStatus={toolStatus}
+                toolResults={toolResults}
+                planStatus={planStatus}
+                planContent={planContent}
+                questionAnswers={questionAnswers}
+                // Fixed defaults: the TasksPanel context has no panel prefs.
+                toolGroupCards
+                autoExpandRunningGroups
+                showMessageHeaders
+                emptyStateContent={(
+                  <div className="chat-messages-empty-side">
+                    <div className="chat-messages-empty-title">No transcript on disk for this subagent.</div>
+                    <div className="chat-messages-empty-hint">
+                      Background subagents write their transcript when they run — nothing was recorded.
+                    </div>
+                  </div>
+                )}
+              />
+            </McpAppsProvider>
           )}
         </div>
       </div>
