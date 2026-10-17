@@ -253,7 +253,9 @@ Click the model chip in the panel header (or search for a model via `Ctrl+K`). T
 
 ![Uploads manager](screenshots/manual/ch4-uploads.png)
 
-Click `Uploaded files` in the toolbar to see every upload: `N files · total size`, a filter by name/cwd/session, `Copy path`, `Delete file`, and `Clean missing entries` to drop stale rows.
+Click `Uploaded files` in the toolbar to see every upload. All uploads (from any session's composer or from this dialog) land in the shared folder `<stateDir>/claude-web-uploads/` (default `~/.claude-react-web/claude-web-uploads/`). The dialog shows `N files · total size`, a filter by name/cwd/session, `Copy path`, `Delete file`, and `Clean missing entries` to drop stale rows.
+
+You can also upload files directly from this dialog: drag files onto it, or click the paperclip button in the toolbar. Files uploaded this way are marked with a **common** badge (no session attached). When uploading from a session, the dialog opens with live progress and copies the path to your clipboard on completion.
 
 ---
 

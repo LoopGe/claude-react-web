@@ -114,3 +114,89 @@
   gap: var(--space-1);
   flex-shrink: 0;
 }
+
+/* ── Drag-over highlight (mirrors .chat-composer-drag tokens) ────── */
+.uploads-manager-card.uploads-manager-drag {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: color-mix(in srgb, var(--drag-over-bg) 72%, transparent);
+}
+
+/* ── Common badge (mirrors .uploads-missing-badge layout) ────────── */
+.uploads-common-badge {
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 var(--space-1);
+  line-height: 14px;
+}
+
+/* ── In-flight progress section ──────────────────────────────────── */
+.uploads-progress-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.uploads-progress-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  min-height: 20px;
+}
+
+.uploads-progress-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+}
+
+.uploads-progress-bar {
+  flex: 1;
+  min-width: 60px;
+  max-width: 200px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.uploads-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 150ms ease;
+}
+
+.uploads-progress-done {
+  color: var(--success-text, var(--accent));
+  font-size: var(--fs-sm);
+  flex-shrink: 0;
+}
+
+.uploads-progress-error {
+  color: var(--danger-text);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.uploads-progress-dismiss {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.uploads-progress-dismiss:hover {
+  opacity: 1;
+}

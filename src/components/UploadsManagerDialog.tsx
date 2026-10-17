@@ -10,18 +10,20 @@
 // the shared sheets; only the row layout gets scoped CSS
 // (src/styles/uploads-manager.css).
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { ConfirmDialog } from './ConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import { writeClipboard } from '../hooks/useCopy'
 import { useUploads } from '../hooks/useUploads'
+import { useUploadQueue, startUploads, dismissItem, consumeCompletion, type BatchCompletion } from '../hooks/useUploadQueue'
 import { formatBytes, formatRelativeTime } from '../utils/format'
 import type { UploadListItem } from '../../shared/uploads'
 import {
   IconCopy,
   IconFolderSearch,
   IconLoader,
+  IconPaperclip,
   IconTrash,
   IconX,
 } from './icons/ToolIcons'
@@ -40,11 +42,72 @@ interface Props {
 export function UploadsManagerDialog({ open = true, onClose }: Props) {
   const { uploads, error, refresh, remove, removeMany } = useUploads(open)
   const toast = useToast()
+  const { items, lastCompletion } = useUploadQueue()
 
   const [filter, setFilter] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<UploadListItem | null>(null)
   const [cleanMissingOpen, setCleanMissingOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // ── Completion effect ──────────────────────────────────────────────
+  // Capture completion data BEFORE consumeCompletion() — the notify()
+  // it calls can trigger synchronous re-renders that empty `items`.
+  const processedCompletionRef = useRef<BatchCompletion | null>(null)
+  useEffect(() => {
+    if (!lastCompletion || lastCompletion === processedCompletionRef.current) return
+    const { allSucceeded, paths, autoClose } = lastCompletion
+    const failed = items.filter((it) => it.status === 'error').length
+    processedCompletionRef.current = lastCompletion
+    consumeCompletion()
+    void refresh()
+    if (allSucceeded) {
+      toast.success(paths.length === 1 ? 'Path copied' : `${paths.length} paths copied`)
+      if (autoClose) onClose()
+    } else {
+      toast.error(`${failed} upload(s) failed`)
+    }
+  }, [lastCompletion, refresh, toast, onClose, items])
+
+  // ── Drag handlers (mirroring Chat.tsx composer drop zone) ──────────
+  const onDragOver = useCallback(
+    (e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes('Files')) return
+      e.preventDefault()
+      setDragOver(true)
+    },
+    [],
+  )
+
+  const onDragLeave = useCallback(
+    (e: React.DragEvent) => {
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return
+      setDragOver(false)
+    },
+    [],
+  )
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault()
+      setDragOver(false)
+      const files = Array.from(e.dataTransfer.files)
+      if (files.length > 0) void startUploads(files)
+    },
+    [],
+  )
+
+  // ── Paperclip file input ───────────────────────────────────────────
+  const onFileInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? [])
+      if (files.length > 0) void startUploads(files)
+      // Reset so the same file can be picked again.
+      e.target.value = ''
+    },
+    [],
+  )
 
   const rows = useMemo(() => {
     const list = uploads ?? []
@@ -103,7 +166,16 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
   }
 
   return (
-    <Overlay variant="perm" open={open} onClose={onClose} ariaLabel="Uploaded files" cardClassName="uploads-manager-card">
+    <Overlay
+      variant="perm"
+      open={open}
+      onClose={onClose}
+      ariaLabel="Uploaded files"
+      cardClassName={`uploads-manager-card${dragOver ? ' uploads-manager-drag' : ''}`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <div className="modal-header">
         <h3>
           <IconFolderSearch size={16} aria-hidden /> Uploaded files
@@ -115,6 +187,41 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
           <IconX size={16} />
         </button>
       </div>
+
+      {/* ── In-flight upload progress ─────────────────────────────── */}
+      {items.length > 0 && (
+        <div className="modal-section uploads-progress-section">
+          {items.map((it) => {
+            const pct = it.total > 0 ? Math.round((it.loaded / it.total) * 100) : 0
+            return (
+              <div key={it.key} className={`uploads-progress-row uploads-progress-${it.status}`}>
+                <span className="uploads-progress-name">{it.name}</span>
+                {it.status === 'uploading' && (
+                  <div className="uploads-progress-bar">
+                    <div className="uploads-progress-fill" style={{ width: `${pct}%` }} />
+                  </div>
+                )}
+                {it.status === 'done' && (
+                  <span className="uploads-progress-done">&#10003;</span>
+                )}
+                {it.status === 'error' && (
+                  <>
+                    <span className="uploads-progress-error">{it.error}</span>
+                    <button
+                      type="button"
+                      className="btn btn-icon uploads-progress-dismiss"
+                      aria-label="Dismiss"
+                      onClick={() => dismissItem(it.key)}
+                    >
+                      <IconX size={12} />
+                    </button>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {uploads === null && error === null && (
         <div className="modal-section uploads-state">
@@ -131,13 +238,7 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
         </div>
       )}
 
-      {uploads !== null && uploads.length === 0 && (
-        <div className="modal-section uploads-state uploads-empty">
-          No files uploaded yet. Attach files from any composer's paperclip.
-        </div>
-      )}
-
-      {uploads !== null && uploads.length > 0 && (
+      {uploads !== null && (
         <>
           <div className="modal-section uploads-toolbar">
             <input
@@ -148,6 +249,23 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
               onChange={(e) => setFilter(e.target.value)}
               aria-label="Filter uploads"
             />
+            {/* Paperclip: hidden file input + icon button */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={onFileInputChange}
+            />
+            <button
+              type="button"
+              className="btn btn-icon"
+              title="Upload files"
+              aria-label="Upload files"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <IconPaperclip size={16} />
+            </button>
             {stats.missing > 0 && (
               <button type="button" className="btn" onClick={() => setCleanMissingOpen(true)}>
                 Clean missing entries
@@ -155,19 +273,33 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
             )}
           </div>
 
-          <div className="uploads-list">
-            {rows.length === 0 && <div className="uploads-state">No uploads match the filter.</div>}
-            {rows.map((u) => (
+          {uploads.length === 0 && items.length === 0 && (
+            <div className="modal-section uploads-state uploads-empty">
+              No files uploaded yet. Attach files from any composer's paperclip, or drop files here
+              to add them to the shared folder.
+            </div>
+          )}
+
+          {uploads.length > 0 && (
+            <div className="uploads-list">
+              {rows.length === 0 && <div className="uploads-state">No uploads match the filter.</div>}
+              {rows.map((u) => (
               <div key={u.id} className={`uploads-row${u.exists ? '' : ' uploads-row-missing'}`}>
                 <div className="uploads-row-main">
                   <span className="uploads-name">
                     {u.name}
                     {!u.exists && <span className="uploads-missing-badge">missing</span>}
+                    {u.origin === 'common' && <span className="uploads-common-badge">common</span>}
                   </span>
                   <span className="uploads-meta truncate" title={u.path}>
-                    {formatBytes(u.size)} · {cwdTail(u.cwd)}
-                    {u.sessionTitle ? ` · ${u.sessionTitle}` : ''} ·{' '}
-                    {formatRelativeTime(new Date(u.uploadedAt).toISOString())}
+                    {u.origin === 'common'
+                      ? `${formatBytes(u.size)} · ${formatRelativeTime(new Date(u.uploadedAt).toISOString())}`
+                      : <>
+                          {formatBytes(u.size)} · {cwdTail(u.cwd)}
+                          {u.sessionTitle ? ` · ${u.sessionTitle}` : ''} ·{' '}
+                          {formatRelativeTime(new Date(u.uploadedAt).toISOString())}
+                        </>
+                    }
                   </span>
                 </div>
                 <div className="uploads-row-actions">
@@ -192,7 +324,8 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          )}
         </>
       )}
 

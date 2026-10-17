@@ -161,6 +161,11 @@ export interface OverlayProps {
   /** Card-level keydown handler (arrow navigation, Enter to confirm, Tab
    *  containment for palettes). */
   onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void
+  /** Backdrop-level drag handlers (for drop-zone overlays). Attached to the
+   *  backdrop element so card events bubble up and are caught too. */
+  onDragOver?: React.DragEventHandler<HTMLDivElement>
+  onDragLeave?: React.DragEventHandler<HTMLDivElement>
+  onDrop?: React.DragEventHandler<HTMLDivElement>
 }
 
 export function Overlay(props: OverlayProps) {
@@ -189,6 +194,9 @@ export function Overlay(props: OverlayProps) {
     exitDurationMs,
     inertOnExit = false,
     onKeyDown,
+    onDragOver,
+    onDragLeave,
+    onDrop,
   } = props
 
   const classes = VARIANT_CLASSES[variant]
@@ -282,6 +290,9 @@ export function Overlay(props: OverlayProps) {
       ? { role: 'dialog', 'aria-modal': modal, 'aria-label': ariaLabel, 'aria-hidden': !open }
       : {}),
     ...(inertOnExit && !open ? { inert: true } : {}),
+    ...(onDragOver ? { onDragOver } : {}),
+    ...(onDragLeave ? { onDragLeave } : {}),
+    ...(onDrop ? { onDrop } : {}),
   }
 
   const cardProps: OverlayDivProps<React.Ref<HTMLDivElement>> = {
