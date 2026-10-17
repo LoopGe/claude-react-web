@@ -1,14 +1,15 @@
 # Unified uploads: single shared directory + dialog drag-and-drop
 
 Date: 2026-10-17
-Status: approved (design v2 agreed in session; this plan is the executable breakdown)
+Status: approved (design v2 + session-upload UX revision agreed in session; this
+plan is the executable breakdown)
 
 ## Context
 
 Today every composer upload (paperclip / drag-drop) is written into the
 session's own working directory under `<session-cwd>/claude-web-uploads/`,
 and the Uploads Manager dialog ("Uploaded files") is a read-only inventory.
-Two changes, approved together:
+Three changes, approved together:
 
 1. **Unify all uploads into one shared directory**:
    `<stateDir>/claude-web-uploads/` (default
@@ -18,9 +19,17 @@ Two changes, approved together:
    anywhere onto the dialog (or click a new paperclip button in its toolbar)
    to upload them to the shared directory with no session attached
    ("common" uploads).
+3. **Session file uploads route through the dialog** (user-approved
+   revision): picking or dropping files in a session composer opens the
+   Uploads Manager dialog, shows per-file upload progress, and on success
+   copies the resulting path(s) to the clipboard. The attachment-chips flow
+   is REMOVED (user chose removal): `useAttachments`, the composer chip UI,
+   and the "Attached files:" prompt preamble are deleted — referencing an
+   uploaded file means pasting its path. Pasted images (Ctrl+V,
+   `usePastedImages`, inline base64) are untouched by all of this.
 
-Consumption of uploaded files is unchanged: the dialog's per-row Copy path
-plus absolute-path citation in prompts.
+Consumption of uploaded files: the dialog's per-row Copy path, plus the
+automatic clipboard copy on upload completion.
 
 ### Current wiring (orientation)
 
@@ -36,11 +45,22 @@ plus absolute-path citation in prompts.
   from the global 32 MB bodyLimit; currently
   `/^\/api\/background\/upload$/` and `/^\/api\/sessions\/[^/]+\/uploads$/`.
 - Boot backfill: `bootstrap.ts` → `uploadStore.backfillFromSessions(sm.list())`.
-- Client: `useAttachments` (composer chips) posts to the session route;
-  `useUploads` (dialog) is fetch-on-open, read-only.
 - `sm.get(id)` throws `HttpError(404)` for unknown ids (never returns
   undefined); `SessionInfo.cwd` may be null; `SessionInfo.title` may be
   undefined.
+- Client today: `useAttachments` (composer chips, POSTs to the session
+  route, chip removal via the filename DELETE); `useUploads` (dialog,
+  fetch-on-open, read-only). App.tsx owns `uploadsDialogOpen` state and
+  renders `UploadsManagerDialog` lazily (`open` / `onClose` props).
+  Chat.tsx composes the outgoing text via
+  `composeOutgoing(input, attachmentList, expandPastedText)` (preview at
+  ~line 200, send at ~line 1627, scheduled-body builder at ~line 1904) and
+  guards "send with only attachments" at ~line 1644. Composer receives
+  `attachments` / `uploading` / `dragOver` / `onDrop` /
+  `onRemoveAttachment` props; Composer.test.tsx only stubs these props in a
+  defaultProps object (no dedicated upload-flow tests).
+- `writeClipboard(text)` in `src/hooks/useCopy.ts` is a plain async
+  function returning boolean (callable outside components).
 
 ## Global Constraints
 
@@ -79,6 +99,30 @@ plus absolute-path citation in prompts.
     no speculative null-guards or silent catches beyond those specified here.
 12. Commit messages end with
     `Co-Authored-By: Claude Code <noreply@anthropic.com>`.
+13. **Session uploads route through the dialog**: picking/dropping files in
+    a session composer opens the Uploads Manager dialog, uploads run with
+    per-file byte progress, and on full-batch success the resulting path(s)
+    are written to the clipboard (single file → its path; multiple →
+    newline-joined), a toast confirms, and the dialog closes IF it was
+    auto-opened by that upload. A manually-opened dialog stays open after
+    its uploads finish. Any upload error keeps the dialog open with visible
+    error rows.
+14. **Attachment chips are REMOVED**: `useAttachments`, the Composer chips
+    UI, the "Attached files:" preamble composing, the send guard branch for
+    attachments-only sends, and the attachments parameter of the scheduled
+    body builder are all deleted.
+15. **Upload queue architecture**: a module-level store
+    (`src/hooks/useUploadQueue.ts`) owns in-flight upload items — one XHR
+    per file (XHR, not fetch: `upload.onprogress` is required), POST
+    `/api/uploads` with the optional `sessionId` query. The dialog is the
+    only renderer, subscribing via `useSyncExternalStore`. Clipboard write
+    on batch completion lives in the queue module (`writeClipboard` is a
+    plain function); toast + auto-close are applied by the dialog when it
+    consumes the completion event. `autoClose: true` rides the batch for
+    session-initiated uploads only.
+16. `useUploads` stays a read-only data layer (list / remove / removeMany /
+    refresh) — NO upload function is added to it; uploads go through the
+    queue module.
 
 ## Task 1: Server data layer — origin field, getByPath, shared-dir backfill
 
@@ -220,59 +264,73 @@ Done when:
 `npx vitest run server/routes/uploads.test.ts server/stream-upload.test.ts`
 green, `npm run typecheck` green, committed.
 
-## Task 3: Client hooks — useAttachments + useUploads on the unified endpoint
+## Task 3: Client upload queue — XHR progress store + completion side-effects
 
 Files:
-- `src/hooks/useAttachments.ts` (modify)
-- `src/hooks/useUploads.ts` (modify)
-- `src/components/Chat.tsx` (call site only)
-- `src/hooks/useUploads.test.ts` (extend)
-- `src/hooks/useAttachments.test.ts` (new)
+- `src/hooks/useUploadQueue.ts` (new)
+- `src/hooks/useUploadQueue.test.ts` (new)
 
-### useAttachments.ts
+### Module shape
 
-- Signature drops the now-unused `sessionCwd` param:
-  `useAttachments(sessionId: string)`. Update the single call site in
-  Chat.tsx (`useAttachments(session.id, session.cwd)` →
-  `useAttachments(session.id)`).
-- `uploadFiles`: POST
-  `/api/uploads?sessionId=${encodeURIComponent(sessionId)}` (raw fetch,
-  FormData — same as today). Response shape `{ uploads?: Attachment[] }`
-  unchanged. REMOVE the `!sessionCwd` guard + its error branch (uploads no
-  longer depend on a cwd). Keep the `uploading` / `error` state semantics.
-- `removeAttachment(path)`: `fetch('/api/uploads/by-path', { method:
-  'DELETE', headers: { 'content-type': 'application/json' }, body:
-  JSON.stringify({ path }) })` — keep today's fire-and-forget best-effort
-  `.catch(() => {})`.
-- Update the hook's header comment to the new endpoint story.
+A module-level store (NOT React state — progress events must not re-render
+the app tree) plus a thin `useSyncExternalStore` hook. Exported surface:
 
-### useUploads.ts
+- `interface UploadItem { key: string; name: string; size: number; loaded:
+  number; total: number; status: 'uploading' | 'done' | 'error';
+  error?: string; path?: string }`
+- `interface BatchCompletion { paths: string[]; allSucceeded: boolean;
+  autoClose: boolean }`
+- `startUploads(files: File[], opts?: { sessionId?: string; autoClose?:
+  boolean }): Promise<void>` — one XHR per file:
+  - `xhr.open('POST', sessionId ? `/api/uploads?sessionId=${encodeURIComponent(sessionId)}` : '/api/uploads')`,
+    send a one-file `FormData` (`form.append('file', file, file.name)`).
+  - `xhr.upload.onprogress` → update the item's `loaded`/`total` + notify.
+  - `onload` with 2xx: parse `{ uploads: [{ path, name, size }] }`, mark the
+    item `done` with its `path`. Non-2xx or `onerror`: parse the response
+    body's `error` when possible, mark the item `error`.
+  - When EVERY file of the batch has reached a terminal state
+    (done|error): if at least one succeeded, `await
+    writeClipboard(paths.join('\n'))` (plain function from
+    `../hooks/useCopy.js`); set the store's `lastCompletion` to
+    `{ paths, allSucceeded, autoClose: opts?.autoClose ?? false }`; notify;
+    resolve the returned promise. On `writeClipboard` failure the
+    completion still fires (paths are in the dialog rows; copy failure is
+    non-fatal).
+  - Done/error items REMAIN in the items list (the dialog renders them)
+    until the next `startUploads` call replaces the batch's items or they
+    are dismissed via `dismissItem(key)`.
+- `dismissItem(key: string): void` — remove one item (error-row X button).
+- `useUploadQueue(): { items: UploadItem[]; lastCompletion:
+  BatchCompletion | null }` — `useSyncExternalStore` view; a stable
+  snapshot (new arrays on change, referentially equal when unchanged).
+- `consumeCompletion(): void` — clear `lastCompletion` + notify.
 
-- Add `upload: (files: File[]) => Promise<void>` to the `UseUploads`
-  interface and the returned memo: empty array → immediate no-op; FormData
-  with one `file` entry per file (same append pattern as useAttachments);
-  POST `/api/uploads` (NO sessionId — these are common uploads); non-ok →
-  `throw new Error(body.error || \`upload failed (HTTP ${res.status})\`)`;
-  on success `await refresh()`. Errors PROPAGATE — the dialog owns the
-  toast / busy UI, the hook stays a thin data layer.
+### Tests (src/hooks/useUploadQueue.test.ts)
 
-### Tests
+Mock `XMLHttpRequest` via `vi.stubGlobal` (a fake class capturing
+`open`/`send`, letting the test trigger `upload.onprogress`, `onload`,
+`onerror`) and mock `writeClipboard` (vi.mock the useCopy module). Cover:
 
-- `src/hooks/useUploads.test.ts`: `upload` success → POST to
-  `/api/uploads` followed by the GET refresh; failure → rejects with the
-  server's error message. Note the existing tests mock `api.get`; the new
-  `upload` uses raw `fetch` — mock global fetch for it.
-- `src/hooks/useAttachments.test.ts` (new; follow useUploads.test.ts's
-  environment / mock pattern, including the jsdom docblock if it has one):
-  `uploadFiles` posts to `/api/uploads?sessionId=...` and appends the
-  returned attachments; `removeAttachment` DELETEs `/api/uploads/by-path`
-  with `{ path }`; upload failure sets `error`.
+- progress events update the snapshot (`loaded`/`total`), without
+  re-rendering anything else (assert snapshot identity between unrelated
+  notifies if trivial).
+- success path: item reaches `done` with the parsed `path`; when the batch
+  settles, `writeClipboard` was called with the joined path(s) and
+  `lastCompletion` is `{ paths, allSucceeded: true, autoClose }` carrying
+  the caller's flag.
+- failure path: `onerror`/non-2xx marks the item `error` with a message;
+  `writeClipboard` NOT called when nothing succeeded; `allSucceeded: false`
+  when mixed.
+- multi-file batch: completion fires only after ALL files settle.
+- `dismissItem` removes the item; `consumeCompletion` clears
+  `lastCompletion`.
+- `startUploads` with sessionId appends the query param (assert on the fake
+  XHR's open URL).
 
-Done when:
-`npx vitest run src/hooks/useUploads.test.ts src/hooks/useAttachments.test.ts`
-green, `npm run typecheck` + `npm run lint` green, committed.
+Done when: `npx vitest run src/hooks/useUploadQueue.test.ts` green,
+`npm run typecheck` + `npm run lint` green, committed.
 
-## Task 4: Client UI — dialog drop zone, common badge, paperclip button, docs
+## Task 4: Client UI — dialog drop zone, progress rows, common badge, docs
 
 Files:
 - `src/components/Overlay.tsx` (modify)
@@ -294,32 +352,43 @@ Files:
 
 ### UploadsManagerDialog.tsx
 
-- Local `dragOver` state + handlers mirroring Chat.tsx's composer drop
-  zone — READ Chat.tsx around lines 1510–1550 FIRST and mirror its guard
-  patterns exactly (including any `dataTransfer.types` check it performs):
+- **Queue consumption**: `const { items, lastCompletion } = useUploadQueue()`.
+  An effect watches `lastCompletion`: when set and not yet consumed →
+  `consumeCompletion()`; `await refresh()` (files landed); if
+  `allSucceeded`: `toast.success(paths.length === 1 ? 'Path copied' :
+  \`${paths.length} paths copied\`)` and `if (autoClose) onClose()`;
+  otherwise `toast.error(\`${failed count} upload(s) failed\`)` and stay
+  open. (Refresh happens on both paths — partial successes landed too.)
+- **In-flight section** (rendered above the uploads list whenever
+  `items.length > 0`): one row per `UploadItem` — name, a thin progress bar
+  (percent from `loaded/total`), and for `error` rows the message plus a
+  dismiss-X calling `dismissItem(key)`. `done` rows show a brief completed
+  state (checkmark or 100% bar).
+- **Dialog drop zone + paperclip button**: drag handlers mirroring
+  Chat.tsx's composer drop zone — READ Chat.tsx around lines 1510–1550
+  FIRST and mirror its guard patterns exactly (including any
+  `dataTransfer.types` check it performs):
   - onDragOver: preventDefault → setDragOver(true)
   - onDragLeave: `if (e.currentTarget.contains(e.relatedTarget as Node |
     null)) return` → setDragOver(false)
   - onDrop: preventDefault, setDragOver(false),
-    `Array.from(e.dataTransfer.files)`; non-empty → set a local `uploading`
-    state, `await upload(files)`, failure →
-    `toast.error((e as Error).message)`, finally clear `uploading`.
-- Pass the three handlers to `<Overlay>`; highlight via
-  `cardClassName={`uploads-manager-card${dragOver ? ' uploads-manager-drag' : ''}`}`.
-- Toolbar paperclip button (in `.uploads-toolbar`, beside the filter
-  input): hidden `<input type="file" multiple>` + an icon button (reuse the
-  paperclip icon the composer's attach button uses — find it under
-  `src/components/icons/`); button click → `input.click()`; input onChange →
-  the same upload path as drop, then reset `input.value = ''` so the same
-  file can be picked again.
-- Common badge: rows with `u.origin === 'common'` render
+    `Array.from(e.dataTransfer.files)`; non-empty →
+    `startUploads(files)` — NO sessionId, NO autoClose (dialog uploads are
+    common; the dialog is already open).
+  - Pass the three handlers to `<Overlay>`; highlight via
+    `cardClassName={`uploads-manager-card${dragOver ? ' uploads-manager-drag' : ''}`}`.
+  - Toolbar paperclip button (in `.uploads-toolbar`, beside the filter
+    input): hidden `<input type="file" multiple>` + an icon button (reuse
+    the paperclip icon the composer's attach button uses — find it under
+    `src/components/icons/`); button click → `input.click()`; input
+    onChange → the same `startUploads(files)` path, then reset
+    `input.value = ''` so the same file can be picked again.
+- **Common badge**: rows with `u.origin === 'common'` render
   `<span className="uploads-common-badge">common</span>` in the meta line
   INSTEAD of the cwd tail + session title. Non-common rows unchanged.
-- Empty-state text: "No files uploaded yet. Attach files from any
+- **Empty-state text**: "No files uploaded yet. Attach files from any
   composer's paperclip, or drop files here to add them to the shared
   folder."
-- While an upload is in flight, show the existing `IconLoader` spinner in
-  the header stats area (`glyph-spin` class).
 
 ### uploads-manager.css
 
@@ -331,17 +400,75 @@ Files:
 - `.uploads-common-badge` mirroring `.uploads-missing-badge`'s layout but a
   neutral accent (the missing badge is a warning color; common is not a
   warning).
+- In-flight section styles: `.uploads-progress-*` rows + progress bar
+  (track + fill), error-row treatment, dismiss button — same theme-variable
+  discipline.
 
 ### Docs
 
 - `docs/manual.zh-CN.md` + `docs/manual.en.md`: update the uploads-manager
   section — ALL uploads (composer and dialog) now land in
   `<stateDir>/claude-web-uploads/` (default
-  `~/.claude-react-web/claude-web-uploads/`); the dialog supports
-  drag-and-drop and a paperclip button; the "common" badge marks
-  dialog-uploaded files with no session attached. Find the section by
+  `~/.claude-react-web/claude-web-uploads/`); uploading from a session
+  opens this dialog with progress and copies the path on completion; the
+  dialog supports drag-and-drop and a paperclip button; the "common" badge
+  marks dialog-uploaded files with no session attached. Find the section by
   searching for "Uploaded files" / 上传.
 
 Done when: `npm run typecheck` + `npm run lint` + `npm run test` all green,
-committed. Browser verification of the drag interaction happens in the
-controller's final review, not in this task.
+committed. Browser verification of the drag + progress interaction happens
+in the controller's final review, not in this task.
+
+## Task 5: Composer side — remove chips, route session uploads through the dialog
+
+Files:
+- `src/hooks/useAttachments.ts` (DELETE)
+- `src/components/Chat.tsx` (rework)
+- `src/components/Composer.tsx` (rework)
+- `src/components/Composer.test.tsx` (update stubs)
+- `src/App.tsx` (one callback prop)
+
+### Deletions (constraint 14)
+
+- Delete `src/hooks/useAttachments.ts` and its import in Chat.tsx.
+- Chat.tsx: remove the `useAttachments(...)` call and its destructuring
+  (~line 854, ~1499–1504), the `attachments.error` term in the merged
+  error (~line 1508), the `attachmentList` argument from BOTH
+  `composeOutgoing` call sites (preview ~line 204, send ~line 1627) and
+  from `composeOutgoing`'s own signature/implementation (drop the
+  attachments preamble it builds), the "send with only attachments" guard
+  branch (~lines 1644–1646), the `attachmentList` param of
+  `buildScheduledBody` (~line 1904), `clearAttachments` references, and the
+  Composer props `attachments` / `uploading` / `onRemoveAttachment`
+  (~lines 2451–2455).
+- Composer.tsx: remove the `attachments` / `uploading` /
+  `onRemoveAttachment` props and ALL chips UI that renders them. Keep the
+  `dragOver` / `onDrop` props.
+
+### New session-upload wiring (constraint 13)
+
+- Composer.tsx: new prop `onFilesPicked: (files: File[]) => void`. The
+  paperclip's hidden file input onChange and the existing `onDrop` flow
+  both route through it (after `Array.from(...files)`, ignore empty).
+  Reset the file input's `value` after a pick so the same file can be
+  re-picked.
+- Chat.tsx: own the composer's `dragOver` state locally (the old
+  `attachments.dragOver` / `setDragOver` came from the deleted hook) — a
+  plain `useState` + the same three drag handlers that exist today
+  (~lines 1515–1545). `onDrop` and `onFilesPicked` both call one handler:
+  `onOpenUploads()` then
+  `void startUploads(files, { sessionId: session.id, autoClose: true })`.
+- App.tsx: pass `onOpenUploads={() => setUploadsDialogOpen(true)}` down to
+  the Chat panels (follow the existing prop-passing convention for Chat
+  callbacks; the `uploadsDialogOpen` state already exists).
+
+### Tests
+
+- Composer.test.tsx: update the defaultProps stub — remove `attachments` /
+  `uploading` / `onRemoveAttachment`, add `onFilesPicked: noop`. Keep
+  everything else passing.
+- Full `npm run test` green (no other test touches useAttachments).
+
+Done when: `npm run test` + `npm run typecheck` + `npm run lint` all green,
+`git grep -n "useAttachments\|Attached files"` returns nothing (docs
+mentions of the new behavior excepted), committed.
