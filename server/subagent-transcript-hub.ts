@@ -19,24 +19,28 @@
 // - Per-subscriber Pushable: subscribe pushes a full snapshot first
 //   (reset: true), then increments — the client's REPLAY_REPLACE dedup
 //   makes the REST-bootstrap → WS-snapshot handover idempotent.
-// - Only the subscribe that CREATES a FileState may advance the shared
-//   offset (to exactly the bytes its snapshot consumed). A later
-//   subscriber's seed reads further than existing subscribers have been
-//   sent; letting it overwrite the shared offset would turn their pending
-//   tail() into a no-op and silently drop the increment (review finding:
-//   subscribe-while-writing). The late joiner re-receives those bytes as a
-//   duplicate increment, which the client's uuid dedup absorbs.
+// - Offset discipline: the shared offset only ever advances where the
+//   advance is broadcast to EVERY subscriber — inside tail() — or inline
+//   when the seeding subscriber is the sole one (no peer to outpace; future
+//   subscribers' seeds read ≥ that size). A seed whose read runs ahead of
+//   the shared offset while peers exist must not write the offset: any
+//   seed's own write can outpace a peer's received coverage (a mid-debounce
+//   joiner, or a creator seed that completes after a peer — both
+//   review findings) and would turn their pending tail() into a no-op,
+//   silently dropping the increment. Such a seed reconciles via
+//   scheduleTail() instead; the late joiner re-receives the overlapping
+//   bytes as a duplicate increment, which the client's uuid dedup absorbs.
 // - File shrink (truncation/rotation): full re-read + reset snapshot.
 // - Watch failure: log.warn + stop pushing (the client keeps its last
 //   snapshot) — a designed degradation, not a speculative fallback.
 //
 // Seed ordering (deliberate, race-proven): the watcher is armed BEFORE the
-// snapshot read, and the offset is seeded to exactly the bytes the snapshot
-// consumed (`raw.byteLength - tailBytes` — the same suffix invariant the
-// tail keeps). An earlier draft stat'ed the file AFTER the snapshot push to
-// seed the offset; any append landing in that window was baked into the
-// offset and its own watch event then found size === offset and was
-// silently swallowed forever (proven by failing hub tests before the fix).
+// snapshot read, and a seed's coverage is exactly the bytes it consumed
+// (`raw.byteLength - tailBytes` — the same suffix invariant the tail keeps).
+// An earlier draft stat'ed the file AFTER the snapshot push to seed the
+// offset; any append landing in that window was baked into the offset and
+// its own watch event then found size === offset and was silently swallowed
+// forever (proven by failing hub tests before the fix).
 
 import { watch, type FSWatcher } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
@@ -91,7 +95,6 @@ export class SubagentTranscriptHub {
     const key = `${sessionId}::${agentId}`
     const push = createPushable<SubagentTranscriptFrame>()
     let state = this.files.get(key)
-    const created = !state
     if (!state) {
       state = { sessionId, agentId, offset: 0, tail: '', subscribers: new Set(), timer: null }
       this.files.set(key, state)
@@ -99,7 +102,7 @@ export class SubagentTranscriptHub {
     state.subscribers.add(push)
     metrics.gauge('subagent_transcript_subscribers', this.totalSubscribers())
 
-    void this.seedSnapshot(state, push, created)
+    void this.seedSnapshot(state, push)
 
     let done = false
     const unsub = () => {
@@ -136,11 +139,15 @@ export class SubagentTranscriptHub {
   }
 
   /** Full read → snapshot push (reset). The watcher is armed BEFORE the
-   *  read, and — for the subscribe that created the state — the byte offset
-   *  is seeded to exactly what the snapshot consumed, so increments start
-   *  strictly after it and no growth can be swallowed by the seeding
-   *  itself. */
-  private async seedSnapshot(state: FileState, push: Pushable<SubagentTranscriptFrame>, created: boolean): Promise<void> {
+   *  read. Offset discipline (see the module header): the shared offset may
+   *  only advance where the advance is broadcast to every subscriber —
+   *  inside tail() — or inline when the seeding subscriber is the ONLY one
+   *  (no peer can be outpaced; future subscribers' seeds read ≥ this size).
+   *  A seed whose read runs ahead of the shared offset while peers exist
+   *  must NOT write the offset: it would steal pending bytes from them.
+   *  It reconciles via scheduleTail() instead — the tail pushes to ALL
+   *  subscribers, so the offset only ever moves with a broadcast. */
+  private async seedSnapshot(state: FileState, push: Pushable<SubagentTranscriptFrame>): Promise<void> {
     let armed = false
     try {
       const main = await findTranscriptFile(state.sessionId)
@@ -175,11 +182,19 @@ export class SubagentTranscriptHub {
         return
       }
       push.push({ sessionId: state.sessionId, agentId: state.agentId, reset: true, frames })
-      // Only the state's creator may advance the shared offset — see the
-      // module header (subscribe-while-writing finding).
-      if (created) {
+      const covered = raw.byteLength - Buffer.byteLength(partial, 'utf8')
+      if (covered <= state.offset) return // nothing beyond the shared coverage
+      if (state.subscribers.size === 1) {
+        // Sole subscriber: the advance cannot outpace any peer (none
+        // exists), and any future subscriber's seed reads ≥ this size.
         state.tail = partial
-        state.offset = raw.byteLength - Buffer.byteLength(partial, 'utf8')
+        state.offset = covered
+      } else {
+        // Peers exist and their coverage may be behind this snapshot — a
+        // direct advance would steal their pending bytes (round-1 and
+        // round-2 findings). Reconcile via the tail: it reads from the
+        // shared offset and pushes to every subscriber.
+        this.scheduleTail(state)
       }
     } catch (err) {
       // The read failed after arming: reclaim the share only if the whole

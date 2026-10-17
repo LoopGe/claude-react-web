@@ -1,5 +1,5 @@
 // server/subagent-transcript-hub.test.ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtemp, mkdir, writeFile, appendFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -119,10 +119,12 @@ describe('SubagentTranscriptHub', () => {
     const b = await nextFrames(s2, () => true)
     expect(a.frames).toEqual(b.frames)
     s1.unsubscribe()
-    // s2 仍活着:追加仍应到达 s2
+    // s2 仍活着:追加必须到达 s2(无丢失契约)。两个背靠背订阅的
+    // reconcile tail 可能与追加的 tail 合并成一个(帧数 ≥ 1),因此这里
+    // 断言"包含追加行"而非精确增量;精确 1 帧增量由单订阅者测试钉住。
     await appendFile(join(subDir, `agent-${AGENT}.jsonl`), assistantLine('a1', 'x') + '\n')
-    const inc = await nextFrames(s2, (f) => !f.reset)
-    expect(inc.frames).toHaveLength(1)
+    const inc = await nextFrames(s2, (f) => !f.reset && f.frames.some((x) => (x as { uuid?: string }).uuid === 'a1'), 8000)
+    expect(inc.frames.length).toBeGreaterThan(0)
   }, 15000)
 
   it('a mid-debounce subscriber must not steal pending bytes from an earlier one', async () => {
@@ -173,5 +175,51 @@ describe('SubagentTranscriptHub', () => {
     const snap = await nextFrames(b, () => true)
     expect(snap.reset).toBe(true)
     b.unsubscribe()
+  }, 15000)
+
+  it('a late-completing creator seed must not steal a peer’s pending bytes', async () => {
+    // 时间线(全部确定性,无任意 sleep):
+    //   A 订阅(创建 state)→ 其 seed 在 findTranscriptFile 处被门控挂起
+    //   C 订阅 → seed 正常完成,快照(1 行)送达 C
+    //   追加 1 行 → 事件使 C 的 reconcile tail 进入防抖
+    //   释放门控 → A 的 seed 恢复,读到 2 行并推快照给 A
+    //   防抖触发 → tail 必须把 A 快照覆盖之外、C 尚未收到的行推给所有人;
+    //   若 A 的 seed 直接推进共享 offset,tail 会因 size === offset 静默
+    //   返回,C 永久丢失那一行。
+    const p = join(subDir, `agent-${AGENT}.jsonl`)
+    await writeFile(p, userLine('u1', 'go') + '\n')
+    const hr = await import('./history-reader.js')
+    const real = hr.findTranscriptFile
+    let releaseA!: () => void
+    const gate = new Promise<void>((r) => { releaseA = r })
+    let calls = 0
+    const spy = vi.spyOn(hr, 'findTranscriptFile').mockImplementation((sid: string) => {
+      calls += 1
+      if (calls === 1) return gate.then(() => real(sid)) // 仅挂起创建者 seed
+      return real(sid)
+    })
+    try {
+      hub = new SubagentTranscriptHub()
+      const a = hub.subscribeSubagentTranscript(SID, AGENT) // seed 挂起
+      const c = hub.subscribeSubagentTranscript(SID, AGENT) // seed 正常完成
+      const cSnap = await nextFrames(c, () => true)
+      expect(cSnap.reset).toBe(true)
+      expect(cSnap.frames).toHaveLength(1)
+
+      await appendFile(p, assistantLine('a1', 'late') + '\n')
+      releaseA()
+      const aSnap = await nextFrames(a, () => true)
+      expect(aSnap.reset).toBe(true)
+      expect(aSnap.frames).toHaveLength(2) // A 的快照读到追加后的内容
+
+      // 无丢失契约:C(a) 都必须最终收到 a1 —— tail 推给所有订阅者。
+      const hasA1 = (f: { frames: unknown[] }) => f.frames.some((x) => (x as { uuid?: string }).uuid === 'a1')
+      const incC = await nextFrames(c, (f) => !f.reset && hasA1(f), 8000)
+      expect(incC.frames.length).toBeGreaterThan(0)
+      const incA = await nextFrames(a, (f) => !f.reset && hasA1(f), 8000)
+      expect(incA.frames.length).toBeGreaterThan(0)
+    } finally {
+      spy.mockRestore()
+    }
   }, 15000)
 })
