@@ -1,4 +1,4 @@
-import { SessionStore, clearSessionStorage } from './store'
+import { SessionStore } from './store'
 
 interface StoreEntry {
   store: SessionStore
@@ -51,15 +51,13 @@ class SessionStoreRegistry {
   }
 
   /** Permanently drop a session's store. Uses store.purge() (cancels timers,
-   *  drops listeners, removes legacy cache keys — there is no persistence
-   *  layer left to drain since the seq-window refactor). */
+   *  drops listeners — there is no persistence layer left since the seq-window
+   *  refactor, and legacy localStorage keys are the boot sweep's job). */
   async delete(sessionId: string): Promise<void> {
     const entry = this.stores.get(sessionId)
     if (entry) {
       await entry.store.purge()
       this.stores.delete(sessionId)
-    } else {
-      clearSessionStorage(sessionId)
     }
   }
 

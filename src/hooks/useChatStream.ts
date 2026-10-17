@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getSessionStore, useSessionField, useSessionSelector } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
-import { clearAllSessionStorage } from '../session-store/store'
 import type { ActiveSubagent, ActivePhase, PlanStatus, SessionSnapshot, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
 import { api } from './useApi'
@@ -175,12 +174,11 @@ export interface PermissionHandlers {
 /** Module-level (stable) selector for `ChatStream.hasActivePhase`. */
 const selectHasActivePhase = (snapshot: SessionSnapshot): boolean => snapshot.activePhase != null
 
-/** Clear all cached session state. Used in tests to avoid cross-test leaks. */
+/** Clear all cached session state. Used in tests to avoid cross-test leaks.
+ *  (The stores hold no persistence since the seq-window refactor, so a
+ *  registry clear is the whole job.) */
 export function cacheClear() {
   void sessionStoreRegistry.clear()
-  // Also wipe localStorage entries so stores recreated after clear()
-  // don't reload stale data from a previous test.
-  clearAllSessionStorage()
 }
 
 export function useChatStream(

@@ -1,16 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { sessionStoreRegistry } from './registry'
+import { sweepLegacyTranscriptCache } from './legacy-transcript-cache'
 
-// Mirrors the literal in store.ts (not exported there).
+// Mirrors the legacy key prefix the pre-seq-refactor builds wrote. Since the
+// seq-window refactor nothing reads or writes these keys; the ONLY sanctioned
+// removal path is the boot-time sweep (legacy-transcript-cache.ts) — not
+// registry.delete, which used to clear them per session and thereby let
+// long-lived orphans accumulate until they starved the ~5MB quota.
 const STORAGE_PREFIX = 'claude-web-session:'
-
-/** Seed a transcript cache entry directly, as if a prior session/tab wrote it. */
-function seedCache(id: string): void {
-  localStorage.setItem(
-    STORAGE_PREFIX + id,
-    JSON.stringify({ v: 2, savedAt: Date.now(), messages: [] }),
-  )
-}
 
 describe('sessionStoreRegistry.delete', () => {
   beforeEach(async () => {
@@ -22,25 +19,31 @@ describe('sessionStoreRegistry.delete', () => {
     await sessionStoreRegistry.clear()
   })
 
-  it('clears the transcript cache for a session with a live in-memory store', async () => {
+  it('deletes an in-memory store without touching legacy localStorage keys', async () => {
     const id = 'session-with-store'
-    // Touch the registry so an in-memory store exists, then give it a cache.
     sessionStoreRegistry.getOrCreate(id)
-    seedCache(id)
-    expect(localStorage.getItem(STORAGE_PREFIX + id)).not.toBeNull()
-
+    localStorage.setItem(STORAGE_PREFIX + id, 'stale-legacy-data')
+    // Deleting a session that still has a live store must evict the store
+    // (a later getOrCreate returns a fresh one) — but legacy keys are NOT
+    // its business: per-key deletion is what let orphans accumulate. The
+    // boot sweep owns them.
     await sessionStoreRegistry.delete(id)
-    expect(localStorage.getItem(STORAGE_PREFIX + id)).toBeNull()
+    expect(localStorage.getItem(STORAGE_PREFIX + id)).toBe('stale-legacy-data')
   })
 
-  it('clears an orphan cache even when no in-memory store exists', async () => {
-    // The common real case: a deleted session whose cache was written by a
-    // previous tab/session, so this tab never instantiated a store for it.
-    const id = 'orphan-session'
-    seedCache(id)
-    expect(localStorage.getItem(STORAGE_PREFIX + id)).not.toBeNull()
+  it('delete of an unknown session is a safe no-op', async () => {
+    localStorage.setItem(STORAGE_PREFIX + 'orphan-session', 'stale')
+    await sessionStoreRegistry.delete('orphan-session')
+    expect(localStorage.getItem(STORAGE_PREFIX + 'orphan-session')).toBe('stale')
+  })
 
-    await sessionStoreRegistry.delete(id)
-    expect(localStorage.getItem(STORAGE_PREFIX + id)).toBeNull()
+  it('the boot sweep removes legacy keys that delete() left behind', async () => {
+    // The full modern lifecycle: orphans accumulate (written by pre-refactor
+    // builds), the sweep wipes them all at next boot.
+    localStorage.setItem(STORAGE_PREFIX + 'orphan-session', 'stale')
+    await sessionStoreRegistry.delete('orphan-session')
+    expect(localStorage.getItem(STORAGE_PREFIX + 'orphan-session')).toBe('stale')
+    expect(sweepLegacyTranscriptCache()).toBe(1)
+    expect(localStorage.getItem(STORAGE_PREFIX + 'orphan-session')).toBeNull()
   })
 })

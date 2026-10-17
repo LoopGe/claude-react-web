@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useResetConfig } from './useResetConfig'
 import { inputHistoryStore } from '../state/inputHistoryStore'
+import { sessionStoreRegistry } from '../session-store/registry'
 
 beforeEach(() => {
   localStorage.clear()
@@ -27,15 +28,22 @@ describe('useResetConfig', () => {
     expect(sessionStorage.getItem('claude-react-web:draft:s1')).toBeNull()
   })
 
-  it('clears session caches when sessions were reset', async () => {
+  it('deletes in-memory stores for the deleted session ids', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ results: { sessions: { ok: true } }, deletedSessionIds: ['a', 'b'] }), { status: 200, headers: { 'content-type': 'application/json' } }),
     )
-    localStorage.setItem('claude-web-session:a', '{}')
+    // The reset flow drops each deleted session's in-memory store; legacy
+    // pre-refactor localStorage keys are NOT its business — they are pure
+    // orphans owned by the boot sweep (legacy-transcript-cache.ts). Per-key
+    // deletion here is exactly what let orphans accumulate against the quota.
+    const registryDelete = vi
+      .spyOn(sessionStoreRegistry, 'delete')
+      .mockResolvedValue(undefined)
     const { result } = renderHook(() => useResetConfig())
     await act(async () => {
       await result.current.reset({ server: ['sessions'], browser: [] })
     })
-    expect(localStorage.getItem('claude-web-session:a')).toBeNull()
+    expect(registryDelete).toHaveBeenCalledWith('a')
+    expect(registryDelete).toHaveBeenCalledWith('b')
   })
 })

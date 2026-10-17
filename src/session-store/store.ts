@@ -5,31 +5,6 @@ import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from 
 
 type Listener = () => void
 
-const STORAGE_PREFIX = 'claude-web-session:'
-
-/** Remove a session's legacy localStorage transcript-cache key. The seq-window
- *  store (transcript-seq refactor, Task 7) no longer WRITES client-side
- *  transcript caches — this only deletes keys left by pre-refactor builds.
- *  Kept for the registry.delete / reset-config flows; P3 removes it. */
-export function clearSessionStorage(sessionId: string): void {
-  try {
-    localStorage.removeItem(STORAGE_PREFIX + sessionId)
-  } catch { /* ignore */ }
-}
-
-/** Remove all legacy session localStorage entries. Used by cacheClear() in
- *  tests and the reset-config flow. Same legacy-key cleanup as above. */
-export function clearAllSessionStorage(): void {
-  try {
-    const keys: string[] = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i)
-      if (k?.startsWith(STORAGE_PREFIX)) keys.push(k)
-    }
-    for (const k of keys) localStorage.removeItem(k)
-  } catch { /* ignore */ }
-}
-
 /** How often the live (in-progress) assistant turn is flushed to a new
  *  snapshot during streaming. Each flush re-renders the streaming footer,
  *  so this directly bounds the per-second render cost of an active turn.
@@ -137,24 +112,23 @@ export class SessionStore {
 
   /** Wipe the in-memory transcript. Historically this also erased the
    *  localStorage + IndexedDB caches; the seq-window store keeps no client
-   *  persistence, so there is nothing left to erase — the legacy cache keys
-   *  are removed only to keep pre-refactor leftovers from lingering. Used
-   *  by the /clear flow. */
+   *  persistence, so there is nothing left to erase. Legacy pre-refactor
+   *  cache keys are handled solely by the boot-time sweep
+   *  (legacy-transcript-cache.ts). Used by the /clear flow. */
   clearPersisted(): void {
     this.wipe()
-    clearSessionStorage(this.state.sessionId)
   }
 
   /** Permanently drop a session's store (registry.delete path). With no
    *  persistence layer there is nothing to drain — cancel timers and drop
-   *  listeners. */
+   *  listeners. (Legacy pre-refactor localStorage keys are handled solely by
+   *  the boot-time sweep — see legacy-transcript-cache.ts.) */
   async purge(): Promise<void> {
     unregisterStoreForDebug(this.state.sessionId, this)
     if (this.flushTimer != null) {
       window.clearTimeout(this.flushTimer)
       this.flushTimer = null
     }
-    clearSessionStorage(this.state.sessionId)
     this.listeners.clear()
   }
 

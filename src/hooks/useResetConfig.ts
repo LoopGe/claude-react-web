@@ -2,7 +2,6 @@ import { useCallback, useState } from 'react'
 import { api } from './useApi'
 import { inputHistoryStore } from '../state/inputHistoryStore'
 import { clearImageDecodeCache } from '../utils/imageDecodeCache'
-import { clearAllSessionStorage } from '../session-store/store'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { DRAFT_KEY_PREFIX, SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_KEY, SIDEBAR_MAX_KEY, PANEL_RATIOS_KEY, PANEL_MIN_RATIO_KEY, LAST_SEEN_TURN_KEY } from '../constants/storageKeys'
 import { RECENT_MODELS_KEY, RECENT_CWDS_KEY } from '../constants/recentKeys'
@@ -58,9 +57,10 @@ export function useResetConfig() {
       const res = await api.post<ResetResponse>('/config/reset', { items: server }, { timeoutMs: 0 })
       // Server cleared; now clear requested browser items.
       for (const b of browser) clearBrowserItem(b)
-      // If sessions were reset, clear client session caches for the deleted ids.
+      // If sessions were reset, drop their in-memory stores (the deleted
+      // sessions' legacy localStorage caches, if any, are the boot sweep's
+      // job — see legacy-transcript-cache.ts).
       if (server.includes('sessions')) {
-        clearAllSessionStorage()
         for (const id of res.deletedSessionIds) {
           try { await sessionStoreRegistry.delete(id) } catch { /* best-effort */ }
         }

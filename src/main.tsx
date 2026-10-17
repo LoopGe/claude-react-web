@@ -10,6 +10,7 @@ import { PluginCommandResultHost } from './app-plugins/PluginCommandResultHost'
 import { installGlobalErrorCapture, rootCallbacks } from './error-capture'
 import { RootErrorBoundary } from './error-capture-boundary'
 import { installConsoleCapture } from './client-debug/console-buffer'
+import { sweepLegacyTranscriptCache } from './session-store/legacy-transcript-cache'
 // KaTeX math styles must load BEFORE styles.css so the theme sizing
 // overrides in messages.css (`.md .katex`, `.md .katex-display`) win the
 // equal-specificity cascade.
@@ -47,6 +48,11 @@ if (import.meta.env.DEV) {
     if (document.hidden) performance.clearMeasures()
   })
 }
+
+// One-time purge of the pre-seq-refactor transcript cache keys. No reader or
+// writer of those keys exists anymore; they are pure quota orphans (measured
+// at 2.5MB starving the ~5MB per-origin quota). See legacy-transcript-cache.ts.
+sweepLegacyTranscriptCache()
 
 // Passive error capture: catches render crashes (root boundary + fallback
 // card), React 19 createRoot errors, and window-level error/rejection events
