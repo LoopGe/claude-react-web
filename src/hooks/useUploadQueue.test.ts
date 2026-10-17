@@ -161,7 +161,7 @@ describe('useUploadQueue', () => {
     expect(item.error).toBe('File too large')
   })
 
-  it('mixed batch: clipboard not called; allSucceeded false', async () => {
+  it('mixed batch: clipboard called with successful paths; allSucceeded false', async () => {
     const files = [makeFile('a.txt'), makeFile('b.txt')]
     const { result } = renderHook(() => useUploadQueue())
 
@@ -181,7 +181,8 @@ describe('useUploadQueue', () => {
     // Now both are terminal.
     expect(result.current.items[0].status).toBe('done')
     expect(result.current.items[1].status).toBe('error')
-    expect(mockWriteClipboard).not.toHaveBeenCalled()
+    // Clipboard is called with the successful paths even on partial success.
+    expect(mockWriteClipboard).toHaveBeenCalledWith('/uploads/a.txt')
     expect(result.current.lastCompletion).toEqual({
       paths: ['/uploads/a.txt'],
       allSucceeded: false,
@@ -316,6 +317,48 @@ describe('useUploadQueue', () => {
     // Completion still fires.
     expect(result.current.lastCompletion).toEqual({
       paths: ['/c'],
+      allSucceeded: true,
+      autoClose: false,
+    })
+  })
+
+  it('overlapping startUploads: old batch XHRs do not corrupt new batch or fire stale completion', async () => {
+    const oldFile = makeFile('old.txt')
+    const newFile = makeFile('new.txt')
+    const { result } = renderHook(() => useUploadQueue())
+
+    // Start first batch.
+    void startUploads([oldFile])
+    await flush()
+    const oldXhr = FakeXHR.instances[0]
+
+    // Start a second batch BEFORE the first settles — this replaces items.
+    void startUploads([newFile])
+    await flush()
+    const newXhr = FakeXHR.instances[1]
+
+    // New batch's items are what the store holds.
+    expect(result.current.items).toHaveLength(1)
+    expect(result.current.items[0].name).toBe('new.txt')
+
+    // Old XHR completes — its events must be silently ignored.
+    oldXhr.simulateProgress(50, 100)
+    expect(result.current.items[0].loaded).toBe(0) // unchanged
+
+    oldXhr.completeOk({ uploads: [{ path: '/uploads/old.txt', name: 'old.txt', size: 100 }] })
+    await flush()
+
+    // No stale completion from the old batch.
+    expect(result.current.lastCompletion).toBeNull()
+
+    // New XHR completes — its events update normally.
+    newXhr.completeOk({ uploads: [{ path: '/uploads/new.txt', name: 'new.txt', size: 100 }] })
+    await flush()
+
+    expect(result.current.items[0].status).toBe('done')
+    expect(result.current.items[0].path).toBe('/uploads/new.txt')
+    expect(result.current.lastCompletion).toEqual({
+      paths: ['/uploads/new.txt'],
       allSucceeded: true,
       autoClose: false,
     })

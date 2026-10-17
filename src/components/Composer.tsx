@@ -63,9 +63,6 @@ interface Props {
   /** Fork from the last completed turn (replacesSource). Only wired when
    *  canRetryResume. */
   onForkFromLastCompleted?: () => void
-  /** True when the session has no cwd — attach button greyed with a tooltip. */
-  canAttach: boolean
-
   dragOver: boolean
   onFilesPicked: (files: File[]) => void
   onDragOver: (e: React.DragEvent) => void
@@ -166,7 +163,6 @@ export const Composer = memo(function Composer({
   error,
   onResume,
   onForkFromLastCompleted,
-  canAttach,
   dragOver,
   onFilesPicked,
   onDragOver,
@@ -985,8 +981,8 @@ export const Composer = memo(function Composer({
           className="btn btn-icon"
           type="button"
           onClick={openFilePicker}
-          disabled={disabled || !canAttach}
-          title={canAttach ? 'Attach files' : 'Attach disabled: session has no cwd'}
+          disabled={disabled}
+          title="Attach files"
           aria-label="Attach files"
         >
           <IconPaperclip size={18} />

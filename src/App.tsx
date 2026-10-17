@@ -469,6 +469,7 @@ export function App() {
   const resumeDialogPresence = useExitPresence(resumeDialogOpen && resumeTargetPanelId === null)
   const globalSettingsPresence = useExitPresence(globalSettingsOpen)
   const uploadsDialogPresence = useExitPresence(uploadsDialogOpen)
+  const openUploadsManager = useCallback(() => setUploadsDialogOpen(true), [])
   const snippetsManagerPresence = useExitPresence(showSnippetsManager)
   const helpPresence = useExitPresence(helpOpen)
   const snippetsRefresh = snippets.refresh
@@ -5168,7 +5169,7 @@ export function App() {
                       onOpenSnippetsManager={openSnippetsManager}
                       onSaveCurrentAsSnippet={saveCurrentAsSnippet}
                       skin={skin}
-                      onOpenUploads={() => setUploadsDialogOpen(true)}
+                      onOpenUploads={openUploadsManager}
                     />
                   </ErrorBoundary>
                 </PanelSlot>

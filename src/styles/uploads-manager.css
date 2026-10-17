@@ -177,7 +177,7 @@
 }
 
 .uploads-progress-done {
-  color: var(--success-text, var(--accent));
+  color: var(--accent);
   font-size: var(--fs-sm);
   flex-shrink: 0;
 }

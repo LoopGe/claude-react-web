@@ -29,6 +29,7 @@ export interface BatchCompletion {
 
 let items: UploadItem[] = []
 let lastCompletion: BatchCompletion | null = null
+let batchCounter = 0
 
 type Listener = () => void
 const listeners = new Set<Listener>()
@@ -81,6 +82,11 @@ export function startUploads(
   files: File[],
   opts?: { sessionId?: string; autoClose?: boolean },
 ): Promise<void> {
+  // Capture the batch counter so stale XHR callbacks from a previous batch
+  // are ignored. Old XHRs may complete server-side — we don't abort them,
+  // but their progress/terminal events must not touch the new batch.
+  const myBatch = ++batchCounter
+
   // Replace the current batch items with the new ones.
   const batchItems: UploadItem[] = files.map((file, i) => ({
     key: `${Date.now()}-${i}`,
@@ -97,6 +103,7 @@ export function startUploads(
   return new Promise<void>((resolve) => {
     if (files.length === 0) {
       // Nothing to upload — treat as an empty success.
+      if (myBatch !== batchCounter) { resolve(); return }
       lastCompletion = { paths: [], allSucceeded: true, autoClose: opts?.autoClose ?? false }
       notify()
       resolve()
@@ -108,14 +115,16 @@ export function startUploads(
     let allSucceeded = true
 
     function markTerminal(idx: number, item: UploadItem): void {
+      if (myBatch !== batchCounter) { resolve(); return }
       // Update the item in the array immutably.
       items = items.map((it, i) => (i === idx ? item : it))
       notify()
 
       settled++
       if (settled === files.length) {
+        if (myBatch !== batchCounter) { resolve(); return }
         // All files reached terminal state.
-        if (allSucceeded && paths.length > 0) {
+        if (paths.length > 0) {
           void writeClipboard(paths.join('\n')).catch(() => {
             // Clipboard failure is non-fatal.
           })
@@ -142,6 +151,7 @@ export function startUploads(
       xhr.open('POST', url)
 
       xhr.upload.onprogress = (e: ProgressEvent) => {
+        if (myBatch !== batchCounter) return
         const loaded = e.loaded
         const total = e.total ?? file.size
         // Update the item in-place and notify.
@@ -152,6 +162,7 @@ export function startUploads(
       }
 
       xhr.onload = () => {
+        if (myBatch !== batchCounter) { resolve(); return }
         if (xhr.status >= 200 && xhr.status < 300) {
           try {
             const body = JSON.parse(xhr.responseText) as {
@@ -181,6 +192,7 @@ export function startUploads(
       }
 
       xhr.onerror = () => {
+        if (myBatch !== batchCounter) { resolve(); return }
         allSucceeded = false
         markTerminal(i, { ...item, status: 'error', error: 'Upload failed', loaded: 0, total: item.size })
       }

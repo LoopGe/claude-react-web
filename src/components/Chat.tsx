@@ -1,4 +1,4 @@
-// Chat panel ?orchestrates the stream, attachments, permissions, and
+// Chat panel — orchestrates the stream, permissions, and
 // renders the message list + composer. Side-effect hooks live in their
 // own files; this module only wires things together.
 //
@@ -1552,7 +1552,7 @@ export const Chat = memo(function Chat({
     // App owns the POST + panel id-swap: the server detaches the pre-clear
     // conversation as a dormant resumable session and returns a fresh session
     // Y under a new id; App swaps this panel from X to Y. X unmounts (its
-    // transcript/permissions/attachments state is discarded), Y mounts fresh.
+    // transcript/permissions state is discarded), Y mounts fresh.
     // We deliberately do NOT set `clearing` here — the blur-fade was tied to
     // the old same-id wipe, and a stuck "Clearing…" veil on a failed POST
     // (onCleared never fires for a local /clear) isn't worth the transition.
@@ -2441,7 +2441,6 @@ export const Chat = memo(function Chat({
               onForkFromLastCompleted={
                 onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined
               }
-              canAttach={!!session.cwd}
               dragOver={dragOver}
               onFilesPicked={onFilesPicked}
               onDragOver={onDragOver}

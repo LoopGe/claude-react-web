@@ -51,6 +51,12 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // When the dialog opens, consume (clear) any stale lastCompletion so
+  // no toast/auto-close fires for a batch the user wasn't watching.
+  useEffect(() => {
+    if (open) consumeCompletion()
+  }, [open])
+
   // ── Completion effect ──────────────────────────────────────────────
   // Capture completion data BEFORE consumeCompletion() — the notify()
   // it calls can trigger synchronous re-renders that empty `items`.
@@ -61,13 +67,15 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
     const failed = items.filter((it) => it.status === 'error').length
     processedCompletionRef.current = lastCompletion
     consumeCompletion()
-    void refresh()
-    if (allSucceeded) {
-      toast.success(paths.length === 1 ? 'Path copied' : `${paths.length} paths copied`)
-      if (autoClose) onClose()
-    } else {
-      toast.error(`${failed} upload(s) failed`)
-    }
+    void (async () => {
+      await refresh()
+      if (allSucceeded) {
+        toast.success(paths.length === 1 ? 'Path copied' : `${paths.length} paths copied`)
+        if (autoClose) onClose()
+      } else {
+        toast.error(`${failed} upload(s) failed`)
+      }
+    })()
   }, [lastCompletion, refresh, toast, onClose, items])
 
   // ── Drag handlers (mirroring Chat.tsx composer drop zone) ──────────

@@ -83,7 +83,6 @@ const defaultProps = {
   sending: false,
   disabled: false,
   terminated: false,
-  canAttach: true,
   dragOver: false,
   onFilesPicked: noop,
   onDragOver: noop,
