@@ -80,13 +80,9 @@ history-reader 的姊妹模块，三个导出：
 
 1. `resolveSubagentFile(sessionId, agentId)`：`findTranscriptFile(sessionId)` 取主文件路径 → `path.join(dirname, 'subagents', \`agent-${path.basename(agentId)}.jsonl\`)`。照抄 `findTranscriptFile` 的 `path.basename()` 手法防路径穿越；文件不存在返回 null。
 2. `isRenderableSubagentLine(line)`：`isRenderableSdkMessage` 的变体——**去掉 `isSidechain` 门**（实测 subagent 文件所有真实行都是 `isSidechain: true`，这是唯一必改），保留 `isMeta` 排除（与主 transcript 一致）；`attachment`/`api-request*` 等噪声类型由 default-false 分支天然过滤。
-3. `readSubagentTranscript(sessionId, agentId)`：读文件 → 逐行 `JSON.parse` → 渲染门过滤 → `normalize(o, sessionId, { trim: true, parentIdMode: 'raw' })` → 返回 wire 帧数组。
+3. `readSubagentTranscript(sessionId, agentId)`：读文件 → 逐行 `JSON.parse` → 渲染门过滤 → `normalize(o, sessionId, true)` → 返回 wire 帧数组。normalize 主干零改动直接复用——磁盘行不携带 `parent_tool_use_id`（`history-reader.ts` 注释明确 + 全量扫描 0 行出现），normalize 为 user 行经 `toolResultParentId` 现算的父子链正是 reducer 配对所需；assistant 行置 null 与 reducer「按 tool_use_id 配对、忽略 parent」的行为匹配。
 
-### 5.2 `normalize()` 变体参数
-
-`server/history-reader.ts` 的 `normalize()` 增加 options 参数：`parentIdMode: 'raw'` 时透传原始 `parent_tool_use_id`（现实现只给 user 行经 `toolResultParentId` 重算、assistant 行一律置 null）。subagent 文件当前没有嵌套帧（0 实例），但透传让未来嵌套帧的根/内层过滤在客户端成立。默认值保持现行为，主 transcript 路径零改动。
-
-### 5.3 Hub `server/subagent-transcript-hub.ts`
+### 5.2 Hub `server/subagent-transcript-hub.ts`
 
 - WS 新帧（`shared/ws-protocol.ts`，按仓库惯例同步补 `server/ws-protocol.ts` 与 `src/ws-types.ts` 两个实例化别名）：
   - client→server：`subagent-transcript-subscribe { sessionId, agentId }` / `subagent-transcript-unsubscribe { sessionId, agentId }`；
@@ -98,7 +94,7 @@ history-reader 的姊妹模块，三个导出：
 - watch 失败：`log.warn` + 停止推送（客户端保留已收快照，内容静止）——设计内降级，非投机 fallback。
 - metrics：hub 订阅数 gauge、推送帧 counter（标签只用有限枚举，无 uuid/session id）。
 
-### 5.4 路由变更
+### 5.3 路由变更
 
 `GET /sessions/:id/subagents/:agentId` 改为经 `readSubagentTranscript` 返回 wire 帧（旧渲染器同时删除，无兼容负担；`limit`/`offset` 查询参数随之移除——增量职责完全归 WS）。`GET /sessions/:id/subagents` 列表路由不动。
 
@@ -134,7 +130,7 @@ history-reader 的姊妹模块，三个导出：
 
 ## 8. 嵌套扩展点（本期不实现）
 
-嵌套 agent 会写**自己的** `agent-*.jsonl`（同目录，SDK `SessionMessage.parent_agent_id` 建模）。`normalize` 变体的 `parentIdMode: 'raw'` 已保证嵌套帧的父子链不被丢弃。未来如需 drill-in：Agent 工具卡加「查看 transcript」入口，以嵌套 agentId 复用同一弹窗组件再开一层即可，无管线改动。
+嵌套 agent 会写**自己的** `agent-*.jsonl`（同目录，SDK `SessionMessage.parent_agent_id` 建模），磁盘行不携带 `parent_tool_use_id`、normalize 主干零改动即可。未来如需 drill-in：Agent 工具卡加「查看 transcript」入口，以嵌套 agentId 复用同一弹窗组件再开一层即可，无管线改动。
 
 ## 9. 测试
 
