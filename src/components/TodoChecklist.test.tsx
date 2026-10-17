@@ -513,22 +513,13 @@ describe('TodoChecklist — Task* reconstruction', () => {
   })
 })
 
-describe('TodoChecklist — collapse + long-press hide', () => {
+describe('TodoChecklist — collapse', () => {
   const msgs = [
     multiTodoMsg([
       { content: 'A', status: 'pending' },
       { content: 'B', status: 'pending' },
     ]),
   ]
-
-  /** Fire a 500ms long-press on an item. Requires vi.useFakeTimers() active. */
-  function longPress(item: Element, pointerId = 1): void {
-    fireEvent.pointerDown(item, { pointerId, button: 0, clientX: 0, clientY: 0 })
-    act(() => {
-      vi.advanceTimersByTime(500)
-    })
-    fireEvent.pointerUp(item, { pointerId })
-  }
 
   it('collapses the list via the header chevron and restores it', () => {
     vi.useFakeTimers()
@@ -572,156 +563,94 @@ describe('TodoChecklist — collapse + long-press hide', () => {
     fireEvent.click(container.querySelector('.todo-panel-collapse')!)
     unmount()
     expect(window.localStorage.getItem('claude-react-web:todo:collapsed:')).toBeNull()
-    expect(window.localStorage.getItem('claude-react-web:todo:hidden:')).toBeNull()
+  })
+})
+
+describe('TodoChecklist — task detail popover', () => {
+  const taskMsgs = [
+    ...created('tc1', 1, 'Deploy', { description: 'Ship it to prod' }),
+    ...created('tc2', 2, 'Run tests'),
+  ]
+
+  it('marks task rows clickable but not TodoWrite rows', () => {
+    const task = render(<TodoChecklist messages={taskMsgs} working />)
+    expect(task.container.querySelectorAll('.todo-item-clickable').length).toBe(2)
+    task.unmount()
+
+    const tw = render(<TodoChecklist messages={[multiTodoMsg([{ content: 'A', status: 'pending' }])]} working />)
+    expect(tw.container.querySelector('.todo-item-clickable')).toBeNull()
   })
 
-  it('hides an item on long-press and shows an undo row', () => {
-    vi.useFakeTimers()
+  it('opens a detail popover when a task row is clicked', () => {
+    const { container } = render(<TodoChecklist messages={taskMsgs} working />)
+    fireEvent.click(container.querySelectorAll('.todo-item')[0])
+
+    const pop = document.querySelector('.todo-detail-pop')
+    expect(pop).not.toBeNull()
+    expect(pop!.textContent).toContain('Deploy')
+    expect(pop!.textContent).toContain('Ship it to prod')
+    expect(pop!.textContent).toContain('#1')
+  })
+
+  it('a task without a description still opens (id + status), without a desc section', () => {
+    // created() defaults description to the subject — strip it explicitly.
+    const msgs = created('tc2', 2, 'Run tests', { description: undefined })
     const { container } = render(<TodoChecklist messages={msgs} working />)
-    longPress(container.querySelectorAll('.todo-item')[0])
+    fireEvent.click(container.querySelectorAll('.todo-item')[0])
 
-    expect(container.querySelectorAll('.todo-item').length).toBe(1)
-    expect(container.querySelector('.todo-text')?.textContent).toBe('B')
-    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/1')
-    expect(container.querySelector('.todo-panel-undo')?.textContent).toContain('Hidden 1 item')
+    const pop = document.querySelector('.todo-detail-pop')!
+    expect(pop.textContent).toContain('Run tests')
+    expect(pop.textContent).toContain('#2')
+    expect(pop.querySelector('.todo-detail-desc')).toBeNull()
   })
 
-  it('does not hide on a short press', () => {
-    vi.useFakeTimers()
+  it('switches content when another row is clicked', () => {
+    const { container } = render(<TodoChecklist messages={taskMsgs} working />)
+    fireEvent.click(container.querySelectorAll('.todo-item')[0])
+    expect(document.querySelector('.todo-detail-pop')!.textContent).toContain('Deploy')
+
+    fireEvent.click(container.querySelectorAll('.todo-item')[1])
+    expect(document.querySelector('.todo-detail-pop')!.textContent).toContain('Run tests')
+    expect(document.querySelector('.todo-detail-pop')!.textContent).not.toContain('Deploy')
+  })
+
+  it('an in-flight (provisional) create shows no #id chip', () => {
+    // Before the tool_result lands, the row key is `pending:<toolUseId>` —
+    // that raw id must not render in the `#N` slot.
+    const msgs = [taskUseMsg('tc9', 'TaskCreate', { subject: 'In flight', description: 'desc' })]
     const { container } = render(<TodoChecklist messages={msgs} working />)
-    const item = container.querySelector('.todo-item')!
-    fireEvent.pointerDown(item, { pointerId: 1, button: 0, clientX: 0, clientY: 0 })
-    act(() => {
-      vi.advanceTimersByTime(300)
-    })
-    fireEvent.pointerUp(item, { pointerId: 1 })
+    fireEvent.click(container.querySelectorAll('.todo-item')[0])
 
-    expect(container.querySelectorAll('.todo-item').length).toBe(2)
-    expect(container.querySelector('.todo-panel-undo')).toBeNull()
+    const pop = document.querySelector('.todo-detail-pop')!
+    expect(pop.textContent).toContain('In flight')
+    expect(pop.querySelector('.todo-detail-id')).toBeNull()
   })
 
-  it('cancels the long-press when the pointer moves beyond the slop', () => {
-    vi.useFakeTimers()
-    const { container } = render(<TodoChecklist messages={msgs} working />)
-    const item = container.querySelector('.todo-item')!
-    fireEvent.pointerDown(item, { pointerId: 1, button: 0, clientX: 0, clientY: 0 })
-    fireEvent.pointerMove(item, { pointerId: 1, clientX: 50, clientY: 50 })
-    act(() => {
-      vi.advanceTimersByTime(500)
-    })
-    fireEvent.pointerUp(item, { pointerId: 1 })
+  it('collapsing the panel closes an open popover', () => {
+    const { container } = render(<TodoChecklist messages={taskMsgs} working />)
+    fireEvent.click(container.querySelectorAll('.todo-item')[0])
+    expect(document.querySelector('.todo-detail-pop')).not.toBeNull()
 
-    expect(container.querySelectorAll('.todo-item').length).toBe(2)
-    expect(container.querySelector('.todo-panel-undo')).toBeNull()
+    fireEvent.click(container.querySelector('.todo-panel-collapse')!)
+    expect(document.querySelector('.todo-detail-pop')).toBeNull()
   })
 
-  it('keeps the panel and undo row visible when every item is hidden', () => {
-    vi.useFakeTimers()
-    const { container } = render(<TodoChecklist messages={msgs} working />)
-    longPress(container.querySelectorAll('.todo-item')[0], 1)
-    longPress(container.querySelectorAll('.todo-item')[0], 2)
+  it('closes on Escape', () => {
+    const { container } = render(<TodoChecklist messages={taskMsgs} working />)
+    fireEvent.click(container.querySelectorAll('.todo-item')[0])
+    expect(document.querySelector('.todo-detail-pop')).not.toBeNull()
 
-    expect(container.querySelector('.todo-panel')).not.toBeNull()
-    expect(container.querySelectorAll('.todo-item').length).toBe(0)
-    expect(container.querySelector('.todo-panel-count')?.textContent).toBe('0/0')
-    expect(container.querySelector('.todo-panel-undo')).not.toBeNull()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(document.querySelector('.todo-detail-pop')).toBeNull()
   })
 
-  it('undo restores every hidden item', () => {
-    vi.useFakeTimers()
-    const { container } = render(<TodoChecklist messages={msgs} working />)
-    longPress(container.querySelectorAll('.todo-item')[0])
-    expect(container.querySelectorAll('.todo-item').length).toBe(1)
+  it('closes on an outside mousedown', () => {
+    const { container } = render(<TodoChecklist messages={taskMsgs} working />)
+    fireEvent.click(container.querySelectorAll('.todo-item')[0])
+    expect(document.querySelector('.todo-detail-pop')).not.toBeNull()
 
-    fireEvent.click(container.querySelector('.todo-panel-undo-btn')!)
-    expect(container.querySelectorAll('.todo-item').length).toBe(2)
-    expect(container.querySelector('.todo-panel-undo')).toBeNull()
-  })
-
-  it('prunes hidden keys once the agent deletes the task', () => {
-    const taskMsgs = [
-      ...created('tu1', 1, 'Keep me'),
-      ...created('tu2', 2, 'Remove me'),
-    ]
-    vi.useFakeTimers()
-    const { container, rerender } = render(
-      <TodoChecklist messages={taskMsgs} sessionId="prune-s1" working />,
-    )
-    expect(container.querySelectorAll('.todo-item').length).toBe(2)
-
-    // Hide 'Remove me' (server id #2) → persisted under the session key.
-    longPress(container.querySelectorAll('.todo-item')[1])
-    expect(container.querySelectorAll('.todo-item').length).toBe(1)
-    expect(container.querySelector('.todo-panel-undo')).not.toBeNull()
-    expect(window.localStorage.getItem('claude-react-web:todo:hidden:prune-s1')).toBe('["2"]')
-
-    // Agent deletes task #2 → the hidden key is pruned (not just hidden by
-    // the derived view) and the undo row goes.
-    rerender(
-      <TodoChecklist
-        messages={[
-          ...taskMsgs,
-          taskUseMsg('tu3', 'TaskUpdate', { taskId: '2', status: 'deleted' }),
-          taskResultMsg('tu3', 'Deleted task #2'),
-        ]}
-        sessionId="prune-s1"
-        working
-      />,
-    )
-    expect(container.querySelector('.todo-panel-undo')).toBeNull()
-    expect(window.localStorage.getItem('claude-react-web:todo:hidden:prune-s1')).toBe('[]')
-  })
-
-  it('does not persist the hidden set without a sessionId', () => {
-    vi.useFakeTimers()
-    const first = render(<TodoChecklist messages={msgs} working />)
-    longPress(first.container.querySelectorAll('.todo-item')[0])
-    first.unmount()
-
-    const second = render(<TodoChecklist messages={msgs} working />)
-    expect(second.container.querySelectorAll('.todo-item').length).toBe(2)
-  })
-
-  it('persists the hidden set per sessionId', () => {
-    vi.useFakeTimers()
-    const first = render(<TodoChecklist messages={msgs} sessionId="hid-s1" working />)
-    longPress(first.container.querySelectorAll('.todo-item')[0])
-    first.unmount()
-
-    const second = render(<TodoChecklist messages={msgs} sessionId="hid-s1" working />)
-    expect(second.container.querySelectorAll('.todo-item').length).toBe(1)
-    expect(second.container.querySelector('.todo-panel-undo')).not.toBeNull()
-  })
-
-  it('auto-dismisses the undo row after a few seconds but keeps items hidden', () => {
-    // Toast pattern: the undo affordance closes on its own after UNDO_DISMISS_MS,
-    // but that commits the hide — the item does NOT reappear.
-    vi.useFakeTimers()
-    const { container } = render(<TodoChecklist messages={msgs} sessionId="dismiss-s1" working />)
-    longPress(container.querySelectorAll('.todo-item')[0])
-    expect(container.querySelector('.todo-panel-undo')).not.toBeNull()
-
-    act(() => {
-      vi.advanceTimersByTime(6000)
-    })
-    expect(container.querySelector('.todo-panel-undo')).toBeNull()
-    expect(container.querySelectorAll('.todo-item').length).toBe(1)
-    expect(container.querySelector('.todo-text')?.textContent).toBe('B')
-  })
-
-  it('shows the pressing state with the fill-duration hook while the pointer is down', () => {
-    // The progress fill is driven by `.todo-item-pressing` + a `--press-ms`
-    // inline var so the CSS animation stays in sync with the 500ms hide timer.
-    vi.useFakeTimers()
-    const { container } = render(<TodoChecklist messages={msgs} working />)
-    const item = container.querySelector('.todo-item')!
-    fireEvent.pointerDown(item, { pointerId: 1, button: 0, clientX: 0, clientY: 0 })
-    expect(item.classList.contains('todo-item-pressing')).toBe(true)
-    expect(item.getAttribute('style')).toContain('--press-ms')
-    act(() => {
-      vi.advanceTimersByTime(500)
-    })
-    fireEvent.pointerUp(item, { pointerId: 1 })
+    fireEvent.mouseDown(document.body)
+    expect(document.querySelector('.todo-detail-pop')).toBeNull()
   })
 })
 

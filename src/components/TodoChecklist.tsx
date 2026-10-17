@@ -26,7 +26,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
 import type { Skin } from '../utils/theme'
-import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox, IconChevronDown, IconRotateCcw } from './icons/ToolIcons'
+import { IconCheck, IconCircleDot, IconCircle, IconCheckboxDot, IconCheckbox, IconChevronDown } from './icons/ToolIcons'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { DockRotor } from './DockRotor'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -34,6 +34,7 @@ import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useRotor } from '../hooks/useRotor'
+import { TodoDetailPopover } from './TodoDetailPopover'
 import {
   buildTaskStateMap,
   lastUserInputIndex,
@@ -42,13 +43,16 @@ import {
 } from '../utils/task-events'
 
 interface Todo {
-  /** Stable identity for the local hide-set. Task* items use the server-
-   *  assigned numeric id (`#N`, from TaskState.id); TodoWrite snapshots have
-   *  no id, so the content string is the fallback. */
+  /** Stable identity for the item (strike-transition bookkeeping). Task*
+   *  items use the server-assigned numeric id (`#N`, from TaskState.id);
+   *  TodoWrite snapshots have no id, so the content string is the fallback. */
   key: string
   content: string
   status: 'pending' | 'in_progress' | 'completed'
   activeForm?: string
+  /** Task* items only — the TaskCreate/TaskUpdate description, shown in the
+   *  click-open detail popover. TodoWrite snapshots carry none. */
+  description?: string
 }
 
 interface Props {
@@ -67,8 +71,8 @@ interface Props {
    *  the store. The last visible list is frozen for the duration so the
    *  panel stays mounted (and fading) after `messages` empties. */
   clearing?: boolean
-  /** Per-session persistence key for the collapse + hidden-set state. When
-   *  omitted both stay in memory only (no localStorage writes) — the tests
+  /** Per-session persistence key for the collapse state. When omitted the
+   *  collapse stays in memory only (no localStorage writes) — the tests
    *  rely on this. */
   sessionId?: string
   /** Server-derived full-transcript fold (useTaskList). Base layer merged
@@ -82,18 +86,6 @@ const LS_PREFIX = 'claude-react-web:todo:'
 function keyCollapsed(sid?: string): string | null {
   return sid ? `${LS_PREFIX}collapsed:${sid}` : null
 }
-function keyHidden(sid?: string): string | null {
-  return sid ? `${LS_PREFIX}hidden:${sid}` : null
-}
-
-const LONG_PRESS_MS = 500
-/** Pointer travel (px) from the press origin that cancels a long-press —
- *  the list is scrollable and a drag/scroll shouldn't trigger a hide. */
-const PRESS_MOVE_SLOP = 10
-/** How long the undo row stays after a hide before auto-dismissing (toast
- *  pattern). Dismissal only closes the undo affordance — the hidden items
- *  STAY hidden; the "hide" is committed once the undo window closes. */
-const UNDO_DISMISS_MS = 5000
 
 export const TodoChecklist = memo(function TodoChecklist({ messages, working, skin, clearing, sessionId, serverTasks }: Props) {
   const result = useMemo(() => extractTodos(messages, !!working, serverTasks), [messages, working, serverTasks])
@@ -107,73 +99,19 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   // stable across renders where the panel is hidden.
   const setListScroller = useOverlayScrollbar({ autoHide: 'leave' })
 
-  // --- collapse + hidden-set state --------------------------------------
+  // --- collapse state ----------------------------------------------------
   // Persisted per session in localStorage (null key → in-memory only, which
-  // the existing tests rely on). All declared before the early return so the
+  // the existing tests rely on). Declared before the early return so the
   // hook order is stable across renders where the panel is hidden.
   const [collapsed, setCollapsed] = useLocalStorage<boolean>(keyCollapsed(sessionId), false, {
     validate: (v): v is boolean => typeof v === 'boolean',
   })
-  const [hiddenList, setHiddenList] = useLocalStorage<string[]>(keyHidden(sessionId), [], {
-    validate: (v): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string'),
-  })
-  const hiddenSet = useMemo(() => new Set(hiddenList), [hiddenList])
 
-  // Undo row auto-dismisses after UNDO_DISMISS_MS (toast pattern) so a hide
-  // doesn't leave a permanent button in the card header. Re-shown on every
-  // new hide; hiding again just resets the window. Dismissal does NOT clear
-  // hiddenList — the items stay hidden, the undo affordance is what closes.
-  const [undoDismissed, setUndoDismissed] = useState(false)
+  // One-time cleanup: the long-press-to-hide feature (removed) persisted a
+  // `hidden:<sid>` key per session. Nothing reads it anymore — drop it.
   useEffect(() => {
-    if (hiddenList.length === 0) return
-    setUndoDismissed(false)
-    const t = window.setTimeout(() => setUndoDismissed(true), UNDO_DISMISS_MS)
-    return () => window.clearTimeout(t)
-  }, [hiddenList])
-
-  const hideTodo = useCallback((k: string) => {
-    setHiddenList((prev) => (prev.includes(k) ? prev : [...prev, k]))
-  }, [setHiddenList])
-  const undoHidden = useCallback(() => setHiddenList([]), [setHiddenList])
-
-  // --- long-press-to-hide gesture (pointer events) ----------------------
-  // Pointer-only affordance — a long-press has no keyboard equivalent. TODO:
-  // add a keyboard-accessible alternative (per-item secondary action) before
-  // treating this as the sole hide path.
-  const pressTimerRef = useRef<number | null>(null)
-  const pressStartRef = useRef<{ x: number; y: number } | null>(null)
-  const [pressingKey, setPressingKey] = useState<string | null>(null)
-
-  const clearPress = useCallback(() => {
-    if (pressTimerRef.current != null) window.clearTimeout(pressTimerRef.current)
-    pressTimerRef.current = null
-    pressStartRef.current = null
-    setPressingKey(null)
-  }, [])
-  // Cleanup on unmount so a pending timer can't fire on a detached item.
-  useEffect(() => () => {
-    if (pressTimerRef.current != null) window.clearTimeout(pressTimerRef.current)
-  }, [])
-
-  const onItemPointerDown = useCallback((e: React.PointerEvent<HTMLLIElement>, key: string) => {
-    if (e.button !== 0) return
-    clearPress()
-    pressStartRef.current = { x: e.clientX, y: e.clientY }
-    setPressingKey(key)
-    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* jsdom / stale pointerId */ }
-    pressTimerRef.current = window.setTimeout(() => {
-      hideTodo(key)
-      clearPress()
-    }, LONG_PRESS_MS)
-  }, [clearPress, hideTodo])
-
-  const onItemPointerMove = useCallback((e: React.PointerEvent<HTMLLIElement>) => {
-    const s = pressStartRef.current
-    if (!s) return
-    if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > PRESS_MOVE_SLOP) clearPress()
-  }, [clearPress])
-
-  const onItemPointerEnd = useCallback(() => clearPress(), [clearPress])
+    if (sessionId) window.localStorage.removeItem(`${LS_PREFIX}hidden:${sessionId}`)
+  }, [sessionId])
 
   // The result that would be shown right now under the normal hide rules
   // (null when the panel should be hidden). Mirrors the old inline early
@@ -211,14 +149,11 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   // content AND its `-clearing` class (a /clear's blur survives the handoff
   // with no manual latch). Snaps under reduced motion.
 
-  // Visible list is the render result minus locally-hidden tasks. The count
-  // chip reflects only what's shown; the undo row explains the difference.
+  // Visible list is the render result. The count chip reflects it.
   // Memoised so the `[]` fallback (panel hidden) keeps a stable identity and
   // the useMemo/useEffect below don't re-run on every render while hidden.
   const todos = useMemo(() => (renderResult ? renderResult.todos : []), [renderResult])
-  const visibleTodos = todos.filter((t) => !hiddenSet.has(t.key))
-  const doneCount = visibleTodos.filter((t) => t.status === 'completed').length
-  const hiddenVisibleCount = todos.filter((t) => hiddenSet.has(t.key)).length
+  const doneCount = todos.filter((t) => t.status === 'completed').length
 
   // --- collapsed-header rotor -------------------------------------------
   // While the card is collapsed (docked behind the composer) and tasks are
@@ -228,27 +163,14 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
   // the pointer rests on the header (so the expand target stays put under
   // the cursor). Expanded, idle, or nothing-running headers keep the static
   // title. The sig is the running items' key-join — a PRIMITIVE, since
-  // visibleTodos is a fresh array every render and during a turn `messages`
+  // todos is a fresh array every render and during a turn `messages`
   // churns constantly.
-  const runningTodos = visibleTodos.filter((t) => t.status === 'in_progress')
+  const runningTodos = todos.filter((t) => t.status === 'in_progress')
   const runningSig = runningTodos.map((t) => t.key).join('\u0000')
   const rotorActive = collapsed && runningTodos.length > 0
   const rotor = useRotor({ sig: runningSig, count: runningTodos.length, active: rotorActive })
   const rotorTask = rotorActive ? runningTodos[rotor.index] : null
   const rotorLabel = rotorTask ? rotorTask.activeForm || rotorTask.content : ''
-
-  // Prune hidden keys that no longer exist in the FULL derived list — an
-  // agent `TaskUpdate(status:'deleted')`, a /clear that wiped `messages`, or
-  // a provisional `pending:<toolUseId>` key resolving to its real `#N`.
-  // Uses `result` (not `renderResult`): when the panel is auto-hidden
-  // (all-done + idle → renderResult null) the tasks still exist and the
-  // hidden set must survive the auto-hide.
-  useEffect(() => {
-    if (hiddenList.length === 0) return
-    const alive = new Set((result?.todos ?? []).map((t) => t.key))
-    const pruned = hiddenList.filter((k) => alive.has(k))
-    if (pruned.length !== hiddenList.length) setHiddenList(pruned)
-  }, [result, hiddenList, setHiddenList])
 
   // --- fresh-completion strike animation -------------------------------
   // A completed item's strike sweeps left→right ONLY on the render where it
@@ -299,7 +221,65 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
     prevStatusRef.current = map
   }, [todos, freshCompletedKeys, renderResult])
 
+  // --- click-open detail popover ----------------------------------------
+  // Task* rows carry fields the one-line card can't show (description, the
+  // server `#N`, activeForm) — clicking a row opens TodoDetailPopover
+  // anchored to it. TodoWrite snapshot rows have nothing beyond the line
+  // already shown, so they stay non-interactive.
+  const sourceIsTask = renderResult?.source === 'task'
+  const [openDetail, setOpenDetail] = useState<{ key: string; anchor: { top: number; bottom: number; left: number; width: number; height: number } } | null>(null)
+  const openRowRef = useRef<HTMLElement | null>(null)
+  // The open row's Todo, re-derived every render — if the task vanishes
+  // (agent deletes it, /clear) the popover closes with it.
+  const openTodo = openDetail && sourceIsTask ? todos.find((t) => t.key === openDetail.key) : undefined
+
+  // Collapse hides the rows the popover anchors to — close it with them.
+  useEffect(() => {
+    if (collapsed) setOpenDetail(null)
+  }, [collapsed])
+  // The open task vanishing (stale cleanup, agent delete, /clear) unmounts
+  // the popover — but `openDetail` must be cleared too, or a later task reusing
+  // the same key re-opens the popover with no user click.
+  useEffect(() => {
+    if (openDetail && !openTodo) setOpenDetail(null)
+  }, [openDetail, openTodo])
+
+  const onItemActivate = (e: React.SyntheticEvent<HTMLLIElement>, key: string) => {
+    // Held-key auto-repeat would toggle the popover open/shut every ~30ms.
+    if (e.nativeEvent instanceof KeyboardEvent && e.nativeEvent.repeat) return
+    const el = e.currentTarget
+    const r = el.getBoundingClientRect()
+    openRowRef.current = el
+    setOpenDetail((prev) =>
+      prev?.key === key
+        ? null
+        : { key, anchor: { top: r.top, bottom: r.bottom, left: r.left, width: r.width, height: r.height } },
+    )
+  }
+
+  // The id chip only makes sense for a resolved `#N` — an in-flight create's
+  // provisional key is `pending:<toolUseId>` and must not render as `#…`.
+  const detail = useMemo(
+    () => openTodo
+      ? {
+          id: /^\d+$/.test(openTodo.key) ? openTodo.key : undefined,
+          subject: openTodo.content,
+          status: openTodo.status,
+          activeForm: openTodo.activeForm,
+          description: openTodo.description,
+        }
+      : null,
+    [openTodo],
+  )
+  const closeDetail = useCallback(() => setOpenDetail(null), [])
+
   return (
+    <>
+    {/* NOT inside the AnimatePresence below: AnimatePresence holds an
+        unmounting child through its exit animation with props frozen, which
+        is right for the card but wrong for the popover — a dismissed popover
+        must unmount instantly (same convention as ContextMenu's callers).
+        Inside, a jsdom/no-rAF exit would strand the node forever. */}
     <AnimatePresence initial={false}>
       {renderResult && (
         <BottomCardMotion key="todo-panel">
@@ -336,18 +316,10 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
                   <IconChevronDown size={16} />
                 </button>
                 <span className="todo-panel-count">
-                  {doneCount}/{visibleTodos.length}
+                  {doneCount}/{todos.length}
                 </span>
               </div>
             </div>
-            {hiddenVisibleCount > 0 && !undoDismissed && (
-              <div className="todo-panel-undo">
-                <span>Hidden {hiddenVisibleCount} item{hiddenVisibleCount === 1 ? '' : 's'}</span>
-                <button type="button" className="todo-panel-undo-btn" onClick={undoHidden}>
-                  <IconRotateCcw size={12} /> Undo
-                </button>
-              </div>
-            )}
             {/* remeasureWhileClamped: this card lives in .chat-bottom-stack, whose
                 45% height cap lands on the collapse body. The card's own content is
                 left at its intrinsic height (see `.todo-panel .animated-collapse-content`),
@@ -355,18 +327,35 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
                 full height when the cap lifts. */}
             <AnimatedCollapse open={!collapsed} animateResize remeasureWhileClamped>
               <ul ref={setListScroller} id="todo-panel-list" className="todo-panel-list">
-                {visibleTodos.map((t, i) => (
+                {todos.map((t, i) => {
+                  // Only Task* rows are clickable — TodoWrite snapshots carry
+                  // nothing beyond the rendered line.
+                  const clickable = sourceIsTask
+                  return (
                   <li
-                    key={i}
-                    // --press-ms feeds the long-press progress fill (`.todo-item::after`),
-                    // keeping the CSS animation duration in sync with LONG_PRESS_MS.
-                    style={{ '--press-ms': `${LONG_PRESS_MS}ms` } as React.CSSProperties}
-                    className={`todo-item todo-${t.status}${pressingKey === t.key ? ' todo-item-pressing' : ''}${t.status === 'completed' && (struckKeys.has(t.key) || freshCompletedKeys.has(t.key)) ? ' todo-strike-anim' : ''}`}
-                    onPointerDown={(e) => onItemPointerDown(e, t.key)}
-                    onPointerMove={onItemPointerMove}
-                    onPointerUp={onItemPointerEnd}
-                    onPointerCancel={onItemPointerEnd}
-                    onPointerLeave={onItemPointerEnd}
+                    // Task* rows key on the stable task id (an open popover's
+                    // triggerRef must keep pointing at ITS row when sibling
+                    // rows are added/removed above it — an index key would
+                    // reuse DOM nodes and misalign it). TodoWrite snapshots
+                    // have no id and can carry duplicate contents, so they
+                    // stay index-keyed; those rows never open a popover.
+                    key={sourceIsTask ? t.key : i}
+                    className={`todo-item todo-${t.status}${clickable ? ' todo-item-clickable' : ''}${t.status === 'completed' && (struckKeys.has(t.key) || freshCompletedKeys.has(t.key)) ? ' todo-strike-anim' : ''}`}
+                    {...(clickable
+                      ? {
+                          role: 'button',
+                          tabIndex: 0,
+                          'aria-haspopup': 'dialog',
+                          'aria-expanded': openDetail?.key === t.key,
+                          onClick: (e) => onItemActivate(e, t.key),
+                          onKeyDown: (e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              onItemActivate(e, t.key)
+                            }
+                          },
+                        }
+                      : {})}
                   >
                     <span className="todo-icon" aria-hidden>
                       {t.status === 'completed' ? (
@@ -383,13 +372,23 @@ export const TodoChecklist = memo(function TodoChecklist({ messages, working, sk
                       </span>
                     </span>
                   </li>
-                ))}
+                  )
+                })}
               </ul>
             </AnimatedCollapse>
           </div>
         </BottomCardMotion>
       )}
     </AnimatePresence>
+    {detail && openDetail && (
+      <TodoDetailPopover
+        detail={detail}
+        anchor={openDetail.anchor}
+        triggerRef={openRowRef}
+        onClose={closeDetail}
+      />
+    )}
+    </>
   )
 })
 
@@ -544,6 +543,7 @@ function extractFromTaskEvents(messages: SdkMessage[], serverTasks: TasklistSnap
       content: t.subject,
       status: t.status === 'cancelled' ? 'completed' : t.status,
       activeForm: t.activeForm,
+      ...(t.description !== undefined ? { description: t.description } : {}),
     })
   }
   return out

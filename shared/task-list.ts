@@ -22,6 +22,7 @@ import {
 export interface TaskState {
   id: string
   subject: string
+  description?: string
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
   activeForm?: string
   lastTouched: number
@@ -174,9 +175,11 @@ function foldTaskEvents(
         // provisional entry naturally resolves once the result arrives and a
         // subsequent render parses the id.
         const key = id ?? (toolUseId ? `pending:${toolUseId}` : `pending:${tasks.size}`)
+        const desc = str(input?.description)
         tasks.set(key, {
           id: id ?? key,
           subject: str(input?.subject) ?? '(no subject)',
+          ...(desc !== undefined ? { description: desc } : {}),
           status: normalizeStatus(str(input?.status)) ?? 'pending',
           activeForm: str(input?.activeForm),
           lastTouched: idx,
@@ -208,6 +211,12 @@ function foldTaskEvents(
         if (input && 'subject' in input) {
           const s = str(input.subject)
           if (s) next.subject = s
+        }
+        if (input && 'description' in input) {
+          const d = str(input.description)
+          // Same rule as subject: a non-empty update overwrites; an update
+          // that omits the field (or empties it) keeps the stored value.
+          if (d) next.description = d
         }
         if (input && 'activeForm' in input) {
           next.activeForm = str(input.activeForm)
@@ -282,6 +291,7 @@ export interface TasklistSnapshotTask {
    *  `taskId` input — the stable identity across snapshot and window fold. */
   id: string
   subject: string
+  description?: string
   status: 'pending' | 'in_progress' | 'completed' | 'cancelled'
   activeForm?: string
   /** Server-precomputed staleness (resolved AND last touched before the
@@ -356,6 +366,7 @@ export function mergeTaskList(
         merged.set(t.id, {
           id: t.id,
           subject: t.subject,
+          ...(t.description !== undefined ? { description: t.description } : {}),
           status: t.status,
           ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
           // Server line-index coordinate — meaningless client-side; the
@@ -367,8 +378,11 @@ export function mergeTaskList(
       }
       // Window entry exists: keep its fresher status. A stub subject is
       // fold filler (`Task #N`) — the snapshot's subject is the real one.
+      // A stub's description is likewise missing/ filler — heal it too
+      // (but never overwrite a description the window actually has).
       if (w.stub) {
         w.subject = t.subject
+        if (w.description === undefined && t.description !== undefined) w.description = t.description
         if (w.activeForm === undefined && t.activeForm !== undefined) w.activeForm = t.activeForm
       }
     }

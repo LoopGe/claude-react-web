@@ -138,6 +138,47 @@ describe('buildTaskStateMap', () => {
     ]
     expect(buildTaskStateMap(messages)!.get('3')?.lastTouched).toBe(3)
   })
+
+  it('captures the description from a TaskCreate input', () => {
+    const messages = [
+      assistant([create('t1', 'Deploy', { description: 'Ship the app to prod' })]),
+      toolResult('t1', 'Task #3 created successfully: Deploy'),
+    ]
+    expect(buildTaskStateMap(messages)!.get('3')?.description).toBe('Ship the app to prod')
+  })
+
+  it('omits description when the create input has none', () => {
+    const messages = [
+      assistant([create('t1', 'Deploy')]),
+      toolResult('t1', 'Task #3 created successfully: Deploy'),
+    ]
+    expect(buildTaskStateMap(messages)!.get('3')?.description).toBeUndefined()
+  })
+
+  it('a TaskUpdate description overwrites the stored one', () => {
+    const messages = [
+      assistant([create('t1', 'Deploy', { description: 'old' })]),
+      toolResult('t1', 'Task #3 created successfully: Deploy'),
+      assistant([update('3', { status: 'in_progress', description: 'new text' })]),
+    ]
+    expect(buildTaskStateMap(messages)!.get('3')?.description).toBe('new text')
+  })
+
+  it('a TaskUpdate without description keeps the create description (same rule as subject)', () => {
+    const messages = [
+      assistant([create('t1', 'Deploy', { description: 'kept' })]),
+      toolResult('t1', 'Task #3 created successfully: Deploy'),
+      assistant([update('3', { status: 'completed' })]),
+    ]
+    expect(buildTaskStateMap(messages)!.get('3')?.description).toBe('kept')
+  })
+
+  it('a stub update carrying a description stores it', () => {
+    const tasks = buildTaskStateMap([
+      assistant([update('9', { status: 'in_progress', description: 'desc from update' })]),
+    ])
+    expect(tasks!.get('9')?.description).toBe('desc from update')
+  })
 })
 
 describe('buildTaskStateMapFromItems', () => {
@@ -215,6 +256,31 @@ describe('mergeTaskList', () => {
     // Status stays the window's (freshest); only the filler subject heals.
     expect(merged.get('9')!.subject).toBe('real subject')
     expect(merged.get('9')!.status).toBe('in_progress')
+  })
+
+  it('heals a window STUB description from the snapshot and fills snapshot-only descriptions', () => {
+    const window = buildTaskStateMap([assistant([update('9', { status: 'in_progress' })]) as unknown as Loose])!
+    const merged = mergeTaskList(
+      snap([
+        { id: '9', subject: 'real subject', status: 'in_progress', stale: false, description: 'real desc' },
+        { id: '10', subject: 'snapshot only', status: 'pending', stale: false, description: 'snapshot desc' },
+      ]),
+      window,
+    )
+    expect(merged.get('9')!.description).toBe('real desc')
+    expect(merged.get('10')!.description).toBe('snapshot desc')
+  })
+
+  it('window description wins over the snapshot (freshest events)', () => {
+    const window = buildTaskStateMap([
+      assistant([create('c1', 'Deploy', { description: 'window desc' })]),
+      toolResult('c1', 'Task #1 created successfully: Deploy'),
+    ] as unknown as Loose[])!
+    const merged = mergeTaskList(
+      snap([{ id: '1', subject: 'Deploy', status: 'pending', stale: false, description: 'snapshot desc' }]),
+      window,
+    )
+    expect(merged.get('1')!.description).toBe('window desc')
   })
 
   it('snapshot fills ids the window cannot see entirely', () => {

@@ -47,6 +47,7 @@ export function deriveTaskListFromLines(lines: readonly unknown[]): TasklistSnap
     out.push({
       id: t.id,
       subject: t.subject,
+      ...(t.description !== undefined ? { description: t.description } : {}),
       status: t.status,
       ...(t.activeForm !== undefined ? { activeForm: t.activeForm } : {}),
       stale: resolved && t.lastTouched < boundary,
