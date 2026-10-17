@@ -18,7 +18,6 @@ import { formatTokens } from '../../utils/format'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { useCountUp } from '../../hooks/useCountUp'
 import { usePhaseDwell } from '../../hooks/usePhaseDwell'
-import { IconClock } from '../icons/ToolIcons'
 import { SubagentSwarmPill } from './SubagentSwarm'
 
 /** Stable empty fallback so the `activeSubagents ?? …` default doesn't hand a
@@ -69,8 +68,6 @@ function RetryLabel({ msg }: { msg: SdkMessage }) {
   const attempt = m.attempt ?? 0
   const maxRetries = m.max_retries ?? 0
   const delayMs = m.retry_delay_ms ?? 0
-  const errorStatus = m.error_status
-  const errorKind = m.error ?? 'unknown'
 
   // We hold an absolute `deadline` and a ticking `now` in a single state
   // object so a fresh frame updates both together — no render where
@@ -118,31 +115,25 @@ function RetryLabel({ msg }: { msg: SdkMessage }) {
   const remainingMs = Math.max(0, state.deadline - state.now)
   const seconds = Math.ceil(remainingMs / 1000)
 
-  const label = errorStatus === 429
-    ? 'rate limited'
-    : errorStatus === 529
-      ? 'overloaded'
-      : errorKind === 'server_error'
-        ? 'server error'
-        : 'retrying'
-  // Once we've ticked down to 0 the next attempt is mid-flight; "now" is
-  // more honest than "in 0s".
-  const phase = seconds > 0 ? `retrying in ${seconds}s` : 'retrying now'
+  // Pill content: wait time + attempt count ONLY ("26s 7/10") — the amber
+  // pill styling (and the bar's aria-label) carries the "retrying" meaning,
+  // so no kind text, no icon. Once we've ticked down to 0 the next attempt
+  // is mid-flight; it shows "0s" until the frame is replaced or cleared.
   // Suppress the "/0" tail when max_retries is missing — better to show
   // just the attempt number than a nonsense fraction.
-  const attemptText =
-    maxRetries > 0 ? `attempt ${attempt}/${maxRetries}` : `attempt ${attempt}`
+  const waitText = `${seconds}s`
+  const attemptText = maxRetries > 0 ? `${attempt}/${maxRetries}` : `${attempt}`
   return (
-    <>
-      {/* The working bar is an aria-live region: the ticking phase span is
-          aria-hidden so a mutating "retrying in 30s" → "29s" → … doesn't
-          re-announce the whole label once per second for the entire backoff
-          window. The static parts (kind, attempt) still announce once on
-          state entry, and the bar's own aria-label carries the state for
-          direct queries. */}
-      <IconClock size={12} aria-hidden /> {label}{' '}
-      <span aria-hidden="true">— {phase} ·</span> {attemptText}
-    </>
+    <span className="working-bar-label working-retry-pill">
+      {/* Static kind word, screen-reader-only: the live region announces
+          changed CONTENT (not the bar's aria-label), so without this the
+          only announcement on state entry would be the bare "1/3" fraction.
+          The ticking countdown span below is aria-hidden so a mutating
+          "26s" → "25s" → … doesn't re-announce the pill once per second;
+          the attempt count still announces when a fresh frame lands. */}
+      <span className="sr-only">retrying </span>
+      <span aria-hidden="true">{waitText}</span> {attemptText}
+    </span>
   )
 }
 
@@ -280,9 +271,12 @@ export const WorkingBubble = memo(function WorkingBubble({
         </div>
       )}
       {!idle && (
-        <span key={labelKey} className="working-bar-label">
-          {retrying && apiRetry ? <RetryLabel msg={apiRetry} /> : labelText}
-        </span>
+        retrying && apiRetry
+          // The retry pill replaces the phase label outright (nothing streams
+          // during the wait, so the phase is stale) and carries its own
+          // working-bar-label class so the entrance crossfade still plays.
+          ? <RetryLabel key={labelKey} msg={apiRetry} />
+          : <span key={labelKey} className="working-bar-label">{labelText}</span>
       )}
       {/* The turn timer is only meaningful while the turn is active; hide it
           in the Waiting state (the parent turn has ended). The swarm pill's

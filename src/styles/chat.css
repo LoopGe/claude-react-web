@@ -2686,19 +2686,23 @@ button.chat-empty-env-chip:hover {
     transform: translateY(0);
   }
 }
-/* Elapsed-time label. Font-variant-numeric: tabular-nums keeps digits
-   from jumping around as seconds tick over ?the badge width stays
+/* Elapsed-time label and retry pill share one chip anatomy (mono digits,
+   pill radius, tight padding). Font-variant-numeric: tabular-nums keeps
+   digits from jumping around as seconds tick over — the badge width stays
    constant. */
-.working-timer {
-  color: var(--accent-text);
+.working-timer,
+.working-retry-pill {
   font-family: var(--mono);
   font-size: var(--fs-sm);
   font-weight: 500;
   letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   padding: 1px 6px;
   border-radius: var(--radius-pill);
+}
+.working-timer {
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   text-transform: none;
 }
 /* Live output token rate badge, shown next to the working timer.
@@ -2779,15 +2783,15 @@ button.chat-empty-env-chip:hover {
 }
 
 /* Retry state: an `api_retry` frame is in flight (429/529 auto-retry). The
-   retry countdown replaces the phase label (nothing streams during the
-   wait, so the phase is stale) and reads as amber — the same warn tier the
-   old transcript divider used, so the color carries the severity.
-   tabular-nums (same reason as .working-timer): the seconds tick every
-   second, and proportional digits would change the label width per tick,
-   visibly shifting the adjacent timer / rate / swarm pill. */
-.working-bar-retry .working-bar-label {
+   retry pill replaces the phase label (nothing streams during the wait, so
+   the phase is stale) and shows ONLY the wait time + attempt count
+   ("26s 7/10"). Amber — the same warn tier the old transcript divider used,
+   so the color carries the severity. Chip anatomy is shared with
+   .working-timer above. */
+.working-retry-pill {
   color: var(--warn-text);
-  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--warn) 14%, var(--bg-elev));
+  white-space: nowrap;
 }
 
 /* Idle-with-tasks: the turn has fully ended and nothing is actively working —
