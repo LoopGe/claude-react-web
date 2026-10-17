@@ -2689,7 +2689,11 @@ export function App() {
       .filter(Boolean) as { id: string; session: SessionInfo; rect: DOMRect }[]
     if (snapshots.length === 0) return
     setClosingPanels((prev) => [...prev, ...snapshots])
-  }, [openIds, bodyRef])
+    // `panelCache` in the deps only re-runs this on cache churn with `gone`
+    // empty (early return above) — the ghost decision itself always
+    // co-occurs with an openIds change; listing it keeps exhaustive-deps
+    // honest about the closure read.
+  }, [openIds, panelCache, bodyRef])
 
   // ── Panel swap animation ─────────────────────────────────────────────
   // animatePanels is called AFTER a state update (swapPanels / handleReorderInGroup).

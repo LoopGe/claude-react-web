@@ -4394,11 +4394,12 @@ describe('collapsed scroller (keep-alive hidden panel)', () => {
     act(() => { fireResize(scroller) })
     expect(Element.prototype.scrollTo).not.toHaveBeenCalled()
 
-    // Hide: geometry collapses (display:none). Regression pin: today this
-    // passes because syncBottomState's disable-now branch re-writes
-    // atBottomRef false after the 0×0 geometry briefly flipped it true;
-    // the collapsed-scroller guard in syncBottomGeometry makes the stand-
-    // down explicit instead of incidental.
+    // Hide: geometry collapses (display:none). Post-guard, this passes
+    // because syncBottomGeometry returns early on clientHeight === 0
+    // before any state flip. Pre-guard (the regression this pins), it
+    // passed only incidentally — the disable-now branch's second
+    // setBottomState(false) override — so a future edit to that branch
+    // must not silently reintroduce writes-while-collapsed.
     virtuosoMockState.scrollHeight = 0
     virtuosoMockState.clientHeight = 0
     act(() => { fireResize(scroller) })
