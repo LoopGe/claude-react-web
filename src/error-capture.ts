@@ -81,6 +81,10 @@ export function crashFrom(kind: CrashKind, error: unknown): CrashRecord {
 export function recordCrash(crash: CrashRecord): CrashRecord {
   lastCrash = crash
   window.__crwLastError = crash
+  // No explicit console-capture funnel here: in dev the always-on console
+  // hook (main.tsx) captures this very console.error call as the crash's
+  // single ring entry — an explicit recordConsoleEntry on top would
+  // double-record the same crash into two ring slots.
   console.error(
     `[error-capture] ${crash.kind}: ${crash.message}`,
     crash.componentStack ? `\ncomponentStack:\n${crash.componentStack}` : '',

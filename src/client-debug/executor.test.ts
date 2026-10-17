@@ -9,7 +9,9 @@ import {
   DOM_EVAL_RESULT_CAP,
   DOM_QUERY_HTML_CAP,
   DOM_SCREENSHOT_URL_CAP,
+  type ConsoleReadResult,
 } from '../../shared/client-debug.js'
+import { installConsoleCapture, resetConsoleForTests } from './console-buffer'
 import {
   buildScreenshotResult,
   clampRasterSize,
@@ -183,5 +185,53 @@ describe('executeClientDebugOp dispatch', () => {
 
   it('rejects missing params', async () => {
     await expect(executeClientDebugOp('dom_query', {} as never)).rejects.toThrow(/selector/i)
+  })
+
+  it('routes console_read to the capture ring (with filters)', async () => {
+    resetConsoleForTests()
+    try {
+      installConsoleCapture()
+      console.warn('disk almost full')
+      console.debug('noise')
+      const res = (await executeClientDebugOp('console_read', {
+        level: 'warn',
+      })) as ConsoleReadResult
+      expect(res.entries).toHaveLength(1)
+      expect(res.entries[0]).toMatchObject({ level: 'warn', args: ['disk almost full'] })
+      expect(res.total).toBe(2)
+      expect(res.dropped).toBe(0)
+    } finally {
+      resetConsoleForTests()
+    }
+  })
+
+  it('console_read applies the default limit of 200 (server logs-tool discipline)', async () => {
+    resetConsoleForTests()
+    try {
+      installConsoleCapture()
+      for (let i = 0; i < 300; i++) console.info(`m${i}`)
+      const res = (await executeClientDebugOp('console_read', {})) as ConsoleReadResult
+      expect(res.entries).toHaveLength(200)
+      expect(res.entries[0]!.args[0]).toBe('m100') // NEWEST 200 kept
+      expect(res.total).toBe(300)
+    } finally {
+      resetConsoleForTests()
+    }
+  })
+
+  it('console_read validates its params like every other op', async () => {
+    resetConsoleForTests()
+    installConsoleCapture() // param checks must outrank the not-installed guard
+    await expect(executeClientDebugOp('console_read', { limit: 0 })).rejects.toThrow(/limit/i)
+    await expect(executeClientDebugOp('console_read', { limit: 1.5 })).rejects.toThrow(/limit/i)
+    await expect(executeClientDebugOp('console_read', { limit: 501 })).rejects.toThrow(/limit/i)
+    await expect(executeClientDebugOp('console_read', { since: Number.NaN })).rejects.toThrow(/since/i)
+    await expect(executeClientDebugOp('console_read', { level: 'nope' })).rejects.toThrow(/level/i)
+    await expect(executeClientDebugOp('console_read', { grep: 123 })).rejects.toThrow(/grep/i)
+  })
+
+  it('console_read REJECTS on a tab without the capture ring (broker failure-grace lets a healthy tab win)', async () => {
+    resetConsoleForTests() // no install — production-bundle shape
+    await expect(executeClientDebugOp('console_read', {})).rejects.toThrow(/not installed/i)
   })
 })

@@ -17,17 +17,23 @@
 // is a debug tool, not a pixel-perfect renderer.
 
 import {
+  CONSOLE_LEVELS,
+  CONSOLE_READ_DEFAULT_LIMIT,
+  CONSOLE_RING_CAP,
   DOM_EVAL_RESULT_CAP,
   DOM_QUERY_HTML_CAP,
   DOM_QUERY_TEXT_CAP,
   DOM_SCREENSHOT_URL_CAP,
   type ClientDebugNode,
   type ClientDebugOp,
+  type ConsoleReadParams,
+  type ConsoleReadResult,
   type DomComputedStylesResult,
   type DomEvalResult,
   type DomQueryResult,
   type DomScreenshotResult,
 } from '../../shared/client-debug.js'
+import { readConsoleBuffer } from './console-buffer.js'
 
 // --- shared helpers ---------------------------------------------------------
 
@@ -326,6 +332,44 @@ async function collectEval(params: Record<string, unknown>): Promise<DomEvalResu
   return { value: safeSerializeValue(await fn()) }
 }
 
+// --- console_read ----------------------------------------------------------------
+
+/** Validate + normalize console_read params. Every other op validates its
+ *  params client-side ("client-side validation is the authority") and this
+ *  one must too: a NaN `since` would silently match nothing, and a 0 /
+ *  negative / fractional `limit` would bypass the server tool's zod contract
+ *  (z.number().int().min(1).max(500)). A missing limit defaults to
+ *  CONSOLE_READ_DEFAULT_LIMIT, mirroring the server `logs` tool and bounding
+ *  the serialized answer. Level vocabulary comes from the shared
+ *  CONSOLE_LEVELS single source. */
+function collectConsoleRead(params: Record<string, unknown>): ConsoleReadResult {
+  // A tab without the ring (production client bundle) must FAIL the op, not
+  // answer a successful empty: the host broker's first-answer-wins would
+  // otherwise settle on the empty success and never open the failure-grace
+  // window that lets a healthy dev tab win.
+  if (!readConsoleBuffer({}).captureEnabled) {
+    throw new Error('console capture not installed in this tab (production client bundle)')
+  }
+  const level = params.level
+  if (level !== undefined && !(typeof level === 'string' && (CONSOLE_LEVELS as readonly string[]).includes(level))) {
+    throw new Error(`level must be one of ${CONSOLE_LEVELS.join('/')}`)
+  }
+  const { grep, since, limit } = params
+  if (grep !== undefined && typeof grep !== 'string') throw new Error('grep must be a string')
+  if (since !== undefined && !(typeof since === 'number' && Number.isFinite(since))) {
+    throw new Error('since must be a finite number')
+  }
+  if (limit !== undefined && !(typeof limit === 'number' && Number.isInteger(limit) && limit >= 1 && limit <= CONSOLE_RING_CAP)) {
+    throw new Error(`limit must be an integer between 1 and ${CONSOLE_RING_CAP}`)
+  }
+  return readConsoleBuffer({
+    level: level as ConsoleReadParams['level'],
+    grep: grep as string | undefined,
+    since: since as number | undefined,
+    limit: (limit as number | undefined) ?? CONSOLE_READ_DEFAULT_LIMIT,
+  })
+}
+
 // --- dispatcher ---------------------------------------------------------------
 
 /** Run one client-debug op against this tab's document. Throws presentable
@@ -341,6 +385,8 @@ export async function executeClientDebugOp(op: ClientDebugOp, params: Record<str
       return collectScreenshot(params)
     case 'dom_eval':
       return collectEval(params)
+    case 'console_read':
+      return collectConsoleRead(params)
     default:
       throw new Error(`unknown op ${JSON.stringify(String(op))}`)
   }

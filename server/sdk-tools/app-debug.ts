@@ -26,7 +26,8 @@ import { tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 import type { FirstPartyToolServer } from './types.js'
 import { ok, guard, json } from './call-result.js'
 import type { DebugSessionDetail, DebugSessionSummary } from '../session-types.js'
-import type { ClientDebugOp, DomComputedStylesParams, DomEvalParams, DomQueryParams, DomScreenshotParams } from '../../shared/client-debug.js'
+import type { ClientDebugOp, ConsoleReadParams, DomComputedStylesParams, DomEvalParams, DomQueryParams, DomScreenshotParams } from '../../shared/client-debug.js'
+import { CONSOLE_LEVELS, CONSOLE_RING_CAP } from '../../shared/client-debug.js'
 import {
   getLogConfig,
   getLogFilePath,
@@ -54,6 +55,7 @@ export const DEBUG_READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'dom_query',
   'dom_computed_styles',
   'dom_screenshot',
+  'console_read',
 ])
 
 /** The slice of SessionManager the debug tools need. Declared structurally so
@@ -190,6 +192,21 @@ export function buildDebugTools(host: DebugHost): SdkMcpToolDefinition<any>[] {
       async (a) =>
         guard(async () =>
           json(await host.clientDebugRequest('dom_screenshot', a satisfies DomScreenshotParams)),
+        ),
+      { annotations: readOnly },
+    ),
+    tool(
+      'console_read',
+      'Read the connected browser tab\'s always-on console/error capture ring (dev-only; requires the web UI open). Captures console.debug/info/log/warn/error/trace calls plus uncaught crashes — error-capture logs each crash via console.error as `[error-capture] <kind>: …`, which is the crash\'s single ring entry — since that tab\'s page load, newest kept up to 500. Args are stored as passed: printf specifiers (%s/%d/…) are NOT interpolated. trace entries carry the caller stack in a dedicated `stack` field (excluded from grep and the args budget). Filters are ANDed and limit keeps the NEWEST N: level is a minimum severity; grep is case-insensitive over the joined formatted args; since is ts>=. Each tab owns its own ring and the rings DIVERGE (a crash in one tab is invisible to another); the answer comes from the FIRST tab that responds — a tab whose bundle lacks the ring FAILS the op instead of answering empty, so a healthy tab wins the race when one exists.',
+      {
+        level: z.enum(CONSOLE_LEVELS).optional(),
+        grep: z.string().optional(),
+        since: z.number().optional(),
+        limit: z.number().int().min(1).max(CONSOLE_RING_CAP).optional(),
+      },
+      async (a) =>
+        guard(async () =>
+          json(await host.clientDebugRequest('console_read', a satisfies ConsoleReadParams)),
         ),
       { annotations: readOnly },
     ),

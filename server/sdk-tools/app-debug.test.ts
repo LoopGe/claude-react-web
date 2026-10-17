@@ -60,20 +60,20 @@ beforeEach(() => {
 })
 
 describe('appdebug tool surface', () => {
-  it('exposes exactly the 11 declared tools', () => {
+  it('exposes exactly the 12 declared tools', () => {
     expect(buildDebugTools(host as unknown as DebugHost).map((t) => t.name)).toEqual([
       'logs', 'metrics', 'sessions', 'session',
-      'dom_query', 'dom_computed_styles', 'dom_screenshot',
+      'dom_query', 'dom_computed_styles', 'dom_screenshot', 'console_read',
       'set_log', 'set_cli_debug', 'send_message', 'dom_eval',
     ])
   })
 
-  it('declares exactly the 7 read tools read-only, and they carry the annotation', () => {
+  it('declares exactly the 8 read tools read-only, and they carry the annotation', () => {
     expect([...DEBUG_READ_ONLY_TOOLS].sort()).toEqual([
-      'dom_computed_styles', 'dom_query', 'dom_screenshot', 'logs', 'metrics', 'session', 'sessions',
+      'console_read', 'dom_computed_styles', 'dom_query', 'dom_screenshot', 'logs', 'metrics', 'session', 'sessions',
     ])
     const tools = buildDebugTools(host as unknown as DebugHost)
-    for (const readOnlyName of ['logs', 'metrics', 'sessions', 'session', 'dom_query', 'dom_computed_styles', 'dom_screenshot']) {
+    for (const readOnlyName of ['logs', 'metrics', 'sessions', 'session', 'dom_query', 'dom_computed_styles', 'dom_screenshot', 'console_read']) {
       expect(tools.find((t) => t.name === readOnlyName)!.annotations?.readOnlyHint).toBe(true)
     }
     for (const writeName of ['set_log', 'set_cli_debug', 'send_message', 'dom_eval']) {
@@ -87,7 +87,7 @@ describe('appdebug tool surface', () => {
     expect(server.requiresCwd).toBe(false)
     expect(server.defaultEnabled).toBe(true)
     expect(server.mutatingToolNames).toBeUndefined()
-    expect(server.buildTools(null).map((t) => t.name)).toHaveLength(11)
+    expect(server.buildTools(null).map((t) => t.name)).toHaveLength(12)
   })
 })
 
@@ -234,6 +234,19 @@ describe('client-debug dom tools', () => {
     const res = await callTool('dom_eval', { code: '2+2' })
     expect(host.clientDebugRequest).toHaveBeenCalledWith('dom_eval', { code: '2+2' })
     expect(JSON.parse(firstText(res))).toEqual({ value: 4 })
+  })
+
+  it('console_read forwards its filters to the host and returns the JSON result', async () => {
+    host.clientDebugRequest.mockResolvedValue({
+      entries: [{ seq: 1, ts: 1, level: 'error', args: ['boom'] }],
+      total: 1,
+      dropped: 0,
+    })
+    const res = await callTool('console_read', { level: 'error', grep: 'boom', limit: 5 })
+    expect(host.clientDebugRequest).toHaveBeenCalledWith('console_read', {
+      level: 'error', grep: 'boom', limit: 5,
+    })
+    expect(JSON.parse(firstText(res))).toMatchObject({ total: 1, dropped: 0 })
   })
 
   it('turns a client-side failure (no tab / timeout / executor error) into isError', async () => {

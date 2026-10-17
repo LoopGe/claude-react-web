@@ -71,12 +71,12 @@ describe('enableDevMode', () => {
     expect(registry.list()).toHaveLength(2)
   })
 
-  it('registers the 7 read tools as read-only and injects with no cwd', () => {
+  it('registers the 8 read tools as read-only and injects with no cwd', () => {
     const registry = new FirstPartyToolRegistry()
     enableDevMode({ registry, sm: fakeHost() })
     const server = registry.get(DEBUG_TOOLS_SERVER_NAME)!
     expect([...server.readOnlyToolNames!].sort()).toEqual([
-      'dom_computed_styles', 'dom_query', 'dom_screenshot', 'logs', 'metrics', 'session', 'sessions',
+      'console_read', 'dom_computed_styles', 'dom_query', 'dom_screenshot', 'logs', 'metrics', 'session', 'sessions',
     ])
     // requiresCwd:false → injected even without a cwd.
     const injected = registry.injectAll(null, (n) => n === DEBUG_TOOLS_SERVER_NAME)

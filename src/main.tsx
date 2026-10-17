@@ -9,11 +9,20 @@ import { PluginRegistryProvider } from './app-plugins/PluginRegistryProvider'
 import { PluginCommandResultHost } from './app-plugins/PluginCommandResultHost'
 import { installGlobalErrorCapture, rootCallbacks } from './error-capture'
 import { RootErrorBoundary } from './error-capture-boundary'
+import { installConsoleCapture } from './client-debug/console-buffer'
 // KaTeX math styles must load BEFORE styles.css so the theme sizing
 // overrides in messages.css (`.md .katex`, `.md .katex-display`) win the
 // equal-specificity cascade.
 import 'katex/dist/katex.min.css'
 import './styles.css'
+
+// Always-on console capture: must install BEFORE installGlobalErrorCapture so
+// the capture layer's own console.error output lands in the ring too. Zero
+// steady-state cost — the hooks only run when console.* is actually called.
+// Queried live by the dev-only `appdebug` console_read tool, which exists only
+// under dev-mode — gate on DEV so a production bundle pays nothing and retains
+// no ring a reader could never reach.
+if (import.meta.env.DEV) installConsoleCapture()
 
 // Passive error capture: catches render crashes (root boundary + fallback
 // card), React 19 createRoot errors, and window-level error/rejection events
