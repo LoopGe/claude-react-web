@@ -75,6 +75,12 @@ const virtuosoMockState = vi.hoisted(() => ({
   // Captures the `rangeChanged` prop so a test can drive it the way real
   // Virtuoso does when its RENDERED window shifts.
   rangeChanged: undefined as ((range: { startIndex: number; endIndex: number }) => void) | undefined,
+  // Wiring locks for the scroll-jitter fix (row-height-cache): the mock can't
+  // run Virtuoso's estimate consumption or the custom Item measurement, so it
+  // records the props instead and a test asserts they are still passed —
+  // dropping either prop would silently undo the fix while tests stay green.
+  lastHeightEstimates: undefined as number[] | undefined,
+  lastItemComponent: undefined as React.ComponentType | undefined,
   // When false the mock renders the item-list element WITHOUT any rows — the
   // "mounted but not yet measured" phase real Virtuoso goes through while its
   // listState is still empty (and, before the hide-flip lands, while the list
@@ -95,6 +101,7 @@ vi.mock('react-virtuoso', async () => {
       itemContent,
       firstItemIndex = 0,
       components,
+      heightEstimates,
       scrollerRef,
       atBottomStateChange,
       followOutput,
@@ -105,7 +112,8 @@ vi.mock('react-virtuoso', async () => {
       data: unknown[]
       itemContent: (index: number, item: unknown) => React.ReactNode
       firstItemIndex?: number
-      components?: { Footer?: React.ComponentType }
+      components?: { Footer?: React.ComponentType; Item?: React.ComponentType }
+      heightEstimates?: number[]
       scrollerRef?: (ref: HTMLElement | Window | null) => void
       atBottomStateChange?: (atBottom: boolean) => void
       followOutput?: (atBottom: boolean) => 'smooth' | 'auto' | false
@@ -115,6 +123,8 @@ vi.mock('react-virtuoso', async () => {
     }) => {
       virtuosoMockState.lastIncreaseViewportBy = increaseViewportBy
       virtuosoMockState.rangeChanged = rangeChanged
+      virtuosoMockState.lastHeightEstimates = heightEstimates
+      virtuosoMockState.lastItemComponent = components?.Item
       // Track `data` identity transitions so tests can assert the overlay
       // stability / inline rebuild contract: `dataIdentities` grows by one
       // entry per DISTINCT array identity the mock receives.
@@ -999,6 +1009,29 @@ describe('MessageList', () => {
     const overscan = virtuosoMockState.lastIncreaseViewportBy
     expect(typeof overscan).toBe('object')
     expect((overscan as { top: number }).top).toBeGreaterThan(0)
+  })
+
+  it('wires the height-estimate cache into Virtuoso (Item + heightEstimates)', () => {
+    // Wiring lock for the scroll-jitter fix (row-height-cache.ts): the mock
+    // can't exercise Virtuoso's estimate consumption or the custom Item's
+    // measurement, so assert the props are still passed. Dropping either one
+    // (a refactor of virtuosoComponents, say) would silently restore the
+    // probe-default jitter while every behavioural test stays green.
+    render(
+      <MessageList
+        items={toItems([
+          makeMsg('assistant', { uuid: 'm-0', message: { content: [{ type: 'text', text: 'hi' }] } }),
+        ] as SdkMessage[])}
+      />,
+    )
+    // memo() returns an object ExoticComponent, not a function.
+    expect(virtuosoMockState.lastItemComponent).toBeDefined()
+    const estimates = virtuosoMockState.lastHeightEstimates
+    expect(Array.isArray(estimates)).toBe(true)
+    // One entry per data item — DATA-space (Virtuoso applies the
+    // firstItemIndex offset itself).
+    expect(estimates!.length).toBeGreaterThan(0)
+    estimates!.forEach((h) => expect(h).toBeGreaterThan(0))
   })
 
   it('reveals filtered subagent transcripts when keyed', async () => {

@@ -8,7 +8,9 @@
 // carries the complete content, so showing both just flickers).
 
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso'
+import { MeasuredItem } from './message-list/MeasuredItem'
+import { lookupRowHeight, ROW_HEIGHT_FALLBACK_PX } from '../utils/row-height-cache'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import { TaskInfoProvider } from '../hooks/useTaskInfo'
@@ -1331,8 +1333,28 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // breathing room. The bottom overlay stack (live streaming bubble + task
   // cards) is an overlay, so the spacer lets settled messages scroll underneath
   // it instead of being obscured.
+  // Per-row height estimates feeding Virtuoso's `heightEstimates` — the
+  // measured-height cache (see row-height-cache.ts for the consumption
+  // semantics). DATA-space indexed (the library applies the firstItemIndex
+  // offset internally; verified against 4.18.6), one entry per data item.
+  // Consumed by Virtuoso only while its size tree is empty — i.e. at the
+  // remount boundaries this cache exists for; mid-mount re-renders drop the
+  // array (harmless: Virtuoso's own size cache covers that case).
+  const heightEstimates: number[] = useMemo(
+    () =>
+      virtuosoData.map((item) => {
+        const cached = 'kind' in item ? undefined : lookupRowHeight(item.id)
+        return cached ?? ROW_HEIGHT_FALLBACK_PX
+      }),
+    [virtuosoData],
+  )
+
   const virtuosoComponents = useMemo(() => {
-    const components: Record<string, () => React.ReactElement> = {}
+    const components: Components<VirtuosoItem> = {}
+    // Wrapper that records measured row heights into the cache. Module-scope
+    // component (identity-stable), so this memo re-creating the object never
+    // remounts items.
+    components.Item = MeasuredItem as Components<VirtuosoItem>['Item']
     if (bottomStackHeight > 0) {
       components.Footer = () => (
         <BottomOverlaySpacer height={bottomStackHeight} />
@@ -1403,6 +1425,16 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           itemContent={itemContent}
           computeItemKey={computeItemKey}
           components={virtuosoComponents}
+          heightEstimates={heightEstimates}
+          // Report item-size changes synchronously inside the ResizeObserver
+          // callback instead of deferring one frame. The default deferral is
+          // the visible half of the scroll-up jitter: a row mounts, the frame
+          // PAINTS with the stale estimate, and only the next frame's rAF
+          // applies the corrected size + compensating scrollBy — one visible
+          // bounce per row mount, ~±20-95px measured. Sync reporting lands
+          // the size change and its compensation before paint (RO callbacks
+          // run in the rendering steps), so the correction is invisible.
+          skipAnimationFrameInResizeObserver
           // Pre-render ~600px of items on BOTH sides of the fold.
           //
           // bottom: a new tail item (e.g. a tool card arriving mid-stream)
