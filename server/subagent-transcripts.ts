@@ -45,6 +45,42 @@ export function isRenderableSubagentLine(o: RawLine): boolean {
   return false
 }
 
+/** Filter + normalize ONE parsed raw line. Returns undefined for
+ *  non-renderable lines. Shared by readSubagentTranscript and the hub tail. */
+export function normalizeSubagentLine(o: RawLine, sessionId: string): unknown | undefined {
+  if (!isRenderableSubagentLine(o)) return undefined
+  return normalize(o, sessionId, true)
+}
+
+/** Split a raw chunk into its COMPLETE lines plus the trailing partial (a
+ *  line not yet terminated by `\n`). Shared by readSubagentTranscript and
+ *  the hub (seed + tail) so all three agree on what "consumed" means: a
+ *  partial line is never rendered, it stays pending until its `\n` lands. */
+export function splitCompleteLines(chunk: string): { lines: string[]; partial: string } {
+  const lines = chunk.split('\n')
+  const partial = chunk.endsWith('\n') ? '' : (lines.pop() ?? '')
+  return { lines, partial }
+}
+
+/** Parse + normalize a chunk's complete lines, skipping blanks and corrupt
+ *  JSON (the history parser's tolerance). Shared kernel of the full read
+ *  and the hub's incremental tail. */
+export function parseSubagentLines(lines: string[], sessionId: string): unknown[] {
+  const out: unknown[] = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    let o: RawLine
+    try {
+      o = JSON.parse(line) as RawLine
+    } catch {
+      continue // corrupt line — skip, same as the history parser's tolerance
+    }
+    const f = normalizeSubagentLine(o, sessionId)
+    if (f !== undefined) out.push(f)
+  }
+  return out
+}
+
 /** Read + normalize one subagent's full transcript. Returns [] for a
  *  missing file (the dialog renders its "No transcript on disk" state) —
  *  a missing subagent transcript is the ordinary no-output case, not an
@@ -62,17 +98,5 @@ export async function readSubagentTranscript(sessionId: string, agentId: string)
     log.warn(`read failed session=${sessionId} agent=${agentId}: ${e.message ?? err}`)
     throw err
   }
-  const out: unknown[] = []
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
-    let o: RawLine
-    try {
-      o = JSON.parse(line) as RawLine
-    } catch {
-      continue // corrupt line — skip, same as the history parser's tolerance
-    }
-    if (!isRenderableSubagentLine(o)) continue
-    out.push(normalize(o, sessionId, true))
-  }
-  return out
+  return parseSubagentLines(splitCompleteLines(raw).lines, sessionId)
 }

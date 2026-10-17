@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { isRenderableSubagentLine, readSubagentTranscript, subagentTranscriptPath, resolveSubagentDir } from './subagent-transcripts.js'
+import { isRenderableSubagentLine, normalizeSubagentLine, readSubagentTranscript, subagentTranscriptPath, resolveSubagentDir } from './subagent-transcripts.js'
 
 // 形状取自真实磁盘文件(spike 验证:所有行 isSidechain:true,
 // 噪声类型 attachment/api-request*,isMeta 只出现在 user 行)。
@@ -64,6 +64,24 @@ describe('isRenderableSubagentLine', () => {
   })
   it('keeps tool_result user lines (no interrupt placeholder)', () => {
     expect(isRenderableSubagentLine({ type: 'user', isSidechain: true, message: { content: [{ type: 'tool_result', tool_use_id: 't' }] } })).toBe(true)
+  })
+})
+
+describe('normalizeSubagentLine', () => {
+  it('returns undefined for noise lines (isMeta / attachment / api-request)', () => {
+    expect(normalizeSubagentLine({ type: 'attachment', attachmentName: 'x' }, SID)).toBeUndefined()
+    expect(normalizeSubagentLine({ type: 'api-request', request: {} }, SID)).toBeUndefined()
+    expect(normalizeSubagentLine({ isSidechain: true, isMeta: true, type: 'user', message: { content: '<local-command>' } }, SID)).toBeUndefined()
+  })
+  it('returns the normalized wire frame for a renderable user line', async () => {
+    const raw = JSON.parse(userLine('u1', 'review the diff')) as Parameters<typeof normalizeSubagentLine>[0]
+    const f = normalizeSubagentLine(raw, SID) as Record<string, unknown>
+    expect(f).toBeDefined()
+    expect(f.type).toBe('user')
+    expect(f.uuid).toBe('u1')
+    expect(f.restoredFromDisk).toBe(true)
+    // 与 readSubagentTranscript 完全一致(同一内核,非手写循环)
+    expect(f).toEqual(((await readSubagentTranscript(SID, AGENT)) as Array<Record<string, unknown>>)[0])
   })
 })
 
