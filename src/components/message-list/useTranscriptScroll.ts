@@ -537,6 +537,13 @@ export function useTranscriptScroll({
     modeWhenAway: BottomSyncMode = 'preserve',
   ) => {
     if (!el) return
+    // Collapsed scroller (clientHeight 0) = the panel is display:none in
+    // the keep-alive cache. Every distance reads 0 there — "at the bottom"
+    // — which the mode calculus below misreads (a bogus leave/restore, and
+    // a shrink-backstop scroll write). The browser preserves scrollTop
+    // across the hide and restores it on show (verified in-app), so the
+    // correct move is to stand down until the panel is visible again.
+    if (el.clientHeight === 0) return
     // ANIMATING: the viewport is intentionally not yet at the bottom. Don't let
     // that mid-animation gap arm the follow-disable debounce or flip
     // atBottomRef false (which would disarm the re-pin paths the animation
@@ -705,7 +712,11 @@ export function useTranscriptScroll({
       const shrunk = now < lastHeight
       lastHeight = now
       dbg('scroller-RO', () => ({ shrunk, atBottomRef: atBottomRef.current }))
-      if (shrunk && atBottomRef.current) {
+      // `current.clientHeight > 0`: never snap on the hide-flip — a
+      // display:none scroller reads scrollHeight 0, so this scrollTo would
+      // write scrollTop 0 on a collapsed box (and the follow invariant
+      // re-pins to the real bottom once the panel is shown again anyway).
+      if (shrunk && atBottomRef.current && current.clientHeight > 0) {
         scrollScrollerToBottom('auto')
       }
     })
