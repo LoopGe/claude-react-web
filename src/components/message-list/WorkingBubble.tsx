@@ -18,7 +18,7 @@ import { formatTokens } from '../../utils/format'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { useCountUp } from '../../hooks/useCountUp'
 import { usePhaseDwell } from '../../hooks/usePhaseDwell'
-import { IconClock, IconZap } from '../icons/ToolIcons'
+import { IconClock } from '../icons/ToolIcons'
 import { SubagentSwarmPill } from './SubagentSwarm'
 
 /** Stable empty fallback so the `activeSubagents ?? …` default doesn't hand a
@@ -295,7 +295,7 @@ export const WorkingBubble = memo(function WorkingBubble({
       )}
       {!waiting && !idle && tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
-          <IconZap size={12} aria-hidden /> {countRate} tok/s
+          {countRate} tok/s
         </span>
       )}
       {/* Redacted-thinking progress: no text deltas stream (tokenRate stays
@@ -303,7 +303,7 @@ export const WorkingBubble = memo(function WorkingBubble({
           marks it as an approximation of the current thinking block. */}
       {!waiting && !idle && thinkingTokens != null && thinkingTokens > 0 && tokenRate == null && (
         <span className="working-rate">
-          <IconZap size={12} aria-hidden /> ~{formatTokens(thinkingTokens)} tok
+          ~{formatTokens(thinkingTokens)} tok
         </span>
       )}
       {/* Divider between the status chrome (dots/label/timer/rate) and the
