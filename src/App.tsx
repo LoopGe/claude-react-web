@@ -12,6 +12,7 @@ import { ContextMenu } from './components/ContextMenu'
 import { DialogHosts } from './components/DialogHosts'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
+import { PANEL_CACHE_EXTRA, evictFromCache, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshotTop } from './utils/panel-cache'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -276,6 +277,18 @@ export function App() {
    *  snapshot of the SessionInfo at the moment the panel was removed so
    *  the closing ChatPanel can finish rendering + fading out. */
   const [closingPanels, setClosingPanels] = useState<{ id: string; session: SessionInfo; rect: DOMRect }[]>([])
+  /** Keep-alive cache: session ids whose panels stay MOUNTED (hidden via
+   *  PanelSlot's `hidden`) after leaving the open view, so a session switch
+   *  preserves scroll position, follow state, the Virtuoso window and the WS
+   *  subscription. LRU order, capped at maxOpen + PANEL_CACHE_EXTRA; synced
+   *  render-phase when openIds changes (see the entering-diff block) and
+   *  evicted explicitly on dismissal paths (closeSession / swapSession /
+   *  teardownRemovedSession / closeGroupPanels). Declared here — before the
+   *  swap/teardown/close callbacks that evict from it — because component
+   *  order is also declaration order for everything below.
+   *  readonly: mergeOpenIntoCache/evictFromCache return readonly arrays —
+   *  the state must accept them without a spread-copy. */
+  const [panelCache, setPanelCache] = useState<readonly string[]>([])
   const prevOpenIdsRef = useRef<string[]>([])
   /** Which of the open panels is currently focused (controls settings
    *  panel target + clears unread when selected). */
@@ -1463,6 +1476,10 @@ export function App() {
           return next
         })
         setOpenIds((prev) => prev.map((id) => (id === oldId ? newId : id)))
+        // X is dead server-side (/clear, fork, discard) — its cached panel
+        // would hold a stale store and subscription. Y joins the cache via
+        // the openIds render-phase sync.
+        setPanelCache((prev) => evictFromCache(prev, [oldId]))
         setFocusedId((prev) => (prev === oldId ? newId : prev))
         setGroups((prev) => inheritGroupId(prev, oldId, newId))
         setSidebarOrder((prev) => inheritSidebarOrderId(prev, oldId, newId))
@@ -1535,6 +1552,8 @@ export function App() {
       })
       setSessions((prev) => prev.filter((s) => s.id !== id))
       setOpenIds((prev) => prev.filter((x) => x !== id))
+      // Session gone server-side — its cached panel must go with it.
+      setPanelCache((prev) => evictFromCache(prev, [id]))
       setFocusedId((prev) => (prev === id ? null : prev))
       setLastSeenTurn((prev) => {
         if (!(id in prev)) return prev
@@ -1616,6 +1635,10 @@ export function App() {
       if (survivors.length > 0 && survivors.length !== prevOpen.length) {
         animatePanelsRef.current?.(...survivors)
       }
+      // Explicit dismissal: X-closing a panel also drops it from the
+      // keep-alive cache — a hidden zombie would keep its session store
+      // retained and its subscription pumping for a panel the user closed.
+      setPanelCache((prev) => evictFromCache(prev, [id]))
       setOpenIds((prev) => {
         const next = prev.filter((x) => x !== id)
         // Schedule the focusedId update inside this updater where
@@ -1644,6 +1667,10 @@ export function App() {
         groupSessionIds: group.sessionIds,
         focusedId: focusedIdRef.current,
       })
+      // Group deactivation is an explicit dismissal of every member panel
+      // that was open — same keep-alive eviction semantics as closeSession.
+      const closedIds = prevOpen.filter((id) => !nextOpen.includes(id))
+      if (closedIds.length > 0) setPanelCache((prev) => evictFromCache(prev, closedIds))
       // FLIP any surviving (non-group) panels into the freed space, mirroring
       // closeSession. When the group was the whole open set this is a no-op.
       if (nextOpen.length !== prevOpen.length) {
@@ -2571,6 +2598,20 @@ export function App() {
     [resolvedOpenIds, sessions],
   )
 
+  /** Sessions whose PanelSlot must render: the open view first, then cached
+   *  (hidden) ids. Open ids first keeps the visible panels' DOM order — and
+   *  grid auto-placement — stable while the cache churns behind them.
+   *  (panelCache itself is declared up with the other panel state — the
+   *  swap/teardown/close callbacks that evict from it sit above this
+   *  point.) */
+  const renderedSessions = useMemo(
+    () =>
+      renderedPanelIds(resolvedOpenIds, panelCache)
+        .map((id) => sessions.find((s) => s.id === id))
+        .filter((s): s is SessionInfo => !!s),
+    [resolvedOpenIds, panelCache, sessions],
+  )
+
   const updateSession = useCallback((s: SessionInfo) => {
     setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)))
   }, [])
@@ -2606,9 +2647,16 @@ export function App() {
     const prevIds = prevExitIdsRef.current
     const nextSet = new Set(openIds)
     prevExitIdsRef.current = openIds
-    const gone = prevIds
-      .filter((id) => !nextSet.has(id))
-      .map((id) => ({ id }))
+    // Keep-alive: an id that left the view but stayed in the cache is
+    // HIDDEN, not gone — no closing ghost (and its collapsed rect would
+    // snapshot a 0×0 box anyway). Only ids that left BOTH ghost. The
+    // closure reads this render's panelCache — evictions always co-occur
+    // with an openIds change, which re-runs this effect, so it is never
+    // stale where it matters.
+    const gone = ghostableIds(
+      prevIds.filter((id) => !nextSet.has(id)),
+      panelCache,
+    ).map((id) => ({ id }))
     // Swap-detection: suppress the closing-ghost ONLY for a true X→Y swap
     // (driven by `swapSession`, which marks the new id in `justSwappedInRef`).
     // A structural 1-for-1 check (gone==1 && added==1) would ALSO match
@@ -2641,7 +2689,11 @@ export function App() {
       .filter(Boolean) as { id: string; session: SessionInfo; rect: DOMRect }[]
     if (snapshots.length === 0) return
     setClosingPanels((prev) => [...prev, ...snapshots])
-  }, [openIds, bodyRef])
+    // `panelCache` in the deps only re-runs this on cache churn with `gone`
+    // empty (early return above) — the ghost decision itself always
+    // co-occurs with an openIds change; listing it keeps exhaustive-deps
+    // honest about the closure read.
+  }, [openIds, panelCache, bodyRef])
 
   // ── Panel swap animation ─────────────────────────────────────────────
   // animatePanels is called AFTER a state update (swapPanels / handleReorderInGroup).
@@ -2707,39 +2759,54 @@ export function App() {
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as openIdsRef etc.)
   animatePanelsRef.current = animatePanels
 
-  // Scroll-position protection for panel reorder. Reordering openIds moves the
-  // keyed <ChatPanel> DOM subtrees (React insertBefore), which can drop the
-  // Virtuoso scroller's scrollTop for any panel the user had scrolled up in.
-  // We snapshot each open panel's scrollTop right before the reorder and
-  // restore it in a layout effect after React commits the moved DOM, before
-  // paint. Idempotent: if the browser preserved scrollTop, the write is a no-op.
-  const pendingScrollRestoreRef = useRef<Map<string, number> | null>(null)
+  // Scroll-position memory for panel reorders AND the keep-alive cache.
+  // Both reordering openIds and switching sessions move the keyed
+  // <ChatPanel> DOM subtrees (React insertBefore), and Chromium DROPS a
+  // moved scroller's scrollTop — measured: a hidden-then-reshown panel
+  // comes back at 0 with zero JS scrollTop writes in between. The memory
+  // holds each VISIBLE panel's scrollTop, snapshotted in the render phase
+  // (BEFORE the DOM mutation — post-commit the offset is already gone) on
+  // every openIds change, and survives the panel's hidden period; the
+  // restore layout effect writes it back after commit, before paint.
+  // Idempotent: if the offset survived (no DOM move), the write is a no-op.
+  const panelScrollMemoryRef = useRef<Map<string, number> | null>(null)
 
+  /** Merge every VISIBLE panel's scrollTop into the scroll memory. Used by
+   *  the drag-reorder paths (right before their setOpenIds) — the
+   *  render-phase snapshot below runs on every openIds change anyway, so
+   *  these calls are redundant-but-harmless belt for non-openIds mutations. */
   const snapshotPanelScrolls = useCallback(() => {
     const bodyEl = bodyRef.current
     if (!bodyEl) return
-    const map = new Map<string, number>()
+    const mem = panelScrollMemoryRef.current ?? (panelScrollMemoryRef.current = new Map())
     for (const panel of bodyEl.querySelectorAll<HTMLElement>('[data-panel-id]')) {
       const id = panel.dataset.panelId
       if (!id) continue
       const scroller = panel.querySelector<HTMLElement>('.chat-virtuoso-scroller')
-      if (scroller) map.set(id, scroller.scrollTop)
+      // Visible scrollers only: a cached (display:none) panel's scroller is
+      // collapsed — scrollTop READS 0 there (snapshotting a hidden panel
+      // would clobber its remembered value).
+      const top = scroller != null ? scrollerSnapshotTop(scroller) : null
+      if (top != null) mem.set(id, top)
     }
-    pendingScrollRestoreRef.current = map
   }, [bodyRef])
 
   useLayoutEffect(() => {
-    const map = pendingScrollRestoreRef.current
-    if (!map) return
-    pendingScrollRestoreRef.current = null
+    const mem = panelScrollMemoryRef.current
     const bodyEl = bodyRef.current
-    if (!bodyEl) return
-    for (const [id, top] of map) {
+    if (!mem || !bodyEl) return
+    for (const [id, top] of mem) {
       const panel = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
       const scroller = panel?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
-      if (scroller && Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
+      // Restore onto a visible scroller only: writing scrollTop on a
+      // collapsed (display:none) scroller clamps to 0 and would clobber
+      // the remembered value. A re-shown panel whose content grew while
+      // hidden gets its remembered offset written first, then the follow
+      // invariant (real geometry, not collapsed) re-pins it if it was
+      // following.
+      if (scroller && scroller.clientHeight > 0 && Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
     }
-  }, [openIds, bodyRef])
+  }, [openIds, panelCache, bodyRef])
 
   const endPanelExit = useCallback((id: string) => {
     setClosingPanels((prev) => prev.filter((p) => p.id !== id))
@@ -2764,15 +2831,41 @@ export function App() {
   // handlePanelAnimEnd then forces a re-render so React's virtual DOM
   // reconciles and removes the class via its normal className commit.
   const enteringSetRef = useRef<Set<string>>(new Set())
-  /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection */
+  /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection + keep-alive cache sync */
   if (prevOpenIdsRef.current !== openIds) {
     const prevSet = new Set(prevOpenIdsRef.current)
+    // A re-entering id that is already in the cache is a keep-alive RE-SHOW,
+    // not a fresh mount: its panel never unmounted, so the entrance
+    // animation is suppressed (the instant appearance is the point).
+    const cachedSet = new Set(panelCache)
     for (const id of openIds) {
-      if (!prevSet.has(id)) {
+      if (!prevSet.has(id) && !cachedSet.has(id)) {
         enteringSetRef.current.add(id)
       }
     }
     prevOpenIdsRef.current = openIds
+    // Fold the new view into the cache (LRU head = the view; ids leaving the
+    // view keep their place behind it). Render-phase setState — the
+    // React-documented adjust-state-on-change pattern, same escape hatch as
+    // the diff above: the COMMITTED render must already see the updated
+    // cache, or a panel leaving the view would unmount for one render
+    // first. Idempotent by the ref guard; mergeOpenIntoCache returns the
+    // same reference when nothing changed.
+    const nextCache = mergeOpenIntoCache(panelCache, openIds, maxOpenRef.current + PANEL_CACHE_EXTRA)
+    if (nextCache !== panelCache) setPanelCache(nextCache)
+    // Scroll memory: snapshot every VISIBLE panel's scrollTop here in the
+    // render phase — BEFORE React commits, because committing this change
+    // reorders/moves/hides keyed PanelSlots and Chromium DROPS a moved
+    // scroller's offset (measured: re-shown panel at 0 with zero JS writes).
+    // The restore layout effect after commit writes the memory back; hidden
+    // panels keep their remembered value across the hidden period.
+    snapshotPanelScrolls()
+    const mem = panelScrollMemoryRef.current
+    if (mem) {
+      // Prune ids that left the cache (their panels unmount this commit).
+      const live = new Set<string>(nextCache)
+      for (const id of mem.keys()) if (!live.has(id)) mem.delete(id)
+    }
   }
   /* eslint-enable react-hooks/refs */
   // State nudge: incremented by handlePanelAnimEnd to force a re-render
@@ -4957,7 +5050,7 @@ export function App() {
           panelCount={openSessions.length || 1}
           style={{ gridTemplateColumns: gridTemplate }}
         >
-          {openSessions.length === 0 ? (
+          {openSessions.length === 0 && (
             <div className="empty-state app-empty-state">
               <p className="app-empty-state-eyebrow">Workspace ready</p>
               <h2>{sessions.length > 0 ? 'No session open' : 'Start a new session'}</h2>
@@ -4981,21 +5074,27 @@ export function App() {
                 Tip: press <kbd>Ctrl</kbd>+<kbd>K</kbd> anytime to jump to actions.
               </p>
             </div>
-          ) : (
-            // Flatten panels + dividers into a single children list. The grid
-            // template we built alternates fr / 4px tracks, so this order has
-            // to match or the columns will de-sync.
-            // eslint-disable-next-line react-hooks/refs -- intentional: entering flag read during render
-            openSessions.flatMap((s, i) => {
-              const entering = enteringSetRef.current.has(s.id)
-              const owningGroup = groups.find((g) => g.sessionIds.includes(s.id))
-              const clearing = clearingIds.has(s.id)
-              const node = (
+          )}
+          {/* Flatten panels + dividers into a single children list. The grid
+              template we built alternates fr / 4px tracks, so this order has
+              to match or the columns will de-sync — cached (display:none)
+              slots are skipped by grid auto-placement wherever they sit. */}
+          {/* eslint-disable-next-line react-hooks/refs -- intentional: entering flag read during render */}
+          {renderedSessions.flatMap((s) => {
+            // Visible index drives everything positional (slot pill number,
+            // composer focus signal, divider adjacency/drag index); cached
+            // panels render hidden and take no grid track.
+            const openIdx = resolvedOpenIds.indexOf(s.id)
+            const visible = openIdx >= 0
+            const entering = enteringSetRef.current.has(s.id)
+            const owningGroup = groups.find((g) => g.sessionIds.includes(s.id))
+            const clearing = clearingIds.has(s.id)
+            const node = (
                 // Per-panel ErrorBoundary: if one panel's render throws
                 // (e.g. a malformed assistant message), the other open
                 // panels and the sidebar keep working. children identity
                 // changes on prop updates, so a recovered render auto-clears.
-                <PanelSlot key={s.id}>
+                <PanelSlot key={s.id} hidden={!visible}>
                   <ErrorBoundary key={s.id}>
                     <ChatPanel
                       session={s}
@@ -5003,8 +5102,8 @@ export function App() {
                       globalPrefs={globalPrefs}
                       clearing={clearing}
                       hasUnread={!!unread[s.id]}
-                      slot={i + 1}
-                      composerFocusSignal={panelFocusSignals[i]}
+                      slot={visible ? openIdx + 1 : 0}
+                      composerFocusSignal={visible ? panelFocusSignals[openIdx] : undefined}
                       showSlotHints={heldModifiers.ctrlOrMeta}
                       entering={entering}
                       onAnimEnd={entering ? handlePanelAnimEnd : undefined}
@@ -5074,44 +5173,46 @@ export function App() {
                   </ErrorBoundary>
                 </PanelSlot>
               )
-              if (i === openSessions.length - 1) return [node]
-              return [
-                node,
-                <div
-                  key={`divider-${s.id}`}
-                  className={`panel-divider ${draggingDivider === i ? 'dragging' : ''}`}
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="Resize panel"
-                  onMouseDown={onDividerMouseDown(i)}
-                  onKeyDown={onPanelDividerKeyDown(i)}
-                  onDoubleClick={() => setPanelRatios(Object.fromEntries(resolvedOpenIds.map((id) => [id, 1])))}
-                  title="Drag to resize · double-click to reset"
-                  tabIndex={0}
-                />,
-              ]
-            }).concat(
-              // Closing panels: lightweight ghost that fades out at the
-              // panel's last known position. onAnimationEnd removes it.
-              closingPanels.map((cp) => (
-                <div
-                  key={`closing-${cp.id}`}
-                  className="chat-panel-slot exiting"
-                  style={{ top: cp.rect.y, left: cp.rect.x, width: cp.rect.width, height: cp.rect.height }}
-                  onAnimationEnd={() => endPanelExit(cp.id)}
+            // Divider only after a VISIBLE panel that is not the last
+            // visible one. Hidden (display:none) slots render no divider
+            // and are skipped by grid auto-placement wherever they sit.
+            if (!visible || openIdx === resolvedOpenIds.length - 1) return [node]
+            return [
+              node,
+              <div
+                key={`divider-${s.id}`}
+                className={`panel-divider ${draggingDivider === openIdx ? 'dragging' : ''}`}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize panel"
+                onMouseDown={onDividerMouseDown(openIdx)}
+                onKeyDown={onPanelDividerKeyDown(openIdx)}
+                onDoubleClick={() => setPanelRatios(Object.fromEntries(resolvedOpenIds.map((id) => [id, 1])))}
+                title="Drag to resize · double-click to reset"
+                tabIndex={0}
+              />,
+            ]
+          }).concat(
+            // Closing panels: lightweight ghost that fades out at the
+            // panel's last known position. onAnimationEnd removes it.
+            closingPanels.map((cp) => (
+              <div
+                key={`closing-${cp.id}`}
+                className="chat-panel-slot exiting"
+                style={{ top: cp.rect.y, left: cp.rect.x, width: cp.rect.width, height: cp.rect.height }}
+                onAnimationEnd={() => endPanelExit(cp.id)}
+              >
+                <section
+                  className="chat-panel"
                 >
-                  <section
-                    className="chat-panel"
-                  >
-                    <div className="chat-panel-header">
-                      <span className="chat-panel-title">
-                        {sessionTitleOrFallback(cp.session)}
-                      </span>
-                    </div>
-                  </section>
-                </div>
-              ))
-            )
+                  <div className="chat-panel-header">
+                    <span className="chat-panel-title">
+                      {sessionTitleOrFallback(cp.session)}
+                    </span>
+                  </div>
+                </section>
+              </div>
+            ))
           )}
         </MainGridDropZone>
       </main>

@@ -4381,3 +4381,94 @@ describe('MessageList — rangeChanged → loadOlder trigger', () => {
     expect(loadOlder).not.toHaveBeenCalled()
   })
 })
+
+// ── Keep-alive: collapsed (display:none) scroller contract ──────────────
+// A panel hidden in the keep-alive cache presents clientHeight 0 (layout
+// collapsed; the browser preserves scrollTop across the hide and restores
+// it on show — verified in-app). While collapsed, the scroll machinery
+// must make NO writes and flip NO state: every distance reads 0 ("at the
+// bottom"), which the follow-mode calculus would misread.
+describe('collapsed scroller (keep-alive hidden panel)', () => {
+  it('hide-flip of an AWAY panel writes no scrollTop and keeps follow off', () => {
+    const { container } = render(
+      <MessageList items={toItems([
+        makeMsg('user', { uuid: 'u-1', message: { content: [{ type: 'text', text: 'q' }] } }),
+        makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'long answer' }] } }),
+      ])} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    virtuosoMockState.scrollHeight = 2000
+    virtuosoMockState.clientHeight = 600
+    scrollUpFromBottom(container)
+    expect(followingOf(container)).toBe('false')
+
+    vi.mocked(Element.prototype.scrollTo).mockClear()
+    // Visible-state RO pass first: arms the viewport observer's lastHeight
+    // baseline (the mock attaches the observer while the state is still
+    // 0×0, so a hide-flip without this pass reads as "no change" and never
+    // reaches the shrink-backstop). This mirrors the real browser, where
+    // the observer attached while the panel was visible at full height.
+    act(() => { fireResize(scroller) })
+    expect(Element.prototype.scrollTo).not.toHaveBeenCalled()
+
+    // Hide: geometry collapses (display:none). Post-guard, this passes
+    // because syncBottomGeometry returns early on clientHeight === 0
+    // before any state flip. Pre-guard (the regression this pins), it
+    // passed only incidentally — the disable-now branch's second
+    // setBottomState(false) override — so a future edit to that branch
+    // must not silently reintroduce writes-while-collapsed.
+    virtuosoMockState.scrollHeight = 0
+    virtuosoMockState.clientHeight = 0
+    act(() => { fireResize(scroller) })
+    expect(Element.prototype.scrollTo).not.toHaveBeenCalled()
+    expect(virtuosoMockState.scrollTop).toBe(0) // untouched by the hide-flip
+    expect(followingOf(container)).toBe('false')
+
+    // Show: geometry returns (browser restored scrollTop in the real app;
+    // the mock keeps its value).
+    virtuosoMockState.scrollHeight = 2000
+    virtuosoMockState.clientHeight = 600
+    act(() => { fireResize(scroller) })
+    expect(Element.prototype.scrollTo).not.toHaveBeenCalled()
+    expect(followingOf(container)).toBe('false')
+  })
+
+  it('a FOLLOWING panel hidden mid-stream makes no scroll write and re-pins to the grown bottom on show', () => {
+    const { container } = render(
+      <MessageList items={toItems([
+        makeMsg('user', { uuid: 'u-1', message: { content: [{ type: 'text', text: 'q' }] } }),
+        makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'answer' }] } }),
+      ])} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    // Parked at the bottom, following.
+    virtuosoMockState.scrollHeight = 2000
+    virtuosoMockState.clientHeight = 600
+    virtuosoMockState.scrollTop = 1400
+    expect(followingOf(container)).toBe('true')
+
+    // Visible-state RO pass (arms lastHeight, mirrors the real browser).
+    act(() => { fireResize(scroller) })
+    expect(Element.prototype.scrollTo).not.toHaveBeenCalled()
+
+    // Hidden while content streams in below. Pre-guard, the hide-flip's
+    // shrink-backstop fires scrollTo(top: 0) on the collapsed scroller —
+    // a write while collapsed, which this mock surfaces as a permanent
+    // scrollTop property hijack (the follow-invariant pin on show then
+    // can't land). Post-guard, no write happens while hidden.
+    virtuosoMockState.scrollHeight = 0
+    virtuosoMockState.clientHeight = 0
+    act(() => { fireResize(scroller) })
+    expect(Element.prototype.scrollTo).not.toHaveBeenCalled()
+
+    // Show with the content that grew while hidden.
+    virtuosoMockState.scrollHeight = 3000
+    virtuosoMockState.clientHeight = 600
+    act(() => { fireResize(scroller) })
+
+    // Follow invariant re-pins to the REAL bottom on show (pinToBottom
+    // writes scrollTop directly, not via scrollTo).
+    expect(virtuosoMockState.scrollTop).toBe(3000)
+    expect(followingOf(container)).toBe('true')
+  })
+})
