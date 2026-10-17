@@ -10,6 +10,7 @@ import { PluginCommandResultHost } from './app-plugins/PluginCommandResultHost'
 import { installGlobalErrorCapture, rootCallbacks } from './error-capture'
 import { RootErrorBoundary } from './error-capture-boundary'
 import { installConsoleCapture } from './client-debug/console-buffer'
+import { installJankMonitor } from './client-debug/jank-monitor'
 import { sweepLegacyTranscriptCache } from './session-store/legacy-transcript-cache'
 // KaTeX math styles must load BEFORE styles.css so the theme sizing
 // overrides in messages.css (`.md .katex`, `.md .katex-display`) win the
@@ -25,6 +26,10 @@ import './styles.css'
 // no ring a reader could never reach.
 if (import.meta.env.DEV) {
   installConsoleCapture()
+  // Always-on frame-gap / longtask rings so an intermittent scroll jank can
+  // be diagnosed AFTER it happened (`__crwDumpJank()` / `__crwJankMark()`)
+  // instead of needing a probe installed from the console first.
+  installJankMonitor()
 
   // React 19.2 dev builds emit one performance.measure() per component render
   // (the "Component Performance Track": zero-width-space-prefixed entries the
