@@ -12,7 +12,7 @@ import { ContextMenu } from './components/ContextMenu'
 import { DialogHosts } from './components/DialogHosts'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
-import { PANEL_CACHE_EXTRA, mergeOpenIntoCache, renderedPanelIds } from './utils/panel-cache'
+import { PANEL_CACHE_EXTRA, ghostableIds, mergeOpenIntoCache, renderedPanelIds } from './utils/panel-cache'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -2629,9 +2629,16 @@ export function App() {
     const prevIds = prevExitIdsRef.current
     const nextSet = new Set(openIds)
     prevExitIdsRef.current = openIds
-    const gone = prevIds
-      .filter((id) => !nextSet.has(id))
-      .map((id) => ({ id }))
+    // Keep-alive: an id that left the view but stayed in the cache is
+    // HIDDEN, not gone — no closing ghost (and its collapsed rect would
+    // snapshot a 0×0 box anyway). Only ids that left BOTH ghost. The
+    // closure reads this render's panelCache — evictions always co-occur
+    // with an openIds change, which re-runs this effect, so it is never
+    // stale where it matters.
+    const gone = ghostableIds(
+      prevIds.filter((id) => !nextSet.has(id)),
+      panelCache,
+    ).map((id) => ({ id }))
     // Swap-detection: suppress the closing-ghost ONLY for a true X→Y swap
     // (driven by `swapSession`, which marks the new id in `justSwappedInRef`).
     // A structural 1-for-1 check (gone==1 && added==1) would ALSO match
