@@ -12,6 +12,7 @@ import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useReducer, useR
 import { createPortal } from 'react-dom'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { sessionTitleOrFallback } from '../utils/session-title'
+import { shouldMountRecapWindow } from '../utils/recap-visibility'
 // SettingsPanel and GitPanel are split into their own chunks: both are
 // per-panel overlays that many sessions never open, so keeping them out of
 // the main bundle shrinks first paint. SettingsPanel stays mounted once
@@ -560,7 +561,10 @@ export const Chat = memo(function Chat({
   // off mid-flight too. Opening search over the recap also unmounts it
   // through the same AnimatePresence exit (collapse included; recapOpen
   // unchanged) — deliberately no settle, and the window drops back in when
-  // search closes.
+  // search closes. Reaching the transcript's true top (shouldMountRecapWindow's
+  // scroll legs, see utils/recap-visibility) is the same shape: recapOpen
+  // stays true, no settle, and the card drops back in once a user message is
+  // above the viewport again.
   const { settleActive: recapSettle, handleAnimationEnd: handleRecapSettleEnd } =
     useRecapSettle(!!recapOpen, !!session.recap, effectiveClearing)
 
@@ -2738,7 +2742,18 @@ export const Chat = memo(function Chat({
           each child re-enables pointer-events. */}
       <div className="chat-top-stack">
         <AnimatePresence>
-          {!!recapOpen && !searchOpen && session.recap && (
+          {/* Mount policy — including the scroll legs that hide the card at
+              the transcript's true top (all history loaded AND no user
+              message above the viewport) — lives in utils/recap-visibility.
+              The trailing `session.recap` leg is not policy: it narrows the
+              prop type for RecapWindow (the predicate takes a boolean). */}
+          {shouldMountRecapWindow({
+            recapOpen: !!recapOpen,
+            searchOpen,
+            hasRecap: session.recap != null,
+            hasOlder: stream.hasOlder,
+            hasPinnedUserMessage: pinnedUserMsg != null,
+          }) && session.recap && (
             <RecapWindow
               key="recap"
               recap={session.recap}
