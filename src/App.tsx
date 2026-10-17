@@ -12,6 +12,7 @@ import { ContextMenu } from './components/ContextMenu'
 import { DialogHosts } from './components/DialogHosts'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
+import { PANEL_CACHE_EXTRA, mergeOpenIntoCache, renderedPanelIds } from './utils/panel-cache'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -2571,6 +2572,28 @@ export function App() {
     [resolvedOpenIds, sessions],
   )
 
+  /** Keep-alive cache: session ids whose panels stay MOUNTED (hidden via
+   *  PanelSlot's `hidden`) after leaving the open view, so a session switch
+   *  preserves scroll position, follow state, the Virtuoso window and the WS
+   *  subscription. LRU order, capped at maxOpen + PANEL_CACHE_EXTRA; synced
+   *  render-phase when openIds changes (see the entering-diff block) and
+   *  evicted explicitly on dismissal paths (closeSession / swapSession /
+   *  teardownRemovedSession / closeGroupPanels). */
+  // readonly: mergeOpenIntoCache/evictFromCache return readonly arrays —
+  // the state must accept them without a spread-copy.
+  const [panelCache, setPanelCache] = useState<readonly string[]>([])
+
+  /** Sessions whose PanelSlot must render: the open view first, then cached
+   *  (hidden) ids. Open ids first keeps the visible panels' DOM order — and
+   *  grid auto-placement — stable while the cache churns behind them. */
+  const renderedSessions = useMemo(
+    () =>
+      renderedPanelIds(resolvedOpenIds, panelCache)
+        .map((id) => sessions.find((s) => s.id === id))
+        .filter((s): s is SessionInfo => !!s),
+    [resolvedOpenIds, panelCache, sessions],
+  )
+
   const updateSession = useCallback((s: SessionInfo) => {
     setSessions((prev) => prev.map((p) => (p.id === s.id ? s : p)))
   }, [])
@@ -2764,15 +2787,28 @@ export function App() {
   // handlePanelAnimEnd then forces a re-render so React's virtual DOM
   // reconciles and removes the class via its normal className commit.
   const enteringSetRef = useRef<Set<string>>(new Set())
-  /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection */
+  /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection + keep-alive cache sync */
   if (prevOpenIdsRef.current !== openIds) {
     const prevSet = new Set(prevOpenIdsRef.current)
+    // A re-entering id that is already in the cache is a keep-alive RE-SHOW,
+    // not a fresh mount: its panel never unmounted, so the entrance
+    // animation is suppressed (the instant appearance is the point).
+    const cachedSet = new Set(panelCache)
     for (const id of openIds) {
-      if (!prevSet.has(id)) {
+      if (!prevSet.has(id) && !cachedSet.has(id)) {
         enteringSetRef.current.add(id)
       }
     }
     prevOpenIdsRef.current = openIds
+    // Fold the new view into the cache (LRU head = the view; ids leaving the
+    // view keep their place behind it). Render-phase setState — the
+    // React-documented adjust-state-on-change pattern, same escape hatch as
+    // the diff above: the COMMITTED render must already see the updated
+    // cache, or a panel leaving the view would unmount for one render
+    // first. Idempotent by the ref guard; mergeOpenIntoCache returns the
+    // same reference when nothing changed.
+    const nextCache = mergeOpenIntoCache(panelCache, openIds, maxOpenRef.current + PANEL_CACHE_EXTRA)
+    if (nextCache !== panelCache) setPanelCache(nextCache)
   }
   /* eslint-enable react-hooks/refs */
   // State nudge: incremented by handlePanelAnimEnd to force a re-render
@@ -4957,7 +4993,7 @@ export function App() {
           panelCount={openSessions.length || 1}
           style={{ gridTemplateColumns: gridTemplate }}
         >
-          {openSessions.length === 0 ? (
+          {openSessions.length === 0 && (
             <div className="empty-state app-empty-state">
               <p className="app-empty-state-eyebrow">Workspace ready</p>
               <h2>{sessions.length > 0 ? 'No session open' : 'Start a new session'}</h2>
@@ -4981,21 +5017,27 @@ export function App() {
                 Tip: press <kbd>Ctrl</kbd>+<kbd>K</kbd> anytime to jump to actions.
               </p>
             </div>
-          ) : (
-            // Flatten panels + dividers into a single children list. The grid
-            // template we built alternates fr / 4px tracks, so this order has
-            // to match or the columns will de-sync.
-            // eslint-disable-next-line react-hooks/refs -- intentional: entering flag read during render
-            openSessions.flatMap((s, i) => {
-              const entering = enteringSetRef.current.has(s.id)
-              const owningGroup = groups.find((g) => g.sessionIds.includes(s.id))
-              const clearing = clearingIds.has(s.id)
-              const node = (
+          )}
+          {/* Flatten panels + dividers into a single children list. The grid
+              template we built alternates fr / 4px tracks, so this order has
+              to match or the columns will de-sync — cached (display:none)
+              slots are skipped by grid auto-placement wherever they sit. */}
+          {/* eslint-disable-next-line react-hooks/refs -- intentional: entering flag read during render */}
+          {renderedSessions.flatMap((s) => {
+            // Visible index drives everything positional (slot pill number,
+            // composer focus signal, divider adjacency/drag index); cached
+            // panels render hidden and take no grid track.
+            const openIdx = resolvedOpenIds.indexOf(s.id)
+            const visible = openIdx >= 0
+            const entering = enteringSetRef.current.has(s.id)
+            const owningGroup = groups.find((g) => g.sessionIds.includes(s.id))
+            const clearing = clearingIds.has(s.id)
+            const node = (
                 // Per-panel ErrorBoundary: if one panel's render throws
                 // (e.g. a malformed assistant message), the other open
                 // panels and the sidebar keep working. children identity
                 // changes on prop updates, so a recovered render auto-clears.
-                <PanelSlot key={s.id}>
+                <PanelSlot key={s.id} hidden={!visible}>
                   <ErrorBoundary key={s.id}>
                     <ChatPanel
                       session={s}
@@ -5003,8 +5045,8 @@ export function App() {
                       globalPrefs={globalPrefs}
                       clearing={clearing}
                       hasUnread={!!unread[s.id]}
-                      slot={i + 1}
-                      composerFocusSignal={panelFocusSignals[i]}
+                      slot={visible ? openIdx + 1 : 0}
+                      composerFocusSignal={visible ? panelFocusSignals[openIdx] : undefined}
                       showSlotHints={heldModifiers.ctrlOrMeta}
                       entering={entering}
                       onAnimEnd={entering ? handlePanelAnimEnd : undefined}
@@ -5073,44 +5115,46 @@ export function App() {
                   </ErrorBoundary>
                 </PanelSlot>
               )
-              if (i === openSessions.length - 1) return [node]
-              return [
-                node,
-                <div
-                  key={`divider-${s.id}`}
-                  className={`panel-divider ${draggingDivider === i ? 'dragging' : ''}`}
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="Resize panel"
-                  onMouseDown={onDividerMouseDown(i)}
-                  onKeyDown={onPanelDividerKeyDown(i)}
-                  onDoubleClick={() => setPanelRatios(Object.fromEntries(resolvedOpenIds.map((id) => [id, 1])))}
-                  title="Drag to resize · double-click to reset"
-                  tabIndex={0}
-                />,
-              ]
-            }).concat(
-              // Closing panels: lightweight ghost that fades out at the
-              // panel's last known position. onAnimationEnd removes it.
-              closingPanels.map((cp) => (
-                <div
-                  key={`closing-${cp.id}`}
-                  className="chat-panel-slot exiting"
-                  style={{ top: cp.rect.y, left: cp.rect.x, width: cp.rect.width, height: cp.rect.height }}
-                  onAnimationEnd={() => endPanelExit(cp.id)}
+            // Divider only after a VISIBLE panel that is not the last
+            // visible one. Hidden (display:none) slots render no divider
+            // and are skipped by grid auto-placement wherever they sit.
+            if (!visible || openIdx === resolvedOpenIds.length - 1) return [node]
+            return [
+              node,
+              <div
+                key={`divider-${s.id}`}
+                className={`panel-divider ${draggingDivider === openIdx ? 'dragging' : ''}`}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize panel"
+                onMouseDown={onDividerMouseDown(openIdx)}
+                onKeyDown={onPanelDividerKeyDown(openIdx)}
+                onDoubleClick={() => setPanelRatios(Object.fromEntries(resolvedOpenIds.map((id) => [id, 1])))}
+                title="Drag to resize · double-click to reset"
+                tabIndex={0}
+              />,
+            ]
+          }).concat(
+            // Closing panels: lightweight ghost that fades out at the
+            // panel's last known position. onAnimationEnd removes it.
+            closingPanels.map((cp) => (
+              <div
+                key={`closing-${cp.id}`}
+                className="chat-panel-slot exiting"
+                style={{ top: cp.rect.y, left: cp.rect.x, width: cp.rect.width, height: cp.rect.height }}
+                onAnimationEnd={() => endPanelExit(cp.id)}
+              >
+                <section
+                  className="chat-panel"
                 >
-                  <section
-                    className="chat-panel"
-                  >
-                    <div className="chat-panel-header">
-                      <span className="chat-panel-title">
-                        {sessionTitleOrFallback(cp.session)}
-                      </span>
-                    </div>
-                  </section>
-                </div>
-              ))
-            )
+                  <div className="chat-panel-header">
+                    <span className="chat-panel-title">
+                      {sessionTitleOrFallback(cp.session)}
+                    </span>
+                  </div>
+                </section>
+              </div>
+            ))
           )}
         </MainGridDropZone>
       </main>
