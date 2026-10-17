@@ -4,17 +4,23 @@
 // (the prototype's variant B, prototype/tasklist-dock.html, tuned after
 // real-app feedback); this file is the LOCKSTEP CONTRACT — a geometry change
 // to one card must land on the other in the same commit:
-//   margin-bottom: calc(var(--chat-row-gap) - 30px) — closes the 12px row gap
-//     AND pulls the composer 18px up over the card's lower edge,
-//   padding-bottom: calc(var(--space-2-5) + 18px)  — the overlap zone is EMPTY
+//   margin-bottom: calc(var(--chat-row-gap) - 36px) — closes the 12px row gap
+//     AND pulls the composer 24px up over the card's lower edge,
+//   padding-bottom: calc(var(--space-2-5) + 20px)  — the overlap zone is EMPTY
 //     padding, so the header text never sits under the composer's glass line;
-//     ~10px of quiet glass remains visible between text and glass line,
+//     ~6px of quiet glass remains visible between text and glass line,
+//   padding-top: var(--space-1-5)                  — the docked bar tightens
+//     its top padding to a slim 6px strip,
 //   square bottom corners                          — the tucked look.
 // Geometry history: the first cut (variant B of prototype/tasklist-dock.html)
 // used -18px / +22px, which left a ~26px empty band exposed under the header —
-// real-app feedback said too much; the overlap deepened and the padding
-// trimmed together. Retuning again is a deliberate re-decision that updates
-// this pin. Also pins structural invariants of the shared feature: the dock
+// real-app feedback said too much. The overlap then deepened stepwise to its
+// current -36px/+20px, shrinking the quiet-glass remainder from ~10px to ~6px
+// (note: padding-bottom GROWS with the overlap to keep the zone empty — only
+// the remainder shrinks). A later retune tightened the collapsed top padding
+// to 6px. Retuning again is a deliberate re-decision that updates this pin.
+// Also pins
+// structural invariants of the shared feature: the dock
 // geometry must TRANSITION on the BASE card rule (a transition declared only
 // on the collapsed rule would make the expand snap), and the rotors' header
 // text must ellipsize — never wrap or push the count / chevron off the docked
@@ -28,6 +34,8 @@ import { describe, expect, it } from 'vitest'
 
 const css = readFileSync(join(process.cwd(), 'src/styles', 'messages.css'), 'utf8')
 const utilitiesCss = readFileSync(join(process.cwd(), 'src/styles', 'utilities.css'), 'utf8')
+const chatCss = readFileSync(join(process.cwd(), 'src/styles', 'chat.css'), 'utf8')
+const tokensCss = readFileSync(join(process.cwd(), 'src/styles', 'tokens.css'), 'utf8')
 
 /** Bodies of EVERY standalone rule whose head is exactly `selector` (at any
  *  indent), captured to the next line-start `}`. Same extraction contract as
@@ -48,10 +56,32 @@ const declarations = (selector: string) =>
 describe('TaskList collapsed dock (prototype variant B)', () => {
   it('collapsed card docks behind the composer with the approved geometry', () => {
     const body = declarations('.todo-panel.todo-panel-collapsed')
-    expect(body).toContain('margin-bottom: calc(var(--chat-row-gap) - 30px)')
-    expect(body).toContain('padding-bottom: calc(var(--space-2-5) + 18px)')
+    expect(body).toContain('padding-top: var(--space-1-5)')
+    expect(body).toContain('margin-bottom: calc(var(--chat-row-gap) - 36px)')
+    expect(body).toContain('padding-bottom: calc(var(--space-2-5) + 20px)')
     expect(body).toContain('border-bottom-left-radius: 0')
     expect(body).toContain('border-bottom-right-radius: 0')
+  })
+
+  it('the collapsed header drops its bottom margin — the quiet-glass figure depends on it', () => {
+    // The ~6px quiet-glass invariant is measured from the HEADER TEXT's bottom
+    // edge, which only sits where the arithmetic expects because the collapsed
+    // header drops its base `margin-bottom: var(--space-1-5)`. Deleting that
+    // rule would widen the band by 6px (or push the text across the glass
+    // line) with every other pin still green — so pin both copies (lockstep).
+    expect(declarations('.todo-panel.todo-panel-collapsed .todo-panel-header')).toContain('margin-bottom: 0')
+    expect(declarations('.monitor-bar.monitor-bar-collapsed .monitor-bar-header')).toContain('margin-bottom: 0')
+  })
+
+  it('the quiet-glass arithmetic assumes --chat-row-gap is 12px', () => {
+    // The doc comments derive the overlap (36 − gap = 24px) and the quiet
+    // glass (padding-bottom − overlap ≈ 6px) from --chat-row-gap; the CSS
+    // pins pin only the calc() TEXT, so a token retune would silently diverge
+    // the rendered geometry from the documented figures. Pin the resolution.
+    const gapRule = chatCss.match(/--chat-row-gap:\s*([^;]+);/)
+    expect(gapRule, '--chat-row-gap declared in chat.css').not.toBeNull()
+    expect(gapRule![1].trim()).toBe('var(--space-3)')
+    expect(tokensCss).toMatch(/--space-3:\s*12px/)
   })
 
   it('the dock geometry transitions on the base card, so the expand animates too', () => {
@@ -60,6 +90,7 @@ describe('TaskList collapsed dock (prototype variant B)', () => {
     expect(body).toContain('transition:')
     expect(body).toContain('margin-bottom var(--motion-duration-moderate)')
     expect(body).toContain('padding-bottom var(--motion-duration-moderate)')
+    expect(body).toContain('padding-top var(--motion-duration-moderate)')
     // …AND the base rule must still own the geometry the collapsed values
     // animate FROM — the shorthands below are that endpoint. Asserting them
     // is what keeps this pin honest: `toContain('margin-bottom')` alone was
@@ -117,7 +148,7 @@ describe('TaskList collapsed dock (prototype variant B)', () => {
 })
 
 describe('collapsed dock vs a visible dock error-bar (un-dock counter-rule)', () => {
-  // The dock-fold pull (margin-bottom -30px) lifts the dock's TOP 18px over
+  // The dock-fold pull (margin-bottom -36px) lifts the dock's TOP 24px over
   // the card's reserved glass band. The design assumes that band is covered
   // by the composer (later tree order → paints above the frosted glass). But
   // .chat-dock's first child is the always-mounted .error-bar, which becomes
@@ -136,8 +167,12 @@ describe('collapsed dock vs a visible dock error-bar (un-dock counter-rule)', ()
     const body = css.slice(start, css.indexOf('\n}', start)).replace(/\/\*[\s\S]*?\*\//g, '')
     // Exact revert to the base-rule geometry (the same values the base
     // `margin:` / `padding:` shorthands and glass.css's radius resolve to) —
-    // anything else would make the un-docked state a third geometry.
+    // anything else would make the un-docked state a third geometry. The
+    // padding-top revert matters because the collapsed rule TIGHTENS it to
+    // var(--space-1-5); without the longhand here the un-docked card would
+    // keep the docked top padding.
     expect(body).toContain('margin-bottom: var(--chat-row-gap)')
+    expect(body).toContain('padding-top: var(--space-2-5)')
     expect(body).toContain('padding-bottom: var(--space-2-5)')
     expect(body).toContain('border-bottom-left-radius: var(--radius-xl)')
     expect(body).toContain('border-bottom-right-radius: var(--radius-xl)')
@@ -155,8 +190,9 @@ describe('collapsed dock vs a visible dock error-bar (un-dock counter-rule)', ()
 describe('MonitorBar collapsed dock (same recipe as the TaskList card)', () => {
   it('collapsed bar docks behind the composer with the shared geometry', () => {
     const body = declarations('.monitor-bar.monitor-bar-collapsed')
-    expect(body).toContain('margin-bottom: calc(var(--chat-row-gap) - 30px)')
-    expect(body).toContain('padding-bottom: calc(var(--space-2-5) + 18px)')
+    expect(body).toContain('padding-top: var(--space-1-5)')
+    expect(body).toContain('margin-bottom: calc(var(--chat-row-gap) - 36px)')
+    expect(body).toContain('padding-bottom: calc(var(--space-2-5) + 20px)')
     expect(body).toContain('border-bottom-left-radius: 0')
     expect(body).toContain('border-bottom-right-radius: 0')
   })
@@ -168,6 +204,7 @@ describe('MonitorBar collapsed dock (same recipe as the TaskList card)', () => {
     expect(body).toContain('transition:')
     expect(body).toContain('margin-bottom var(--motion-duration-moderate)')
     expect(body).toContain('padding-bottom var(--motion-duration-moderate)')
+    expect(body).toContain('padding-top var(--motion-duration-moderate)')
     expect(body).toContain('margin: 0 var(--chat-reading-inset) var(--chat-row-gap)')
     expect(body).toContain('padding: var(--space-2-5) var(--space-3-5)')
   })
