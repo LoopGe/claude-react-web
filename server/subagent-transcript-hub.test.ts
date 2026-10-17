@@ -124,4 +124,54 @@ describe('SubagentTranscriptHub', () => {
     const inc = await nextFrames(s2, (f) => !f.reset)
     expect(inc.frames).toHaveLength(1)
   }, 15000)
+
+  it('a mid-debounce subscriber must not steal pending bytes from an earlier one', async () => {
+    const p = join(subDir, `agent-${AGENT}.jsonl`)
+    await writeFile(p, userLine('u1', 'go') + '\n')
+    hub = new SubagentTranscriptHub()
+    const a = hub.subscribeSubagentTranscript(SID, AGENT)
+    expect((await nextFrames(a, () => true)).reset).toBe(true)
+
+    // 追加并让 B 在 A 的 200ms 防抖窗口内订阅:B 的 seed 会读到追加后的
+    // 内容,但不得把共享 offset 推进到 A 尚未收到的位置——否则 A 的
+    // tail 会因 size === offset 直接返回,字节 100-150 永久丢失。
+    await appendFile(p, assistantLine('a1', 'mid-debounce') + '\n')
+    const b = hub.subscribeSubagentTranscript(SID, AGENT)
+    const bSnap = await nextFrames(b, () => true)
+    expect(bSnap.reset).toBe(true)
+    expect(bSnap.frames).toHaveLength(2) // B 的快照本身已含追加行
+
+    // A 的防抖定时器在 B 的 seed 之后触发:A 仍必须收到增量。
+    const inc = await nextFrames(a, (f) => !f.reset, 8000)
+    expect(inc.frames).toHaveLength(1)
+    expect((inc.frames[0] as { uuid?: string }).uuid).toBe('a1')
+    b.unsubscribe()
+  }, 15000)
+
+  it('releases the watcher when a subscriber unsubscribes during its seed', async () => {
+    await writeFile(join(subDir, `agent-${AGENT}.jsonl`), userLine('u1', 'go') + '\n')
+    hub = new SubagentTranscriptHub()
+    // 唯一订阅者,同步退订:必然发生在其 seed 的第一个 await 恢复之前。
+    // seed 不得为已死的订阅者 arm watcher(否则该 state 份额无人释放,
+    // 句柄泄漏,随弹窗开关反复累积)。
+    const a = hub.subscribeSubagentTranscript(SID, AGENT)
+    a.unsubscribe()
+    await new Promise((r) => setTimeout(r, 100)) // 让 seed 恢复并(必须)提前退出
+    const watchers = (hub as unknown as { watchers: Map<string, unknown> }).watchers
+    expect(watchers.size).toBe(0)
+  }, 15000)
+
+  it('unsubscribe is idempotent', async () => {
+    await writeFile(join(subDir, `agent-${AGENT}.jsonl`), userLine('u1', 'go') + '\n')
+    hub = new SubagentTranscriptHub()
+    const a = hub.subscribeSubagentTranscript(SID, AGENT)
+    await nextFrames(a, () => true)
+    a.unsubscribe()
+    a.unsubscribe() // 第二次必须是无害的 no-op
+    // hub 仍可用:重新订阅正常拿到快照
+    const b = hub.subscribeSubagentTranscript(SID, AGENT)
+    const snap = await nextFrames(b, () => true)
+    expect(snap.reset).toBe(true)
+    b.unsubscribe()
+  }, 15000)
 })

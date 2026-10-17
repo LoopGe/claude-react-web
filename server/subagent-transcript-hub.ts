@@ -6,14 +6,26 @@
 // connected tab learns about growth without polling).
 //
 // Design:
-// - ONE fs.watch handle per subagents DIRECTORY (refcounted across agents),
-//   not per file — 186 files in the wild stay at a handful of open handles.
+// - ONE fs.watch handle per subagents DIRECTORY (shared across agent files
+//   and subscribers), not per file — 186 files in the wild stay at a handful
+//   of open handles. The handle's lifetime is tracked as a SET of the
+//   FileStates using it (not a numeric refcount): every acquire adds its
+//   state, every unsubscribe/early-seed-exit removes exactly its own state,
+//   so a seed that loses its subscriber mid-flight can never under/over-
+//   decrement a live peer's share.
 // - Per (sessionId, agentId) file state: byte offset + incomplete-tail
 //   buffer + debounce timer. Tail reads only COMPLETE lines (a trailing
 //   partial line stays buffered until its \n lands).
 // - Per-subscriber Pushable: subscribe pushes a full snapshot first
 //   (reset: true), then increments — the client's REPLAY_REPLACE dedup
 //   makes the REST-bootstrap → WS-snapshot handover idempotent.
+// - Only the subscribe that CREATES a FileState may advance the shared
+//   offset (to exactly the bytes its snapshot consumed). A later
+//   subscriber's seed reads further than existing subscribers have been
+//   sent; letting it overwrite the shared offset would turn their pending
+//   tail() into a no-op and silently drop the increment (review finding:
+//   subscribe-while-writing). The late joiner re-receives those bytes as a
+//   duplicate increment, which the client's uuid dedup absorbs.
 // - File shrink (truncation/rotation): full re-read + reset snapshot.
 // - Watch failure: log.warn + stop pushing (the client keeps its last
 //   snapshot) — a designed degradation, not a speculative fallback.
@@ -28,7 +40,6 @@
 
 import { watch, type FSWatcher } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
-import path from 'node:path'
 import { createPushable, type Pushable } from './pushable.js'
 import { findTranscriptFile } from './history-reader.js'
 import {
@@ -66,14 +77,21 @@ interface FileState {
   timer: ReturnType<typeof setTimeout> | null
 }
 
+interface WatcherEntry {
+  watcher: FSWatcher
+  /** Every FileState currently holding a share of this handle. */
+  states: Set<FileState>
+}
+
 export class SubagentTranscriptHub {
   private files = new Map<string, FileState>()
-  private watchers = new Map<string, { watcher: FSWatcher; refs: number }>()
+  private watchers = new Map<string, WatcherEntry>()
 
   subscribeSubagentTranscript(sessionId: string, agentId: string): SubagentTranscriptSub {
     const key = `${sessionId}::${agentId}`
     const push = createPushable<SubagentTranscriptFrame>()
     let state = this.files.get(key)
+    const created = !state
     if (!state) {
       state = { sessionId, agentId, offset: 0, tail: '', subscribers: new Set(), timer: null }
       this.files.set(key, state)
@@ -81,16 +99,21 @@ export class SubagentTranscriptHub {
     state.subscribers.add(push)
     metrics.gauge('subagent_transcript_subscribers', this.totalSubscribers())
 
-    void this.seedSnapshot(state, push)
+    void this.seedSnapshot(state, push, created)
 
+    let done = false
     const unsub = () => {
+      // External wiring may double-teardown; the second call must not
+      // release another state's watcher share or corrupt bookkeeping.
+      if (done) return
+      done = true
       state!.subscribers.delete(push)
       push.end()
       metrics.gauge('subagent_transcript_subscribers', this.totalSubscribers())
       if (state!.subscribers.size === 0) {
         if (state!.timer != null) clearTimeout(state!.timer)
         this.files.delete(key)
-        this.releaseWatcher(state!.sessionId)
+        this.releaseWatcher(state!)
       }
     }
     return { iterable: push.iterable, unsubscribe: unsub }
@@ -113,15 +136,21 @@ export class SubagentTranscriptHub {
   }
 
   /** Full read → snapshot push (reset). The watcher is armed BEFORE the
-   *  read, and the byte offset is seeded to exactly what the snapshot
-   *  consumed, so increments start strictly after it and no growth can be
-   *  swallowed by the seeding itself. */
-  private async seedSnapshot(state: FileState, push: Pushable<SubagentTranscriptFrame>): Promise<void> {
+   *  read, and — for the subscribe that created the state — the byte offset
+   *  is seeded to exactly what the snapshot consumed, so increments start
+   *  strictly after it and no growth can be swallowed by the seeding
+   *  itself. */
+  private async seedSnapshot(state: FileState, push: Pushable<SubagentTranscriptFrame>, created: boolean): Promise<void> {
+    let armed = false
     try {
       const main = await findTranscriptFile(state.sessionId)
+      // The subscriber may have unsubscribed while findTranscriptFile ran.
+      // Bail before ANY side effect — arming for a dead subscriber would
+      // orphan its watcher share (nothing will ever remove it).
+      if (!state.subscribers.has(push)) return
       if (main) {
-        // Arm FIRST: every mutation from here on carries its own watch event.
-        this.acquireWatcher(main.path, state.sessionId)
+        this.acquireWatcher(main.path, state)
+        armed = true
       }
       let raw = Buffer.alloc(0)
       if (main) {
@@ -136,46 +165,64 @@ export class SubagentTranscriptHub {
       }
       const { lines, partial } = splitCompleteLines(raw.toString('utf8'))
       const frames = parseSubagentLines(lines, state.sessionId)
-      if (!state.subscribers.has(push)) return // unsubscribed while reading
+      if (!state.subscribers.has(push)) {
+        // Died while reading. Reclaim the share ONLY if the whole state is
+        // dead: the share belongs to the STATE, and other subscribers of
+        // the same state are still using it — releasing here would deafen
+        // them. (When the arm preceded the unsub, unsubscribe already
+        // removed the share; this release covers the unsub → arm ordering.)
+        if (armed && state.subscribers.size === 0) this.releaseWatcher(state)
+        return
+      }
       push.push({ sessionId: state.sessionId, agentId: state.agentId, reset: true, frames })
-      state.tail = partial
-      state.offset = raw.byteLength - Buffer.byteLength(partial, 'utf8')
+      // Only the state's creator may advance the shared offset — see the
+      // module header (subscribe-while-writing finding).
+      if (created) {
+        state.tail = partial
+        state.offset = raw.byteLength - Buffer.byteLength(partial, 'utf8')
+      }
     } catch (err) {
+      // The read failed after arming: reclaim the share only if the whole
+      // state is dead (a live subscriber keeps the watcher for its future
+      // tails — the failure must not deafen it).
+      if (armed && state.subscribers.size === 0) this.releaseWatcher(state)
       log.warn(`snapshot read failed session=${state.sessionId} agent=${state.agentId}: ${(err as Error).message}`)
       // No reset push: the REST bootstrap already gave the client content;
       // a failed disk read here must not blank it.
     }
   }
 
-  /** ONE watcher per subagents dir, refcounted per agent file in it. */
-  private acquireWatcher(mainPath: string, sessionId: string): void {
-    const dir = resolveSubagentDir(mainPath, sessionId)
-    const existing = this.watchers.get(dir)
-    if (existing) {
-      existing.refs += 1
-      return
+  /** ONE watcher per subagents dir, shared by the FileStates in it. */
+  private acquireWatcher(mainPath: string, state: FileState): void {
+    const dir = resolveSubagentDir(mainPath, state.sessionId)
+    let entry = this.watchers.get(dir)
+    if (!entry) {
+      try {
+        const watcher = watch(dir, (_event, filename) => {
+          if (!filename || !filename.startsWith('agent-')) return
+          const agentId = filename.slice('agent-'.length).replace(/\.jsonl$/, '')
+          const key = `${state.sessionId}::${agentId}`
+          const st = this.files.get(key)
+          if (st) this.scheduleTail(st)
+        })
+        watcher.unref?.()
+        entry = { watcher, states: new Set() }
+        this.watchers.set(dir, entry)
+      } catch (err) {
+        log.warn(`watch failed dir=${dir}: ${(err as Error).message} — live updates disabled for this dir`)
+        return
+      }
     }
-    try {
-      const watcher = watch(dir, (_event, filename) => {
-        if (!filename || !filename.startsWith('agent-')) return
-        const agentId = filename.slice('agent-'.length).replace(/\.jsonl$/, '')
-        const key = `${sessionId}::${agentId}`
-        const st = this.files.get(key)
-        if (st) this.scheduleTail(st)
-      })
-      watcher.unref?.()
-      this.watchers.set(dir, { watcher, refs: 1 })
-    } catch (err) {
-      log.warn(`watch failed dir=${dir}: ${(err as Error).message} — live updates disabled for this dir`)
-    }
+    entry.states.add(state)
   }
 
-  private releaseWatcher(sessionId: string): void {
-    // The watcher's dir is derived from the session id; find and release it.
+  /** Drop ONE state's share of its dir watcher; close the handle when the
+   *  last share goes. Never touches other states' shares. */
+  private releaseWatcher(state: FileState): void {
     for (const [dir, entry] of this.watchers) {
-      if (!dir.endsWith(`/${path.basename(sessionId)}/subagents`)) continue
-      entry.refs -= 1
-      if (entry.refs <= 0) {
+      if (!entry.states.has(state)) continue
+      entry.states.delete(state)
+      if (entry.states.size === 0) {
         entry.watcher.close()
         this.watchers.delete(dir)
       }
