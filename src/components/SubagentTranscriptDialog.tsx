@@ -55,7 +55,10 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
           </button>
         </header>
         <div className="subagent-transcript-body">
-          {error ? (
+          {/* Data present = show data: a stale store error must not hide
+              content that already arrived (the scratch store's error field is
+              sticky by design — the reducer never clears it on REPLAY_REPLACE). */}
+          {error && items.length === 0 ? (
             <div className="subagent-transcript-error">Failed to load transcript: {error}</div>
           ) : (
             <McpAppsProvider sessionId={sessionId}>
@@ -63,6 +66,10 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
                 items={items}
                 sessionId={sessionId}
                 replayReady={replayReady}
+                // Gate the empty state on the REST bootstrap: without this the
+                // "No transcript on disk" card flashes before the store's
+                // replayReady flips.
+                expectHistory
                 toolStatus={toolStatus}
                 toolResults={toolResults}
                 planStatus={planStatus}

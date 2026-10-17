@@ -11,17 +11,24 @@ vi.mock('./useApi', () => ({ api: { get: vi.fn() } }))
 // Stub hub:捕获 session listener,手动投帧。
 let listener: WsHubListener | null = null
 const deliver = (frame: unknown) => listener?.(frame as Parameters<WsHubListener>[0])
+const { subscribeSubagentTranscript } = vi.hoisted(() => ({
+  subscribeSubagentTranscript: vi.fn(() => () => {}),
+}))
 vi.mock('./useWsHub', () => ({
   useWsHub: () => ({
     addListener: () => () => {},
     addSessionListener: (_sid: string, fn: WsHubListener) => { listener = fn; return () => { listener = null } },
     subscribe: () => () => {},
-    subscribeSubagentTranscript: vi.fn(() => () => {}),
+    subscribeSubagentTranscript,
   }),
   useWsHubStatus: () => 'online',
 }))
 
-beforeEach(() => { listener = null; vi.mocked(api.get).mockReset() })
+beforeEach(() => {
+  listener = null
+  vi.mocked(api.get).mockReset()
+  subscribeSubagentTranscript.mockClear()
+})
 
 describe('useSubagentTranscriptStore', () => {
   it('bootstraps via REST into the scratch store, then applies WS increments', async () => {
@@ -29,6 +36,7 @@ describe('useSubagentTranscriptStore', () => {
     const { result } = renderHook(() => useSubagentTranscriptStore('s1', 'a1'))
     const store = sessionStoreRegistry.getOrCreate(subagentStoreId('s1', 'a1'))
     await waitFor(() => expect(result.current.replayReady).toBe(true))
+    expect(subscribeSubagentTranscript).toHaveBeenCalledWith('s1', 'a1')
     const before = store.getSnapshot().items.length
     expect(before).toBeGreaterThan(0)
 
