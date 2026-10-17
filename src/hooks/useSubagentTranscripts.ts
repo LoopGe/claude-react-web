@@ -5,14 +5,14 @@
 // main stream (parent_tool_use_id === the Agent tool_use id). Background /
 // async subagents write their OWN JSONL transcript on disk that never reaches
 // that stream, so this is the authoritative full conversation. No live
-// subprocess round-trip — the server reads the file via the SDK standalone
-// helpers.
+// subprocess round-trip — the server reads the file from disk directly.
 
 import { useCallback } from 'react'
 import { api } from './useApi'
 
-/** Wire type for the SDK standalone getSubagentMessages result (server
- *  passthrough). `message` carries the raw Anthropic `{ role, content }`. */
+/** Wire type for one message of a subagent's on-disk transcript (server
+ *  `GET /sessions/:id/subagents/:agentId`). `message` carries the raw
+ *  Anthropic `{ role, content }`. */
 export interface SubagentSessionMessage {
   type?: 'user' | 'assistant' | 'system' | string
   uuid?: string

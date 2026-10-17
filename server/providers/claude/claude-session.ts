@@ -1,4 +1,4 @@
-import { getSubagentMessages, listSubagents, type Query, type SessionMessage } from '@anthropic-ai/claude-agent-sdk'
+import { listSubagents, type Query } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { Pushable } from '../../pushable.js'
 import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.js'
@@ -28,8 +28,7 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
      *  points at this session's own `subagents/` directory. */
     private readonly sessionId = '',
     /** cwd the subprocess runs in — narrows the SDK's project-dir scan for
-     *  listSubagents / getSubagentMessages to the right `~/.claude/projects/`
-     *  subtree. */
+     *  listSubagents to the right `~/.claude/projects/` subtree. */
     private readonly cwd = '',
     /** Mid-run steering 状态机（spec §5）。undefined = CLI 版本门控未过
      *  （老 CLI）——enqueueSupplement 恒 false，feature 静默退化排队。 */
@@ -40,14 +39,6 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
    *  standalone listSubagents). No live subprocess round-trip — reads disk. */
   async listSubagents(): Promise<string[]> {
     return listSubagents(this.sessionId, { dir: this.cwd })
-  }
-
-  /** Read one subagent's full transcript from its own JSONL (SDK standalone
-   *  getSubagentMessages). Returns SessionMessage[] in conversation order.
-   *  Authoritative for background/async subagents whose frames were never
-   *  forwarded onto the main stream. */
-  async getSubagentMessages(agentId: string, opts?: { limit?: number; offset?: number }): Promise<SessionMessage[]> {
-    return getSubagentMessages(this.sessionId, agentId, { dir: this.cwd, ...opts })
   }
 
   get messages(): AsyncIterable<AgentMessage> {

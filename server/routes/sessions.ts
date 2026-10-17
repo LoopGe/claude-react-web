@@ -21,6 +21,7 @@ import { HttpError } from '../errors.js'
 import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
 import { worktreeIsDirty } from '../git.js'
 import { worktreePathOf } from '../session-worktree.js'
+import { readSubagentTranscript } from '../subagent-transcripts.js'
 
 const log = createLogger('http')
 
@@ -1123,20 +1124,12 @@ export function buildSessionRouter(
     return c.json({ subagents })
   })
 
-  // Read one subagent's full transcript from its own on-disk JSONL. Returns
-  // SessionMessage[] ({ type: user|assistant|system, uuid, parent_tool_use_id,
-  // parent_agent_id, message }). Authoritative for background/async subagents
-  // whose frames never reached the main stream.
+  // Read one subagent's full transcript from its own on-disk JSONL, converted
+  // to live-wire frames by history-reader.normalize(). Authoritative for
+  // background/async subagents whose frames never reached the main stream.
+  // Pure disk read — no live Query required, dormant sessions work.
   app.get('/sessions/:id/subagents/:agentId', async (c) => {
-    const limitQ = c.req.query('limit')
-    const offsetQ = c.req.query('offset')
-    const limit = limitQ !== undefined ? Number(limitQ) : undefined
-    const offset = offsetQ !== undefined ? Number(offsetQ) : undefined
-    if ((limit !== undefined && (!Number.isFinite(limit) || limit < 0)) ||
-        (offset !== undefined && (!Number.isFinite(offset) || offset < 0))) {
-      return c.json({ error: 'limit/offset must be non-negative integers' }, 400)
-    }
-    const messages = await sm.getSubagentMessages(c.req.param('id'), c.req.param('agentId'), { limit, offset })
+    const messages = await readSubagentTranscript(c.req.param('id'), c.req.param('agentId'))
     return c.json({ messages })
   })
 
