@@ -637,6 +637,37 @@ describe('useWsHub: frame fan-out', () => {
   })
 })
 
+// ── subagent transcript channel ────────────────────────────────────
+
+describe('useWsHub: subagent transcript channel', () => {
+  it('sends subscribe on demand, resends on reconnect, unsubscribes on last release', async () => {
+    const { result } = mountHub()
+    openSocket()
+    expect(sock().framesOfKind('subagent-transcript-subscribe')).toHaveLength(0)
+
+    const release = result.current.hub.subscribeSubagentTranscript('s1', 'a1')
+    expect(sock().framesOfKind('subagent-transcript-subscribe')).toHaveLength(1)
+    expect(sock().framesOfKind('subagent-transcript-subscribe')[0]).toMatchObject({ sessionId: 's1', agentId: 'a1' })
+
+    // ref-count:第二个持有者不重发
+    const release2 = result.current.hub.subscribeSubagentTranscript('s1', 'a1')
+    expect(sock().framesOfKind('subagent-transcript-subscribe')).toHaveLength(1)
+
+    // 重连:重发所有仍持有的
+    act(() => { sock().serverDrop() })
+    await flushMicrotasks()
+    act(() => { vi.advanceTimersByTime(500) })
+    openSocket()
+    const subs = sock().framesOfKind('subagent-transcript-subscribe')
+    expect(subs).toHaveLength(1) // 本次连接的
+    expect(subs[0]).toMatchObject({ sessionId: 's1', agentId: 'a1' })
+
+    release2()
+    release()
+    expect(sock().framesOfKind('subagent-transcript-unsubscribe')).toHaveLength(1)
+  })
+})
+
 // ── contract ───────────────────────────────────────────────────────
 
 describe('useWsHub: contract', () => {
