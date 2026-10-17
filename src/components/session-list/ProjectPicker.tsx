@@ -22,7 +22,7 @@ import { IconCheck, IconChevronDown, IconChevronUp, IconFolder, IconSearch, Icon
 import { useEscapeStack } from '../../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../../hooks/useOutsideMouseDown'
 import { markPortaledSurface } from '../../theme'
-import { isAbsolutePath, shortenPath } from '../../utils/paths'
+import { isAbsolutePath, shortenPath, basenameOf, parentOf, initialOf } from '../../utils/paths'
 import { clamp } from '../../utils/clamp'
 
 export interface ProjectPickerProps {
@@ -41,21 +41,9 @@ export interface ProjectPickerProps {
   onBrowse: () => void
 }
 
-/** Last path segment — the project's display name. */
-function basenameOf(p: string): string {
-  const parts = p.split(/[/\\]/).filter(Boolean)
-  return parts.length > 0 ? parts[parts.length - 1] : p
-}
-
-/** Everything before the last separator (used for the dimmed sub-line). */
-function parentOf(p: string): string {
-  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
-  return i > 0 ? p.slice(0, i) : p
-}
-
-function initialOf(p: string): string {
-  return (basenameOf(p)[0] ?? '?').toUpperCase()
-}
+// basenameOf / parentOf / initialOf live in utils/paths.ts, hoisted there so
+// the session-header project chip renders project names with the exact same
+// derivation.
 
 /** Design maximum for the list, mirrored by the CSS default of
  *  `--project-picker-list-max`. The flip/height math below never grows the

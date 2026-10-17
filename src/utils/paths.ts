@@ -103,3 +103,22 @@ export function resolveAbsolutePath(cwd: string | undefined, path: string): stri
   return `${base}${sep}${norm(path)}`
 }
 
+
+/** Last path segment — a project's display name. Separator-tolerant
+ *  (both `/` and `\`, trailing separator ignored). */
+export function basenameOf(p: string): string {
+  const parts = p.split(/[/\\]/).filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1] : p
+}
+
+/** Everything before the last separator (the dimmed sub-line under a
+ *  project name). Returns the input when there is no parent. */
+export function parentOf(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  return i > 0 ? p.slice(0, i) : p
+}
+
+/** First character of the basename, uppercased — the project avatar. */
+export function initialOf(p: string): string {
+  return (basenameOf(p)[0] ?? '?').toUpperCase()
+}

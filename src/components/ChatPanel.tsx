@@ -29,9 +29,10 @@ import { useModelOptions } from '../hooks/useModelOptions'
 import { AnimatePresence } from 'motion/react'
 import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
-import { shortenPath } from '../utils/paths'
+import { basenameOf, initialOf } from '../utils/paths'
+import { ProjectPopover } from './ProjectPopover'
 import { gitChipText } from '../utils/git-chip'
-import { IconFolder, IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
+import { IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { PermissionModeIcon, permissionModeLabel, permissionModeShortLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingDisplay, ThinkingSetting } from '../types'
@@ -487,6 +488,13 @@ export const ChatPanel = memo(function ChatPanel({
   // vanish (and never return) the moment a session went idle, because the
   // hook resets data to null when disabled. Only the cwd matters here.
   const gitStatus = useGitStatus(session.cwd, session.id, { enabled: !!session.cwd })
+
+  // Project chip (header row 2) + its detail popover. Replaces the old cwd
+  // Tooltip with a New-session-style project display (avatar + basename);
+  // clicking opens ProjectPopover, which carries the full path and the
+  // Finder/Terminal/copy actions.
+  const [projectOpen, setProjectOpen] = useState(false)
+  const projectChipRef = useRef<HTMLButtonElement | null>(null)
 
   // Agent-driven worktree isolation state, folded from EnterWorktree /
   // ExitWorktree in this session's transcript, reconciled against the git
@@ -1175,6 +1183,16 @@ export const ChatPanel = memo(function ChatPanel({
             />
           )}
         </AnimatePresence>
+        <AnimatePresence>
+          {projectOpen && session.cwd && (
+            <ProjectPopover
+              key="project"
+              path={session.cwd}
+              triggerRef={projectChipRef}
+              onClose={() => setProjectOpen(false)}
+            />
+          )}
+        </AnimatePresence>
         </div>
         {session.error && (
           <>
@@ -1197,12 +1215,23 @@ export const ChatPanel = memo(function ChatPanel({
         {(session.cwd || gitStatus.data?.isRepo === true) && (
           <div className="chat-panel-header-row2">
             {session.cwd && (
-              <Tooltip label={session.cwd} placement="bottom" align="start">
-                <span className="chat-panel-cwd">
-                  <IconFolder size={12} />
-                  {shortenPath(session.cwd)}
+              <button
+                ref={projectChipRef}
+                type="button"
+                className="chat-panel-project"
+                aria-haspopup="dialog"
+                aria-expanded={projectOpen}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setProjectOpen((v) => !v)
+                }}
+              >
+                <span className="chat-panel-project-avatar" aria-hidden>
+                  {initialOf(session.cwd)}
                 </span>
-              </Tooltip>
+                <span className="chat-panel-project-name">{basenameOf(session.cwd)}</span>
+              </button>
             )}
             {/* Worktree-isolation badge — the session was created with the
                 new-session dialog's isolate checkbox, so its cwd IS a

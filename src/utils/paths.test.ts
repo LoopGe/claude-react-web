@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shortenPath, splitDrive, buildCrumbs, isAbsolutePath, resolveAbsolutePath } from './paths'
+import { shortenPath, splitDrive, buildCrumbs, isAbsolutePath, resolveAbsolutePath, basenameOf, parentOf, initialOf } from './paths'
 
 // ── splitDrive ──────────────────────────────────────────────────────
 
@@ -275,5 +275,49 @@ describe('resolveAbsolutePath', () => {
 
   it('returns cwd when path is empty', () => {
     expect(resolveAbsolutePath('/home/me/proj', '')).toBe('/home/me/proj')
+  })
+})
+
+// ── basenameOf / parentOf / initialOf ───────────────────────────────
+// (project display names — hoisted here so the session-header project
+// chip and the New-session ProjectPicker can't drift)
+
+describe('basenameOf', () => {
+  it('returns the last segment of a unix path', () => {
+    expect(basenameOf('/home/user/my-project')).toBe('my-project')
+  })
+
+  it('returns the last segment of a windows path', () => {
+    expect(basenameOf('C:\\Users\\john\\proj')).toBe('proj')
+  })
+
+  it('ignores a trailing separator', () => {
+    expect(basenameOf('/home/user/proj/')).toBe('proj')
+  })
+
+  it('returns the input for a bare segment', () => {
+    expect(basenameOf('proj')).toBe('proj')
+  })
+})
+
+describe('parentOf', () => {
+  it('returns everything before the last separator', () => {
+    expect(parentOf('/home/user/my-project')).toBe('/home/user')
+    expect(parentOf('C:\\Users\\john\\proj')).toBe('C:\\Users\\john')
+  })
+
+  it('returns the input when there is no parent', () => {
+    expect(parentOf('proj')).toBe('proj')
+    expect(parentOf('/proj')).toBe('/proj')
+  })
+})
+
+describe('initialOf', () => {
+  it('uppercases the first character of the basename', () => {
+    expect(initialOf('/home/user/my-project')).toBe('M')
+  })
+
+  it('falls back to ? for an empty path', () => {
+    expect(initialOf('')).toBe('?')
   })
 })

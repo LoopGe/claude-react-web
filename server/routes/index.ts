@@ -29,6 +29,7 @@ import { buildHooksRouter } from './hooks.js'
 import { buildDiagnosticsRouter } from './diagnostics.js'
 import { buildStructuredRouter } from './structured.js'
 import { buildFirstPartyRouter } from './first-party.js'
+import { buildOpenPathRouter } from './open-path.js'
 import { ScheduledSendManager } from '../scheduled-send-manager.js'
 import { buildScheduledSendRouter } from './scheduled-sends.js'
 import { buildMetricsRouter } from './metrics.js'
@@ -147,6 +148,7 @@ export function buildApiRouter(
   app.route('/', buildRecapRouter(sm))
   app.route('/', buildSearchRouter(sm))
   app.route('/', buildStructuredRouter(sm))
+  app.route('/', buildOpenPathRouter())
   // Homegrown git-repo marketplace lives under /mp/*. Only mounted when an
   // MpStore was provided — other buildApp callers (tests, standalone
   // tooling) skip it cleanly.
