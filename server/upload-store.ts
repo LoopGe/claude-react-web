@@ -47,6 +47,7 @@ export function coerceStoredUpload(raw: unknown): UploadEntry | null {
     size: r.size,
     uploadedAt: r.uploadedAt,
     sessionTitle: typeof r.sessionTitle === 'string' ? r.sessionTitle : '',
+    origin: r.origin === 'common' ? 'common' : undefined,
   }
 }
 
@@ -132,6 +133,13 @@ export class UploadStore extends JsonFileStore<UploadEntry> {
     this.remove(path)
   }
 
+  /** Exact lookup by the store's path key (the same map `list()` reads;
+   *  `getKey` returns `entry.path`). Returns undefined when the path is
+   *  not recorded. */
+  getByPath(path: string): UploadEntry | undefined {
+    return this.get(path)
+  }
+
   /** Seed the registry from the on-disk `claude-web-uploads/` folders of
    *  the given sessions. Idempotent — already-recorded paths (matched by
    *  path) keep their original uploadedAt/sessionTitle; only new paths are
@@ -177,6 +185,48 @@ export class UploadStore extends JsonFileStore<UploadEntry> {
     }
     if (added > 0) {
       log.info(`backfill added ${added} upload ${added === 1 ? 'entry' : 'entries'}`)
+    }
+    return added
+  }
+
+  /** Scan `<stateDir>/claude-web-uploads/` and record any files not yet in
+   *  the registry. Idempotent — already-recorded paths (matched by path)
+   *  are skipped. Missing or unreadable dir → 0 without throwing. Each new
+   *  entry gets `cwd: resolvePath(this.getDir())`, `sessionTitle: ''`,
+   *  `origin: 'common'`, `uploadedAt: stat.mtimeMs`. */
+  async backfillCommonDir(): Promise<number> {
+    let added = 0
+    const dir = resolvePath(this.getDir(), UPLOAD_SUBDIR)
+    let names: string[]
+    try {
+      names = await fs.readdir(dir)
+    } catch {
+      return 0 // no upload dir (or unreadable) — nothing to seed
+    }
+    for (const name of names) {
+      const path = resolvePath(dir, name)
+      let stat
+      try {
+        stat = await fs.stat(path)
+      } catch {
+        continue
+      }
+      if (!stat.isFile()) continue
+      if (this.has(path)) continue
+      this.upsert({
+        id: randomUUID(),
+        path,
+        cwd: resolvePath(this.getDir()),
+        name: basename(path),
+        size: stat.size,
+        uploadedAt: stat.mtimeMs,
+        sessionTitle: '',
+        origin: 'common',
+      })
+      added++
+    }
+    if (added > 0) {
+      log.info(`backfillCommonDir added ${added} upload ${added === 1 ? 'entry' : 'entries'}`)
     }
     return added
   }

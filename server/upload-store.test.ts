@@ -114,6 +114,14 @@ describe('UploadStore', () => {
       store.removeByPath('/proj/claude-web-uploads/2-b.txt')
       expect(store.getById('b')).toBeUndefined()
     })
+
+    it('getByPath returns the entry for a known path', () => {
+      expect(store.getByPath('/proj/claude-web-uploads/1-a.txt')?.name).toBe('a.txt')
+    })
+
+    it('getByPath returns undefined for an unknown path', () => {
+      expect(store.getByPath('/no/such/path')).toBeUndefined()
+    })
   })
 
   describe('coerceStoredUpload', () => {
@@ -127,6 +135,21 @@ describe('UploadStore', () => {
     it('accepts a full valid entry', () => {
       const entry = makeEntry()
       expect(coerceStoredUpload(entry)).toEqual(entry)
+    })
+
+    it('round-trips origin: "common"', () => {
+      const entry = makeEntry({ origin: 'common' })
+      expect(coerceStoredUpload(entry)).toEqual(entry)
+    })
+
+    it('maps absent origin to undefined', () => {
+      const raw = { id: 'a', path: '/p', cwd: '/c', name: 'a.txt', size: 1, uploadedAt: 1 }
+      expect(coerceStoredUpload(raw)!.origin).toBeUndefined()
+    })
+
+    it('maps origin: "session" (unknown literal) to undefined', () => {
+      const entry = makeEntry({ origin: 'session' as unknown as 'common' })
+      expect(coerceStoredUpload(entry)!.origin).toBeUndefined()
     })
   })
 
@@ -170,6 +193,52 @@ describe('UploadStore', () => {
         { title: 'no cwd' },
         { cwd: tempDir('no-upload-dir'), title: 'empty' },
       ])
+      expect(added).toBe(0)
+    })
+  })
+
+  describe('backfillCommonDir', () => {
+    it('seeds entries with cwd=stateDir, empty sessionTitle, origin common, correct size and mtime', async () => {
+      const updir = join(dir, 'claude-web-uploads')
+      mkdirSync(updir, { recursive: true })
+      writeFileSync(join(updir, '10-report.pdf'), 'hello')
+
+      const added = await store.backfillCommonDir()
+      expect(added).toBe(1)
+
+      const entry = store.list()[0]
+      const expectedStat = statSync(join(updir, '10-report.pdf'))
+      expect(entry.name).toBe('10-report.pdf')
+      expect(entry.size).toBe(5)
+      expect(entry.sessionTitle).toBe('')
+      expect(entry.origin).toBe('common')
+      expect(entry.cwd).toBe(dir)
+      expect(entry.uploadedAt).toBe(expectedStat.mtimeMs)
+      expect(entry.path).toBe(join(updir, '10-report.pdf'))
+    })
+
+    it('is idempotent — second run adds 0', async () => {
+      const updir = join(dir, 'claude-web-uploads')
+      mkdirSync(updir, { recursive: true })
+      writeFileSync(join(updir, '1-a.txt'), 'x')
+
+      const first = await store.backfillCommonDir()
+      expect(first).toBe(1)
+      const second = await store.backfillCommonDir()
+      expect(second).toBe(0)
+      expect(store.list()).toHaveLength(1)
+    })
+
+    it('skips a subdirectory inside the upload dir', async () => {
+      const updir = join(dir, 'claude-web-uploads')
+      mkdirSync(join(updir, 'subdir'), { recursive: true })
+
+      const added = await store.backfillCommonDir()
+      expect(added).toBe(0)
+    })
+
+    it('returns 0 without throwing for a missing dir', async () => {
+      const added = await store.backfillCommonDir()
       expect(added).toBe(0)
     })
   })
