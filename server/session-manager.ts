@@ -4075,11 +4075,13 @@ export class SessionManager {
         modelGroupId: s.modelGroupId,
         permissionMode: s.permissionMode,
         // Plain /clear starts a FRESH conversation, so Y is untitled — the
-        // sidebar falls back to the id prefix until the user renames it
-        // (titles are user-set only; there is no auto-titler). Carrying X's
-        // title over would stick a stale label on the new conversation
-        // forever. Compact (seedText) is a CONTINUATION of the same
-        // conversation, so it keeps X's title.
+        // sidebar falls back to the id prefix and the first post-clear message
+        // auto-titles it. Carrying X's title over would stick a stale label on
+        // the new conversation forever (autoGenerateTitle short-circuits once a
+        // title exists). Compact (seedText) is a CONTINUATION of the same
+        // conversation, so it keeps X's title: the client's isFirstUserTurn is
+        // suppressed by the seeded summary, so a compacted Y would otherwise
+        // stay untitled forever.
         title: opts?.seedText ? s.title : undefined,
         effortLevel: s.effortLevel,
         thinking: s.thinking,
@@ -5872,6 +5874,48 @@ export class SessionManager {
       'supportsUsage',
     )
     return this.timeSdkControl(id, 'getUsage', fn)
+  }
+
+  /** Auto-generate a session title from a short description, via the SDK's
+   *  `generate_session_title` control request (persisted to the CLI
+   *  transcript via `persist: true` so it survives resume). NO-OP when the
+   *  session already has a title — the user named it, or an earlier
+   *  auto-title landed — so a user-chosen title is never overwritten.
+   *  Mirrors usage()/accountInfo() as a capability-gated provider passthrough,
+   *  but additionally writes the title into SessionMeta + broadcasts a
+   *  session-update so every tab's sidebar refreshes. */
+  async autoGenerateTitle(id: string, description: string): Promise<SessionInfo> {
+    const s = this.requireLive(id)
+    // Guard FIRST: a named session must never trigger an LLM title call.
+    // The default path stays strictly overwrite-free.
+    if (s.title) return this.info(s)
+    const fn = this.requireHandleMethod<(desc: string) => Promise<unknown>>(
+      s,
+      'generateTitle',
+      'auto-title',
+      'supportsSessionTitle',
+    )
+    const raw = await this.timeSdkControl(id, 'generateSessionTitle', () => fn(description))
+    // Re-check AFTER the await: the LLM call takes seconds, and a user
+    // rename (or a second tab's title call) that landed in that window
+    // must not be clobbered — the no-overwrite guard only held at entry.
+    if (s.title) return this.info(s)
+    // The SDK's `generateSessionTitle` resolves to the title STRING itself
+    // (it returns `response.title`), not a `{ title }` wrapper object.
+    // Parsing `raw.title` against a plain string always yielded '' — so
+    // auto-title silently produced no title for every session. The whole
+    // resolved value IS the title.
+    const generated = String(raw ?? '').trim()
+    if (!generated) {
+      log.warn(`[session ${id}] auto-title generated an empty title; leaving untitled`)
+      return this.info(s)
+    }
+    s.title = generated
+    s.lastActivityAt = Date.now()
+    // persist() broadcasts the session-update itself — no extra frame here
+    // (same as rename()).
+    this.persist(s)
+    return this.info(s)
   }
 
   /** Authenticated-account info for the session's CLI subprocess (email,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, computeTurnActive, countTaskActivity, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, computeTurnActive, countTaskActivity, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem, autoTitleDescription } from './normalize'
 import type { SdkMessage, TaskRecordUi } from '../types'
 import { TERMINAL_TASK_STATUSES } from '../../shared/tasks.js'
 
@@ -527,5 +527,18 @@ describe('toTranscriptItem — empty result suppression', () => {
     expect(toTranscriptItem(resultMsg({ num_turns: 1, result: 'done' }), undefined)).not.toBeNull()
     expect(toTranscriptItem(resultMsg({ result: '/usage output' }), undefined)).not.toBeNull()
     expect(toTranscriptItem(resultMsg({ is_error: true, subtype: 'error_during_execution' }), undefined)).not.toBeNull()
+  })
+})
+
+describe('autoTitleDescription', () => {
+  it('prefers the typed text over the composed message', () => {
+    expect(autoTitleDescription('fix the bug', 'Attached: src/a.ts\n\nfix the bug')).toBe('fix the bug')
+  })
+  it('falls back to the composed message for image-only sends', () => {
+    expect(autoTitleDescription('', 'Draft: ship it')).toBe('Draft: ship it')
+  })
+  it('truncates to 300 chars', () => {
+    const long = 'x'.repeat(400)
+    expect(autoTitleDescription(long, long).length).toBe(300)
   })
 })

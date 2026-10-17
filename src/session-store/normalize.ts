@@ -533,6 +533,15 @@ export function getEnterPlanToolUseIds(msg: SdkMessage): string[] {
   return ids
 }
 
+/** Pick the description used to auto-generate a session title: prefer the
+ *  user's typed text, fall back to the composed (preamble + text) message
+ *  (image-only first turns have empty typed text), then trim and truncate
+ *  so the title-generation LLM call stays cheap. */
+export function autoTitleDescription(text: string, full: string): string {
+  const src = text.trim() || full
+  return src.trim().slice(0, 300)
+}
+
 /** True when the WorkingBubble should stay mounted in its "Waiting..." state:
  *  the parent turn has ended but work is still in flight. `runningCount` is the
  *  authoritative task-store count of running background tasks (already filtered

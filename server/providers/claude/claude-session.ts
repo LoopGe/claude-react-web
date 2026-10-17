@@ -256,6 +256,20 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
     return this.query.accountInfo()
   }
 
+  /** Auto-generated session title (SDK `generate_session_title` control
+   *  request). `persist: true` writes the title into the CLI transcript so
+   *  it survives `--resume`. The SDK resolves to the title STRING (it
+   *  returns `response.title`), not a `{ title }` wrapper. */
+  generateTitle(description: string): Promise<unknown> {
+    const q = this.query as typeof this.query & {
+      generateSessionTitle(
+        description: string,
+        options: { persist: boolean },
+      ): Promise<string>
+    }
+    return q.generateSessionTitle(description, { persist: true })
+  }
+
   /** Read a file's content (SDK Query.readFile), gated by the session's
    *  Read-permission rules inside the SDK. Resolves `{ contents }` or null
    *  (denied / missing); the manager narrows via coerceReadFileOutput. */

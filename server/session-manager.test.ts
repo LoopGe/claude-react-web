@@ -50,6 +50,7 @@ interface MockQueryHandle {
   setMcpPermissionModeOverride: ReturnType<typeof vi.fn>
   getContextUsage: ReturnType<typeof vi.fn>
   accountInfo: ReturnType<typeof vi.fn>
+  generateSessionTitle: ReturnType<typeof vi.fn>
   readFile: ReturnType<typeof vi.fn>
   seedReadState: ReturnType<typeof vi.fn>
 }
@@ -221,6 +222,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         setMcpPermissionModeOverride: vi.fn(async () => ({})),
         getContextUsage: vi.fn(async () => ({})),
         accountInfo: vi.fn(async () => ({})),
+        generateSessionTitle: vi.fn(async (_desc: string, _opts?: { persist?: boolean }) => 'Mock auto title'),
         readFile: vi.fn(async () => ({ available: false })),
         seedReadState: vi.fn(async () => {}),
       }
@@ -268,6 +270,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => {
         setMcpPermissionModeOverride: handle.setMcpPermissionModeOverride,
         getContextUsage: handle.getContextUsage,
         accountInfo: handle.accountInfo,
+        generateSessionTitle: handle.generateSessionTitle,
         readFile: handle.readFile,
         seedReadState: handle.seedReadState,
       }
@@ -4234,6 +4237,42 @@ describe('SessionManager', () => {
 
   it('setToolProfile() requires a live session', async () => {
     await expect(sm.setToolProfile('nope', { tools: ['Bash'] })).rejects.toThrow('not found')
+  })
+
+  it('autoGenerateTitle persists a generated title on an untitled session, exactly once', async () => {
+    const info = await sm.create({ cwd: '/tmp' })
+    const handle = mockHandles[mockHandles.length - 1]
+    const titled = await sm.autoGenerateTitle(info.id, 'Refactor the checkout flow')
+    expect(titled.title).toBe('Mock auto title')
+    expect(handle.generateSessionTitle).toHaveBeenCalledWith('Refactor the checkout flow', { persist: true })
+    // Second call is a no-op: the title is already set.
+    const again = await sm.autoGenerateTitle(info.id, 'whatever')
+    expect(again.title).toBe('Mock auto title')
+    expect(handle.generateSessionTitle).toHaveBeenCalledTimes(1)
+  })
+
+  it('autoGenerateTitle never overwrites a user-named session', async () => {
+    const info = await sm.create({ cwd: '/tmp', title: 'My session' })
+    const handle = mockHandles[mockHandles.length - 1]
+    const titled = await sm.autoGenerateTitle(info.id, 'should be ignored')
+    expect(titled.title).toBe('My session')
+    expect(handle.generateSessionTitle).not.toHaveBeenCalled()
+  })
+
+  it('autoGenerateTitle does not clobber a rename that landed while the LLM call was in flight', async () => {
+    const info = await sm.create({ cwd: '/tmp' })
+    const handle = mockHandles[mockHandles.length - 1]
+    let release!: (v: string) => void
+    handle.generateSessionTitle.mockImplementationOnce(
+      () => new Promise<string>((r) => { release = r }),
+    )
+    const pending = sm.autoGenerateTitle(info.id, 'Refactor the checkout flow')
+    // The generate call starts synchronously inside the async body, so the
+    // deferred promise exists by the time autoGenerateTitle returns.
+    await sm.rename(info.id, 'User named')
+    release('LLM title')
+    const titled = await pending
+    expect(titled.title).toBe('User named')
   })
 
   it('setMemorySettings() forwards only present keys and records them on the session', async () => {

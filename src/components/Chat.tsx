@@ -77,7 +77,7 @@ import { useTaskList } from '../hooks/useTaskList'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
 import { useSessionTaskCounts } from '../session-store/selectors'
-import { computeWaiting, computeTurnActive, hasTranscriptBackground, countQueuedUserTurns } from '../session-store/normalize'
+import { computeWaiting, computeTurnActive, hasTranscriptBackground, autoTitleDescription, isHumanUserMessage, countQueuedUserTurns } from '../session-store/normalize'
 import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction } from '../utils/task-actions'
 import { composeOutgoing } from '../utils/outgoing-text'
 import { planSubmission } from '../utils/submission'
@@ -600,6 +600,8 @@ export const Chat = memo(function Chat({
   // handler — `stream.messages` changes on every streamed message).
   const messagesRef = useRef(stream.messages)
   messagesRef.current = stream.messages
+  const sessionTitleRef = useRef(session.title)
+  sessionTitleRef.current = session.title
   // Top-level user turns queued behind the in-flight turn (server-acked, not
   // yet consumed) — drives the Composer's interrupt-button tooltip. The scan
   // is cheap: `stream.messages` is reference-stable during token streaming
@@ -1659,6 +1661,13 @@ export const Chat = memo(function Chat({
     // ran AFTER await, so the broadcast arrived first and the dedup
     // (which compares content with ===) failed for image arrays,
     // leaving two "you" bubbles in the transcript.
+    // First real user turn? Only the session's first HUMAN-typed message
+    // should trigger auto-title (isHumanUserMessage — not the replay-dedup
+    // signature — so command logs and other synthetic user frames that
+    // arrived earlier or via disk replay don't count). Computed BEFORE the
+    // optimistic insert so the placeholder we just inserted can't skew the
+    // count.
+    const isFirstUserTurn = !messagesRef.current.some(isHumanUserMessage)
     const pendingId = full.trim() ? insertUserMessage(full) : null
 
     // POST with a bounded retry for the crash-recovery window: the server
@@ -1711,6 +1720,15 @@ export const Chat = memo(function Chat({
       // clicked the Send button it's currently on the button and the
       // next keystroke wouldn't show up.
       setComposerFocusSignal((n) => n + 1)
+      // Auto-title (fire-and-forget): on the first user turn of an untitled
+      // session, ask the server to generate a title from this message. The
+      // server no-ops if the user has already named the session, so a
+      // user-chosen title is never overwritten. A failed title call must
+      // never affect message sending.
+      if (isFirstUserTurn && !sessionTitleRef.current) {
+        const description = autoTitleDescription(text, full)
+        void api.post(`/sessions/${session.id}/title`, { description }).catch(() => {})
+      }
     } catch (e) {
       setLocalError((e as Error).message)
       // Roll back the optimistic placeholder so the user sees that the

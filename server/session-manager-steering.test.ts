@@ -79,6 +79,7 @@ const FAKE_CAPS: ProviderCapabilities = {
   supportsContextUsage: false,
   supportsUsage: false,
   supportsAccountInfo: false,
+  supportsSessionTitle: false,
   supportsTaskControl: false,
   supportsStructuredOutput: false,
   supportsReadFile: false,
