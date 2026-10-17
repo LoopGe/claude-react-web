@@ -49,7 +49,10 @@ export async function summarizeForCompact(messages: SDKMessage[], target?: AuxLl
     target,
     system: COMPACT_SYSTEM_PROMPT,
     userContent: transcript,
-    maxTokens: 1000,
+    // 2048: reasoning-model thinking headroom — see recap.ts. Thinking
+    // consumes max_tokens before the summary text on GLM / DeepSeek
+    // gateways; 1000 was sized for the summary alone.
+    maxTokens: 2048,
     temperature: 0,
     caller: 'compact-summary',
   })

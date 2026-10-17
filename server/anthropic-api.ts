@@ -56,10 +56,11 @@ interface CallOptions {
   target?: AuxLlmTarget
 }
 
-/** POST /v1/messages with a single-turn user message. Returns the raw
- *  text from the first content block. Throws on non-2xx, network errors,
- *  timeout, or empty content — callers wrap in try/catch when they want
- *  a graceful fallback path. */
+/** POST /v1/messages with a single-turn user message. Returns the raw text
+ *  from the FIRST content block carrying a text field — reasoning models
+ *  (GLM / DeepSeek on Anthropic-compatible gateways) put a `thinking` block
+ *  before it. Throws on non-2xx, network errors, timeout, or empty content
+ *  — callers wrap in try/catch when they want a graceful fallback path. */
 export async function callAnthropicMessages(opts: CallOptions): Promise<string> {
   // Guard, not a fallback: every caller resolves its model from a config
   // setting that is EMPTY by default ('' = "use the session's model"), so a
@@ -107,8 +108,17 @@ export async function callAnthropicMessages(opts: CallOptions): Promise<string> 
       log.error(`api error status=${res.status} elapsed=${Date.now() - start}ms model=${opts.model} baseUrl=${baseUrl} body=${body.slice(0, LOG_PREVIEW_CAP)}`)
       throw new Error(`Anthropic API ${res.status}: ${body.slice(0, LOG_PREVIEW_CAP)}`)
     }
+    // Skip non-text blocks: reasoning-style models (e.g. GLM on the Volcengine
+    // Ark gateway) return a `thinking` block BEFORE the text block, so
+    // `content[0].text` is undefined even on a successful response. Take the
+    // FIRST block carrying a text field — callers (fence stripping, regex
+    // trims) were built against first-block semantics. Matched by typeof
+    // rather than `type === 'text'` because loosely-conformant gateways omit
+    // the type field.
     const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> }
-    const text = data.content?.[0]?.text
+    const text = (data.content ?? []).find(
+      (b) => typeof b?.text === 'string' && b.text,
+    )?.text
     if (!text) {
       log.error(`empty response elapsed=${Date.now() - start}ms model=${opts.model} baseUrl=${baseUrl}`)
       throw new Error('Empty response from Anthropic API')

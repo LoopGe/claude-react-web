@@ -58,7 +58,7 @@ describe('summarizeForCompact', () => {
     expect(mockCall).toHaveBeenCalledTimes(1)
     const opts = mockCall.mock.calls[0][0]
     expect(opts.model).toBe(TARGET.model)
-    expect(opts.maxTokens).toBe(1000)
+    expect(opts.maxTokens).toBe(2048)
     expect(opts.temperature).toBe(0)
     // The transcript must carry the actual conversation (not a generic recap).
     expect(opts.userContent).toContain('dark mode toggle')

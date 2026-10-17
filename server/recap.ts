@@ -262,7 +262,12 @@ async function callAnthropic(transcript: string, language: string | null, target
     target,
     system: buildSystemPrompt(language),
     userContent: transcript,
-    maxTokens: 1000,
+    // 2048: reasoning models (GLM / DeepSeek on Anthropic-compatible
+    // gateways) emit a `thinking` block that consumes max_tokens BEFORE the
+    // summary text. 1000 was sized for the summary alone; measured thinking
+    // runs 100–500+ tokens, so the extra headroom keeps the summary itself
+    // from being truncated (stop_reason=max_tokens) on reasoning models.
+    maxTokens: 2048,
     temperature: 0,
     caller: 'recap',
   })

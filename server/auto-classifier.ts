@@ -195,7 +195,7 @@ export async function classifyToolAction(params: {
   const userPrompt = parts.join('\n')
 
   // Merge the caller's signal with our own timeout
-  const timeoutMs = config.autoClassifierTimeout ?? 5_000
+  const timeoutMs = config.autoClassifierTimeout ?? 15_000
   const timeoutSignal = AbortSignal.timeout(timeoutMs)
   const mergedSignal = signal
     ? AbortSignal.any([signal, timeoutSignal])
@@ -215,7 +215,16 @@ export async function classifyToolAction(params: {
       target,
       system: CLASSIFIER_SYSTEM_PROMPT,
       userContent: userPrompt,
-      maxTokens: 32,
+      // 1024: reasoning models (GLM / DeepSeek on Anthropic-compatible
+      // gateways) emit a `thinking` block that consumes max_tokens BEFORE
+      // the text answer. The old 32-token budget let thinking alone hit the
+      // cap (stop_reason=max_tokens, empty text block), so the call threw
+      // and the classifier silently fell back to a human prompt on every
+      // request. Measured thinking length varies widely (182–512+ output
+      // tokens for one verdict on glm-5.3-flash — a 512 budget was still
+      // exhausted in 1 of 3 live runs), so the budget needs generous
+      // headroom; latency is bounded separately by autoClassifierTimeout.
+      maxTokens: 1024,
       temperature: 0,
       signal: mergedSignal,
       caller: 'auto-classifier',

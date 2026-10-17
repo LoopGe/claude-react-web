@@ -244,7 +244,10 @@ export interface ServerConfig {
    *  the session model is a large/slow one, since the classifier must answer
    *  within autoClassifierTimeout or it fails closed to the human prompt. */
   readonly autoClassifierModel: string
-  /** Timeout (ms) for classifier API calls. */
+  /** Timeout (ms) for classifier API calls. The 15s default is measured
+   *  against reasoning models (GLM / DeepSeek on Anthropic-compatible
+   *  gateways): their thinking block runs 4–9s per verdict, so the old 5s
+   *  default failed closed to the human prompt on most requests. */
   readonly autoClassifierTimeout: number
   /** Global default for the pinned "current question" header. Sessions
    *  without an explicit override inherit this. */
@@ -329,7 +332,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   skillLoadMode: 'default',
   enabledSkills: Object.freeze([]),
   autoClassifierModel: '',
-  autoClassifierTimeout: 5000,
+  autoClassifierTimeout: 15_000,
   showPinnedUserMessage: true,
   autoRecap: true,
   toolGroupCards: true,

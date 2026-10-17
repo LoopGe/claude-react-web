@@ -46,9 +46,12 @@ async function callAnthropic(diff: string, signal: AbortSignal | undefined, targ
     system: SYSTEM_PROMPT,
     userContent: diff || '(empty diff)',
     caller: 'commit-message',
-    // 400 covers a 72-char subject + a few-paragraph body. Larger
-    // values waste cost on a model that should be terse anyway.
-    maxTokens: 400,
+    // 1024: reasoning models (GLM / DeepSeek on Anthropic-compatible
+    // gateways) emit a `thinking` block that consumes max_tokens BEFORE the
+    // text answer — a 400 budget left only ~20% headroom on a measured
+    // medium diff and would truncate (stop_reason=max_tokens, empty text)
+    // as soon as thinking runs long. Still cheap for an aux call.
+    maxTokens: 1024,
     // Slightly higher than recap's 0.3 so the model is willing to
     // pick a definite verb / scope. Still well below "creative".
     temperature: 0.4,
