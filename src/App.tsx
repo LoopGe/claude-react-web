@@ -12,7 +12,7 @@ import { ContextMenu } from './components/ContextMenu'
 import { DialogHosts } from './components/DialogHosts'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
-import { PANEL_CACHE_EXTRA, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshotTop } from './utils/panel-cache'
+import { PANEL_CACHE_EXTRA, evictFromCache, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshotTop } from './utils/panel-cache'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -277,6 +277,18 @@ export function App() {
    *  snapshot of the SessionInfo at the moment the panel was removed so
    *  the closing ChatPanel can finish rendering + fading out. */
   const [closingPanels, setClosingPanels] = useState<{ id: string; session: SessionInfo; rect: DOMRect }[]>([])
+  /** Keep-alive cache: session ids whose panels stay MOUNTED (hidden via
+   *  PanelSlot's `hidden`) after leaving the open view, so a session switch
+   *  preserves scroll position, follow state, the Virtuoso window and the WS
+   *  subscription. LRU order, capped at maxOpen + PANEL_CACHE_EXTRA; synced
+   *  render-phase when openIds changes (see the entering-diff block) and
+   *  evicted explicitly on dismissal paths (closeSession / swapSession /
+   *  teardownRemovedSession / closeGroupPanels). Declared here — before the
+   *  swap/teardown/close callbacks that evict from it — because component
+   *  order is also declaration order for everything below.
+   *  readonly: mergeOpenIntoCache/evictFromCache return readonly arrays —
+   *  the state must accept them without a spread-copy. */
+  const [panelCache, setPanelCache] = useState<readonly string[]>([])
   const prevOpenIdsRef = useRef<string[]>([])
   /** Which of the open panels is currently focused (controls settings
    *  panel target + clears unread when selected). */
@@ -1464,6 +1476,10 @@ export function App() {
           return next
         })
         setOpenIds((prev) => prev.map((id) => (id === oldId ? newId : id)))
+        // X is dead server-side (/clear, fork, discard) — its cached panel
+        // would hold a stale store and subscription. Y joins the cache via
+        // the openIds render-phase sync.
+        setPanelCache((prev) => evictFromCache(prev, [oldId]))
         setFocusedId((prev) => (prev === oldId ? newId : prev))
         setGroups((prev) => inheritGroupId(prev, oldId, newId))
         setSidebarOrder((prev) => inheritSidebarOrderId(prev, oldId, newId))
@@ -1536,6 +1552,8 @@ export function App() {
       })
       setSessions((prev) => prev.filter((s) => s.id !== id))
       setOpenIds((prev) => prev.filter((x) => x !== id))
+      // Session gone server-side — its cached panel must go with it.
+      setPanelCache((prev) => evictFromCache(prev, [id]))
       setFocusedId((prev) => (prev === id ? null : prev))
       setLastSeenTurn((prev) => {
         if (!(id in prev)) return prev
@@ -1617,6 +1635,10 @@ export function App() {
       if (survivors.length > 0 && survivors.length !== prevOpen.length) {
         animatePanelsRef.current?.(...survivors)
       }
+      // Explicit dismissal: X-closing a panel also drops it from the
+      // keep-alive cache — a hidden zombie would keep its session store
+      // retained and its subscription pumping for a panel the user closed.
+      setPanelCache((prev) => evictFromCache(prev, [id]))
       setOpenIds((prev) => {
         const next = prev.filter((x) => x !== id)
         // Schedule the focusedId update inside this updater where
@@ -1645,6 +1667,10 @@ export function App() {
         groupSessionIds: group.sessionIds,
         focusedId: focusedIdRef.current,
       })
+      // Group deactivation is an explicit dismissal of every member panel
+      // that was open — same keep-alive eviction semantics as closeSession.
+      const closedIds = prevOpen.filter((id) => !nextOpen.includes(id))
+      if (closedIds.length > 0) setPanelCache((prev) => evictFromCache(prev, closedIds))
       // FLIP any surviving (non-group) panels into the freed space, mirroring
       // closeSession. When the group was the whole open set this is a no-op.
       if (nextOpen.length !== prevOpen.length) {
@@ -2572,20 +2598,12 @@ export function App() {
     [resolvedOpenIds, sessions],
   )
 
-  /** Keep-alive cache: session ids whose panels stay MOUNTED (hidden via
-   *  PanelSlot's `hidden`) after leaving the open view, so a session switch
-   *  preserves scroll position, follow state, the Virtuoso window and the WS
-   *  subscription. LRU order, capped at maxOpen + PANEL_CACHE_EXTRA; synced
-   *  render-phase when openIds changes (see the entering-diff block) and
-   *  evicted explicitly on dismissal paths (closeSession / swapSession /
-   *  teardownRemovedSession / closeGroupPanels). */
-  // readonly: mergeOpenIntoCache/evictFromCache return readonly arrays —
-  // the state must accept them without a spread-copy.
-  const [panelCache, setPanelCache] = useState<readonly string[]>([])
-
   /** Sessions whose PanelSlot must render: the open view first, then cached
    *  (hidden) ids. Open ids first keeps the visible panels' DOM order — and
-   *  grid auto-placement — stable while the cache churns behind them. */
+   *  grid auto-placement — stable while the cache churns behind them.
+   *  (panelCache itself is declared up with the other panel state — the
+   *  swap/teardown/close callbacks that evict from it sit above this
+   *  point.) */
   const renderedSessions = useMemo(
     () =>
       renderedPanelIds(resolvedOpenIds, panelCache)
