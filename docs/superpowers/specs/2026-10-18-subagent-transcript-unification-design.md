@@ -138,7 +138,7 @@ history-reader 的姊妹模块，三个导出：
 
 - `subagent-transcripts.test.ts`：路径解析（含 `basename` 穿越防护、文件缺失）、变体渲染门（sidechain 保留 / isMeta 排除 / 噪声过滤）、normalize 变体（raw parent 透传、时间戳、超限裁剪）；fixture 取真实文件行形状。
 - hub 测试：tmpdir 追加行 → 防抖广播；文件收缩 → reset；退订关句柄；不完整尾行缓冲。
-- 路由测试：响应为 wire 形状。
+- 路由：3 行磁盘 passthrough（无 sm 依赖），由模块测试 + typecheck 覆盖，wire 形状行为由手动冒烟验证（spec 评审时从「路由测试」降级——独立路由测试需要真实 SessionManager，成本与价值不成比例）。
 
 **客户端**
 
