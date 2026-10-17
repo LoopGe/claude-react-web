@@ -2755,46 +2755,54 @@ export function App() {
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as openIdsRef etc.)
   animatePanelsRef.current = animatePanels
 
-  // Scroll-position protection for panel reorder. Reordering openIds moves the
-  // keyed <ChatPanel> DOM subtrees (React insertBefore), which can drop the
-  // Virtuoso scroller's scrollTop for any panel the user had scrolled up in.
-  // We snapshot each open panel's scrollTop right before the reorder and
-  // restore it in a layout effect after React commits the moved DOM, before
-  // paint. Idempotent: if the browser preserved scrollTop, the write is a no-op.
-  const pendingScrollRestoreRef = useRef<Map<string, number> | null>(null)
+  // Scroll-position memory for panel reorders AND the keep-alive cache.
+  // Both reordering openIds and switching sessions move the keyed
+  // <ChatPanel> DOM subtrees (React insertBefore), and Chromium DROPS a
+  // moved scroller's scrollTop — measured: a hidden-then-reshown panel
+  // comes back at 0 with zero JS scrollTop writes in between. The memory
+  // holds each VISIBLE panel's scrollTop, snapshotted in the render phase
+  // (BEFORE the DOM mutation — post-commit the offset is already gone) on
+  // every openIds change, and survives the panel's hidden period; the
+  // restore layout effect writes it back after commit, before paint.
+  // Idempotent: if the offset survived (no DOM move), the write is a no-op.
+  const panelScrollMemoryRef = useRef<Map<string, number> | null>(null)
 
+  /** Merge every VISIBLE panel's scrollTop into the scroll memory. Used by
+   *  the drag-reorder paths (right before their setOpenIds) — the
+   *  render-phase snapshot below runs on every openIds change anyway, so
+   *  these calls are redundant-but-harmless belt for non-openIds mutations. */
   const snapshotPanelScrolls = useCallback(() => {
     const bodyEl = bodyRef.current
     if (!bodyEl) return
-    const map = new Map<string, number>()
+    const mem = panelScrollMemoryRef.current ?? (panelScrollMemoryRef.current = new Map())
     for (const panel of bodyEl.querySelectorAll<HTMLElement>('[data-panel-id]')) {
       const id = panel.dataset.panelId
       if (!id) continue
       const scroller = panel.querySelector<HTMLElement>('.chat-virtuoso-scroller')
       // Visible scrollers only: a cached (display:none) panel's scroller is
       // collapsed — scrollTop READS 0 there (snapshotting a hidden panel
-      // would clobber its restore value). Reorders only move visible panels.
+      // would clobber its remembered value).
       const top = scroller != null ? scrollerSnapshotTop(scroller) : null
-      if (top != null) map.set(id, top)
+      if (top != null) mem.set(id, top)
     }
-    pendingScrollRestoreRef.current = map
   }, [bodyRef])
 
   useLayoutEffect(() => {
-    const map = pendingScrollRestoreRef.current
-    if (!map) return
-    pendingScrollRestoreRef.current = null
+    const mem = panelScrollMemoryRef.current
     const bodyEl = bodyRef.current
-    if (!bodyEl) return
-    for (const [id, top] of map) {
+    if (!mem || !bodyEl) return
+    for (const [id, top] of mem) {
       const panel = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
       const scroller = panel?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
       // Restore onto a visible scroller only: writing scrollTop on a
-      // collapsed (display:none) scroller clamps to 0 and could clobber the
-      // browser's pending offset restore.
+      // collapsed (display:none) scroller clamps to 0 and would clobber
+      // the remembered value. A re-shown panel whose content grew while
+      // hidden gets its remembered offset written first, then the follow
+      // invariant (real geometry, not collapsed) re-pins it if it was
+      // following.
       if (scroller && scroller.clientHeight > 0 && Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
     }
-  }, [openIds, bodyRef])
+  }, [openIds, panelCache, bodyRef])
 
   const endPanelExit = useCallback((id: string) => {
     setClosingPanels((prev) => prev.filter((p) => p.id !== id))
@@ -2841,6 +2849,19 @@ export function App() {
     // same reference when nothing changed.
     const nextCache = mergeOpenIntoCache(panelCache, openIds, maxOpenRef.current + PANEL_CACHE_EXTRA)
     if (nextCache !== panelCache) setPanelCache(nextCache)
+    // Scroll memory: snapshot every VISIBLE panel's scrollTop here in the
+    // render phase — BEFORE React commits, because committing this change
+    // reorders/moves/hides keyed PanelSlots and Chromium DROPS a moved
+    // scroller's offset (measured: re-shown panel at 0 with zero JS writes).
+    // The restore layout effect after commit writes the memory back; hidden
+    // panels keep their remembered value across the hidden period.
+    snapshotPanelScrolls()
+    const mem = panelScrollMemoryRef.current
+    if (mem) {
+      // Prune ids that left the cache (their panels unmount this commit).
+      const live = new Set<string>(nextCache)
+      for (const id of mem.keys()) if (!live.has(id)) mem.delete(id)
+    }
   }
   /* eslint-enable react-hooks/refs */
   // State nudge: incremented by handlePanelAnimEnd to force a re-render
