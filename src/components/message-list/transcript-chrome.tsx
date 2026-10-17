@@ -1,8 +1,10 @@
-import { memo, useEffect, useMemo, useRef } from 'react'
+import { memo, useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { motion, useIsPresent } from 'motion/react'
 import { IconAlertCircle, IconLoader } from '../icons/ToolIcons'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
+import { useStreamingRegionMotion } from '../../utils/transitions'
 // Temporarily disabled: live fenced-code-block rendering in the streaming
 // bubble (StreamCodeSegment below + the segment split in StreamingFooter).
 // Restore these imports together with the commented-out logic to re-enable.
@@ -93,6 +95,42 @@ const StreamCodeSegment = memo(function StreamCodeSegment({
  *  transcript, no glass (nothing behind it to refract), no internal
  *  scrollbar (the body never scrolls). */
 export type StreamingFooterVariant = 'overlay' | 'inline'
+
+/** Presence wrapper for the overlay-mode live bubble: the AnimatePresence
+ *  child MessageList mounts under `.chat-bottom-stack`. Owns the mount
+ *  rise-in and the staggered exit (fade/sink first, then the measured-height
+ *  collapse — useStreamingRegionMotion), replacing the old manual presence
+ *  machine + CSS `streaming-region-out` keyframes + delayed-unmount timer.
+ *
+ * `useIsPresent`, read INSIDE the presence child, drives `aria-hidden`: the
+ * exiting bubble is no longer a live region (the old machine's `exiting`
+ * flag did the same). Same reasoning as BottomCardMotion: deliberately
+ * useIsPresent and NOT usePresence — the latter would register this
+ * component as an exit participant that must call safeToRemove, which the
+ * inner motion.div (the actual exit owner) already does; a second
+ * registration that never resolves would block the unmount forever.
+ *
+ * The clip stays the presence child's ROOT (not a permanent stack member):
+ * it collapses in lockstep with the motion.div's height and clips the
+ * sink-translate during the fade, and when idle nothing of the slot is
+ * mounted — matching the old conditional render exactly. */
+export function StreamingRegion({ children }: { children: ReactNode }) {
+  const isPresent = useIsPresent()
+  const { region } = useStreamingRegionMotion()
+  return (
+    <div className="chat-streaming-clip">
+      <motion.div
+        className="chat-streaming-region"
+        aria-hidden={!isPresent}
+        initial={region.initial}
+        animate={region.animate}
+        exit={region.exit}
+      >
+        {children}
+      </motion.div>
+    </div>
+  )
+}
 
 export const StreamingFooter = memo(function StreamingFooter({
   content,

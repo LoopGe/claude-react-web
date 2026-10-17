@@ -327,14 +327,19 @@
 }
 /* The streaming region itself is a plain block inside .chat-streaming-clip. It
    keeps pointer-events: none so the live bubble never blocks clicks on the
-   messages behind it. */
+   messages behind it. The CSS animation below is the mount-only HEIGHT GROW
+   (max-height 0 → cap): opacity/transform and the whole exit belong to the
+   motion.div wrapper (StreamingRegion + useStreamingRegionMotion) — CSS must
+   not animate those, or the filled keyframes would override motion's inline
+   styles. The exit used to live here as `streaming-region-out` on an
+   `.exiting` class + a 180ms delayed-unmount timer; that design had three
+   measured defects (max-height dead zone, accelerating ease-exit tail, timer
+   racing the animation start) that snapped the transcript at the end of the
+   exit — see useStreamingRegionMotion's comment for the harness numbers. */
 .chat-streaming-region {
   overflow: hidden;
   pointer-events: none;
   animation: streaming-region-in var(--motion-duration-base) var(--motion-ease-enter) both;
-}
-.chat-streaming-region.exiting {
-  animation: streaming-region-out var(--motion-duration-base) var(--motion-ease-exit) both;
 }
 .streaming-footer-wrapper {
   display: flex;
@@ -362,32 +367,20 @@
   background: transparent;
 }
 @keyframes streaming-region-in {
+  /* Only the height grow lives in CSS (see the .chat-streaming-region note);
+     opacity + the 14px rise are motion's mount tween. The cap is a generous
+     ceiling above any bubble height — held by `both` fill it is what lets the
+     region size to its (already internally capped, .streaming-plain) content
+     while the grow plays. */
   from {
-    opacity: 0;
     max-height: 0;
-    transform: translateY(var(--motion-distance-lg));
   }
   to {
-    opacity: 1;
     max-height: calc(3lh + 72px);
-    transform: translateY(0);
-  }
-}
-@keyframes streaming-region-out {
-  from {
-    opacity: 1;
-    max-height: calc(3lh + 72px);
-    transform: translateY(0);
-  }
-  to {
-    opacity: 0;
-    max-height: 0;
-    transform: translateY(var(--motion-distance-lg));
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .chat-streaming-region,
-  .chat-streaming-region.exiting {
+  .chat-streaming-region {
     animation: none;
   }
 }

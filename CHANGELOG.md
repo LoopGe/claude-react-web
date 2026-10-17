@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **StreamingFooter exit rebuilt on the bottom-overlay card pattern** — the
+  live bubble's overlay exit no longer ends with the transcript snapping.
+  The old exit was one 180ms CSS keyframe (`streaming-region-out`:
+  opacity + `max-height` + translate on an ease-exit curve) plus a
+  180ms delayed-unmount timer, and frame-by-frame harness measurement showed
+  three compounding defects: the `max-height` tween started from a cap ABOVE
+  the content height, so nothing moved geometrically until ~85ms (capped
+  bubble) / ~141ms (short reply) of the window — all the collapse compressed
+  into the tail; the accelerating ease-exit curve put the LARGEST per-frame
+  deltas exactly where the RO→spacer→pin pipeline lags; and the timer
+  (started at React-commit time) raced the animation (started at the next
+  rendered frame), so under the finalize-time render storm the region
+  unmounted with residual height still in it. The exit is now
+  `useStreamingRegionMotion` (utils/transitions.ts) inside an
+  `AnimatePresence` — mirroring `useBottomCardMotion`: fade/sink over 110ms
+  while the height collapses over 160ms on the ease-ENTER curve starting at
+  90ms (the same deliberate 20ms overlap as the cards — by 90ms the
+  accelerating fade is ~90% done, so the shrinking box never squashes a
+  still-visible bubble), animating from the element's MEASURED height (no
+  dead zone) to 0, and AnimatePresence owns the unmount after the tweens
+  complete (no timer to race). The manual presence machine (`streamingPresence` +
+  `STREAMING_EXIT_MS` + the exit-timer effect) is deleted — AnimatePresence
+  freezing the last-mounted subtree replaces the content snapshot, and
+  `useIsPresent` drives `aria-hidden`. The CSS `streaming-region-in`
+  keyframes keep only the mount max-height grow (motion owns opacity/
+  transform — filled keyframes would override its inline styles). Reduced
+  motion now snaps the collapse at exit start instead of the old behaviour,
+  where `animation: none` also killed the exiting rule's fade — the bubble
+  froze fully visible at full height for the whole 180ms window and then
+  dropped away in one frame.
+
 - **`api_retry` moved from a transcript divider into the WorkingBubble** — a
   rate-limit retry (429/529 auto-retry) no longer renders as an amber
   `.msg.result.retry` tail divider in the message list; the WorkingBubble's

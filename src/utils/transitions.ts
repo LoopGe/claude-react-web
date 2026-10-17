@@ -220,6 +220,23 @@ export function useTopCardMotion() {
 }
 
 /**
+ * Shared staggered-exit transition config: the fade/sink (opacity + y) runs
+ * 110ms while the height collapse starts at 90ms on the ease-ENTER curve.
+ * The 20ms overlap is deliberate — by 90ms the accelerating fade is ~90%
+ * done, so the shrinking box never squashes a still-visible card
+ * (useBottomCardMotion), and the DECELERATING collapse tail is the easiest
+ * target for the RO→spacer→pin pipeline that tracks the streaming region's
+ * exit (useStreamingRegionMotion — the fix for the "message card snaps at the
+ * end of the streaming footer's exit" bug). Consumed by BOTH hooks so the two
+ * exits cannot drift apart; pinned by streaming-region-motion.test.tsx.
+ */
+const STAGGERED_COLLAPSE_EXIT_TRANSITION = {
+  opacity: { duration: 0.11, ease: EXIT_EASE },
+  y: { duration: 0.11, ease: EXIT_EASE },
+  height: { duration: 0.16, ease: ENTER_EASE, delay: 0.09 },
+} as const
+
+/**
  * Bottom-overlay card motion (TodoChecklist / MonitorBar / WorkingBubble).
  * Mount is a rise-in; exit is a STAGGERED fade + height collapse — the card
  * fades/sinks in ~110ms while the wrapper's height collapses over 160ms after a
@@ -246,11 +263,76 @@ export function useBottomCardMotion() {
         opacity: 0,
         y: 6,
         height: 0,
-        transition: {
-          opacity: { duration: 0.11, ease: [0.4, 0, 1, 1] as const },
-          y: { duration: 0.11, ease: [0.4, 0, 1, 1] as const },
-          height: { duration: 0.16, ease: [0.22, 1, 0.36, 1] as const, delay: 0.09 },
-        },
+        transition: STAGGERED_COLLAPSE_EXIT_TRANSITION,
+      },
+    },
+  }
+}
+
+/**
+ * Live-streaming region motion (the overlay bubble's `.chat-streaming-region`
+ * slot in MessageList). The exit mirrors useBottomCardMotion's staggered
+ * fade-then-collapse, and the shape of that stagger is load-bearing — it is the
+ * fix for the "message card snaps at the end of the streaming footer's exit"
+ * bug, where the old single 180ms keyframe animation had three compounding
+ * defects (all measured frame-by-frame in an offscreen harness):
+ *
+ *   1. max-height animated from a cap ABOVE the content height, so nothing
+ *      moved geometrically until the curve crossed it — the collapse only
+ *      started at ~85ms (capped bubble) / ~141ms (short reply) of the 180ms
+ *      window, compressing all of the motion into the tail.
+ *   2. it used ease-exit (accelerating), so the tail carried the LARGEST
+ *      per-frame deltas exactly where the RO→spacer→pin pipeline lags.
+ *   3. the unmount timer equalled the animation duration, and it started at
+ *      React-commit time while the CSS animation started at the next rendered
+ *      frame — under the finalize-time render storm the timer won, unmounting
+ *      a region that still held residual height (the visible snap).
+ *
+ * Here motion animates `height` from the element's MEASURED height (no dead
+ * zone), the collapse uses ease-ENTER so it decelerates to zero velocity at
+ * the end (the pipeline's easiest target), the fade/sink runs 110ms while the
+ * collapse starts at 90ms — a deliberate 20ms overlap (the same shape as
+ * useBottomCardMotion: by 90ms the accelerating fade is at ~90%, so the
+ * shrinking box never squashes a still-visible bubble), and AnimatePresence
+ * owns the unmount after the tweens complete (no timer to race). Mount keeps
+ * the region's own enter feel: --motion-distance-lg rise over 180ms; the
+ * separate CSS `streaming-region-in` keyframes still animate the max-height
+ * grow (chat.css) — motion must NOT own height while streaming, or every 80ms
+ * content flush would tween the bubble's height instead of sizing to content.
+ * That is also why `initial` carries `height: 'auto'`: with height in BOTH
+ * initial and animate the mount target equals the latest value and motion
+ * skips it, leaving CSS the sole height animator while live (a null-origin
+ * mount target would make motion measure the box mid-CSS-grow and tween
+ * inline height for 180ms). The exit measurement and the aborted-exit
+ * recovery are unaffected. `height: 'auto'` in animate restores natural size
+ * when an exit is aborted mid-collapse (rapid next turn), same rationale as
+ * useTopCardMotion.
+ */
+export function useStreamingRegionMotion() {
+  const reduce = useReducedMotion()
+  if (reduce) {
+    return {
+      region: {
+        initial: { opacity: 0 },
+        // height:'auto' restores natural size when a duration-0 exit is
+        // interrupted by a same-key re-entry (queued next turn), so the
+        // exit-applied inline height: 0 is never stranded.
+        animate: { opacity: 1, height: 'auto', transition: { duration: 0 } },
+        exit: { opacity: 0, height: 0, transition: { duration: 0 } },
+      },
+    }
+  }
+  return {
+    region: {
+      // y mirrors --motion-distance-lg (14px), duration --motion-duration-base.
+      // height:'auto' in initial AND animate = mount no-op (see above).
+      initial: { opacity: 0, y: 14, height: 'auto' },
+      animate: { opacity: 1, y: 0, height: 'auto', transition: ENTER_TRANSITION },
+      exit: {
+        opacity: 0,
+        y: 14,
+        height: 0,
+        transition: STAGGERED_COLLAPSE_EXIT_TRANSITION,
       },
     },
   }

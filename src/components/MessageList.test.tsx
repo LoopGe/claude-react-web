@@ -1415,7 +1415,7 @@ describe('MessageList', () => {
     expect(followingOf(container)).toBe('true')
   })
 
-  it('re-pins to the bottom when settled content grows AFTER the bottom overlay exits', () => {
+  it('re-pins to the bottom when settled content grows AFTER the bottom overlay exits', async () => {
     // Regression guard for the "当 StreamingFooter 消失，视图向上弹一段" bug.
     //
     // The streaming bubble is height-capped (.streaming-plain max-height:
@@ -1438,7 +1438,6 @@ describe('MessageList', () => {
     // the ~110px spacer inflation — is skipped, so the backstop never
     // re-pins. The viewport is left at the old scrollTop, short of the new
     // bottom: the visible "bounces up a bit" jolt.
-    vi.useFakeTimers()
     virtuosoMockState.atBottomReport = true
     virtuosoMockState.reportBeforeRef = true
     virtuosoMockState.clientHeight = 100
@@ -1496,15 +1495,19 @@ describe('MessageList', () => {
     const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
     act(() => { fireResize(itemList) })
 
-    // Turn ends: streamingContent -> null. The 180ms exit timer unmounts the
-    // region, so the stack collapses -> bottomStackHeight -> 0 -> spacer
-    // removed. The stub ResizeObserver never fires on its own, so drive the
-    // stack shrink explicitly — a real browser fires it here. scrollHeight
-    // drops to 200 and the browser clamps scrollTop 180 -> 100 (bottom of the
-    // settled content).
+    // Turn ends: streamingContent -> null. AnimatePresence unmounts the
+    // region once motion's exit tweens complete — the height tween's 90ms
+    // delay + 160ms duration = ~250ms of real time (in jsdom the tweened
+    // values are 0→0, but the delay still elapses), so the stack collapses ->
+    // bottomStackHeight -> 0 -> spacer removed. The stub ResizeObserver never
+    // fires on its own, so drive the stack shrink explicitly — a real browser
+    // fires it here. scrollHeight drops to 200 and the browser clamps
+    // scrollTop 180 -> 100 (bottom of the settled content).
     rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent={null} />)
-    act(() => { vi.advanceTimersByTime(180) })
-    expect(container.querySelector('.chat-streaming-region')).toBeNull()
+    // Explicit timeout: this is the app's longest presence exit (~250ms of
+    // rAF-driven tweens), and a loaded CI runner can starve happy-dom's rAF
+    // cadence well past the 1s default's comfort.
+    await waitFor(() => expect(container.querySelector('.chat-streaming-region')).toBeNull(), { timeout: 3000 })
     stackHeight = 0
     act(() => { fireResize(stack) })
     expect(scroller.scrollTop).toBe(100) // clamped to the post-exit bottom
@@ -1519,8 +1522,6 @@ describe('MessageList', () => {
     // peak (280), so the backstop skips the re-pin and scrollTop stays at
     // 100 — 50px short of the bottom (the "bounces up" jolt).
     expect(scroller.scrollTop).toBe(150)
-
-    vi.useRealTimers()
   })
 
   it('inline mode: renders the live turn as an in-flow tail row inside the scroller', () => {
@@ -2863,8 +2864,12 @@ describe('MessageList', () => {
     expect(container.querySelector('[data-message-id="server-1"]')!.classList.contains('msg-enter')).toBe(false)
   })
 
-  it('animates streaming content out before unmounting it', () => {
-    vi.useFakeTimers()
+  it('animates streaming content out before unmounting it', async () => {
+    // AnimatePresence + useStreamingRegionMotion own the exit now: the node
+    // stays mounted on its LAST props through the tweens (content frozen),
+    // flagged non-live via aria-hidden, then unmounts when they complete.
+    // Real timers — motion's tweens run on rAF; the card suite (MonitorBar
+    // etc.) established this waitFor pattern for presence exits.
     const msgs = [
       makeMsg('assistant', {
         message: { content: [{ type: 'text', text: 'Settled message' }] },
@@ -2877,14 +2882,15 @@ describe('MessageList', () => {
 
     rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent={null} />)
 
-    expect(container.querySelector('.chat-streaming-region')?.classList.contains('exiting')).toBe(true)
+    const exiting = container.querySelector('.chat-streaming-region')
+    expect(exiting).not.toBeNull()
+    expect(exiting?.getAttribute('aria-hidden')).toBe('true')
     expect(container.textContent).toContain('Live tokens')
 
-    act(() => {
-      vi.advanceTimersByTime(180)
-    })
-
-    expect(container.querySelector('.chat-streaming-region')).toBeNull()
+    // Explicit timeout: the exit chain is rAF-driven (90ms delay + 160ms
+    // height tween), the app's longest presence exit — keep margin over the
+    // 1s default for loaded CI runners.
+    await waitFor(() => expect(container.querySelector('.chat-streaming-region')).toBeNull(), { timeout: 3000 })
   })
 
   it('renders result stats with clean separators', () => {
@@ -3196,12 +3202,13 @@ describe('MessageList', () => {
     expect(kids[1].querySelector('.probe-card')).not.toBeNull()
 
     // The stack is always mounted, even with no streaming content and no cards.
-    // The region lingers through its exit animation (`.exiting`), so assert it
-    // is no longer a LIVE region rather than absent.
+    // The region lingers through its AnimatePresence exit tweens, so assert it
+    // is no longer a LIVE region (aria-hidden, the presence-driven flag) rather
+    // than absent.
     rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="" />)
     const stack2 = container.querySelector('.chat-bottom-stack') as HTMLElement
     expect(stack2).not.toBeNull()
-    expect(stack2.querySelector('.chat-streaming-region:not(.exiting)')).toBeNull()
+    expect(stack2.querySelector('.chat-streaming-region:not([aria-hidden="true"])')).toBeNull()
   })
 
   it('drives the bottom spacer from the STACK height, not the streaming region', () => {

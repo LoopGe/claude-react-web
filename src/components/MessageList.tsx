@@ -9,6 +9,7 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { AnimatePresence } from 'motion/react'
 import { PlanStatusProvider, PlanContentProvider, ToolStatusProvider, ToolResultProvider } from '../hooks/usePlanStatus'
 import { QuestionAnswersProvider } from '../hooks/useQuestionAnswers'
 import { TaskInfoProvider } from '../hooks/useTaskInfo'
@@ -24,7 +25,7 @@ import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/nor
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
+import { StreamingFooter, StreamingRegion, type StreamingFooterVariant } from './message-list/transcript-chrome'
 import { ChatEmptyState } from './ChatEmptyState'
 import { EasterEggGame } from './EasterEggGame'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
@@ -336,8 +337,6 @@ const EMPTY_QUESTION_ANSWERS: ReadonlyMap<string, QuestionAnswerEntry[]> = new M
 const EMPTY_TOOL_STATUS: ReadonlyMap<string, ToolStatus> = new Map()
 const EMPTY_TOOL_RESULTS: ReadonlyMap<string, ToolResultEntry> = new Map()
 
-const STREAMING_EXIT_MS = 180
-
 /** Return a `Set` whose *identity* is stable as long as its *contents* are
  *  unchanged.
  *
@@ -455,10 +454,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // an empty placeholder that reserves layout space but shows nothing
   // (the gradient mask on .streaming-plain fades out the lone cursor),
   // and WorkingBubble already signals the active phase. Treat "" as null
-  // so the footer doesn't mount until real text arrives. The exit-fade
-  // logic below still works: at turn end `liveTurn` is cleared to null
-  // (reducer sets `liveTurn: null`), which triggers the exit branch and
-  // keeps the last non-empty content visible during the fade-out.
+  // so the footer doesn't mount until real text arrives. The exit still
+  // works: at turn end `liveTurn` is cleared to null (reducer sets
+  // `liveTurn: null`), AnimatePresence keeps the last-mounted subtree on
+  // its frozen content through the exit tweens (see the render below).
   // Live source: subscribed here when `sessionId` is provided (the hot
   // 12.5 Hz field re-renders only this subtree); the prop is the fallback
   // for prop-fed callers (tests, static transcripts).
@@ -469,45 +468,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // constant (currently 'overlay') so production behavior is unchanged; the
   // prop exists for tests and a future UI setting.
   const resolvedMode = streamingMode ?? DEFAULT_STREAMING_RENDER_MODE
-  // The exit-fade presence machinery is overlay-only: the inline row unmounts
-  // abruptly at finalize (spec §6 — no fade), so in inline mode presence must
-  // never see a non-null source (which would churn the 180ms exit timer for
-  // a region that never renders).
-  const presenceSource = resolvedMode === 'overlay' ? liveStreamingContent : null
-  const [streamingPresence, setStreamingPresence] = useState(() => ({
-    source: presenceSource,
-    content: presenceSource,
-    exiting: false,
-  }))
-  const streamingExitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const nextStreamingPresence = presenceSource !== streamingPresence.source
-    ? presenceSource != null
-      ? { source: presenceSource, content: presenceSource, exiting: false }
-      : { source: null, content: streamingPresence.content, exiting: streamingPresence.content != null }
-    : streamingPresence
-
-  if (nextStreamingPresence !== streamingPresence) {
-    setStreamingPresence(nextStreamingPresence)
-  }
-
-  useEffect(() => {
-    if (streamingExitTimerRef.current) {
-      clearTimeout(streamingExitTimerRef.current)
-      streamingExitTimerRef.current = null
-    }
-    if (!streamingPresence.exiting) return
-    streamingExitTimerRef.current = setTimeout(() => {
-      streamingExitTimerRef.current = null
-      setStreamingPresence({ source: null, content: null, exiting: false })
-    }, STREAMING_EXIT_MS)
-    return () => {
-      if (streamingExitTimerRef.current) {
-        clearTimeout(streamingExitTimerRef.current)
-        streamingExitTimerRef.current = null
-      }
-    }
-  }, [streamingPresence.exiting])
 
   // EnterPlanMode has no lifecycle map (it renders as a stateless marker and
   // nothing consumes its result), so its result ids aren't in any of the maps
@@ -1297,10 +1257,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   ]
     .filter(Boolean)
     .join(' ')
-  const visibleStreamingContent = nextStreamingPresence.content
-  const streamingRegionClassName = nextStreamingPresence.exiting
-    ? 'chat-streaming-region exiting'
-    : 'chat-streaming-region'
 
   // Inline mode appends the live turn as a TAIL data row. Overlay mode returns
   // `renderableItems` ITSELF, so Virtuoso's `data` identity stays per-items
@@ -1431,18 +1387,24 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         )}
       </div>
       <div className="chat-bottom-stack" ref={bottomStackRef}>
-        {resolvedMode === 'overlay' && visibleStreamingContent != null && (
-          <div className="chat-streaming-clip">
-            <div
-              className={streamingRegionClassName}
-              aria-hidden={nextStreamingPresence.exiting}
-            >
+        {/* The live bubble's overlay slot. AnimatePresence owns the exit
+            (fade/sink first, then the measured-height collapse — see
+            useStreamingRegionMotion) and keeps the last-mounted subtree on
+            its FROZEN content through the tweens, which is what replaced the
+            old manual presence machine + STREAMING_EXIT_MS timer (the timer
+            raced the CSS animation and cut the collapse's tail — the "message
+            card snaps at the end" bug). The clip stays INSIDE the presence
+            child so the sinking bubble is clipped exactly as long as the
+            subtree exists and nothing is mounted while idle. */}
+        <AnimatePresence>
+          {resolvedMode === 'overlay' && liveStreamingContent != null && (
+            <StreamingRegion key="streaming-region">
               {/* key=variant: remounts on a variant flip so useMergedRef's
                   first-render ref capture (mergedRef.ts) stays correct. */}
-              <StreamingFooter key="overlay" content={visibleStreamingContent} />
-            </div>
-          </div>
-        )}
+              <StreamingFooter key="overlay" content={liveStreamingContent} />
+            </StreamingRegion>
+          )}
+        </AnimatePresence>
         <div className="chat-bottom-overlay" ref={bottomOverlayRef}>
           {bottomOverlay}
         </div>
