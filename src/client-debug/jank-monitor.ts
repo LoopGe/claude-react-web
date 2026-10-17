@@ -166,11 +166,17 @@ export function resetJankMonitorForTests(): void {
 }
 
 if (typeof window !== 'undefined') {
-  ;(window as unknown as { __crwDumpJank?: () => JankSummary }).__crwDumpJank = () => {
+  ;(window as unknown as {
+    __crwDumpJank?: () => JankSummary & ReturnType<typeof getRecentJankEvents>
+  }).__crwDumpJank = () => {
     const summary = getJankSummary()
-    // User-facing dump (same rationale as the other __crw* dumps).
+    const events = getRecentJankEvents()
+    // User-facing dump (same rationale as the other __crw* dumps). The full
+    // event lists ride along so a reader can correlate per-event timestamps
+    // with the marks — the summary alone hides "which gap was during the
+    // scroll".
     console.log('[jank] summary', summary)
-    return summary
+    return { ...summary, ...events }
   }
   ;(window as unknown as { __crwJankMark?: (label: string) => void }).__crwJankMark = (label: string) => {
     markJank(label)
