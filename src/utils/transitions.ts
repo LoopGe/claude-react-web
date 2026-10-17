@@ -111,6 +111,28 @@ export function useTopBannerMotion() {
   }
 }
 
+// Mirrored layout values for useTopCardMotion's collapse — same convention as
+// the motion tokens above: JS duplicates what CSS owns so the exit can cancel
+// layout the element leaves behind. Keep in sync with the cited rules.
+//   border: glass.css gives .recap-window (Transcript cards group) a
+//     `border: 2px solid` shell, and the global `*` rule sets
+//     box-sizing: border-box. The exit animates `height: 0`, but borders are
+//     NOT part of the animated value: at height 0 the box still renders its
+//     2px top + 2px bottom border, so the exiting ghost occupies 4px of
+//     phantom layout until AnimatePresence unmounts it — the transcript
+//     beneath visibly jumps at the last frame. Zeroing border-width on the
+//     height's own timing folds the shell into the collapse.
+//   margin: overlays.css separates .chat-top-stack's children (recap above,
+//     pinned-question header below) with `gap: var(--space-2)` (8px). The gap
+//     belongs to the PARENT, so it survives the recap's own collapse and pops
+//     8px at unmount whenever both cards are open. The exit animates a
+//     matching negative bottom margin (gap + margin → 0) so the pinned header
+//     finishes its rise exactly at unmount instead of taking a final step.
+//     The `animate` target restores both rest values so an aborted exit
+//     recovers the shell, same as the height:'auto' restore below.
+const RECAP_SHELL_BORDER_PX = 2
+const TOP_STACK_GAP_PX = 8
+
 /**
  * Top-overlay card motion (RecapWindow). Mount is the same top-banner drop-in
  * as useTopBannerMotion (opacity + y:-6, ENTER 180ms); the exit is where it
@@ -123,8 +145,10 @@ export function useTopBannerMotion() {
  * when the node unmounts. AnimatePresence keeps the node mounted through the
  * exit and owns the height auto → 0 animation. (No overflow clip is needed
  * for the collapse: glass.css keeps .recap-window overflow:hidden at rest,
- * so the shrinking box clips its own content.) Reduced motion snaps
- * everything to 0.
+ * so the shrinking box clips its own content.) border-width and a gap-
+ * cancelling negative margin-bottom ride the height's timing so the box ends
+ * at exactly 0 occupied space — see RECAP_SHELL_BORDER_PX / TOP_STACK_GAP_PX.
+ * Reduced motion snaps everything to 0.
  */
 export function useTopCardMotion() {
   const reduce = useReducedMotion()
@@ -134,9 +158,23 @@ export function useTopCardMotion() {
         initial: { opacity: 0 },
         // height:'auto' restores the natural size when an exit is aborted
         // mid-collapse (AnimatePresence re-entry) — motion animates its
-        // internal height value back, so no stranded inline height.
-        animate: { opacity: 1, height: 'auto', transition: { duration: 0 } },
-        exit: { opacity: 0, height: 0, transition: { duration: 0 } },
+        // internal height value back, so no stranded inline height. The
+        // border/margin rest values ride along for the same aborted-exit
+        // recovery (see the mirrored-value comments above).
+        animate: {
+          opacity: 1,
+          height: 'auto',
+          borderWidth: RECAP_SHELL_BORDER_PX,
+          marginBottom: 0,
+          transition: { duration: 0 },
+        },
+        exit: {
+          opacity: 0,
+          height: 0,
+          borderWidth: 0,
+          marginBottom: -TOP_STACK_GAP_PX,
+          transition: { duration: 0 },
+        },
       },
     }
   }
@@ -147,17 +185,34 @@ export function useTopCardMotion() {
       // aborted exit recover: motion re-grows the collapsed height back to
       // natural instead of leaving the box squashed at its last mid-collapse
       // value. height: 0 in the exit target is the collapse itself — the
-      // transition entry below does nothing without it.
-      animate: { opacity: 1, y: 0, height: 'auto', transition: ENTER_TRANSITION },
+      // transition entry below does nothing without it. borderWidth /
+      // marginBottom pair with height the same way (restore on animate, zero
+      // out on exit) so the collapse ends at exactly 0 occupied space.
+      animate: {
+        opacity: 1,
+        y: 0,
+        height: 'auto',
+        borderWidth: RECAP_SHELL_BORDER_PX,
+        marginBottom: 0,
+        transition: ENTER_TRANSITION,
+      },
       exit: {
         opacity: 0,
         y: -6,
         height: 0,
+        borderWidth: 0,
+        marginBottom: -TOP_STACK_GAP_PX,
         pointerEvents: 'none' as const,
         transition: {
           opacity: { duration: 0.12, ease: EXIT_EASE },
           y: { duration: 0.12, ease: EXIT_EASE },
+          // height / border-width / gap-cancelling margin share one timing:
+          // the box must fold as a unit — a border thinning ahead of the
+          // height (or lagging behind it) would read as the outline detaching
+          // from the shrinking box.
           height: { duration: 0.2, ease: ENTER_EASE, delay: 0.09 },
+          borderWidth: { duration: 0.2, ease: ENTER_EASE, delay: 0.09 },
+          marginBottom: { duration: 0.2, ease: ENTER_EASE, delay: 0.09 },
         },
       },
     },
