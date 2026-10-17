@@ -22,7 +22,31 @@ import './styles.css'
 // Queried live by the dev-only `appdebug` console_read tool, which exists only
 // under dev-mode — gate on DEV so a production bundle pays nothing and retains
 // no ring a reader could never reach.
-if (import.meta.env.DEV) installConsoleCapture()
+if (import.meta.env.DEV) {
+  installConsoleCapture()
+
+  // React 19.2 dev builds emit one performance.measure() per component render
+  // (the "Component Performance Track": zero-width-space-prefixed entries the
+  // DevTools Performance panel colors by render duration). The user-timing
+  // buffer is unbounded and never auto-trims, and this app re-renders
+  // thousands of components per second while streaming — a long-lived dev tab
+  // accumulates millions of retained PerformanceMeasure objects (~100MB per
+  // 6 min of dense streaming; a 2-day dev tab was measured at 4GB). They are
+  // Blink/Oilpan objects, invisible to performance.memory, so the growth only
+  // surfaces as renderer private memory. Production builds ship none of
+  // React's instrumentation code, hence the DEV gate.
+  //
+  // The trim wipes ALL user-timing measures — React's (ZWSP-prefixed, plus
+  // unprefixed "Update"/"Errored"/"Recovered"; clearMeasures cannot filter by
+  // prefix) and any you create by hand in the console, so re-measure within a
+  // trim window. DevTools Performance recordings are trace-based and
+  // unaffected at any length. Hidden tabs throttle setInterval to ~1/min, so
+  // also trim at the moment the tab hides to keep the bound tight.
+  setInterval(() => performance.clearMeasures(), 30_000)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) performance.clearMeasures()
+  })
+}
 
 // Passive error capture: catches render crashes (root boundary + fallback
 // card), React 19 createRoot errors, and window-level error/rejection events
