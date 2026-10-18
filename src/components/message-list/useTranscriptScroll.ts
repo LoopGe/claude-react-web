@@ -164,6 +164,13 @@ const isAtTrueBottom = (el: HTMLElement) => getDistanceFromTrueBottom(el) <= BOT
 type FollowMode = 'restore' | 'disable-now' | 'disable-debounced' | 'preserve'
 type BottomSyncMode = FollowMode | 'confirm-away'
 
+/** How long after a keep-alive re-show the scroll machinery treats scroll
+ *  events as mechanical artifacts of the row remount rather than user intent.
+ *  Consumed by the justReshowed() suppression in this hook AND by App's
+ *  scroll-memory re-assert loop (src/App.tsx), whose deadline must stay
+ *  within this window — tune them together. */
+export const PANEL_RESHOW_SETTLE_MS = 750
+
 export interface UseTranscriptScrollOptions {
   /** Shared handle so seeks can fall back to Virtuoso's index API before the
    *  scroller element exists. */
@@ -188,6 +195,15 @@ export interface UseTranscriptScrollOptions {
    *  the owner (which owns the anchor), so seekToIndex can resolve DATA-space
    *  indices to the OFFSET-space stamps Virtuoso writes on row elements. */
   firstItemIndexRef: RefObject<number>
+  /** False while the hosting panel is in the keep-alive cache. Re-showing a
+   *  cached panel remounts the rows, and the scrollTop clamps during that
+   *  rebuild emit scroll events whose geometry reads "at the bottom" — the
+   *  restore path then re-latches follow and the follow invariant pins the
+   *  viewport to the bottom, discarding the restored scroll position. The
+   *  hook suppresses every follow re-arm for a short window after each
+   *  re-show (mechanical scroll events only in that window — the user hasn't
+   *  scrolled yet). */
+  panelVisible?: boolean
   /**
    * The top-most VISIBLE row changed, reported in Virtuoso's offset space
    * (dataIndex + firstItemIndex) — same space as `rangeChanged`.
@@ -253,6 +269,7 @@ export function useTranscriptScroll({
   firstItemIndexRef,
   onVisibleTopChange,
   onUserScrollIntent,
+  panelVisible,
 }: UseTranscriptScrollOptions): TranscriptScrollApi {
   // Boolean form of rowCount for effect deps: the scroll/gesture listeners
   // only need to (re-)attach when the scroller comes into existence, not on
@@ -260,6 +277,31 @@ export function useTranscriptScroll({
   const hasRows = rowCount > 0
   // Virtuoso's underlying scroll element. Captured through scrollerRefCb.
   const scrollerRef = useRef<HTMLElement | null>(null)
+  // Timestamp of the last keep-alive re-show (panelVisible false→true, or
+  // mount). For a short window after a re-show, every scroll event on the
+  // scroller is a mechanical artifact of the row remount (scrollTop clamps
+  // while Virtuoso rebuilds the range), not user intent — the geometry reads
+  // "at the bottom" mid-rebuild and the restore path would re-latch follow,
+  // letting the follow invariant discard the restored scroll position ("切
+  // group 回来跳到底部"). All follow re-arm paths consult justReshowed()
+  // (declared after userScrollIntentRef below).
+  //
+  // The window (750ms) must cover App's scroll-memory re-assert loop, which
+  // holds the restored offset against Virtuoso's gradual repositioning for
+  // ~700ms after the re-show — a shorter suppression lets the drift-landed
+  // geometry re-latch follow inside the band. A user gesture (wheel/touch/
+  // scroll key — userScrollIntentRef, stamped AFTER lastShowAt) ends the
+  // suppression early: past that point scroll events are the user's again.
+  const lastShowAtRef = useRef(0)
+  // useLayoutEffect: the stamp must land BEFORE the remount-clamp scroll
+  // events of the show commit — App's restore layout effect writes scrollTop
+  // pre-paint and Virtuoso's rebuild can emit clamps in the same frame, both
+  // ahead of a passive effect's delivery. Date.now() on purpose: it must be
+  // comparable with userScrollIntentRef (stamped with Date.now() by the
+  // gesture listeners).
+  useLayoutEffect(() => {
+    if (panelVisible !== false) lastShowAtRef.current = Date.now()
+  }, [panelVisible])
   // At-bottom mirror, read by callbacks (notably the viewport-shrink backstop)
   // without a stale-closure dance. Written by setBottomState.
   const atBottomRef = useRef(true)
@@ -281,6 +323,20 @@ export function useTranscriptScroll({
   // to be fresh. Set by the wheel / touch / overlay-thumb-drag listeners in the
   // scroll-intent effect below.
   const userScrollIntentRef = useRef(0)
+  // True within the re-show settle window (see lastShowAtRef above), unless
+  // the user has gestured since the re-show — their wheel/touch/scroll key
+  // stamps userScrollIntentRef with a LATER timestamp than lastShowAt, which
+  // ends the suppression on the spot (a genuine scroll-down-to-bottom right
+  // after switching back must still re-latch follow).
+  const justReshowed = useCallback(() => {
+    // Same clock as the gesture stamps (Date.now()).
+    if (Date.now() - lastShowAtRef.current >= PANEL_RESHOW_SETTLE_MS) return false
+    // User gesture stamped after the re-show → the scroll events are the
+    // user's again; end the suppression (a genuine scroll-down-to-bottom
+    // right after switching back must still re-latch follow).
+    if (userScrollIntentRef.current > lastShowAtRef.current) return false
+    return true
+  }, [])
   // Held TRUE for the whole of a programmatic scroll-to-bottom animation. See
   // the ANIMATING state in the module comment: while set, the scroll handler
   // and syncBottomGeometry leave atBottomRef/shouldFollowRef alone. Bounded by
@@ -539,6 +595,13 @@ export function useTranscriptScroll({
         // nothing from collapsed geometry.
         if (el.clientHeight === 0) {
           setBottomState(false)
+          return
+        }
+        // Just-reshowed window: the remount clamps read as "at the bottom"
+        // even with the panel visible. Decide nothing from them — return
+        // WITHOUT touching state, so a re-shown panel that genuinely sits at
+        // the true bottom can still re-latch follow once the window ends.
+        if (justReshowed()) {
           return
         }
 
@@ -996,7 +1059,7 @@ export function useTranscriptScroll({
       dbg('scroll-handler', () => ({ isScrollingUp, userDriven, isUserLeave, following: shouldFollowRef.current }))
       if (isUserLeave) {
         syncBottomGeometry(el, 'disable-now')
-      } else if (!isScrollingUp && distTrue <= BOTTOM_EPSILON_PX) {
+      } else if (!isScrollingUp && distTrue <= BOTTOM_EPSILON_PX && !justReshowed()) {
         // The user actively scrolled back DOWN to the true bottom — the only
         // scroll-driven path that re-arms follow. A scrollTop drop caused by a
         // bottom-spacer COLLAPSE (task list finishes, clamp back to the new
@@ -1058,7 +1121,13 @@ export function useTranscriptScroll({
       // ANY transcript wheel invalidates a pending user-message navigation
       // target; the direction gate below is purely for the follow leave.
       onUserScrollIntentRef.current?.()
-      if (e.deltaY >= 0) return
+      if (e.deltaY >= 0) {
+        // Downward wheels are user intent too — stamp so justReshowed()'s
+        // gesture-escape lets a genuine scroll-down-to-bottom right after a
+        // keep-alive re-show re-latch follow — without the upward leave.
+        userScrollIntentRef.current = Date.now()
+        return
+      }
       markUserScrollIntent()
       leaveOnUpwardGesture()
     }

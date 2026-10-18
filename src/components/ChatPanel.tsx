@@ -139,6 +139,9 @@ export interface ChatPanelProps {
   hasUnread?: boolean
   /** True when this panel just mounted and should play its enter animation. */
   entering?: boolean
+  /** Keep-alive re-show flavor of entering (320ms with a transparent hold
+   *  masking Virtuoso's stale-position frames vs the fresh mount's 180ms). */
+  enteringReplay?: boolean
   /** True while App is playing the /clear fade-in on this slot. Threaded
    *  through to <Chat> so TodoChecklist / MessageList / MonitorBar get their
    *  content-blur classes for the duration of the fade-in. */
@@ -149,6 +152,9 @@ export interface ChatPanelProps {
    *  header so the user can tell this panel apart from the sidebar card
    *  and map it to the Ctrl+<n> shortcut. */
   slot: number
+  /** False while this panel is in the keep-alive cache — forwarded to
+   *  <Chat> → <MessageList> for the row-entrance replay on re-show. */
+  panelVisible?: boolean
   /** External composer-focus signal from App — bumped by the mod+1/2/3
    *  slot shortcuts. Forwarded to <Chat> → <Composer> so switching panels
    *  also refocuses the target panel's composer. */
@@ -298,11 +304,13 @@ export const ChatPanel = memo(function ChatPanel({
   globalPrefs,
   hasUnread,
   entering,
+  enteringReplay,
   onAnimEnd,
   slot,
   composerFocusSignal,
   showSlotHints,
   onFocus,
+  panelVisible,
   onClose,
   onResume,
   onForkFromLastCompleted,
@@ -394,8 +402,8 @@ export const ChatPanel = memo(function ChatPanel({
   // through App's existing channel; `animationend` would never fire for a
   // cancelled animation.
   useEffect(() => {
-    if (panelDrag.isDragging && entering) onAnimEnd?.(session.id)
-  }, [panelDrag.isDragging, entering, onAnimEnd, session.id])
+    if (panelDrag.isDragging && (entering || enteringReplay)) onAnimEnd?.(session.id)
+  }, [panelDrag.isDragging, entering, enteringReplay, onAnimEnd, session.id])
   /** Tracks the `generatedAt` of the recap the user has dismissed. When it
    *  matches the current session.recap.generatedAt, the floating window
    *  stays hidden; a NEW recap (different generatedAt) auto-reopens it.
@@ -780,7 +788,7 @@ export const ChatPanel = memo(function ChatPanel({
       className={cx(
         'chat-panel',
         focused ? 'focused' : '',
-        entering ? 'entering' : '',
+        enteringReplay ? 'entering-replay' : entering ? 'entering' : '',
         // The lifted ghost IS this panel's frozen clone — recede the source
         // into a quiet hole for the drag (same .dnd-source-dim language the
         // sidebar cards use), so the screen doesn't read as two panels.
@@ -788,7 +796,7 @@ export const ChatPanel = memo(function ChatPanel({
         `mode-${permMode}`,
       )}
       onAnimationEnd={(e) => {
-        if (entering && e.target === e.currentTarget) onAnimEnd?.(session.id)
+        if ((entering || enteringReplay) && e.target === e.currentTarget) onAnimEnd?.(session.id)
       }}
       onMouseDownCapture={(e) => {
         // Focus on any mousedown inside the panel (capture phase so we win
@@ -1301,6 +1309,7 @@ export const ChatPanel = memo(function ChatPanel({
             key={session.id}
             session={session}
             focused={focused}
+            panelVisible={panelVisible}
             composerFocusSignal={composerFocusSignal}
             globalPrefs={globalPrefs}
             clearing={clearing}

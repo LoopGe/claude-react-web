@@ -663,6 +663,27 @@ body.resizing-col .app {
     transform: scale(1);
   }
 }
+/* Keep-alive re-show flavor: 320ms, and the first 30% (~96ms) holds fully
+   transparent — a re-shown panel's row remount lets Virtuoso repaint the
+   viewport at its stale internal position for a few frames before the
+   scroll-memory re-assert (App.tsx, 700ms loop) corrects it; those frames
+   must stay invisible or the panel flashes at the wrong scroll offset
+   ("回到正确位置前会闪烁一下"). The transform still eases over the full
+   duration (unspecified in a keyframe = interpolated across). Fresh mounts
+   use plain panel-enter above — no stale position to mask, no hold to pay. */
+@keyframes panel-enter-replay {
+  0% {
+    opacity: 0;
+    transform: scale(var(--motion-scale-enter));
+  }
+  30% {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 @keyframes panel-exit {
   from { opacity: 1; }
   to   { opacity: 0; }
@@ -671,6 +692,9 @@ body.resizing-col .app {
    needed — the panel is always a real grid cell). */
 .chat-panel.entering {
   animation: panel-enter var(--motion-duration-base) var(--motion-ease-standard) both;
+}
+.chat-panel.entering-replay {
+  animation: panel-enter-replay var(--motion-duration-panel-enter) var(--motion-ease-standard) both;
 }
 .chat-panel-slot.exiting {
   animation: panel-exit var(--motion-duration-fast) var(--motion-ease-exit) forwards;
@@ -1892,6 +1916,7 @@ body.resizing-col .app {
   .app-loading-card,
   .app-empty-state,
   .chat-panel.entering,
+  .chat-panel.entering-replay,
   .chat-panel-slot.exiting {
     animation: none;
   }

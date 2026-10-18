@@ -287,6 +287,10 @@ interface Props {
   /** Whether this panel is the currently focused (active) one. Used by
    *  useSessionRecap to track last-viewed timestamps. */
   focused?: boolean
+  /** False while this panel is in the keep-alive cache (not in the open
+   *  view). Drives MessageList's row-entrance replay: re-showing a cached
+   *  panel replays the per-row cascade, DOM untouched. */
+  panelVisible?: boolean
   /** External composer-focus signal from App — bumped by the mod+1/2/3
    *  slot shortcuts. Combined with the local composerFocusSignal so the
    *  target panel's <Composer> refocuses after a slot switch. */
@@ -438,7 +442,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, panelVisible, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -2282,6 +2286,7 @@ export const Chat = memo(function Chat({
           expectHistory={session.messageCount > 0}
           clearing={effectiveClearing}
           transcriptRevealKey={session.id}
+          panelVisible={panelVisible}
           sessionId={session.id}
           planStatus={stream.planStatus}
           planContent={stream.planContent}

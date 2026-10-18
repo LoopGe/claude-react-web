@@ -34,6 +34,7 @@ import { useHeldModifiers } from './hooks/useHeldModifiers'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { useComposerSnippets } from './hooks/useComposerSnippets'
 import { usePanelColumnResize } from './hooks/usePanelColumnResize'
+import { PANEL_RESHOW_SETTLE_MS } from './components/message-list/useTranscriptScroll'
 import { useSidebarResize } from './hooks/useSidebarResize'
 import { useSessionNotifications } from './hooks/useSessionNotifications'
 import { useClientDebug } from './hooks/useClientDebug'
@@ -2792,21 +2793,96 @@ export function App() {
     }
   }, [bodyRef])
 
+  // Cancel handle for the previous re-assert pass: the layout effect re-runs
+  // on every openIds change, and two concurrent loops would tug-of-war over
+  // the same scrollers (stale tops vs fresh tops) for up to the window.
+  const scrollReassertCancelRef = useRef<(() => void) | null>(null)
   useLayoutEffect(() => {
+    scrollReassertCancelRef.current?.()
+    scrollReassertCancelRef.current = null
     const mem = panelScrollMemoryRef.current
     const bodyEl = bodyRef.current
     if (!mem || !bodyEl) return
+    // Re-asserts for THIS pass, replayed one frame later. Virtuoso remounts
+    // every row when a cached panel re-shows and re-positions the viewport
+    // per its own internal range state (the bottom rows of the follow era),
+    // OVERWRITING the restore written here. One next-frame re-assert wins
+    // that race: by then Virtuoso's initial reposition has landed, and the
+    // remembered offset is still valid (appends go to the bottom, so content
+    // above the remembered position never shifts).
+    const reassert: { scroller: HTMLElement; top: number }[] = []
     for (const [id, top] of mem) {
       const panel = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
       const scroller = panel?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
       // Restore onto a visible scroller only: writing scrollTop on a
       // collapsed (display:none) scroller clamps to 0 and would clobber
-      // the remembered value. A re-shown panel whose content grew while
-      // hidden gets its remembered offset written first, then the follow
-      // invariant (real geometry, not collapsed) re-pins it if it was
-      // following.
-      if (scroller && scroller.clientHeight > 0 && Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
+      // the remembered value.
+      //
+      // A panel that was FOLLOWING (parked at the bottom) when hidden is
+      // skipped entirely: content that grew while hidden moved the true
+      // bottom past the stale remembered top, and writing it here only sets
+      // up a per-frame tug-of-war with the follow invariant's pin-to-bottom.
+      // The follow machinery restores that panel on its own — the correct
+      // position for a following panel is the NEW bottom, not the old one.
+      // `data-following` is stamped by useTranscriptScroll for exactly this
+      // kind of read (the test-suite assertion surface).
+      const following = panel?.querySelector('[data-following]')?.getAttribute('data-following') === 'true'
+      if (scroller && scroller.clientHeight > 0 && !following && Math.abs(scroller.scrollTop - top) > 1) {
+        scroller.scrollTop = top
+        reassert.push({ scroller, top })
+      }
     }
+    if (reassert.length > 0) {
+      // Re-assert for PANEL_RESHOW_SETTLE_MS: Virtuoso's post-remount
+      // repositioning is GRADUAL — its range restoration adjusts the leading
+      // spacer over several frames, drifting the viewport back toward the
+      // follow-era bottom rows. A one-shot re-assert loses that race;
+      // per-frame re-asserts of the remembered offset hold the position
+      // until Virtuoso settles. The window matches the hook's follow-rearm
+      // suppression (PANEL_RESHOW_SETTLE_MS) — tune them together.
+      const deadline = performance.now() + PANEL_RESHOW_SETTLE_MS
+      const cancelers: { scroller: HTMLElement; events: string[] }[] = []
+      let cancelled = false
+      const cancel = () => {
+        if (cancelled) return
+        cancelled = true
+        for (const { scroller, events } of cancelers) {
+          for (const ev of events) scroller.removeEventListener(ev, cancel)
+        }
+        scrollReassertCancelRef.current = null
+      }
+      scrollReassertCancelRef.current = cancel
+      const tick = () => {
+        if (cancelled || performance.now() > deadline) {
+          cancel()
+          return
+        }
+        for (const { scroller, top } of reassert) {
+          // Collapsed (re-hidden mid-window) scrollers must not be written —
+          // same clobber contract as the restore pass above.
+          if (scroller.clientHeight === 0) continue
+          // A jump far PAST the remembered offset (way beyond Virtuoso's
+          // gradual drift) is the user taking over — keyboard scrolling,
+          // thumb drag, middle-click autoscroll — yield immediately.
+          if (scroller.scrollTop - top > 200) {
+            cancel()
+            return
+          }
+          if (Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
+        }
+        requestAnimationFrame(tick)
+      }
+      for (const { scroller } of reassert) {
+        // Direct input ends the hold immediately — wheel/thumb is the user
+        // taking over the viewport. Keyboard and thumb drags are caught by
+        // the drift escape in tick (they move scrollTop past the threshold).
+        const events = ['wheel', 'touchstart']
+        for (const ev of events) scroller.addEventListener(ev, cancel, { passive: true })
+        cancelers.push({ scroller, events })
+      }
+      requestAnimationFrame(tick)
+    }
+    return () => scrollReassertCancelRef.current?.()
   }, [openIds, panelCache, bodyRef])
 
   const endPanelExit = useCallback((id: string) => {
@@ -2832,16 +2908,30 @@ export function App() {
   // handlePanelAnimEnd then forces a re-render so React's virtual DOM
   // reconciles and removes the class via its normal className commit.
   const enteringSetRef = useRef<Set<string>>(new Set())
+  /** Keep-alive re-show flavor of entering (see the diff block below): the
+   *  panel-enter replay — 320ms with a transparent hold masking Virtuoso's
+   *  stale-position frames. Drained by the same handlePanelAnimEnd. */
+  const replayEnterSetRef = useRef<Set<string>>(new Set())
   /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection + keep-alive cache sync */
   if (prevOpenIdsRef.current !== openIds) {
     const prevSet = new Set(prevOpenIdsRef.current)
-    // A re-entering id that is already in the cache is a keep-alive RE-SHOW,
-    // not a fresh mount: its panel never unmounted, so the entrance
-    // animation is suppressed (the instant appearance is the point).
-    const cachedSet = new Set(panelCache)
-    for (const id of openIds) {
-      if (!prevSet.has(id) && !cachedSet.has(id)) {
-        enteringSetRef.current.add(id)
+    // Entering covers BOTH fresh mounts and keep-alive re-shows, with a
+    // different flavor each: a fresh mount pops in at once (180ms, no hold —
+    // there is no stale Virtuoso position to mask), while a cache re-show
+    // uses the replay flavor (320ms with a transparent hold) so the few
+    // frames where Virtuoso repaints its stale internal scroll position stay
+    // invisible. Reduced motion skips both sets entirely (no class, no
+    // animation, no onAnimationEnd dependency). Both sets are drained by
+    // handlePanelAnimEnd (CSS animationend), so an id whose animation is
+    // interrupted mid-flight by another hide replays on its next show —
+    // self-consistent for rapid switching.
+    if (!prefersReducedMotion()) {
+      const cachedSet = new Set(panelCache)
+      for (const id of openIds) {
+        if (!prevSet.has(id)) {
+          if (cachedSet.has(id)) replayEnterSetRef.current.add(id)
+          else enteringSetRef.current.add(id)
+        }
       }
     }
     prevOpenIdsRef.current = openIds
@@ -2874,6 +2964,7 @@ export function App() {
   const [, setAnimEpoch] = useState(0)
   const handlePanelAnimEnd = useCallback((id: string) => {
     enteringSetRef.current.delete(id)
+    replayEnterSetRef.current.delete(id)
     setAnimEpoch((n) => n + 1)
   }, [])
 
@@ -5088,6 +5179,7 @@ export function App() {
             const openIdx = resolvedOpenIds.indexOf(s.id)
             const visible = openIdx >= 0
             const entering = enteringSetRef.current.has(s.id)
+            const enteringReplay = replayEnterSetRef.current.has(s.id)
             const owningGroup = groups.find((g) => g.sessionIds.includes(s.id))
             const clearing = clearingIds.has(s.id)
             const node = (
@@ -5104,10 +5196,12 @@ export function App() {
                       clearing={clearing}
                       hasUnread={!!unread[s.id]}
                       slot={visible ? openIdx + 1 : 0}
+                      panelVisible={visible}
                       composerFocusSignal={visible ? panelFocusSignals[openIdx] : undefined}
                       showSlotHints={heldModifiers.ctrlOrMeta}
                       entering={entering}
-                      onAnimEnd={entering ? handlePanelAnimEnd : undefined}
+                      enteringReplay={enteringReplay}
+                      onAnimEnd={entering || enteringReplay ? handlePanelAnimEnd : undefined}
                       onFocus={focusPanel}
                       onClose={closeSession}
                       onResume={handleResumePanel}

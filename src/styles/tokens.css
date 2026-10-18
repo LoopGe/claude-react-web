@@ -123,6 +123,10 @@
   --motion-duration-base: 180ms;
   --motion-duration-moderate: 240ms;
   --motion-duration-slow: 320ms;
+  /* Panel-enter (fade+scale on session/group switch). Longer than base:
+     a whole-panel fade must outlast its content's row cascade to read as
+     one transition instead of a flash. */
+  --motion-duration-panel-enter: 320ms;
   --motion-ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
   --motion-ease-enter: var(--motion-ease-standard);
   --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
