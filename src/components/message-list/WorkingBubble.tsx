@@ -37,11 +37,13 @@ interface ApiRetryMessage {
   receivedAt?: number
 }
 
-/** The retrying label content for the working bar — the transient
- *  `mirror.apiRetry` slot rendered as text (moved here from the old
- *  ApiRetryView transcript divider). Isolated in its own component so the
- *  1Hz countdown tick re-renders only this subtree, not the whole memoized
- *  bubble (timer, countUp, swarm pill stay untouched).
+/** The retry pill for the working bar — the transient `mirror.apiRetry`
+ *  slot rendered as a compact amber chip (wait time + attempt count, e.g.
+ *  "26s 7/10"). It does NOT replace the phase label: the pill sits beside
+ *  the timer/rate chips so the stale-but-contextual phase text ("Calling
+ *  MCP...") stays visible during the backoff window. Isolated in its own
+ *  component so the 1Hz countdown tick re-renders only this subtree, not
+ *  the whole memoized bubble (timer, countUp, swarm pill stay untouched).
  *
  *  The SDK emits one `api_retry` frame per retry attempt with
  *  `retry_delay_ms` set, but no follow-up when the delay elapses — so a
@@ -63,7 +65,7 @@ interface ApiRetryMessage {
  *  We stop the interval at remainingMs → 0 — the next attempt is in
  *  flight; either it succeeds (no more frames) or a new frame arrives and
  *  the effect restarts the timer. */
-function RetryLabel({ msg }: { msg: SdkMessage }) {
+function RetryPill({ msg }: { msg: SdkMessage }) {
   const m = msg as unknown as ApiRetryMessage
   const attempt = m.attempt ?? 0
   const maxRetries = m.max_retries ?? 0
@@ -116,15 +118,16 @@ function RetryLabel({ msg }: { msg: SdkMessage }) {
   const seconds = Math.ceil(remainingMs / 1000)
 
   // Pill content: wait time + attempt count ONLY ("26s 7/10") — the amber
-  // pill styling (and the bar's aria-label) carries the "retrying" meaning,
-  // so no kind text, no icon. Once we've ticked down to 0 the next attempt
+  // pill styling carries the "retrying" meaning, so no VISIBLE kind text and
+  // no icon. (A screen-reader-only kind word is included below — see the
+  // live-region note.) Once we've ticked down to 0 the next attempt
   // is mid-flight; it shows "0s" until the frame is replaced or cleared.
   // Suppress the "/0" tail when max_retries is missing — better to show
   // just the attempt number than a nonsense fraction.
   const waitText = `${seconds}s`
   const attemptText = maxRetries > 0 ? `${attempt}/${maxRetries}` : `${attempt}`
   return (
-    <span className="working-bar-label working-retry-pill">
+    <span className="working-retry-pill">
       {/* Static kind word, screen-reader-only: the live region announces
           changed CONTENT (not the bar's aria-label), so without this the
           only announcement on state entry would be the bare "1/3" fraction.
@@ -157,9 +160,8 @@ export interface WorkingBubbleProps {
   recapping?: boolean
   /** Transient `api_retry` frame (rate-limit retry indicator) from the
    *  `mirror.apiRetry` slot, or null when no retry is in flight. While set
-   *  (and not `waiting`) it REPLACES the phase label with the retry state —
-   *  during a retry wait nothing streams, so the phase label is stale and
-   *  the retry countdown (RetryLabel) is the bubble's only true state. */
+   *  (and not `waiting`) an amber retry pill (RetryPill) renders to the
+   *  right of the timer / token-rate chips; the phase label keeps its slot. */
   apiRetry?: SdkMessage | null
   /** True when the parent turn has ended but `pending` background subagents
    *  are still in flight. The bubble stays mounted and shows "Waiting..."
@@ -197,9 +199,11 @@ export const WorkingBubble = memo(function WorkingBubble({
   const idle = !active && !waiting
   // A retry is in flight. Waiting outranks it (the parent turn ended — the
   // result frame already cleared the slot, so the two can't genuinely
-  // co-occur); retrying in turn outranks recapping (a 429'd auto-compact
-  // fires api_retry while compacting is still set — the retry is the newer,
-  // more specific state) and the phase label (stale during the wait).
+  // co-occur). The retry state lives in the pill chip (right of the timer /
+  // rate readouts); the phase label keeps rendering normally beside it —
+  // nothing streams during the backoff window so the phase is stale, but it
+  // preserves the "what was in flight" context and re-syncs seamlessly when
+  // the wait ends.
   const retrying = apiRetry != null && !waiting
 
   // MCP tool names are `mcp__<server>__<tool>` — unbounded length, and in this
@@ -220,17 +224,15 @@ export const WorkingBubble = memo(function WorkingBubble({
   // the label text so e.g. "Calling <tool>" tool swaps also retrigger.
   const labelKey = waiting
     ? 'waiting'
-    : retrying
-      ? 'retrying'
-      : recapping
-        ? 'recap'
-        : activePhase === 'thinking'
-          ? 'thinking'
-          : activePhase === 'writing'
-            ? 'writing'
-            : phaseKey
-              ? `tool:${phaseKey}`
-              : 'working'
+    : recapping
+      ? 'recap'
+      : activePhase === 'thinking'
+        ? 'thinking'
+        : activePhase === 'writing'
+          ? 'writing'
+          : phaseKey
+            ? `tool:${phaseKey}`
+            : 'working'
   const labelText = waiting
     ? 'Waiting...'
     : recapping
@@ -271,12 +273,9 @@ export const WorkingBubble = memo(function WorkingBubble({
         </div>
       )}
       {!idle && (
-        retrying && apiRetry
-          // The retry pill replaces the phase label outright (nothing streams
-          // during the wait, so the phase is stale) and carries its own
-          // working-bar-label class so the entrance crossfade still plays.
-          ? <RetryLabel key={labelKey} msg={apiRetry} />
-          : <span key={labelKey} className="working-bar-label">{labelText}</span>
+        <span key={labelKey} className="working-bar-label">
+          {labelText}
+        </span>
       )}
       {/* The turn timer is only meaningful while the turn is active; hide it
           in the Waiting state (the parent turn has ended). The swarm pill's
@@ -299,6 +298,13 @@ export const WorkingBubble = memo(function WorkingBubble({
         <span className="working-rate">
           ~{formatTokens(thinkingTokens)} tok
         </span>
+      )}
+      {/* Retry pill: wait time + attempt count ("26s 7/10"), to the right of
+          the timer / token-rate chips. A 429'd auto-compact can fire api_retry
+          while `recapping` is set — the pill is the newer, more specific
+          state, but it coexists with the label rather than replacing it. */}
+      {!idle && retrying && apiRetry && (
+        <RetryPill msg={apiRetry} />
       )}
       {/* Divider between the status chrome (dots/label/timer/rate) and the
           subagent group — it belongs to the swarm side (pinned by the

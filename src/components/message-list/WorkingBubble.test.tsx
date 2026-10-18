@@ -20,7 +20,7 @@ function retryMsg(over: Record<string, unknown> = {}): SdkMessage {
 
 describe('WorkingBubble api_retry label', () => {
   beforeEach(() => {
-    // RetryLabel runs a 1s countdown interval whose lifetime scales with
+    // RetryPill runs a 1s countdown interval whose lifetime scales with
     // retry_delay_ms; under real timers it can outlive the file's execution
     // and fire one last setState after the jsdom environment is torn down.
     // None of these tests need real time (same reason the old ApiRetryView
@@ -28,20 +28,20 @@ describe('WorkingBubble api_retry label', () => {
     vi.useFakeTimers()
   })
 
-  it('replaces the phase label with the retry pill: wait time + attempt count', () => {
+  it('renders the retry pill beside the phase label: wait time + attempt count', () => {
     const { container } = render(
       <WorkingBubble active apiRetry={retryMsg()} activePhase="thinking" />,
     )
-    const label = container.querySelector('.working-bar-label')
+    const pill = container.querySelector('.working-retry-pill')
     // No icon — the pill is plain text like the bar's other chips.
-    expect(label?.querySelector('svg')).toBeFalsy()
+    expect(pill?.querySelector('svg')).toBeFalsy()
     // Pill content is ONLY the wait time and the attempt count.
-    expect(label?.textContent).toContain('9s')
-    expect(label?.textContent).toContain('1/3')
-    expect(label?.className).toContain('working-retry-pill')
-    // The stale phase label is gone — during a retry wait nothing streams,
-    // so the retry state IS the bubble's current state.
-    expect(label?.textContent).not.toContain('Thinking')
+    expect(pill?.textContent).toContain('9s')
+    expect(pill?.textContent).toContain('1/3')
+    // The phase label keeps its own slot beside the pill — it's stale during
+    // the backoff window, but preserves the "what was in flight" context.
+    const label = container.querySelector('.working-bar-label')
+    expect(label?.textContent).toContain('Thinking')
   })
 
   it('marks the bar with the working-bar-retry state class while retrying', () => {
@@ -56,11 +56,11 @@ describe('WorkingBubble api_retry label', () => {
         apiRetry={retryMsg({ attempt: 2, max_retries: undefined, retry_delay_ms: 4000, error_status: 529, error: 'overloaded_error' })}
       />,
     )
-    const label = container.querySelector('.working-bar-label')
+    const pill = container.querySelector('.working-retry-pill')
     // Exact pill content: sr-only kind word + wait time + attempt count —
     // pins the "/max tail omitted" guard (a stray '/0' or 'attempt' word
     // would fail the equality).
-    expect(label?.textContent?.trim()).toBe('retrying 4s 2')
+    expect(pill?.textContent?.trim()).toBe('retrying 4s 2')
   })
 
   it('shows "0s" once the countdown reaches zero', () => {
@@ -70,7 +70,7 @@ describe('WorkingBubble api_retry label', () => {
     act(() => {
       vi.advanceTimersByTime(2500)
     })
-    expect(container.querySelector('.working-bar-label')?.textContent).toContain('0s')
+    expect(container.querySelector('.working-retry-pill')?.textContent).toContain('0s')
   })
 
   it('restarts the countdown when a follow-up frame carries the SAME delay', () => {
@@ -84,33 +84,32 @@ describe('WorkingBubble api_retry label', () => {
     act(() => {
       vi.advanceTimersByTime(2500)
     })
-    expect(container.querySelector('.working-bar-label')?.textContent).toContain('0s')
+    expect(container.querySelector('.working-retry-pill')?.textContent).toContain('0s')
 
     // Attempt 2 lands with the SAME retry_delay_ms.
     rerender(
       <WorkingBubble active apiRetry={retryMsg({ attempt: 2, retry_delay_ms: 2000 })} />,
     )
-    const label = container.querySelector('.working-bar-label')
-    expect(label?.textContent).toContain('2s')
-    expect(label?.textContent).toContain('2/3')
+    const pill = container.querySelector('.working-retry-pill')
+    expect(pill?.textContent).toContain('2s')
+    expect(pill?.textContent).toContain('2/3')
   })
 
-  it('waiting outranks retrying: the calm Waiting label stays', () => {
+  it('waiting outranks retrying: no pill, the calm Waiting label stays', () => {
     const { container } = render(
       <WorkingBubble active apiRetry={retryMsg()} waiting />,
     )
     const label = container.querySelector('.working-bar-label')
     expect(label?.textContent).toContain('Waiting')
-    expect(label?.className).not.toContain('working-retry-pill')
+    expect(container.querySelector('.working-retry-pill')).toBeNull()
   })
 
-  it('retrying outranks recapping', () => {
+  it('retrying coexists with recapping: pill renders, recap label keeps its slot', () => {
     const { container } = render(
       <WorkingBubble active apiRetry={retryMsg()} recapping />,
     )
-    const label = container.querySelector('.working-bar-label')
-    expect(label?.className).toContain('working-retry-pill')
-    expect(label?.textContent).not.toContain('Recap')
+    expect(container.querySelector('.working-retry-pill')).toBeTruthy()
+    expect(container.querySelector('.working-bar-label')?.textContent).toContain('Recap')
   })
 
   it('without an api_retry frame the phase label renders as before', () => {
@@ -132,7 +131,7 @@ describe('WorkingBubble api_retry label', () => {
         apiRetry={retryMsg({ retry_delay_ms: 60000, receivedAt: 1_000_000 - 30_000 })}
       />,
     )
-    expect(container.querySelector('.working-bar-label')?.textContent).toContain('30s')
+    expect(container.querySelector('.working-retry-pill')?.textContent).toContain('30s')
   })
 
   it('reflects the retry state in the working bar aria-label', () => {
@@ -156,11 +155,11 @@ describe('WorkingBubble api_retry label', () => {
     const { container } = render(
       <WorkingBubble active apiRetry={retryMsg({ retry_delay_ms: 30000 })} />,
     )
-    const label = container.querySelector('.working-bar-label')
-    const hidden = label?.querySelector('span[aria-hidden="true"]')
+    const pill = container.querySelector('.working-retry-pill')
+    const hidden = pill?.querySelector('span[aria-hidden="true"]')
     expect(hidden?.textContent).toBe('30s')
     // The visible pill is unchanged (aria-hidden is presentational only).
-    expect(label?.textContent).toContain('30s')
-    expect(label?.textContent).toContain('1/3')
+    expect(pill?.textContent).toContain('30s')
+    expect(pill?.textContent).toContain('1/3')
   })
 })
