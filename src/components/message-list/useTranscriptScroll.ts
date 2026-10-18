@@ -48,6 +48,12 @@ import { clamp } from '../../utils/clamp'
  *  being at the bottom. */
 const BOTTOM_EPSILON_PX = 2
 
+/** Initial value of the follow-gate reset guard's last-reset key. A unique
+ *  symbol — never equal to any `transcriptRevealKey` (which may legitimately
+ *  be `undefined` for callers like SubagentTranscriptDialog) — so the mount
+ *  run of the reset effect always executes once, even for undefined keys. */
+const FOLLOW_RESET_NEVER = Symbol('crw-follow-reset-never')
+
 /** How long a settle-verification pass keeps watching the viewport after a
  *  pin (see verifyFollowInvariant). Long enough to outlast Virtuoso's
  *  post-replay re-measurement storm, short enough that it can never read as a
@@ -524,6 +530,18 @@ export function useTranscriptScroll({
           return
         }
 
+        // Collapsed scroller (clientHeight 0) = the panel is display:none in
+        // the keep-alive cache. Every distance reads 0 there, so
+        // isAtTrueBottom would report "at the bottom" and re-latch follow on
+        // a panel the user deliberately scrolled away from — the follow
+        // invariant then snaps the viewport back to the bottom when the panel
+        // is re-shown. Same stand-down contract as syncBottomGeometry: decide
+        // nothing from collapsed geometry.
+        if (el.clientHeight === 0) {
+          setBottomState(false)
+          return
+        }
+
         // Already away: restore follow only when back at the TRUE bottom.
         // Restoring while still inside the dead zone (spacer-aware at-bottom)
         // would re-latch follow and re-arm the re-pin backstops that snap the
@@ -689,7 +707,23 @@ export function useTranscriptScroll({
   // so stale values from the old transcript don't leak into the new one — a
   // stale atBottomRef=false would disarm the viewport-shrink backstop, and a
   // stale following=false would leave the new transcript unpinned.
+  //
+  // Guarded by the last-reset key. The reset may only run when the transcript
+  // identity ACTUALLY changes. Two verified reasons to gate it:
+  //  1. Fast Refresh (dev) has been observed to re-render hook owners with a
+  //     transiently-undefined revealKey while a group switch has the panel
+  //     hidden — an undefined→key flip then re-runs the reset for a transcript
+  //     that did not change, wiping the user's away state.
+  //  2. Same-key effect re-fires (same key value, same instance, no remount)
+  //     wipe the away state identically: the follow-invariant then snaps the
+  //     viewport back to the bottom when the panel is re-shown, defeating the
+  //     keep-alive cache's scroll-preservation promise ("切 group 回来滚动位置
+  //     丢失,回到底部"). The key-equality check suppresses both regardless of
+  //     which React mechanism produced them.
+  const lastResetKeyRef = useRef<string | undefined | typeof FOLLOW_RESET_NEVER>(FOLLOW_RESET_NEVER)
   useEffect(() => {
+    if (lastResetKeyRef.current === transcriptRevealKey) return
+    lastResetKeyRef.current = transcriptRevealKey
     clearFollowTimer()
     atBottomRef.current = true
     userScrollIntentRef.current = 0

@@ -2205,6 +2205,56 @@ describe('MessageList', () => {
     })
   })
 
+  it('keeps the away gate across a same-key effect re-fire (group-switch keep-alive)', async () => {
+    // Regression guard for the group-switch scroll-loss bug: the follow-gate
+    // reset effect (deps [transcriptRevealKey]) was observed to re-fire for a
+    // panel whose transcript did NOT change (dev StrictMode/HMR re-fire, same
+    // key value, same instance) — the unconditional setFollowing(true) wiped
+    // the user's away state, and the follow-invariant snapped the viewport
+    // back to the bottom when the panel was re-shown. The last-reset-key guard
+    // must suppress the reset when the key did not actually change.
+    virtuosoMockState.atBottomReport = false
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100 // start at the bottom (following)
+
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Scrollable message' }] },
+      }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+
+    const { container, rerender } = render(
+      <MessageList items={items} transcriptRevealKey="session-a" />,
+    )
+    await waitFor(() => {
+      expect(container.querySelector('.chat-messages')?.classList.contains('chat-messages-reveal-pending')).toBe(false)
+    })
+    // User scrolls up → follow drops.
+    scrollUpFromBottom(container)
+    await waitFor(() => {
+      expect(followingOf(container)).toBe('false')
+    })
+
+    // Simulate the observed re-fire: re-renders + effect re-runs with the
+    // SAME key (what a group switch does to a hidden cached panel). The away
+    // gate must survive — the reset runs only when the key truly changes.
+    rerender(<MessageList items={items} transcriptRevealKey="session-a" />)
+    rerender(<MessageList items={items} transcriptRevealKey="session-a" />)
+
+    await waitFor(() => {
+      expect(followingOf(container)).toBe('false')
+    })
+
+    // And the reset still works when the key genuinely changes afterwards.
+    rerender(<MessageList items={items} transcriptRevealKey="session-b" />)
+    await waitFor(() => {
+      expect(followingOf(container)).toBe('true')
+    })
+  })
+
   it('prev-nav from a parked-at-bottom viewport finds a target and eases to it', () => {
     // Regression guard for the right-click menu's "Scroll to previous user
     // message" appearing to do nothing when the transcript was parked at the
