@@ -1584,7 +1584,7 @@ describe('MessageList', () => {
       makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
     ]
-    let contentHeight = 200
+    const contentHeight = 200
     let stackHeight = 80
 
     const { container } = render(
@@ -1657,7 +1657,7 @@ describe('MessageList', () => {
       makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
     ]
     let contentHeight = 200
-    let stackHeight = 80
+    const stackHeight = 80
 
     const { container } = render(
       <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
