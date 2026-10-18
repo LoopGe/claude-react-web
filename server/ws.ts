@@ -17,7 +17,7 @@ import type { IncomingMessage, Server as HttpServer } from 'node:http'
 import type { Socket } from 'node:net'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { authorizeUpgrade } from './auth.js'
-import { checkUpgradeRequest, createRequestGuard, devOrigins, type BindAddress } from './request-guard.js'
+import { checkUpgradeRequest, createRequestGuard, devVitePort, type BindAddress } from './request-guard.js'
 import { SessionConnection } from './frame-bridge.js'
 import { WsFrameSink } from './ws-sink.js'
 import type { SessionBroadcaster } from './session-types.js'
@@ -52,7 +52,12 @@ export function attachWebSocket(
   // Same Host/Origin policy as the HTTP middleware (server/request-guard.ts).
   // Only with a real bind, mirroring buildApp.
   const guard = opts?.bind
-    ? createRequestGuard({ bind: opts.bind, extraOrigins: opts.trustDevOrigins ? devOrigins() : [] })
+    ? createRequestGuard({
+        bind: opts.bind,
+        // Mirrors buildApp: devOriginPort covers loopback + LAN-interface
+        // Vite origins (dev:host cross-machine), matched lazily.
+        devOriginPort: opts.trustDevOrigins ? devVitePort() : undefined,
+      })
     : undefined
   // `noServer: true` means the WSS doesn't listen on its own port; it
   // only handles connections handed to it via `handleUpgrade()`. That's

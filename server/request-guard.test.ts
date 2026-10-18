@@ -3,14 +3,13 @@ import type { IncomingMessage } from 'node:http'
 import {
   checkUpgradeRequest,
   createRequestGuard,
-  devOrigins,
   isJsonContentType,
   parseHostHeader,
 } from './request-guard.js'
 
 const lan = () => ['192.168.1.5']
 const loopbackGuard = (port = 3499) =>
-  createRequestGuard({ bind: { host: '127.0.0.1', port }, extraOrigins: devOrigins(5174), lanAddresses: lan })
+  createRequestGuard({ bind: { host: '127.0.0.1', port }, devOriginPort: 5174, lanAddresses: lan })
 
 describe('parseHostHeader', () => {
   it('parses host, port, IPv6 and defaults to 80', () => {
@@ -102,6 +101,45 @@ describe('createRequestGuard — Origin', () => {
     const g = createRequestGuard({ bind: { host: '0.0.0.0', port: 3499 }, lanAddresses: lan })
     expect(g.isTrustedOrigin('http://192.168.1.5:3499')).toBe(true)
     expect(g.isTrustedOrigin('http://192.168.1.9:3499')).toBe(false)
+  })
+})
+
+describe('createRequestGuard — dev Vite origin over LAN (devOriginPort)', () => {
+  // dev:host topology: the API binds loopback while Vite (--host) is
+  // LAN-reachable, so a remote browser's page origin is LAN-IP:5174.
+  const devGuard = () =>
+    createRequestGuard({ bind: { host: '127.0.0.1', port: 3499 }, devOriginPort: 5174, lanAddresses: lan })
+
+  it('trusts a LAN-interface Vite origin even when the API binds loopback', () => {
+    const g = devGuard()
+    expect(g.isTrustedOrigin('http://192.168.1.5:5174')).toBe(true)
+    expect(g.isAllowedRequestOrigin('http://192.168.1.5:5174')).toBe(true)
+  })
+
+  it('still trusts the loopback Vite origins without extraOrigins', () => {
+    const g = devGuard()
+    expect(g.isTrustedOrigin('http://localhost:5174')).toBe(true)
+    expect(g.isTrustedOrigin('http://127.0.0.1:5174')).toBe(true)
+    expect(g.isTrustedOrigin('http://[::1]:5174')).toBe(true)
+  })
+
+  it('rejects foreign LAN IPs, wrong ports and schemes at the dev port', () => {
+    const g = devGuard()
+    expect(g.isTrustedOrigin('http://192.168.1.9:5174')).toBe(false) // another machine's IP
+    expect(g.isTrustedOrigin('http://192.168.1.5:9999')).toBe(false)
+    expect(g.isTrustedOrigin('https://192.168.1.5:5174')).toBe(false)
+  })
+
+  it('is off unless devOriginPort is set (production runtime)', () => {
+    const g = createRequestGuard({ bind: { host: '127.0.0.1', port: 3499 }, lanAddresses: lan })
+    expect(g.isTrustedOrigin('http://192.168.1.5:5174')).toBe(false)
+    expect(g.isAllowedRequestOrigin('http://192.168.1.5:5174')).toBe(false)
+  })
+
+  it('applies to the WS upgrade path', () => {
+    const req = (headers: Record<string, string>) => ({ headers }) as unknown as IncomingMessage
+    expect(checkUpgradeRequest(devGuard(), req({ host: '127.0.0.1:3499', origin: 'http://192.168.1.5:5174' }))).toEqual({ ok: true })
+    expect(checkUpgradeRequest(devGuard(), req({ host: '127.0.0.1:3499', origin: 'http://192.168.1.9:5174' }))).toEqual({ ok: false, reason: 'origin' })
   })
 })
 

@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { buildApp } from './app.js'
+import { lanIPv4Addresses } from './net.js'
 
 const BIND = { host: '127.0.0.1', port: 3499 }
 const BASE = `http://127.0.0.1:${BIND.port}`
@@ -163,6 +164,29 @@ describe('buildApp security boundary (bound to 127.0.0.1:3499, dev runtime)', ()
       })
       expect(res.status).toBe(400)
     })
+  })
+})
+
+describe('dev runtime (trustDevOrigins) — Vite origin over LAN', () => {
+  // dev:host cross-machine topology: browser on another device reaches Vite
+  // (--host) via this machine's LAN IP, so the proxied write carries
+  // Origin http://<lan-ip>:5174. Uses the machine's real interface IP.
+  const { app } = buildApp({ bind: BIND, trustDevOrigins: true })
+  const lanIp = lanIPv4Addresses()[0]
+
+  it.skipIf(!lanIp)('allows a write and CORS-reflects the LAN-interface Vite origin', async () => {
+    const origin = `http://${lanIp}:5174`
+    const res = await app.request(`${BASE}/api/sessions/does-not-exist/model`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin },
+      body: JSON.stringify({ model: 'x' }),
+    })
+    expect(res.status).toBe(404)
+    const pre = await app.request(`${BASE}/api/sessions`, {
+      method: 'OPTIONS',
+      headers: { origin, 'access-control-request-method': 'POST' },
+    })
+    expect(pre.headers.get('access-control-allow-origin')).toBe(origin)
   })
 })
 

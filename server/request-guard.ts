@@ -37,13 +37,21 @@ export interface BindAddress {
 /** Vite dev server port default — mirrors vite.config.ts (`VITE_PORT || 5174`). */
 export const DEFAULT_VITE_PORT = 5174
 
-/** Origins of the Vite dev server. Its `/api` proxy uses `changeOrigin`, which
- *  rewrites Host to the API target but leaves Origin as the dev page origin,
- *  so these must be trusted for dev-mode writes and the proxied WS. Trusted
- *  ONLY in a dev runtime (`trustDevOrigins`, see server/dev-mode.ts
- *  isDevRuntime): 5174 is also Vite's fallback port for any other local
- *  project, which must not drive a production instance. */
-export function devOrigins(vitePort = Number(process.env.VITE_PORT) || DEFAULT_VITE_PORT): string[] {
+/** The Vite dev server port (`VITE_PORT` override or the 5174 default). */
+export function devVitePort(): number {
+  return Number(process.env.VITE_PORT) || DEFAULT_VITE_PORT
+}
+
+/** Origins of the Vite dev server (loopback names only). Its `/api` proxy
+ *  uses `changeOrigin`, which rewrites Host to the API target but leaves
+ *  Origin as the dev page origin, so these must be trusted for dev-mode
+ *  writes and the proxied WS. Trusted ONLY in a dev runtime
+ *  (`trustDevOrigins`, see server/dev-mode.ts isDevRuntime): 5174 is also
+ *  Vite's fallback port for any other local project, which must not drive
+ *  a production instance. LAN-reachable dev origins (remote browser →
+ *  `vite --host`) are covered by the `devOriginPort` option instead, which
+ *  matches interface IPs lazily. */
+export function devOrigins(vitePort = devVitePort()): string[] {
   return [
     `http://localhost:${vitePort}`,
     `http://127.0.0.1:${vitePort}`,
@@ -111,15 +119,21 @@ export interface RequestGuard {
 
 export interface RequestGuardOptions {
   bind: BindAddress
-  /** Exact origins trusted in addition to the bound ones. Default none;
-   *  callers pass `devOrigins()` only in a dev runtime. */
-  extraOrigins?: string[]
+  /** Vite dev-server port trusted in a dev runtime (`trustDevOrigins`).
+   *  Accepts `http://<host>:<devOriginPort>` where `<host>` is a loopback
+   *  name OR one of this machine's LAN interface IPs — lazily resolved, so
+   *  a Wi-Fi reconnect is picked up and another machine's IP never matches.
+   *  Covers both the loopback `npm run dev` topology and the `dev:host`
+   *  cross-machine one: the API binds loopback while `vite --host` serves
+   *  the page the remote browser's Origin points at. Only plain `http:` is
+   *  trusted, mirroring the dev origins. */
+  devOriginPort?: number
   lanAddresses?: () => string[]
 }
 
 export function createRequestGuard({
   bind,
-  extraOrigins = [],
+  devOriginPort,
   lanAddresses = lanIPv4Addresses,
 }: RequestGuardOptions): RequestGuard {
   const boundHost = normalizeBindHost(bind.host)
@@ -129,16 +143,15 @@ export function createRequestGuard({
   // means the server is reachable over the LAN by interface IP.
   const allowLan = !isLoopbackHost(bind.host.trim().toLowerCase())
 
-  const trustedExtra = new Set<string>()
-  for (const o of extraOrigins) {
-    try { trustedExtra.add(new URL(o).origin) } catch { /* ignore malformed */ }
-  }
-
-  function isAllowedHostname(hostname: string): boolean {
+  /** Hostname membership in this machine's trusted set: static names
+   *  (loopback + bind host) always; LAN interface IPs lazily (interfaces
+   *  can change — Wi-Fi reconnect). `lanGate` restricts the LAN expansion
+   *  to non-loopback binds — the Host-allowlist / bound-origin rule. Dev
+   *  origins pass `lanGate = false` because the dev:host API binds
+   *  loopback while Vite is LAN-reachable. */
+  function isTrustedHostname(hostname: string, lanGate: boolean): boolean {
     if (staticHosts.has(hostname)) return true
-    if (!allowLan) return false
-    // Lazy: interfaces can change (Wi-Fi reconnect) and enumeration is only
-    // needed for names outside the static set.
+    if (lanGate && !allowLan) return false
     return lanAddresses().some((ip) => ip.toLowerCase() === hostname)
   }
 
@@ -146,15 +159,18 @@ export function createRequestGuard({
     isAllowedHost(hostHeader) {
       const parsed = parseHostHeader(hostHeader)
       if (!parsed) return false
-      return parsed.port === bind.port && isAllowedHostname(parsed.hostname)
+      return parsed.port === bind.port && isTrustedHostname(parsed.hostname, true)
     },
     isTrustedOrigin(origin) {
       let url: URL
       try { url = new URL(origin) } catch { return false }
-      if (trustedExtra.has(url.origin)) return true
       if (url.protocol !== 'http:') return false
       const port = url.port ? Number(url.port) : 80
-      return port === bind.port && isAllowedHostname(url.hostname.toLowerCase())
+      if (port === bind.port && isTrustedHostname(url.hostname.toLowerCase(), true)) return true
+      if (devOriginPort !== undefined && port === devOriginPort) {
+        return isTrustedHostname(url.hostname.toLowerCase(), false)
+      }
+      return false
     },
     isAllowedRequestOrigin(origin) {
       if (origin === undefined || origin === null) return true

@@ -38,7 +38,7 @@ import { buildAppPluginRouter } from './app-plugins/routes.js'
 import type { AppPluginMarketplaceStore } from './app-plugins/marketplace-store.js'
 import { buildAppPluginMarketplaceRouter } from './app-plugins/marketplace-routes.js'
 import { isStreamingUploadPath } from './stream-upload.js'
-import { buildRequestGuardMiddleware, createRequestGuard, devOrigins } from './request-guard.js'
+import { buildRequestGuardMiddleware, createRequestGuard, devOrigins, devVitePort } from './request-guard.js'
 
 const appLog = createLogger('app')
 
@@ -159,7 +159,13 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
   // in-process app.fetch with no listener. First app.use so OPTIONS
   // preflights and static assets are Host-checked too.
   const guard = opts.bind
-    ? createRequestGuard({ bind: opts.bind, extraOrigins: opts.trustDevOrigins ? devOrigins() : [] })
+    ? createRequestGuard({
+        bind: opts.bind,
+        // devOriginPort covers the loopback devOrigins() AND the LAN-interface
+        // Vite origins (dev:host cross-machine), matched lazily. devOrigins()
+        // stays for the no-bind CORS fallback above.
+        devOriginPort: opts.trustDevOrigins ? devVitePort() : undefined,
+      })
     : undefined
   if (guard) app.use('*', buildRequestGuardMiddleware(guard))
 
