@@ -117,9 +117,10 @@ export const MessageView = memo(function MessageView({
   /** Queue-delivery state of a top-level user turn. 'queued' renders a
    *  "queued" chip (the SDK is busy and hasn't read this turn yet);
    *  'consumed' renders a brief "processing" chip; 'injecting'/'injected'
-   *  are the mid-run steering states (spec §10); undefined renders
-   *  nothing. Mutually exclusive with `sending` in practice (sending is
-   *  the pre-ack optimistic state, deliveryStatus is post-ack). */
+   *  are the mid-run steering states (spec §10 — 'injected' fades once an
+   *  assistant/result row follows, i.e. the injected turn has ended);
+   *  undefined renders nothing. Mutually exclusive with `sending` in practice
+   *  (sending is the pre-ack optimistic state, deliveryStatus is post-ack). */
   deliveryStatus?: 'queued' | 'consumed' | 'injecting' | 'injected'
   /** Whether the session is currently working. Gates the processing
    *  indicator so it only shows on active turns, not on historical
@@ -375,18 +376,28 @@ export const MessageView = memo(function MessageView({
     // the session is actively working, so historical consumed messages
     // after a reconnect don't re-trigger the indicator.
     const showQueued = !sending && deliveryStatus === 'queued'
-    // Mid-run steering chips (spec §10). 'injected' always shows (a durable
-    // historical fact — the boundary delivered it); 'injecting' only while
-    // the session is working — a non-terminal steeredAt on an idle session
-    // is a crash leftover (orphan, spec §8.3) and renders as a plain sent
-    // message instead of a promise that will never resolve.
-    const showInjectedChip = !sending && deliveryStatus === 'injected'
+    // "Model has visibly moved on" proxy, shared by the injected and
+    // processing chips: once an assistant/result row follows this user turn,
+    // the turn it rode has ended. (Intervening rows — task-notification user
+    // frames, system banners — do NOT end the turn, they only delay the
+    // proxy; the `working` gate below is what guarantees the fade when the
+    // turn settles without a directly-following assistant row.)
+    const turnResponded = nextItemType === 'assistant' || nextItemType === 'result'
+    // Mid-run steering chips (spec §10). Both are live-turn promises, so both
+    // are gated on `working` — an idle session must not render a promise
+    // (crash orphan, spec §8.3; also every replayed/historical transcript,
+    // where working is false). Within the live turn: 'injected' fades once
+    // the model visibly responded to the turn it was delivered into;
+    // 'injecting' is a non-terminal steeredAt still awaiting delivery. The
+    // injectedAt stamp itself stays durable in the data model
+    // (replay/deriveDeliveryStatus) — only the chip presentation is transient.
+    const showInjectedChip = !sending && deliveryStatus === 'injected' && working && !turnResponded
     const showInjectingChip = !sending && deliveryStatus === 'injecting' && working
     // Show processing only while the session is working AND the model
     // hasn't started responding yet. Once an assistant/result message
     // appears after this user turn, the model has moved on —hide the
     // indicator even if the session is still working on a subsequent turn.
-    const showProcessing = !sending && deliveryStatus === 'consumed' && working && nextItemType !== 'assistant' && nextItemType !== 'result'
+    const showProcessing = !sending && deliveryStatus === 'consumed' && working && !turnResponded
     return (
       <div className={`msg user${sending ? ' msg-sending' : ''}${showQueued ? ' msg-queued' : ''}`}>
         {showMessageHeaders && (

@@ -1205,6 +1205,76 @@ describe('MessageList', () => {
     expect(container.querySelector('.msg-processing-indicator')).toBeNull()
   })
 
+  it('keeps the injected chip while the injected turn is still running', () => {
+    // Steered message delivered into the live turn: the assistant hasn't
+    // visibly responded yet (nothing follows), so "injected into the current
+    // turn" is still the accurate claim.
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'steer: also run lint' }] } }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+    items[0].deliveryStatus = 'injected'
+
+    const { container } = render(
+      <MessageList items={items} working />,
+    )
+
+    const chip = container.querySelector('.msg-steered-indicator')
+    expect(chip).not.toBeNull()
+    expect(chip?.textContent).toContain('injected')
+  })
+
+  it('fades the injected chip once the injected turn has visibly ended', () => {
+    // An assistant response follows the steered message — the turn it was
+    // injected into has ended, and the durable injectedAt stamp stays in the
+    // data model (replay) while the live chip spends its promise.
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'steer: also run lint' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'done' }] } }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+    items[0].deliveryStatus = 'injected'
+
+    const { container } = render(
+      <MessageList items={items} working />,
+    )
+
+    expect(container.querySelector('.msg-steered-indicator')).toBeNull()
+  })
+
+  it('fades the injected chip on the turn-result row (the common turn-end path)', () => {
+    // Every settled turn ends with a result row — the most common fade path.
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'steer: also run lint' }] } }),
+      makeMsg('result', {}),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+    items[0].deliveryStatus = 'injected'
+
+    const { container } = render(
+      <MessageList items={items} working />,
+    )
+
+    expect(container.querySelector('.msg-steered-indicator')).toBeNull()
+  })
+
+  it('hides the injected chip on an idle session (replayed orphan)', () => {
+    // Delivery happened but the subprocess died before any output: the last
+    // row is the injected message with nothing after. An idle session must
+    // not render a promise — same rule as the 'injecting' orphan (spec §8.3).
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'steer: also run lint' }] } }),
+    ]
+    const items = toItems(msgs as SdkMessage[])
+    items[0].deliveryStatus = 'injected'
+
+    const { container } = render(
+      <MessageList items={items} />,
+    )
+
+    expect(container.querySelector('.msg-steered-indicator')).toBeNull()
+  })
+
   it('renders streaming content outside the virtualized transcript', () => {
     const msgs = [
       makeMsg('assistant', {
