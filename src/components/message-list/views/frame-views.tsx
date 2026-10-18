@@ -11,7 +11,8 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Markdown } from '../../Markdown'
 import { AnsiText } from '../../AnsiText'
 import { Tooltip } from '../../Tooltip'
-import type { SdkMessage } from '../../../types'
+import { getBlocks } from '../../../session-store/normalize'
+import type { Block, SdkMessage } from '../../../types'
 import { formatClockTime, formatFullTimestamp, formatTokens } from '../../../utils/format'
 import { IconSquare } from '../../icons/ToolIcons'
 import { countMatches } from '../../../search'
@@ -163,6 +164,47 @@ export function TaskNotificationCard({ text, searchQuery, activeMatchIdx }: {
         {summary && <div style={{ marginBottom: result ? 6 : 0, opacity: 0.85 }}>{summary}</div>}
         {result && <Markdown text={result} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}
       </div>
+    </div>
+  )
+}
+
+/** Collapsed summary row for a run of >=2 consecutive COMPLETED
+ *  <task-notification> injections (the background-task noise reducer).
+ *  failed/stopped never reach this component — they render as standalone
+ *  prominent cards via TaskNotificationCard. Expansion state is LIFTED to
+ *  MessageList (keyed by the group row's id): Virtuoso unmounts off-screen
+ *  rows, so local state would reset on every scroll. */
+export function TaskNotificationGroupRow({ members, expanded, onToggle, searchQuery, activeMatchIdx }: {
+  members: SdkMessage[]
+  expanded: boolean
+  onToggle: () => void
+  searchQuery?: string
+  activeMatchIdx?: number
+}) {
+  return (
+    <div className="msg task-notification-group">
+      <button
+        type="button"
+        className="task-notification-group-summary"
+        onClick={onToggle}
+        aria-expanded={expanded}
+      >
+        <span className="task-notification-group-label">
+          background tasks · {members.length} completed
+        </span>
+        <span className="task-notification-group-hint">{expanded ? 'hide' : 'show'}</span>
+      </button>
+      {expanded && (
+        <div className="task-notification-group-body">
+          {members.map((m, i) => {
+            const text = getBlocks(m)
+              .filter((b: Block) => b.type === 'text' && typeof b.text === 'string')
+              .map((b) => b.text as string)
+              .join('\n\n')
+            return <TaskNotificationCard key={i} text={text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+          })}
+        </div>
+      )}
     </div>
   )
 }
