@@ -65,6 +65,12 @@ interface WsHubApi {
    *  alone does not mean THIS listener received the `attached` handshake and
    *  the pending-request re-broadcast the server answers a subscribe with. */
   subscribe: (sessionId: string, opts?: SubscribeOpts) => () => void
+  /** Hold one subagent's disk-transcript channel (TasksPanel dialog).
+   *  Ref-counted like `subscribe`; the hub resends the subscribe frame on
+   *  every (re)open for keys still held. The server answers with a full
+   *  snapshot frame then increments — no `live` bookkeeping needed: a
+   *  duplicate subscribe only re-pushes an idempotent snapshot. */
+  subscribeSubagentTranscript: (sessionId: string, agentId: string) => () => void
 }
 
 const WsHubContext = createContext<WsHubApi | null>(null)
@@ -122,6 +128,10 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   /** Channel bookkeeping per session — holders, server-confirmed liveness, and
    *  the replay cursor. See ChannelState. */
   const channelsRef = useRef<Map<string, ChannelState>>(new Map())
+  /** Ref-counted subagent-transcript channels, parallel to `channelsRef`.
+   *  key = `${sessionId}::${agentId}`. Deliberately NO `live` bookkeeping:
+   *  a duplicate subscribe's only cost is an idempotent snapshot re-push. */
+  const subagentChannelsRef = useRef(new Map<string, number>())
   const connRef = useRef<TransportConnection | null>(null)
   /** Monotonic id for the current connection: a later connect() bumps it, so
    *  a stale connection's late open/close events are ignored (the equivalent
@@ -215,6 +225,11 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         for (const state of channelsRef.current.values()) state.live = false
         for (const sessionId of channelsRef.current.keys()) {
           sendOn(conn, { kind: 'subscribe', sessionId })
+        }
+        for (const key of subagentChannelsRef.current.keys()) {
+          // ids are server-minted uuid/hex — no '::' inside them.
+          const sep = key.indexOf('::')
+          sendOn(conn, { kind: 'subagent-transcript-subscribe', sessionId: key.slice(0, sep), agentId: key.slice(sep + 2) })
         }
         // App-level heartbeat — some reverse proxies close idle WS
         // after 30-60s. A 25s app-level ping is safely below that, and
@@ -390,6 +405,35 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     [safeSend],
   )
 
+  const subscribeSubagentTranscript = useCallback(
+    (sessionId: string, agentId: string) => {
+      const key = `${sessionId}::${agentId}`
+      const prev = subagentChannelsRef.current.get(key) ?? 0
+      subagentChannelsRef.current.set(key, prev + 1)
+      // Only the first holder asks: the server answers a subscribe with a
+      // snapshot then ref-counts, so a duplicate frame is an idempotent
+      // snapshot re-push — harmless, but consumers share one store per key
+      // and the onOpen resend below re-asks for every held key after a drop.
+      if (prev === 0) {
+        safeSend({ kind: 'subagent-transcript-subscribe', sessionId, agentId })
+      }
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        const count = subagentChannelsRef.current.get(key)
+        if (count === undefined) return
+        if (count > 1) {
+          subagentChannelsRef.current.set(key, count - 1)
+          return
+        }
+        subagentChannelsRef.current.delete(key)
+        safeSend({ kind: 'subagent-transcript-unsubscribe', sessionId, agentId })
+      }
+    },
+    [safeSend],
+  )
+
   // Memoize so the controls part (addListener/subscribe) has stable
   // identity across re-renders. Status is deliberately excluded — it
   // lives in its own WsStatusContext so status flips (connecting →
@@ -397,8 +441,8 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // This prevents effect teardown/rebuild in consumers like
   // useChatStream that have `[hub]` in their dependency arrays.
   const api = useMemo<WsHubApi>(
-    () => ({ addListener, addSessionListener, subscribe }),
-    [addListener, addSessionListener, subscribe],
+    () => ({ addListener, addSessionListener, subscribe, subscribeSubagentTranscript }),
+    [addListener, addSessionListener, subscribe, subscribeSubagentTranscript],
   )
   return createElement(
     WsHubContext.Provider,

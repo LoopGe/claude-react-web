@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'vitest'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { SessionConnection, type FrameSink } from './frame-bridge.js'
+import { createPushable, type Pushable } from './pushable.js'
+import type { SubagentTranscriptFrame } from './subagent-transcript-hub.js'
 import type {
   DialogEvent,
   ElicitationEvent,
@@ -936,3 +938,57 @@ describe('per-session channel drivers', () => {
   })
 })
 
+describe('SessionConnection: subagent-transcript channel', () => {
+  it('wires the hub, forwards snapshot + increments, tears down on unsubscribe', async () => {
+    const pushed: Array<Pushable<SubagentTranscriptFrame>> = []
+    const stubHub = {
+      subscribeSubagentTranscript: (_sessionId: string, _agentId: string) => {
+        const p = createPushable<SubagentTranscriptFrame>()
+        pushed.push(p)
+        return { iterable: p.iterable, unsubscribe: () => p.end() }
+      },
+    }
+    const sink = new FakeSink()
+    const conn = new SessionConnection(
+      { sm: new FakeBroadcaster(), subagentTranscripts: stubHub as never },
+      sink,
+    )
+    send(conn, { kind: 'subagent-transcript-subscribe', sessionId: 's1', agentId: 'a1' })
+    await waitForFrame(sink, (_f) => false, 50).catch(() => {}) // give the pump a tick
+    expect(pushed).toHaveLength(1)
+
+    pushed[0].push({ sessionId: 's1', agentId: 'a1', reset: true, frames: [{ uuid: 'u1' }] })
+    const snap = await waitForFrame(sink, (f) => f.kind === 'subagent-transcript' && f.reset === true)
+    expect(snap).toMatchObject({ kind: 'subagent-transcript', sessionId: 's1', agentId: 'a1' })
+
+    pushed[0].push({ sessionId: 's1', agentId: 'a1', reset: false, frames: [{ uuid: 'a2' }] })
+    await waitForFrame(sink, (f) => f.kind === 'subagent-transcript' && f.reset === false)
+
+    // Duplicate subscribe: no second hub subscription.
+    send(conn, { kind: 'subagent-transcript-subscribe', sessionId: 's1', agentId: 'a1' })
+    expect(pushed).toHaveLength(1)
+
+    // Unsubscribe stops the pump.
+    send(conn, { kind: 'subagent-transcript-unsubscribe', sessionId: 's1', agentId: 'a1' })
+    const before = sink.frames.length
+    pushed[0].push({ sessionId: 's1', agentId: 'a1', reset: false, frames: [{ uuid: 'x' }] })
+    await waitForFrame(sink, (_f) => false, 50).catch(() => {})
+    expect(sink.frames.length).toBe(before)
+  })
+
+  it('answers subscribe with an error frame when no hub is wired', async () => {
+    const { sink, conn } = setup()
+    send(conn, { kind: 'subagent-transcript-subscribe', sessionId: 's1', agentId: 'a1' })
+    // Narrowed by message: a generic "unknown kind" error from the default
+    // branch must NOT satisfy this — the no-hub guard is what's under test.
+    await waitForFrame(sink, (f) => f.kind === 'error' && String(f.message).includes('streaming unavailable'))
+  })
+
+  it('rejects malformed subscribe frames', async () => {
+    const { sink, conn } = setup()
+    send(conn, { kind: 'subagent-transcript-subscribe', sessionId: '', agentId: 'a1' })
+    // Narrowed by message: pins the malformed-input guard, not the
+    // default "unknown kind" fallback.
+    await waitForFrame(sink, (f) => f.kind === 'error' && String(f.message).includes('sessionId/agentId required'))
+  })
+})

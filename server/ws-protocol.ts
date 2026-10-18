@@ -22,6 +22,8 @@ export type {
   WsSubscribe,
   WsUnsubscribe,
   WsPing,
+  WsSubagentTranscriptSubscribe,
+  WsSubagentTranscriptUnsubscribe,
   WsClientFrame,
 } from '../shared/ws-protocol.js'
 
@@ -39,7 +41,7 @@ export type WsPermissionResolved = shared.WsPermissionResolved<PermissionDecisio
 export type WsSessionRecapUpdate = shared.WsSessionRecapUpdate<SessionRecap>
 export type WsHookRunEvent = shared.WsHookRunEvent<HookRuntimeEvent>
 export type { WsSubscribeResult, WsSubscribeResultReason } from '../shared/ws-protocol.js'
-export type { WsContextUsage, WsGitSnapshot, WsTasklistSnapshot, WsMessageConsumed, WsMessagesWithdrawn, WsAttached, WsMessagesEvicted, WsMessageSteered, WsSessionCleared, WsCommandsChanged, WsPong, WsError, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsClientDebugRequest } from '../shared/ws-protocol.js'
+export type { WsContextUsage, WsGitSnapshot, WsTasklistSnapshot, WsMessageConsumed, WsMessagesWithdrawn, WsAttached, WsMessagesEvicted, WsMessageSteered, WsSessionCleared, WsCommandsChanged, WsPong, WsError, WsAppPluginsSnapshot, WsAppPluginStateChanged, WsAppPluginContributionsChanged, WsAppPluginEvent, WsSubagentTranscript, WsClientDebugRequest } from '../shared/ws-protocol.js'
 
 export type WsServerFrame = shared.WsServerFrame<
   SessionInfo,

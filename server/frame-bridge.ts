@@ -22,6 +22,7 @@
 
 import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
+import type { SubagentTranscriptHub } from './subagent-transcript-hub.js'
 import { createLogger } from './log.js'
 import type {
   WsClientFrame,
@@ -32,6 +33,8 @@ import type {
   WsMessagesWithdrawn,
   WsServerFrame,
   WsSubscribeResultReason,
+  WsSubagentTranscriptSubscribe,
+  WsSubagentTranscriptUnsubscribe,
   WsTasklistSnapshot,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
@@ -58,6 +61,9 @@ export interface FrameSink {
 export interface FrameBridgeDeps {
   sm: SessionBroadcaster
   appPlugins?: AppPluginBroadcaster
+  /** Optional subagent on-disk transcript hub. When absent, a
+   *  `subagent-transcript-subscribe` frame is answered with an `error`. */
+  subagentTranscripts?: SubagentTranscriptHub
 }
 
 function hookSnapshotEvent(run: HookRunRecord): HookRuntimeEvent {
@@ -127,8 +133,11 @@ export class SessionConnection {
   private readonly sink: FrameSink
   private readonly sm: SessionBroadcaster
   private readonly appPlugins?: AppPluginBroadcaster
+  private readonly subagentTranscripts?: SubagentTranscriptHub
 
   private readonly subs = new Map<string, SessionSub>()
+  /** Live subagent-transcript subscriptions keyed by `sessionId::agentId`. */
+  private readonly subagentSubs = new Map<string, { unsubscribe: () => void }>()
   /** Sessions whose subscribe-setup is mid-flight (waiting on the
    *  auto-resume await below). Guard: a second subscribe frame for the
    *  same session must not race the first through the await — subs.has()
@@ -143,6 +152,7 @@ export class SessionConnection {
   constructor(deps: FrameBridgeDeps, sink: FrameSink) {
     this.sm = deps.sm
     this.appPlugins = deps.appPlugins
+    this.subagentTranscripts = deps.subagentTranscripts
     this.sink = sink
   }
 
@@ -273,6 +283,42 @@ export class SessionConnection {
       case 'ping':
         this.sink.send({ kind: 'pong', nonce: frame.nonce })
         break
+      case 'subagent-transcript-subscribe': {
+        const f = frame as WsSubagentTranscriptSubscribe
+        if (typeof f.sessionId !== 'string' || typeof f.agentId !== 'string' || !f.sessionId || !f.agentId) {
+          this.sink.send({ kind: 'error', message: 'subagent-transcript-subscribe: sessionId/agentId required' })
+          return
+        }
+        if (!this.subagentTranscripts) {
+          this.sink.send({ kind: 'error', message: 'subagent transcript streaming unavailable' })
+          return
+        }
+        const key = `${f.sessionId}::${f.agentId}`
+        if (this.subagentSubs.has(key)) return // duplicate subscribe — snapshot already streaming
+        const sub = this.subagentTranscripts.subscribeSubagentTranscript(f.sessionId, f.agentId)
+        this.subagentSubs.set(key, sub)
+        void (async () => {
+          try {
+            for await (const ev of sub.iterable) {
+              if (this.closed) return
+              this.sink.send({ kind: 'subagent-transcript', sessionId: ev.sessionId, agentId: ev.agentId, reset: ev.reset, frames: ev.frames })
+            }
+          } catch (err) {
+            if (!this.closed) this.sink.send({ kind: 'error', message: `subagent-transcript channel: ${(err as Error).message}` })
+          }
+        })()
+        return
+      }
+      case 'subagent-transcript-unsubscribe': {
+        const f = frame as WsSubagentTranscriptUnsubscribe
+        const key = `${f.sessionId}::${f.agentId}`
+        const sub = this.subagentSubs.get(key)
+        if (sub) {
+          sub.unsubscribe()
+          this.subagentSubs.delete(key)
+        }
+        return
+      }
       default:
         // Exhaustiveness check — a new client-side kind we don't know.
         this.sink.send({ kind: 'error', message: `unknown kind: ${(frame as { kind: string }).kind}` })
@@ -287,6 +333,8 @@ export class SessionConnection {
     this.sink.close()
     for (const s of this.subs.values()) s.cleanup()
     this.subs.clear()
+    for (const sub of this.subagentSubs.values()) sub.unsubscribe()
+    this.subagentSubs.clear()
     this.globalCleanup?.()
     this.globalCleanup = null
     this.appPluginCleanup?.()

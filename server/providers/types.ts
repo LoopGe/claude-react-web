@@ -254,11 +254,6 @@ export interface ProviderSessionHandle {
    *  listSubagents — scans `subagents/agent-<id>.jsonl` under the session's
    *  project transcript dir). Empty when the session has no subagents. */
   listSubagents?(): Promise<string[]>
-  /** Read one subagent's full transcript from its own JSONL (SDK standalone
-   *  getSubagentMessages — returns SessionMessage[] in conversation order via
-   *  parentUuid links). Works for background/async subagents whose frames were
-   *  never forwarded to the main stream. */
-  getSubagentMessages?(agentId: string, opts?: { limit?: number; offset?: number }): Promise<unknown>
 }
 
 export interface ProviderCapabilities {
