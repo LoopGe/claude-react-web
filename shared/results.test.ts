@@ -28,8 +28,22 @@ describe('isEmptyResultFrame', () => {
     expect(isEmptyResultFrame({ ...base, subtype: 'error_max_turns' })).toBe(false)
   })
 
-  it('keeps a zero-turn result that cost money', () => {
-    expect(isEmptyResultFrame({ ...base, total_cost_usd: 0.01 })).toBe(false)
+  it('flags the SDK 0.3.274 queued-completion shape even when it carries the CUMULATIVE session cost', () => {
+    // Real wire shape from session 07790d71 (2026-10-18): the queued-
+    // completion placeholder inherits the SESSION-CUMULATIVE tally — cost,
+    // usage and duration_api_ms are the session totals, not this frame's
+    // turn. total_cost_usd is cumulative on every result frame, so a
+    // positive value carries no information about THIS frame's turn; the
+    // old "cost money is kept" guard made the classifier work only while
+    // the session's running total was still 0.
+    expect(isEmptyResultFrame({
+      ...base,
+      total_cost_usd: 18.077710999999997,
+      duration_api_ms: 4877255,
+      usage: { input_tokens: 214800, cache_read_input_tokens: 18907392, output_tokens: 65955 },
+      terminal_reason: 'completed',
+      result_index: 1,
+    })).toBe(true)
   })
 
   it('keeps a zero-turn interrupted turn (terminal_reason is the marker the UI reads)', () => {

@@ -336,7 +336,7 @@ const waitForIo = async (cond: () => boolean, timeoutMs = 2_000): Promise<void> 
 }
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
-import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions } from './session-manager.js'
+import { SessionManager, resolveConfiguredModel, backfillSubagentCompletions, mergeResultFrames } from './session-manager.js'
 import { ensureWorktreeForResume } from './session-worktree.js'
 import type { Session } from './session-types.js'
 import { ClaudeSessionHandle } from './providers/claude/claude-session.js'
@@ -9469,5 +9469,39 @@ describe('delete() / setCwd() worktree cleanup', () => {
     // Sanity: the branch the session kept still exists — setCwd must NOT
     // have tried to clean up the worktree.
     expect(await branchExists(repo, `crw/${info.id.slice(0, 8)}`)).toBe(true)
+  })
+})
+
+describe('mergeResultFrames', () => {
+  const assistant = (uuid: string): SDKMessage =>
+    ({ type: 'assistant', uuid, message: { content: [{ type: 'text', text: 'hi' }] } }) as unknown as SDKMessage
+  const realResult = (assistantUuid: string): SDKMessage =>
+    ({ type: 'result', subtype: 'success', is_error: false, num_turns: 3, result: 'done', total_cost_usd: 1, assistantUuid }) as unknown as SDKMessage
+  // The exact polluted record from session 07790d71: the CLI's queued-
+  // completion placeholder persisted to the sidecar before the classifier
+  // learned that total_cost_usd is session-cumulative.
+  const placeholderResult = (assistantUuid: string): SDKMessage =>
+    ({
+      type: 'result', subtype: 'success', is_error: false, num_turns: 0, result: '',
+      total_cost_usd: 18.077710999999997, duration_api_ms: 4877255, terminal_reason: 'completed',
+      assistantUuid,
+    }) as unknown as SDKMessage
+
+  it('inserts each result after its assistant frame', () => {
+    const merged = mergeResultFrames([assistant('a1')], [
+      { resultUuid: 'r1', assistantUuid: 'a1', result: realResult('a1') },
+    ])
+    expect(merged).toHaveLength(2)
+    expect((merged[1] as { type: string }).type).toBe('result')
+  })
+
+  it('drops sidecar entries the classifier now deems empty (heals pre-fix placeholder records)', () => {
+    const merged = mergeResultFrames([assistant('a1'), assistant('a2')], [
+      { resultUuid: 'r1', assistantUuid: 'a1', result: placeholderResult('a1') },
+      { resultUuid: 'r2', assistantUuid: 'a2', result: realResult('a2') },
+    ])
+    expect(merged).toHaveLength(3)
+    expect((merged[1] as { type: string }).type).toBe('assistant')
+    expect((merged[2] as { type: string }).type).toBe('result')
   })
 })

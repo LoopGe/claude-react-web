@@ -24,6 +24,7 @@ import {
 import type { ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd } from './cwd-equality.js'
+import { isEmptyResultFrame } from '../shared/results.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
@@ -319,14 +320,23 @@ export function effectiveProfileFor(profileId: string | undefined): ProviderProf
  *  This inserts each result right after its corresponding assistant frame
  *  (matched by assistantUuid), restoring the turn-end summaries the client
  *  renders. Entries whose assistantUuid isn't in the seed (older than the
- *  ring window) are silently dropped — they have nowhere to insert. */
-function mergeResultFrames(
+ *  ring window) are silently dropped — they have nowhere to insert.
+ *
+ *  Entries the classifier deems empty are skipped too: one pre-fix record in
+ *  the wild (session 07790d71) is a queued-completion placeholder the old
+ *  "cost money is kept" guard persisted — re-inserting it would resurrect
+ *  the double "ok" footer on every reload. */
+export function mergeResultFrames(
   seed: SDKMessage[],
   resultFrames: ResultFrameEntry[] | null | undefined,
 ): SDKMessage[] {
   if (!resultFrames || resultFrames.length === 0 || seed.length === 0) return seed
   const byAssistant = new Map<string, SDKMessage>()
   for (const entry of resultFrames) {
+    // Skip entries with no frame at all before classifying — a missing
+    // result must not crash the seed over one corrupted record.
+    if (!entry.result) continue
+    if (isEmptyResultFrame(entry.result as { type?: string })) continue
     byAssistant.set(entry.assistantUuid, entry.result)
   }
   const merged: SDKMessage[] = []
