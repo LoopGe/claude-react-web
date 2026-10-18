@@ -322,6 +322,38 @@ describe('Composer', () => {
     expect(container.querySelector('[contenteditable="true"]')).toBeNull()
   })
 
+  it('disables the editor and shows the hint when disabledHint is set', () => {
+    const { container } = render(
+      <Composer {...defaultProps} disabled disabledHint="Answer the pending question first." />,
+    )
+    // Editor is fully disabled (contenteditable off, aria-disabled on).
+    // getEditor can't find it — the disabled editor drops contenteditable —
+    // so query by the editor's own class instead.
+    const editor = container.querySelector<HTMLElement>('.rich-prompt')!
+    expect(editor).not.toBeNull()
+    expect(editor.getAttribute('aria-disabled')).toBe('true')
+    expect(container.querySelector('[contenteditable="true"]')).toBeNull()
+    // Hint line renders with the given text.
+    expect(container.textContent).toContain('Answer the pending question first.')
+  })
+
+  it('does not render a hint line when disabled without disabledHint', () => {
+    const { container } = render(
+      <Composer {...defaultProps} disabled />,
+    )
+    const editor = container.querySelector<HTMLElement>('.rich-prompt')!
+    expect(editor.getAttribute('aria-disabled')).toBe('true')
+    expect(container.querySelector('.composer-disabled-hint')).toBeNull()
+  })
+
+  it('does not render the hint when terminated (session-ended branch wins)', () => {
+    const { container } = render(
+      <Composer {...defaultProps} terminated disabledHint="Answer the pending question first." />,
+    )
+    expect(container.textContent).toContain('session has ended')
+    expect(container.textContent).not.toContain('Answer the pending question first.')
+  })
+
   it('calls setInput on textarea change', () => {
     const setInput = vi.fn()
     const { container } = render(
