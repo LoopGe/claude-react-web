@@ -959,3 +959,35 @@ describe('foldTaskNotificationRows', () => {
     expect(rows.every((r) => r.taskNotifGroup === undefined)).toBe(true)
   })
 })
+
+describe('buildTranscriptRows: task-notification fold vs toolGroupCards pref', () => {
+  const notifItem = (id: string): TranscriptItem => {
+    const m = notifMsg(id, 'completed')
+    return {
+      id,
+      msg: m,
+      plainText: 'notification',
+      isCompactSummary: false,
+      hiddenByDefault: false,
+    } as TranscriptItem
+  }
+
+  it('toolGroupCards: true (default) folds consecutive completed notifications', () => {
+    const { rows } = buildTranscriptRows({
+      items: [notifItem('a'), notifItem('b')],
+      isResultConsumed: never,
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.taskNotifGroup?.memberIds).toEqual(['a', 'b'])
+  })
+
+  it('toolGroupCards: false skips the task-notification fold — every row stands alone', () => {
+    const { rows } = buildTranscriptRows({
+      items: [notifItem('a'), notifItem('b')],
+      isResultConsumed: never,
+      toolGroupCards: false,
+    })
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.taskNotifGroup === undefined)).toBe(true)
+  })
+})

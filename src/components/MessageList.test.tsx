@@ -3367,6 +3367,61 @@ describe('MessageList', () => {
       expect(container.textContent).toContain('peer')
       expect(container.textContent).toContain('handoff from peer')
     })
+
+    it('expands a folded task-notification group on toggle (state reaches itemContent)', () => {
+      const notif = (i: number) => [
+        '<task-notification>',
+        `<task-id>t${i}</task-id>`,
+        `<tool-use-id>tu${i}</tool-use-id>`,
+        '<status>completed</status>',
+        `<summary>Background command "task ${i}" completed</summary>`,
+        '<result>exit 0</result>',
+        '</task-notification>',
+      ].join('\n')
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', { message: { content: [{ type: 'text', text: notif(1) }] } }),
+          makeMsg('user', { message: { content: [{ type: 'text', text: notif(2) }] } }),
+        ])} />,
+      )
+      // Folded into one group row while collapsed.
+      expect(container.textContent).toContain('background tasks · 2 completed')
+      expect(container.querySelectorAll('.msg.task-notification')).toHaveLength(0)
+      // Toggle: the member cards must appear — this exercises
+      // expandedNotifGroups/toggleNotifGroup reaching the memoized
+      // itemContent (stale-closure regressions keep the row collapsed).
+      fireEvent.click(container.querySelector('.task-notification-group-summary')!)
+      expect(container.querySelectorAll('.msg.task-notification')).toHaveLength(2)
+      expect(container.textContent).toContain('task 1')
+      expect(container.textContent).toContain('task 2')
+    })
+
+    it('collapses expanded notification groups when the transcript identity changes', () => {
+      const notif = (i: number) => [
+        '<task-notification>',
+        `<task-id>t${i}</task-id>`,
+        `<tool-use-id>tu${i}</tool-use-id>`,
+        '<status>completed</status>',
+        `<summary>Background command "task ${i}" completed</summary>`,
+        '<result>exit 0</result>',
+        '</task-notification>',
+      ].join('\n')
+      const items = toItems([
+        makeMsg('user', { message: { content: [{ type: 'text', text: notif(1) }] } }),
+        makeMsg('user', { message: { content: [{ type: 'text', text: notif(2) }] } }),
+      ])
+      const { container, rerender } = render(
+        <MessageList items={items} transcriptRevealKey="session-a" />,
+      )
+      fireEvent.click(container.querySelector('.task-notification-group-summary')!)
+      expect(container.querySelectorAll('.msg.task-notification')).toHaveLength(2)
+      // Session switch / overlay retarget: same contract as expandedBodies —
+      // expansions from one transcript are meaningless in the next, so the
+      // group must fold back instead of the Set accumulating stale ids.
+      rerender(<MessageList items={items} transcriptRevealKey="session-b" />)
+      expect(container.querySelectorAll('.msg.task-notification')).toHaveLength(0)
+      expect(container.textContent).toContain('background tasks · 2 completed')
+    })
   })
 
   it('renders a bottom stack containing the streaming region and the bottomOverlay', () => {

@@ -490,6 +490,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   if (prevRevealKey !== transcriptRevealKey) {
     setPrevRevealKey(transcriptRevealKey)
     if (expandedBodies.size > 0) setExpandedBodies(new Set())
+    // Same contract as expandedBodies above: group ids from one transcript
+    // are meaningless in the next (panel keep-alive keeps this instance
+    // alive across session switches — don't let the Set accumulate).
+    if (expandedNotifGroups.size > 0) setExpandedNotifGroups(new Set())
   }
   // Which streaming render mode this transcript uses. Defaults to the module
   // constant (currently 'overlay') so production behavior is unchanged; the
@@ -1214,19 +1218,28 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       isHumanRow &&
       !!searchQuery?.trim() &&
       countMatches(item.plainText, searchQuery.trim()) > 0
+    // Which transcript item holds the active search match, when it landed
+    // inside THIS row's group (tool group or notification group — mutually
+    // exclusive). One membership computation shared by both group branches;
+    // the per-member gating (which member gets activeMatchInItem) is owned
+    // inside each group row.
+    const groupMemberIndices =
+      item.toolGroup?.memberItemIndices ?? item.taskNotifGroup?.memberItemIndices
+    const activeGroupMemberIdx =
+      searchActiveMsgIdx != null &&
+      searchActiveMsgIdx >= 0 &&
+      groupMemberIndices?.includes(searchActiveMsgIdx)
+        ? searchActiveMsgIdx
+        : undefined
     const rowBody = item.taskNotifGroup ? (
           <TaskNotificationGroupRow
             members={item.taskNotifGroup.members}
             expanded={expandedNotifGroups.has(item.id)}
             onToggle={() => toggleNotifGroup(item.id)}
             searchQuery={searchQuery}
-            activeMatchIdx={
-              searchActiveMsgIdx != null &&
-              searchActiveMsgIdx >= 0 &&
-              item.taskNotifGroup.memberItemIndices.includes(searchActiveMsgIdx)
-                ? searchActiveMatchInItem
-                : undefined
-            }
+            memberItemIndices={item.taskNotifGroup.memberItemIndices}
+            activeMemberItemIndex={activeGroupMemberIdx}
+            activeMatchIdx={searchActiveMatchInItem}
           />
         ) : item.toolGroup ? (
           <ToolGroupCard
@@ -1245,20 +1258,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             // the last one (consecutive eligible rows were folded into the
             // same group), so its presence here means a boundary row landed.
             closed={nextItemTypeMap.has(item.id)}
-            activeMemberItemIndex={
-              searchActiveMsgIdx != null &&
-              searchActiveMsgIdx >= 0 &&
-              item.toolGroup.memberItemIndices.includes(searchActiveMsgIdx)
-                ? searchActiveMsgIdx
-                : undefined
-            }
-            activeMatchInItem={
-              searchActiveMsgIdx != null &&
-              searchActiveMsgIdx >= 0 &&
-              item.toolGroup.memberItemIndices.includes(searchActiveMsgIdx)
-                ? searchActiveMatchInItem
-                : undefined
-            }
+            activeMemberItemIndex={activeGroupMemberIdx}
+            // Ungated here by design: ToolGroupCard gates per member
+            // internally (only the member whose itemIndex matches
+            // activeMemberItemIndex forwards it as activeMatchIdx).
+            activeMatchInItem={searchActiveMatchInItem}
           />
         ) : (
           <MessageView
@@ -1310,7 +1314,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // events, unlike the context values that carry `messages`.
     // revealSnapshot: the reveal row class + frozen stagger come from the
     // flip-time snapshot; identity-stable between reveals.
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, revealSnapshot])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, expandedNotifGroups, toggleNotifGroup, subagentCtx?.index, workflowCtx?.index, revealSnapshot])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).

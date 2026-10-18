@@ -324,11 +324,11 @@ export function buildTranscriptRows({
 
   // Fold tool-only assistant runs. Must run before nextItemTypeMap so the
   // map keys on the surviving (group) ids. The `toolGroupCards` pref skips
-  // the fold entirely — every tool row stays its own card.
+  // the fold entirely — every tool row stays its own card. The same gate
+  // covers the task-notification fold: it's the same "collapse rows into
+  // group chrome" feature, and the pref's contract is "no fold chrome".
   const folded = toolGroupCards ? foldToolGroupRows(out) : out
-  // Fold consecutive COMPLETED background-task notifications (the noise
-  // reducer). Runs after the tool fold for the same nextItemTypeMap reason.
-  const foldedNotifs = foldTaskNotificationRows(folded)
+  const foldedNotifs = toolGroupCards ? foldTaskNotificationRows(folded) : folded
 
   const nextItemTypeMap = new Map<string, string>()
   for (let i = 0; i < foldedNotifs.length - 1; i++) {

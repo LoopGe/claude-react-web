@@ -718,10 +718,10 @@ export interface Session {
    *  global config default; a boolean pins it. Persisted via SessionMeta
    *  and mirrored into SessionInfo. Pure UI pref — no SDK call. */
   autoRecap?: boolean
-  /** Per-session override for the transcript's collapsible tool-group
-   *  cards. Undefined = inherit the global config default; a boolean pins
-   *  it. Persisted via SessionMeta and mirrored into SessionInfo. Pure
-   *  UI pref — no SDK call. */
+  /** Per-session override for the transcript's collapsible group cards
+   *  (tool-group + task-notification folds). Undefined = inherit the global
+   *  config default; a boolean pins it. Persisted via SessionMeta and
+   *  mirrored into SessionInfo. Pure UI pref — no SDK call. */
   toolGroupCards?: boolean
   /** Per-session override for auto-expanding a group that holds a running
    *  tool. Undefined = inherit the global config default; a boolean pins

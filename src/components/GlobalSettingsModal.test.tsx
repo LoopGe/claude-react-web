@@ -388,7 +388,7 @@ describe('GlobalSettingsModal Appearance tab', () => {
   const MOVED_SWITCHES = [
     'Show pinned “current question” header',
     'Auto-generate session recap',
-    'Use collapsible tool-group cards',
+    'Use collapsible transcript cards',
     'Show message card headers',
   ] as const
   const MOVED_GROUPS = ['Transcript spacing', 'Message text density', 'Font size'] as const
@@ -504,7 +504,7 @@ describe('GlobalSettingsModal Appearance tab', () => {
       // Turning the parent off must not silently reset the child — the value
       // rides along on Save and the row comes back as it was.
       await openAppearanceTab({ toolGroupCards: true, autoExpandRunningGroups: false })
-      fireEvent.click(screen.getByRole('switch', { name: 'Use collapsible tool-group cards' }))
+      fireEvent.click(screen.getByRole('switch', { name: 'Use collapsible transcript cards' }))
       expect(screen.queryByRole('switch', { name: SUB })).toBeNull()
 
       save()

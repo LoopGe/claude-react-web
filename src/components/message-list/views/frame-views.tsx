@@ -11,12 +11,11 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Markdown } from '../../Markdown'
 import { AnsiText } from '../../AnsiText'
 import { Tooltip } from '../../Tooltip'
-import { getBlocks } from '../../../session-store/normalize'
-import type { Block, SdkMessage } from '../../../types'
+import type { SdkMessage } from '../../../types'
 import { formatClockTime, formatFullTimestamp, formatTokens } from '../../../utils/format'
 import { IconSquare } from '../../icons/ToolIcons'
 import { countMatches } from '../../../search'
-import { extractTag } from '../rendering'
+import { extractTag, extractUserText } from '../rendering'
 /** Inline message timestamp shown in the header. Renders the clock time
  *  (HH:MM:SS) with the full date+time on hover. Returns null when the
  *  message has no server-stamped time (e.g. history restored from disk
@@ -174,11 +173,21 @@ export function TaskNotificationCard({ text, searchQuery, activeMatchIdx }: {
  *  prominent cards via TaskNotificationCard. Expansion state is LIFTED to
  *  MessageList (keyed by the group row's id): Virtuoso unmounts off-screen
  *  rows, so local state would reset on every scroll. */
-export function TaskNotificationGroupRow({ members, expanded, onToggle, searchQuery, activeMatchIdx }: {
+export function TaskNotificationGroupRow({ members, expanded, onToggle, searchQuery, memberItemIndices, activeMemberItemIndex, activeMatchIdx }: {
   members: SdkMessage[]
   expanded: boolean
   onToggle: () => void
   searchQuery?: string
+  /** Per-member position in the outer transcript item list. Required — the
+   *  only caller (MessageList) always has it, and a missing array would
+   *  silently kill the active search mark, so it's a type error instead. */
+  memberItemIndices: number[]
+  /** Transcript item index of the active search match, when it landed
+   *  inside this group (undefined otherwise). */
+  activeMemberItemIndex?: number
+  /** Match index WITHIN the active member. Forwarded ONLY to the member
+   *  whose itemIndex equals activeMemberItemIndex — the gating lives here,
+   *  not at the caller (same convention as ToolGroupCard). */
   activeMatchIdx?: number
 }) {
   return (
@@ -197,11 +206,20 @@ export function TaskNotificationGroupRow({ members, expanded, onToggle, searchQu
       {expanded && (
         <div className="task-notification-group-body">
           {members.map((m, i) => {
-            const text = getBlocks(m)
-              .filter((b: Block) => b.type === 'text' && typeof b.text === 'string')
-              .map((b) => b.text as string)
-              .join('\n\n')
-            return <TaskNotificationCard key={i} text={text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+            // Same extraction the standalone TaskNotificationCard path uses
+            // (MessageView's userContent) — one implementation, so a folded
+            // member renders identically to its unfolded form.
+            const text = extractUserText(m) ?? ''
+            const isActiveMember =
+              activeMemberItemIndex != null && memberItemIndices[i] === activeMemberItemIndex
+            return (
+              <TaskNotificationCard
+                key={i}
+                text={text}
+                searchQuery={searchQuery}
+                activeMatchIdx={isActiveMember ? activeMatchIdx : undefined}
+              />
+            )
           })}
         </div>
       )}

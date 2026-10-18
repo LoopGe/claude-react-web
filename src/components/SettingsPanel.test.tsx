@@ -380,7 +380,7 @@ describe('SettingsPanel Appearance tab', () => {
   const OVERRIDES = [
     ['Show pinned current question header', 'showPinnedUserMessage'],
     ['Auto-generate session recap', 'autoRecap'],
-    ['Use collapsible tool-group cards', 'toolGroupCards'],
+    ['Use collapsible transcript cards', 'toolGroupCards'],
     ['Show message card headers', 'showMessageHeaders'],
   ] as const
 
@@ -456,7 +456,7 @@ describe('SettingsPanel Appearance tab', () => {
 
     it('hides the sub-row while the effective parent is off', async () => {
       const { container } = renderPanel({ tab: 'appearance', globalPrefs: { toolGroupCards: false } })
-      await waitFor(() => expect(switchEl(container, 'Use collapsible tool-group cards')).not.toBeNull())
+      await waitFor(() => expect(switchEl(container, 'Use collapsible transcript cards')).not.toBeNull())
       expect(switchEl(container, SUB_LABEL)).toBeNull()
     })
 

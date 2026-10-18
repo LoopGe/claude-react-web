@@ -45,7 +45,7 @@ interface Props {
   stream: ChatStream
   /** Permission state from the ChatPanel-level usePermissionChannel hook. */
   permissions: UsePermissionChannel
-  /** Transcript's collapsible tool-group cards pref (effective value —
+  /** Transcript's collapsible transcript-group-cards pref (tool-group + task-notification folds) (effective value —
    *  session override ?? global default, resolved by ChatPanel). */
   toolGroupCards?: boolean
   /** Auto-expand running groups pref (effective value — session override ??

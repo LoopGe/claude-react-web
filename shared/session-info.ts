@@ -343,8 +343,9 @@ export interface SessionInfoBase<PM = string> {
    *  that value. Manual recap (Alt+R) is never gated by this. Persisted
    *  so it survives resume / fork / reload. */
   autoRecap?: boolean
-  /** Per-session override for the transcript's collapsible tool-group
-   *  cards. Undefined = inherit the global default (config.toolGroupCards);
+  /** Per-session override for the transcript's collapsible group cards
+   *  (tool-group + task-notification folds). Undefined = inherit the global
+   *  default (config.toolGroupCards);
    *  a boolean pins this session to that value. Persisted so it survives
    *  resume / fork / reload. */
   toolGroupCards?: boolean

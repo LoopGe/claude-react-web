@@ -819,11 +819,11 @@ function AppearanceTab({
           />
         </SettingsRow>
         <SettingsRow
-          title="Use collapsible tool-group cards"
-          hint="Folds consecutive tool calls in the transcript into one collapsible card. When off, every tool renders as its own card."
+          title="Use collapsible transcript cards"
+          hint="Folds consecutive tool calls and completed background-task notifications in the transcript into collapsible group cards. When off, every row renders on its own."
         >
           <Switch
-            label="Use collapsible tool-group cards"
+            label="Use collapsible transcript cards"
             checked={toolGroupCards}
             onChange={onToolGroupCardsChange}
           />

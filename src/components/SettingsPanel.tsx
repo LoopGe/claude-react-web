@@ -1565,9 +1565,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         </SettingsRow>
 
         <SettingsRow
-          title="Use collapsible tool-group cards"
-          hint={<>Folds consecutive tool calls in this transcript into one collapsible
-            card. When off, every tool renders as its own card.{' '}
+          title="Use collapsible transcript cards"
+          hint={<>Folds consecutive tool calls and completed background-task
+            notifications in this transcript into collapsible group cards.
+            When off, every row renders on its own.{' '}
             {session.toolGroupCards === undefined
               ? `Inheriting global (${globalPrefs.toolGroupCards ? 'ON' : 'OFF'}).`
               : 'Session override.'}
@@ -1583,7 +1584,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             )}</>}
         >
           <Switch
-            label="Use collapsible tool-group cards"
+            label="Use collapsible transcript cards"
             checked={effToolGroupCards}
             disabled={busy || session.terminated}
             onChange={(next) => void changePref({ toolGroupCards: next })}
