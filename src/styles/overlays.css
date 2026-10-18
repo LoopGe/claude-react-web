@@ -508,6 +508,7 @@
   font-weight: 600;
   color: var(--fg);
 }
+.recap-window-retry,
 .recap-window-close {
   display: inline-flex;
   align-items: center;
@@ -522,6 +523,7 @@
   transition: background var(--motion-duration-fast) var(--motion-ease-standard),
               color var(--motion-duration-fast) var(--motion-ease-standard);
 }
+.recap-window-retry:hover,
 .recap-window-close:hover {
   background: var(--btn-hover-bg);
   color: var(--fg);

@@ -2770,6 +2770,7 @@ export const Chat = memo(function Chat({
               recap={session.recap}
               clearing={effectiveClearing}
               onClose={() => onCloseRecap?.()}
+              onRetry={recap.refresh}
             />
           )}
           {effectiveShowPinned && !!pinnedUserMsg && !searchOpen && (

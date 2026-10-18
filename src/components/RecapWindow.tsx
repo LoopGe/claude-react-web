@@ -16,7 +16,7 @@ import type { SessionRecap } from '../../shared/session-info'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useTopBannerMotion, useTopCardMotion } from '../utils/transitions'
 import { Markdown } from './Markdown'
-import { IconSparkles, IconAlertTriangle, IconX } from './icons/ToolIcons'
+import { IconSparkles, IconAlertTriangle, IconX, IconRotateCcw } from './icons/ToolIcons'
 
 interface Props {
   recap: SessionRecap
@@ -25,9 +25,14 @@ interface Props {
    *  the message list instead of snapping out when the server confirms. */
   clearing?: boolean
   onClose: () => void
+  /** Re-dispatch a recap generation. Rendered as a button beside the close
+   *  button ONLY on the error state — a failed card has no other retry
+   *  affordance on it (Alt+R / composer menu are indirect paths), and
+   *  auto-retry is deliberately blocked in useSessionRecap. */
+  onRetry?: () => void
 }
 
-export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose }: Props) {
+export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose, onRetry }: Props) {
   const windowRef = useRef<HTMLDivElement>(null)
   const setBodyOs = useOverlayScrollbar({ autoHide: 'leave' })
   // Natural height captured at the end of the previous render's layout pass.
@@ -167,6 +172,17 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose 
           )}
           {recap.status === 'error' ? 'Recap unavailable' : 'Session recap'}
         </span>
+        {recap.status === 'error' && onRetry && (
+          <button
+            type="button"
+            className="recap-window-retry"
+            onClick={onRetry}
+            aria-label="Retry recap"
+            title="Retry recap"
+          >
+            <IconRotateCcw size={14} />
+          </button>
+        )}
         <button
           type="button"
           className="recap-window-close"

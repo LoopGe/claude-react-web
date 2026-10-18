@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, cleanup, waitFor } from '@testing-library/react'
 import { AnimatePresence } from 'motion/react'
 import { RecapWindow } from './RecapWindow'
@@ -26,6 +26,10 @@ function readyRecap(): SessionRecap {
   }
 }
 
+function errorRecap(): SessionRecap {
+  return { status: 'error', error: 'Recap failed: 429', generatedAt: 1 }
+}
+
 describe('RecapWindow', () => {
   it('does not carry the clearing class by default', () => {
     const { container } = render(<RecapWindow recap={readyRecap()} onClose={() => {}} />)
@@ -39,6 +43,25 @@ describe('RecapWindow', () => {
     )
     const root = container.querySelector('.recap-window')
     expect(root?.className).toContain('recap-window-clearing')
+  })
+
+  it('shows a retry button only on error state, wired to onRetry', () => {
+    const onRetry = vi.fn()
+    // Error + handler: button sits left of the close button and fires onRetry.
+    const err = render(<RecapWindow recap={errorRecap()} onRetry={onRetry} onClose={() => {}} />)
+    const retry = err.getByRole('button', { name: 'Retry recap' })
+    const close = err.getByRole('button', { name: 'Close recap' })
+    expect(retry.compareDocumentPosition(close) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    retry.click()
+    expect(onRetry).toHaveBeenCalledTimes(1)
+    err.unmount()
+
+    // Ready state: no retry button, with or without a handler.
+    const ready = render(<RecapWindow recap={readyRecap()} onRetry={onRetry} onClose={() => {}} />)
+    expect(ready.queryByRole('button', { name: 'Retry recap' })).toBeNull()
+    ready.unmount()
+    const readyNoHandler = render(<RecapWindow recap={readyRecap()} onClose={() => {}} />)
+    expect(readyNoHandler.queryByRole('button', { name: 'Retry recap' })).toBeNull()
   })
 
   it('indexes markdown blocks for the staggered reveal', () => {
