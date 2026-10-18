@@ -223,6 +223,11 @@ export class SessionEventBroadcaster {
    *  `/clear`-triggered context reset is confirmed (and the history ring
    *  has already been truncated). */
   broadcastSessionCleared(id: string): void {
+    // /clear restarts the CLI transcript, so the next tasklist derive
+    // legitimately regresses to rev 0 — drop the cached seed or the
+    // rev-regression guard in emitTasklistSnapshot would pin the
+    // pre-clear checklist against it.
+    this.tasklistSnapshots.delete(id)
     const s = this.sessions.get(id)
     if (!s) return
     if (s.sessionClearedSubscribers.size === 0) return
@@ -416,7 +421,19 @@ export class SessionEventBroadcaster {
     metrics.count('tasklist_broadcast_total')
     const frame: WsTasklistSnapshot = { kind: 'tasklist-snapshot', sessionId: id, rev: payload.rev, tasks: payload.tasks }
     const s = this.sessions.get(id)
-    if (s) this.tasklistSnapshots.set(id, frame)
+    // A rev-REGRESSING derive is a degraded read, not real history shrink:
+    // the transcript is append-only (and /clear drops the cache itself, see
+    // broadcastSessionCleared), so the only way rev goes down is the
+    // tasklist fold's contained-failure contract. Overwriting the seed with
+    // the degraded frame would hand every NEW subscriber the ghost state
+    // this channel exists to heal; keep the last good seed instead. The
+    // frame still pushes — live clients' monotone-rev guard ignores it.
+    const cached = this.tasklistSnapshots.get(id)
+    if (cached && frame.rev < cached.rev) {
+      tlog.warn(`tasklist snapshot rev regressed session=${id} (${cached.rev} -> ${frame.rev}); degraded read, keeping last good seed`)
+    } else if (s) {
+      this.tasklistSnapshots.set(id, frame)
+    }
     this.pruneTasklistSnapshots()
     if (!s) return
     for (const sub of s.tasklistSubscribers) {

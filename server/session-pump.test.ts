@@ -2392,7 +2392,8 @@ describe('pump: task lifecycle frames', () => {
       { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
     ])
     const onTaskNotification = vi.fn()
-    await pump(session, makePumpDeps({ onTaskNotification }))
+    const onTaskListChanged = vi.fn()
+    await pump(session, makePumpDeps({ onTaskNotification, onTaskListChanged }))
 
     // Ephemeral frames never entered the ring; notification + result did.
     const ringSubtypes = session.history.map((m) => (m as { subtype?: string }).subtype)
@@ -2413,6 +2414,12 @@ describe('pump: task lifecycle frames', () => {
     // The real notification reached the manager (cancels the subagent watcher).
     expect(onTaskNotification).toHaveBeenCalledTimes(1)
     expect(onTaskNotification).toHaveBeenCalledWith('s-pump', 'tu1')
+    // The notification is also a tasklist re-derive trigger: a background
+    // subagent's TaskUpdate lives ONLY in its sidechain file (no live
+    // frames), so without this the snapshot stays in_progress until the
+    // next user message.
+    expect(onTaskListChanged).toHaveBeenCalledTimes(1)
+    expect(onTaskListChanged).toHaveBeenCalledWith('s-pump')
   })
 
   it('skips the onTaskNotification dep when the notification carries no tool_use_id', async () => {

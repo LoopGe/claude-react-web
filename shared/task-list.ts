@@ -296,8 +296,10 @@ export interface TasklistSnapshotTask {
   activeForm?: string
   /** Server-precomputed staleness (resolved AND last touched before the
    *  last genuine user input). The client executes this flag as-is for
-   *  snapshot-only entries; window entries win the merge and keep their
-   *  own rule. */
+   *  snapshot-only entries; window entries keep their own window-relative
+   *  rule — EXCEPT ghost-adopted entries (window unresolved, snapshot
+   *  resolved), whose status came from this coordinate system and whose
+   *  flag is copied with it. See mergeTaskList. */
   stale: boolean
 }
 
@@ -325,15 +327,22 @@ export function countTaskEvents(messages: readonly unknown[]): number {
   return n
 }
 
-/** Server-side stale-boundary criterion over transcript lines: a genuine
- *  top-level human input frame. Same discriminator as the pump's echo
- *  drop-filter (server/session-pump.ts:876-881): null-parent user frame
- *  with no tool_result block and no <task-notification> injection — so
- *  background-subagent result injections and tool_result carriers never
- *  move the "user has moved on" boundary. (The client's window cleanup
- *  uses the richer isHumanUserMessage; snapshot entries carry the server's
- *  precomputed flag instead, so the two never compare across coordinate
- *  systems.) */
+/** Server-side criterion for a genuine top-level HUMAN input frame — the
+ *  LIVE-wire discriminator: the pump's echo drop-filter calls this directly
+ *  (the echo is droppable exactly when the frame is not a genuine human
+ *  input). Covers: null parent, no tool_result block, no
+ *  <task-notification> injection — so background-subagent result
+ *  injections and tool_result carriers never qualify. Live sidechain
+ *  frames carry a non-null parent_tool_use_id, so they are excluded
+ *  without an isSidechain check; the DISK form (subagent-transcript lines
+ *  carry isSidechain:true but NO parent_tool_use_id — that field exists
+ *  only on live wire frames) is excluded separately by the disk fold's
+ *  boundary scan in deriveTaskListFromLines. Keeping this predicate free
+ *  of isSidechain is deliberate: reusing it for live frames must not
+ *  change how frames with the (disk-only) marker are forwarded.
+ *  (The client's window cleanup uses the richer isHumanUserMessage;
+ *  snapshot entries carry the server's precomputed flag instead, so the
+ *  two never compare across coordinate systems.) */
 export function isGenuineUserInputFrame(msg: UserFrameShape): boolean {
   if (msg.type !== 'user') return false
   if (msg.parent_tool_use_id != null) return false
@@ -342,13 +351,37 @@ export function isGenuineUserInputFrame(msg: UserFrameShape): boolean {
   return true
 }
 
+/** Visibility cleanup over a merged task map — the ONE filter TodoChecklist
+ *  (and the cross-layer regression test) execute: drop resolved tasks whose
+ *  staleness predates the last genuine user input (snapshot entries carry
+ *  the server-precomputed flag; window entries fall back to their
+ *  window-relative `lastTouched < lastUserInputIdx`), and drop stale
+ *  provisional orphans (in-flight creates whose turn moved on). Pure. */
+export function filterVisibleTasks(
+  merged: Map<string, TaskState>,
+  lastUserInputIdx: number,
+): TaskState[] {
+  const out: TaskState[] = []
+  for (const t of merged.values()) {
+    const resolved = t.status === 'completed' || t.status === 'cancelled'
+    const stale = t.stale ?? (t.lastTouched < lastUserInputIdx)
+    if (resolved && stale) continue
+    if (t.provisional && stale) continue
+    out.push(t)
+  }
+  return out
+}
+
 /** Merge the server snapshot (full-history base) under the client's window
  *  fold (freshest event order). Per id: the window's status/provisional
- *  always win (freshest events); the snapshot fills ids the window can't
- *  see, AND heals the subject of window STUB entries (create outside the
- *  window — the whole reason the snapshot exists). Snapshot-only entries
- *  flagged `stale && resolved` are dropped here — the client's window-
- *  relative staleness rule cannot see them.
+ *  win (freshest events) EXCEPT the ghost case — window unresolved while
+ *  the snapshot is resolved adopts the snapshot's completion AND its stale
+ *  flag (see the branch below: the completion lives in history the window
+ *  never sees). The snapshot also fills ids the window can't see, and
+ *  heals the subject of window STUB entries (create outside the window —
+ *  the whole reason the snapshot exists). Snapshot-only entries flagged
+ *  `stale && resolved` are dropped here — the client's window-relative
+ *  staleness rule cannot see them.
  *  Pure; returns a fresh Map. */
 export function mergeTaskList(
   snapshot: TasklistSnapshotPayload | null | undefined,
@@ -376,10 +409,43 @@ export function mergeTaskList(
         })
         continue
       }
-      // Window entry exists: keep its fresher status. A stub subject is
-      // fold filler (`Task #N`) — the snapshot's subject is the real one.
-      // A stub's description is likewise missing/ filler — heal it too
-      // (but never overwrite a description the window actually has).
+      // Window entry exists: keep its fresher status — EXCEPT the ghost
+      // case: the window is UNRESOLVED while the full-history fold says
+      // RESOLVED. A completion can only ever come from the full history
+      // (subagent sidechain files the main transcript never carries, or
+      // events evicted past the ring cap), so an unresolved window view of
+      // a task the snapshot says completed is a stale ghost — the precise
+      // mechanism that kept subagent-completed tasks on the checklist
+      // forever. The reverse (window resolved, snapshot unresolved) keeps
+      // the window: the freshest event order is genuinely the window's
+      // there.
+      //
+      // Known limitation, accepted: between a RE-OPEN and the snapshot
+      // re-derive, the snapshot's completed wins over the window's
+      // genuinely-fresher in_progress. For MAIN-thread Task tools the
+      // re-derive fires on the tool_result landing — sub-second. For a
+      // BACKGROUND subagent that re-opens or creates tasks mid-run there
+      // is NO derive trigger until its completion notification (its inner
+      // frames ride no live frames), so the wrong/hidden state can persist
+      // for the agent's remaining runtime; the task_notification trigger
+      // heals it at completion. Closing that mid-run gap needs a
+      // sidechain-growth trigger in the watcher's poll loop — not worth
+      // the surgery while no real case has surfaced.
+      if (w.status !== 'completed' && w.status !== 'cancelled'
+        && (t.status === 'completed' || t.status === 'cancelled')) {
+        w.status = t.status
+        // The stale flag rides WITH the adopted status: the status itself
+        // now comes from the snapshot's coordinate system, so its
+        // precomputed visibility flag is the truth for this entry. Leaving
+        // it undefined would fall back to the window-relative rule, which
+        // shows the ghost forever once the window has evicted every
+        // genuine user input (lastUserInputIndex → -1 → stale=false).
+        w.stale = t.stale
+      }
+      // A stub subject is fold filler (`Task #N`) — the snapshot's subject
+      // is the real one. A stub's description is likewise missing/ filler —
+      // heal it too (but never overwrite a description the window actually
+      // has).
       if (w.stub) {
         w.subject = t.subject
         if (w.description === undefined && t.description !== undefined) w.description = t.description

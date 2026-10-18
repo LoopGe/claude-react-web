@@ -3,8 +3,9 @@
 //
 // SDK-agnostic by design: typed structurally — the server's `SDKMessage`
 // and the client's loose `SdkMessage` both satisfy these shapes — because
-// the predicates only read `type`, `parent_tool_use_id`, and
-// `message.content`.
+// the predicates only read `type`, `parent_tool_use_id`, `message.content`,
+// and (for the disk-only sidechain marker on UserFrameShape)
+// `isSidechain`.
 //
 // These two MUST be one implementation, not parallel mirrors: they are the
 // classification behind the queued-input count and the delivery badges, and
@@ -18,6 +19,11 @@
 export interface UserFrameShape {
   type?: unknown
   parent_tool_use_id?: unknown
+  /** Disk-only sidechain marker: subagent-transcript lines carry
+   *  isSidechain:true but NO parent_tool_use_id (that field exists only on
+   *  live wire frames), so classifiers that must recognize the human's own
+   *  input have to check both. */
+  isSidechain?: unknown
   message?: unknown
 }
 

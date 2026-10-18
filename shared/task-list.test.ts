@@ -12,6 +12,7 @@ import {
   buildTaskStateMap,
   buildTaskStateMapFromItems,
   countTaskEvents,
+  filterVisibleTasks,
   isGenuineUserInputFrame,
   mergeTaskList,
   type TasklistSnapshotPayload,
@@ -237,15 +238,48 @@ describe('isGenuineUserInputFrame', () => {
 describe('mergeTaskList', () => {
   const snap = (tasks: TasklistSnapshotPayload['tasks']): TasklistSnapshotPayload => ({ rev: 1, tasks })
 
-  it('window entries win per id (freshest event order)', () => {
+  it('window entries win per id when both sides are unresolved (freshest event order)', () => {
     const window = buildTaskStateMap([
       assistant([create('c1', 'fresh subject')]),
       toolResult('c1', 'Task #1 created successfully: fresh subject'),
       assistant([update('1', { status: 'in_progress' })]),
     ] as unknown as Loose[])!
-    const merged = mergeTaskList(snap([{ id: '1', subject: 'stale snapshot subject', status: 'completed', stale: false }]), window)
+    const merged = mergeTaskList(snap([{ id: '1', subject: 'stale snapshot subject', status: 'in_progress', stale: false }]), window)
     expect(merged.get('1')!.subject).toBe('fresh subject')
     expect(merged.get('1')!.status).toBe('in_progress')
+  })
+
+  it('a window entry UNRESOLVED while the snapshot says RESOLVED adopts the completion', () => {
+    // The ghost case: the completion event lives in full history the window
+    // cannot see (subagent sidechain files, or frames evicted past the ring
+    // cap) — an unresolved window view of a task the full-history fold says
+    // completed is precisely a stale ghost. A completion can only ever come
+    // from the full-history fold, so it is trusted over the window's
+    // in_progress. Stale stays undefined for window entries: visibility
+    // keeps the window-relative rule (no cross-coordinate flag copy).
+    const window = buildTaskStateMap([
+      assistant([create('c1', 'fresh subject')]),
+      toolResult('c1', 'Task #1 created successfully: fresh subject'),
+      assistant([update('1', { status: 'in_progress' })]),
+    ] as unknown as Loose[])!
+    const merged = mergeTaskList(snap([{ id: '1', subject: 'fresh subject', status: 'completed', stale: true }]), window)
+    expect(merged.get('1')!.status).toBe('completed')
+    // The stale flag rides WITH the adopted status: the status came from the
+    // snapshot's coordinate system, so its precomputed visibility flag is
+    // the truth for this entry — the window-relative fallback would show
+    // the ghost forever once the window has evicted every genuine user
+    // input (lastUserInputIndex = -1 → stale = false).
+    expect(merged.get('1')!.stale).toBe(true)
+  })
+
+  it('a window entry RESOLVED while the snapshot is unresolved keeps the window status', () => {
+    const window = buildTaskStateMap([
+      assistant([create('c1', 't')]),
+      toolResult('c1', 'Task #1 created successfully: t'),
+      assistant([update('1', { status: 'completed' })]),
+    ] as unknown as Loose[])!
+    const merged = mergeTaskList(snap([{ id: '1', subject: 't', status: 'in_progress', stale: false }]), window)
+    expect(merged.get('1')!.status).toBe('completed')
   })
 
   it('heals a window STUB subject from the snapshot (create out of window — the bug being fixed)', () => {
@@ -311,5 +345,51 @@ describe('mergeTaskList', () => {
 
   it('returns an empty map for null snapshot + null window', () => {
     expect(mergeTaskList(null, null).size).toBe(0)
+  })
+})
+
+describe('cross-layer regression: the full ghost-checklist chain', () => {
+  // The two bugs that kept subagent-completed tasks on the checklist
+  // forever were invisible to single-layer tests: the server fold read the
+  // wrong file set, and the client merge trusted an incomplete window.
+  // Both are covered individually above; this test pins the CHAIN in one
+  // shape — main-transcript-only window + sidechain completion → snapshot
+  // → merge → TodoChecklist's visibility cleanup — the test that would
+  // have caught the whole class before it shipped.
+  //
+  // Uses the file's top-level create/update helpers and the SHARED
+  // filterVisibleTasks — no inline re-implementation of the cleanup rules,
+  // so a product-side change to either rule turns this test red.
+  it('a task completed only in a sidechain clears from the merged checklist', () => {
+    const main = [
+      { type: 'user', message: { content: [{ type: 'text', text: 'do it' }] } },
+      assistant([create('c1', 'A')]),
+      toolResult('c1', 'Task #1 created successfully: A'),
+      assistant([update('1', { status: 'in_progress' })]),
+      // The user has moved on — later human input is what makes the
+      // window-relative staleness rule fire (this is the real timeline:
+      // the subagent-completed task sat behind several later prompts).
+      { type: 'user', message: { content: [{ type: 'text', text: 'next request' }] } },
+    ] as unknown as Loose[]
+    // Window fold (client reload): the main transcript alone.
+    const window = buildTaskStateMap(main)!
+    expect(window.get('1')!.status).toBe('in_progress')
+    // Server derive (after the fix): main + sidechain lines merged.
+    const sidechain = [assistant([update('1', { status: 'completed' })])]
+    const fullFold = buildTaskStateMap([...main, ...sidechain] as unknown as Loose[])!
+    const snapshot: TasklistSnapshotPayload = {
+      rev: 2,
+      tasks: [...fullFold.values()].map((t) => ({
+        id: t.id, subject: t.subject, status: t.status, stale: t.status === 'completed',
+      })),
+    }
+    // Merge + the shared visibility cleanup, lastUserInputIndex = the last
+    // genuine human input in the window (same discriminator the client uses).
+    const merged = mergeTaskList(snapshot, window)
+    let lastUserInputIdx = -1
+    for (let i = main.length - 1; i >= 0; i--) {
+      if (isGenuineUserInputFrame(main[i] as Parameters<typeof isGenuineUserInputFrame>[0])) { lastUserInputIdx = i; break }
+    }
+    expect(filterVisibleTasks(merged, lastUserInputIdx)).toEqual([])
   })
 })

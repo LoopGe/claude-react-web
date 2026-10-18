@@ -56,6 +56,7 @@ function makeSession(id: string, cwd: string, repoRoot?: string): Session {
     id, cwd, repoRoot,
     gitStatusSubscribers: new Set(),
     tasklistSubscribers: new Set(),
+    sessionClearedSubscribers: new Set(),
     terminated: false,
   } as unknown as Session
 }
@@ -388,5 +389,40 @@ describe('SessionEventBroadcaster tasklist-snapshot', () => {
     const first = await sub.iterable[Symbol.asyncIterator]().next()
     expect((first.value as { kind: string }).kind).toBe('tasklist-snapshot')
     expect((first.value as { rev: number }).rev).toBe(7)
+  })
+
+  it('a rev-REGRESSING derive does not overwrite the subscriber seed (degraded read)', async () => {
+    // The subagent-fold derive can now return a LOWER rev on a transient
+    // read failure (main-only derive, or the {rev:0} main-unreadable
+    // degrade). History is append-only, so a real snapshot can never
+    // shrink — pinning the last good seed keeps a newly opened tab from
+    // seeding the exact ghost checklist this fix removes.
+    const s = makeSession('a', '/repo')
+    const bc = new SessionEventBroadcaster(new Map([['a', s]]))
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledTimes(1))
+    vi.mocked(deriveTaskListForSession).mockResolvedValueOnce({ rev: 1, tasks: [] })
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledTimes(2))
+    const sub = bc.subscribeTaskList('a')!
+    const first = await sub.iterable[Symbol.asyncIterator]().next()
+    expect((first.value as { rev: number }).rev).toBe(2) // last GOOD seed, not the degraded one
+  })
+
+  it('session-cleared drops the cached seed (a post-/clear rev-0 derive must re-seed)', async () => {
+    // /clear restarts the CLI transcript, so the derive legitimately
+    // regresses to rev 0 — the regression guard must not pin the pre-clear
+    // frame against it.
+    const s = makeSession('a', '/repo')
+    const bc = new SessionEventBroadcaster(new Map([['a', s]]))
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledTimes(1))
+    vi.mocked(deriveTaskListForSession).mockResolvedValueOnce({ rev: 0, tasks: [] })
+    bc.broadcastSessionCleared('a')
+    bc.broadcastTaskListChanged('a')
+    await vi.waitFor(() => expect(deriveTaskListForSession).toHaveBeenCalledTimes(2))
+    const sub = bc.subscribeTaskList('a')!
+    const first = await sub.iterable[Symbol.asyncIterator]().next()
+    expect((first.value as { rev: number }).rev).toBe(0)
   })
 })

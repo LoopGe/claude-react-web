@@ -62,20 +62,33 @@ export function splitCompleteLines(chunk: string): { lines: string[]; partial: s
   return { lines, partial }
 }
 
+/** Parse complete JSONL lines to raw objects with the history parser's
+ *  tolerance: blank lines skip (split('\n') always yields one trailing
+ *  empty), corrupt lines skip. THE shared tolerance rule for this file
+ *  format — normalizeSubagentLine's and the tasklist fold's parsers both
+ *  sit on top of this so the two cannot drift. */
+export function parseRawJsonLines(lines: string[]): unknown[] {
+  const out: unknown[] = []
+  for (const line of lines) {
+    if (!line.trim()) continue
+    let o: unknown
+    try {
+      o = JSON.parse(line)
+    } catch {
+      continue // corrupt line — skip, same as the history parser's tolerance
+    }
+    out.push(o)
+  }
+  return out
+}
+
 /** Parse + normalize a chunk's complete lines, skipping blanks and corrupt
  *  JSON (the history parser's tolerance). Shared kernel of the full read
  *  and the hub's incremental tail. */
 export function parseSubagentLines(lines: string[], sessionId: string): unknown[] {
   const out: unknown[] = []
-  for (const line of lines) {
-    if (!line.trim()) continue
-    let o: RawLine
-    try {
-      o = JSON.parse(line) as RawLine
-    } catch {
-      continue // corrupt line — skip, same as the history parser's tolerance
-    }
-    const f = normalizeSubagentLine(o, sessionId)
+  for (const o of parseRawJsonLines(lines)) {
+    const f = normalizeSubagentLine(o as RawLine, sessionId)
     if (f !== undefined) out.push(f)
   }
   return out

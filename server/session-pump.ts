@@ -29,8 +29,8 @@ import type { CliNotification } from '../shared/ws-protocol.js'
 import { isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame } from '../shared/results.js'
-import { isTaskNotificationUserMessage, userMessageHasToolResult } from '../shared/user-frames.js'
-import { taskToolUseId } from '../shared/task-list.js'
+import { isTaskNotificationUserMessage } from '../shared/user-frames.js'
+import { isGenuineUserInputFrame, taskToolUseId } from '../shared/task-list.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
 
@@ -1016,12 +1016,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // emits task completion as a `system`/`task_notification` frame
         // (already forwarded), so this guard only matters for harnesses
         // that use the user-role injection path.
-        if (
-          msg.type === 'user' &&
-          getParentToolUseId(msg) == null &&
-          !userMessageHasToolResult(msg) &&
-          !isTaskNotificationUserMessage(msg)
-        ) {
+        if (isGenuineUserInputFrame(msg)) {
           // Before dropping the SDK's echo of a top-level user prompt, hand its
           // on-disk uuid (`v`) to the manager so it can pair it with the
           // server-minted `u` recorded at send() time (FIFO order). That pairs
@@ -1343,6 +1338,13 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
               try { deps.onTaskNotification?.(session.id, toolUseId) }
               catch (err) { log.warn(`[session ${session.id}] onTaskNotification threw: ${err}`) }
             }
+            // A completion also re-derives the tasklist snapshot: a
+            // background subagent's Task* events live ONLY in its sidechain
+            // file (no live frames carry them), so without this trigger the
+            // checklist keeps showing the task in_progress until the next
+            // user message or main-thread Task tool_result.
+            try { deps.onTaskListChanged?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] onTaskListChanged threw: ${err}`) }
           }
         }
         // Only durable transcript messages enter the bounded history ring

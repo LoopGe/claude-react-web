@@ -7,6 +7,7 @@ export {
   buildTaskStateMap,
   buildTaskStateMapFromItems,
   countTaskEvents,
+  filterVisibleTasks,
   isGenuineUserInputFrame,
   mergeTaskList,
   normalizeStatus,

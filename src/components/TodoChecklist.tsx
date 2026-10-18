@@ -38,6 +38,7 @@ import { TodoDetailPopover } from './TodoDetailPopover'
 import {
   buildTaskStateMap,
   lastUserInputIndex,
+  filterVisibleTasks,
   mergeTaskList,
   type TasklistSnapshotPayload,
 } from '../utils/task-events'
@@ -527,17 +528,12 @@ function extractFromTaskEvents(messages: SdkMessage[], serverTasks: TasklistSnap
   // it's stale and gets cleaned up. Tasks touched at or after this point
   // are part of the current request and stay visible (so a just-finished
   // task lingers with its ✔ until the user sends the next message).
+  // The filter itself is the shared filterVisibleTasks (one copy for the
+  // component and the cross-layer regression test).
   const lastUserInputIdx = lastUserInputIndex(messages)
 
   const out: Todo[] = []
-  for (const t of merged.values()) {
-    const resolved = t.status === 'completed' || t.status === 'cancelled'
-    // Snapshot entries carry the server's precomputed flag (their
-    // lastTouched is a server-side line index — meaningless here);
-    // window entries use the window-relative rule as before.
-    const stale = t.stale ?? (t.lastTouched < lastUserInputIdx)
-    if (resolved && stale) continue
-    if (t.provisional && stale) continue
+  for (const t of filterVisibleTasks(merged, lastUserInputIdx)) {
     out.push({
       key: t.id,
       content: t.subject,
