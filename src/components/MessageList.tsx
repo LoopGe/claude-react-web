@@ -30,6 +30,7 @@ import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
 import { OverlayStreamingRegion } from './message-list/OverlayStreamingRegion'
 import { ChatEmptyState } from './ChatEmptyState'
+import { ErrorBoundary } from './ErrorBoundary'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
@@ -1565,6 +1566,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     [items, tasklist],
   )
 
+  // The default empty state. Also the easter-egg game's error fallback, so a
+  // failed game chunk shows exactly what the panel shows without the game.
+  const defaultEmptyState = <ChatEmptyState onUnlockEasterEgg={openEasterEgg} env={emptyStateExtra} />
+
   return (
     <SessionCwdProvider value={cwd}>
     <BackgroundToolProvider value={onBackgroundTool}>
@@ -1641,9 +1646,19 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         />
         {renderableItems.length === 0 && (!expectHistory || replayReady) && (
           <div className="chat-messages-empty">
+            {/* Like the lazy Settings / Git / Tasks panels, the lazy game is
+                paired with an ErrorBoundary: a rejected chunk degrades to "no
+                game" instead of reaching App's per-panel boundary. The
+                resetKey is constant: React.lazy caches the rejection, so a
+                retry can only rethrow, and the children-identity reset would
+                retry on every MessageList render. */}
             {emptyStateContent ?? (gameOpen
-                ? <Suspense fallback={null}><EasterEggGame onExit={closeEasterEgg} /></Suspense>
-                : <ChatEmptyState onUnlockEasterEgg={openEasterEgg} env={emptyStateExtra} />)}
+                ? (
+                  <ErrorBoundary resetKey="easter-egg" fallback={defaultEmptyState}>
+                    <Suspense fallback={null}><EasterEggGame onExit={closeEasterEgg} /></Suspense>
+                  </ErrorBoundary>
+                )
+                : defaultEmptyState)}
           </div>
         )}
       </div>
