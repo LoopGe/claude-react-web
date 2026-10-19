@@ -111,7 +111,9 @@ function connect(
     }
     handlers.onFrame(raw)
   })
-  ws.addEventListener('close', () => handlers.onClose())
+  ws.addEventListener('close', (ev) => {
+    handlers.onClose({ code: ev.code, reason: ev.reason })
+  })
   ws.addEventListener('error', () => {
     // Browsers don't give useful detail here; the close event follows and the
     // hub's reconnect handles the retry. Logging the event itself is noise.

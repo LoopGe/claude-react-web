@@ -23,6 +23,11 @@ import { createContext, createElement, useCallback, useContext, useEffect, useLa
 import type { ReactNode } from 'react'
 import type { WsClientFrame, WsServerFrame } from '../ws-types'
 import { getTransport, type TransportConnection, type TransportFrameHandlers } from '../transport'
+import { wsLog } from './ws-debug'
+
+/** Ping cadence (ms) while the connection is open — below reverse proxies'
+ *  typical 30-60s idle-WS timeout. */
+const PING_INTERVAL_MS = 25_000
 
 /** Per-subscribe options (see WsHubApi.subscribe). */
 export interface SubscribeOpts {
@@ -141,6 +146,15 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   const pingTimerRef = useRef<number | null>(null)
   const attemptsRef = useRef<number>(0)
   const unmountedRef = useRef(false)
+  /** The outstanding heartbeat: the ping sent on the current tick, awaiting
+   *  its pong. Cleared by ANY incoming pong (any pong proves the pipe passes
+   *  server→client; the ping itself proves client→server) and by open/close.
+   *  A ping still pending at the NEXT tick is the zombie verdict: the socket
+   *  accepts writes (no send error) but nothing flows in either direction —
+   *  TCP established, no close event, frames never arrive. Observed live:
+   *  the app frozen with the hub 'online' while a freshly opened second
+   *  connection to the same URL worked instantly. */
+  const pendingPingRef = useRef<{ nonce: number; sentAt: number } | null>(null)
   // Ref to break the circular dependency between connect ↔ scheduleReconnect.
   // connect is declared first; scheduleReconnect calls connectRef.current().
   const connectRef = useRef<() => void>(() => {})
@@ -178,6 +192,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
     const base = Math.min(500 * 2 ** attempt, 15_000)
     const jitter = Math.random() * 400
     const delay = base + jitter
+    wsLog('reconnect-scheduled', { attempt, delayMs: Math.round(delay) })
     if (reconnectTimerRef.current != null) window.clearTimeout(reconnectTimerRef.current)
     reconnectTimerRef.current = window.setTimeout(() => {
       reconnectTimerRef.current = null
@@ -217,6 +232,8 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         }
         attemptsRef.current = 0
         setStatus('online')
+        pendingPingRef.current = null
+        wsLog('open', { seq })
         // A fresh connection owns no channels: forget what the previous
         // connection confirmed, then re-ask for every session still held (the
         // server answers each frame, so liveness is re-learned rather than
@@ -234,17 +251,64 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         // App-level heartbeat — some reverse proxies close idle WS
         // after 30-60s. A 25s app-level ping is safely below that, and
         // the server echoes a tiny pong so we also get a failure
-        // signal if the pipe is half-closed.
+        // signal if the pipe is half-closed. The signal is ENFORCED:
+        // the check runs on the NEXT tick, so a ping that is still
+        // unanswered a full interval later means the pipe is wedged
+        // (writes succeed, nothing flows, no close event ever fires) —
+        // abandon it and let the normal reconnect path build a fresh
+        // connection. This is the refresh the user would otherwise
+        // have to do by hand.
+        //
+        // Accepted trade-off: after laptop sleep / tab suspension a
+        // coalesced timer can run before the buffered pong dispatches,
+        // force-reconnecting a pipe that might still work. That is
+        // harmless by design — the reconnect's `attached` handshake and
+        // seq-window gap-fill re-sync anything missed while suspended
+        // (the machinery exists for exactly that), and a connection that
+        // genuinely survived sleep is the exception. Detection latency
+        // (25-50s) stays low; a grace mechanism would double it to shield
+        // the exception case.
         if (pingTimerRef.current != null) window.clearInterval(pingTimerRef.current)
         pingTimerRef.current = window.setInterval(() => {
-          safeSend({ kind: 'ping', nonce: Date.now() })
-        }, 25_000)
+          const pending = pendingPingRef.current
+          if (pending) {
+            wsLog('zombie-detected', { pingAgeMs: Date.now() - pending.sentAt })
+            pendingPingRef.current = null
+            // Abandon, don't just close(): a wedged socket may never
+            // deliver the close event, and scheduleReconnect would then
+            // never run. Bumping the connection sequence invalidates this
+            // socket's handlers (its late open/close events become no-ops),
+            // exactly like the 'replaced' path in connect().
+            connSeqRef.current++
+            if (pingTimerRef.current != null) {
+              window.clearInterval(pingTimerRef.current)
+              pingTimerRef.current = null
+            }
+            try { connRef.current?.close(4000, 'pong timeout') } catch { /* already dead */ }
+            connRef.current = null
+            scheduleReconnect()
+            return
+          }
+          const nonce = Date.now()
+          pendingPingRef.current = { nonce, sentAt: nonce }
+          safeSend({ kind: 'ping', nonce })
+        }, PING_INTERVAL_MS)
       },
 
       onFrame: (raw) => {
         if (unmountedRef.current) return
+        // Stale-connection guard, same as onOpen/onClose: after the watchdog
+        // (or the 'replaced' path) abandons a socket, its late frames must
+        // not fan out — a stale pong would clear the CURRENT connection's
+        // pendingPingRef and slip zombie detection another full interval,
+        // and late message frames would double-deliver to every listener.
+        if (connSeqRef.current !== seq) return
         const frame = raw as WsServerFrame
         if (!frame || typeof frame !== 'object' || typeof frame.kind !== 'string') return
+        // Any pong settles the outstanding heartbeat BEFORE fan-out — a healthy
+        // server answers within milliseconds, so the next tick always finds
+        // this null on a live connection.
+        if (frame.kind === 'pong') pendingPingRef.current = null
         // Fold the server's answer to a subscribe into this connection's channel
         // state BEFORE fan-out, so a listener reacting to the frame sees it
         // already applied. Shape-checked: the handler's only other validation is
@@ -280,16 +344,18 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         }
       },
 
-      onClose: () => {
+      onClose: (info) => {
         if (unmountedRef.current || connSeqRef.current !== seq) return
         // The connection is gone, so its channels are too. Forgetting here (and
         // not only on the next open) keeps "live" == "live on the current
         // connection" true for the whole reconnect gap.
         for (const state of channelsRef.current.values()) state.live = false
+        pendingPingRef.current = null
         if (pingTimerRef.current != null) {
           window.clearInterval(pingTimerRef.current)
           pingTimerRef.current = null
         }
+        wsLog('close', { code: info?.code, reason: info?.reason || undefined })
         scheduleReconnect()
       },
 
