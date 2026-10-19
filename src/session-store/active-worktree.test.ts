@@ -17,8 +17,10 @@
 //     older-than-cache prepend, in-span mid fill + chronology repair
 //   - tail-first bursts (tail REPLAY_REPLACE + MARK_TAIL_FIRST_APPLIED +
 //     trusted PREPEND chunks + SETTLE_RESULT_INDEXES) and loadOlder prepends
-//   - the seq-window actions: WINDOW_PAGE (tail incl. hole fill, head),
-//     WINDOW_LIVE (contiguous and gapped/parked), WINDOW_EVICT, WINDOW_BUMP
+//   - the seq-window actions: WINDOW_PAGE (tail, head, and a page filling an
+//     open hole), WINDOW_LIVE (contiguous, gapped/parked, and at the hole's
+//     first seq), the pending drain a fill triggers (counted, so it cannot
+//     silently drop out of the corpus), WINDOW_EVICT, WINDOW_BUMP
 //   - MESSAGE_CONSUMED, MESSAGE_STEERED, CLEAR_TRANSCRIPT, SESSION_TERMINATED and the
 //     intent-only actions (which must leave the field untouched)
 //   - MEMORY_ITEM_CAP front-trim with hysteresis
@@ -254,8 +256,8 @@ function randomAction(state: SessionState, gen: MessageGen, rng: Rng): SessionAc
 
 /** A seq-window action relative to the current window: tail pages (some
  *  skipping ahead so a hole parks the next live frames), live frames
- *  (contiguous or gapped), head pages below oldestSeq, tombstones, and the
- *  occasional generation bump. */
+ *  (contiguous or gapped), the frames that fill an open hole, head pages
+ *  below oldestSeq, tombstones, and the occasional generation bump. */
 function randomWindowAction(state: SessionState, gen: MessageGen, rng: Rng): SessionAction {
   const w = state.mirror.window
   const generation = w.generation < 0 ? 0 : w.generation
@@ -263,6 +265,20 @@ function randomWindowAction(state: SessionState, gen: MessageGen, rng: Rng): Ses
   for (const s of w.window.keys()) top = Math.max(top, s)
   for (const s of w.pending.keys()) top = Math.max(top, s)
   const next = top + 1
+  // Fill an open hole. Every other branch lands at max(window ∪ pending) + 1
+  // or beyond, so without this a parked frame never drains: the pending run
+  // only moves into the window (and through applyMessage) once the seqs in
+  // front of it arrive. A page over the whole hole drains it; a partial page,
+  // or a live frame at its first seq, narrows it (or drains a 1-wide hole).
+  if (w.hole && w.hole[0] <= w.hole[1] && rng.chance(0.5)) {
+    const [from, to] = w.hole
+    const frame = () => (rng.chance(0.5) ? gen.assistant({ worktree: true }) : gen.any())
+    if (rng.chance(0.3)) return { type: 'WINDOW_LIVE', seq: from, generation, message: frame() }
+    const end = rng.chance(0.8) ? to : from + rng.int(to - from + 1)
+    const messages: Array<{ seq: number; msg: SdkMessage }> = []
+    for (let seq = from; seq <= end; seq++) messages.push({ seq, msg: frame() })
+    return { type: 'WINDOW_PAGE', at: 'tail', generation, headSeq: Math.max(w.headSeq, next), messages, hasMore: rng.chance(0.3), tombstones: [] }
+  }
   const kind = rng.int(10)
   if (kind < 3) {
     const n = 1 + rng.int(5)
@@ -303,21 +319,37 @@ function assertInvariant(state: SessionState, ctx: string): void {
   expect(state.mirror.activeWorktree, ctx).toEqual(expected)
 }
 
+/** True when a step moved a parked frame from `pending` into the window —
+ *  the hole drain (seq-window insertMessage's cascade). That cascade is the
+ *  only way a pending seq can enter the window. */
+function drainedPending(prev: SessionState, next: SessionState): boolean {
+  for (const seq of prev.mirror.window.pending.keys()) {
+    if (next.mirror.window.window.has(seq)) return true
+  }
+  return false
+}
+
 describe('ServerMirror.activeWorktree — incremental === getActiveWorktree(messages)', () => {
   it('holds after every step of random action sequences (reducer level)', () => {
     let checks = 0
+    let drains = 0
     for (let seed = 1; seed <= SEEDS; seed++) {
       const rng = makeRng(seed)
       const gen = new MessageGen(rng, `s${seed}`)
       let state = createInitialSessionState(`prop-${seed}`)
       for (let step = 0; step < STEPS; step++) {
         const action = randomAction(state, gen, rng)
+        const prev = state
         state = reduceSessionState(state, action)
         assertInvariant(state, `seed=${seed} step=${step} action=${action.type}`)
+        if (drainedPending(prev, state)) drains++
         checks++
       }
     }
     expect(checks).toBe(SEEDS * STEPS)
+    // The hole drain really ran, and the invariant was checked right after
+    // each one.
+    expect(drains).toBeGreaterThan(0)
   }, HEAVY_TIMEOUT_MS)
 
   it('holds through tail-first bursts (tail first, then trusted backfill chunks)', () => {
