@@ -47,12 +47,6 @@ interface Props {
   setInput: (v: string) => void
   sending: boolean
   disabled: boolean
-  /** Why the input is disabled, rendered as a hint line above the editor
-   *  while `disabled` is set. Only shown when NOT terminated — the
-   *  terminated branch replaces the whole composer. Used for transient
-   *  interactive-blocked states (pending question / permission /
-   *  elicitation / dialog), not for permanent ends. */
-  disabledHint?: string
   /** True when the session has permanently ended (terminated). Shows a
    *  "session ended" message instead of the disabled textarea. */
   terminated?: boolean
@@ -163,7 +157,6 @@ export const Composer = memo(function Composer({
   setInput,
   sending,
   disabled,
-  disabledHint,
   terminated,
   terminatedReason,
   canRetryResume,
@@ -721,18 +714,6 @@ export const Composer = memo(function Composer({
   // forgot one side made the wrapper either not open or never collapse. A
   // single array removes the chance to disagree.
   const composerRows: ReactNode[] = []
-  // Transient interactive-blocked hint (pending question / permission /
-  // elicitation / dialog). The terminated case never reaches here — the
-  // early-return above replaces the whole composer — so no terminated guard
-  // is needed. Rendering it as a composer row means it tweens in/out with
-  // the same AnimatedCollapse as the other rows.
-  if (disabled && disabledHint) {
-    composerRows.push(
-      <div className="composer-disabled-hint" key="disabled-hint" role="status">
-        {disabledHint}
-      </div>,
-    )
-  }
   if (SCHEDULE_SEND_ENABLED && (pendingScheduled.length > 0 || failedScheduled.length > 0) && scheduled) {
     composerRows.push(
       <div className="scheduled-sends" key="scheduled-sends">

@@ -1113,21 +1113,13 @@ export const Chat = memo(function Chat({
   const dialogPresence = usePresenceValue(activeDialog)
   // Composer gate: any pending interactive request (permission / question /
   // elicitation / user dialog) means the turn is blocked waiting on user
-  // input, so the composer is disabled with a matching hint. Whole-array
-  // check, not just the dialog head: a request minimized out of view is
-  // still pending, and tail-of-queue requests still block this turn. Hint
-  // priority mirrors the dialog yield chain (permission/question >
-  // elicitation > dialog). Null = composer enabled.
-  const interactivePendingHint: string | null =
-    permissions.pending.length > 0
-      ? (permissions.pending[0].kind === 'question'
-          ? 'Answer the pending question first.'
-          : 'Respond to the pending permission request first.')
-      : elicitations.pending.length > 0
-        ? 'Complete the pending sign-in first.'
-        : dialogs.pending.length > 0
-          ? 'Respond to the pending dialog first.'
-          : null
+  // input, so the composer is disabled. Whole-array check, not just the
+  // dialog head: a request minimized out of view is still pending, and
+  // tail-of-queue requests still block this turn.
+  const interactivePending =
+    permissions.pending.length > 0 ||
+    elicitations.pending.length > 0 ||
+    dialogs.pending.length > 0
   // Drop persisted draft entries once a question resolves so questionDrafts
   // doesn't accumulate stale ids over a long session. The corresponding
   // minimize state is derived on read (see `minimizedQ` above), so we no
@@ -2454,8 +2446,7 @@ export const Chat = memo(function Chat({
               input={input}
               setInput={setInput}
               sending={sending}
-              disabled={session.terminated || interactivePendingHint != null}
-              disabledHint={interactivePendingHint ?? undefined}
+              disabled={session.terminated || interactivePending}
               terminated={session.terminated}
               terminatedReason={session.terminatedReason}
               canRetryResume={session.canRetryResume}
