@@ -31,8 +31,18 @@
 //   scheduleTail() instead; the late joiner re-receives the overlapping
 //   bytes as a duplicate increment, which the client's uuid dedup absorbs.
 // - File shrink (truncation/rotation): full re-read + reset snapshot.
-// - Watch failure: log.warn + stop pushing (the client keeps its last
-//   snapshot) — a designed degradation, not a speculative fallback.
+// - Watch failure: log.warn once per queue; a MISSING dir (the CLI creates
+//   subagents/ lazily on first write) is queued for re-arm on a backoff,
+//   and a dir deleted after arming is detected on POSIX via the fs.watch
+//   'error' event and on Windows via a stat re-check on the dir-level
+//   rename flood. On re-arm the subscriber gets a FULL `reset: true`
+//   snapshot — the recreated file may be re-initialized, so resuming from
+//   the old byte offset could drop its head. The FSWatcher carries an
+//   'error' listener so a handle loss can never surface as an unhandled
+//   event that kills the process.
+// - Main-path caching: the seed resolves findTranscriptFile once and tails
+//   against the cached path, avoiding an O(#projects) readdir+stat scan on
+//   every debounced write.
 //
 // Seed ordering (deliberate, race-proven): the watcher is armed BEFORE the
 // snapshot read, and a seed's coverage is exactly the bytes it consumed
@@ -57,6 +67,14 @@ import { metrics } from './metrics.js'
 
 const log = createLogger('subagent-transcripts')
 const DEBOUNCE_MS = 200
+/** Base re-arm interval for a subagents dir that did not exist when a
+ *  subscriber arrived (the CLI creates it lazily on first agent write). The
+ *  delay backs off exponentially (×2 per failed attempt, capped) so a
+ *  permanently-missing dir cannot spin a 5Hz warn/retry storm. A retry keeps
+ *  going ONLY while live subscribers still hold their share, and stops the
+ *  moment the last one leaves. */
+const WATCH_RETRY_MS = 200
+const MAX_WATCH_RETRY_MS = 2000
 
 export interface SubagentTranscriptFrame {
   sessionId: string
@@ -79,6 +97,16 @@ interface FileState {
   tail: string
   subscribers: Set<Pushable<SubagentTranscriptFrame>>
   timer: ReturnType<typeof setTimeout> | null
+  /** Cached main-transcript path, resolved once by the seed. The hub tails
+   *  against this instead of calling findTranscriptFile (an O(#projects)
+   *  readdir+stat scan) on every debounced write — the path only changes
+   *  with the session id itself, so caching is safe. */
+  mainPath?: string
+  /** Set when the watched dir was torn down (deleted/renamed). The next
+   *  tail after re-arm MUST be a full `reset: true` snapshot: the file may
+   *  have been re-initialized, so resuming from the old byte offset would
+   *  drop its head. */
+  resetNextTail?: boolean
 }
 
 interface WatcherEntry {
@@ -87,9 +115,18 @@ interface WatcherEntry {
   states: Set<FileState>
 }
 
+interface WatcherRetry {
+  timer: ReturnType<typeof setTimeout> | null
+  /** FileStates whose share would re-arm once the dir (re)appears. */
+  states: Set<FileState>
+  /** Failed arm attempts so far — drives the exponential backoff. */
+  attempts: number
+}
+
 export class SubagentTranscriptHub {
   private files = new Map<string, FileState>()
   private watchers = new Map<string, WatcherEntry>()
+  private retries = new Map<string, WatcherRetry>()
 
   subscribeSubagentTranscript(sessionId: string, agentId: string): SubagentTranscriptSub {
     const key = `${sessionId}::${agentId}`
@@ -117,6 +154,7 @@ export class SubagentTranscriptHub {
         if (state!.timer != null) clearTimeout(state!.timer)
         this.files.delete(key)
         this.releaseWatcher(state!)
+        this.dropRetryState(state!)
       }
     }
     return { iterable: push.iterable, unsubscribe: unsub }
@@ -125,6 +163,8 @@ export class SubagentTranscriptHub {
   close(): void {
     for (const { watcher } of this.watchers.values()) watcher.close()
     this.watchers.clear()
+    for (const retry of this.retries.values()) if (retry.timer != null) clearTimeout(retry.timer)
+    this.retries.clear()
     for (const state of this.files.values()) {
       if (state.timer != null) clearTimeout(state.timer)
       for (const p of state.subscribers) p.end()
@@ -156,8 +196,10 @@ export class SubagentTranscriptHub {
       // orphan its watcher share (nothing will ever remove it).
       if (!state.subscribers.has(push)) return
       if (main) {
-        this.acquireWatcher(main.path, state)
-        armed = true
+        // armed reflects whether a share was actually acquired: a missing
+        // dir returns false (re-arm queued) and leaves nothing to release.
+        armed = this.acquireWatcher(main.path, state)
+        state.mainPath = main.path
       }
       let raw = Buffer.alloc(0)
       if (main) {
@@ -207,28 +249,144 @@ export class SubagentTranscriptHub {
     }
   }
 
-  /** ONE watcher per subagents dir, shared by the FileStates in it. */
-  private acquireWatcher(mainPath: string, state: FileState): void {
+  /** ONE watcher per subagents dir, shared by the FileStates in it. Returns
+   *  true when armed (or already armed); false when the dir was missing and
+   *  a re-arm retry was queued instead. */
+  private acquireWatcher(mainPath: string, state: FileState): boolean {
     const dir = resolveSubagentDir(mainPath, state.sessionId)
     let entry = this.watchers.get(dir)
     if (!entry) {
       try {
         const watcher = watch(dir, (_event, filename) => {
-          if (!filename || !filename.startsWith('agent-')) return
-          const agentId = filename.slice('agent-'.length).replace(/\.jsonl$/, '')
-          const key = `${state.sessionId}::${agentId}`
-          const st = this.files.get(key)
-          if (st) this.scheduleTail(st)
+          if (typeof filename === 'string' && filename.startsWith('agent-')) {
+            const agentId = filename.slice('agent-'.length).replace(/\.jsonl$/, '')
+            const key = `${state.sessionId}::${agentId}`
+            const st = this.files.get(key)
+            if (st) this.scheduleTail(st)
+            return
+          }
+          // Dir-level event: a deleted/renamed dir surfaces on WINDOWS as a
+          // rename flood (full-path filenames, or null) rather than an
+          // 'error' — so the error handler below never fires there. Verify
+          // the dir still exists and tear the dead handle down when it does
+          // not, so a recreated dir revives via the retry queue. Benign
+          // non-agent child writes (.DS_Store, temp files) stat OK and are
+          // ignored; teardownWatcher is idempotent against the rename flood.
+          stat(dir).then((s) => {
+            if (!s.isDirectory()) this.teardownWatcher(dir)
+          }).catch(() => this.teardownWatcher(dir))
         })
         watcher.unref?.()
+        // Deleting/renaming the watched dir emits an async 'error' on POSIX.
+        // Without a listener an 'error' is an unhandled event →
+        // uncaughtException → the whole server dies. With it, the dead handle
+        // is torn down and re-armed once the dir returns.
+        watcher.on('error', (err) => {
+          log.warn(`watch error dir=${dir}: ${(err as Error).message} — tearing down and queuing re-arm`)
+          this.teardownWatcher(dir)
+        })
         entry = { watcher, states: new Set() }
         this.watchers.set(dir, entry)
+        entry.states.add(state)
       } catch (err) {
-        log.warn(`watch failed dir=${dir}: ${(err as Error).message} — live updates disabled for this dir`)
-        return
+        // Warn ONCE per retry-queue: a permanently-missing dir would
+        // otherwise emit a warn on every backoff tick indefinitely.
+        if (!this.retries.has(dir)) log.warn(`watch failed dir=${dir}: ${(err as Error).message} — queuing re-arm`)
+        this.retryWatcher(dir, state)
+        return false
       }
+    } else {
+      entry.states.add(state)
     }
-    entry.states.add(state)
+    // A state being (re)armed is no longer waiting on a retry.
+    this.retries.get(dir)?.states.delete(state)
+    return true
+  }
+
+  /** Close a dead dir watcher and move its still-subscribed states onto the
+   *  re-arm queue so a recreated dir revives live updates. States are reset
+   *  to a FULL snapshot on re-arm (offset zeroed + resetNextTail): the
+   *  recreated file may be re-initialized, and resuming from the old offset
+   *  could tail from mid-file and drop its head. */
+  private teardownWatcher(dir: string): void {
+    const entry = this.watchers.get(dir)
+    if (!entry) return
+    entry.watcher.close()
+    this.watchers.delete(dir)
+    let retry = this.retries.get(dir)
+    if (!retry) {
+      retry = { timer: null, states: new Set(), attempts: 0 }
+      this.retries.set(dir, retry)
+    }
+    for (const st of entry.states) {
+      if (st.subscribers.size === 0) continue
+      st.resetNextTail = true
+      st.offset = 0
+      st.tail = ''
+      retry.states.add(st)
+    }
+    this.scheduleArmRetry(dir)
+  }
+
+  /** Queue a state for re-arm once its dir exists. The retry timer is born
+   *  here on the first failure; later failures are set-membership only. */
+  private retryWatcher(dir: string, state: FileState): void {
+    let retry = this.retries.get(dir)
+    if (!retry) {
+      retry = { timer: null, states: new Set(), attempts: 0 }
+      this.retries.set(dir, retry)
+    }
+    retry.states.add(state)
+    this.scheduleArmRetry(dir)
+  }
+
+  private scheduleArmRetry(dir: string): void {
+    const retry = this.retries.get(dir)
+    if (!retry || retry.timer != null) return
+    // Exponential backoff (200ms ×2, capped 2s) so a long-missing dir does
+    // not hammer watch()/stat at 5Hz forever.
+    const delay = Math.min(WATCH_RETRY_MS * 2 ** retry.attempts, MAX_WATCH_RETRY_MS)
+    retry.attempts += 1
+    retry.timer = setTimeout(() => {
+      if (this.armRetry(dir)) this.scheduleArmRetry(dir)
+    }, delay)
+  }
+
+  /** Attempt to re-arm every still-subscribed state of a dir. Returns true
+   *  when at least one state is still waiting (the caller reschedules). On a
+   *  successful arm the state also tails from its shared offset, so content
+   *  written before the dir reappeared is NOT missed — the re-arm's watch
+   *  event would otherwise never cover it. */
+  private armRetry(dir: string): boolean {
+    const retry = this.retries.get(dir)
+    if (!retry) return false
+    retry.timer = null
+    for (const st of [...retry.states]) {
+      if (st.subscribers.size === 0 || !st.mainPath) {
+        retry.states.delete(st)
+        continue
+      }
+      if (this.acquireWatcher(st.mainPath, st)) this.scheduleTail(st)
+    }
+    if (retry.states.size === 0) {
+      this.retries.delete(dir)
+      return false
+    }
+    return true
+  }
+
+  /** Drop a state from its dir's re-arm queue on unsubscribe; clears the
+   *  timer too when nothing is left waiting. */
+  private dropRetryState(state: FileState): void {
+    if (!state.mainPath) return
+    const dir = resolveSubagentDir(state.mainPath, state.sessionId)
+    const retry = this.retries.get(dir)
+    if (!retry) return
+    retry.states.delete(state)
+    if (retry.states.size === 0) {
+      if (retry.timer != null) clearTimeout(retry.timer)
+      this.retries.delete(dir)
+    }
   }
 
   /** Drop ONE state's share of its dir watcher; close the handle when the
@@ -255,17 +413,31 @@ export class SubagentTranscriptHub {
 
   private async tail(state: FileState): Promise<void> {
     try {
-      const main = await findTranscriptFile(state.sessionId)
-      if (!main) return
-      const file = subagentTranscriptPath(main.path, state.sessionId, state.agentId)
+      // The path is resolved once by the seed and cached; re-resolving here
+      // would readdir+stat every project dir on every debounced write tick.
+      let mainPath = state.mainPath
+      if (!mainPath) {
+        const main = await findTranscriptFile(state.sessionId)
+        if (!main) return
+        state.mainPath = main.path
+        mainPath = main.path
+      }
+      const file = subagentTranscriptPath(mainPath, state.sessionId, state.agentId)
       let s
       try {
         s = await stat(file)
       } catch {
         return // deleted mid-run — nothing to tail
       }
-      let reset = false
+      let reset = state.resetNextTail ?? false
       let start = state.offset
+      if (state.resetNextTail) {
+        // Dir was torn down and re-armed: the whole file is new (may have
+        // been re-initialized) — full snapshot, not a mid-file resume.
+        state.resetNextTail = false
+        start = 0
+        state.tail = ''
+      }
       if (s.size < state.offset) {
         // Shrink (truncation/rotation): full re-read. The old pending tail
         // belonged to the pre-truncate content — drop it.

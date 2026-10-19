@@ -58,4 +58,32 @@ describe('useSubagentTranscriptStore', () => {
     const { result } = renderHook(() => useSubagentTranscriptStore('s1', 'a3'))
     await waitFor(() => expect(result.current.error).toContain('boom'))
   })
+
+  it('skips MESSAGE frames whose uuid the store already holds (hub overlap increments)', async () => {
+    // hub 双订阅者的 offset 纪律:共享 offset 只随广播推进,晚加入的订阅者
+    // 在 reset 快照之后还会把重叠字节作为 reset:false 增量再收一遍。
+    // REPLAY_REPLACE 内部去重,但 MESSAGE 是无条件 append——增量必须跳过
+    // 已在 store 里的 uuid,否则重叠段渲染两遍。
+    vi.mocked(api.get).mockResolvedValue({ messages: [] })
+    const { result } = renderHook(() => useSubagentTranscriptStore('s1', 'a9'))
+    const store = sessionStoreRegistry.getOrCreate(subagentStoreId('s1', 'a9'))
+    await waitFor(() => expect(result.current.replayReady).toBe(true))
+
+    deliver({
+      kind: 'subagent-transcript', sessionId: 's1', agentId: 'a9', reset: true,
+      frames: [
+        { type: 'user', uuid: 'u1', restoredFromDisk: true, message: { role: 'user', content: 'go' } },
+        { type: 'assistant', uuid: 'a1', restoredFromDisk: true, message: { role: 'assistant', content: [{ type: 'text', text: 'x' }] } },
+      ],
+    })
+    expect(store.getSnapshot().items).toHaveLength(2)
+
+    deliver({
+      kind: 'subagent-transcript', sessionId: 's1', agentId: 'a9', reset: false,
+      frames: [
+        { type: 'assistant', uuid: 'a1', restoredFromDisk: true, message: { role: 'assistant', content: [{ type: 'text', text: 'x' }] } },
+      ],
+    })
+    expect(store.getSnapshot().items).toHaveLength(2)
+  })
 })

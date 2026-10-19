@@ -222,4 +222,92 @@ describe('SubagentTranscriptHub', () => {
       spy.mockRestore()
     }
   }, 15000)
+
+  it('re-arms the watcher when the subagents dir appears after subscribe (lazy dir)', async () => {
+    // 模拟 CLI 首次写入前尚无 subagents/ 目录:subscribe 时目录缺失,watch
+    // 同步抛 ENOENT(已被探针证实);随后目录出现并写入,重试必须重新挂上
+    // watcher 并把已落盘的内容作为增量送达(readSubagentTranscript 路径曾
+    // 让这个窗口永远失聪)。
+    await rm(subDir, { recursive: true, force: true })
+    hub = new SubagentTranscriptHub()
+    const sub = hub.subscribeSubagentTranscript(SID, AGENT)
+    const snap = await nextFrames(sub, () => true)
+    expect(snap.reset).toBe(true)
+    expect(snap.frames).toEqual([])
+
+    await mkdir(subDir, { recursive: true })
+    await writeFile(join(subDir, `agent-${AGENT}.jsonl`), userLine('u1', 'late') + '\n')
+    const inc = await nextFrames(sub, (f) => !f.reset, 8000)
+    expect(inc.frames).toHaveLength(1)
+    expect((inc.frames[0] as { uuid?: string }).uuid).toBe('u1')
+  }, 15000)
+
+  it('caches the main transcript path instead of rescanning projects per tail', async () => {
+    const p = join(subDir, `agent-${AGENT}.jsonl`)
+    await writeFile(p, userLine('u1', 'go') + '\n')
+    const hr = await import('./history-reader.js')
+    const spy = vi.spyOn(hr, 'findTranscriptFile')
+    try {
+      hub = new SubagentTranscriptHub()
+      const sub = hub.subscribeSubagentTranscript(SID, AGENT)
+      await nextFrames(sub, () => true)
+      const afterSeed = spy.mock.calls.length
+      expect(afterSeed).toBeGreaterThanOrEqual(1)
+      // 增量走坑:tail 不得再次 readdir 全 projects 目录找主 transcript
+      await appendFile(p, assistantLine('a1', 'more') + '\n')
+      await nextFrames(sub, (f) => !f.reset)
+      expect(spy.mock.calls.length).toBe(afterSeed)
+    } finally {
+      spy.mockRestore()
+    }
+  }, 15000)
+
+  it('survives the watched subagents dir being deleted (no unhandled error)', async () => {
+    // POSIX 上删除被 watch 的目录会异步 emit 'error',无监听即 uncaught 崩
+    // 进程(vitest 会标记失败);换本实测(Win)发射的是 rename 洪流而非 error。
+    // 守护两条路径:error 监听存在 + 进程存活 + hub 仍可用。
+    await writeFile(join(subDir, `agent-${AGENT}.jsonl`), userLine('u1', 'go') + '\n')
+    const uncaught: unknown[] = []
+    const hUncaught = (e: unknown) => void uncaught.push(e)
+    const hRejection = (e: unknown) => void uncaught.push(e)
+    process.on('uncaughtException', hUncaught)
+    process.on('unhandledRejection', hRejection)
+    try {
+      hub = new SubagentTranscriptHub()
+      const sub = hub.subscribeSubagentTranscript(SID, AGENT)
+      await nextFrames(sub, () => true)
+      await rm(subDir, { recursive: true, force: true })
+      await new Promise((r) => setTimeout(r, 300))
+      expect(uncaught).toEqual([])
+      const sub2 = hub.subscribeSubagentTranscript(SID, AGENT)
+      const snap = await nextFrames(sub2, () => true)
+      expect(snap.reset).toBe(true)
+      sub2.unsubscribe()
+      sub.unsubscribe()
+    } finally {
+      process.removeListener('uncaughtException', hUncaught)
+      process.removeListener('unhandledRejection', hRejection)
+    }
+  }, 15000)
+
+  it('delivers a FULL reset after the dir is deleted and recreated (no mid-file tail)', async () => {
+    const p = join(subDir, `agent-${AGENT}.jsonl`)
+    await writeFile(p, userLine('u1', 'old content') + '\n')
+    hub = new SubagentTranscriptHub()
+    const sub = hub.subscribeSubagentTranscript(SID, AGENT)
+    const snap = await nextFrames(sub, () => true)
+    expect(snap.reset).toBe(true)
+    expect((snap.frames[0] as { uuid?: string }).uuid).toBe('u1')
+
+    // 目录被删(POSIX: error;Win: rename 洪流)→ teardown → offset 归零。
+    await rm(subDir, { recursive: true, force: true })
+    // 重建目录,内容整体重写(同样的文件,新头部,不再有 u1)。
+    await mkdir(subDir, { recursive: true })
+    await writeFile(p, [assistantLine('a1', 'recomposed'), userLine('u2', 'after rebuild')].join('\n') + '\n')
+
+    // 重挂后的尾巴必须是一次 reset:true 全量(不能从旧 offset 中间续读,
+    // 否则丢 a1;也不能把 u1 当已消费)。
+    const reset = await nextFrames(sub, (f) => f.reset && f.frames.some((x) => (x as { uuid?: string }).uuid === 'a1'), 8000)
+    expect(reset.frames.map((x) => (x as { uuid?: string }).uuid)).toEqual(['a1', 'u2'])
+  }, 15000)
 })

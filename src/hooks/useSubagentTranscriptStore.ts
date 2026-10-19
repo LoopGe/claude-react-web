@@ -62,7 +62,16 @@ export function useSubagentTranscriptStore(
       if (f.reset) {
         store.dispatch({ type: 'REPLAY_REPLACE', permissions: [], messages: f.frames })
       } else {
-        for (const message of f.frames) store.dispatch({ type: 'MESSAGE', message })
+        for (const message of f.frames) {
+          const uuid = typeof message?.uuid === 'string' ? message.uuid : null
+          // REPLAY_REPLACE dedups its own payload, but MESSAGE appends
+          // unconditionally. The hub's shared offset only advances with a
+          // broadcast, so a mid-debounce joiner re-receives the bytes its
+          // snapshot already covered as a duplicate increment — skip frames
+          // already held or the overlap renders twice.
+          if (uuid != null && store.getSnapshot().items.some((it) => it.id === uuid)) continue
+          store.dispatch({ type: 'MESSAGE', message })
+        }
       }
     })
     const releaseChannel = hub.subscribeSubagentTranscript(sessionId, agentId)
