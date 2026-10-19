@@ -508,6 +508,13 @@
   font-weight: 600;
   color: var(--fg);
 }
+/* Retry + close grouped tight (4px) so they read as one cluster; the
+   header's own gap (8px) separates the title from the group. */
+.recap-window-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
 .recap-window-retry,
 .recap-window-close {
   display: inline-flex;

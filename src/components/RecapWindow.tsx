@@ -172,25 +172,29 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose,
           )}
           {recap.status === 'error' ? 'Recap unavailable' : 'Session recap'}
         </span>
-        {recap.status === 'error' && onRetry && (
+        {/* Actions cluster hugs the right edge (header is space-between):
+            retry sits directly beside close instead of floating mid-header. */}
+        <div className="recap-window-actions">
+          {recap.status === 'error' && onRetry && (
+            <button
+              type="button"
+              className="recap-window-retry"
+              onClick={onRetry}
+              aria-label="Retry recap"
+              title="Retry recap"
+            >
+              <IconRotateCcw size={14} />
+            </button>
+          )}
           <button
             type="button"
-            className="recap-window-retry"
-            onClick={onRetry}
-            aria-label="Retry recap"
-            title="Retry recap"
+            className="recap-window-close"
+            onClick={onClose}
+            aria-label="Close recap"
           >
-            <IconRotateCcw size={14} />
+            <IconX size={14} />
           </button>
-        )}
-        <button
-          type="button"
-          className="recap-window-close"
-          onClick={onClose}
-          aria-label="Close recap"
-        >
-          <IconX size={14} />
-        </button>
+        </div>
       </div>
       <div className="recap-window-body" ref={setBodyOs}>
         {/* Key includes generatedAt so a freshly-GENERATED summary (same
