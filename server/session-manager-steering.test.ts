@@ -330,6 +330,26 @@ describe('turn-end steer fallback', () => {
     expect(s.steeredInFlight.size).toBe(0)
     await sm.shutdown()
   })
+  it('empty bookend (emptyResult=true) is a turn-end no-op — no close, no requeue', async () => {
+    // A background-task-completion bookend lands MID-turn; treating it as a
+    // turn end would close admission and prematurely requeue a pending steer.
+    const ctx = await makeSteeringSession()
+    dirs.push(ctx.dir)
+    const { sm, s, handle, info } = ctx
+    sm.send(info.id, 'first')
+    const second = sm.send(info.id, 'pivot now')
+    handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
+    handle.enqueueUserMessage.mockClear()
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(
+      s,
+      true,
+    )
+    expect(handle.noteTurnSettled).not.toHaveBeenCalled()
+    expect(handle.drainSupplements).not.toHaveBeenCalled()
+    expect(handle.enqueueUserMessage).not.toHaveBeenCalled()
+    expect(s.steeredInFlight.size).toBe(1) // steer stays pending for injection
+    await sm.shutdown()
+  })
   it('leaves delivered entries alone (drain returns empty → no-op)', async () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)

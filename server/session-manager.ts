@@ -6416,20 +6416,23 @@ export class SessionManager {
     log.info(`[session ${id}] steered ${uuid.slice(0, 8)} injected at ${outcome.boundary}`)
   }
 
-  /** Turn-end fallback（spec §6.3，pump 的 onTurnSettling 落点）：drain 全部
-   *  未投递的 supplement 并逐条转回 SDK 输入队列——零丢失保证。必须在
+  /** Turn-end fallback（spec §6.3，pump 的 onTurnSettling 落点）：在**真实**
+   *  turn 结束时（`emptyResult` 为 false）关闭 steering admission，并 drain
+   *  全部未投递的 supplement 逐条转回 SDK 输入队列——零丢失保证。必须在
    *  result 处理器的 moreQueued 检查之前调用（pump 已保证），requeue 后
-   *  的条目要被 queueDepth 检查看见。 */
+   *  的条目要被 queueDepth 检查看见。
+   *
+   *  empty bookend（后台任务完成，num_turns 0）**不是** turn 结束——它出现在
+   *  外层 turn 进行中，故对本函数是 no-op：既不关闸，也不把待注入的 steer
+   *  提前 requeue 成下一轮 prompt（那会让本轮 guidance 延后生效）。 */
   private drainAndRequeueSteered(s: Session, emptyResult: boolean): void {
-    // A real turn end closes steering admission. A Stop boundary normally does
-    // it, but a turn that ends WITHOUT one (api_error, interrupt, max-turns)
-    // leaves admission open — measured live: after an api_error turn the next
-    // message's `providerAdmit=true` (admission still open) and it was
-    // mis-routed into mid-run steering with no live turn to inject into
-    // (stranded supplement, pendingTurns pinned at 1 → UI stuck "working").
-    // Gated on !emptyResult: an empty bookend (background-task completion) does
-    // not end the outer turn, so admission stays open across it.
-    if (!emptyResult) s.handle.noteTurnSettled?.()
+    // An empty bookend (a background-task completion, num_turns 0) does NOT end
+    // the outer turn, so it must neither inject-requeue a pending steer nor
+    // close admission — both are turn-end actions. (Measured live: after an
+    // api_error turn the next message's `providerAdmit=true` meant admission
+    // was still open; the sibling result path closes it.)
+    if (emptyResult) return
+    s.handle.noteTurnSettled?.()
     this.requeueSteeredLeftovers(s, s.handle.drainSupplements?.() ?? [])
   }
 
