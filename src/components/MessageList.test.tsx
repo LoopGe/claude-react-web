@@ -208,6 +208,7 @@ vi.mock('react-virtuoso', async () => {
 // Import AFTER mock.
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
 import { FOLD_MAX_PX } from './message-list/fold-key'
+import { TRAILING_MICRO_PIN_MS } from './message-list/useTranscriptScroll'
 import { extractMessagePlainText } from '../search'
 import { shouldArmEnterAnimation } from '../utils/enter-animation'
 import { SubagentProvider } from '../hooks/useSubagentContext'
@@ -384,6 +385,13 @@ describe('MessageList', () => {
     virtuosoMockState.lastFollowOutput = undefined
     virtuosoMockState.renderItems = true
     roObserved.clear()
+  })
+  // The fake-timer tests below restore inline on the happy path; this closes
+  // the failure path — a mid-body expect must not leak fake timers into the
+  // describes that follow (several have no timer reset of their own), where
+  // rAF-driven verify passes and debounces would silently stop advancing.
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   it('shows the default empty state when messages are empty', () => {
@@ -1784,6 +1792,188 @@ describe('MessageList', () => {
     act(() => { fireResize(itemList) })
     expect(appWrites).toBe(writesAtBaseline + 1)
     expect(scroller.scrollTop).toBe(215)
+  })
+
+  it('item-list micro-deltas schedule ONE trailing exact pin once the chain quiets', () => {
+    // The residue the bands leave behind: a POSITIVE sub-band growth has no
+    // clamp to correct it (the browser only clamps on shrink) and fires no
+    // scroll event, so at a quiet turn end nothing ever corrects it — the
+    // "回复刚结束差几像素" report. The band must schedule a trailing
+    // correction instead of dropping the event; the debounce must collapse a
+    // per-frame wobble chain into ONE write (the 吸附感 contract: no
+    // per-frame scrollTop writes).
+    vi.useFakeTimers()
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+    ]
+    let contentHeight = 200
+    const stackHeight = 80
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+    )
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+
+    const readSpacer = () => {
+      const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+      return sp ? (Number.parseFloat(sp.style.height) || 0) : 0
+    }
+    let rawScrollTop = 200 + 80 - 100
+    let appWrites = 0
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => contentHeight + readSpacer(),
+    })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        const max = Math.max(0, contentHeight + readSpacer() - 100)
+        return Math.min(rawScrollTop, max)
+      },
+      // Same contract as the sibling test above: only an app-level pin goes
+      // through the setter — count those. The setter must ALSO model the
+      // browser clamping the WRITE to the max: a pin that writes
+      // `scrollHeight` while parked at the old bottom lands at the old max,
+      // and only a LATER growth leaves a residual. Without the clamp the
+      // stored raw value rides above every new max and the min() read erases
+      // exactly the residual this test exists to verify.
+      set: (v: number) => {
+        appWrites++
+        rawScrollTop = Math.min(v, Math.max(0, contentHeight + readSpacer() - 100))
+      },
+    })
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+    })
+    const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+
+    // Establish the baseline: committed spacer + one item-list observation.
+    act(() => { fireResize(stack) })
+    act(() => { fireResize(itemList) })
+    expect(scroller.scrollTop).toBe(180)
+
+    // Let the baseline pins' settle-verification pass RUN OUT (its rAF ticks
+    // see a stable bottom and finish; the 1500ms deadline also expires). This
+    // matters: the pass re-pins any residual > 2px on sight, so a chain that
+    // lands within it is already covered — the hole this test exists for is a
+    // chain that lands AFTER the pass is gone, where the trailing correction
+    // is the only corrector left.
+    act(() => { vi.advanceTimersByTime(2500) })
+    const writesAtBaseline = appWrites
+
+    // A chain of POSITIVE sub-band growths: each within the band — no
+    // immediate write (unchanged contract), but the trailing correction must
+    // be (re-)armed by every one of them.
+    contentHeight = 202
+    act(() => { fireResize(itemList) })
+    contentHeight = 203
+    act(() => { fireResize(itemList) })
+    contentHeight = 206
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline)
+
+    // The chain quiets; the debounce fires and corrects ONCE to the new
+    // bottom (206 + 80 − 100 = 186).
+    act(() => { vi.advanceTimersByTime(TRAILING_MICRO_PIN_MS + 100) })
+    expect(appWrites).toBe(writesAtBaseline + 1)
+    expect(scroller.scrollTop).toBe(186)
+
+    // And it stays put — no further writes leak out afterwards.
+    act(() => { vi.advanceTimersByTime(2000) })
+    expect(appWrites).toBe(writesAtBaseline + 1)
+    vi.useRealTimers()
+  })
+
+  it('a pending trailing micro-pin does not survive a transcript switch', () => {
+    // The timer is hook-instance state; the RO effect's cleanup tears down
+    // the observer on a transcriptRevealKey switch and must tear the armed
+    // correction down with it — a wobble armed on transcript A must not fire
+    // against transcript B's freshly-reset scroller 250ms later.
+    vi.useFakeTimers()
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+    ]
+    let contentHeight = 200
+    const stackHeight = 80
+    const readSpacerOf = (scroller: HTMLElement) => {
+      const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+      return sp ? (Number.parseFloat(sp.style.height) || 0) : 0
+    }
+    let rawScrollTop = 200 + 80 - 100
+    let appWrites = 0
+    // The transcript switch REMOUNTS the scroller (the messages div is keyed
+    // on the reveal key), so the stub must be reapplied to the new element —
+    // a stale fire against an unstubbed element reads clientHeight 0 and is
+    // silently stood down, hiding the regression this test locks.
+    const stubScroller = (scroller: HTMLElement) => {
+      Object.defineProperty(scroller, 'scrollHeight', {
+        configurable: true,
+        get: () => contentHeight + readSpacerOf(scroller),
+      })
+      Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+      Object.defineProperty(scroller, 'scrollTop', {
+        configurable: true,
+        get: () => {
+          const max = Math.max(0, contentHeight + readSpacerOf(scroller) - 100)
+          return Math.min(rawScrollTop, max)
+        },
+        set: (v: number) => {
+          appWrites++
+          rawScrollTop = Math.min(v, Math.max(0, contentHeight + readSpacerOf(scroller) - 100))
+        },
+      })
+    }
+
+    const { container, rerender } = render(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        streamingContent="Live tokens"
+        transcriptRevealKey="A"
+      />,
+    )
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+    stubScroller(scroller)
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+    })
+    const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+
+    act(() => { fireResize(stack) })
+    act(() => { fireResize(itemList) })
+    act(() => { vi.advanceTimersByTime(2500) })
+    const writesAtBaseline = appWrites
+
+    // Arm the trailing correction on transcript A… (two sub-band growths —
+    // the residue must clear BOTTOM_EPSILON_PX (2px) for the stale fire to
+    // be observable at all; a 2px residue reads as "at bottom" to the guard.)
+    contentHeight = 203
+    act(() => { fireResize(itemList) })
+    contentHeight = 206
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline)
+
+    // …then switch transcripts inside the window. The RO effect re-runs and
+    // must disarm the correction along with the observer. The remounted
+    // scroller gets the same stub so a stale fire is observable as a write.
+    rerender(
+      <MessageList
+        items={toItems(msgs as SdkMessage[])}
+        streamingContent="Live tokens"
+        transcriptRevealKey="B"
+      />,
+    )
+    const newScroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    if (newScroller !== scroller) stubScroller(newScroller)
+    act(() => { vi.advanceTimersByTime(TRAILING_MICRO_PIN_MS + 100) })
+    expect(appWrites).toBe(writesAtBaseline)
+    vi.useRealTimers()
   })
 
   it('inline mode: renders the live turn as an in-flow tail row inside the scroller', () => {
@@ -4818,6 +5008,51 @@ describe('collapsed scroller (keep-alive hidden panel)', () => {
 
     // Follow invariant re-pins to the REAL bottom on show (pinToBottom
     // writes scrollTop directly, not via scrollTo).
+    expect(virtuosoMockState.scrollTop).toBe(3000)
+    expect(followingOf(container)).toBe('true')
+  })
+
+  it('hide-flip of a FOLLOWING panel: the item-list RO makes no write on the collapsed box', () => {
+    // The item-list observer reads contentHeightOf = scrollHeight − spacer.
+    // On the hide-flip scrollHeight reads 0, so the delta reads as a huge
+    // "shrink" (2000 → 0 here, with no spacer rendered — a spacer's surviving
+    // style height would only amplify it) that used to fire the instant
+    // re-pin with scrollTop = scrollHeight = 0 on the hidden element —
+    // violating the collapsed-scroller stand-down the scroller-RO guard two
+    // tests up already follows.
+    const { container } = render(
+      <MessageList items={toItems([
+        makeMsg('user', { uuid: 'u-1', message: { content: [{ type: 'text', text: 'q' }] } }),
+        makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'answer' }] } }),
+      ])} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+    // Parked at the bottom, following.
+    virtuosoMockState.scrollHeight = 2000
+    virtuosoMockState.clientHeight = 600
+    virtuosoMockState.scrollTop = 1400
+    expect(followingOf(container)).toBe('true')
+
+    // Visible-state pass: baseline the item-list observer at the parked
+    // bottom (fires its growth pin — 2000 content, baseline was the
+    // mount-time collapsed box).
+    act(() => { fireResize(itemList) })
+    expect(virtuosoMockState.scrollTop).toBe(2000)
+
+    // Hide: the box collapses and the RO fires on the flip. Pre-guard this
+    // re-pins scrollTop to the collapsed scrollHeight (0) on the hidden
+    // scroller; post-guard nothing is written while collapsed.
+    virtuosoMockState.scrollHeight = 0
+    virtuosoMockState.clientHeight = 0
+    act(() => { fireResize(itemList) })
+    expect(virtuosoMockState.scrollTop).toBe(2000)
+
+    // Show with content that grew while hidden: the RO fires with the real
+    // box again and re-pins to the grown bottom.
+    virtuosoMockState.scrollHeight = 3000
+    virtuosoMockState.clientHeight = 600
+    act(() => { fireResize(itemList) })
     expect(virtuosoMockState.scrollTop).toBe(3000)
     expect(followingOf(container)).toBe('true')
   })

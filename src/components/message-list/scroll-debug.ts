@@ -29,9 +29,22 @@ export function scrollDebugEnabled(): boolean {
   return enabled
 }
 
+/** TEMPORARY in-page mirror of every diagnostic event, so an occurrence can
+ *  be diagnosed after the fact — the DevTools console ring rolls over and a
+ *  reload wipes it. Inspect from the console: `__scrollLogV2`. Best-effort,
+ *  diagnostics only. */
+type ScrollLogEntry = { t: number; ev: string; d: unknown }
+
 /** Log a scroll-lifecycle event. No-op (and no payload built) unless the flag
  *  is set, so the cost when off is one cached boolean read. */
 export function scrollDebug(event: string, buildPayload: () => Record<string, unknown>): void {
   if (!enabled) return
-  console.debug(`[scroll] ${event}`, buildPayload())
+  const payload = buildPayload()
+  console.debug(`[scroll] ${event}`, payload)
+  // The only importer runs in the browser bundle and jsdom client tests —
+  // `window` always exists where this executes.
+  const w = window as unknown as { __scrollLogV2?: ScrollLogEntry[] }
+  w.__scrollLogV2 ??= []
+  w.__scrollLogV2.push({ t: Date.now(), ev: event, d: payload })
+  if (w.__scrollLogV2.length > 20000) w.__scrollLogV2.splice(0, 5000)
 }

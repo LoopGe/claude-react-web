@@ -89,6 +89,13 @@ const SEEK_SNAP_PX = 2
  *  invisible ≤3px drift it would fix. See the micro-delta comment in the
  *  observer. */
 const ITEM_LIST_MICRO_DELTA_PX = 3
+/** How long after the LAST sub-band item-list wobble the trailing correction
+ *  waits before it writes. Each wobble resets it, so a settling chain produces
+ *  no write at all; once the chain quiets, ONE exact pin cleans up the residue
+ *  the band deliberately left (at a quiet turn end no scroll event or append
+ *  ever comes to correct it — the "回复刚结束差几像素" report). Exported for
+ *  the band tests' clock. */
+export const TRAILING_MICRO_PIN_MS = 250
 /** Frames the seek loop HOLDS the anchor after landing, re-pinning if a late
  *  row re-measurement (Virtuoso measures fresh-mounted rows a frame or two
  *  after paint) shifts the content under the parked viewport. */
@@ -421,6 +428,37 @@ export function useTranscriptScroll({
     // dependency-free and the two can call each other.
     verifyRef.current()
   }, [])
+
+  // --- Trailing micro-band correction --------------------------------------
+  //
+  // The item-list observer's micro-delta band skips the instant re-pin for
+  // sub-band wobbles; its contract says the residue is "corrected by the
+  // follow invariant on the next scroll event or append". At a quiet turn end
+  // neither ever comes: the chain's last event is frequently a POSITIVE
+  // growth (a row re-measure lands taller), positive growth fires no clamp
+  // and no scroll event, and the verify pass has long expired — so the 1–3px
+  // residue the band deliberately left stays on screen (the "回复刚结束
+  // 差几像素" report). Schedule a correction instead of dropping the event:
+  // every wobble RESETS the timer, so a settling chain produces no write at
+  // all, and ONE exact pin lands once the chain has been quiet for a beat. A
+  // panel frozen by a hidden tab heals the same way — the RO's queued entry
+  // is delivered after the tab returns and arms the same trailing pass.
+  const trailingMicroPinRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scheduleTrailingMicroPin = useCallback(() => {
+    if (trailingMicroPinRef.current != null) clearTimeout(trailingMicroPinRef.current)
+    trailingMicroPinRef.current = setTimeout(() => {
+      trailingMicroPinRef.current = null
+      const el = scrollerRef.current
+      // Same stand-down contract as every other corrector: not following, an
+      // animation owns the viewport, or the panel is display:none in the
+      // keep-alive cache.
+      if (!el || !shouldFollowRef.current || scrollAnimatingRef.current) return
+      if (el.clientHeight === 0) return
+      if (getDistanceFromTrueBottom(el) > BOTTOM_EPSILON_PX) {
+        pinToBottom(el, { reason: 'trailing-micro' })
+      }
+    }, TRAILING_MICRO_PIN_MS)
+  }, [pinToBottom])
 
   // --- Settle verification -------------------------------------------------
   //
@@ -908,6 +946,14 @@ export function useTranscriptScroll({
       if (cancelled) return
       const scroller = scrollerRef.current
       if (!scroller) return
+      // Collapsed scroller (clientHeight 0) = the panel is display:none in
+      // the keep-alive cache. The hide-flip delivers a 0×0 box whose
+      // scrollHeight reads 0 while the spacer (if any) still contributes its
+      // style height, so the delta reads as a huge "shrink" — pre-guard this
+      // fired the instant re-pin with scrollTop = scrollHeight = 0 on the
+      // hidden element. Same stand-down contract as syncBottomGeometry and
+      // the scroller-RO backstop: decide nothing from collapsed geometry.
+      if (scroller.clientHeight === 0) { dbg('itemlist-RO collapsed-skip', () => ({})); return }
       if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); return }
       const contentH = contentHeightOf(scroller)
       const delta = contentH - lastContentHeight
@@ -924,7 +970,15 @@ export function useTranscriptScroll({
       // invisible, and a real event (append, spacer commit, the user's next
       // scroll — every scroll event re-checks the follow invariant) corrects
       // any residue.
-      if (Math.abs(delta) <= ITEM_LIST_MICRO_DELTA_PX) { dbg('itemlist-RO micro-skip', () => ({ delta })); return }
+      if (Math.abs(delta) <= ITEM_LIST_MICRO_DELTA_PX) {
+        dbg('itemlist-RO micro-skip', () => ({ delta }))
+        // The band skips the WRITE, not the correction: schedule the trailing
+        // exact pin (see scheduleTrailingMicroPin). Applies to negative
+        // deltas too — the check reads live geometry at fire time, so a
+        // clamp that already healed the shrink makes it a silent no-op.
+        scheduleTrailingMicroPin()
+        return
+      }
       dbg('itemlist-RO pin', () => ({ delta }))
       // Re-pin on shrink as well as growth while following. A group folding
       // ABOVE the viewport reduces scrollHeight; with the viewport pinned to
@@ -948,8 +1002,16 @@ export function useTranscriptScroll({
       cancelled = true
       cancelAnimationFrame(raf)
       ro.disconnect()
+      // The armed trailing correction belongs to THIS transcript's wobble
+      // chain: a transcriptRevealKey switch tears the observer down and must
+      // tear the correction down with it, or a wobble armed on the old
+      // transcript fires against the new one's freshly-reset scroller.
+      if (trailingMicroPinRef.current != null) {
+        clearTimeout(trailingMicroPinRef.current)
+        trailingMicroPinRef.current = null
+      }
     }
-  }, [transcriptRevealKey, pinToBottom])
+  }, [transcriptRevealKey, pinToBottom, scheduleTrailingMicroPin])
 
   // --- Visible top row ----------------------------------------------------
 
