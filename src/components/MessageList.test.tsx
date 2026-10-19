@@ -3651,6 +3651,141 @@ describe('MessageList', () => {
       expect(container.textContent).toContain('{"findings":["a","b"]}')
     })
 
+    it('renders the <event> body of a <task-notification> card', () => {
+      const notification = [
+        '<task-notification>',
+        '<task-id>b69rtzfqh</task-id>',
+        '<summary>Monitor event: "push retry outcome"</summary>',
+        '<event>[Monitor expired after 15m with no events delivered.]</event>',
+        '</task-notification>',
+      ].join('\n')
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', { message: { content: [{ type: 'text', text: notification }] } }),
+        ])} />,
+      )
+      expect(container.textContent).toContain('Monitor expired after 15m with no events delivered')
+    })
+
+    it('renders a recognized-but-unusual <status> verbatim (e.g. killed), never coerced', () => {
+      // The card is presentation: a raw status the harness actually emits
+      // (real corpus has 15× 'killed') must display as itself. Only a
+      // MISSING status falls back — to 'failed', matching the reducer's
+      // normalizeTaskStatus default, never 'completed'.
+      const notification = [
+        '<task-notification>',
+        '<task-id>abc-123</task-id>',
+        '<tool-use-id>call_xyz</tool-use-id>',
+        '<status>killed</status>',
+        '<summary>Watcher stopped</summary>',
+        '</task-notification>',
+      ].join('\n')
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', { message: { content: [{ type: 'text', text: notification }] } }),
+        ])} />,
+      )
+      const card = container.querySelector('.msg.task-notification')
+      expect(card?.querySelector('.msg-header')?.textContent).toBe('background task · killed')
+    })
+
+    it('routes the active search match to the correct region when both <event> and <result> render', () => {
+      // Both Markdown regions previously received the raw item-level
+      // activeMatchIdx; Markdown treats that as LOCAL to its own text, so
+      // the active mark could land in <event> when the real hit is in
+      // <result> (BashMessage solves the same problem with per-region
+      // rebasing — this card must do the same).
+      const notification = [
+        '<task-notification>',
+        '<task-id>abc-123</task-id>',
+        '<summary>status summary</summary>',
+        '<event>first needle here</event>',
+        '<result>second needle here</result>',
+        '</task-notification>',
+      ].join('\n')
+      const { container } = render(
+        <MessageList
+          items={toItems([
+            makeMsg('user', { message: { content: [{ type: 'text', text: notification }] } }),
+          ])}
+          searchQuery="needle"
+          searchActiveMsgIdx={0}
+          searchActiveMatchInItem={1}
+        />,
+      )
+      const active = container.querySelector('mark.search-hl-active')
+      expect(active).toBeTruthy()
+      // The 2nd match in document order lives in <result>, not <event>.
+      expect(active?.closest('.task-notification-event')).toBeNull()
+    })
+
+    it('shows a statusless Monitor-expiry notification as expired, not failed', () => {
+      // Statusless + harness's standardized "[Monitor expired …]" event body
+      // is a timed-out watch, not a crashed task — the header should say so.
+      const notification = [
+        '<task-notification>',
+        '<task-id>b69rtzfqh</task-id>',
+        '<summary>Monitor event: "push retry outcome"</summary>',
+        '<event>[Monitor expired after 15m with no events delivered.]</event>',
+        '</task-notification>',
+      ].join('\n')
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', { message: { content: [{ type: 'text', text: notification }] } }),
+        ])} />,
+      )
+      const card = container.querySelector('.msg.task-notification')
+      expect(card!.querySelector('.msg-header')?.textContent).toBe('background task · expired')
+    })
+
+    it('keeps the failed fallback for a statusless notification without an expiry event', () => {
+      const notification = [
+        '<task-notification>',
+        '<task-id>abc-123</task-id>',
+        '<summary>Something happened</summary>',
+        '<event>[Some other harness commentary.]</event>',
+        '</task-notification>',
+      ].join('\n')
+      const { container } = render(
+        <MessageList items={toItems([
+          makeMsg('user', { message: { content: [{ type: 'text', text: notification }] } }),
+        ])} />,
+      )
+      const card = container.querySelector('.msg.task-notification')
+      expect(card!.querySelector('.msg-header')?.textContent).toBe('background task · failed')
+    })
+
+    it('keeps the active match correct when the query also hits the tag scaffolding', () => {
+      // item.plainText indexes the FULL raw injection (htmlAsTextHandlers
+      // keeps '<task-notification>' etc. as literal searchable text), so the
+      // per-region rebase must count scaffolding matches too. For this text
+      // the global 'task' matches are: <task-notification> (0), <task-id> (1),
+      // </task-id> (2), event body (3), result body (4), </task-notification>
+      // (5) — index 3 is the event body's.
+      const notification = [
+        '<task-notification>',
+        '<task-id>abc-123</task-id>',
+        '<summary>status summary</summary>',
+        '<event>task one</event>',
+        '<result>task two</result>',
+        '</task-notification>',
+      ].join('\n')
+      const { container } = render(
+        <MessageList
+          items={toItems([
+            makeMsg('user', { message: { content: [{ type: 'text', text: notification }] } }),
+          ])}
+          searchQuery="task"
+          searchActiveMsgIdx={0}
+          searchActiveMatchInItem={3}
+        />,
+      )
+      const active = container.querySelector('mark.search-hl-active')
+      expect(active).toBeTruthy()
+      expect(active?.textContent).toBe('task')
+      expect(active?.closest('.task-notification-event')).not.toBeNull()
+    })
+
     it('renders an isSynthetic user message as a neutral card, NOT a "you" bubble', () => {
       const { container } = render(
         <MessageList items={toItems([

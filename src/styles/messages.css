@@ -4021,3 +4021,10 @@ details.question-inline-card .question-inline-body {
   flex-direction: column;
   gap: var(--space-1-5);
 }
+
+/* <event> body inside a standalone TaskNotificationCard — harness commentary
+   (e.g. "Monitor expired after 15m with no events delivered"), the WHY behind
+   a statusless notification. Dimmed prose beneath the summary line; no color
+   of its own so theme variables stay authoritative. */
+.task-notification-event { opacity: 0.8; margin-top: var(--space-1-5); font-size: var(--fs-sm); }
+.task-notification-event:first-child { margin-top: 0; }
