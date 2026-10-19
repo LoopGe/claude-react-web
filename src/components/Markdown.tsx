@@ -18,7 +18,6 @@
 import { memo } from 'react'
 import { ErrorBoundary } from './ErrorBoundary'
 import { compileMarkdown } from '../utils/markdown-cache'
-import { useMarkdownFeaturesVersion } from '../utils/markdown-features'
 
 // Re-export CodeBlock so existing `import { CodeBlock } from './Markdown'`
 // sites (e.g. FileViewer.tsx) keep working after the extraction.
@@ -36,11 +35,6 @@ export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchI
 })
 
 const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMatchIdx, breaks }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean }) {
-  // Re-render when an on-demand highlight grammar finishes loading.
-  // compileMarkdown never caches a render made before a grammar it needed had
-  // loaded, so this re-render recompiles exactly those blocks; every other
-  // block is a cache hit returning the same tree (see markdown-features.ts).
-  useMarkdownFeaturesVersion()
   return (
     <div className="md">
       {compileMarkdown(text, { breaks, searchQuery, activeMatchIdx })}

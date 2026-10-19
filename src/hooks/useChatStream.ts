@@ -9,7 +9,6 @@ import type { WsServerFrame } from '../ws-types'
 import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
 import { extractMessagePlainText } from '../../shared/search/extract'
 import type { TranscriptPageResponse } from '../../shared/transcript-page'
-import { prefetchMarkdownFeatures, prefetchMarkdownFeaturesForItems } from '../utils/markdown-prefetch'
 
 export interface ContextUsage {
   totalTokens?: number
@@ -342,13 +341,7 @@ export function useChatStream(
         const stale =
           clearEpochRef.current !== epochAtRequest ||
           (minGenerationRef.current != null && page.generation < minGenerationRef.current)
-        if (!stale) {
-          // Start the highlight-grammar loads this page's rows will need
-          // before the dispatch renders them. Best-effort; see
-          // markdown-prefetch.ts.
-          prefetchMarkdownFeaturesForItems(page.messages)
-          return page
-        }
+        if (!stale) return page
         if (retries >= 5) throw new Error('transcript generation moved')
       }
     },
@@ -523,9 +516,6 @@ export function useChatStream(
             }
             break
           }
-          // Streamed deltas included: a fence seen mid-stream has its grammar
-          // load in flight long before the final message mounts.
-          prefetchMarkdownFeatures(message, sessionId)
           if (frame.seq != null && frame.generation != null) {
             // Seq-carrying frame — the seq-window protocol path. WINDOW_LIVE
             // REPLACES the legacy MESSAGE dispatch here (dispatching both

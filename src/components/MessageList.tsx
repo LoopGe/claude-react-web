@@ -49,7 +49,6 @@ import {
 import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRows'
 import { TRANSCRIPT_REVEAL_ROW_CLASS, TRANSCRIPT_ROW_CLASS, useTranscriptAnimations } from './message-list/useTranscriptAnimations'
 import { useTranscriptScroll } from './message-list/useTranscriptScroll'
-import { prefetchMarkdownFeaturesForItems } from '../utils/markdown-prefetch'
 /** The easter-egg game only mounts after a triple-click on the empty state's
  *  icon, so it is not shipped in the entry chunk: its chunk is fetched once
  *  the empty state is on screen (see the prefetch effect in MessageList). */
@@ -613,17 +612,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     }),
     [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards],
   )
-
-  // Warm the on-demand highlight grammars for the whole transcript, not just
-  // the mounted rows: items that reach the store without passing
-  // useChatStream's page / frame scan (prop-fed transcripts) are covered
-  // here, and a row the user
-  // scrolls to later should paint highlighted on its first render. Each
-  // message is scanned once
-  // (markdown-prefetch.ts), so this stays cheap per append.
-  useEffect(() => {
-    prefetchMarkdownFeaturesForItems(items)
-  }, [items])
 
   // The easter-egg game can only open from the default empty state, so fetch
   // its lazy chunk once that state is on screen: the triple-click then swaps

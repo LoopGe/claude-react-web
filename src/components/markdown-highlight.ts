@@ -13,7 +13,7 @@
 // pass would replace the text-with-marks subtree wholesale and erase the
 // highlights.
 
-import { lowlight, lazyGrammarFor, type LazyGrammar } from '../utils/lowlight-instance'
+import { lowlight } from '../utils/lowlight-instance'
 
 /** Minimal hast-like node shape. Uses a loose type rather than importing
  *  hast's full union to keep the plugin self-contained. */
@@ -23,14 +23,6 @@ export interface HastNode {
   value?: string
   properties?: { className?: string[]; [k: string]: unknown }
   children?: HastNode[]
-}
-
-/** What rehypeHighlightLite reports back to compileMarkdown through the vfile
- *  (`file.data`) about a compile that is not final yet. */
-export interface MarkdownFileData {
-  /** On-demand grammars a fence needed before they were registered: those
-   *  fences were left plain this pass. */
-  pendingGrammars?: Set<LazyGrammar>
 }
 
 /** Walk a hast tree, visiting every node. */
@@ -50,7 +42,7 @@ export function extractText(node: HastNode): string {
 
 /** Rehype plugin that highlights fenced code blocks using lowlight. */
 export function rehypeHighlightLite() {
-  return (tree: unknown, file?: { data: object }) => {
+  return (tree: unknown) => {
     visitNodes(tree as HastNode, (node) => {
       if (
         node.type !== 'element' ||
@@ -82,20 +74,7 @@ export function rehypeHighlightLite() {
       // Gating on the narrower Set silently dropped highlighting for all of
       // those. `registered` tracks registration and aliasing with no second
       // list to keep in sync.
-      //
-      // Not registered can also mean "not registered YET": an on-demand
-      // grammar (lowlight-instance.ts) stays plain for this pass and is
-      // reported, so compileMarkdown keeps the render out of its cache and
-      // requests the grammar; the block re-renders highlighted once it lands.
-      if (!lowlight.registered(lang)) {
-        const pending = lazyGrammarFor(lang)
-        if (pending && file) {
-          const data = file.data as MarkdownFileData
-          data.pendingGrammars ??= new Set()
-          data.pendingGrammars.add(pending)
-        }
-        return
-      }
+      if (!lowlight.registered(lang)) return
       try {
         const result = lowlight.highlight(lang, text)
         if (result.children.length > 0) {

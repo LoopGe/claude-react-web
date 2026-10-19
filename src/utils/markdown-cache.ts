@@ -37,13 +37,6 @@
 // above. The entries are immutable React trees that the mounted rows are
 // holding anyway in the common case.
 
-// On-demand grammars (lowlight-instance.ts). A compile whose fence needed a
-// grammar that had not loaded yet renders that fence plain and is NOT
-// admitted to any bucket, so the cache only ever holds final trees: the
-// version bump that follows the load re-renders <Markdown>
-// (markdown-features.ts), whose next compile misses and produces the final
-// tree. KaTeX is deliberately NOT lazy (see AGENTS.md).
-
 import { Fragment, type ReactNode } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { unified } from 'unified'
@@ -56,10 +49,9 @@ import rehypeKatex from 'rehype-katex'
 import { toJsxRuntime, type Options as ToJsxOptions } from 'hast-util-to-jsx-runtime'
 import { rehypeStripStructuralWhitespace } from '../../shared/search/rehype-strip-structural-whitespace'
 import { htmlAsTextHandlers } from '../../shared/markdown-html-text'
-import { rehypeHighlightLite, type MarkdownFileData } from '../components/markdown-highlight'
+import { rehypeHighlightLite } from '../components/markdown-highlight'
 import { rehypeHighlightQuery } from '../search'
 import { MD_COMPONENTS } from '../components/markdown-components'
-import { requestGrammar } from './lowlight-instance'
 
 export interface CompileMarkdownOptions {
   breaks?: boolean
@@ -231,10 +223,7 @@ export function compileMarkdown(source: string, opts: CompileMarkdownOptions): R
 
   const proc = q ? buildSearchProcessor(opts) : getBaseProcessor(breaks)
   const mdast = proc.parse(source)
-  // rehypeHighlightLite reports fences whose grammar is still loading through
-  // this (unified copies `data` onto the vfile by reference).
-  const data: MarkdownFileData = {}
-  const hast = proc.runSync(mdast, { data })
+  const hast = proc.runSync(mdast)
 
   const tree = toJsxRuntime(hast as never, {
     Fragment,
@@ -245,13 +234,6 @@ export function compileMarkdown(source: string, opts: CompileMarkdownOptions): R
     stylePropertyNameCase: 'css',
   })
 
-  // A fence rendered plain because its grammar is still loading: show this
-  // tree now but keep it OUT of the cache (a cached pre-load tree would be
-  // served forever after the load) and request the grammars.
-  if (data.pendingGrammars) {
-    for (const grammar of data.pendingGrammars) void requestGrammar(grammar)
-    return tree
-  }
   admit(bucket, q ? SEARCH_CAP : PLAIN_CAP, source, tree)
   return tree
 }

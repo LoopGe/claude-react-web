@@ -1,27 +1,28 @@
-// The lazy grammar split must not change WHAT gets highlighted or HOW: every
-// tag the old eager instance resolved still resolves (now or after a load),
-// to the same grammar, with byte-identical output once loaded. The old
-// instance is rebuilt in src/test-utils/markdown-reference.ts.
+// The highlight grammars are registered EAGERLY: every block is highlighted on
+// its first paint, with nothing loaded on demand. Pinned here against the
+// independently written registration in src/test-utils/markdown-reference.ts:
+// the same 24 grammars registered at import, every tag resolving to the same
+// grammar (haskell, mermaid & co. staying plain), byte-identical output, and
+// the diff-line gate (`isRegisteredLanguage`) accepting exactly the registered
+// names and our aliases.
 
 import { describe, it, expect } from 'vitest'
 import hljs from 'highlight.js/lib/core'
-import type { LanguageFn, Mode } from 'highlight.js'
-import { lowlight, lazyGrammarFor, requestGrammar, allGrammarsRegistered, LAZY_GRAMMARS, type LazyGrammar } from './lowlight-instance'
+import type { LanguageFn } from 'highlight.js'
+import { isRegisteredLanguage, lowlight } from './lowlight-instance'
 import { REFERENCE_CUSTOM_ALIASES, REFERENCE_GRAMMARS, referenceLowlight } from '../test-utils/markdown-reference'
 
 type GrammarId = keyof typeof REFERENCE_GRAMMARS
 const GRAMMAR_IDS = Object.keys(REFERENCE_GRAMMARS) as GrammarId[]
-const LAZY_IDS = Object.keys(LAZY_GRAMMARS) as LazyGrammar[]
-const CORE_IDS = GRAMMAR_IDS.filter((id) => !(LAZY_IDS as string[]).includes(id))
 
-/** Old registration order: the createLowlight object (html after php). */
-const OLD_ORDER = [
+/** Registration order: the createLowlight object (html after php). */
+const REGISTRATION_ORDER = [
   'javascript', 'typescript', 'python', 'bash', 'json', 'xml', 'css', 'java', 'cpp', 'go', 'rust', 'sql',
   'markdown', 'yaml', 'ruby', 'swift', 'kotlin', 'csharp', 'php', 'html', 'diff', 'dockerfile', 'makefile',
   'ini', 'properties',
 ] as const
 
-function grammarOf(name: (typeof OLD_ORDER)[number]): GrammarId {
+function grammarOf(name: (typeof REGISTRATION_ORDER)[number]): GrammarId {
   return name === 'html' ? 'xml' : name
 }
 
@@ -29,13 +30,13 @@ function ownAliases(id: GrammarId): string[] {
   return ((REFERENCE_GRAMMARS[id] as LanguageFn)(hljs).aliases ?? []).map((a) => a.toLowerCase())
 }
 
-/** Every tag the old instance resolved, mapped to the grammar it resolved to.
+/** Every tag the reference resolves, mapped to the grammar it resolves to.
  *  Replays hljs's own rule: language names first, then the alias map, where a
  *  later registration overwrites an alias and our aliases were applied last. */
-function oldResolution(): Map<string, GrammarId> {
+function referenceResolution(): Map<string, GrammarId> {
   const languages = new Map<string, GrammarId>()
   const aliases = new Map<string, string>()
-  for (const name of OLD_ORDER) {
+  for (const name of REGISTRATION_ORDER) {
     languages.set(name, grammarOf(name))
     for (const alias of ownAliases(grammarOf(name))) aliases.set(alias, name)
   }
@@ -45,36 +46,20 @@ function oldResolution(): Map<string, GrammarId> {
   return out
 }
 
-const OLD = oldResolution()
+const RESOLVED = referenceResolution()
 const NOT_OURS = [
   'haskell', 'mermaid', 'elixir', 'plaintext', 'text', 'txt', 'math', 'latex', 'tex', 'graphql', 'handlebars',
   'scss', 'less', 'console', 'shell-session', 'objectivec', 'vue', 'svelte', 'lua', 'perl', 'r', 'scala', 'dart',
   'zig', 'powershell', 'ps1', 'bat', 'cmd', 'not-a-real-language', 'c-like', 'json5', '', ' ',
 ]
-/** Every tag worth asking about: all old names, case variants, and a spread of
- *  hljs languages the app never registered. */
+/** Every tag worth asking about: all resolved names, case variants, and a
+ *  spread of hljs languages the app never registered. */
 const CANDIDATES = [...new Set([
-  ...OLD.keys(),
-  ...[...OLD.keys()].map((n) => n.toUpperCase()),
-  ...[...OLD.keys()].map((n) => n.charAt(0).toUpperCase() + n.slice(1)),
+  ...RESOLVED.keys(),
+  ...[...RESOLVED.keys()].map((n) => n.toUpperCase()),
+  ...[...RESOLVED.keys()].map((n) => n.charAt(0).toUpperCase() + n.slice(1)),
   ...NOT_OURS,
 ])]
-
-/** Sub-languages a grammar embeds (walks its mode tree). */
-function subLanguages(id: GrammarId): string[] {
-  const out = new Set<string>()
-  const seen = new Set<unknown>()
-  const walk = (mode: Mode | undefined): void => {
-    if (!mode || typeof mode !== 'object' || seen.has(mode)) return
-    seen.add(mode)
-    if (mode.subLanguage) for (const s of ([] as string[]).concat(mode.subLanguage)) out.add(s)
-    for (const child of mode.contains ?? []) if (typeof child === 'object') walk(child as Mode)
-    for (const variant of mode.variants ?? []) walk(variant)
-    walk(mode.starts)
-  }
-  walk((REFERENCE_GRAMMARS[id] as LanguageFn)(hljs) as unknown as Mode)
-  return [...out]
-}
 
 /** One snippet per grammar, chosen to exercise its embedded languages. */
 const SAMPLES: Record<GrammarId, string> = {
@@ -104,67 +89,36 @@ const SAMPLES: Record<GrammarId, string> = {
   properties: 'server.port=8080',
 }
 
-describe('lowlight-instance: lazy grammar split', () => {
-  it('registers exactly the core grammars up front', () => {
-    expect(CORE_IDS.sort()).toEqual(['bash', 'css', 'diff', 'javascript', 'json', 'python', 'typescript', 'xml'])
-    for (const id of GRAMMAR_IDS) expect(lowlight.registered(id), id).toBe(CORE_IDS.includes(id))
+describe('lowlight-instance: eager grammars', () => {
+  it('registers all 24 grammars (and html) at import, so nothing is left to load', () => {
+    expect(GRAMMAR_IDS).toHaveLength(24)
+    for (const id of GRAMMAR_IDS) expect(lowlight.registered(id), id).toBe(true)
     expect(lowlight.registered('html')).toBe(true)
+    expect([...lowlight.listLanguages()].sort()).toEqual([...referenceLowlight.listLanguages()].sort())
   })
 
-  it('keeps the core closed under embedded languages, and every lazy grammar loads what it embeds', () => {
-    const ours = new Set<string>(GRAMMAR_IDS)
-    for (const id of GRAMMAR_IDS) {
-      const embedded = subLanguages(id).filter((s) => ours.has(s) && s !== id)
-      const allowed = new Set<string>([...CORE_IDS, ...((LAZY_GRAMMARS as Record<string, { deps?: readonly string[] }>)[id]?.deps ?? [])])
-      for (const s of embedded) expect(allowed.has(s), `${id} embeds ${s}`).toBe(true)
-    }
-    // The non-trivial edges this relies on, so a grammar update can't silently
-    // move them.
-    expect(subLanguages('typescript')).toEqual(expect.arrayContaining(['xml', 'css']))
-    expect(subLanguages('xml')).toEqual(expect.arrayContaining(['css', 'javascript']))
-    expect(subLanguages('yaml')).toContain('ruby')
-  })
-
-  it('names every lazy grammar by exactly the tags the old instance resolved to it', () => {
-    for (const id of LAZY_IDS) {
-      const expected = [...OLD].filter(([, g]) => g === id).map(([name]) => name).sort()
-      expect([...LAZY_GRAMMARS[id].names].sort(), id).toEqual(expected)
-    }
-  })
-
-  it('leaves no gap before any load: a tag the old instance highlighted is registered now or names its grammar', () => {
-    for (const tag of CANDIDATES) {
-      const before = referenceLowlight.registered(tag)
-      const now = lowlight.registered(tag)
-      const lazy = lazyGrammarFor(tag)
-      expect(now || lazy !== undefined, `tag ${JSON.stringify(tag)}`).toBe(before)
-      if (now) expect(lazy).toBeUndefined()
-      if (lazy) expect(lazy).toBe(OLD.get(tag.toLowerCase()))
-    }
-  })
-
-  it('loads a grammar with its deps: yaml registers only once ruby is registered too', async () => {
-    expect(lowlight.registered('yaml')).toBe(false)
-    expect(lowlight.registered('ruby')).toBe(false)
-    const pending = requestGrammar('yaml')
-    expect(requestGrammar('yaml')).toBe(pending) // one load per grammar
-    await pending
-    expect(lowlight.registered('ruby')).toBe(true)
-    expect(lowlight.registered('yml')).toBe(true)
-    expect(lazyGrammarFor('yaml')).toBeUndefined()
-  })
-
-  it('after every load: same resolution and byte-identical output as the eager instance', async () => {
-    // Load in reverse order on purpose: registration order must not matter.
-    await Promise.all([...LAZY_IDS].reverse().map((id) => requestGrammar(id)))
-    expect(allGrammarsRegistered()).toBe(true)
+  it('resolves every tag like the reference, with byte-identical output', () => {
     for (const tag of CANDIDATES) {
       expect(lowlight.registered(tag), `tag ${JSON.stringify(tag)}`).toBe(referenceLowlight.registered(tag))
-      expect(lazyGrammarFor(tag)).toBeUndefined()
     }
-    for (const [tag, grammar] of OLD) {
+    expect(lowlight.registered('haskell')).toBe(false)
+    expect(lowlight.registered('mermaid')).toBe(false)
+    for (const [tag, grammar] of RESOLVED) {
       const code = SAMPLES[grammar]
       expect(lowlight.highlight(tag, code), `${tag} -> ${grammar}`).toEqual(referenceLowlight.highlight(tag, code))
     }
+  })
+
+  // Diff lines go through `isRegisteredLanguage`, a hand-maintained Set kept
+  // apart from the createLowlight registration: a grammar registered without
+  // its Set entry highlights fences while its diff lines stay plain.
+  it('gates diff lines on exactly the registered names and our aliases', () => {
+    const gated = new Set<string>([...REGISTRATION_ORDER, ...Object.values(REFERENCE_CUSTOM_ALIASES).flat()])
+    for (const tag of gated) expect(lowlight.registered(tag), tag).toBe(true)
+    for (const tag of new Set([...CANDIDATES, ...gated])) {
+      expect(isRegisteredLanguage(tag), `tag ${JSON.stringify(tag)}`).toBe(gated.has(tag))
+    }
+    expect(isRegisteredLanguage(null)).toBe(false)
+    expect(isRegisteredLanguage(undefined)).toBe(false)
   })
 })
