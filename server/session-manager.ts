@@ -6420,10 +6420,17 @@ export class SessionManager {
    *  未投递的 supplement 并逐条转回 SDK 输入队列——零丢失保证。必须在
    *  result 处理器的 moreQueued 检查之前调用（pump 已保证），requeue 后
    *  的条目要被 queueDepth 检查看见。 */
-  private drainAndRequeueSteered(s: Session): void {
-    const handle = s.handle as ProviderSessionHandle & { drainSupplements?: () => Array<{ uuid: string }> }
-    if (typeof handle.drainSupplements !== 'function') return
-    this.requeueSteeredLeftovers(s, handle.drainSupplements())
+  private drainAndRequeueSteered(s: Session, emptyResult: boolean): void {
+    // A real turn end closes steering admission. A Stop boundary normally does
+    // it, but a turn that ends WITHOUT one (api_error, interrupt, max-turns)
+    // leaves admission open — measured live: after an api_error turn the next
+    // message's `providerAdmit=true` (admission still open) and it was
+    // mis-routed into mid-run steering with no live turn to inject into
+    // (stranded supplement, pendingTurns pinned at 1 → UI stuck "working").
+    // Gated on !emptyResult: an empty bookend (background-task completion) does
+    // not end the outer turn, so admission stays open across it.
+    if (!emptyResult) s.handle.noteTurnSettled?.()
+    this.requeueSteeredLeftovers(s, s.handle.drainSupplements?.() ?? [])
   }
 
   /** Requeue 一组已 drain 的 steer 余量（turn 结束与 plain interrupt 共用，
@@ -7721,7 +7728,7 @@ export class SessionManager {
       this.cachedPumpDeps = {
         historyCap: this.historyCap,
         subagentHistoryCap: this.subagentHistoryCap,
-        onTurnSettling: (s) => this.drainAndRequeueSteered(s),
+        onTurnSettling: (s, empty) => this.drainAndRequeueSteered(s, empty),
         persist: (s) => this.persist(s),
         denyPendingPermissions: (s) => {
           this.permBroker.denyAll(s)

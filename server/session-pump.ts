@@ -682,7 +682,7 @@ export interface PumpDeps {
    *  handler before the moreQueued check. The host drains undelivered
    *  supplements from the provider handle and re-routes them onto the SDK
    *  input queue as normal next-turn prompts (zero-loss guarantee). */
-  onTurnSettling?: (session: Session) => void
+  onTurnSettling?: (session: Session, emptyResult: boolean) => void
   /** Separate FIFO budget for subagent frames (parent_tool_use_id != null).
    *  Independent of historyCap so subagent volume never evicts main-thread
    *  frames from the replay surface. */
@@ -1585,7 +1585,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // supplements and requeue them as normal next-turn prompts BEFORE
           // the moreQueued check so they count toward the working-state
           // decision (a requeued supplement is exactly a queued turn).
-          deps.onTurnSettling?.(session)
+          deps.onTurnSettling?.(session, emptyResult)
           const moreQueued = session.handle.queueDepth > 0
           log.debug(
             `[session ${session.id}] result received — total msgs: ${msgCount}, ` +

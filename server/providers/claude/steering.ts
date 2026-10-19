@@ -41,6 +41,17 @@ export class SupplementSession {
     this.admissionOpen = true
   }
 
+  /** turn 结束（host 收到该 turn 的 `result`）：关闭 admission。与
+   *  notePromptConsumed 对称——正常 turn 由 Stop boundary 关闸，但以
+   *  api_error / interrupt / max-turns 收尾的 turn **不触发 Stop**，admission
+   *  会一直敞着。实测（复现日志）：api_error turn 之后下一条消息的
+   *  `providerAdmit=true`（admission 仍开）→ 被误判成 mid-turn steering、
+   *  投递到一个已不存在的 turn（被 strand，pendingTurns 钉死 → UI 永久
+   *  "working"）。`result` 是可靠的 turn-end 信号，在此关闭 admission。 */
+  noteTurnSettled(): void {
+    this.admissionOpen = false
+  }
+
   /** 入队一条待注入消息。admission 关闭（turn 正在结束/尚未开始）时返回
    *  false，调用方（manager 路由）透明回退到普通排队路径。 */
   enqueue(entry: SteerEntryInput): boolean {

@@ -22,6 +22,20 @@ describe('SupplementSession admission', () => {
     expect(s.handleBoundary('Stop', {})).toEqual({ decision: 'block', reason: expect.stringContaining('x') })
     expect(s.enqueue({ uuid: 'b', text: 'y' })).toBe(true) // block 续跑 → 保持开
   })
+  it('noteTurnSettled closes admission without draining pending (a turn that ended without a Stop)', () => {
+    // api_error / interrupt / max-turns end the turn WITHOUT firing the Stop
+    // hook — the host closes admission at the `result` instead, so a later
+    // message isn't mis-admitted into a turn that no longer exists (the
+    // stranded-supplement hang).
+    const s = new SupplementSession(vi.fn())
+    open(s)
+    expect(s.enqueue({ uuid: 'a', text: 'x' })).toBe(true)
+    s.noteTurnSettled()
+    expect(s.enqueue({ uuid: 'b', text: 'y' })).toBe(false)
+    // The pending entry is left for drainUndelivered (the host's turn-end
+    // requeue), not silently dropped.
+    expect(s.drainUndelivered()).toEqual([{ uuid: 'a' }])
+  })
 })
 
 describe('SupplementSession delivery', () => {

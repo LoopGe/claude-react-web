@@ -30,6 +30,7 @@ class FakeHandle implements ProviderSessionHandle {
   enqueueUserMessage = vi.fn((m: AgentUserMessage) => this.input.push(m))
   enqueueSupplement = vi.fn((_entry: { uuid: string; text: string }): boolean => true)
   drainSupplements = vi.fn((): Array<{ uuid: string }> => [])
+  noteTurnSettled = vi.fn()
   constructor() {
     this.messages = this.input.iterable
   }
@@ -317,7 +318,8 @@ describe('turn-end steer fallback', () => {
     handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
     handle.enqueueUserMessage.mockClear()
 
-    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown) => void }).drainAndRequeueSteered(s)
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(s, false)
+    expect(handle.noteTurnSettled).toHaveBeenCalledTimes(1) // a real turn end closes admission
 
     expect(handle.enqueueUserMessage).toHaveBeenCalledWith(expect.objectContaining({ uuid: second.uuid! }))
     expect((second as { requeuedAt?: number }).requeuedAt).toEqual(expect.any(Number))
@@ -336,7 +338,7 @@ describe('turn-end steer fallback', () => {
     sm.send(info.id, 'second')
     handle.drainSupplements.mockReturnValue([])
     handle.enqueueUserMessage.mockClear()
-    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown) => void }).drainAndRequeueSteered(s)
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(s, false)
     expect(handle.enqueueUserMessage).not.toHaveBeenCalled()
     await sm.shutdown()
   })

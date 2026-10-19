@@ -143,6 +143,13 @@ export interface ProviderSessionHandle {
   /** Remove and return undelivered supplement entries (turn-end fallback /
    *  interrupt withdrawal); mirrors drainQueuedInput. */
   drainSupplements?(): Array<{ uuid: string }>
+  /** Close steering admission at the turn's end (host `result`). A Stop hook
+   *  normally closes it, but a turn that ends WITHOUT one (api_error,
+   *  interrupt, max-turns) would leave it open forever — a later message is
+   *  then mis-admitted as a mid-turn steer with no live turn to inject into
+   *  (stranded supplement, pendingTurns pinned at 1). Optional like the other
+   *  steering members — a provider without steering omits it. */
+  noteTurnSettled?(): void
   /** RUNTIME steering state for THIS spawn (distinct from the provider-level
    *  `supportsSteering` capability): true when the spawn's version gate
    *  passed and a supplement session exists; false on an old CLI where
