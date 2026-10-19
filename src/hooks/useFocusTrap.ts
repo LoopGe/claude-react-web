@@ -49,10 +49,35 @@ export function useFocusTrap(
       : DEFAULT_SELECTOR
     const handleKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return
-      const focusable = el.querySelectorAll<HTMLElement>(selector)
-      if (!focusable.length) return
-      const first = focusable[0]
-      const last = focusable[focusable.length - 1]
+      // Unfocusable controls still match the selector but must not define
+      // the Tab-wrap boundary: an element can never be `first`/`last` if
+      // document.activeElement can't equal it. Skip the `hidden`
+      // attribute, type="hidden", disabled controls, and anything hidden
+      // by CSS (including display:none on an ANCESTOR — checkVisibility
+      // walks the tree, the computed-style fallback cannot).
+      const isTabbable = (n: HTMLElement): boolean => {
+        if (n.hasAttribute('hidden') || n.matches('input[type="hidden"]') || n.matches(':disabled')) {
+          return false
+        }
+        const check = (
+          n as HTMLElement & { checkVisibility?: (opts?: { visibilityProperty?: boolean }) => boolean }
+        ).checkVisibility
+        if (typeof check === 'function') return check.call(n, { visibilityProperty: true })
+        const style = getComputedStyle(n)
+        return style.display !== 'none' && style.visibility !== 'hidden'
+      }
+      const all = Array.from(el.querySelectorAll<HTMLElement>(selector))
+      // Only the first and last tabbable controls matter, so scan from
+      // each end rather than styling every matched node on each keydown.
+      const first = all.find(isTabbable)
+      if (!first) return
+      let last = first
+      for (let i = all.length - 1; i >= 0; i--) {
+        if (isTabbable(all[i])) {
+          last = all[i]
+          break
+        }
+      }
       if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
         e.preventDefault()
         ;(e.shiftKey ? last : first).focus()

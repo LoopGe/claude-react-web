@@ -138,6 +138,10 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
     }
   }, [uploads])
 
+  // Shared by the header text and its title: the span ellipsizes on narrow
+  // viewports, so the tooltip keeps the full aggregate readable.
+  const statsText = `${stats.count} ${stats.count === 1 ? 'file' : 'files'} · ${formatBytes(stats.bytes)}`
+
   const copyPath = async (u: UploadListItem) => {
     // Plain `writeClipboard`: this row reports BOTH outcomes itself, with
     // wording that names the fallback ("select the path manually").
@@ -188,12 +192,34 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
         <h3>
           <IconFolderSearch size={16} aria-hidden /> Uploaded files
         </h3>
-        <span className="uploads-stats">
-          {stats.count} {stats.count === 1 ? 'file' : 'files'} · {formatBytes(stats.bytes)}
+        <span className="uploads-stats truncate" title={statsText}>
+          {statsText}
         </span>
+        {/* Paperclip: dialog-level action, so it lives in the header next
+            to Close rather than in the toolbar row (where the conditional
+            "Clean missing entries" button pushed it into the middle). */}
+        <button
+          type="button"
+          className="btn btn-icon"
+          title="Upload files"
+          aria-label="Upload files"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <IconPaperclip size={16} />
+        </button>
         <button type="button" className="btn btn-icon" onClick={onClose} aria-label="Close">
           <IconX size={16} />
         </button>
+        {/* Hidden file input driven by the paperclip button above. Kept at
+            the end of the header; useFocusTrap also skips hidden inputs
+            when computing its Tab-wrap boundaries. */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          onChange={onFileInputChange}
+        />
       </div>
 
       {/* ── In-flight upload progress ─────────────────────────────── */}
@@ -257,23 +283,6 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
               onChange={(e) => setFilter(e.target.value)}
               aria-label="Filter uploads"
             />
-            {/* Paperclip: hidden file input + icon button */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              hidden
-              onChange={onFileInputChange}
-            />
-            <button
-              type="button"
-              className="btn btn-icon"
-              title="Upload files"
-              aria-label="Upload files"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <IconPaperclip size={16} />
-            </button>
             {stats.missing > 0 && (
               <button type="button" className="btn" onClick={() => setCleanMissingOpen(true)}>
                 Clean missing entries

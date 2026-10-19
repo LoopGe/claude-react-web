@@ -26,7 +26,11 @@
 .uploads-stats {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
-  white-space: nowrap;
+  /* Truncation comes from the `.truncate` utility; on a flex child it
+     needs min-width: 0. Without it, adding the upload button to the header
+     could push Close past the card's overflow: hidden edge on narrow
+     viewports. */
+  min-width: 0;
 }
 
 .uploads-state {
