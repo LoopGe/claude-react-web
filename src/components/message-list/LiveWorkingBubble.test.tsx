@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render } from '@testing-library/react'
-import { PresenceContext } from 'motion/react'
+import { act, render, waitFor } from '@testing-library/react'
+import { AnimatePresence, PresenceContext } from 'motion/react'
 import type { ReactNode } from 'react'
 import { LiveWorkingBubble } from './WorkingBubble'
+import { BottomCardMotion } from '../BottomCardMotion'
 import { getSessionStore } from '../../session-store/selectors'
 import { sessionStoreRegistry } from '../../session-store/registry'
 import type { SdkMessage } from '../../types'
@@ -109,6 +110,48 @@ describe('LiveWorkingBubble', () => {
     rerender(tree(true))
     expect(label(container)).toBe('Working')
     expect(container.querySelector('.working-rate')).toBeNull()
+  })
+
+  it('stays frozen through a real AnimatePresence + BottomCardMotion exit (the tree Chat mounts)', async () => {
+    // Same freeze as above, but with the presence context coming from the
+    // real AnimatePresence child instead of a hand-built provider: this also
+    // pins that nothing between that child and the bubble resets the context,
+    // and that the exit really retains the bubble until it finishes.
+    const sid = 'lwb-exit-real'
+    const tree = (mounted: boolean) => (
+      <AnimatePresence initial={false}>
+        {mounted && (
+          <BottomCardMotion key="working-bubble" fixed>
+            <LiveWorkingBubble sessionId={sid} active dwellPhase showThinkingTokens />
+          </BottomCardMotion>
+        )}
+      </AnimatePresence>
+    )
+    const rate = (c: HTMLElement) => c.querySelector('.working-rate')?.textContent ?? null
+    const exiting = (c: HTMLElement) => c.querySelector('.bottom-card-motion-exiting') != null
+    const { container, rerender } = render(tree(true))
+    act(() => {
+      send(sid, blockStart({ type: 'text', text: '' }))
+      seedRate(sid)
+    })
+    expect(label(container)).toBe('Writing...')
+    // Let the count-up settle so the readout is a fixed string to compare.
+    await waitFor(() => expect(rate(container)).toBe('117 tok/s'))
+    expect(exiting(container)).toBe(false)
+
+    // Unmount: AnimatePresence starts the exit. Then the turn-end sweep nulls
+    // the live turn while the bubble is still fading.
+    rerender(tree(false))
+    expect(exiting(container)).toBe(true)
+    act(() => { send(sid, { type: 'result', uuid: 'r-exit-real', subtype: 'success' } as unknown as SdkMessage) })
+    expect(getSessionStore(sid).getSnapshot().tokenRate).toBeNull()
+    expect(getSessionStore(sid).getSnapshot().activePhase).toBeNull()
+    expect(exiting(container)).toBe(true)
+    expect(label(container)).toBe('Writing...')
+    expect(rate(container)).toBe('117 tok/s')
+
+    // The exit runs to completion and AnimatePresence removes the bubble.
+    await waitFor(() => expect(container.querySelector('.working-bar')).toBeNull())
   })
 
   it('shows the redacted-thinking estimate only when showThinkingTokens is set', () => {
