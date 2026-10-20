@@ -5,6 +5,7 @@
 // returns a stub that fails loudly, keeping every commit typecheck-green.
 import type { PlatformRegister } from './types.js'
 import { WindowsRegister } from './windows.js'
+import { MacosRegister } from './macos.js'
 
 let cached: PlatformRegister | null = null
 
@@ -16,7 +17,7 @@ export function getPlatformRegister(): PlatformRegister {
       platform = new WindowsRegister()
       break
     case 'darwin':
-      platform = stubRegister('launchd')
+      platform = new MacosRegister()
       break
     default:
       platform = stubRegister('systemd')
