@@ -3,41 +3,12 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import type { SdkMessage } from '../types'
 import type { TranscriptItem } from '../session-store/types'
 import { shouldHideByDefault } from '../session-store/normalize'
+// Shared controllable ResizeObserver stub (see src/test/resize-observer-stub.ts
+// — a behavioral fix to the stub must land in ONE place, which is why this file
+// imports it instead of carrying a private copy).
+import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
 
-// Stub ResizeObserver — not available in jsdom. Controllable: captures each
-// callback by observed element (in `roObserved`) so a test can fire it on
-// demand via `fireResize(el)`. Never auto-fires, so tests that don't drive it
-// behave exactly as under the old no-op stub (their observer callbacks simply
-// never run).
-const roObserved = new Map<Element, Array<() => void>>()
-function fireResize(el: Element) {
-  for (const cb of roObserved.get(el) ?? []) cb()
-}
-vi.stubGlobal(
-  'ResizeObserver',
-  class {
-    constructor(private cb: () => void) {}
-    observe(el: Element) {
-      const list = roObserved.get(el) ?? []
-      list.push(this.cb)
-      roObserved.set(el, list)
-    }
-    unobserve(el: Element) {
-      const list = roObserved.get(el)
-      if (!list) return
-      const i = list.indexOf(this.cb)
-      if (i >= 0) list.splice(i, 1)
-      if (list.length === 0) roObserved.delete(el)
-    }
-    disconnect() {
-      for (const [el, list] of Array.from(roObserved)) {
-        const i = list.indexOf(this.cb)
-        if (i >= 0) list.splice(i, 1)
-        if (list.length === 0) roObserved.delete(el)
-      }
-    }
-  },
-)
+stubResizeObserver()
 
 // Stub scrollIntoView / scrollTo - used by virtualized scrolling paths.
 Element.prototype.scrollIntoView = vi.fn()
@@ -209,6 +180,7 @@ vi.mock('react-virtuoso', async () => {
 import { MessageList, WorkingBubble, type ScrollNavigator } from './MessageList'
 import { FOLD_MAX_PX } from './message-list/fold-key'
 import { TRAILING_MICRO_PIN_MS } from './message-list/useTranscriptScroll'
+import { setCollapseAnimating } from './collapse-animation'
 import { extractMessagePlainText } from '../search'
 import { shouldArmEnterAnimation } from '../utils/enter-animation'
 import { SubagentProvider } from '../hooks/useSubagentContext'
@@ -384,7 +356,7 @@ describe('MessageList', () => {
     virtuosoMockState.streamingSpacerHeight = 0
     virtuosoMockState.lastFollowOutput = undefined
     virtuosoMockState.renderItems = true
-    roObserved.clear()
+    clearResizeObserverStub()
   })
   // The fake-timer tests below restore inline on the happy path; this closes
   // the failure path — a mid-body expect must not leak fake timers into the
@@ -1808,6 +1780,144 @@ describe('MessageList', () => {
     expect(scroller.scrollTop).toBe(215)
   })
 
+  it('a fold animation in flight pins on EVERY item-list observation (bypasses the micro band)', () => {
+    // While an AnimatedCollapse inside the transcript is animating
+    // (`.animated-collapse.animating` — a ToolGroupCard fold, a TaskList
+    // growth…), scrollHeight changes a FRACTION of a px per frame for ~240ms
+    // while follow is still on. The band would skip those frames and the
+    // trailing pin would land 250ms after the chain quiets — measured live,
+    // that combination wobbled the card below an expanding group ±2.5px and
+    // bounced +2.5/−2.5px at animation end. In-flight folds pin on EVERY
+    // observation instead: the RO callback runs after layout, before paint,
+    // so each pin reads this frame's final geometry and the viewport never
+    // leaves the bottom.
+    vi.useFakeTimers()
+    const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+    ]
+    let contentHeight = 200
+    const stackHeight = 80
+
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+    )
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+
+    const readSpacer = () => {
+      const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+      return sp ? (Number.parseFloat(sp.style.height) || 0) : 0
+    }
+    let rawScrollTop = 200 + 80 - 100
+    let appWrites = 0
+    Object.defineProperty(scroller, 'scrollHeight', {
+      configurable: true,
+      get: () => contentHeight + readSpacer(),
+    })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 100 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        const max = Math.max(0, contentHeight + readSpacer() - 100)
+        return Math.min(rawScrollTop, max)
+      },
+      set: (v: number) => { appWrites++; rawScrollTop = v },
+    })
+    Object.defineProperty(stack, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: stackHeight, x: 0, y: 0 }),
+    })
+    const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+    // The fold-lockstep compensation reads the item-list's FRACTIONAL border
+    // box from the observation; jsdom reports 0 unless stubbed, so drive it
+    // alongside contentHeight.
+    let itemListH = 200
+    Object.defineProperty(itemList, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ height: itemListH, width: 400, top: 0, left: 0, right: 400, bottom: itemListH, x: 0, y: 0 }),
+    })
+
+    act(() => { fireResize(stack) })
+    act(() => { fireResize(itemList) })
+    expect(scroller.scrollTop).toBe(180)
+    // Let the baseline pins' settle-verification pass run out, so every write
+    // counted below is attributable to the fold-lockstep branch.
+    act(() => { vi.advanceTimersByTime(2500) })
+    const writesAtBaseline = appWrites
+
+    // A fold starts animating inside the transcript… (the synthetic body must
+    // register itself the way AnimatedCollapse does — the hook consults the
+    // registry, not the DOM class.)
+    const fold = document.createElement('div')
+    fold.className = 'animated-collapse animating'
+    scroller.appendChild(fold)
+    setCollapseAnimating(fold, true)
+
+    // …and from then on even a SUB-BAND growth pins immediately — no band,
+    // no trailing pin. Each write is the exact new bottom (growth + spacer
+    // − viewport).
+    contentHeight = 202
+    itemListH = 202
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline + 1)
+    expect(scroller.scrollTop).toBe(182)
+    contentHeight = 203
+    itemListH = 203
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline + 2)
+    expect(scroller.scrollTop).toBe(183)
+
+    // A SHRINK: the ledger subtracts the delta and writes the absolute
+    // rounded target — the same position the browser's own clamp parks the
+    // viewport at (the stub's clamping getter models that state), so the
+    // visible scrollTop is unchanged; the write is the ledger staying in
+    // authority instead of deferring to the clamp.
+    contentHeight = 201
+    itemListH = 201
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline + 3)
+    expect(scroller.scrollTop).toBe(181)
+
+    // Growth resumes (still folding): the lockstep rides again.
+    contentHeight = 203
+    itemListH = 203
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline + 4)
+    expect(scroller.scrollTop).toBe(183)
+
+    // The fold branch bypasses the band, so no trailing correction is armed:
+    // nothing leaks out after the chain quiets.
+    act(() => { vi.advanceTimersByTime(TRAILING_MICRO_PIN_MS + 100) })
+    expect(appWrites).toBe(writesAtBaseline + 4)
+
+    // The lockstep signal must CLEAR with the animation: once the animating
+    // element is gone, the pre-existing band contract is back — a sub-band
+    // growth is skipped again (deferred to the trailing pin), not hard-written.
+    // This is the regression class a stuck signal would hit: the band silently
+    // disabled for the life of the transcript.
+    fold.remove()
+    setCollapseAnimating(fold, false)
+    // The stub's clamping getter erases the sub-pixel position the ledger
+    // carried (raw rode above the old max); re-anchor to where a real
+    // browser sits after the fold's last lockstep write — the old bottom.
+    rawScrollTop = 183
+    // +3 stays within the band (skipped, deferred) but leaves a 3px residue —
+    // past BOTTOM_EPSILON_PX, so the trailing correction's guard lets it write.
+    contentHeight = 206
+    itemListH = 206
+    act(() => { fireResize(itemList) })
+    expect(appWrites).toBe(writesAtBaseline + 4)
+    act(() => { vi.advanceTimersByTime(TRAILING_MICRO_PIN_MS + 100) })
+    expect(appWrites).toBe(writesAtBaseline + 5)
+    expect(scroller.scrollTop).toBe(186)
+    // And the trailing correction's verify pass expires cleanly.
+    act(() => { vi.advanceTimersByTime(2500) })
+    expect(appWrites).toBe(writesAtBaseline + 5)
+
+    vi.useRealTimers()
+  })
+
   it('item-list micro-deltas schedule ONE trailing exact pin once the chain quiets', () => {
     // The residue the bands leave behind: a POSITIVE sub-band growth has no
     // clamp to correct it (the browser only clamps on shrink) and fires no
@@ -3099,8 +3209,8 @@ describe('MessageList', () => {
 
     // Fire the content-growth observer (real Virtuoso fires it after
     // measuring). Without the fix no observer is registered for `content`, so
-    // `roObserved` has no entry for it and `fireResize` is a no-op — leaving
-    // scrollTop stranded and failing the assertion below.
+    // the stub registry has no entry for it and `fireResize` is a no-op —
+    // leaving scrollTop stranded and failing the assertion below.
     fireResize(content)
 
     // scrollTop was re-pinned to the fresh bottom (>= 900 = 1000-100): the

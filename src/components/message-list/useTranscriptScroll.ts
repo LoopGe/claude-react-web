@@ -31,14 +31,18 @@
  *               short-circuits while this is set — otherwise the 150ms
  *               follow-disable debounce fires mid-flight and drops us to AWAY.
  *
- * Writes to `scrollTop` go through exactly two paths: `pinToBottom` (instant
- * snap, used by the re-pin backstops and the follow invariant) and
- * `animateScrollToBottom` (the rAF easing loop). Keeping that list at two is the
- * point of this module — a third writer added elsewhere is how the viewport ends
- * up fighting itself.
+ * Writes to `scrollTop` go through exactly three paths: `pinToBottom` (instant
+ * snap, used by the re-pin backstops and the follow invariant),
+ * `animateScrollToBottom` (the rAF easing loop), and the item-list observer's
+ * fold-lockstep compensation (absolute `Math.round(ledger)` writes plus a
+ * sub-pixel translateY on the item-list — scroll alone is integer-grained and
+ * cannot hold the content below the fold still; see the ledger comment at the
+ * branch). Keeping that list at three is the point of this module — a fourth
+ * writer added elsewhere is how the viewport ends up fighting itself.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
+import { anyCollapseAnimatingInside } from '../collapse-animation'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { scrollDebug as dbg } from './scroll-debug'
 import { clamp } from '../../utils/clamp'
@@ -415,7 +419,7 @@ export function useTranscriptScroll({
 
   const pinToBottom = useCallback((
     el: HTMLElement | null = scrollerRef.current,
-    { allowDuringAnimation = false, reason = '?' }: { allowDuringAnimation?: boolean; reason?: string } = {},
+    { allowDuringAnimation = false, reason = '?', verify = true }: { allowDuringAnimation?: boolean; reason?: string; verify?: boolean } = {},
   ) => {
     if (!el) { dbg('pin skip', () => ({ reason, why: 'no-el' })); return }
     if (!shouldFollowRef.current) { dbg('pin skip', () => ({ reason, why: 'away' })); return }
@@ -425,8 +429,11 @@ export function useTranscriptScroll({
     // Every correction is provisional: the layout can keep moving after this
     // write, so verify the invariant across the next frames (see
     // verifyFollowInvariant). Handled through a ref so this callback stays
-    // dependency-free and the two can call each other.
-    verifyRef.current()
+    // dependency-free and the two can call each other. `verify: false` opts
+    // out — the fold-lockstep pin, whose NEXT observation is guaranteed to
+    // re-pin anyway, must not keep a verify pass ticking (and re-pinning)
+    // every frame for the whole animation.
+    if (verify) verifyRef.current()
   }, [])
 
   // --- Trailing micro-band correction --------------------------------------
@@ -940,9 +947,68 @@ export function useTranscriptScroll({
     // the viewport never re-pinned and landed short (the "bounces up a bit when
     // the streaming footer disappears" jolt).
     let lastContentHeight = 0
+    // Fractional border-box height of the observed item-list, from the last
+    // observation. `scrollHeight` is integer-rounded, so it can't express a
+    // sub-pixel content change — the fold-lockstep compensation below needs
+    // the FRACTIONAL delta to keep the bottom exactly still.
+    let lastItemListH: number | null = null
+    // The fold-lockstep LEDGER: the compensation's own fractional scrollTop.
+    // Measured on this very page (dpr=2): `scrollTop = x.5` reads back `x` —
+    // Chrome floors scrollTop to whole CSS px on write AND read. An
+    // incremental `scrollTop += Δ` therefore loses Δ's fraction EVERY frame
+    // (the read returns the floored stored value), the loss accumulates
+    // ~0.5px/frame, and the follow invariant's 2px threshold periodically
+    // snaps it back — the measured ±2.8px sawtooth mid-expand. The ledger
+    // keeps the exact fractional target (accumulating无损 in a JS number) and
+    // writes it; the DOM floors it, so the DOM rides ≤1px from the true
+    // bottom, but that offset varies SMOOTHLY with the eased height instead
+    // of sawtoothing, and never accumulates.
+    let ledger: number | null = null
+    // The sub-pixel half of the compensation. scrollTop is integer-grained
+    // (measured: write x.5 → read x, even at dpr=2), so scroll alone can
+    // never hold the content below the fold pixel-still — its position
+    // wanders within a ±1px band as the eased height's fraction changes.
+    // During a fold, the remainder rides on a translateY applied to the
+    // item-list: the transform is compositor-precise, so
+    //   visual = docPos − round(ledger) + (round(ledger) − ledger) ≡ docPos − ledger
+    // is EXACTLY constant per frame. The ≤0.5px error is thereby moved onto
+    // the expanding card itself (whose whole body is visibly animating) and
+    // the clipped bottom edge — both imperceptible.
+    let transformEl: HTMLElement | null = null
+    let settleRaf: number | null = null
+    const clearFoldTransform = () => {
+      if (transformEl) {
+        transformEl.style.transform = ''
+        transformEl = null
+      }
+    }
+    // Settle watcher: RO deliveries stop when the last fold finishes, so the
+    // transform cannot be cleared from the observer path. Keep checking each
+    // frame and, once nothing is animating (or follow was dropped / the
+    // panel hidden mid-fold), clear the transform and the ledger. The ≤1px
+    // fractional residue this leaves (floored scrollTop + integer
+    // scrollHeight) is deliberately dropped, not scrolled in: it is within
+    // the follow invariant's epsilon and the next scroll event / append pin
+    // reconciles it — an extra write here would re-arm a verify pass for an
+    // invisible step.
+    const settleFoldTransform = () => {
+      if (settleRaf != null) cancelAnimationFrame(settleRaf)
+      const step = () => {
+        settleRaf = null
+        const scroller = scrollerRef.current
+        if (cancelled || !scroller) return
+        if (scroller.clientHeight !== 0 && shouldFollowRef.current && !scrollAnimatingRef.current && anyCollapseAnimatingInside(scroller)) {
+          settleRaf = requestAnimationFrame(step)
+          return
+        }
+        clearFoldTransform()
+        ledger = null
+      }
+      settleRaf = requestAnimationFrame(step)
+    }
     const contentHeightOf = (scroller: HTMLElement) =>
       scroller.scrollHeight - getBottomSpacerHeight(scroller)
-    const ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver((entries) => {
       if (cancelled) return
       const scroller = scrollerRef.current
       if (!scroller) return
@@ -953,9 +1019,107 @@ export function useTranscriptScroll({
       // fired the instant re-pin with scrollTop = scrollHeight = 0 on the
       // hidden element. Same stand-down contract as syncBottomGeometry and
       // the scroller-RO backstop: decide nothing from collapsed geometry.
-      if (scroller.clientHeight === 0) { dbg('itemlist-RO collapsed-skip', () => ({})); return }
-      if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); return }
+      if (scroller.clientHeight === 0) { dbg('itemlist-RO collapsed-skip', () => ({})); lastItemListH = null; ledger = null; return }
+      // This frame's observation of the item-list box. borderBoxSize carries
+      // the fractional block size; the rect fallback covers engines without
+      // the entries API shape. RO is state-based: one entry per element per
+      // callback, so the last entry IS this frame's geometry.
+      const entry = entries[entries.length - 1]
+      const itemListH = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height
+      if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); lastItemListH = itemListH; ledger = null; return }
       const contentH = contentHeightOf(scroller)
+
+      // Lockstep bottom-pinning while a collapse fold is in flight anywhere in
+      // this transcript (ToolGroupCard, the TaskList card, any AnimatedCollapse
+      // rendered inside the scroller).
+      //
+      // A fold animates its body height over ~240ms, so the content changes by
+      // a FRACTION of a pixel every frame while follow is still on. The paths
+      // below can't follow that: the micro-delta band skips ≤3px frames (most
+      // of the ease's tail) and hands them to the trailing pin — a one-shot
+      // write 250ms after the chain quiets, visibly late — and the
+      // settle-verify pass only corrects once the drift crosses
+      // BOTTOM_EPSILON_PX, which turns the whole animation into a ±2px
+      // sawtooth. Both measured live: expanding a ToolGroupCard while
+      // FOLLOWING wobbled the card below it ±2.5px per frame and bounced
+      // +2.5/−2.5px at animation end, while the same expansion AWAY from the
+      // bottom (no compensation running at all) was perfectly smooth.
+      //
+      // The compensation must ALSO be fractional, and it must NOT trust the
+      // DOM's scrollTop as its accumulator. An integer pin
+      // (`scrollTop = scrollHeight`) shimmers ±1px per frame: scrollHeight is
+      // rounded, so the distance-from-bottom left after each pin is a
+      // DIFFERENT sub-pixel residue every frame as the eased height advances.
+      // An incremental `scrollTop += Δ` looked like the fix and wasn't: the
+      // DOM floors scrollTop on write AND read (measured on this page, dpr=2:
+      // write x.5 → read x), so every frame's Δ fraction is lost off the
+      // floored read, the loss accumulates ~0.5px/frame, and the follow
+      // invariant's 2px threshold periodically snaps it back — a ±2.8px
+      // sawtooth mid-expand. Hence the LEDGER: the fractional target lives in
+      // a JS number (lossless), the DOM gets floored copies of it, and the
+      // DOM's ≤1px offset from the true bottom varies smoothly with the eased
+      // height instead of sawtoothing — sub-pixel drift, never accumulation.
+      // Growth accumulates on the ledger; shrink hands control to the
+      // browser's own clamp (see the branch below).
+      //
+      // This callback is the one compensation point that runs AFTER layout and
+      // BEFORE paint: the delta here is THIS frame's final geometry (the real
+      // ResizeObserver fires on every per-frame height step of the transition,
+      // sub-pixel included), so the content below the fold never moves in any
+      // painted frame.
+      //
+      // Deliberately placed BEFORE the delta checks, and deliberately
+      // transcript-wide: a fold's per-frame step is routinely <1px, so a
+      // delta gate would re-open the tail sawtooth, and while a fold animates
+      // ANY growth this transcript sees wants the same lockstep (an unrelated
+      // zero-delta fire degenerates to a no-op — scrollTop is unchanged).
+      if (anyCollapseAnimatingInside(scroller)) {
+        dbg('itemlist-RO fold-lockstep', () => ({}))
+        const itemDelta = lastItemListH == null ? null : itemListH - lastItemListH
+        lastItemListH = itemListH
+        lastContentHeight = contentH
+        const domTop = scroller.scrollTop
+        if (itemDelta == null) {
+          // No fractional reference (first observation after a baseline
+          // reset): fall back to the integer pin for this frame.
+          pinToBottom(scroller, { reason: 'fold-lockstep', verify: false })
+          ledger = scroller.scrollTop
+        } else {
+          // Seed the ledger direction-aware. GROWTH: the browser does not
+          // move scrollTop on its own, so the ledger starts at the DOM value
+          // and the frame's delta stacks on top of it. SHRINK: the browser
+          // has ALREADY clamped scrollTop to the reduced max in this same
+          // layout pass (the clamp is what keeps the bottom pinned — adding
+          // the delta again double-scrolls, measured at 2× per frame), so
+          // the ledger starts FROM the clamped value.
+          if (ledger == null) ledger = itemDelta < 0 ? domTop : domTop + itemDelta
+          else ledger += itemDelta
+          const max = scroller.scrollHeight - scroller.clientHeight
+          if (ledger > max) ledger = max
+          if (ledger < 0) ledger = 0
+          // Integer half → scroll; fractional half → transform. Together
+          // they hold the content below the fold EXACTLY still (see the
+          // ledger/transform comments above).
+          const rounded = Math.round(ledger)
+          scroller.scrollTop = rounded
+          const target = entry.target as HTMLElement
+          const frac = rounded - ledger
+          target.style.transform = frac === 0 ? '' : `translateY(${frac}px)`
+          transformEl = target
+        }
+        // Arm the settle watcher only when a transform is actually riding on
+        // the item list (transformEl set by a previous frame and not yet
+        // cleared). The common all-integer fold — every frac 0, no transform
+        // ever applied — has nothing for the watcher to clear, and re-arming
+        // a cancel/re-request rAF pair on every RO frame for the whole fold
+        // is pure waste.
+        if (transformEl) settleFoldTransform()
+        return
+      }
+      lastItemListH = itemListH
+      ledger = null
+      clearFoldTransform()
+
       const delta = contentH - lastContentHeight
       if (Math.abs(delta) < 1) { dbg('itemlist-RO noop', () => ({})); return }
       // Baseline always tracks past this point, INCLUDING micro-deltas we
@@ -995,6 +1159,17 @@ export function useTranscriptScroll({
       const itemList = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
       if (!itemList) { raf = requestAnimationFrame(attach); return }
       lastContentHeight = contentHeightOf(scroller)
+      // NO rect-based seed for lastItemListH: the observation path reads
+      // borderBoxSize (layout box, transform-free) while getBoundingClientRect
+      // carries ancestor transforms — seeded mid-flight (panel-enter
+      // scale(0.98), a DnD FLIP), the first fold frame's itemDelta would read
+      // the transform's error (~2% of the list) as a huge shrink and mis-pin
+      // the ledger by tens of px. Leave it null: the first observation
+      // establishes the baseline, and a first fold frame takes the documented
+      // integer-pin fallback (one frame, no ledger) instead of a poisoned
+      // delta. `lastContentHeight` keeps its content-based seed — scrollHeight
+      // is transform-free.
+      lastItemListH = null
       ro.observe(itemList)
     }
     attach()
@@ -1002,6 +1177,10 @@ export function useTranscriptScroll({
       cancelled = true
       cancelAnimationFrame(raf)
       ro.disconnect()
+      // A mid-fold teardown (transcript switch) must not leave the sub-pixel
+      // transform — or the settle watcher — behind on the unmounting list.
+      if (settleRaf != null) cancelAnimationFrame(settleRaf)
+      clearFoldTransform()
       // The armed trailing correction belongs to THIS transcript's wobble
       // chain: a transcriptRevealKey switch tears the observer down and must
       // tear the correction down with it, or a wobble armed on the old
