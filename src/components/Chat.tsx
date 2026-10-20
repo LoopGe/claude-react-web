@@ -50,6 +50,7 @@ import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useElicitationChannel } from '../hooks/useElicitationChannel'
 import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
 import { Composer } from './Composer'
+import { HandoffOverlay } from './HandoffOverlay'
 import { ContextOrb } from './ContextOrb'
 import { MessageList, LiveWorkingBubble, type ScrollNavigator } from './MessageList'
 import { OlderHistoryFloat } from './message-list/transcript-chrome'
@@ -238,6 +239,17 @@ interface Props {
    *  detaches the pre-clear conversation and returns a fresh session under a
    *  new id). Invoked by the `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
+  /** `/handoff` this panel. App owns the POST + panel id-swap (the server
+   *  summarizes the conversation, spawns a fresh seeded continuation session
+   *  and returns it). Invoked by the `/handoff` local command. Required (like
+   *  /clear) so a missing pass-through fails loudly rather than swallowing
+   *  `/handoff`. */
+  onHandoffSession: (panelSessionId: string) => void
+  /** True while this panel's /handoff POST is in flight. Renders the
+   *  "Handing off…" pill over the blurred transcript AND locks the composer —
+   *  a message sent during the wait would be drained by doClear and silently
+   *  lost in the X→Y swap. */
+  handoffing?: boolean
   /** Nonce-stamped request to switch the settings tab ?forwarded to
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
@@ -442,7 +454,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, settingsTabRequest, messageJumpTarget, focused, panelVisible, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, handoffing, settingsTabRequest, messageJumpTarget, focused, panelVisible, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -1574,6 +1586,14 @@ export const Chat = memo(function Chat({
     onClearSession(sessionId)
   }, [clearError, onClearSession])
 
+  const requestHandoffSession = useCallback((sessionId: string) => {
+    // App owns the POST + panel id-swap, mirroring /clear: the server
+    // summarizes X's history (aux LLM), spawns a fresh session Y seeded with
+    // the hand-off summary, and returns Y; App swaps this panel X → Y.
+    clearError()
+    onHandoffSession(sessionId)
+  }, [clearError, onHandoffSession])
+
   /** Run a `!`/`!!` bash command: optimistic placeholder → POST /exec →
    *  ack/rollback. `share:true` (`!!`) injects the result into the SDK
    *  transcript so the model sees it (triggers a model turn); the default
@@ -1633,8 +1653,9 @@ export const Chat = memo(function Chat({
       return
     }
     // Expanded here, after routing, so every path below works on the pasted
-    // bodies instead of `[Pasted text #N]`. composeOutgoing also rewrites the
-    // /summarize legacy alias to /compact (see outgoing-text.ts).
+    // bodies instead of `[Pasted text #N]`. No alias rewriting — the old
+    // /summarize rewrite died with the app-side compact flow (see
+    // outgoing-text.ts).
     const { text, full } = composeOutgoing(input, expandPastedText)
     // Client-side local commands (e.g. /resume) are intercepted here and
     // handled in-app instead of being POSTed to the SDK. Matched strictly
@@ -1649,6 +1670,7 @@ export const Chat = memo(function Chat({
         openSettingsTab: onOpenSettingsTab,
         showHelp: onShowHelp,
         clearSession: requestClearSession,
+        handoffSession: requestHandoffSession,
       })
       return
     }
@@ -1748,7 +1770,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, runBashCommand])
+  }, [input, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestHandoffSession, runBashCommand])
 
   // The Overlay primitive owns the focus traps and presence for the settings
   // + git overlays; its `mounted && open` active gate reproduces the old
@@ -2314,6 +2336,11 @@ export const Chat = memo(function Chat({
           bottomOverlay={bottomOverlay}
           emptyStateExtra={emptyStateExtra}
         />
+        {/* /handoff wait pill — centered over the blurred transcript. The
+            composer is locked (below); the pill is why. pointer-events:none
+            keeps the context menu working during the wait. Conditional MOUNT
+            (not an `active` prop) — remounting resets the elapsed counter. */}
+        {handoffing ? <HandoffOverlay /> : null}
         </div>
         {discardConfirm && (
           <ConfirmDialog
@@ -2446,7 +2473,7 @@ export const Chat = memo(function Chat({
               input={input}
               setInput={setInput}
               sending={sending}
-              disabled={session.terminated || interactivePending}
+              disabled={session.terminated || interactivePending || !!handoffing}
               terminated={session.terminated}
               terminatedReason={session.terminatedReason}
               canRetryResume={session.canRetryResume}

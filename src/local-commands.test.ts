@@ -14,6 +14,25 @@ describe('matchLocalCommand', () => {
     expect(matchLocalCommand('/new')?.name).toBe('clear')
   })
 
+  it('matches /handoff', () => {
+    expect(matchLocalCommand('/handoff')?.name).toBe('handoff')
+  })
+
+  it('/handoff run() calls the handoff control hook for its panel', () => {
+    const cmd = matchLocalCommand('/handoff')!
+    let handedOff: string | null = null
+    cmd.run({
+      sessionId: 'sess-1',
+      commands: [],
+      requestResumeForPanel: () => {},
+      openSettingsTab: () => {},
+      showHelp: () => {},
+      clearSession: () => {},
+      handoffSession: (id) => { handedOff = id },
+    })
+    expect(handedOff).toBe('sess-1')
+  })
+
   it('/mcp run() opens the mcp settings tab for its panel', () => {
     const cmd = matchLocalCommand('/mcp')!
     let opened: { id: string; tab: string } | null = null
@@ -24,6 +43,7 @@ describe('matchLocalCommand', () => {
       openSettingsTab: (id, tab) => { opened = { id, tab } },
       showHelp: () => {},
       clearSession: () => {},
+      handoffSession: () => {},
     })
     expect(opened).toEqual({ id: 'sess-1', tab: 'mcp' })
   })
@@ -39,6 +59,7 @@ describe('matchLocalCommand', () => {
       openSettingsTab: () => {},
       showHelp: (cmds) => { shown = cmds },
       clearSession: () => {},
+      handoffSession: () => {},
     })
     expect(shown).toBe(panelCommands)
   })
@@ -53,6 +74,7 @@ describe('matchLocalCommand', () => {
       openSettingsTab: () => {},
       showHelp: () => {},
       clearSession: (id) => { cleared = id },
+      handoffSession: () => {},
     })
     expect(cleared).toBe('sess-1')
   })

@@ -28,27 +28,31 @@ describe('composeOutgoing', () => {
     expect(text).toBe('  kept  ')
   })
 
-  it('rewrites the /summarize legacy alias to /compact', () => {
-    // The CLI has no /summarize builtin — without the rewrite the literal
-    // text would reach the model as a plain prompt (see outgoing-text.ts).
+  it('passes /summarize through verbatim (legacy alias dropped)', () => {
+    // The alias died with the app-side compact flow: /compact is the CLI's
+    // native pass-through and /handoff is the app-side continuation flow —
+    // neither claims /summarize. A stray /summarize reaching the model is
+    // benign (the model just answers in-band); no rewrite keeps the composer
+    // honest about what will actually be sent.
     const { text } = composeOutgoing('/summarize', expand)
-    expect(text).toBe('/compact')
+    expect(text).toBe('/summarize')
   })
 
-  it('rewrites the alias case-insensitively and keeps trailing args', () => {
+  it('passes /summarize with args through verbatim (no case-sensitive surprises)', () => {
     const { text } = composeOutgoing('/SUMMARIZE focus on the bug fix', expand)
-    expect(text).toBe('/compact focus on the bug fix')
+    expect(text).toBe('/SUMMARIZE focus on the bug fix')
   })
 
-  it('leaves /summarize-x (never an alias) passing through verbatim', () => {
+  it('passes /summarize-x through verbatim', () => {
     const { text } = composeOutgoing('/summarize-x keep', expand)
     expect(text).toBe('/summarize-x keep')
   })
 
-  it('rewrites the alias in the scheduled-send path too (same chokepoint)', () => {
+  it('passes /summarize through in the scheduled-send path too (same chokepoint)', () => {
     // The scheduled-send composition calls this same function — a deliberate
-    // regression guard: the rewrite must not exist only in Chat.send().
+    // regression guard: whatever alias behavior exists must not live only in
+    // Chat.send().
     const { full } = composeOutgoing(' /summarize  ', expand)
-    expect(full).toBe('/compact')
+    expect(full).toBe('/summarize')
   })
 })

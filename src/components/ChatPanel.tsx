@@ -223,6 +223,13 @@ export interface ChatPanelProps {
    *  and returns a fresh session; App swaps the panel id. Triggered by the
    *  `/clear` local command. */
   onClearSession: (panelSessionId: string) => void
+  /** `/handoff` this panel — the server summarizes the conversation and
+   *  returns a fresh seeded continuation session; App swaps the panel id.
+   *  Triggered by the `/handoff` local command. */
+  onHandoffSession: (panelSessionId: string) => void
+  /** True while this panel's /handoff POST is in flight (App-owned state).
+   *  Drives Chat's "Handing off…" pill + composer lockout. */
+  handoffing?: boolean
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). Server forks from the anchor and swaps the
    *  panel id; `deleteOriginal` also unlinks the source transcript. */
@@ -337,6 +344,8 @@ export const ChatPanel = memo(function ChatPanel({
   historyOpen,
   onCloseHistory,
   onClearSession,
+  onHandoffSession,
+  handoffing,
   onDiscard,
   onOpenSettingsTab,
   onShowHelp,
@@ -1376,6 +1385,8 @@ export const ChatPanel = memo(function ChatPanel({
             historyOpen={historyOpen}
             onCloseHistory={onCloseHistory}
             onClearSession={onClearSession}
+            onHandoffSession={onHandoffSession}
+            handoffing={handoffing}
             onDiscard={onDiscard}
             onOpenSettingsTab={onOpenSettingsTab}
             onShowHelp={onShowHelp}
