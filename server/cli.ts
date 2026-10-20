@@ -15,6 +15,7 @@ import type { Server } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import open from 'open'
 import QRCode from 'qrcode'
+import { registerShutdownRequest } from './daemon/shutdown-request.js'
 import pkg from '../package.json' with { type: 'json' }
 import { isLoopbackHost, lanIPv4Addresses } from './net.js'
 import { setWebAuth } from './auth.js'
@@ -285,6 +286,9 @@ async function runServer(args: CliArgs): Promise<void> {
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  // POST /api/daemon/stop rides this seam: it writes the daemon stop marker
+  // (server-bridge) and then reuses the exact same graceful path as SIGTERM.
+  registerShutdownRequest(() => shutdown('daemon-stop'))
 }
 
 main().catch((err) => {
