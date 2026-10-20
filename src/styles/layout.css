@@ -1299,6 +1299,14 @@ body.resizing-col .app {
 .chat-panel-model-badge:disabled .chat-panel-model-badge-value {
   color: var(--fg-muted);
 }
+/* In-flight model switch. Rides the spinner, i.e. it only appears after the
+   flash-prevention delay (see MODEL_SWITCH_INDICATOR_DELAY_MS) — an ordinary
+   switch leaves the chip looking untouched. `:disabled` above already dims it;
+   only the cursor needs correcting, since `not-allowed` reads as "you may not"
+   where this is "work in progress". */
+.chat-panel-model-badge.pending {
+  cursor: progress;
+}
 /* Git ⎇ glyph: muted, doesn't compete with the branch/status value. */
 .chat-panel-git-badge-icon {
   color: var(--fg-muted);

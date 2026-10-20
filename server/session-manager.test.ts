@@ -415,7 +415,10 @@ describe('SessionManager', () => {
     dir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
     await store.load()
-    sm = new SessionManager({ store })
+    // Short model-switch retry delay (same idea as deleteLockMaxWaitMs in the
+    // op-lock suite): the retry path is exercised here, and the production
+    // 1.5s wait would slow the suite without adding signal.
+    sm = new SessionManager({ store, modelSwitchRetryDelayMs: 5 })
   })
 
   afterEach(async () => {
@@ -689,6 +692,20 @@ describe('SessionManager', () => {
       __setConfigForTest({ modelGroups: [GROUP] })
       const info = await sm.create({ cwd: '/tmp' })
       await expect(sm.setModelGroup(info.id, 'g_missing')).rejects.toThrow(/model group g_missing not found/)
+    })
+
+    it('setModelGroup retries an unconfirmed switch before applying the fallback chain', async () => {
+      __setConfigForTest({ modelGroups: [GROUP] })
+      const info = await sm.create({ cwd: '/tmp', model: 'gw/start' })
+      mockHandles[0].setModel
+        .mockRejectedValueOnce(
+          new Error('Couldn\'t confirm model "anthropic/claude-opus-4-20250514" with the API. Try again, or run /model to see available models.'),
+        )
+      const updated = await sm.setModelGroup(info.id, 'g_flagship')
+      expect(mockHandles[0].setModel).toHaveBeenCalledTimes(2)
+      expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({ fallbackModel: ['sonnet', 'haiku'] })
+      expect(updated.model).toBe('anthropic/claude-opus-4-20250514')
+      expect(updated.modelGroupId).toBe('g_flagship')
     })
 
     it('setModel clears modelGroupId and the fallback chain', async () => {
@@ -2637,6 +2654,40 @@ describe('SessionManager', () => {
     await sm.setModel(info.id, 'new-model')
     expect(mockHandles[0].setModel).toHaveBeenCalledWith('new-model')
     expect(sm.get(info.id).model).toBe('new-model')
+  })
+
+  it('setModel() retries once when the CLI cannot confirm the model', async () => {
+    const info = await sm.create({ model: 'gw/old' })
+    mockHandles[0].setModel.mockRejectedValueOnce(
+      new Error('Couldn\'t confirm model "gw/new" with the API. Try again, or run /model to see available models.'),
+    )
+    await sm.setModel(info.id, 'gw/new')
+    expect(mockHandles[0].setModel).toHaveBeenCalledTimes(2)
+    expect(sm.get(info.id).model).toBe('gw/new')
+  })
+
+  it('setModel() does not retry a policy refusal', async () => {
+    const info = await sm.create({ model: 'gw/old' })
+    // The CLI's verdict on the REQUEST (entitlement), not a transient probe
+    // failure — a second attempt would only repeat it, so this must surface
+    // on the first try.
+    mockHandles[0].setModel.mockRejectedValue(
+      new Error('set_model: model "gw/new" is not allowed on this account'),
+    )
+    await expect(sm.setModel(info.id, 'gw/new')).rejects.toThrow(/is not allowed/)
+    expect(mockHandles[0].setModel).toHaveBeenCalledTimes(1)
+    expect(sm.get(info.id).model).toBe('gw/old')
+  })
+
+  it('setModel() surfaces the CLI failure when the retry is refused too', async () => {
+    const info = await sm.create({ model: 'gw/old' })
+    mockHandles[0].setModel.mockRejectedValue(
+      new Error('Couldn\'t confirm model "gw/new" with the API. Try again, or run /model to see available models.'),
+    )
+    await expect(sm.setModel(info.id, 'gw/new')).rejects.toThrow(/Couldn't confirm model "gw\/new"/)
+    // Exactly one retry — not a ladder, and not zero.
+    expect(mockHandles[0].setModel).toHaveBeenCalledTimes(2)
+    expect(sm.get(info.id).model).toBe('gw/old')
   })
 
   it('setFastMode() records the intent and forwards applyFlagSettings({ fastMode }) to the Query', async () => {

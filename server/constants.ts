@@ -32,6 +32,20 @@ export const GIT_BROADCAST_MAX_WAIT_MS = 3_000
  *  delete only overtakes a holder that is actually wedged. */
 export const DELETE_LOCK_MAX_WAIT_MS = 20_000
 
+/** How long setModel() waits before re-issuing a model switch the CLI could
+ *  not CONFIRM (its pre-switch entitlement probe exceeded the CLI's own ~5 s
+ *  deadline, answering "Couldn't confirm model … with the API. Try again"),
+ *  and the only failure class that is retried — the CLI's wording carries the
+ *  retry instruction, and the app cannot see the probe's structure.
+ *
+ *  Measured on a slow gateway (state dir logs, 2026-10-19): all four observed
+ *  failures landed at 5013–5033 ms (the CLI's deadline), while successful
+ *  switches took 6 ms–4428 ms; every manual re-attempt of the SAME model
+ *  succeeded seconds later, so the failure is throughput, not entitlement.
+ *  Waiting a moment hands the probe a fresh window. One retry, not a ladder:
+ *  no observed failure needed more, and each attempt costs up to ~5 s. */
+export const MODEL_SWITCH_RETRY_DELAY_MS = 1_500
+
 /** Default cap (bytes) on untracked files captured by the file-snapshot
  *  sidecar. Backs the `fileSnapshotsMaxUntrackedBytes` config default and
  *  the SnapshotService / shadow-git fallbacks, so the default cannot drift

@@ -21,6 +21,7 @@ import { useGitStatus } from '../hooks/useGitStatus'
 import { useChatStream } from '../hooks/useChatStream'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useDelayedFlag } from '../hooks/useDelayedFlag'
 import { useDiagnostics } from '../hooks/useDiagnostics'
 import { shortenModel } from '../utils/session-status'
 import { sessionTitleOrFallback } from '../utils/session-title'
@@ -32,7 +33,7 @@ import { EffortSlider } from './EffortSlider'
 import { basenameOf, initialOf } from '../utils/paths'
 import { ProjectPopover } from './ProjectPopover'
 import { gitChipText } from '../utils/git-chip'
-import { IconCheck, IconAlertTriangle, IconSparkles, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
+import { IconCheck, IconAlertTriangle, IconSparkles, IconLoader, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { PermissionModeIcon, permissionModeLabel, permissionModeShortLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingDisplay, ThinkingSetting } from '../types'
@@ -97,8 +98,19 @@ function worktreeChipTitle(
   return lines.map((line, i) => <div key={i}>{line}</div>)
 }
 
+/** How long a model switch may be in flight before the chip swaps its glyph
+ *  for a spinner. Ordinary switches measured on this gateway (state-dir logs,
+ *  2026-10-19) run 6 ms–1.2 s, so ~1 s keeps the spinner off the bulk of them
+ *  while still appearing well inside the window it exists for: a failed probe
+ *  (the CLI's ~5 s deadline) and its server-side retry (~6–11 s). The switch
+ *  is disabled for its whole flight regardless — this only gates the glyph, so
+ *  a sub-second switch shows nothing beyond the chip's disabled styling. */
+const MODEL_SWITCH_INDICATOR_DELAY_MS = 1000
+
 /** Optimistic-update helper: POST to `apiPath`, update session on success,
- *  rollback + show error toast on failure. */
+ *  rollback + show error toast on failure. Returns the round-trip promise so
+ *  callers can track in-flight state (the model chip's spinner); it never
+ *  rejects — the failure path is the toast + rollback above. */
 function commitWithRollback(
   session: SessionInfo,
   apiPath: string,
@@ -108,7 +120,7 @@ function commitWithRollback(
   onSessionUpdate: (s: SessionInfo) => void,
   showError: (msg: string) => void,
 ) {
-  void api
+  return api
     .post<{ session: SessionInfo }>(apiPath, payload)
     .then((r) => onSessionUpdate(r.session))
     .catch(() => {
@@ -422,6 +434,13 @@ export const ChatPanel = memo(function ChatPanel({
    *  panel as the surface's owner (see `markPortaledSurface`); required so
    *  no caller can drop the ownership stamp by accident. */
   const [modelMenu, setModelMenu] = useState<{ x: number; y: number; source: Element | null } | null>(null)
+  /** In-flight model switch, as the LABEL to show while it runs (null = none).
+   *  Covers both the model and the model-group switch — they POST to different
+   *  routes but both change the session's model. Kept as a label rather than a
+   *  boolean so the chip's tooltip can name the target; the spinner itself is
+   *  `modelSwitching` below, which waits out the flash-prevention delay. */
+  const [modelSwitchLabel, setModelSwitchLabel] = useState<string | null>(null)
+  const modelSwitching = useDelayedFlag(modelSwitchLabel !== null, MODEL_SWITCH_INDICATOR_DELAY_MS)
   /** Anchor for the permission-mode menu. Non-null = menu visible. A
    *  custom menu (rather than a native <select>) gives us full control
    *  over dark-theme styling; the native control's dropdown surface
@@ -555,7 +574,16 @@ export const ChatPanel = memo(function ChatPanel({
     const value = next.trim()
     setModelMenu(null)
     if (value === (session.model ?? '')) return
-    commitWithRollback(
+    // One switch at a time. The chip's `disabled` covers the visible case, but
+    // this guard is the authoritative stop: a second pick that arrived in the
+    // same tick would still pass a stale `disabled`, and a switch started from
+    // SettingsPanel's model select is invisible to this component entirely.
+    // Without it the overlap issues a second POST and then clears the shared
+    // label when IT settles, dropping the indicator while the first is still
+    // in flight.
+    if (modelSwitchLabel !== null) return
+    setModelSwitchLabel(shortenModel(value))
+    void commitWithRollback(
       session,
       `/sessions/${session.id}/model`,
       { model: value || undefined },
@@ -563,13 +591,17 @@ export const ChatPanel = memo(function ChatPanel({
       `Couldn't change model`,
       onSessionUpdate,
       toast.error,
-    )
+    ).finally(() => setModelSwitchLabel(null))
   }
 
   const commitGroup = (groupId: string) => {
     setModelMenu(null)
     if (groupId === (session.modelGroupId ?? '')) return
-    commitWithRollback(
+    if (modelSwitchLabel !== null) return
+    setModelSwitchLabel(
+      modelOptions.modelGroups.find((g) => g.id === groupId)?.name ?? groupId,
+    )
+    void commitWithRollback(
       session,
       `/sessions/${session.id}/model-group`,
       { groupId },
@@ -579,7 +611,7 @@ export const ChatPanel = memo(function ChatPanel({
       `Couldn't change model group`,
       onSessionUpdate,
       toast.error,
-    )
+    ).finally(() => setModelSwitchLabel(null))
   }
 
   const commitPermissionMode = (mode: PermissionMode) => {
@@ -1017,14 +1049,30 @@ export const ChatPanel = memo(function ChatPanel({
           </Tooltip>
         )}
         <div className="chat-panel-meta">
-          <Tooltip label={`Model: ${session.model ?? 'default'} · click to change`} placement="bottom" align="end">
+          <Tooltip
+            label={
+              modelSwitchLabel !== null
+                ? `Model: switching to ${modelSwitchLabel}…`
+                : `Model: ${session.model ?? 'default'} · click to change`
+            }
+            placement="bottom"
+            align="end"
+          >
             <button
               type="button"
-              className={`chat-panel-model-badge${modelMenu ? ' open' : ''}`}
-              disabled={chipsDisabled}
+              className={`chat-panel-model-badge${modelMenu ? ' open' : ''}${modelSwitching ? ' pending' : ''}`}
+              // In-flight disable uses the UNDELAYED label, the same signal the
+              // picker's own `disabled` reads: two different signals would let
+              // the chip open a picker whose every row is already disabled.
+              disabled={chipsDisabled || modelSwitchLabel !== null}
               aria-haspopup="listbox"
               aria-expanded={!!modelMenu}
-              aria-label={`Model: ${session.model ?? 'default'} · click to change`}
+              aria-busy={modelSwitching}
+              aria-label={
+                modelSwitchLabel !== null
+                  ? `Model: switching to ${modelSwitchLabel}`
+                  : `Model: ${session.model ?? 'default'} · click to change`
+              }
               onMouseDown={(e) => e.stopPropagation()}
               onClick={(e) => {
                 e.stopPropagation()
@@ -1039,7 +1087,9 @@ export const ChatPanel = memo(function ChatPanel({
                 setModelMenu({ x: rect.left, y: rect.bottom + 4, source: e.currentTarget })
               }}
             >
-              <IconSparkles size={13} aria-hidden />
+              {modelSwitching
+                ? <IconLoader size={13} className="glyph-spin" aria-hidden />
+                : <IconSparkles size={13} aria-hidden />}
               <span className="chat-panel-model-badge-value">{shortenModel(session.model)}</span>
             </button>
           </Tooltip>
@@ -1170,7 +1220,10 @@ export const ChatPanel = memo(function ChatPanel({
               current={session.model}
               currentGroupId={session.modelGroupId}
               options={modelOptions}
-              disabled={chipsDisabled}
+              // Same in-flight signal as the chip's own `disabled` (not the
+              // delayed spinner one): keeping the two in step is what stops the
+              // chip from opening a picker whose every row is already disabled.
+              disabled={chipsDisabled || modelSwitchLabel !== null}
               onSelect={(model) => commitModel(model)}
               onSelectGroup={(groupId) => commitGroup(groupId)}
               onClose={() => setModelMenu(null)}

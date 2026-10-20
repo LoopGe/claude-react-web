@@ -169,7 +169,7 @@ import {
 import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 import { raceWithFallback } from './with-timeout.js'
-import { COMMAND_PREVIEW_CAP, DELETE_LOCK_MAX_WAIT_MS } from './constants.js'
+import { COMMAND_PREVIEW_CAP, DELETE_LOCK_MAX_WAIT_MS, MODEL_SWITCH_RETRY_DELAY_MS } from './constants.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -205,6 +205,26 @@ const TRANSIENT_TERMINATED_REASONS = new Set([
 
 function isTransientTerminatedReason(reason?: string): boolean {
   return !!reason && TRANSIENT_TERMINATED_REASONS.has(reason)
+}
+
+/** True when a model switch failed because the CLI could not CONFIRM the
+ *  model with the upstream API — its pre-switch probe ran past the CLI's own
+ *  deadline. This is the one switch failure worth retrying: the probe is a
+ *  live API round-trip (slow-gateway throughput, not a verdict on the
+ *  request), the CLI's own wording says "Try again", and every observed
+ *  re-attempt of the same model succeeded seconds later.
+ *
+ *  Matched on the CLI's message because that is all the SDK surfaces for a
+ *  failed control request (the response's error text, re-thrown as the
+ *  rejection reason; requireHandleMethod embeds it in the 502). Same
+ *  deliberate-pattern-matching stance as shared/control-errors.ts — the CLI's
+ *  wording is not a contract, so a reword degrades to "no retry", never to a
+ *  wrong retry. Everything else MUST fall through: 'not allowed' / blocked
+ *  (entitlement), an unrecognized id, a hook veto, or 'must be a string' are
+ *  the CLI's verdict on the REQUEST — retrying only repeats them. */
+function isUnconfirmedModelSwitch(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return msg.toLowerCase().includes("couldn't confirm model")
 }
 
 /** Node's spawn reports ENOENT for a missing `cwd` as well as a missing
@@ -775,6 +795,9 @@ export class SessionManager {
   private maxCrashRecovery: number
   /** delete()'s bound on queueing for the op lock (see DELETE_LOCK_MAX_WAIT_MS). */
   private readonly deleteLockMaxWaitMs: number
+  /** Delay before re-issuing an unconfirmed model switch (see
+   *  MODEL_SWITCH_RETRY_DELAY_MS). */
+  private readonly modelSwitchRetryDelayMs: number
   private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
   private promptUuidStore: PromptUuidStore
@@ -895,6 +918,7 @@ export class SessionManager {
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.maxCrashRecovery = opts.maxCrashRecovery ?? 2
     this.deleteLockMaxWaitMs = opts.deleteLockMaxWaitMs ?? DELETE_LOCK_MAX_WAIT_MS
+    this.modelSwitchRetryDelayMs = opts.modelSwitchRetryDelayMs ?? MODEL_SWITCH_RETRY_DELAY_MS
     this.store = opts.store ?? new SessionStore()
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
     // Mid-run steering 的回放 sidecar（spec §8.1）——steered 消息不在 CLI
@@ -4505,12 +4529,15 @@ export class SessionManager {
     return this.opLock.run(id, async () => {
       const s = this.requireLive(id)
       const wasGroup = !!s.modelGroupId
-      await this.requireHandleMethod<(model?: string) => Promise<void>>(
+      // Resolve the control method OUTSIDE the retry: a provider without
+      // model-switch support must 501 immediately, not after two attempts.
+      const pickModel = this.requireHandleMethod<(model?: string) => Promise<void>>(
         s,
         'setModel',
         'model switching',
         'supportsModelSwitch',
-      )(model)
+      )
+      await this.switchModelWithRetry(s, () => pickModel(model))
       if (wasGroup) {
         // Switching to a single model fully reverts today's behavior: clear
         // the group reference AND the fallback degradation chain so no
@@ -4551,12 +4578,13 @@ export class SessionManager {
       const group = profile.modelGroups.find((g) => g.id === groupId)
       if (!group) throw new HttpError(400, `model group ${groupId} not found`)
       const r = resolveGroup(group, (m) => resolveConfiguredModel(m, profile.modelList))
-      await this.requireHandleMethod<(model?: string) => Promise<void>>(
+      const pickModel = this.requireHandleMethod<(model?: string) => Promise<void>>(
         s,
         'setModel',
         'model switching',
         'supportsModelSwitch',
-      )(r.main)
+      )
+      await this.switchModelWithRetry(s, () => pickModel(r.main))
       const fallback = fallbackAliasesFor(group.main ?? 'opus')
       await this.requireHandleMethod<(settings: Record<string, unknown>) => Promise<void>>(
         s,
@@ -7481,6 +7509,35 @@ export class SessionManager {
     if (!provider.capabilities[capability]) {
       throw new HttpError(501, `provider ${providerName} does not support ${action}`)
     }
+  }
+
+  /** Issue a model switch, retrying ONCE when the CLI could not confirm the
+   *  model (see isUnconfirmedModelSwitch / MODEL_SWITCH_RETRY_DELAY_MS).
+   *
+   *  Called from inside the caller's op lock, so the wait extends that
+   *  session's lock hold by the delay + one more probe (≤ ~5 s on the CLI
+   *  side). That is deliberate: a switch keeps its single local-state write,
+   *  single persist and single session-update broadcast, and no competing
+   *  change can slip between the two attempts. delete() is unblocked
+   *  regardless — it queues with deleteLockMaxWaitMs.
+   *
+   *  The second failure propagates untouched, so the caller (and the client)
+   *  sees exactly what an un-retried failure looked like. */
+  private async switchModelWithRetry(s: Session, call: () => Promise<void>): Promise<void> {
+    try {
+      await call()
+      return
+    } catch (err) {
+      if (!isUnconfirmedModelSwitch(err)) throw err
+      log.warn(
+        `[session ${s.id}] model switch not confirmed by the CLI — ` +
+          `retrying once in ${this.modelSwitchRetryDelayMs}ms:`,
+        err,
+      )
+    }
+    await new Promise((resolve) => setTimeout(resolve, this.modelSwitchRetryDelayMs))
+    await call()
+    log.info(`[session ${s.id}] model switch confirmed on retry`)
   }
 
   private requireHandleMethod<T extends (...args: never[]) => unknown>(
