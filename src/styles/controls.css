@@ -244,3 +244,37 @@ select:hover {
   border-color: var(--accent);
 }
 .textarea { resize: vertical; min-height: 60px; font-family: var(--mono); font-size: var(--fs-sm); }
+
+/* ── Row-level "Update" control (marketplace panels) ─────────────── */
+/* Shared by BOTH marketplace panels — the Claude Plugin Marketplace
+   (MarketplaceTab) and App Plugins / Mods (AppPluginMarketplaceSection) — so
+   the two render as one control. Lives here, next to .btn, rather than in
+   either panel's own stylesheet: it belongs to neither subsystem, and a lazy
+   or conditional load of one panel's CSS must not strip the other's control.
+   The warn tint means the same in both: upstream has commits we don't. */
+
+.marketplace-update-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.marketplace-update-available {
+  color: var(--warn-text);
+}
+.marketplace-update-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: var(--radius-circle);
+  background: var(--warn);
+}
+/* The status-line "couldn't check" affordance, shared by both panels'
+   status lines so they render identically (icon gap + warn token included). */
+.marketplace-update-error {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--warn-text);
+  cursor: help;
+  font-size: var(--fs-sm);
+}

@@ -82,6 +82,39 @@ describe('built-in app plugin marketplace', () => {
     expect(store.list()).toHaveLength(1)
   })
 
+  it('re-parses an existing record so an app upgrade that adds bundled plugins shows up', async () => {
+    const store = new AppPluginMarketplaceStore({ stateDir })
+    await seedBuiltinMarketplace(store, pluginsDir)
+    expect(store.get(BUILTIN_MARKETPLACE_ID)?.manifest.plugins).toHaveLength(1)
+
+    // Simulate the upgraded app shipping one more plugin in the same bundled
+    // dir. The record persists with its old manifest — and there is no Update
+    // control on a marketplace with no upstream, so boot must heal it.
+    writeFileSync(
+      join(pluginsDir, 'app-plugins-marketplace.json'),
+      JSON.stringify({
+        name: 'Claude React Web Plugins',
+        appPlugins: [
+          { name: 'translator', dir: 'translator', description: 'Translate', version: '1.0.0' },
+          { name: 'newcomer', dir: 'newcomer', description: 'New', version: '1.0.0' },
+        ],
+      }),
+    )
+    // Later launch: bootstrap loads the persisted store, then seeds.
+    const later = new AppPluginMarketplaceStore({ stateDir })
+    await later.load()
+    await seedBuiltinMarketplace(later, pluginsDir)
+
+    const refreshed = later.get(BUILTIN_MARKETPLACE_ID)
+    expect(refreshed?.manifest.plugins.map((p) => p.name)).toEqual(['translator', 'newcomer'])
+    // The record itself is reused — a re-parse must not re-add or duplicate it.
+    expect(later.list()).toHaveLength(1)
+    // Nor does it resurrect one the user removed.
+    later.removeEntry(BUILTIN_MARKETPLACE_ID)
+    await seedBuiltinMarketplace(later, pluginsDir)
+    expect(later.get(BUILTIN_MARKETPLACE_ID)).toBeUndefined()
+  })
+
   it('seedBuiltinMarketplace skips (no crash) when the dir is missing', async () => {
     const store = new AppPluginMarketplaceStore({ stateDir })
     await seedBuiltinMarketplace(store, join(stateDir, 'does-not-exist'))

@@ -62,10 +62,13 @@ export async function buildBuiltinRecord(pluginsDir: string): Promise<AppPluginM
   }
 }
 
-/** Seed the built-in marketplace on first launch. No-op when the store file
- *  already exists (later launches — the record persists, and a removed
- *  built-in stays removed). `pluginsDir` is optional for tests; it defaults
- *  to the runtime-resolved bundled dir. Any error is logged, never fatal. */
+/** Seed the built-in marketplace on first launch, and RE-PARSE it on every
+ *  later launch. The record persists across restarts (a removed built-in stays
+ *  removed); what boot refreshes is its manifest, because the plugin content
+ *  lives in a directory that ships inside the app and therefore changes
+ *  underneath the persisted copy on every upgrade.
+ *  `pluginsDir` is optional for tests; it defaults to the runtime-resolved
+ *  bundled dir. Any error is logged, never fatal. */
 export async function seedBuiltinMarketplace(store: AppPluginMarketplaceStore, pluginsDir?: string): Promise<void> {
   const dir = pluginsDir ?? resolveBundledPluginsDir()
   if (!dir) {
@@ -78,6 +81,20 @@ export async function seedBuiltinMarketplace(store: AppPluginMarketplaceStore, p
   }
   try {
     const record = await buildBuiltinRecord(dir)
+    // An EXISTING record is re-parsed, not left alone. The bundled plugin
+    // content ships inside the app, so an upgrade adds plugins to this very
+    // directory while the persisted manifest still describes the previous
+    // release — and there is deliberately no Update control on a marketplace
+    // with no upstream, so boot is the only place that can heal it.
+    // A removed built-in still stays removed: only an existing record is
+    // touched, and creating one is still seedBuiltinIfFirstRun's job.
+    const existing = store.get(record.id)
+    if (existing) {
+      store.upsert({ ...record, addedAt: existing.addedAt })
+      await store.flush()
+      log.debug(`re-parsed built-in marketplace (${record.manifest.plugins.length} plugin(s))`)
+      return
+    }
     await store.seedBuiltinIfFirstRun(record)
   } catch (err) {
     log.warn(`failed to seed built-in marketplace: ${(err as Error).message}`)

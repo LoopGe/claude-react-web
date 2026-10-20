@@ -311,9 +311,9 @@ describe('MarketplaceTab update-check states', () => {
     const { container } = render(<MarketplaceTab />)
     await waitFor(() => expect(container.textContent).toContain("Couldn't check for updates"))
 
-    // The per-card Refresh proves upstream is reachable and pulls mp1 to HEAD,
+    // The row's Update proves upstream is reachable and pulls mp1 to HEAD,
     // so the stale whole-check banner must clear rather than linger.
-    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Refresh')!
+    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Update')!
     fireEvent.click(refresh)
     await waitFor(() => expect(container.textContent).not.toContain("Couldn't check for updates"))
     await waitFor(() => expect(container.textContent).toContain('All marketplaces up to date'))
@@ -347,7 +347,7 @@ describe('MarketplaceTab update-check states', () => {
     // List loaded; the mount check is still in flight.
     await waitFor(() => expect(container.textContent).toContain('Checking for updates…'))
 
-    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Refresh')!
+    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Update')!
     fireEvent.click(refresh)
     // Let the refresh land first — mp1 is now provably at HEAD.
     await act(async () => { resolveRefresh({ ok: true, entry: mkItem('mp1', 'MP One'), updated: true, warnings: [] }) })
@@ -382,7 +382,7 @@ describe('MarketplaceTab update-check states', () => {
 
     // Refreshing mp1 verifies only mp1 — mp2 was never re-checked after the
     // whole-request failure, so the error + Retry must stay (no over-claim).
-    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Refresh')!
+    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Update')!
     fireEvent.click(refresh)
     await waitFor(() => expect(refreshCalls()).toEqual(['/mp/marketplaces/mp1/refresh']))
     expect(container.textContent).toContain("Couldn't check for updates")
@@ -411,7 +411,7 @@ describe('MarketplaceTab update-check states', () => {
     const { container } = render(<MarketplaceTab />)
     await waitFor(() => expect(container.textContent).toContain('Checking for updates…'))
 
-    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Refresh')!
+    const refresh = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Update')!
     fireEvent.click(refresh)
     await act(async () => { /* let the refresh land */ })
 

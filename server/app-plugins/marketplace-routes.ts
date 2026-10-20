@@ -8,16 +8,18 @@
 import { Hono } from 'hono'
 import { HttpError, createErrorHandler } from '../errors.js'
 import { safeJson, safeJsonOptional } from '../routes/index.js'
-import { gitPull } from '../git-clone.js'
+import { gitLsRemoteHead, gitPull } from '../git-clone.js'
 import { parseAppPluginMarketplaceAuto } from './marketplace-parser.js'
 import { addAppPluginMarketplaceByUrl } from './marketplace-ops.js'
 import { createLogger } from '../log.js'
+import { LOG_PREVIEW_CAP, ERROR_DETAIL_CAP } from '../constants.js'
 import type { AppPluginMarketplaceStore } from './marketplace-store.js'
 import type { AppPluginManager } from './app-plugin-manager.js'
 import type {
   AppPluginMarketplaceInfo,
   AppPluginMarketplaceManifest,
   AppPluginMarketplaceRecord,
+  AppPluginMarketplaceUpdateStatus,
 } from '../../shared/app-plugins/marketplace.js'
 import type { AppPluginRecord } from '../../shared/app-plugins/runtime-state.js'
 
@@ -42,6 +44,44 @@ export function buildAppPluginMarketplaceRouter(store: AppPluginMarketplaceStore
     const { record } = await addAppPluginMarketplaceByUrl(store, { url, ref, subdir })
     log.info(`added marketplace ${record.id} (${record.manifest.plugins.length} plugins) from ${url}`)
     return c.json({ ok: true, marketplace: toInfo(record) })
+  })
+
+  // ─── Check for updates (non-mutating) ───────────────────────────────
+  // Mirrors the Claude Plugin marketplace route of the same name: `git
+  // ls-remote` each https upstream and compare to the stored lastSha.
+  // Promise.allSettled isolates per-marketplace failures (dead URL,
+  // auth-required repo, timeout) so one bad marketplace can't blank the
+  // result for the rest. Pure read — no store / disk mutation.
+  //
+  // `local` (bundled) records are excluded rather than reported: they have no
+  // upstream, so there is nothing to be behind, and the UI renders no Update
+  // control for them either.
+  app.post('/check-updates', async (c) => {
+    const entries = store.list().filter(
+      (e): e is AppPluginMarketplaceRecord & { source: { type: 'https'; url: string; ref?: string } } =>
+        e.source.type === 'https',
+    )
+    const settled = await Promise.allSettled(
+      entries.map((e) => gitLsRemoteHead(e.source.url, e.source.ref)),
+    )
+    const updates: AppPluginMarketplaceUpdateStatus[] = entries.map((e, i) => {
+      const r = settled[i]
+      if (r.status === 'fulfilled') {
+        return { id: e.id, hasUpdate: r.value !== e.lastSha, remoteSha: r.value }
+      }
+      // An HttpError carries a deliberate message (bad url, no parseable SHA);
+      // anything else is a transport failure. Both are worth surfacing.
+      const reason = r.reason
+      const msg =
+        reason instanceof HttpError
+          ? reason.message
+          : reason instanceof Error
+            ? reason.message
+            : String(reason)
+      log.warn(`check-updates failed for ${e.id}: ${msg.slice(0, LOG_PREVIEW_CAP)}`)
+      return { id: e.id, hasUpdate: false, error: msg.slice(0, ERROR_DETAIL_CAP) }
+    })
+    return c.json({ ok: true, updates })
   })
 
   app.post('/:id/refresh', async (c) => {

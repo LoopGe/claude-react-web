@@ -62,6 +62,23 @@ export interface AppPluginMarketplaceRecord {
   manifest: AppPluginMarketplaceManifest
 }
 
+/** Per-marketplace update-check result, mirroring the Claude Plugin
+ *  marketplace's `MpUpdateStatusItem`. `hasUpdate` is true when the upstream
+ *  tip differs from the stored `lastSha` (a pull would move HEAD). Only
+ *  `https` marketplaces are checked — a `local` (bundled) marketplace has no
+ *  upstream to compare against.
+ *
+ *  This is the *repo* signal only. An App Plugin is installed as a copy, so it
+ *  can also lag its catalog with the repo already at HEAD — that second signal
+ *  has no upstream to check and is surfaced per plugin in `GET /:id/plugins`
+ *  instead (whose Update buttons are what clear it). */
+export interface AppPluginMarketplaceUpdateStatus {
+  id: string
+  hasUpdate: boolean
+  remoteSha?: string
+  error?: string
+}
+
 /** Client-facing marketplace DTO (no cloneDir / raw manifest blob). */
 export interface AppPluginMarketplaceInfo {
   id: string

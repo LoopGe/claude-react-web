@@ -10,6 +10,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import type { MpListItem, MpPluginInfo, MpParseWarning, MpUpdateStatus } from '../types'
 import { IconX, IconChevronDown, IconChevronRight, IconAlertTriangle } from './icons/ToolIcons'
+import { MarketplaceUpdateButton } from './MarketplaceUpdateButton'
+import { CHECK_UPDATES_TIMEOUT_MS, MARKETPLACE_PULL_TIMEOUT_MS } from '../marketplace-update'
 import { AnimatedCollapse } from './AnimatedCollapse'
 
 type AddState =
@@ -54,6 +56,11 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   const [plugins, setPlugins] = useState<Record<string, MpPluginInfo[]>>({})
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  // Kept separate from busyId: busyId means "this card is being synced" and
+  // drives the Update label, while a pending removal must only DISABLE the
+  // card's actions — otherwise Del → Confirm re-labels the button "Updating…"
+  // for a pull that isn't happening.
+  const [removingId, setRemovingId] = useState<string | null>(null)
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
   // Per-plugin in-flight toggles, keyed `<mpId>:<plugin>`. Enabling a
   // git-subdir plugin triggers a full external-repo clone server-side, which
@@ -136,13 +143,11 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     // Refresh/Add can't resurrect the badge that pull just cleared.
     const startEpoch = localPullEpoch.current
     try {
-      // The server awaits Promise.allSettled of N concurrent `git ls-remote`
-      // calls, each capped at 60s — so its worst-case response is ~60s (the
-      // slowest one, since they run in parallel). The default 30s request
-      // timeout is shorter than that, which would let one slow upstream
-      // abort the whole batch and blank every badge. Give it headroom past
-      // the server's per-call ceiling.
-      const r = await api.post<CheckUpdatesResponse>('/mp/marketplaces/check-updates', {}, { signal, timeoutMs: 90_000 })
+      const r = await api.post<CheckUpdatesResponse>(
+        '/mp/marketplaces/check-updates',
+        {},
+        { signal, timeoutMs: CHECK_UPDATES_TIMEOUT_MS },
+      )
       // Merge, not replace: skip entries for marketplaces pulled after this
       // check began (the local pull is newer), and overwrite every other
       // entry (clearing old errors/badges). A wholesale replace would drop
@@ -212,7 +217,11 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   // by the per-card Refresh button (handleRefresh) and the bulk "Update all"
   // loop. Throws on failure so callers decide how to surface it.
   const refreshMarketplace = useCallback(async (id: string): Promise<void> => {
-    const r = await api.post<RefreshResponse>(`/mp/marketplaces/${encodeURIComponent(id)}/refresh`)
+    const r = await api.post<RefreshResponse>(
+      `/mp/marketplaces/${encodeURIComponent(id)}/refresh`,
+      {},
+      { timeoutMs: MARKETPLACE_PULL_TIMEOUT_MS },
+    )
     setItems((prev) => prev.map((x) => (x.id === id ? r.entry : x)))
     setWarningsById((w) => ({ ...w, [id]: r.warnings }))
     // A refresh pulled local up to upstream HEAD — clear the update badge.
@@ -319,7 +328,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
   }
 
   const handleRemove = async (id: string) => {
-    setBusyId(id)
+    setRemovingId(id)
     setError(null)
     try {
       await api.delete(`/mp/marketplaces/${encodeURIComponent(id)}?confirm=true`)
@@ -349,7 +358,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
     } catch (e) {
       setError((e as Error).message)
     } finally {
-      setBusyId(null)
+      setRemovingId(null)
       setConfirmRemoveId(null)
     }
   }
@@ -493,16 +502,13 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
                   here with a Retry. Per-marketplace errors otherwise render a
                   blank status line with no in-mount way back to a re-check. */}
               <span
+                className="marketplace-update-error"
                 title={updateCheckError
                   ? `Couldn't check for updates: ${updateCheckError}`
                   : 'Some marketplaces could not be checked against their upstream'}
                 aria-label={updateCheckError
                   ? `Couldn't check for updates: ${updateCheckError}`
                   : 'Some marketplaces could not be checked against their upstream'}
-                style={{
-                  fontSize: 'var(--fs-sm)', color: 'var(--warn, var(--fg-muted))',
-                  display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help',
-                }}
               >
                 <IconAlertTriangle size={12} />
                 {updateCheckError ? "Couldn't check for updates" : "Some marketplaces couldn't be checked"}
@@ -542,6 +548,7 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
             plugins={plugins[item.id]}
             expanded={expandedId === item.id}
             busy={busyId === item.id}
+            removing={removingId === item.id}
             confirmRemove={confirmRemoveId === item.id}
             updateStatus={updateById[item.id]}
             onToggleExpand={() => void handleToggleExpand(item.id)}
@@ -582,10 +589,12 @@ interface CardProps {
   togglingPlugins: Set<string>
   /** True while the bulk "Update all" loop runs — disables card actions. */
   bulkBusy: boolean
+  /** True while this card's removal is in flight — disables, never re-labels. */
+  removing: boolean
 }
 
 function MarketplaceCard({
-  item, warnings, plugins, expanded, busy, confirmRemove, updateStatus, bulkBusy,
+  item, warnings, plugins, expanded, busy, removing, confirmRemove, updateStatus, bulkBusy,
   onToggleExpand, onRefresh, onRequestRemove, onCancelRemove, onConfirmRemove, onTogglePlugin,
   togglingPlugins,
 }: CardProps) {
@@ -593,10 +602,13 @@ function MarketplaceCard({
   const visiblePlugins = (plugins ?? []).filter((p) =>
     pluginFilter === 'all' ? true : pluginFilter === 'enabled' ? p.enabled : !p.enabled,
   )
+  // Anything that should block this card's actions. `busy` alone is the card's
+  // own pull, which is the only thing allowed to re-label the Update control.
+  const rowBlocked = busy || removing || bulkBusy
   return (
     <div style={{
       border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', overflow: 'hidden',
-      opacity: busy || bulkBusy ? 0.7 : 1,
+      opacity: rowBlocked ? 0.7 : 1,
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'var(--bg)',
@@ -636,45 +648,21 @@ function MarketplaceCard({
           {item.enabledCount > 0 ? ' / ' : ''}
           {item.pluginCount} plugin{item.pluginCount === 1 ? '' : 's'}
         </span>
-        {updateStatus?.hasUpdate && (
-          <span
-            title="Upstream has new commits — click Refresh to pull"
-            style={{
-              fontSize: 'var(--fs-xs)', color: 'var(--warn, var(--fg-muted))', flexShrink: 0,
-              display: 'inline-flex', alignItems: 'center', gap: 4,
-            }}
-          >
-            <span
-              aria-hidden
-              style={{
-                width: 7, height: 7, borderRadius: 'var(--radius-circle)',
-                background: 'var(--warn, var(--fg-muted))', flexShrink: 0,
-              }}
-            />
-            Update
-          </span>
-        )}
-        {updateStatus?.error && (
-          <span
-            title={`Couldn't check for updates: ${updateStatus.error}`}
-            style={{
-              fontSize: 'var(--fs-xs)', color: 'var(--warn, var(--fg-muted))', flexShrink: 0,
-              display: 'inline-flex', alignItems: 'center', gap: 3, cursor: 'help',
-            }}
-            aria-label={`Couldn't check for updates: ${updateStatus.error}`}
-          >
-            <IconAlertTriangle size={12} />
-          </span>
-        )}
-        <button className="btn" onClick={onRefresh} disabled={busy || bulkBusy} title="Pull from upstream">
-          Refresh
-        </button>
+        <MarketplaceUpdateButton
+          hasUpdate={updateStatus?.hasUpdate === true}
+          // `busy` is this card's own pull (busyId === item.id) — a bulk run
+          // must not re-label every card as "Updating…"; it only disables.
+          busy={busy}
+          disabled={rowBlocked}
+          error={updateStatus?.error}
+          onUpdate={onRefresh}
+        />
         {!confirmRemove ? (
           <button
             className="btn"
             style={{ color: 'var(--danger-text)' }}
             onClick={onRequestRemove}
-            disabled={busy || bulkBusy}
+            disabled={rowBlocked}
           >
             Del
           </button>
@@ -684,7 +672,7 @@ function MarketplaceCard({
               className="btn"
               style={{ padding: '2px 6px', fontSize: 'var(--fs-xs)', color: 'var(--danger-text)' }}
               onClick={onConfirmRemove}
-              disabled={busy || bulkBusy}
+              disabled={rowBlocked}
             >
               Confirm
             </button>
@@ -692,7 +680,7 @@ function MarketplaceCard({
               className="btn"
               style={{ padding: '2px 6px', fontSize: 'var(--fs-xs)' }}
               onClick={onCancelRemove}
-              disabled={busy || bulkBusy}
+              disabled={rowBlocked}
               aria-label="Cancel"
             >
               <IconX size={12} />
