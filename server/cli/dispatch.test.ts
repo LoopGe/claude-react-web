@@ -25,7 +25,7 @@ describe('parseArgv (from args.ts)', () => {
 describe('registry', () => {
   it('registers the full set of groups', () => {
     const names = GROUPS.map((g) => g.name).sort()
-    expect(names).toEqual(['app-plugin', 'config', 'doctor', 'marketplace', 'mcp', 'sessions', 'update'])
+    expect(names).toEqual(['app-plugin', 'config', 'daemon', 'doctor', 'marketplace', 'mcp', 'sessions', 'update'])
   })
   it('top-level help lists every group', () => {
     const help = topLevelHelp()

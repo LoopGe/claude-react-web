@@ -79,20 +79,23 @@ export async function daemonStatus(stateDir: string, runner: CommandRunner = exe
   return snapshot(stateDir, runner)
 }
 
-/** Start the daemon NOW as a detached, hidden process. The caller decides
- *  between this and the start-requested marker (routes: alive daemon →
- *  marker; CLI/routes with no daemon → detached spawn). */
-export function spawnDaemonDetached(stateDir: string): void {
+/** Start the daemon NOW as a detached, hidden process. Resolves once the OS
+ *  actually spawned it; rejects with the raw spawn error (e.g. ENOENT) so
+ *  callers surface it instead of leaking an unhandled exception. */
+export function spawnDaemonDetached(stateDir: string): Promise<void> {
   const { nodePath, daemonEntry } = resolveDaemonEntryPaths()
-  const child = spawn(nodePath, [daemonEntry, '--state-dir', stateDir], {
-    detached: true,
-    stdio: 'ignore',
-    // The daemon process is NOT a daemon child itself — strip the marker so
-    // an inherited CRW_DAEMON_CHILD from a daemon-spawned server can't leak.
-    env: { ...process.env, CRW_DAEMON_CHILD: '' },
-    windowsHide: true,
+  return new Promise((resolve, reject) => {
+    const child = spawn(nodePath, [daemonEntry, '--state-dir', stateDir], {
+      detached: true,
+      stdio: 'ignore',
+      // The daemon process is NOT a daemon child itself — strip the marker so
+      // an inherited CRW_DAEMON_CHILD from a daemon-spawned server can't leak.
+      env: { ...process.env, CRW_DAEMON_CHILD: '' },
+      windowsHide: true,
+    })
+    child.once('error', reject)
+    child.once('spawn', () => { child.unref(); resolve() })
   })
-  child.unref()
 }
 
 /** CLI-side stop: marker FIRST (so the supervisor treats the exit as
