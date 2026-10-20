@@ -24,6 +24,37 @@ const TRANSITION = [
  *  mounting) and gets the animateResize tween instead. */
 const RESIZE_COALESCE_MS = 80
 
+/** Is this element actually being rendered — does it have a box at all? A box
+ *  under a `display:none` ancestor (exactly what a keep-alive-cached panel is)
+ *  has none, so every metric read off it reports 0, and none of those zeros is a
+ *  height. Deliberately NOT "its height is 0", and not "is it visible": a
+ *  rendered box that happens to be zero tall reports a real 0, and a
+ *  `visibility: hidden` box has real metrics — both readings must keep being
+ *  adopted.
+ *
+ *  `checkVisibility` is this question exactly: it walks the ancestor chain and
+ *  ignores size and visibility (verified in the browser — a zero-height box and
+ *  a `visibility: hidden` box both answer true, a `display: none` ancestor
+ *  answers false). It sits behind a feature test only because it is younger than
+ *  browsers this app may run in; the fallback walks the display chain itself,
+ *  which is all the app's own hiding shape needs (`.panel-slot-cached` is a plain
+ *  `display: none` on an ancestor, and `getComputedStyle` never reports an
+ *  ANCESTOR's display, so a per-node walk is the only way to see it).
+ *
+ *  The fallback covers that shape and nothing more: it does not know about
+ *  `content-visibility`, about a shadow boundary (the walk stops at the
+ *  ShadowRoot), or about a detached box — none of which this app produces. Both
+ *  forms assume the element is not `display: contents`, which generates no box of
+ *  its own either. */
+function isRendered(el: HTMLElement): boolean {
+  const check = (el as HTMLElement & { checkVisibility?: () => boolean }).checkVisibility
+  if (typeof check === 'function') return check.call(el)
+  for (let node: HTMLElement | null = el; node; node = node.parentElement) {
+    if (getComputedStyle(node).display === 'none') return false
+  }
+  return true
+}
+
 /** What the collapse should settle the body's height on, or null when the
  *  measurement must not be adopted.
  *
@@ -39,13 +70,24 @@ const RESIZE_COALESCE_MS = 80
  *  into it (the TaskList card's `flex: 0 0 auto` content). There the content's
  *  own height is what the body should be pinned to, in both directions, so the
  *  card is right again the moment the constraint lifts. Do not set it for
- *  content stretched to the body: the measured height is then the clamp. */
+ *  content stretched to the body: the measured height is then the clamp.
+ *
+ *  A box that is not being rendered offers no measurement at all (see
+ *  isRendered) and returns null like any other non-adoptable read — the
+ *  opt-in above must not widen that: a hidden box is *shorter than the pin*
+ *  for the same trivial reason a clamped one is, and adopting it pins the body
+ *  to 0. */
 function measureAdoptableHeight(
   body: HTMLDivElement,
   content: HTMLDivElement,
   keepWhileClamped: boolean,
 ): { height: number; pinned: number; clamped: boolean } | null {
   const contentHeight = content.getBoundingClientRect().height
+  // Only a ZERO reading needs the rendered-ness probe: a non-zero one proves the
+  // box exists, and this runs per growth frame while an inner animation feeds
+  // the observer (see RESIZE_COALESCE_MS), so the ancestor walk in isRendered
+  // stays off that path.
+  if (contentHeight === 0 && !isRendered(content)) return null
   const pinned = Number.parseFloat(body.style.height)
   // The LAYOUT height (`offsetHeight`), not a rect: getBoundingClientRect
   // includes ancestor transforms, and the chat panel plus the overlay panels
@@ -134,6 +176,26 @@ export function AnimatedCollapse({
     cleanupRef.current?.()
     cleanupRef.current = null
   }, [])
+
+  /** Stand down from an OPEN body whose box cannot be measured (see isRendered):
+   *  cancel any fold still in flight, then drop the pin — its natural height is
+   *  already the right answer (nothing re-pins an auto-height body on its own;
+   *  the next fold pins it explicitly, and under a flex clamp the observer does,
+   *  because the body's box then differs from its content). The cancel is
+   *  unconditional because it is a no-op when nothing is animating, and one shape
+   *  for both stand-down sites (a mount in an unrendered subtree, an open in one)
+   *  is what keeps them from drifting apart. Clearing the transition is part of
+   *  settling — the cancelled fold may already have written the tween's own
+   *  transition onto the body, and every other settle path clears it too. */
+  const standDown = useCallback(
+    (body: HTMLDivElement) => {
+      cleanupAnimation()
+      body.style.transition = ''
+      body.style.height = ''
+      body.style.opacity = ''
+    },
+    [cleanupAnimation],
+  )
 
   // aria-hidden is managed imperatively rather than through JSX. Applying it in
   // the same commit that flips `open` false would cover whatever control the
@@ -293,10 +355,19 @@ export function AnimatedCollapse({
     const content = contentRef.current
     if (!body || !content) return
 
-    const nextHeight = content.scrollHeight
     if (!initializedRef.current) {
       initializedRef.current = true
       previousOpenRef.current = open
+      if (open && !isRendered(content)) {
+        // Mounted open inside a subtree that is not being rendered — a card can
+        // mount in a keep-alive-cached panel, which still receives live data.
+        // scrollHeight is 0 there, and pinning that 0 is what leaves the card
+        // header-only until something measures it again, and what makes it grow
+        // when the panel is shown. Stand down instead.
+        standDown(body)
+        return
+      }
+      const nextHeight = content.scrollHeight
       lastHeightRef.current = open ? nextHeight : 0
       const shouldAnimateInitialOpen = open && (appear || (!initiallyOpenRef.current && unmountOnExit))
       body.style.height = shouldAnimateInitialOpen ? '0px' : (open ? `${nextHeight}px` : '0px')
@@ -314,6 +385,15 @@ export function AnimatedCollapse({
       // body's pinned height rather than the content's true height (see the
       // ResizeObserver note below). The content is laid out by now (the
       // <details> just opened), so its bounding box is the true height.
+      //
+      // Opened while the subtree is not being rendered: the persisted collapse
+      // flag syncs across tabs, so a card in a cached panel can be opened while
+      // it is hidden. Both metrics read 0 there and neither is a height — stand
+      // down instead (cancelling the close fold the same flag may have started).
+      if (!isRendered(content)) {
+        standDown(body)
+        return
+      }
       const target = content.getBoundingClientRect().height || content.scrollHeight
       animateHeight(0, target, true, true)
       return
@@ -321,7 +401,7 @@ export function AnimatedCollapse({
 
     const startHeight = body.getBoundingClientRect().height || lastHeightRef.current || content.scrollHeight
     animateHeight(startHeight, 0, false, true)
-  }, [animateHeight, appear, open, rendered, unmountOnExit])
+  }, [animateHeight, appear, open, rendered, standDown, unmountOnExit])
 
   // Apply / drop aria-hidden AFTER the height effect above, so `animatingRef`
   // already reflects a fold that just started. See hideClosedBody for why the
