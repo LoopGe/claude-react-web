@@ -118,6 +118,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The context bar now updates right after a manual `/compact`** — the compact
+  turn ends with a result that classifies "empty" (`num_turns: 0`, empty text,
+  all-zero usage, no `terminal_reason`), and the pump's reconcile-probe fire
+  sat inside the `!emptyResult` branch, so the probe never ran: the bar kept
+  the stale pre-compact total until the next ordinary turn, even though the
+  context had actually dropped ("recap ran, the bar didn't move"). The probe
+  is the only post-compact source — the compact result itself can never yield
+  a snapshot (all-zero usage → the zero guard; the aggregate wire's
+  `iterations: []` → the empty-iterations gate) — so an empty result that
+  carries `local_command` (the slash-command name; `/compact` sets it) now
+  fires the reconcile too. Warm-up placeholders and background-task
+  bookkeeping results carry no `local_command` and keep skipping the probe.
+  Verified end-to-end against a live CLI 2.1.278: a probe-sourced
+  context-usage frame lands the same second the compact result does.
 - **App Plugin `ai.request` can now spend the invoking session's profile** — the host broker always
   authenticated against the globally active profile, so a plugin invoked from a session pinned
   elsewhere (the `translator`, run from a message selection) billed the wrong subscription and

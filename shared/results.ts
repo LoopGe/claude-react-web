@@ -54,3 +54,16 @@ export function isEmptyResultFrame(msg: {
   if (text.length > 0) return false
   return true
 }
+
+/** The slash command that produced a `result` frame, if any. The CLI stamps
+ *  local-command turns with `local_command: '<name>'` (e.g. 'compact' for a
+ *  manual /compact) — one of the SDK 0.3.268/0.3.273/0.3.277 wrapper fields
+ *  the result footer already renders (MessageView). Returns null when the
+ *  frame is an ordinary model turn or the field is absent/mistyped. Takes a
+ *  bare `unknown` because both sides pass their own loose SDK message types
+ *  at it. */
+export function localCommandOf(msg: unknown): string | null {
+  if (typeof msg !== 'object' || msg === null) return null
+  const v = (msg as { local_command?: unknown }).local_command
+  return typeof v === 'string' && v.length > 0 ? v : null
+}

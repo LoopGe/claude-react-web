@@ -13,6 +13,7 @@ import { Markdown } from '../Markdown'
 import type { SdkMessage } from '../../types'
 import { formatTokens } from '../../utils/format'
 import { IconUser } from '../icons/ToolIcons'
+import { localCommandOf } from '../../../shared/results.js'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../../search'
 import { getBlocks, isHumanUserMessage, isTaskNotificationUserMessage, userMessageOriginKind } from '../../session-store/normalize'
 import { BlockView, ToolResultBlock } from './blocks'
@@ -625,11 +626,10 @@ export const MessageView = memo(function MessageView({
     const tokens = inTok > 0 || outTok > 0 ? `${formatTokens(inTok)} in \u00b7 ${formatTokens(outTok)} out` : ''
     // SDK 0.3.268/0.3.273/0.3.277 wrapper fields on the result frame.
     const wrapper = msg as unknown as {
-      local_command?: unknown
       resume_reason?: unknown
       startup_failure_reason?: unknown
     }
-    const localCommand = typeof wrapper.local_command === 'string' ? wrapper.local_command : ''
+    const localCommand = localCommandOf(msg) ?? ''
     const resumeReason = typeof wrapper.resume_reason === 'string' ? wrapper.resume_reason : ''
     const startupReason = typeof wrapper.startup_failure_reason === 'string' ? wrapper.startup_failure_reason : ''
     const meta = [

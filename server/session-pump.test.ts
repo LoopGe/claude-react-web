@@ -2494,6 +2494,94 @@ describe('pump: empty result frames', () => {
 })
 
 // ---------------------------------------------------------------------------
+// pump: reconcile probe after a purely-compaction result (manual /compact)
+//
+// The CLI 2.1.278 manual-compact wire (probed live; also captured in a real
+// incident transcript): the /compact turn ends with a result that is
+// num_turns: 0, empty result text, ALL-ZERO usage, `local_command: 'compact'`,
+// and NO terminal_reason — isEmptyResultFrame() classifies it empty. The
+// reconcile fire gate used to sit inside `if (!emptyResult)`, so the probe
+// never ran and the ContextBar kept the stale PRE-compact total until the
+// next ordinary turn — the "recap ran, context dropped, the bar didn't move"
+// bug. The compact result itself can never yield a snapshot (all-zero usage
+// → the zero guard; the aggregate wire's iterations:[] → the empty-iterations
+// gate), so the CLI's own accounting via the probe is the ONLY post-compact
+// source.
+// ---------------------------------------------------------------------------
+
+describe('pump: reconcile probe after a purely-compaction result', () => {
+  // A real main-thread assistant message so the turn has content; the
+  // compact result below closes it.
+  const assistant = {
+    type: 'assistant',
+    uuid: 'a-compact',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'working' }] },
+    parent_tool_use_id: null,
+  } as unknown as SDKMessage
+
+  // The real /compact result shape, verified against a live CLI 2.1.278
+  // capture (fields the classifier reads + the all-zero usage payload).
+  const compactResult = {
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    num_turns: 0,
+    result: '',
+    stop_reason: 'end_turn',
+    total_cost_usd: 0,
+    duration_ms: 0,
+    duration_api_ms: 0,
+    usage: {
+      input_tokens: 0,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 0,
+      output_tokens: 0,
+    },
+    modelUsage: {},
+    permission_denials: [],
+    local_command: 'compact',
+    uuid: 'r-compact',
+  } as unknown as SDKMessage
+
+  it('fires the reconcile probe for a compact-shaped empty result', async () => {
+    const { session } = makePumpSession([assistant, compactResult])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    // The derivation failed (all-zero usage) on a turn that DID change the
+    // context — the probe is the bar's only way to learn the post-compact
+    // total.
+    expect(reconcileContextUsage).toHaveBeenCalledTimes(1)
+    expect(reconcileContextUsage).toHaveBeenCalledWith(session)
+  })
+
+  it('still records nothing for the compact result (empty-frame recording skip holds)', async () => {
+    const { session } = makePumpSession([assistant, compactResult])
+    const recordResultFrame = vi.fn()
+    const recordTurnAnchor = vi.fn()
+    await pump(session, makePumpDeps({ recordResultFrame, recordTurnAnchor }))
+
+    expect(recordResultFrame).not.toHaveBeenCalled()
+    expect(recordTurnAnchor).not.toHaveBeenCalled()
+  })
+
+  it('does NOT fire the probe for an equally-empty result without local_command (warm-up/bookkeeping)', async () => {
+    // Negative control for the local_command gate: the warm-up placeholder
+    // and background-task bookkeeping shapes carry the same zero-turn,
+    // empty-text, all-zero-usage payload but no slash-command stamp — they
+    // must keep skipping the probe (redundant with seedContextUsage).
+    const { session } = makePumpSession([
+      assistant,
+      { ...compactResult, local_command: undefined, uuid: 'r-warmup' } as unknown as SDKMessage,
+    ])
+    const reconcileContextUsage = vi.fn()
+    await pump(session, makePumpDeps({ reconcileContextUsage }))
+
+    expect(reconcileContextUsage).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // pump: context-usage degraded-snapshot guard
 //
 // Guard 1 (assembleLiteUsage) DROPS a corrupt cache bucket that exceeds the
@@ -2964,7 +3052,10 @@ describe('saneCacheBucket', () => {
 // the derivation an exact last-iteration snapshot (nothing to correct) and an
 // older wire omits the field entirely (top-level IS the one call's prompt).
 // So the probe fires exactly when iterations is present and empty. Empty
-// warm-up results (num_turns: 0) are not turns — no probe for them either.
+// warm-up results (num_turns: 0, NO local_command) are not turns — no probe
+// for them either. The ONE empty shape that DOES probe: a local-command
+// turn's result (manual /compact — see the purely-compaction suite below),
+// whose CLI accounting is the only post-compact context source.
 // ---------------------------------------------------------------------------
 
 describe('pump: reconcileContextUsage dep', () => {

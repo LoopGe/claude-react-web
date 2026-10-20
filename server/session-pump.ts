@@ -28,7 +28,7 @@ import type { PluginLoadError } from '../shared/session-info.js'
 import type { CliNotification } from '../shared/ws-protocol.js'
 import { isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
-import { isEmptyResultFrame } from '../shared/results.js'
+import { isEmptyResultFrame, localCommandOf } from '../shared/results.js'
 import { isTaskNotificationUserMessage } from '../shared/user-frames.js'
 import { isGenuineUserInputFrame, taskToolUseId } from '../shared/task-list.js'
 
@@ -736,14 +736,17 @@ export interface PumpDeps {
    *  is). Optional so test fixtures that don't exercise snapshot behavior
    *  can omit it. */
   recordTurnSnapshot?: (sessionId: string, assistantUuid: string) => void
-  /** Request a context-usage reconciliation probe after a non-empty result
-   *  FAILED to yield a snapshot. The main failure mode: the aggregate-
+  /** Request a context-usage reconciliation probe after a result FAILED to
+   *  yield a snapshot. The main failure modes: the aggregate-
    *  reporting wire (SDK 0.3.278 + e.g. mify proxies) whose top-level usage
    *  is the turn's BILLING SUM across all API calls and whose `iterations`
    *  arrive empty — liteContextUsageFromResult refuses that shape (a real
    *  session cached 995,023/1M = 99.5% off it while the CLI's own accounting
-   *  said 16%), so the probe is the bar's ONLY source there. Also covers
-   *  purely-compaction turns and garbage payloads the guards rejected. The
+   *  said 16%), and purely-compaction turns (manual /compact), whose result
+   *  classifies EMPTY (num_turns 0, empty text, all-zero usage) yet is
+   *  exactly when the bar needs the CLI's own accounting — the stale
+   *  pre-compact number must not wait for the next ordinary result. Also
+   *  covers garbage payloads the guards rejected. The
    *  manager (which owns SDK control calls — see probeAutoCompactFacts)
    *  answers by probing getContextUsage() and applying the CLI's
    *  authoritative numbers via applyContextUsage. Fire-and-forget: the turn
@@ -1570,6 +1573,26 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             ) {
               deps.reconcileContextUsage?.(session)
             }
+          } else if (localCommandOf(msg) !== null) {
+            // A LOCAL-COMMAND turn whose result classified empty — manual
+            // /compact is the one that matters. CLI 2.1.278 ends that turn
+            // with num_turns 0, empty text, ALL-ZERO usage and
+            // `local_command: 'compact'`, so isEmptyResultFrame() calls it
+            // empty and the gate above never ran: the ContextBar kept the
+            // stale pre-compact total until the next ordinary turn
+            // (live-reproduced 2026-10-19). The compact result can never
+            // yield a snapshot (all-zero usage → the zero guard; the
+            // aggregate wire's iterations:[] → the empty-iterations gate),
+            // so the CLI's own accounting via the probe is the ONLY
+            // post-compact source. The gate keys on any local command, not
+            // just /compact: a context-mutating one (/clear) wants the
+            // correction too, and a read-only one (/cost, /model) merely
+            // spends one cheap control request. Frames reaching this branch
+            // are never errors — isEmptyResultFrame rejects is_error before
+            // classifying empty. Warm-up placeholders and background-task
+            // bookkeeping results carry no local_command and keep skipping
+            // the probe.
+            deps.reconcileContextUsage?.(session)
           }
           // Capture the end-of-turn worktree state and append a patch (the
           // diff from the previous tree to this one) to the snapshot sidecar.
