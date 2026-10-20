@@ -44,16 +44,17 @@ describe('daemon ops', () => {
   })
 
   it('status aggregates: registered but not running is NOT drift', async () => {
-    // point the registration target at a file that EXISTS so targetMissing is
-    // false — isolating "not running" from "target gone"
-    const existing = join(dir, 'daemon.mjs')
+    // The Windows adapter derives targetMissing from the registry stdout's
+    // vbs path (must end in run-hidden.vbs AND exist on disk) — the fake
+    // runner reports a registered value pointing at a real vbs file.
+    const existing = join(dir, 'daemon', 'run-hidden.vbs')
+    mkdirSync(join(dir, 'daemon'), { recursive: true })
     writeFileSync(existing, '', 'utf8')
-    const { resolveDaemonEntryPaths } = await import('./paths.js')
-    vi.mocked(resolveDaemonEntryPaths).mockReturnValue({ nodePath: '/node', daemonEntry: existing, serverEntry: '/fake/dist/cli.mjs' })
-    await daemonEnable(dir, noopRunner)
-    const snap = await daemonStatus(dir, noopRunner)
+    const runner = async () => ({ code: 0, stdout: `claude-react-web REG_SZ wscript.exe "${existing}"`, stderr: '' })
+    await daemonEnable(dir, runner)
+    const snap = await daemonStatus(dir, runner)
     expect(snap.configEnabled).toBe(true)
-    expect(snap.osRegistered).toBe(true) // the fake runner answers code 0 for everything
+    expect(snap.osRegistered).toBe(true)
     expect(snap.osTargetMissing).toBe(false)
     expect(snap.daemonAlive).toBe(false) // no heartbeat on disk
     expect(snap.drift).toBe(false)
