@@ -18,6 +18,7 @@ import { buildClientDebugRouter } from './client-debug.js'
 import { buildUploadRouter } from './uploads.js'
 import { buildRecapRouter } from './recap.js'
 import { buildConfigRouter } from './config-routes.js'
+import { buildDaemonRouter } from './daemon-routes.js'
 import { buildProfilesRouter } from './profiles.js'
 import { buildHealthRouter } from './health-routes.js'
 import { buildMpRouter } from './mp-marketplace.js'
@@ -135,6 +136,13 @@ export function buildApiRouter(
     permissions_pending: () => sm.totalPendingPermissions(),
   }))
   app.route('/', buildConfigRouter(sm, configDir))
+  // Daemon auto-start — needs the state dir for the <stateDir>/daemon/* control
+  // files; configDir IS the state dir (the same value buildConfigRouter writes).
+  // Only mounted when a configDir was provided — other buildApp callers (tests,
+  // standalone tooling) skip it cleanly, same as the mpStore router below.
+  if (configDir) {
+    app.route('/', buildDaemonRouter(configDir))
+  }
   app.route('/', buildProfilesRouter(configDir, sm))
   app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore, configDir))
   app.route('/', buildHooksRouter(sm))
