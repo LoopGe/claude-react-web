@@ -1,10 +1,24 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { tempDir, rmRf } from '../__test-utils__/index.js'
 import { writeMarker, readMarker } from './control.js'
-import { parseDaemonArgv, isSingletonBlocked, openServerLogStream, sweepStaleMarkers, type DaemonStatusLike } from './main.js'
+import { parseDaemonArgv, isSingletonBlocked, openServerLogStream, sweepStaleMarkers, nodeSchedule, type DaemonStatusLike } from './main.js'
+
+describe('nodeSchedule (live-verified regression)', () => {
+  it('keeps timers REFERENCED — unref let the daemon die silently with its child', () => {
+    // LIVE FAILURE: with t.unref() on every timer, the moment the supervised
+    // child died the event loop drained and the daemon exited 0 — no
+    // heartbeat, no backoff restart. Timers must hold the loop open.
+    const spy = vi.spyOn(globalThis, 'setTimeout')
+    const cancel = nodeSchedule(() => {}, 50)
+    const timer = spy.mock.results[spy.mock.results.length - 1]!.value as NodeJS.Timeout
+    expect(timer.hasRef()).toBe(true)
+    cancel()
+    spy.mockRestore()
+  })
+})
 
 describe('parseDaemonArgv', () => {
   it('reads --state-dir in both spellings and defaults to ~/.claude-react-web', () => {

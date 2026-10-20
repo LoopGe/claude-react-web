@@ -55,6 +55,15 @@ export function isSingletonBlocked(status: DaemonStatusLike | null, isAlive: (pi
   return isAlive(status.daemonPid)
 }
 
+/** The supervisor's timer factory. Timers MUST stay referenced: an unref'd
+ *  timer set let the event loop drain the moment the supervised child died —
+ *  the daemon exited 0 silently, no heartbeat, no backoff restart (found
+ *  live). The process is deliberately kept alive by these timers. */
+export function nodeSchedule(fn: () => void, ms: number): () => void {
+  const t = setTimeout(fn, ms)
+  return () => clearTimeout(t)
+}
+
 async function main(): Promise<void> {
   const { stateDir } = parseDaemonArgv(process.argv.slice(2))
   const existing = await readStatusFile(stateDir)
@@ -85,11 +94,7 @@ async function main(): Promise<void> {
         on: (event, cb) => { if (event === 'exit') child.on('exit', (code, signal) => cb(code, signal)) },
       }
     },
-    schedule: (fn, ms) => {
-      const t = setTimeout(fn, ms)
-      t.unref()
-      return () => clearTimeout(t)
-    },
+    schedule: nodeSchedule,
   })
 
   const shutdown = (): void => { process.exit(0) }
