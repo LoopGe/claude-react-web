@@ -40,6 +40,9 @@ export function DaemonSection() {
 
   useEffect(() => {
     if (desktop) return
+    // refresh is async — every setState inside runs after an await, never
+    // synchronously in the effect body (same pattern as SetupPage's probe).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh()
   }, [desktop, refresh])
 
