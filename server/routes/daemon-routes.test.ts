@@ -10,6 +10,7 @@ vi.mock('../daemon/paths.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../daemon/paths.js')>()
   return {
     ...actual,
+    isBundledDaemon: vi.fn(() => true),
     resolveDaemonEntryPaths: vi.fn(() => ({ nodePath: '/node', daemonEntry: '/fake/dist/daemon.mjs', serverEntry: '/fake/dist/cli.mjs' })),
   }
 })

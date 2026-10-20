@@ -9,6 +9,7 @@ vi.mock('./paths.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./paths.js')>()
   return {
     ...actual,
+    isBundledDaemon: vi.fn(() => true),
     resolveDaemonEntryPaths: vi.fn(() => ({ nodePath: '/node', daemonEntry: '/fake/dist/daemon.mjs', serverEntry: '/fake/dist/cli.mjs' })),
   }
 })
@@ -139,5 +140,60 @@ describe('review fixes — ops', () => {
     expect(killSpy.mock.calls.some((c) => c[0] === 4242 && c[1] === 'SIGTERM')).toBe(true)
     expect(killSpy.mock.calls.some((c) => c[0] === process.pid && c[1] === 'SIGTERM')).toBe(true)
     killSpy.mockRestore()
+  })
+})
+
+describe('dev mode (tsx, non-bundled) — the daemon is unsupported, not a 500', () => {
+  let dir: string
+  beforeEach(() => { dir = tempDir('daemon-ops-dev') })
+  afterEach(() => { vi.restoreAllMocks(); rmRf(dir) })
+
+  async function goDev(): Promise<void> {
+    const { isBundledDaemon } = await import('./paths.js')
+    vi.mocked(isBundledDaemon).mockReturnValue(false)
+  }
+
+  it('status degrades to supported:false with the reason (LIVE: this was a 500)', async () => {
+    await goDev()
+    const snap = await daemonStatus(dir)
+    expect(snap.supported).toBe(false)
+    expect(snap.supportReason).toMatch(/production bundle/)
+    expect(snap.osRegistered).toBe(false)
+    expect(snap.drift).toBe(false)
+  })
+
+  it('status still reports a live production daemon sharing the state dir (honest facts)', async () => {
+    await goDev()
+    await writeStatusFile(dir, {
+      daemonPid: process.pid, childPid: null, state: 'running', startedAt: Date.now(),
+      childStartedAt: Date.now(), restartCount: 0, consecutiveFailures: 0,
+      lastError: null, lastExitReason: null, updatedAt: Date.now(),
+    })
+    const snap = await daemonStatus(dir)
+    expect(snap.supported).toBe(false)
+    expect(snap.daemonAlive).toBe(true)
+    expect(snap.child!.state).toBe('running')
+  })
+
+  it('enable refuses with HttpError 400 carrying the same reason', async () => {
+    await goDev()
+    await expect(daemonEnable(dir)).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('disable refuses with HttpError 400 carrying the same reason', async () => {
+    await goDev()
+    await expect(daemonDisable(dir)).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('requestStart refuses with HttpError 400 even when a fresh status file exists (review #3)', async () => {
+    await goDev()
+    await writeStatusFile(dir, {
+      daemonPid: process.pid, childPid: null, state: 'stopped', startedAt: Date.now(),
+      childStartedAt: null, restartCount: 0, consecutiveFailures: 0,
+      lastError: null, lastExitReason: null, updatedAt: Date.now(),
+    })
+    const { readMarker } = await import('./control.js')
+    await expect(daemonRequestStart(dir)).rejects.toMatchObject({ status: 400 })
+    expect(await readMarker(dir, 'start')).toBe(false) // no orphan marker either
   })
 })

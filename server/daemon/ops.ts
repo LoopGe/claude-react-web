@@ -6,11 +6,11 @@
 import { spawn } from 'node:child_process'
 import { config, updateConfigFile } from '../config.js'
 import { HttpError } from '../errors.js'
-import { resolveDaemonEntryPaths } from './paths.js'
 import { execRunner } from './register/runner.js'
 import type { CommandRunner } from './register/types.js'
 import { getPlatformRegister } from './register/index.js'
-import { readStatusFile, isStatusFresh, writeMarker, type DaemonState } from './control.js'
+import { readStatusFile, isStatusFresh, writeMarker, type DaemonState, type DaemonStatusFile } from './control.js'
+import { resolveDaemonEntryPaths, isBundledDaemon, DEV_UNSUPPORTED } from './paths.js'
 
 export interface DaemonStatusSnapshot {
   supported: boolean
@@ -25,12 +25,39 @@ export interface DaemonStatusSnapshot {
   child: { state: DaemonState; uptimeSec: number; restartCount: number; lastError: string | null; lastExitReason: string | null } | null
 }
 
+function childOf(status: DaemonStatusFile | null): DaemonStatusSnapshot['child'] {
+  return status == null ? null : {
+    state: status.state,
+    uptimeSec: status.childStartedAt == null ? 0 : Math.max(0, Math.floor((Date.now() - status.childStartedAt) / 1000)),
+    restartCount: status.restartCount,
+    lastError: status.lastError,
+    lastExitReason: status.lastExitReason,
+  }
+}
+
 function isAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch { return false }
 }
 
 async function snapshot(stateDir: string, runner: CommandRunner): Promise<DaemonStatusSnapshot> {
   const reg = getPlatformRegister()
+  if (!isBundledDaemon()) {
+    // Dev mode: registration/resolve are unavailable, but the FACTS on disk
+    // stay honest — a production daemon sharing this state dir is reported.
+    const status = await readStatusFile(stateDir)
+    return {
+      supported: false,
+      supportReason: DEV_UNSUPPORTED,
+      mechanism: reg.mechanism,
+      configEnabled: config.autoStart === true,
+      osRegistered: false,
+      osTargetMissing: false,
+      drift: false,
+      daemonAlive: isStatusFresh(status) && status != null && isAlive(status.daemonPid),
+      isDaemonChild: process.env.CRW_DAEMON_CHILD === '1',
+      child: childOf(status),
+    }
+  }
   const support = await reg.isSupported(runner).catch((err: Error) => ({ supported: false, reason: err.message }))
   const q = support.supported
     ? await reg.query(resolveDaemonEntryPaths(), runner)
@@ -48,17 +75,12 @@ async function snapshot(stateDir: string, runner: CommandRunner): Promise<Daemon
     drift: configEnabled && osBroken,
     daemonAlive: isStatusFresh(status) && isAlive(status!.daemonPid),
     isDaemonChild: process.env.CRW_DAEMON_CHILD === '1',
-    child: status == null ? null : {
-      state: status.state,
-      uptimeSec: status.childStartedAt == null ? 0 : Math.max(0, Math.floor((Date.now() - status.childStartedAt) / 1000)),
-      restartCount: status.restartCount,
-      lastError: status.lastError,
-      lastExitReason: status.lastExitReason,
-    },
+    child: childOf(status),
   }
 }
 
 export async function daemonEnable(stateDir: string, runner: CommandRunner = execRunner): Promise<DaemonStatusSnapshot> {
+  if (!isBundledDaemon()) throw new HttpError(400, DEV_UNSUPPORTED)
   const reg = getPlatformRegister()
   const support = await reg.isSupported(runner).catch((err: Error) => ({ supported: false, reason: err.message }))
   if (!support.supported) throw new HttpError(400, `daemon auto-start is not supported here: ${support.reason ?? 'unknown reason'}`)
@@ -68,6 +90,7 @@ export async function daemonEnable(stateDir: string, runner: CommandRunner = exe
 }
 
 export async function daemonDisable(stateDir: string, runner: CommandRunner = execRunner): Promise<DaemonStatusSnapshot> {
+  if (!isBundledDaemon()) throw new HttpError(400, DEV_UNSUPPORTED)
   const reg = getPlatformRegister()
   const support = await reg.isSupported(runner).catch((err: Error) => ({ supported: false, reason: err.message }))
   if (support.supported) await reg.unregister(resolveDaemonEntryPaths(), runner)
@@ -84,6 +107,7 @@ export async function daemonStatus(stateDir: string, runner: CommandRunner = exe
  *  a no-op (NEVER a marker — a stale one would resurrect the server after a
  *  later intentional stop); no daemon → detached spawn. */
 export async function daemonRequestStart(stateDir: string): Promise<{ started: 'marker' | 'spawn' | 'already-running' }> {
+  if (!isBundledDaemon()) throw new HttpError(400, DEV_UNSUPPORTED)
   const status = await readStatusFile(stateDir)
   if (isStatusFresh(status)) {
     if (status!.state === 'stopped') {

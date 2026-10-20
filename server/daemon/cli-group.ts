@@ -37,7 +37,7 @@ export const daemonGroup: CliGroup = {
     sub('status', 'daemon status', 'Show auto-start registration and daemon/server state',
       async (ctx) => daemonStatus(ctx.stateDir),
       (d) => {
-        const s = d as { configEnabled: boolean; osRegistered: boolean; daemonAlive: boolean; drift: boolean; mechanism: string; child: { state: string; restartCount: number } | null }
+        const s = d as { supported: boolean; supportReason?: string; configEnabled: boolean; osRegistered: boolean; daemonAlive: boolean; drift: boolean; mechanism: string; child: { state: string; restartCount: number } | null }
         const lines = [
           `mechanism: ${s.mechanism}`,
           `config autoStart: ${s.configEnabled}`,
@@ -45,6 +45,7 @@ export const daemonGroup: CliGroup = {
           `daemon alive: ${s.daemonAlive}`,
           `child: ${s.child ? `${s.child.state} (restarts: ${s.child.restartCount})` : 'none'}`,
         ]
+        if (s.supported === false && s.supportReason) lines.push(`NOTE: ${s.supportReason}`)
         if (s.drift) lines.push('DRIFT: config says on but registration is missing — run `daemon install` to re-register.')
         return lines.join('\n')
       }),
