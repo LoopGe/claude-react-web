@@ -5,7 +5,9 @@ import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useUpdateInfo } from '../hooks/useUpdateInfo'
 import { notificationTooltip } from '../utils/notifications'
 import { cx } from '../utils/cx'
+import { isDesktopHost } from '../host-capabilities'
 import { IconBell, IconBellOff, IconX, IconCheck } from './icons/ToolIcons'
+import { Switch } from './Switch'
 import type { McpServerConfigMeta } from '../types'
 
 interface Props {
@@ -44,15 +46,18 @@ const STEPS = [
   { id: 3, short: 'MCP', subtitle: 'Import MCP servers from your Claude CLI config.' },
   { id: 4, short: 'Notifications', subtitle: 'Decide how you want to be notified when a turn completes.' },
   { id: 5, short: 'Updates', subtitle: 'Choose the npm registry used to check for updates.' },
-  { id: 6, short: 'Finish', subtitle: "You're ready — let's open your first session." },
+  // Web host only — the desktop app has no TCP server to auto-start (Electron
+  // login items are a separate future feature).
+  ...(isDesktopHost() ? [] : [{ id: 6, short: 'Autostart', subtitle: 'Run Claude Web automatically when you log in.' }]),
+  { id: 7, short: 'Finish', subtitle: "You're ready — let's open your first session." },
 ] as const
 
 type Step = (typeof STEPS)[number]['id']
 const TOTAL_STEPS = STEPS.length
-/** stepMeta uses id-as-index because STEPS[0].id === 0, so id and array
- *  position happen to align. If a future step is inserted out of order,
- *  switch this to a Map lookup instead of relying on the alignment. */
-const stepMeta = (id: Step) => STEPS[id]
+/** id→meta lookup by Map: ids no longer align with array positions now that
+ *  a host-conditional step can be absent (desktop has no Autostart step). */
+const STEP_BY_ID = new Map<number, (typeof STEPS)[number]>(STEPS.map((s) => [s.id, s]))
+const stepMeta = (id: Step) => STEP_BY_ID.get(id)!
 const FIRST_STEP: Step = STEPS[0].id
 const LAST_STEP: Step = STEPS[STEPS.length - 1].id
 
@@ -123,6 +128,23 @@ export function SetupPage({ onConfigured }: Props) {
 
   // ── Step 3: Notifications ──
   const notifications = useNotifications()
+
+  // ── Autostart step (web host only) ──
+  const [daemonEnabled, setDaemonEnabled] = useState(false)
+  const [daemonSupported, setDaemonSupported] = useState(true)
+  const [daemonWarning, setDaemonWarning] = useState<string | null>(null)
+  useEffect(() => {
+    if (step !== 6) return
+    void api
+      .get<{ supported: boolean; osRegistered: boolean }>('/daemon/status')
+      .then((r) => {
+        setDaemonSupported(r.supported !== false)
+        // Already registered (e.g. the user re-ran the wizard) → default the
+        // toggle to on. enable is idempotent, so completing again is harmless.
+        if (r.osRegistered) setDaemonEnabled(true)
+      })
+      .catch(() => setDaemonSupported(false))
+  }, [step])
 
   // ── Step 4: Update registry ──
   // Empty string = update checks disabled (mirrors server/config.ts:
@@ -512,6 +534,19 @@ export function SetupPage({ onConfigured }: Props) {
             )
           }
           setSetupCompleted(true)
+          // Optional enhancement step: OS auto-start. A failure here must NOT
+          // block completing setup — surface the raw error inline and point at
+          // the settings panel (explicit, never swallowed).
+          if (daemonEnabled && daemonSupported) {
+            try {
+              await api.post('/daemon/enable', {})
+            } catch (enableErr) {
+              setDaemonWarning(
+                `Auto-start could not be enabled: ${enableErr instanceof Error ? enableErr.message : String(enableErr)}`
+                + ' — you can enable it later from Settings → Server.',
+              )
+            }
+          }
         }
         // Await onConfigured so the parent's post-setup work (a /config
         // refresh) finishes before we re-enable the button. Without this
@@ -539,7 +574,7 @@ export function SetupPage({ onConfigured }: Props) {
       // flipped isConfigured), so calling setSubmitting(false) would warn
       // about state-on-unmounted in dev.
     },
-    [authToken, baseUrl, modelList, recapModel, commitMessageModel, recapModelTouched, commitModelTouched, updateRegistry, onConfigured, setupCompleted, tokenPrefilled],
+    [authToken, baseUrl, modelList, recapModel, commitMessageModel, recapModelTouched, commitModelTouched, updateRegistry, onConfigured, setupCompleted, tokenPrefilled, daemonEnabled, daemonSupported],
   )
 
   // ── Navigation helpers ──
@@ -1182,9 +1217,32 @@ export function SetupPage({ onConfigured }: Props) {
             </div>
           )}
 
-          {step === 6 && (
+          {step === 6 && !isDesktopHost() && (
+            <div className="setup-field">
+              <label className="setup-label">Auto-start (daemon)</label>
+              <p className="setup-hint">
+                Run Claude Web automatically when you log in, supervised in the
+                background — no terminal window, and it restarts if it crashes.
+                You can change this anytime from Settings → Server.
+              </p>
+              <Switch
+                label="Run automatically at login"
+                checked={daemonEnabled}
+                disabled={!daemonSupported}
+                onChange={setDaemonEnabled}
+              />
+              {!daemonSupported && (
+                <p className="setup-hint">Auto-start is not supported on this platform.</p>
+              )}
+            </div>
+          )}
+
+          {step === LAST_STEP && (
             <div className="setup-field">
               <label className="setup-label">You're all set</label>
+              {daemonWarning && (
+                <p role="alert" className="setup-field-error">{daemonWarning}</p>
+              )}
               <p className="setup-hint">
                 Create your first session to start chatting with Claude. You
                 can drop a folder onto the{' '}
