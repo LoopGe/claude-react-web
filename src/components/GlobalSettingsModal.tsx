@@ -18,6 +18,8 @@ import type { TextSpacingPreset } from '../../shared/text-spacing'
 import { DEFAULT_TEXT_SPACING, TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spacing'
 import type { FontSizePreset } from '../../shared/font-size'
 import { DEFAULT_FONT_SIZE, FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../shared/font-size'
+import type { AnimationSpeedPreset } from '../../shared/animation-speed'
+import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
@@ -179,6 +181,7 @@ export function GlobalSettingsModal({
   const [rowGap, setRowGap] = useState<RowGapPreset>(DEFAULT_ROW_GAP)
   const [textSpacing, setTextSpacing] = useState<TextSpacingPreset>(DEFAULT_TEXT_SPACING)
   const [fontSize, setFontSize] = useState<FontSizePreset>(DEFAULT_FONT_SIZE)
+  const [animationSpeed, setAnimationSpeed] = useState<AnimationSpeedPreset>(DEFAULT_ANIMATION_SPEED)
 
   // Skills tab state
   const [skillLoadMode, setSkillLoadMode] = useState<SkillLoadMode>('default')
@@ -230,6 +233,7 @@ export function GlobalSettingsModal({
         setRowGap(cfg.rowGap ?? DEFAULT_ROW_GAP)
         setTextSpacing(cfg.textSpacing ?? DEFAULT_TEXT_SPACING)
         setFontSize(cfg.fontSize ?? DEFAULT_FONT_SIZE)
+        setAnimationSpeed(cfg.animationSpeed ?? DEFAULT_ANIMATION_SPEED)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
         setSteering(cfg.steering ?? true)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
@@ -315,6 +319,7 @@ export function GlobalSettingsModal({
         rowGap,
         textSpacing,
         fontSize,
+        animationSpeed,
         allowSensitivePathEdits,
         steering,
       }
@@ -484,6 +489,7 @@ export function GlobalSettingsModal({
                   rowGap={rowGap}
                   textSpacing={textSpacing}
                   fontSize={fontSize}
+                  animationSpeed={animationSpeed}
                   onShowPinnedUserMessageChange={setShowPinnedUserMessage}
                   onAutoRecapChange={setAutoRecap}
                   onToolGroupCardsChange={setToolGroupCards}
@@ -492,6 +498,7 @@ export function GlobalSettingsModal({
                   onRowGapChange={setRowGap}
                   onTextSpacingChange={setTextSpacing}
                   onFontSizeChange={setFontSize}
+                  onAnimationSpeedChange={setAnimationSpeed}
                 />
               )}
               {tab === 'skills' && (
@@ -769,10 +776,11 @@ function ServerTab({
  *  the Server tab, which now holds only server-wide Limits + Permissions. */
 function AppearanceTab({
   showPinnedUserMessage, autoRecap, toolGroupCards, autoExpandRunningGroups,
-  showMessageHeaders, rowGap, textSpacing, fontSize,
+  showMessageHeaders, rowGap, textSpacing, fontSize, animationSpeed,
   onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
   onAutoExpandRunningGroupsChange,
   onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onFontSizeChange,
+  onAnimationSpeedChange,
 }: {
   showPinnedUserMessage: boolean
   autoRecap: boolean
@@ -782,6 +790,7 @@ function AppearanceTab({
   rowGap: RowGapPreset
   textSpacing: TextSpacingPreset
   fontSize: FontSizePreset
+  animationSpeed: AnimationSpeedPreset
   onShowPinnedUserMessageChange: (v: boolean) => void
   onAutoRecapChange: (v: boolean) => void
   onToolGroupCardsChange: (v: boolean) => void
@@ -790,6 +799,7 @@ function AppearanceTab({
   onRowGapChange: (v: RowGapPreset) => void
   onTextSpacingChange: (v: TextSpacingPreset) => void
   onFontSizeChange: (v: FontSizePreset) => void
+  onAnimationSpeedChange: (v: AnimationSpeedPreset) => void
 }) {
   return (
     <div className="settings-stack">
@@ -890,6 +900,18 @@ function AppearanceTab({
             options={FONT_SIZE_PRESETS}
             onChange={onFontSizeChange}
             labelFor={(p) => FONT_SIZE_LABELS[p]}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Animation speed"
+          hint="Speeds up or slows down the app's CSS transitions and animations — panel entrances, hover fades, transcript reveals — without changing their distance or easing. Applies globally to every session."
+        >
+          <Segmented
+            ariaLabel="Animation speed"
+            value={animationSpeed}
+            options={ANIMATION_SPEED_PRESETS}
+            onChange={onAnimationSpeedChange}
+            labelFor={(p) => ANIMATION_SPEED_LABELS[p]}
           />
         </SettingsRow>
       </section>

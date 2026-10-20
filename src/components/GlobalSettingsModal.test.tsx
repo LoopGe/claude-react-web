@@ -391,7 +391,7 @@ describe('GlobalSettingsModal Appearance tab', () => {
     'Use collapsible transcript cards',
     'Show message card headers',
   ] as const
-  const MOVED_GROUPS = ['Transcript spacing', 'Message text density', 'Font size'] as const
+  const MOVED_GROUPS = ['Transcript spacing', 'Message text density', 'Font size', 'Animation speed'] as const
 
   const openAppearanceTab = async (config: Record<string, unknown>) => {
     mockGet(config)
@@ -427,6 +427,7 @@ describe('GlobalSettingsModal Appearance tab', () => {
       rowGap: 'comfortable',
       textSpacing: 'compact',
       fontSize: 'large',
+      animationSpeed: 'fast',
     })
 
     for (const name of MOVED_SWITCHES) {
@@ -437,23 +438,28 @@ describe('GlobalSettingsModal Appearance tab', () => {
     expect(segmentedActive('Transcript spacing', 'Comfortable')).toBe('true')
     expect(segmentedActive('Message text density', 'Compact')).toBe('true')
     expect(segmentedActive('Font size', 'Large')).toBe('true')
+    expect(segmentedActive('Animation speed', 'Fast')).toBe('true')
   })
 
   it('persists a switch flip and a preset change on Save', async () => {
     await openAppearanceTab({
       showPinnedUserMessage: false,
       fontSize: 'standard',
+      animationSpeed: 'slow',
     })
 
     fireEvent.click(screen.getByRole('switch', { name: 'Show pinned “current question” header' }))
     fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Font size' }))
       .getByRole('radio', { name: 'X-Large' }))
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
+      .getByRole('radio', { name: 'Fast' }))
 
     save()
     await waitFor(() => expect(api.put).toHaveBeenCalled())
     expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
       showPinnedUserMessage: true,
       fontSize: 'xlarge',
+      animationSpeed: 'fast',
     }))
   })
 

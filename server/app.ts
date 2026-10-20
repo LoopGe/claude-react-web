@@ -273,6 +273,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       rowGap: serverConfig.rowGap,
       textSpacing: serverConfig.textSpacing,
       fontSize: serverConfig.fontSize,
+      animationSpeed: serverConfig.animationSpeed,
       activeProfileId: serverConfig.activeProfileId,
       activeProfileName: serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId)?.name ?? 'Default',
     }),

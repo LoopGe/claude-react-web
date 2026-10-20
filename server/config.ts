@@ -19,6 +19,8 @@ import type { TextSpacingPreset } from '../shared/text-spacing.js'
 import { isTextSpacingPreset, DEFAULT_TEXT_SPACING } from '../shared/text-spacing.js'
 import type { FontSizePreset } from '../shared/font-size.js'
 import { isFontSizePreset, DEFAULT_FONT_SIZE } from '../shared/font-size.js'
+import type { AnimationSpeedPreset } from '../shared/animation-speed.js'
+import { isAnimationSpeedPreset, DEFAULT_ANIMATION_SPEED } from '../shared/animation-speed.js'
 import {
   enableFileLogging, disableFileLogging, setLogConfig,
   LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
@@ -169,6 +171,9 @@ interface ConfigFile {
   /** Global font-size preset. A personal UI preference — global only, never
    *  per-session. */
   fontSize?: string
+  /** Global animation-speed preset. A personal UI preference — global only,
+   *  never per-session. */
+  animationSpeed?: string
   /** Global default for per-session CLI debug logging (Options.debug +
    *  debugFile). SessionMeta.cliDebug overrides when set. Default: false. */
   cliDebug?: boolean
@@ -282,6 +287,10 @@ export interface ServerConfig {
   /** Global font-size (`--fs-scale`) preset. Sibling of rowGap/textSpacing
    *  but controls size, not spacing. Applied globally. */
   readonly fontSize: FontSizePreset
+  /** Global animation-speed — scales every `--motion-duration-*` token.
+   *  Sibling of rowGap/textSpacing/fontSize but controls motion duration, not
+   *  rhythm or size. Applied globally. */
+  readonly animationSpeed: AnimationSpeedPreset
   /** Global default for per-session CLI debug logging (spawn-time only). */
   readonly cliDebug: boolean
   /** Global default for the per-session `git-tools` git MCP server. Sessions
@@ -351,6 +360,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   rowGap: DEFAULT_ROW_GAP,
   textSpacing: DEFAULT_TEXT_SPACING,
   fontSize: DEFAULT_FONT_SIZE,
+  animationSpeed: DEFAULT_ANIMATION_SPEED,
   cliDebug: false,
   appToolsGit: true,
   firstPartyTools: Object.freeze({ [GIT_TOOLS_SERVER_NAME]: Object.freeze({ enabled: true }) }),
@@ -683,6 +693,10 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { fontSize: FontSizePreset }).fontSize = file_.fontSize
   }
 
+  if (typeof file_.animationSpeed === 'string' && isAnimationSpeedPreset(file_.animationSpeed)) {
+    ;(merged as { animationSpeed: AnimationSpeedPreset }).animationSpeed = file_.animationSpeed
+  }
+
   if (typeof file_.cliDebug === 'boolean') {
     ;(merged as { cliDebug: boolean }).cliDebug = file_.cliDebug
     log.info(`cliDebug: ${file_.cliDebug}`)
@@ -814,6 +828,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'rowGap',
   'textSpacing',
   'fontSize',
+  'animationSpeed',
   'cliDebug',
   'appToolsGit',
   'firstPartyTools',

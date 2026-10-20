@@ -124,6 +124,8 @@ import type { TextSpacingPreset } from '../shared/text-spacing'
 import { DEFAULT_TEXT_SPACING, TEXT_SPACING_CSS } from '../shared/text-spacing'
 import type { FontSizePreset } from '../shared/font-size'
 import { DEFAULT_FONT_SIZE, FONT_SIZE_SCALE } from '../shared/font-size'
+import type { AnimationSpeedPreset } from '../shared/animation-speed'
+import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_SCALE, MOTION_DURATION_TOKENS } from '../shared/animation-speed'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
@@ -339,8 +341,9 @@ export function App() {
     rowGap: RowGapPreset
     textSpacing: TextSpacingPreset
     fontSize: FontSizePreset
+    animationSpeed: AnimationSpeedPreset
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE, animationSpeed: DEFAULT_ANIMATION_SPEED })
 
   // Apply the global transcript spacing to a CSS variable. Set on
   // documentElement, it overrides the `.chat`-scoped default, so message rows,
@@ -368,6 +371,26 @@ export function App() {
   useEffect(() => {
     document.documentElement.style.setProperty('--fs-scale', String(FONT_SIZE_SCALE[globalPrefs.fontSize]))
   }, [globalPrefs.fontSize])
+
+  // Apply the global animation speed by writing the final scaled duration to
+  // each --motion-duration-* token inline on <html>. Written as a plain
+  // 'NNNms' (not calc()) so BOTH CSS transitions and the JS readers that
+  // parse the token numerically (MessageList panel-unhide sweep,
+  // useRevealClass) observe the same value. Standard = 1 (the shipped
+  // default = unchanged).
+  //
+  // Skipped under prefers-reduced-motion: the OS-level opt-out is stronger
+  // than an aesthetic speed preference, and a 'slow' choice must never
+  // lengthen motion for a vestibular user. Elements with their own
+  // @media (prefers-reduced-motion) block already snap independently; the
+  // rest keep their base durations (the pre-feature behavior).
+  useEffect(() => {
+    if (prefersReducedMotion()) return
+    const scale = ANIMATION_SPEED_SCALE[globalPrefs.animationSpeed]
+    for (const { token, baseMs } of MOTION_DURATION_TOKENS) {
+      document.documentElement.style.setProperty(token, `${Math.round(baseMs * scale)}ms`)
+    }
+  }, [globalPrefs.animationSpeed])
 
   const {
     settingsOpenFor,
@@ -627,6 +650,7 @@ export function App() {
       rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
       textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
       fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
+      animationSpeed: r.animationSpeed ?? DEFAULT_ANIMATION_SPEED,
       firstPartyTools: r.firstPartyTools,
     }
     // Keep object identity when nothing changed — every store notify runs
@@ -641,6 +665,7 @@ export function App() {
       prev.rowGap === nextPrefs.rowGap &&
       prev.textSpacing === nextPrefs.textSpacing &&
       prev.fontSize === nextPrefs.fontSize &&
+      prev.animationSpeed === nextPrefs.animationSpeed &&
       prev.firstPartyTools === nextPrefs.firstPartyTools
         ? prev
         : nextPrefs,

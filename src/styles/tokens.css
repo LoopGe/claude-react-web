@@ -117,7 +117,13 @@
   --fs-base: calc(13px * var(--fs-scale));
   --fs-md: calc(14px * var(--fs-scale));
   --fs-lg: calc(16px * var(--fs-scale));
-  /* Motion tokens: shared durations/easings/distances for UI transitions. */
+  /* Motion tokens: shared durations/easings/distances for UI transitions.
+     The base duration values below are overridden inline on <html> by App.tsx
+     from the global animation-speed setting (slow/standard/fast): it writes
+     the final scaled 'NNNms' per token so CSS transitions AND the JS readers
+     that parse the token numerically stay in lockstep. (A calc() wrapper would
+     defeat those JS readers — a custom property never evaluates calc() at
+     computed-value time, so parseFloat() would read NaN.) */
   --motion-duration-instant: 80ms;
   --motion-duration-fast: 120ms;
   --motion-duration-base: 180ms;

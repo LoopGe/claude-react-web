@@ -2,6 +2,7 @@ import type { SkillLoadMode } from '../../shared/skills'
 import type { RowGapPreset } from '../../shared/row-gap'
 import type { TextSpacingPreset } from '../../shared/text-spacing'
 import type { FontSizePreset } from '../../shared/font-size'
+import type { AnimationSpeedPreset } from '../../shared/animation-speed'
 
 /** Client-side mirror of a provider profile. */
 export interface ProviderProfile {
@@ -70,6 +71,9 @@ export interface ConfigResponse {
   /** Global font size (`--fs-scale`) preset. Undefined = inherit the server
    *  default (standard, scale 1). */
   fontSize?: FontSizePreset
+  /** Global animation speed (scales every `--motion-duration-*` token).
+   *  Undefined = inherit the server default (standard, scale 1). */
+  animationSpeed?: AnimationSpeedPreset
   /** Global default for the first-party `git-tools` git MCP server. Sessions
    *  without an explicit override inherit this. */
   appToolsGit?: boolean
@@ -120,6 +124,8 @@ export interface FullServerConfig {
   textSpacing: TextSpacingPreset
   /** Global font size (`--fs-scale`) preset. */
   fontSize: FontSizePreset
+  /** Global animation speed (scales every `--motion-duration-*` token). */
+  animationSpeed: AnimationSpeedPreset
   /** Global default for the first-party `git-tools` git MCP server. */
   appToolsGit: boolean
   /** Per-first-party-server global defaults. */

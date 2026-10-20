@@ -485,6 +485,30 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('fontSize')
   })
 
+  it('defaults animationSpeed to standard', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.animationSpeed).toBe('standard')
+  })
+
+  it('honors an animationSpeed override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ animationSpeed: 'fast' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.animationSpeed).toBe('fast')
+  })
+
+  it('ignores an invalid animationSpeed value', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ animationSpeed: '2x' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.animationSpeed).toBe('standard')
+  })
+
+  it('exposes animationSpeed as a writable config key', () => {
+    expect(WRITABLE_CONFIG_KEYS).toContain('animationSpeed')
+  })
+
   it('defaults autoExpandRunningGroups to true (current behavior)', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
