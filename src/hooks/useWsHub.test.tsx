@@ -240,11 +240,39 @@ describe('useWsHub: connection lifecycle', () => {
     // The stale socket emits close again (late delivery).
     act(() => { stale.serverDrop() })
     await flushMicrotasks()
-    // No reconnect scheduled, and the live socket is untouched.
-    act(() => { vi.advanceTimersByTime(60_000) })
+    // No reconnect scheduled, and the live socket is untouched. The 60s
+    // window spans live heartbeats, so answer each ping — a healthy server
+    // would — or the zombie watchdog would (correctly) replace the socket.
+    for (let i = 0; i < 3; i++) {
+      act(() => { vi.advanceTimersByTime(25_000) })
+      const pings = live.framesOfKind('ping')
+      const last = pings[pings.length - 1] as { nonce?: number } | undefined
+      act(() => { live.fireMessage({ kind: 'pong', nonce: last?.nonce }) })
+    }
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect(live.readyState).toBe(FakeWebSocket.OPEN)
     expect(live.closeCalls).toHaveLength(0)
+  })
+
+  it("a stale socket's late frames do not reach listeners (onFrame stale guard)", () => {
+    // The pong path makes this load-bearing: without the guard, an abandoned
+    // socket's late pong would clear the LIVE connection's pendingPingRef and
+    // postpone zombie detection by a full interval.
+    const { result } = mountHub()
+    openSocket()
+    const stale = sock()
+    act(() => { stale.serverDrop() })
+    act(() => { vi.advanceTimersByTime(500) })
+    openSocket()
+    const seen = vi.fn()
+    act(() => { result.current.hub.addListener(seen) })
+
+    act(() => { stale.fireMessage({ kind: 'sessions-snapshot', sessions: [] }) })
+    expect(seen).not.toHaveBeenCalled()
+
+    // The live socket still delivers.
+    act(() => { sock().fireMessage({ kind: 'sessions-snapshot', sessions: [] }) })
+    expect(seen).toHaveBeenCalledTimes(1)
   })
 
   it('closes the socket and stops reconnecting on unmount', () => {
@@ -266,9 +294,19 @@ describe('useWsHub: connection lifecycle', () => {
     const live = sock()
     expect(live.framesOfKind('ping')).toHaveLength(0)
 
-    act(() => { vi.advanceTimersByTime(25_000) })
-    expect(live.framesOfKind('ping')).toHaveLength(1)
-    act(() => { vi.advanceTimersByTime(50_000) })
+    const echoPong = () => {
+      const pings = live.framesOfKind('ping')
+      const last = pings[pings.length - 1] as { nonce?: number } | undefined
+      if (last) act(() => { live.fireMessage({ kind: 'pong', nonce: last.nonce }) })
+    }
+
+    // One tick per step: each ping must be answered BEFORE the next tick's
+    // zombie check runs (advancing two intervals at once would run both
+    // ticks before the echo lands).
+    for (let i = 0; i < 3; i++) {
+      act(() => { vi.advanceTimersByTime(25_000) })
+      echoPong()
+    }
     expect(live.framesOfKind('ping')).toHaveLength(3)
 
     // After a drop the heartbeat interval is cleared — no further pings on the
@@ -277,6 +315,79 @@ describe('useWsHub: connection lifecycle', () => {
     const afterDrop = live.framesOfKind('ping').length
     act(() => { vi.advanceTimersByTime(100_000) })
     expect(live.framesOfKind('ping')).toHaveLength(afterDrop)
+  })
+})
+
+// ── zombie-connection watchdog ──────────────────────────────────────
+
+describe('useWsHub: zombie-connection watchdog', () => {
+  it('keeps the connection alive while every ping is answered in time', () => {
+    mountHub()
+    openSocket()
+    const live = sock()
+
+    // 10 minutes of healthy heartbeats: each tick's ping is answered by the
+    // server before the next tick. No reconnect may fire — this is the
+    // every-day path and a false zombie here would drop live connections.
+    for (let i = 0; i < 24; i++) {
+      act(() => { vi.advanceTimersByTime(25_000) })
+      const pings = live.framesOfKind('ping')
+      const last = pings[pings.length - 1] as { nonce?: number } | undefined
+      act(() => { live.fireMessage({ kind: 'pong', nonce: last?.nonce }) })
+    }
+    expect(live.framesOfKind('ping')).toHaveLength(24)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('detects a dead connection (pong never arrives) and reconnects without a refresh', () => {
+    const { result } = mountHub()
+    openSocket()
+    const zombie = sock()
+
+    // Tick 1: ping goes out. The peer never answers (pipe wedged silently —
+    // TCP established, no close event).
+    act(() => { vi.advanceTimersByTime(25_000) })
+    expect(zombie.framesOfKind('ping')).toHaveLength(1)
+    expect(FakeWebSocket.instances).toHaveLength(1) // still hoping
+
+    // Tick 2: the pending ping is now a full interval old (the verdict is
+    // whatever is still pending at the next 25s tick — there is no separate
+    // deadline constant; pong tolerance IS the ping cadence).
+    // The hub must declare the connection dead, drop it, and start the
+    // reconnect path (this is what a refresh does, without the refresh).
+    act(() => { vi.advanceTimersByTime(25_000) })
+    expect(result.current.status).toBe('reconnecting')
+    expect(zombie.closeCalls.length).toBeGreaterThan(0)
+
+    // The abandoned socket's events are ignored (stale-sequence guard): a
+    // late open must not resurrect the dead connection's state.
+    act(() => { zombie.fireOpen() })
+    expect(result.current.status).toBe('reconnecting')
+
+    // Backoff (500ms, jitter mocked to 0) → fresh socket → online again.
+    act(() => { vi.advanceTimersByTime(500) })
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    openSocket()
+    expect(result.current.status).toBe('online')
+    // Heartbeats resume on the new socket.
+    act(() => { vi.advanceTimersByTime(25_000) })
+    expect(sock().framesOfKind('ping')).toHaveLength(1)
+  })
+
+  it('a pong arriving within the deadline cancels the zombie verdict', () => {
+    mountHub()
+    openSocket()
+    const live = sock()
+
+    act(() => { vi.advanceTimersByTime(25_000) })
+    const pings = live.framesOfKind('ping') as Array<{ nonce?: number }>
+    // Answer the first ping late in the window but before the next tick.
+    act(() => { live.fireMessage({ kind: 'pong', nonce: pings[0]?.nonce }) })
+    act(() => { vi.advanceTimersByTime(25_000) })
+
+    // Both ticks sent pings, both were answered — still one connection.
+    expect(live.framesOfKind('ping')).toHaveLength(2)
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 })
 

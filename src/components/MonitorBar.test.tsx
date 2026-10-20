@@ -46,6 +46,87 @@ describe('MonitorBar', () => {
     expect(container.querySelector('.monitor-text')?.textContent).toBe('Watch build')
     expect(container.querySelector('.monitor-bar-count')?.textContent).toBe('1')
   })
+
+  it('drops a monitor whose task settled (a <task-notification> injection carried its task id)', () => {
+    // The harness delivers a `<task-notification>` user injection when a
+    // background task settles — the same server task id MonitorBar parses
+    // out of the "Monitor started (task abc123, …)" result. That injection
+    // is the authoritative end signal for a persistent monitor (no
+    // TaskStop, no timeout window): the bar must stop listing it.
+    const msgs = [
+      ...runningMonitor('m1', 'Watch build'),
+      {
+        type: 'user',
+        message: { content: [{ type: 'text', text: [
+          '<task-notification>',
+          '<task-id>abc123</task-id>',
+          '<summary>Monitor event: "build done"</summary>',
+          '<event>[Monitor expired after 15m with no events delivered.]</event>',
+          '</task-notification>',
+        ].join('\n') }] },
+      } as unknown as SdkMessage,
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    expect(container.querySelector('.monitor-bar')).toBeNull()
+  })
+
+  it('drops a monitor named among MULTIPLE task-ids in one notification', () => {
+    // Real corpus shape: "2 background shell command tasks didn't finish"
+    // carries several <task-id> children. Eviction must consider ALL of
+    // them, not just the first.
+    const msgs = [
+      ...runningMonitor('m1', 'Watch build'),
+      {
+        type: 'user',
+        message: { content: [{ type: 'text', text: [
+          '<task-notification>',
+          '<task-id>shellAAA</task-id>',
+          '<task-id>abc123</task-id>',
+          '<status>stopped</status>',
+          '<summary>2 background shell command tasks didn\'t finish</summary>',
+          '</task-notification>',
+        ].join('\n') }] },
+      } as unknown as SdkMessage,
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    expect(container.querySelector('.monitor-bar')).toBeNull()
+  })
+
+  it('does NOT evict when a LATER text block merely quotes a <task-id> literal', () => {
+    // The canonical grammar (shared/user-frames) matches on the LEADING text
+    // block only. A second block quoting the format (user paste, model echo)
+    // must not count as a settle signal for the monitor's task id.
+    const msgs = [
+      ...runningMonitor('m1', 'Watch build'),
+      {
+        type: 'user',
+        message: { content: [
+          { type: 'text', text: '<task-notification>\n<task-id>other999</task-id>\n<summary>unrelated</summary>\n</task-notification>' },
+          { type: 'text', text: 'the format is <task-id>abc123</task-id>' },
+        ] },
+      } as unknown as SdkMessage,
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    expect(container.querySelector('.monitor-bar')).not.toBeNull()
+  })
+
+  it('keeps a monitor whose task id was NOT in the notification (no over-eager eviction)', () => {
+    const msgs = [
+      ...runningMonitor('m1', 'Watch build'),
+      {
+        type: 'user',
+        message: { content: [{ type: 'text', text: [
+          '<task-notification>',
+          '<task-id>other999</task-id>',
+          '<summary>Some other task finished</summary>',
+          '</task-notification>',
+        ].join('\n') }] },
+      } as unknown as SdkMessage,
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    expect(container.querySelector('.monitor-bar')).not.toBeNull()
+    expect(container.querySelector('.monitor-bar-count')?.textContent).toBe('1')
+  })
 })
 
 // /clear blur-fade: while a clear is in flight the bar must reuse the

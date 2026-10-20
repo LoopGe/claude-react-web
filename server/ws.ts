@@ -29,11 +29,26 @@ import { WS_PATH } from './ws-protocol.js'
 
 const log = createLogger('ws')
 
+/** Liveness flag stamped on every socket by the heartbeat sweep below. */
+declare module 'ws' {
+  interface WebSocket {
+    isAlive: boolean
+  }
+}
+
 /** Inbound frame cap. The only client → server frames are
  *  `subscribe | unsubscribe | ping` (shared/ws-protocol.ts WsClientFrame):
  *  a session id and a mode literal — well under 1 KiB. Anything larger is
  *  closed with 1009 before it is buffered. */
 export const WS_MAX_INBOUND_BYTES = 64 * 1024
+
+/** Protocol-level dead-client sweep. Every HEARTBEAT_INTERVAL_MS each socket
+ *  gets one `ping()`; a socket that answered the previous ping with a pong
+ *  (browsers do this automatically, below the JS layer) is alive, one that
+ *  didn't is a zombie — e.g. a tab the OS killed without a close handshake —
+ *  and is terminated so its SessionConnection, session subscriptions and
+ *  fan-out queues are freed instead of lingering until process exit. */
+const HEARTBEAT_INTERVAL_MS = 30_000
 
 /** Attach a WebSocket endpoint to an existing Node HTTP server. Returns
  *  a `shutdown()` function that closes every live socket — callers pass
@@ -67,6 +82,21 @@ export function attachWebSocket(
   // All live sockets, so shutdown() can close them. A Set is enough —
   // per-connection state lives in the SessionConnection closures.
   const sockets = new Set<WebSocket>()
+
+  const heartbeat = setInterval(() => {
+    for (const ws of sockets) {
+      if (ws.isAlive === false) {
+        // `_socket` is real but untyped in this ws version — diagnostics only.
+        const addr = (ws as unknown as { _socket?: { remoteAddress?: string } })._socket?.remoteAddress
+        log.info(`terminating dead socket (no pong) addr=${addr ?? '?'}`)
+        try { ws.terminate() } catch { /* already gone */ }
+        continue
+      }
+      ws.isAlive = false
+      try { ws.ping() } catch { /* close/error handlers own the cleanup */ }
+    }
+  }, HEARTBEAT_INTERVAL_MS)
+  heartbeat.unref()
 
   httpServer.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
     // Only hijack upgrades on our path; others (e.g. Vite HMR on a
@@ -106,19 +136,24 @@ export function attachWebSocket(
 
   wss.on('connection', (ws) => {
     sockets.add(ws)
+    ws.isAlive = true
     // Gauge derived from the Set itself — single source of truth, no
     // separate counter to drift.
     metrics.gauge('ws_connections', sockets.size)
 
     const conn = new SessionConnection({ sm, appPlugins, subagentTranscripts }, new WsFrameSink(ws))
 
+    ws.on('pong', () => { ws.isAlive = true })
+
     ws.on('message', (raw) => {
       conn.handleClientFrame(typeof raw === 'string' ? raw : raw.toString('utf-8'))
     })
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       conn.close()
       sockets.delete(ws)
+      // After the delete — the count must describe surviving connections.
+      log.info(`socket closed code=${code} reason=${reason.toString() || '-'} (open=${sockets.size})`)
       metrics.gauge('ws_connections', sockets.size)
     })
 
@@ -138,6 +173,7 @@ export function attachWebSocket(
   })
 
   const shutdown = async () => {
+    clearInterval(heartbeat)
     // Send close frames to all connected clients. Some may never
     // acknowledge (e.g. backgrounded tabs), so we also set a hard
     // timeout to forcibly terminate stragglers.

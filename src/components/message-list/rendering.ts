@@ -121,11 +121,23 @@ function unescapeXml(s: string): string {
  *  returned text is run through `unescapeXml` so it matches what the
  *  server originally captured (see `escapeXml` in server/exec.ts). */
 export function extractTag(s: string, tag: string): string | null {
+  return extractTags(s, tag)[0] ?? null
+}
+
+/** Extract the inner text of EVERY `<tag>...</tag>` occurrence in `s`, in
+ *  document order, each unescaped exactly like `extractTag`. For injections
+ *  that legitimately repeat a tag — a `<task-notification>` may list several
+ *  `<task-id>` children ("2 background shell command tasks didn't finish"). */
+export function extractTags(s: string, tag: string): string[] {
   const open = `<${tag}>`
   const close = `</${tag}>`
-  const start = s.indexOf(open)
-  if (start < 0) return null
-  const end = s.indexOf(close, start + open.length)
-  if (end < 0) return null
-  return unescapeXml(s.slice(start + open.length, end))
+  const out: string[] = []
+  let i = s.indexOf(open)
+  while (i >= 0) {
+    const end = s.indexOf(close, i + open.length)
+    if (end < 0) break
+    out.push(unescapeXml(s.slice(i + open.length, end)))
+    i = s.indexOf(open, end + close.length)
+  }
+  return out
 }

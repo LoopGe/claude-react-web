@@ -14,6 +14,12 @@
 // rely on two signals that are SAFE (no false "stopped" while it's running):
 //   - A `TaskStop` whose task_id matches  → stopped. This is the clean,
 //     reliable end signal (TaskStop's input carries {task_id}).
+//   - A `<task-notification>` user injection whose <task-id> matches →
+//     settled. The harness delivers this when the background task ends
+//     (completion OR expiry — e.g. a persistent Monitor timing out). It is
+//     the ONLY end signal a persistent monitor gets short of TaskStop, and
+//     it also makes history replay correct (the walk re-reads the whole
+//     stream, so ended monitors never reappear in old transcripts).
 //   - Non-persistent + past its timeout window (receivedAt + timeout_ms)
 //     → assumed ended.
 //   - Otherwise → running.
@@ -35,6 +41,8 @@ import { IconChevronDown, IconCircleDot } from './icons/ToolIcons'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useRotor } from '../hooks/useRotor'
+import { isTaskNotificationUserMessage } from '../session-store/normalize'
+import { extractTags } from './message-list/rendering'
 
 interface MonitorInfo {
   /** tool_use id of the Monitor call — stable key. */
@@ -241,8 +249,10 @@ function extractRunningMonitors(messages: SdkMessage[], now: number): MonitorInf
     }
   }
 
-  // 3) Walk Monitor tool_use blocks and decide which are still running.
-  const out: MonitorInfo[] = []
+  // 3) Walk Monitor tool_use blocks into candidate records; decide
+  // running-ness AFTER, so the (comparatively expensive) settled-notification
+  // scan only runs when a monitor with a parsed taskId actually exists.
+  const candidates: Array<MonitorInfo & { timeoutEnd?: number }> = []
   for (const msg of messages) {
     if (msg.type !== 'assistant') continue
     const content = msg.message?.content
@@ -258,22 +268,52 @@ function extractRunningMonitors(messages: SdkMessage[], now: number): MonitorInf
       const timeoutMs = typeof input?.timeout_ms === 'number' ? input.timeout_ms : undefined
       const start = typeof msg.receivedAt === 'number' ? msg.receivedAt : undefined
 
-      // --- ended? (only the two safe signals; see header comment) ---
-      if (taskId && stoppedTaskIds.has(taskId)) continue
-      if (!persistent && start && timeoutMs && now > start + timeoutMs) continue
-
       const description =
         str(input?.description) ?? firstLine(str(input?.command)) ?? 'Background monitor'
 
-      out.push({
-        key: toolUseId ?? `monitor:${out.length}`,
+      candidates.push({
+        key: toolUseId ?? `monitor:${candidates.length}`,
         taskId,
         description,
         persistent,
+        timeoutEnd: !persistent && start && timeoutMs ? start + timeoutMs : undefined,
       })
     }
   }
-  return out
+  if (candidates.length === 0) return []
+
+  // 4) Collect task ids the harness has reported SETTLED via a
+  // <task-notification> user injection — the authoritative end signal for a
+  // monitor that was never TaskStopped and (being persistent) has no timeout
+  // window: the injection's <task-id> is the same server task id
+  // parseMonitorTaskId extracts from the "Monitor started (task …)" result,
+  // so the correlation is exact. Structured-tag sniffing, not free text —
+  // the false-positive concern in the header comment doesn't apply. A
+  // notification can carry MULTIPLE task-ids (corpus: "2 background shell
+  // command tasks didn't finish" lists 3-4), so extract all of them.
+  const settledTaskIds = new Set<string>()
+  if (candidates.some((c) => c.taskId)) {
+    for (const msg of messages) {
+      if (!isTaskNotificationUserMessage(msg)) continue
+      // Parse the LEADING text block only — the same slice the canonical
+      // grammar (shared/user-frames taskNotificationText) matched on. A
+      // later block quoting '<task-id>…' verbatim must not settle a task.
+      const text = leadingUserText(msg)
+      if (!text) continue
+      for (const id of extractTags(text, 'task-id')) {
+        if (id) settledTaskIds.add(id)
+      }
+    }
+  }
+
+  // 5) Ended? (the three safe signals; see header comment.)
+  return candidates.flatMap((c) => {
+    if (c.taskId && stoppedTaskIds.has(c.taskId)) return []
+    if (c.taskId && settledTaskIds.has(c.taskId)) return []
+    if (c.timeoutEnd != null && now > c.timeoutEnd) return []
+    const { timeoutEnd: _drop, ...info } = c
+    return [info]
+  })
 }
 
 /** Parse the background task id out of a "Monitor started (task <id>, …)"
@@ -310,4 +350,20 @@ function firstLine(s: string | undefined): string | undefined {
 /** Narrow an unknown to a non-empty string, else undefined. */
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined
+}
+
+/** The message's FIRST text block only — the slice the canonical
+ *  `<task-notification>` grammar (shared/user-frames) matches on. Unlike
+ *  extractUserText this never joins later blocks, so a quoted
+ *  `<task-id>` literal in a trailing block can't settle a task. */
+function leadingUserText(msg: SdkMessage): string | null {
+  const content = msg.message?.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const b = (content as Array<{ type?: unknown; text?: unknown }>).find(
+      (b) => b?.type === 'text' && typeof b.text === 'string',
+    )
+    return b && typeof b.text === 'string' ? b.text : null
+  }
+  return null
 }

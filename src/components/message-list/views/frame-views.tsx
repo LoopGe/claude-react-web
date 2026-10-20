@@ -142,18 +142,74 @@ export function BashMessage({ text, sending, onAbort, searchQuery, activeMatchIn
 
 /** Render a synthetic `<task-notification>` user message — the harness's
  *  background-subagent result injection. Parses the `<status>`, `<summary>`,
- *  and `<result>` tags and shows the result body as a neutral card so it is
- *  never mistaken for a human-typed "you" bubble. Reuses the same `msg
- *  tool-result` styling as an orphan tool-result frame (no new CSS), with a
- *  header that names the origin and completion status. */
+ *  `<event>`, and `<result>` tags and shows the result body as a neutral card
+ *  so it is never mistaken for a human-typed "you" bubble. Reuses the same
+ *  `msg tool-result` styling as an orphan tool-result frame, with a header
+ *  that names the origin and completion status.
+ *
+ *  Status is displayed VERBATIM when the harness supplies one (the corpus has
+ *  'completed'/'failed'/'stopped'/'killed' — coercion would misreport e.g. a
+ *  deliberate kill as a crash). A MISSING status falls back to 'expired' when
+ *  the `<event>` body is the harness's Monitor-expiry notice (a timed-out
+ *  watch, not a crashed task), else 'failed' — the reducer's
+ *  `normalizeTaskStatus` default. Never defaults to 'completed': the old
+ *  default showed a green label for a Monitor that timed out with nothing
+ *  delivered (these injections carry NO `<status>` tag at all).
+ *  `<event>` (harness commentary, e.g. the expiry reason) is rendered dimmed
+ *  beneath the summary so the card explains WHY a statusless notification
+ *  fired. `<event>`/`<result>` rebase the item-level active search match
+ *  per region by counting raw-text prefix matches (the plainText basis
+ *  includes the tag scaffolding — see the memo below).
+ *  Note: extractTag above only returns the FIRST occurrence; fine here
+ *  because every tag consumed is single-occurrence per injection. */
 export function TaskNotificationCard({ text, searchQuery, activeMatchIdx }: {
   text: string
   searchQuery?: string
   activeMatchIdx?: number
 }) {
-  const status = extractTag(text, 'status') ?? 'completed'
   const summary = extractTag(text, 'summary') ?? undefined
+  const event = extractTag(text, 'event') ?? undefined
   const result = extractTag(text, 'result') ?? undefined
+  // Status display ladder: harness-supplied status VERBATIM → Monitor-expiry
+  // detection (statusless + the harness's standardized "[Monitor expired …]"
+  // event body — a timed-out watch, not a crashed task) → 'failed', matching
+  // the reducer's normalizeTaskStatus default. Never defaults to 'completed'.
+  const rawStatus = extractTag(text, 'status')
+  const status = rawStatus
+    ?? (event != null && /monitor expired/i.test(event) ? 'expired' : 'failed')
+  const q = searchQuery?.trim()
+  const { eventActiveIdx, resultActiveIdx } = useMemo(() => {
+    if (!q || activeMatchIdx == null || activeMatchIdx < 0) {
+      return { eventActiveIdx: undefined, resultActiveIdx: undefined }
+    }
+    // The item-level active index is computed over item.plainText, which
+    // indexes the FULL raw injection: htmlAsTextHandlers keeps the tag
+    // scaffolding ('<task-notification>', '<task-id>', …) as literal
+    // searchable text. So the global→local rebase counts every match in the
+    // raw text BEFORE a region's body (scaffolding + earlier regions),
+    // then bounds the local index by the region's own match count — an
+    // active hit outside both regions (e.g. inside <summary>) marks nothing.
+    const bodyStart = (tag: string) => {
+      const open = `<${tag}>`
+      const start = text.indexOf(open)
+      return start < 0 ? null : start + open.length
+    }
+    const evStart = event != null ? bodyStart('event') : null
+    const resStart = result != null ? bodyStart('result') : null
+    const evCount = event != null ? countMatches(event, q) : 0
+    const resCount = result != null ? countMatches(result, q) : 0
+    let eventActiveIdx: number | undefined
+    let resultActiveIdx: number | undefined
+    if (evStart != null) {
+      const local = activeMatchIdx - countMatches(text.slice(0, evStart), q)
+      if (local >= 0 && local < evCount) eventActiveIdx = local
+    }
+    if (resStart != null) {
+      const local = activeMatchIdx - countMatches(text.slice(0, resStart), q)
+      if (local >= 0 && local < resCount) resultActiveIdx = local
+    }
+    return { eventActiveIdx, resultActiveIdx }
+  }, [q, activeMatchIdx, text, event, result])
   return (
     <div className="msg tool-result task-notification">
       <div className="msg-header">
@@ -161,7 +217,8 @@ export function TaskNotificationCard({ text, searchQuery, activeMatchIdx }: {
       </div>
       <div className="msg-body">
         {summary && <div style={{ marginBottom: result ? 6 : 0, opacity: 0.85 }}>{summary}</div>}
-        {result && <Markdown text={result} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}
+        {event && <div className="task-notification-event"><Markdown text={event} searchQuery={searchQuery} activeMatchIdx={eventActiveIdx} /></div>}
+        {result && <Markdown text={result} searchQuery={searchQuery} activeMatchIdx={resultActiveIdx} />}
       </div>
     </div>
   )
