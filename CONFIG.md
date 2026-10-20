@@ -405,6 +405,21 @@ Must be a positive integer.
 
 ---
 
+### `autoStart`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+
+Daemon auto-start **desired state**. Managed by `POST /api/daemon/enable|disable` and the
+`claude-react-web daemon install|uninstall` commands, which also perform the OS-level
+registration (the actual state). Setting it directly (PUT /config) records intent only and
+does NOT register or unregister anything — a mismatch is surfaced as `drift` by
+`GET /api/daemon/status`.
+
+---
+
 ## Priority order
 
 Configuration values are resolved in this order (highest priority first):
