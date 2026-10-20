@@ -21,7 +21,7 @@
 |---|---|
 | 定位 | 面向最终用户的产品功能 |
 | 运行形态 | 隐藏后台运行：无窗口、无终端，日志落盘，面板可查看/停止 |
-| 平台 | Windows（计划任务）/ macOS（LaunchAgent）/ Linux（systemd user unit）三平台 |
+| 平台 | Windows（HKCU Run 键，实机修订）/ macOS（LaunchAgent）/ Linux（systemd user unit）三平台 |
 | 服务对象 | 生产服务（`node dist/cli.mjs`）；`dev:host:once` 等开发脚本不在范围内 |
 | 触发时机 | 系统登录时（用户级注册，不需要管理员权限） |
 | 配置入口 | Setup 向导新增一步 + GlobalSettingsModal Server tab 常驻区块 + CLI `daemon` 命令组 |
@@ -142,12 +142,14 @@ CLI `status` 离线可查（不依赖 server 存活）：读注册项 + status.j
 
 ## 10. 平台注册细节（实现参考）
 
-### Windows（计划任务）
+### Windows（HKCU Run 键 + 隐藏包装）
 
-- 目标：登录触发、S4U 登录类型（无密码存储、非交互会话 → 无控制台窗口）。
-- 创建：生成任务 XML（`<LogonType>S4U</LogonType>`、`<Hidden>true</Hidden>`、LogonTrigger、`<Command>`=node 绝对路径、`<Arguments>`=`<daemon.mjs 绝对路径> --state-dir <abs>`），`schtasks /create /tn claude-react-web /xml <file> /f`。若 S4U 经实测不可行，回退候选：`Register-ScheduledTask -LogonType S4U`（PowerShell）。**S4U 隐藏行为是全方案唯一无法单测覆盖的高风险点，必须本机实测。**
-- 注销：`schtasks /delete /tn claude-react-web /f`；查询：`schtasks /query /tn claude-react-web`。
-- stdout 重定向：S4U 会话无控制台，daemon 自身输出由 daemon 启动后自行重定向到 `daemon.log`（代码内 `fs.write` 到固定 fd），不依赖平台重定向。
+> **实机修订（2026-10-20 实测）**：原设计的计划任务路线（S4U XML / InteractiveToken XML / `/sc onlogon` flags）在本机全部被系统以"拒绝访问"拒绝——**非提权状态下 Windows 禁止创建登录触发器任务**（`/sc daily` 可创建，证明是登录触发器这一安全边界）。在保持 spec 硬约束（登录自启、隐藏、用户级、免提权、可查询可卸载）的前提下改用：
+
+- 机制：用户级 Run 键 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，值名 `claude-react-web`，数据 `wscript.exe "<stateDir>\daemon\run-hidden.vbs"`。
+- 隐藏：`run-hidden.vbs` 通过 `WScript.Shell.Run "cmd /c ... >> daemon.log 2>&1", 0, False` 以窗口样式 0（隐藏）拉起 daemon，stdout/stderr 重定向进 `daemon.log`。
+- 注册：`reg add <key> /v claude-react-web /t REG_SZ /d <wscript 命令> /f`；注销：`reg delete`（并删除 vbs，路径从注册值回读——注册本身即事实源，stateDir 迁移后仍能清理）；查询：`reg query`（code 0 = 已注册；targetMissing = 注册指向的 vbs 在磁盘上消失）。三者均已在实机验证可用。
+- 权衡：Run 键只在登录时启动（无计划任务的"立即执行"语义——手动测试/恢复用 `daemon start`）；S4U 的"登录即会话外运行"被放弃，daemon 始终运行在用户会话内（对 localhost 服务无差别）。
 
 ### macOS（LaunchAgent）
 
