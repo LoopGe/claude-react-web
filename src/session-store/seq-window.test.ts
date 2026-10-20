@@ -222,9 +222,142 @@ describe('seq-window: evictSeqs', () => {
     expect(next.window.size).toBe(0)
   })
 
-  it('is identity-stable when nothing named exists', () => {
+  it('is identity-stable on a REPEAT evict of already-recorded seqs', () => {
     const w = stream()
-    expect(evictSeqs(w, [99, 100])).toBe(w)
+    const once = evictSeqs(w, [99, 100]) // first evict records the tombstones
+    expect(once).not.toBe(w)
+    expect(once.tombstones.has(99)).toBe(true)
+    expect(evictSeqs(once, [99, 100])).toBe(once) // nothing new → same reference
+  })
+
+  it('records unknown seqs as tombstones even when nothing was held', () => {
+    const w = stream()
+    const next = evictSeqs(w, [99])
+    expect(next.tombstones.has(99)).toBe(true)
+    expect(next.window.size).toBe(w.window.size) // nothing deleted
+    expect(next).not.toBe(w)
+  })
+
+  it('opts.tombstone=false deletes without recording (client-side trims)', () => {
+    const w = stream()
+    const next = evictSeqs(w, [0], { tombstone: false })
+    expect(next.window.has(0)).toBe(false)
+    expect(next.tombstones.size).toBe(0)
+  })
+})
+
+describe('seq-window: tombstone-aware contiguity', () => {
+  it('THE interrupt/withdraw race: evict of the top seq lets the next seq append', () => {
+    // Steer message applied at seq 4; server tombstones 4; the turn's result
+    // registers at 5. Without tombstone awareness 5 parks behind an
+    // unfillable hole and the WorkingBubble never clears.
+    const w = stream(undefined, 0, 4) // newest = 4
+    const evicted = evictSeqs(w, [4])
+    expect(evicted.newestSeq).toBe(3)
+    const result = liveAppend(evicted, 5, msg('result', 5), 0)
+    expect(result.window.has(5)).toBe(true)
+    expect(result.newestSeq).toBe(5)
+    expect(result.pending.size).toBe(0)
+    expect(result.hole).toBeNull()
+  })
+
+  it('reverse order: a frame parked behind a tombstoned hole drains on evict', () => {
+    const w = stream(undefined, 0, 3) // newest = 3
+    const parked = liveAppend(w, 5, msg('result', 5), 0)
+    expect(parked.pending.size).toBe(1)
+    const evicted = evictSeqs(parked, [4]) // tombstone lands AFTER the park
+    expect(evicted.window.has(5)).toBe(true)
+    expect(evicted.pending.size).toBe(0)
+    expect(evicted.newestSeq).toBe(5)
+    expect(evicted.hole).toBeNull()
+  })
+
+  it('drains a pending run across a tombstone run', () => {
+    const w = stream(undefined, 0, 5) // newest = 5
+    const parked = liveAppend(liveAppend(w, 8, msg('a', 8), 0), 9, msg('a', 9), 0)
+    const evicted = evictSeqs(parked, [6, 7])
+    expect(evicted.window.has(8)).toBe(true)
+    expect(evicted.window.has(9)).toBe(true)
+    expect(evicted.pending.size).toBe(0)
+    expect(evicted.newestSeq).toBe(9)
+  })
+
+  it('a live frame at an already-tombstoned seq is dropped, the next seq skips past', () => {
+    const w = stream(undefined, 0, 2) // newest = 2
+    const recorded = evictSeqs(w, [3]) // seq 3 will never arrive
+    const resurrect = liveAppend(recorded, 3, msg('user', 3), 0)
+    expect(resurrect.window.has(3)).toBe(false)
+    expect(resurrect.pending.has(3)).toBe(false)
+    const next = liveAppend(resurrect, 4, msg('result', 4), 0)
+    expect(next.window.has(4)).toBe(true)
+    expect(next.newestSeq).toBe(4)
+    expect(next.window.has(3)).toBe(false)
+  })
+
+  it('pageLoaded records tombstones before inserting and drains pending behind them', () => {
+    const w = stream(undefined, 0, 2) // newest = 2
+    const parked = liveAppend(w, 5, msg('result', 5), 0) // hole [3, 4]
+    const filled = pageLoaded(parked, {
+      at: 'tail',
+      generation: 0,
+      messages: [{ seq: 3, msg: msg('user', 3) }],
+      tombstones: [4],
+      hasMore: false,
+    })
+    expect(filled.newestSeq).toBe(5)
+    expect(filled.pending.size).toBe(0)
+    expect(filled.hole).toBeNull()
+    expect(filled.window.has(4)).toBe(false)
+    expect(filled.tombstones.has(4)).toBe(true)
+  })
+
+  it('a fresh tail page spanning a tombstone bootstraps without parking', () => {
+    const w = pageLoaded(emptyWindow(-1, 0), {
+      at: 'tail',
+      generation: 0,
+      messages: [
+        { seq: 0, msg: msg('user', 0) },
+        { seq: 1, msg: msg('user', 1) },
+        { seq: 2, msg: msg('user', 2) },
+        { seq: 4, msg: msg('result', 4) },
+      ],
+      tombstones: [3],
+      hasMore: false,
+    })
+    expect(w.newestSeq).toBe(4)
+    expect(w.pending.size).toBe(0)
+    expect(w.hole).toBeNull()
+    expect(w.oldestSeq).toBe(0)
+  })
+
+  it('bumpGeneration discards recorded tombstones', () => {
+    const w = evictSeqs(stream(), [2])
+    expect(w.tombstones.size).toBe(1)
+    const bumped = bumpGeneration(w, 1, 0)
+    expect(bumped.tombstones.size).toBe(0)
+  })
+
+  it('a live frame at an already-tombstoned seq is identity-stable (no clone churn)', () => {
+    const w = evictSeqs(stream(undefined, 0, 4), [5]) // tombstone above newest
+    const again = liveAppend(w, 5, msg('user', 5), 0)
+    expect(again).toBe(w)
+  })
+
+  it('an emptied window still drains parked frames when a later tombstone closes the hole', () => {
+    // Withdrawal evicts ALL applied rows (newestSeq → null), stranding a
+    // parked frame behind a real hole; the LATE tombstone for that hole must
+    // still drain it — an empty window has no contiguity anchor, so every
+    // pending seq is appendable (same semantics as insertMessage on empty).
+    let w = stream(undefined, 0, 2) // applied 0..2
+    w = liveAppend(w, 4, msg('result', 4), 0) // parks behind hole [3, 3]
+    w = evictSeqs(w, [0, 1, 2]) // withdrawal empties the window
+    expect(w.newestSeq).toBeNull()
+    expect(w.pending.size).toBe(1)
+    w = evictSeqs(w, [3]) // the server tombstones the hole seq
+    expect(w.pending.size).toBe(0)
+    expect(w.window.has(4)).toBe(true)
+    expect(w.newestSeq).toBe(4)
+    expect(w.hole).toBeNull()
   })
 })
 

@@ -754,6 +754,11 @@ export type SessionAction =
       headSeq: number
       messages: Array<{ seq: number; msg: unknown }>
       hasMore: boolean
+      /** Evicted seqs inside the page's covered span (the response's
+       *  `tombstones`) — frames that will never arrive. Recorded into the
+       *  window BEFORE the messages insert, so the contiguity check skips
+       *  them instead of parking behind an unfillable hole. */
+      tombstones: number[]
     }
   /** A live `message` WS frame carrying seq/generation. Contiguous seqs
    *  append at the tail (full applyMessage path); gapped seqs park in the

@@ -112,6 +112,7 @@ function seedPage(
     headSeq,
     messages,
     hasMore: opts?.hasMore ?? false,
+    tombstones: [],
   })
 }
 

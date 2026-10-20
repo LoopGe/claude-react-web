@@ -15,17 +15,30 @@
  *      · seq === newestSeq + 1 (or the window is empty) → tail append.
  *        If the seq sits in `pending`, it is consumed and any now-contiguous
  *        pending run cascades into the window behind it.
- *      · seq >  newestSeq + 1 → parked in `pending`; the state carries the
- *        hole marker `{ from: newestSeq + 1, to: seq - 1 }` (readable via
- *        `windowHole(w)` / the `hole` field) — the hook fetches the REST
- *        page over that range to fill it.
+ *      · seq >  newestSeq + 1 → parked in `pending` UNLESS every missing
+ *        seq in between is a tombstone (see below — an all-tombstone gap
+ *        is unfillable by design, so the seq skips across it); the state
+ *        carries the hole marker `{ from: newestSeq + 1, to: seq - 1 }`
+ *        (readable via `windowHole(w)` / the `hole` field) — the hook
+ *        fetches the REST page over that range to fill it.
  *      · seq <= newestSeq → idempotent drop (already applied, tombstoned,
  *        or a duplicate re-send). Returns `w` unchanged.
  *      · generation mismatch → no-op, returns `w` unchanged.
  *
  *  - `pending` draining: whenever the hole is filled — by `pageLoaded` or
  *    by live appends — the contiguous run starting at newestSeq + 1 is
- *    folded into the window.
+ *    folded into the window. Tombstoned seqs (see below) are skipped, not
+ *    folded: they never carry content.
+
+ *  - Tombstones (`tombstones: Set<number>`): seqs the server has evicted
+ *    and will NEVER re-send (interrupt withdrawal tombstones a steered
+ *    message while the turn's `result` frame registers on a higher seq —
+ *    pages can never return the tombstoned seq, so treating it as a hole
+ *    would strand every later frame in `pending` forever). Recorded from
+ *    `evictSeqs` (the seq-carrying `messages-evicted` frame / uuid evictions
+ *    of server-dead rows) and from `pageLoaded` (`tombstones` on the page
+ *    response). The contiguity check and the pending drain skip them; a
+ *    live frame AT a tombstoned seq is dropped (never resurrects).
  *
  *  - `pageLoaded(w, { at, messages, hasMore, generation })`
  *      · at 'tail': the newest page (or a hole-filling page in between).
@@ -76,6 +89,11 @@ export interface WindowState {
   hasNewer: boolean
   /** Out-of-order live frames parked while a hole precedes them. */
   pending: Map<number, SdkMessage>
+  /** Seqs known permanently dead (server tombstones — `TranscriptStore`
+   *  never reuses or re-sends them). The contiguity check and the pending
+   *  drain skip them; they are never inserted. Cleared by bumpGeneration
+   *  (a fresh seq space has no tombstones). */
+  tombstones: Set<number>
   /** Live hole marker — set while `pending` holds frames ahead of the
    *  applied tail, cleared when they drain. Derived on every write. */
   hole: HoleRange | null
@@ -91,6 +109,7 @@ export function emptyWindow(generation: number, headSeq: number): WindowState {
     hasOlder: false,
     hasNewer: false,
     pending: new Map<number, SdkMessage>(),
+    tombstones: new Set<number>(),
     hole: null,
   }
 }
@@ -107,12 +126,13 @@ export function windowHole(w: WindowState): HoleRange | null {
   return [w.newestSeq + 1, min - 1]
 }
 
-/** Clone a window shallowly (fresh Maps) so operators stay pure. */
+/** Clone a window shallowly (fresh Maps/Set) so operators stay pure. */
 function clone(w: WindowState): WindowState {
   return {
     ...w,
     window: new Map(w.window),
     pending: new Map(w.pending),
+    tombstones: new Set(w.tombstones),
   }
 }
 
@@ -158,29 +178,62 @@ function rederive(w: WindowState): WindowState {
   return w
 }
 
+/** Fold the contiguous run at newestSeq+1 into the window: pending frames
+ *  move in (their seq becomes newest); tombstoned seqs are skipped WITHOUT
+ *  entering the window — they never carry content. newestSeq is only ever
+ *  advanced ONTO an inserted pending seq: rederive() recomputes it as the
+ *  max window key, so it must never be pushed past a tombstone run.
+ *
+ *  An EMPTY window (newestSeq === null — a withdrawal can evict every
+ *  applied row) has no contiguity anchor: insertMessage treats any seq as
+ *  appendable there, so parked frames all drain, in seq order — otherwise a
+ *  late tombstone closing the hole could never release them. */
+function drainContiguous(w: WindowState): void {
+  if (w.newestSeq === null) {
+    if (w.pending.size === 0) return
+    for (const seq of [...w.pending.keys()].sort((a, b) => a - b)) {
+      const message = w.pending.get(seq)
+      w.pending.delete(seq)
+      if (message !== undefined && !w.tombstones.has(seq)) w.window.set(seq, message)
+    }
+    return
+  }
+  let nx = w.newestSeq + 1
+  while (w.pending.has(nx) || w.tombstones.has(nx)) {
+    if (w.pending.has(nx)) {
+      w.window.set(nx, w.pending.get(nx)!)
+      w.pending.delete(nx)
+      w.newestSeq = nx
+    }
+    nx++
+  }
+}
+
 /** Insert one seq-keyed message into a window being built, keeping the
  *  tail contiguous: a seq at or below newest+1 lands in the window (with
- *  its seq becoming newest when it extends the tail, cascading any
+ *  its seq becoming newest when it extends the tail, draining any
  *  now-contiguous pending run behind it); a seq beyond the tail parks in
- *  `pending`. Shared by liveAppend and pageLoaded — the ONLY behavioural
+ *  `pending` — but ONLY when a real hole precedes it. A gap of nothing
+ *  but tombstones is unfillable by design (pages never return evicted
+ *  seqs), so it is skipped across. A seq the server has tombstoned never
+ *  resurrects. Shared by liveAppend and pageLoaded — the ONLY behavioural
  *  difference between the two is liveAppend's idempotent `seq <= newest`
  *  drop, which lives in liveAppend itself. */
 function insertMessage(w: WindowState, seq: number, message: SdkMessage): void {
   if (w.window.has(seq) || w.pending.has(seq)) return
+  if (w.tombstones.has(seq)) return
   if (w.newestSeq !== null && seq > w.newestSeq + 1) {
-    w.pending.set(seq, message)
-    return
+    for (let nx = w.newestSeq + 1; nx < seq; nx++) {
+      if (!w.tombstones.has(nx)) {
+        w.pending.set(seq, message)
+        return
+      }
+    }
   }
   w.window.set(seq, message)
   if (w.newestSeq === null || seq > w.newestSeq) {
     w.newestSeq = seq
-    let nx = seq + 1
-    while (w.pending.has(nx)) {
-      w.window.set(nx, w.pending.get(nx)!)
-      w.pending.delete(nx)
-      w.newestSeq = nx
-      nx++
-    }
+    drainContiguous(w)
   }
 }
 
@@ -194,6 +247,11 @@ export function liveAppend(
   // Duplicate of an already-parked frame — idempotent drop.
   if (w.pending.has(seq)) return w
   if (w.newestSeq !== null && seq <= w.newestSeq) return w
+  // A tombstoned seq will never (re-)enter the window — drop BEFORE the
+  // clone so the identity-stability contract holds for duplicates the
+  // server re-sends. A tombstoned seq is always < headSeq (it was
+  // allocated), so no headSeq advance is lost here.
+  if (w.tombstones.has(seq)) return w
 
   const next = clone(w)
   // headSeq tracks "next seq the server will allocate" — a live frame at
@@ -212,6 +270,12 @@ export function pageLoaded(
     hasMore: boolean
     generation: number
     headSeq?: number
+    /** Evicted seqs inside this page's covered span — frames that will
+     *  never arrive. Recorded BEFORE the insert loop so the contiguity
+     *  check skips them (a page can span a tombstone below a visible
+     *  newer seq — the interrupt/withdraw race). Recorded unconditionally:
+     *  a fresh tab may learn tombstones before it holds any frame. */
+    tombstones?: number[]
   },
 ): WindowState {
   const empty =
@@ -224,28 +288,47 @@ export function pageLoaded(
   const next = clone(w)
   if (empty) next.generation = opts.generation
   if (opts.headSeq !== undefined && opts.headSeq > next.headSeq) next.headSeq = opts.headSeq
+  for (const seq of opts.tombstones ?? []) next.tombstones.add(seq)
 
   for (const { seq, msg } of opts.messages) {
-    // Pages never carry tombstoned seqs (the server filters them), so
-    // membership — not the `seq <= newest` live-drop rule — decides
-    // idempotence here. This is what lets a head page insert seqs below
-    // oldestSeq that liveAppend's drop rule would have rejected.
+    // Pages never carry tombstoned seqs (the server filters them and
+    // declares them via opts.tombstones instead), so membership — not the
+    // `seq <= newest` live-drop rule — decides idempotence here. This is
+    // what lets a head page insert seqs below oldestSeq that liveAppend's
+    // drop rule would have rejected.
     if (next.window.has(seq) || next.pending.has(seq)) continue
     insertMessage(next, seq, msg as SdkMessage)
   }
+  drainContiguous(next)
   next.hasOlder = opts.hasMore
   rederive(next)
   return next
 }
 
-export function evictSeqs(w: WindowState, seqs: number[]): WindowState {
+export function evictSeqs(
+  w: WindowState,
+  seqs: number[],
+  opts?: { tombstone?: boolean },
+): WindowState {
+  // Default true: every caller except trimFront evicts SERVER-tombstoned
+  // rows (WINDOW_EVICT rides the server-resolved seqs; uuid evictions —
+  // withdrawal, refusal-fallback, dialog — are server-dead rows too, with
+  // the seqs co-broadcast on messages-evicted). trimFront is a client-side
+  // memory trim of rows the server still holds and passes
+  // `{ tombstone: false }`.
+  const record = opts?.tombstone !== false
   let touched = false
   const next = clone(w)
   for (const seq of seqs) {
     if (next.window.delete(seq)) touched = true
     if (next.pending.delete(seq)) touched = true
+    if (record && !next.tombstones.has(seq)) {
+      next.tombstones.add(seq)
+      touched = true
+    }
   }
   if (!touched) return w
+  drainContiguous(next)
   rederive(next)
   return next
 }

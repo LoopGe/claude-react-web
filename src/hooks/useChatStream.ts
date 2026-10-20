@@ -400,6 +400,11 @@ export function useChatStream(
             generation: page.generation,
             headSeq: page.headSeq,
             messages: page.messages,
+            // The page DECLARES the evicted seqs in its span (they can never
+            // arrive): recording them lets the window's contiguity check skip
+            // them, so a frame parked above a tombstoned hole drains instead
+            // of stranding (the interrupt/withdraw vs result race).
+            tombstones: page.tombstones,
             // OR, not overwrite: a hole-fill page runs mid-transcript, and
             // the page's hasMore describes content below the PAGE — which
             // the window may already hold. OR-ing can only keep hasOlder
@@ -414,14 +419,12 @@ export function useChatStream(
             post.hole?.[1] !== pre.hole?.[1]
           if (!progressed) {
             // The page changed nothing (stale generation, all seqs already
-            // owned, empty range — including a tombstoned seq sitting inside
-            // the hole, which no page can ever return): stop — otherwise
-            // this loops forever. Known residual: a tombstone inside the
-            // hole strands the parked frames until the panel is REOPENED (a
-            // fresh tail page re-anchors the window); a reconnect does NOT
-            // heal it — with an equal generation the attached handshake
-            // finds nothing to reconcile and the gap-fill hits the same
-            // no-progress wall.
+            // owned, empty range): stop — otherwise this loops forever.
+            // A tombstoned seq inside the hole is NOT a stall anymore: the
+            // page declares it, the window records it, and recording either
+            // drains the parked frames (advancing newestSeq or clearing the
+            // hole) — so a pure tombstone gap converges in one fetch. This
+            // closes the old "stranded until the panel is reopened" residual.
             gapTargetRef.current = null
             break
           }
@@ -468,6 +471,7 @@ export function useChatStream(
           generation: page.generation,
           headSeq: page.headSeq,
           messages: page.messages,
+          tombstones: page.tombstones,
           hasMore: page.hasMore,
         })
       } catch {
@@ -838,6 +842,7 @@ export function useChatStream(
         generation: page.generation,
         headSeq: page.headSeq,
         messages: page.messages,
+        tombstones: page.tombstones,
         hasMore: page.hasMore,
       })
       // hasOlder needs no setter: pageLoaded (at:'head') writes hasMore into

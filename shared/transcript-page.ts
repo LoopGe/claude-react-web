@@ -32,4 +32,11 @@ export interface TranscriptPageResponse {
   /** Oldest-first page of messages with seq < before (or the newest page
    *  when `before` is omitted). */
   messages: TranscriptPageMessage[]
+  /** Evicted (tombstoned) seqs inside this page's covered span
+   *  `[startIndex, headSeq)` — or `[startIndex, before)` for a bounded
+   *  request. Frames that will never arrive (interrupt withdrawal evicts
+   *  seqs the client may already have applied, and later frames register
+   *  above the tombstone); the client's contiguity check must skip them
+   *  instead of parking behind an unfillable hole. */
+  tombstones: number[]
 }

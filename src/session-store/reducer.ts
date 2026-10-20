@@ -484,6 +484,7 @@ function windowPage(
     hasMore: action.hasMore,
     generation: action.generation,
     headSeq: action.headSeq,
+    tombstones: action.tombstones,
   })
   if (nw === prev) return state
   const fresh = freshWindowMessages(prev, nw)
@@ -516,9 +517,26 @@ function windowEvict(state: SessionState, seqs: number[]): SessionState {
     const u = msg ? (msg as { uuid?: unknown }).uuid : undefined
     if (typeof u === 'string' && u.length > 0) uuids.add(u)
   }
-  let next = state
-  if (uuids.size > 0) next = evictMessages(state, Array.from(uuids))
-  return withMirror(next, { ...next.mirror, window: nw })
+  // Attach the evicted window FIRST: evictMessages' internal window sync
+  // (seqsForUuids + evictSeqs) then finds the seqs already deleted and
+  // no-ops, instead of computing a second window from `prev` that the
+  // overwrite below would discard. Its uuid pruning (items/messages,
+  // toolUseId lifecycle maps) still runs on the attached state.
+  let next = withMirror(state, { ...state.mirror, window: nw })
+  if (uuids.size > 0) next = evictMessages(next, Array.from(uuids))
+  // Recording tombstones can DRAIN parked frames: the interrupt/withdraw
+  // race lands the result (seq N+1) while the steer (seq N) is still
+  // missing — it parks — and the late messages-evicted [N] then tombstones
+  // the hole and moves the parked result into the window. Those drained
+  // frames are fresh (never applied — see freshWindowMessages) and MUST
+  // reach the ordered log, or a stranded `result` never clears liveTurn
+  // (the stuck WorkingBubble). Same attach-before-apply ordering as
+  // windowLive: applyMessage's internal trim/eviction must sync the
+  // window the frames actually survive into.
+  for (const [, msg] of freshWindowMessages(prev, nw)) {
+    next = applyMessage(next, msg)
+  }
+  return next
 }
 
 /** Keep-first uuid dedup over a REPLAY_REPLACE payload. A single
@@ -1832,7 +1850,13 @@ function trimFront(state: SessionState): SessionState {
     if (typeof m.uuid === 'string') trimmedUuids.add(m.uuid)
   }
   const trimmedSeqs = seqsForUuids(mirror.window, trimmedUuids)
-  const window = trimmedSeqs.length > 0 ? evictSeqs(mirror.window, trimmedSeqs) : mirror.window
+  // `tombstone: false` — trimFront is a client-side memory trim of OLD rows
+  // the server still holds (loadOlder can refetch them); recording them
+  // would poison the tombstone set with live seqs.
+  const window =
+    trimmedSeqs.length > 0
+      ? evictSeqs(mirror.window, trimmedSeqs, { tombstone: false })
+      : mirror.window
   return withMirror(state, {
     ...mirror,
     items,

@@ -268,7 +268,7 @@ function randomWindowAction(state: SessionState, gen: MessageGen, rng: Rng): Ses
     const n = 1 + rng.int(5)
     const from = next + (rng.chance(0.2) ? 1 + rng.int(3) : 0)
     const messages = Array.from({ length: n }, (_, i) => ({ seq: from + i, msg: gen.any() }))
-    return { type: 'WINDOW_PAGE', at: 'tail', generation, headSeq: from + n, messages, hasMore: rng.chance(0.3) }
+    return { type: 'WINDOW_PAGE', at: 'tail', generation, headSeq: from + n, messages, hasMore: rng.chance(0.3), tombstones: [] }
   }
   if (kind < 6) {
     const seq = next + (rng.chance(0.2) ? 1 + rng.int(3) : 0)
@@ -279,7 +279,7 @@ function randomWindowAction(state: SessionState, gen: MessageGen, rng: Rng): Ses
     const head = (state.mirror.messages[0] as { receivedAt?: number } | undefined)?.receivedAt ?? Date.now()
     const batch = gen.olderBatch(n, head)
     const messages = batch.map((msg, i) => ({ seq: w.oldestSeq! - n + i, msg }))
-    return { type: 'WINDOW_PAGE', at: 'head', generation, headSeq: Math.max(w.headSeq, next), messages, hasMore: rng.chance(0.5) }
+    return { type: 'WINDOW_PAGE', at: 'head', generation, headSeq: Math.max(w.headSeq, next), messages, hasMore: rng.chance(0.5), tombstones: [] }
   }
   if (kind < 9) {
     const seqs = [...w.window.keys(), ...w.pending.keys()]

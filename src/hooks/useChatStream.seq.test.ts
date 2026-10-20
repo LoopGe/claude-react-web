@@ -34,6 +34,9 @@ interface FakeTranscript {
   generation: number
   headSeq: number
   msgs: Array<{ seq: number; msg: unknown }>
+  /** Tombstoned seqs — TranscriptStore.evict: filtered from pages, declared
+   *  on the page response's `tombstones`, never recycled. */
+  evicted: Set<number>
 }
 
 /** In-memory server transcripts, keyed by session id. Tests mutate these to
@@ -43,7 +46,7 @@ const transcripts = new Map<string, FakeTranscript>()
 function transcript(sid: string): FakeTranscript {
   let t = transcripts.get(sid)
   if (!t) {
-    t = { generation: 0, headSeq: 0, msgs: [] }
+    t = { generation: 0, headSeq: 0, msgs: [], evicted: new Set<number>() }
     transcripts.set(sid, t)
   }
   return t
@@ -54,19 +57,27 @@ function fakeMsg(sid: string, seq: number) {
 }
 
 /** The GET /sessions/:id/messages semantics, faithfully: `before` is an
- *  exclusive upper bound, the page is the newest `limit` eligible messages,
- *  hasMore reports older eligible content past the page. */
+ *  exclusive upper bound, the page is the newest `limit` eligible messages
+ *  (tombstoned rows are FILTERED OUT — TranscriptStore.window skips them),
+ *  hasMore reports older eligible content past the page, and the page
+ *  DECLARES the tombstoned seqs inside its covered span. */
 function pageFor(sid: string, before: number | undefined, limit: number) {
   const t = transcript(sid)
-  const eligible = t.msgs.filter((m) => before === undefined || m.seq < before)
+  const eligible = t.msgs.filter(
+    (m) => (before === undefined || m.seq < before) && !t.evicted.has(m.seq),
+  )
   const page = eligible.slice(-limit)
+  const bound = before ?? t.headSeq
+  const spanStart = page.length > 0 ? page[0].seq : (before ?? t.headSeq)
+  const tombstones = [...t.evicted].filter((s) => s >= spanStart && s < bound).sort((a, b) => a - b)
   return {
     generation: t.generation,
     headSeq: t.headSeq,
-    totalCount: t.msgs.length,
+    totalCount: eligible.length,
     startIndex: page.length > 0 ? page[0].seq : (before ?? t.headSeq),
     hasMore: eligible.length > page.length,
     messages: page,
+    tombstones,
   }
 }
 
@@ -334,6 +345,103 @@ describe('useChatStream seq-window protocol', () => {
     const uuids = result.current.messages.map((m) => (m as { uuid?: string }).uuid)
     expect(uuids).not.toContain(`${sid}-m3`)
     expect(uuids).not.toContain(`${sid}-m4`)
+  })
+
+  // ── interrupt/withdraw tombstone race (the stuck WorkingBubble bug) ──
+
+  /** THE race, end-to-end: interrupt() withdraws the steered message
+   *  (messages-evicted [5] — its seq is tombstoned server-side) moments
+   *  before the CLI's result frame registers at seq 6. Without tombstone
+   *  awareness the evict regresses newestSeq to 4, seq 6 parks behind the
+   *  unfillably-tombstoned hole, and the WorkingBubble never clears. */
+  it('withdrawal evict of the applied top seq lets the result frame append with zero fetches', async () => {
+    const sid = 'seq-tombstone-race'
+    const t = transcript(sid)
+    for (let i = 0; i < 5; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 5
+
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitFor(() => expect(result.current.replayReady).toBe(true))
+    expect(result.current.messages).toHaveLength(5)
+
+    // Steered message applied live at seq 5.
+    act(() => {
+      dispatchToSession(sid, { kind: 'message', sessionId: sid, seq: 5, generation: 0, message: fakeMsg(sid, 5) })
+    })
+    expect(result.current.messages).toHaveLength(6)
+
+    // interrupt(): tombstone 5 + messages-evicted; the result registers at 6.
+    t.evicted.add(5)
+    t.msgs.push({ seq: 6, msg: fakeMsg(sid, 6) })
+    t.headSeq = 7
+    act(() => {
+      dispatchToSession(sid, { kind: 'messages-evicted', sessionId: sid, seqs: [5], generation: 0 })
+    })
+    act(() => {
+      dispatchToSession(sid, { kind: 'message', sessionId: sid, seq: 6, generation: 0, message: fakeMsg(sid, 6) })
+    })
+
+    // The withdrawn steer's bubble is GONE (that is what withdrawal means):
+    // 5 seeded rows + the result = 6 — healed from the frames alone, no REST
+    // gap-fill round trip.
+    expect(result.current.messages).toHaveLength(6)
+    expect(gapFetchUrls()).toEqual([])
+    const snap = getSessionStore(sid).getSnapshot()
+    expect(snap.newestSeq).toBe(6)
+    expect(snap.hole).toBeNull()
+    const uuids = result.current.messages.map((m) => (m as { uuid?: string }).uuid)
+    expect(uuids).not.toContain(`${sid}-m5`)
+    expect(uuids.at(-1)).toBe(`${sid}-m6`)
+  })
+
+  /** Fresh open AFTER the race (panel reopened): the tail page spans the
+   *  tombstone — visible 0..4 and 6, evicted 5 declared in the response —
+   *  and must bootstrap without parking seq 6 behind the dead seq. */
+  it('a fresh open whose tail page spans a tombstone bootstraps without parking', async () => {
+    const sid = 'seq-tombstone-open'
+    const t = transcript(sid)
+    for (let i = 0; i < 7; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.evicted.add(5) // the withdrawn steer, tombstoned before this tab existed
+    t.headSeq = 7
+
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitFor(() => expect(result.current.replayReady).toBe(true))
+    expect(result.current.messages).toHaveLength(6)
+    const snap = getSessionStore(sid).getSnapshot()
+    expect(snap.newestSeq).toBe(6)
+    expect(snap.hole).toBeNull()
+    const uuids = result.current.messages.map((m) => (m as { uuid?: string }).uuid)
+    expect(uuids).not.toContain(`${sid}-m5`)
+    expect(uuids.at(-1)).toBe(`${sid}-m6`)
+  })
+
+  /** Missed-evict reconnect: the tab never saw messages-evicted; the live
+   *  frame above the tombstone parks, and the gap-fill page's declared
+   *  tombstones heal it — the `!progressed` stop becomes a completion. */
+  it('gap-fill across a tombstone drains the parked frame when the page declares it', async () => {
+    const sid = 'seq-tombstone-gap'
+    const t = transcript(sid)
+    for (let i = 0; i < 5; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 5
+
+    const { result } = renderHook(() => useChatStream(sid, noopPerms, false, false))
+    await waitFor(() => expect(result.current.messages).toHaveLength(5))
+
+    // seq 5 was withdrawn+tomstoned while this tab was disconnected; only
+    // seq 6 arrives live. It must park (hole [5,5])…
+    t.evicted.add(5)
+    t.msgs.push({ seq: 6, msg: fakeMsg(sid, 6) })
+    t.headSeq = 7
+    act(() => {
+      dispatchToSession(sid, { kind: 'message', sessionId: sid, seq: 6, generation: 0, message: fakeMsg(sid, 6) })
+    })
+
+    // …and the gap-fill page (before=6, tombstones [5]) drains it.
+    await waitFor(() => expect(result.current.messages).toHaveLength(6))
+    expect(gapFetchUrls()).toEqual([`/sessions/${sid}/messages?before=6&limit=200`])
+    const snap = getSessionStore(sid).getSnapshot()
+    expect(snap.hole).toBeNull()
+    expect(snap.newestSeq).toBe(6)
   })
 
   // ── loadOlder (seq paging) ────────────────────────────────────────

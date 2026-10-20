@@ -51,7 +51,19 @@ describe('GET /sessions/:id/messages', () => {
       startIndex: 0,
       hasMore: false,
       messages: [],
+      tombstones: [],
     })
+  })
+
+  it('evicted seqs inside the page span ride the response as tombstones', async () => {
+    const { app, store } = makeApp()
+    for (let i = 0; i < 3; i++) recordTurn(store, i) // seqs 0..5
+    store.evict(['u1', 'a2']) // u1 → seq 2, a2 → seq 5
+    const res = await app.request('/sessions/s1/messages')
+    expect(res.status).toBe(200)
+    const body = await json(res)
+    expect(body.messages.map((m: { seq: number }) => m.seq)).toEqual([0, 1, 3, 4])
+    expect(body.tombstones).toEqual([2, 5])
   })
 
   it('?before=4&limit=3 returns seq [1,2,3] oldest-first with hasMore', async () => {

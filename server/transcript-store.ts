@@ -10,8 +10,11 @@
  *   non-tombstoned messages with seq < before, oldest-first. `before` omitted
  *   means the newest page (upper bound = headSeq). Tombstones are filtered out
  *   of the window but their seqs are not reused, so callers can page by seq
- *   safely across evictions. `totalCount` composition is the caller's job —
- *   this class only yields messages.
+ *   safely across evictions. Pages DECLARE their span's tombstones (the
+ *   `tombstones` field) so seq-window clients can treat them as frames that
+ *   will never arrive instead of parking behind an unfillable hole.
+ *   `totalCount` composition is the caller's job — this class only yields
+ *   messages.
  * - reset() (=/clear) bumps `generation` and zeroes the seq space; indexes are
  *   cleared so stale uuid→seq mappings can never leak across generations.
  * - hydrate() reconciles in-memory indexes from persisted rows (Task 3 loads
@@ -36,6 +39,11 @@ export interface TranscriptWindow {
   hasMore: boolean
   /** 不含墓碑，chronological */
   messages: SeqMessage[]
+  /** 本页覆盖 span [startIndex, before|headSeq) 内被墓碑化的 seq —— 永远
+   *  不会到达的帧。客户端 seq-window 的连续性检查据此跳过它们（interrupt
+   *  撤回与 result 帧的 seq 竞态：撤回先至，后续帧落在墓碑之上，若无此
+   *  声明会被判跳号而永久 park）。 */
+  tombstones: number[]
 }
 
 export interface HydrateRow {
@@ -135,12 +143,29 @@ export class TranscriptStore {
     // nothing, so the hasMore computation below must not dereference
     // picked[0] (it threw RangeError before the guard).
     const hasMore = limit > 0 && picked.length === limit && this.hasVisibleBelow(picked[0].seq)
+    // Tombstones across the page's whole covered span — NOT just the run
+    // above the newest visible seq. A tombstone can sit BELOW visible
+    // messages (interrupt withdrawal races a later frame onto a higher
+    // seq), and the client needs every seq in the span that will never
+    // arrive. The seq space is dense (record() allocates sequentially,
+    // hydrate() fills from sidecar rows), so this scan is O(span width).
+    // An empty NON-probe page (limit > 0, nothing visible below the bound)
+    // means EVERY seq below the bound is evicted — the walk visited them
+    // all — so the span is [0, bound) and must still be declared, or a
+    // hole-fill over it strands the parked frames above. A limit-0 page is
+    // a cursor-only probe: no span to describe.
+    const spanStart = picked.length > 0 ? picked[0].seq : limit > 0 ? 0 : bound
+    const tombstones: number[] = []
+    for (let seq = spanStart; seq < bound; seq++) {
+      if (this.messages.get(seq)?.evicted === true) tombstones.push(seq)
+    }
     return {
       generation: this.generation,
       headSeq: this.nextSeq,
       startIndex: picked.length > 0 ? picked[0].seq : bound,
       hasMore,
       messages: picked.map(({ seq, uuid, msg }) => ({ seq, uuid, msg })),
+      tombstones,
     }
   }
 
