@@ -6,6 +6,7 @@
 import type { PlatformRegister } from './types.js'
 import { WindowsRegister } from './windows.js'
 import { MacosRegister } from './macos.js'
+import { LinuxRegister } from './linux.js'
 
 let cached: PlatformRegister | null = null
 
@@ -20,20 +21,9 @@ export function getPlatformRegister(): PlatformRegister {
       platform = new MacosRegister()
       break
     default:
-      platform = stubRegister('systemd')
+      platform = new LinuxRegister()
       break
   }
   cached = platform
   return cached
-}
-
-function stubRegister(mechanism: PlatformRegister['mechanism']): PlatformRegister {
-  const fail = (op: string): never => { throw new Error(`not implemented: ${mechanism}.${op}`) }
-  return {
-    mechanism,
-    isSupported: async () => fail('isSupported'),
-    register: async () => fail('register'),
-    unregister: async () => fail('unregister'),
-    query: async () => fail('query'),
-  }
 }
