@@ -27,6 +27,7 @@
 // → land): see the height-tween block below for why the direct class flip
 // read as a flicker against the transcript's scroll system.
 import { prefersReducedMotion } from '../../utils/reduced-motion'
+import { isRendered } from '../../utils/rendered'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { IconChevronDown } from '../icons/ToolIcons'
 import { FOLD_MAX_PX } from './fold-key'
@@ -93,6 +94,12 @@ export function FoldableBody({ expanded, forceOpen = false, onToggle, children }
   const measure = useCallback(() => {
     const el = measureRef.current
     if (!el) return
+    // A box that is not being rendered has no measurement to offer: in a
+    // keep-alive-cached panel (display:none) this reads 0, and adopting that
+    // reports every long body as "fits" — no clamp, no Show more — until the
+    // observer's next fire, i.e. a flash of the whole message the next time the
+    // panel is shown. Keep the last rendered verdict instead.
+    if (!isRendered(el)) return
     // scrollHeight of the INNER box: never clamped, never clipped, so it
     // always reports the natural content height (the parent's max-height
     // clips painting only — it does not shrink this child's layout box).

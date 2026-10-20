@@ -114,7 +114,12 @@ export function useAutoHeightTransition<T extends HTMLElement>(
   const captureHeight = useCallback(() => {
     const el = ref.current
     if (!el) return
-    const startHeight = el.getBoundingClientRect().height
+    // The USED height, not a rect: a rect carries every ancestor transform, and
+    // this hook's callers (a settings panel body, a folder picker list) live
+    // inside `.chat-panel`, which enters with `scale(0.98)` (layout.css). A
+    // captured start height 2% short makes the tween begin smaller than the box
+    // and jump on its first frame — the hazard the fold components document.
+    const startHeight = el.offsetHeight
     cleanupRef.current?.()
     cleanupRef.current = null
     pendingTargetHeightRef.current = null

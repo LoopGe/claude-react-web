@@ -89,6 +89,43 @@ describe('FoldableBody', () => {
     expect(btn.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('keeps the fold verdict when the body stops being rendered', () => {
+    // A keep-alive-cached panel is display:none, so `.fold-measure` reports 0
+    // for every metric — including the scrollHeight this measures against.
+    // Adopting that would un-fold every long body (no clamp, no Show more)
+    // until the observer's next fire, i.e. a flash of the whole message on
+    // re-show. The verdict has to survive the hidden period.
+    mockScrollHeight = FOLD_MAX_PX + 100
+    const wrap = { current: null as HTMLDivElement | null }
+    const { container } = render(
+      <div
+        ref={(node) => {
+          wrap.current = node
+        }}
+      >
+        <FoldableBody expanded={false} onToggle={() => {}}>
+          <p>tall</p>
+        </FoldableBody>
+      </div>,
+    )
+    const content = container.querySelector('.fold-content') as HTMLElement
+    const measureEl = container.querySelector('.fold-measure') as HTMLElement
+    // The toggle is queried as a NODE, not by role: these assertions also run
+    // while the wrapper is display:none, where RTL's a11y queries would refuse.
+    expect(content.classList.contains('fold-clamped')).toBe(true)
+    expect(container.querySelector('.fold-toggle')).not.toBeNull()
+
+    // The panel goes into the cache: nothing renders, so a browser reports 0
+    // for the height — and the observer fires with the box gone.
+    wrap.current!.style.display = 'none'
+    mockScrollHeight = 0
+    act(() => fireResize(measureEl))
+
+    // Still folded, still offering the toggle.
+    expect(content.classList.contains('fold-clamped')).toBe(true)
+    expect(container.querySelector('.fold-toggle')).not.toBeNull()
+  })
+
   it('invokes onToggle and reflects the parent-controlled expanded state', () => {
     mockScrollHeight = FOLD_MAX_PX + 100
     const onToggle = vi.fn()

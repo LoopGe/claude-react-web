@@ -1,4 +1,5 @@
 import { prefersReducedMotion } from '../utils/reduced-motion'
+import { isRendered } from '../utils/rendered'
 import {
   type DetailsHTMLAttributes,
   type MouseEvent,
@@ -23,37 +24,6 @@ const TRANSITION = [
  *  than a frame behind the content). An observation isolated past the window is
  *  a discrete jump (a card mounting) and gets the animateResize tween instead. */
 const RESIZE_COALESCE_MS = 80
-
-/** Is this element actually being rendered — does it have a box at all? A box
- *  under a `display:none` ancestor (exactly what a keep-alive-cached panel is)
- *  has none, so every metric read off it reports 0, and none of those zeros is a
- *  height. Deliberately NOT "its height is 0", and not "is it visible": a
- *  rendered box that happens to be zero tall reports a real 0, and a
- *  `visibility: hidden` box has real metrics — both readings must keep being
- *  adopted.
- *
- *  `checkVisibility` is this question exactly: it walks the ancestor chain and
- *  ignores size and visibility (verified in the browser — a zero-height box and
- *  a `visibility: hidden` box both answer true, a `display: none` ancestor
- *  answers false). It sits behind a feature test only because it is younger than
- *  browsers this app may run in; the fallback walks the display chain itself,
- *  which is all the app's own hiding shape needs (`.panel-slot-cached` is a plain
- *  `display: none` on an ancestor, and `getComputedStyle` never reports an
- *  ANCESTOR's display, so a per-node walk is the only way to see it).
- *
- *  The fallback covers that shape and nothing more: it does not know about
- *  `content-visibility`, about a shadow boundary (the walk stops at the
- *  ShadowRoot), or about a detached box — none of which this app produces. Both
- *  forms assume the element is not `display: contents`, which generates no box of
- *  its own either. */
-function isRendered(el: HTMLElement): boolean {
-  const check = (el as HTMLElement & { checkVisibility?: () => boolean }).checkVisibility
-  if (typeof check === 'function') return check.call(el)
-  for (let node: HTMLElement | null = el; node; node = node.parentElement) {
-    if (getComputedStyle(node).display === 'none') return false
-  }
-  return true
-}
 
 /** What the collapse should settle the body's height on, or null when the
  *  measurement must not be adopted.
