@@ -1,0 +1,110 @@
+// dist/daemon.mjs entry. Registered at OS login as:
+//   node <abs>/daemon.mjs --state-dir <abs>
+// It supervises the sibling dist/cli.mjs via the file protocol in control.ts.
+// The server itself loads its own config.json; the daemon only owns the
+// process lifecycle and the heartbeat/marker files.
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { spawn } from 'node:child_process'
+import { mkdirSync, createWriteStream, type WriteStream } from 'node:fs'
+import { readStatusFile, clearMarker, HEARTBEAT_FRESH_MS } from './control.js'
+import { startSupervisor } from './supervisor.js'
+import { resolveDaemonEntryPaths } from './paths.js'
+
+export interface DaemonStatusLike { daemonPid: number; state: string; updatedAt: number }
+
+/** Open the supervised server's log, creating <stateDir>/daemon first — on a
+ *  fresh state dir the first child spawns BEFORE the first heartbeat would
+ *  have created the directory, and a bare createWriteStream there crashed the
+ *  whole daemon with an unhandled ENOENT. */
+export function openServerLogStream(stateDir: string): WriteStream {
+  mkdirSync(join(stateDir, 'daemon'), { recursive: true })
+  return createWriteStream(join(stateDir, 'daemon', 'server.log'), { flags: 'a' })
+}
+
+/** Clear markers orphaned by a previous daemon (crashed between writing a
+ *  marker and consuming it, or written by the CLI while nothing ran). Called
+ *  AFTER the singleton check so a LIVE daemon's in-flight markers are never
+ *  swept by a second boot attempt. */
+export async function sweepStaleMarkers(stateDir: string): Promise<void> {
+  await clearMarker(stateDir, 'stop')
+  await clearMarker(stateDir, 'restart')
+  await clearMarker(stateDir, 'start')
+}
+
+export function parseDaemonArgv(argv: string[]): { stateDir: string } {
+  let stateDir: string | undefined
+  for (let i = 0; i < argv.length; i++) {
+    const raw = argv[i]
+    if (raw === '--state-dir') {
+      stateDir = argv[++i]
+      if (stateDir == null) throw new Error('option --state-dir requires a value')
+      continue
+    }
+    if (raw.startsWith('--state-dir=')) { stateDir = raw.slice('--state-dir='.length); continue }
+    if (raw.startsWith('--')) throw new Error(`unknown option: ${raw}`)
+    throw new Error(`unexpected argument: ${raw}`)
+  }
+  return { stateDir: stateDir ?? join(homedir(), '.claude-react-web') }
+}
+
+export function isSingletonBlocked(status: DaemonStatusLike | null, isAlive: (pid: number) => boolean): boolean {
+  if (status == null) return false
+  if (Date.now() - status.updatedAt >= HEARTBEAT_FRESH_MS) return false
+  return isAlive(status.daemonPid)
+}
+
+/** The supervisor's timer factory. Timers MUST stay referenced: an unref'd
+ *  timer set let the event loop drain the moment the supervised child died —
+ *  the daemon exited 0 silently, no heartbeat, no backoff restart (found
+ *  live). The process is deliberately kept alive by these timers. */
+export function nodeSchedule(fn: () => void, ms: number): () => void {
+  const t = setTimeout(fn, ms)
+  return () => clearTimeout(t)
+}
+
+async function main(): Promise<void> {
+  const { stateDir } = parseDaemonArgv(process.argv.slice(2))
+  const existing = await readStatusFile(stateDir)
+  const pidAlive = (pid: number): boolean => { try { process.kill(pid, 0); return true } catch { return false } }
+  if (isSingletonBlocked(existing, pidAlive)) {
+    // Another daemon is alive — exit quietly (natural idempotency when the
+    // scheduled task fires twice or the user starts one manually).
+    process.exit(0)
+  }
+  await sweepStaleMarkers(stateDir)
+  const { nodePath, serverEntry } = resolveDaemonEntryPaths()
+
+  startSupervisor({
+    stateDir,
+    spawnChild: () => {
+      const child = spawn(nodePath, [serverEntry, '--state-dir', stateDir, '--no-open'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, CRW_DAEMON_CHILD: '1' },
+        windowsHide: true,
+      })
+      // The supervised server's stdout/stderr → <stateDir>/daemon/server.log,
+      // so the daemon's platform redirection (daemon.log) stays daemon-only.
+      const out = openServerLogStream(stateDir)
+      child.stdout?.pipe(out)
+      child.stderr?.pipe(out)
+      return {
+        pid: child.pid!,
+        on: (event, cb) => { if (event === 'exit') child.on('exit', (code, signal) => cb(code, signal)) },
+      }
+    },
+    schedule: nodeSchedule,
+  })
+
+  const shutdown = (): void => { process.exit(0) }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+}
+
+// Boot only when THIS module is the process entry (dist/daemon.mjs run by the
+// OS registration or by hand). Imported for its pure helpers (tests, future
+// callers), it must not spawn anything.
+const isEntryModule = process.argv[1] != null
+  && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isEntryModule) void main()

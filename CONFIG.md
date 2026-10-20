@@ -405,6 +405,21 @@ Must be a positive integer.
 
 ---
 
+### `autoStart`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `false` |
+
+Daemon auto-start **desired state**. Managed by `POST /api/daemon/enable|disable` and the
+`claude-react-web daemon install|uninstall` commands, which also perform the OS-level
+registration (the actual state). Setting it directly (PUT /config) records intent only and
+does NOT register or unregister anything — a mismatch is surfaced as `drift` by
+`GET /api/daemon/status`.
+
+---
+
 ## Priority order
 
 Configuration values are resolved in this order (highest priority first):
@@ -429,8 +444,25 @@ state dir):
 - `claude-react-web config get|set` — read (tokens masked) / update writable
   keys of `config.json`
 - `claude-react-web sessions list|delete` — persisted session management
+- `claude-react-web daemon install|uninstall|status|start|stop` — daemon
+  auto-start management (see below)
 - `claude-react-web doctor` — local environment checks (exit 0 when healthy)
 - `claude-react-web update` — npm-registry update check
+
+### Daemon auto-start
+
+```bash
+claude-react-web daemon install      # register OS auto-start + start the daemon now
+claude-react-web daemon status       # registration + daemon/server state (works offline)
+claude-react-web daemon stop         # stop the supervised server (daemon keeps running)
+claude-react-web daemon start        # start the daemon now
+claude-react-web daemon uninstall    # unregister auto-start AND stop daemon + server
+```
+
+`daemon install` is NOT the same as the settings-panel toggle: install and the panel toggle
+map to enable/disable, which only register/unregister the OS entry. `uninstall` additionally
+stops the running daemon and server. Logs land in `<stateDir>/daemon/daemon.log` (daemon)
+and `<stateDir>/daemon/server.log` (supervised server).
 
 `config set` only accepts the writable keys listed under `WRITABLE_CONFIG_KEYS`
 in `server/config.ts` (the same set the in-app settings panel can change);

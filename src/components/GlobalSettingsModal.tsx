@@ -28,6 +28,7 @@ import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
 import { Switch } from './Switch'
 import { SettingsRow } from './SettingsRow'
+import { DaemonSection } from './settings/DaemonSection'
 import { Overlay } from './Overlay'
 import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
 import type { FirstPartyToolServerInfo } from '../../shared/first-party'
@@ -757,6 +758,8 @@ function ServerTab({
           />
         </SettingsRow>
       </section>
+
+      <DaemonSection />
     </div>
   )
 }

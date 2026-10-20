@@ -43,20 +43,29 @@ beforeEach(() => {
     // hasKey:true pre-fills the token, but the tests type one anyway so the path
     // does not depend on that async pre-fill having landed.
     if (url === '/config/claude-defaults') return Promise.resolve({ hasKey: true, settingsPath: '/tmp/settings.json' })
+    if (url === '/daemon/status') return Promise.resolve({ supported: true, mechanism: 'schtasks', configEnabled: false, osRegistered: false, drift: false, daemonAlive: false, child: null })
     return Promise.resolve({})
   })
 })
 
 afterEach(() => { vi.clearAllMocks() })
 
-/** Walk the 7-step wizard to the last step and return its primary button. */
+/** Walk the wizard to the AUTOSTART step (web host). */
+async function driveToAutostartStep() {
+  fireEvent.click(await screen.findByText('Continue'))
+  fireEvent.change(screen.getByPlaceholderText('sk-ant-...'), { target: { value: 'sk-test' } })
+  for (let i = 0; i < 5; i++) fireEvent.click(screen.getByText('Next'))
+  return screen.findByRole('switch', { name: /run automatically at login/i })
+}
+
+/** Walk the 8-step wizard to the last step and return its primary button. */
 async function driveToFinishStep() {
   // Step 0 disables Continue until the CLI probe settles.
   fireEvent.click(await screen.findByText('Continue'))
   // By placeholder, not by label text: the progress dots carry aria-labels like
-  // "Step 2 of 7: Auth Token (current step)", so /Auth Token/ is ambiguous.
+  // "Step 2 of 8: Auth Token (current step)", so /Auth Token/ is ambiguous.
   fireEvent.change(screen.getByPlaceholderText('sk-ant-...'), { target: { value: 'sk-test' } })
-  for (let i = 0; i < 5; i++) fireEvent.click(screen.getByText('Next'))
+  for (let i = 0; i < 6; i++) fireEvent.click(screen.getByText('Next'))
   return screen.findByText('Create New Session')
 }
 
@@ -116,5 +125,63 @@ describe('SetupPage — the save contract', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
     expect(onConfigured).not.toHaveBeenCalled()
+  })
+})
+
+describe('SetupPage — the autostart step', () => {
+  it('posts /daemon/enable after setup when the toggle is on (config/setup first)', async () => {
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      if (url === '/config/setup') return { ok: true, configured: true }
+      if (url === '/daemon/enable') return { supported: true, osRegistered: true, configEnabled: true }
+      throw new Error(`unexpected POST ${url}`)
+    })
+    const onConfigured = vi.fn(async () => {})
+    render(<SetupPage onConfigured={onConfigured} />)
+
+    const toggle = await driveToAutostartStep()
+    fireEvent.click(toggle)
+    fireEvent.click(await screen.findByText('Next'))
+    fireEvent.click(await screen.findByText('Create New Session'))
+
+    await waitFor(() => expect(onConfigured).toHaveBeenCalled())
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/daemon/enable', {}))
+    // enable strictly AFTER the setup write
+    const calls = vi.mocked(api.post).mock.calls.map((c) => c[0])
+    expect(calls.indexOf('/daemon/enable')).toBeGreaterThan(calls.indexOf('/config/setup'))
+  })
+
+  it('completes setup even when enable fails, showing the raw error', async () => {
+    vi.mocked(api.post).mockImplementation(async (url: string) => {
+      if (url === '/config/setup') return { ok: true, configured: true }
+      if (url === '/daemon/enable') throw new Error('schtasks /create failed (1): boom')
+      throw new Error(`unexpected POST ${url}`)
+    })
+    const onConfigured = vi.fn(async () => {})
+    render(<SetupPage onConfigured={onConfigured} />)
+
+    const toggle = await driveToAutostartStep()
+    fireEvent.click(toggle)
+    fireEvent.click(await screen.findByText('Next'))
+    fireEvent.click(await screen.findByText('Create New Session'))
+
+    await waitFor(() => expect(onConfigured).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/schtasks \/create failed/i))
+  })
+
+  it('defaults the toggle to on when auto-start is already registered', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/daemon/status') {
+        return Promise.resolve({ supported: true, mechanism: 'schtasks', configEnabled: true, osRegistered: true, drift: false, daemonAlive: true, child: { state: 'running', uptimeSec: 1, restartCount: 0, lastError: null } })
+      }
+      if (url.startsWith('/health/claude')) return Promise.resolve({ ok: true, version: '1.0.0' })
+      if (url === '/profiles') return Promise.resolve({ profiles: [], activeProfileId: 'default' })
+      if (url === '/mcp-config/claude-import') return Promise.resolve({ servers: [] })
+      if (url === '/config/claude-defaults') return Promise.resolve({ hasKey: true, settingsPath: '/tmp/settings.json' })
+      return Promise.resolve({})
+    })
+    render(<SetupPage onConfigured={vi.fn(async () => {})} />)
+
+    const toggle = await driveToAutostartStep()
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
   })
 })

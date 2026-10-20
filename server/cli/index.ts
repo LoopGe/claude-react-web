@@ -8,6 +8,7 @@ import { configGroup } from './config.js'
 import { sessionsGroup } from './sessions.js'
 import { doctorGroup } from './doctor.js'
 import { updateGroup } from './update.js'
+import { daemonGroup } from '../daemon/cli-group.js'
 
 export const GROUPS: CliGroup[] = [
   mcpGroup,
@@ -17,6 +18,7 @@ export const GROUPS: CliGroup[] = [
   sessionsGroup,
   doctorGroup,
   updateGroup,
+  daemonGroup,
 ]
 
 export function topLevelHelp(): string {

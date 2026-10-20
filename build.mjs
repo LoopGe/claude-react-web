@@ -34,6 +34,24 @@ if (!bundled.startsWith('#!')) {
 // Mark it executable (chmod 755)
 chmodSync(path, 0o755)
 
+// Second entry: the daemon supervisor (server/daemon/main.ts → dist/daemon.mjs).
+// Spawned by the OS autostart registration as `node <abs>/daemon.mjs --state-dir <abs>`;
+// it in turn spawns the sibling dist/cli.mjs. No shebang — it is never exec'd directly.
+await build({
+  entryPoints: ['server/daemon/main.ts'],
+  bundle: true,
+  minify: true,
+  platform: 'node',
+  target: 'node20',
+  format: 'esm',
+  outfile: 'dist/daemon.mjs',
+  external: ['@anthropic-ai/claude-agent-sdk'],
+  banner: {
+    js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);",
+  },
+  logLevel: 'info',
+})
+
 // Ship the official App Plugin marketplace with the package so the built-in
 // marketplace works offline without a runtime git clone. Test files excluded,
 // and build-time / cache noise (node_modules, .vite, src/) is dropped — the
@@ -52,4 +70,4 @@ cpSync('plugins', 'dist/plugins', {
   },
 })
 
-console.log('✔ Built dist/cli.mjs')
+console.log('✔ Built dist/cli.mjs + dist/daemon.mjs')
