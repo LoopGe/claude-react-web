@@ -5,6 +5,7 @@
 // process lifecycle and the heartbeat/marker files.
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import { readStatusFile, HEARTBEAT_FRESH_MS } from './control.js'
@@ -76,4 +77,9 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown)
 }
 
-void main()
+// Boot only when THIS module is the process entry (dist/daemon.mjs run by the
+// OS registration or by hand). Imported for its pure helpers (tests, future
+// callers), it must not spawn anything.
+const isEntryModule = process.argv[1] != null
+  && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isEntryModule) void main()
