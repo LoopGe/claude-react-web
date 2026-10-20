@@ -123,6 +123,144 @@ function toItems(msgs: SdkMessage[]): TranscriptItem[] {
 describe('MessageList far seek', () => {
   afterEach(() => { vi.useRealTimers() })
 
+  // Regression guard for the "点完 Scroll to next user message 后鼠标滚不动"
+  // report: the landed seek's HOLD loop re-pins the target and RESETS its own
+  // frame expiry on every correction, so while the user keeps wheeling it
+  // erases every notch and never expires. A user gesture after the seek began
+  // must end the hold outright — the viewport stays where the user put it.
+  it('releases the landed seek the moment the user wheels (hold must not absorb the scroll)', () => {
+    vi.useFakeTimers()
+    state.scrollTop = 0
+    state.scrollToCalls = []
+    const msgs: SdkMessage[] = []
+    for (let i = 0; i < 10; i++) {
+      msgs.push(makeMsg('user', { uuid: `q-${i}`, message: { content: [{ type: 'text', text: `q${i}` }] } }))
+      msgs.push(makeMsg('assistant', { uuid: `a-${i}`, message: { content: [{ type: 'text', text: `a${i}` }] } }))
+    }
+    const nav: { current: { to: (i: number) => void } | null } = { current: null }
+    const { container } = render(
+      <MessageList items={toItems(msgs)} onRegisterNavigate={(n) => { nav.current = n }} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    // Leave follow, park at the top (same dance as the ease test above).
+    act(() => {
+      const ev = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+      ev.deltaY = -120
+      scroller.dispatchEvent(ev)
+      state.scrollTop = 0
+      fireEvent.scroll(scroller)
+    })
+    act(() => { vi.advanceTimersByTime(32) })
+
+    // Near seek: row 8 sits inside the rendered window → target scrollTop 800.
+    act(() => { nav.current!.to(8) })
+    for (let f = 0; f < 60 && Math.round(state.scrollTop) !== 800; f++) {
+      act(() => { vi.advanceTimersByTime(16) })
+    }
+    expect(Math.round(state.scrollTop)).toBe(800)
+    // Landed ~1 frame ago — the hold loop is live (8-frame window).
+
+    // The user wheels up one notch: the browser moves the viewport (the wheel
+    // listener itself never touches scrollTop), the scroll event fires.
+    act(() => {
+      const ev = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+      ev.deltaY = -120
+      scroller.dispatchEvent(ev)
+      state.scrollTop = 680
+      fireEvent.scroll(scroller)
+    })
+    for (let f = 0; f < 12; f++) act(() => { vi.advanceTimersByTime(16) })
+
+    // The hold must have released: the viewport stays where the user put it.
+    expect(Math.round(state.scrollTop)).toBe(680)
+  })
+
+  // Same gap, ease phase: a user wheel mid-flight must abort the seek instead
+  // of fighting the wheel for the remaining ease frames.
+  it('a user wheel mid-ease aborts the seek instead of fighting the wheel', () => {
+    vi.useFakeTimers()
+    state.scrollTop = 0
+    state.scrollToCalls = []
+    const msgs: SdkMessage[] = []
+    for (let i = 0; i < 20; i++) {
+      msgs.push(makeMsg('user', { uuid: `q-${i}`, message: { content: [{ type: 'text', text: `q${i}` }] } }))
+      msgs.push(makeMsg('assistant', { uuid: `a-${i}`, message: { content: [{ type: 'text', text: `a${i}` }] } }))
+    }
+    const nav: { current: { to: (i: number) => void } | null } = { current: null }
+    const { container } = render(
+      <MessageList items={toItems(msgs)} onRegisterNavigate={(n) => { nav.current = n }} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    act(() => {
+      const ev = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+      ev.deltaY = -120
+      scroller.dispatchEvent(ev)
+      state.scrollTop = 0
+      fireEvent.scroll(scroller)
+    })
+    act(() => { vi.advanceTimersByTime(32) })
+
+    // Far seek (target scrollTop 3000), interrupted mid-ease.
+    act(() => { nav.current!.to(30) })
+    act(() => { vi.advanceTimersByTime(16 * 6) })
+    expect(Math.round(state.scrollTop)).toBeGreaterThan(0)
+    expect(Math.round(state.scrollTop)).toBeLessThan(3000)
+    // The user wheels up, away from the target; the viewport lands at 400.
+    act(() => {
+      const ev = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+      ev.deltaY = -120
+      scroller.dispatchEvent(ev)
+      state.scrollTop = 400
+      fireEvent.scroll(scroller)
+    })
+    state.scrollToCalls = []
+    for (let f = 0; f < 40; f++) act(() => { vi.advanceTimersByTime(16) })
+
+    // Aborted: no further scrollTop writes, the viewport stays at 400.
+    expect(state.scrollToCalls).toEqual([])
+    expect(Math.round(state.scrollTop)).toBe(400)
+  })
+
+  // Regression guard for the self-abort: an UPWARD seek fired within the
+  // user-scroll-intent window after a wheel-up must not be killed by the
+  // scroll handler's gesture-chaining restamp (which fires on the seek's OWN
+  // upward scroll events while a prior gesture is still fresh).
+  it('an upward seek shortly after a wheel-up completes instead of self-aborting', () => {
+    vi.useFakeTimers()
+    state.scrollTop = 0
+    state.scrollToCalls = []
+    const msgs: SdkMessage[] = []
+    for (let i = 0; i < 20; i++) {
+      msgs.push(makeMsg('user', { uuid: `q-${i}`, message: { content: [{ type: 'text', text: `q${i}` }] } }))
+      msgs.push(makeMsg('assistant', { uuid: `a-${i}`, message: { content: [{ type: 'text', text: `a${i}` }] } }))
+    }
+    const nav: { current: { to: (i: number) => void } | null } = { current: null }
+    const { container } = render(
+      <MessageList items={toItems(msgs)} onRegisterNavigate={(n) => { nav.current = n }} />,
+    )
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    // Leave follow with a wheel-up (stamps user scroll intent), then park the
+    // viewport at the BOTTOM so the seek below moves UP.
+    act(() => {
+      const ev = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+      ev.deltaY = -120
+      scroller.dispatchEvent(ev)
+      state.scrollTop = 3400
+      fireEvent.scroll(scroller)
+    })
+    act(() => { vi.advanceTimersByTime(32) })
+
+    // Upward seek: target row 4 (scrollTop 400) while parked at 3400. The
+    // pre-seek wheel is 32ms old — well inside the 1200ms intent window.
+    act(() => { nav.current!.to(4) })
+    for (let f = 0; f < 60 && Math.round(state.scrollTop) !== 400; f++) {
+      act(() => { vi.advanceTimersByTime(16) })
+    }
+
+    // The ease must run to landing, not die after one frame at ~2650.
+    expect(Math.round(state.scrollTop)).toBe(400)
+  })
+
   it('eases a target outside the rendered window instead of hard-jumping', () => {
     // Regression guard: a target outside Virtuoso's window used to fall back to
     // `scrollToIndex({ behavior: 'auto' })` — an instant jump — so far

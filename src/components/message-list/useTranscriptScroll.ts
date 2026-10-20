@@ -361,6 +361,15 @@ export function useTranscriptScroll({
   // a newer seek cancels the older loop), and the post-landing hold counter.
   const seekAnimRafRef = useRef<number | null>(null)
   const seekSeqRef = useRef(0)
+  // True for the whole life of a seek (ease + landed hold). The scroll
+  // handler's gesture-chaining restamp consults this: the seek's OWN upward
+  // scroll events must not re-arm userScrollIntentRef, or an upward seek fired
+  // while a prior gesture is still fresh (≤ USER_SCROLL_INTENT_MS old) reads
+  // its own first write as a user takeover and self-aborts after one frame
+  // ("Alt+↑ does nothing right after wheeling up"). Genuine user gestures are
+  // unaffected — wheel / touch / scroll key / overlay-thumb listeners stamp
+  // userScrollIntentRef directly, bypassing this chain.
+  const seekActiveRef = useRef(false)
   const [followDebounceRaw] = useLocalStorage<number>(
     'claude-react-web:follow-debounce-ms',
     150,
@@ -1261,7 +1270,7 @@ export function useTranscriptScroll({
       // whole gesture stays attributable to the user. Only upward events
       // re-arm, so our own downward pins and a downward gesture can't keep the
       // window alive.
-      if (userDriven && isScrollingUp) userScrollIntentRef.current = Date.now()
+      if (userDriven && isScrollingUp && !seekActiveRef.current) userScrollIntentRef.current = Date.now()
       // A genuine user push-away measures against the TRUE bottom
       // (scrollHeight). The spacer-aware `getDistanceFromBottom` subtracts the
       // task-list / live-bubble reserve, so an up-scroll that stays inside it
@@ -1488,6 +1497,7 @@ export function useTranscriptScroll({
       cancelAnimationFrame(seekAnimRafRef.current)
       seekAnimRafRef.current = null
     }
+    seekActiveRef.current = false
     scrollAnimatingRef.current = false
   }, [])
 
@@ -1603,6 +1613,21 @@ export function useTranscriptScroll({
       scrollAnimatingRef.current = false
     }
     const token = ++seekSeqRef.current
+    // The seek owns the viewport only until the USER takes it back. A gesture
+    // (wheel / touch / scroll key / overlay-thumb drag) stamped AFTER the seek
+    // began ends the loop outright — both the ease and the landed hold. Without
+    // this the hold's re-pin absorbs every wheel notch (and resets its own
+    // expiry on each correction, so continuous wheeling keeps it alive
+    // forever), and the ease fights the wheel for its remaining frames — the
+    // "点完 Scroll to next user message 后鼠标滚不动" report. Gestures stamped
+    // BEFORE the seek (the leave-wheel that parked the viewport, a click's own
+    // pointer events) don't abort: the comparison is strictly later-than.
+    // The seek's own scroll events can't trip this — the scroll handler's
+    // gesture-chaining restamp is suppressed while seekActiveRef is set (see
+    // seekActiveRef), and every real gesture stamps userScrollIntentRef
+    // directly from its own listener.
+    const seekStartedAt = Date.now()
+    const userTookOver = () => userScrollIntentRef.current > seekStartedAt
     const offsetIndexOf = (row: HTMLElement): number => {
       const raw = row.dataset.itemIndex
       return raw == null ? Number.NaN : Number.parseInt(raw, 10)
@@ -1668,12 +1693,17 @@ export function useTranscriptScroll({
     // tree) must not pin the rAF loop forever. On exhaustion fall back to
     // Virtuoso's own jump so the click still does something.
     let easeFrames = 600
+    // Cleared on EVERY exit of the loop (abort, supersede, fallback, hold
+    // expiry); stays set across the ease→hold hand-off. See seekActiveRef.
+    const endSeek = () => { seekActiveRef.current = false }
     const step = () => {
       seekAnimRafRef.current = null
-      if (token !== seekSeqRef.current || scrollerRef.current !== el) return
+      if (token !== seekSeqRef.current || scrollerRef.current !== el) { endSeek(); return }
+      if (userTookOver()) { endSeek(); return }
       const desired = desiredTop()
       if (desired == null) {
         // Nothing measurable at all (empty list): defer to Virtuoso.
+        endSeek()
         virtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align })
         return
       }
@@ -1688,18 +1718,22 @@ export function useTranscriptScroll({
         let holds = SEEK_HOLD_FRAMES
         const hold = () => {
           seekAnimRafRef.current = null
-          if (token !== seekSeqRef.current || scrollerRef.current !== el) return
+          if (token !== seekSeqRef.current || scrollerRef.current !== el) { endSeek(); return }
+          // User gesture after landing: release the anchor, same as mid-ease.
+          if (userTookOver()) { endSeek(); return }
           const want = desiredTop()
           if (want != null && Math.abs(el.scrollTop - want) > SEEK_SNAP_PX) {
             el.scrollTo({ top: want, behavior: 'auto' })
             holds = SEEK_HOLD_FRAMES
           }
           if (holds-- > 0) seekAnimRafRef.current = requestAnimationFrame(hold)
+          else endSeek()
         }
         seekAnimRafRef.current = requestAnimationFrame(hold)
         return
       }
       if (easeFrames-- <= 0) {
+        endSeek()
         virtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align })
         return
       }
@@ -1707,6 +1741,7 @@ export function useTranscriptScroll({
       el.scrollTo({ top: current + remaining * 0.25, behavior: 'auto' })
       seekAnimRafRef.current = requestAnimationFrame(step)
     }
+    seekActiveRef.current = true
     seekAnimRafRef.current = requestAnimationFrame(step)
     // Ref read (firstItemIndexRef.current) is live-by-design — a ref needs no dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
