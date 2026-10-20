@@ -135,7 +135,7 @@
 .memory-recall-entry {
   padding: var(--space-1) var(--space-1-5);
   border: 1px solid var(--border);
-  border-radius: var(--radius-2xs);
+  border-radius: var(--radius-sm);
   background: var(--bg-elev-2);
   font-size: var(--fs-sm);
 }
@@ -195,8 +195,11 @@
 .msg.result.permission-denied .result-mark { color: var(--warn-text); }
 
 /* system/informational: loop text banner (hook block reason, slash-command
-   output, status line). 'info'/'notice' are muted single lines;
-   'suggestion'/'warning' get the prominent card treatment. */
+   output, status line). 'info'/'notice' are muted single lines with no card
+   chrome; 'suggestion'/'warning' get the card treatment shared by the other
+   system cards (plugin-install / refusal-fallback): header + left accent bar.
+   Warning uses the warn accent; suggestion uses the theme accent (a
+   suggestion is not a warning). */
 .msg.informational {
   display: flex;
   align-items: baseline;
@@ -205,21 +208,32 @@
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   word-wrap: break-word;
+  /* Strip the base `.msg` card chrome so the quiet levels read as plain
+     muted lines, not bordered cards. */
+  border: none;
+  background: none;
 }
 .msg.informational .informational-body { min-width: 0; }
 .msg.informational.informational--warning,
 .msg.informational.informational--suggestion {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
+  display: block;                        /* header stacks above the body */
   padding: var(--space-2) var(--space-2-5);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--warn);
-  border-radius: var(--radius-2xs);
+  border-radius: var(--radius-sm);       /* 6px — matches the chip/control radius */
   background: var(--bg-elev-2);
   color: var(--fg);
 }
-.msg.informational.informational--warning .result-mark { color: var(--warn); }
+.msg.informational.informational--warning { border-left: 3px solid var(--warn); }
+.msg.informational.informational--suggestion { border-left: 3px solid var(--accent); }
+.msg.informational.informational--warning .msg-header,
+.msg.informational.informational--suggestion .msg-header {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: var(--space-1);
+}
 
 /* system/plugin_install: plugin install lifecycle card. The `status` drives
    the left accent — installed(ok) / failed(danger) / started+completed(muted). */
@@ -230,7 +244,7 @@
   padding: var(--space-1-5) var(--space-2-5);
   border: 1px solid var(--border);
   border-left: 3px solid var(--fg-muted);
-  border-radius: var(--radius-2xs);
+  border-radius: var(--radius-sm);
   background: var(--bg-elev-2);
   color: var(--fg);
   font-size: var(--fs-sm);
@@ -254,7 +268,7 @@
   padding: var(--space-2) var(--space-2-5);
   border: 1px solid var(--border);
   border-left: 3px solid var(--warn);
-  border-radius: var(--radius-2xs);
+  border-radius: var(--radius-sm);
   background: var(--bg-elev-2);
 }
 .msg.refusal-fallback .msg-header {

@@ -1136,12 +1136,26 @@ describe('MessageList', () => {
   it('renders system/informational at the given level', () => {
     const msgs = [
       makeMsg('system', { subtype: 'informational', content: 'hook blocked the prompt', level: 'warning' }),
+      makeMsg('system', { subtype: 'informational', content: 'try this instead', level: 'suggestion' }),
+      makeMsg('system', { subtype: 'informational', content: 'just an FYI', level: 'info' }),
     ]
     const { container } = render(
       <MessageList items={toItems(msgs as SdkMessage[])} />,
     )
     expect(container.textContent).toContain('hook blocked the prompt')
-    expect(container.querySelector('.informational--warning')).not.toBeNull()
+    // warning / suggestion render as cards with an uppercase header label.
+    const warning = container.querySelector('.informational--warning')
+    expect(warning).not.toBeNull()
+    expect(warning?.querySelector('.msg-header')?.textContent).toContain('warning')
+    const suggestion = container.querySelector('.informational--suggestion')
+    expect(suggestion).not.toBeNull()
+    expect(suggestion?.querySelector('.msg-header')?.textContent).toContain('suggestion')
+    // info / notice stay headerless muted lines (no card modifier, no header).
+    const info = container.querySelector(
+      '.msg.informational:not(.informational--warning):not(.informational--suggestion)',
+    )
+    expect(info).not.toBeNull()
+    expect(info?.querySelector('.msg-header')).toBeNull()
   })
 
   it('renders system/model_refusal_fallback as the fallback notice', () => {

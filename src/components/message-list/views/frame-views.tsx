@@ -396,8 +396,10 @@ export function PermissionDeniedView({ msg }: { msg: SdkMessage }) {
 
 /** Renders `system/informational` — a generic text banner from the loop
  *  (hook block reason, slash-command output, non-error status line). Level
- *  drives prominence: 'info'/'notice' render as muted single lines;
- *  'suggestion'/'warning' get the stronger card treatment. `content` is
+ *  drives prominence: 'info'/'notice' render as muted single lines (no card
+ *  chrome); 'suggestion'/'warning' get the card treatment shared by the other
+ *  system cards (plugin-install / refusal-fallback) — an uppercase mono header
+ *  + a semantic left accent bar, instead of a standalone glyph. `content` is
  *  plaintext per the SDK contract — render as text, not markdown. */
 export function InformationalView({ msg }: { msg: SdkMessage }) {
   const m = msg as { content?: unknown; level?: unknown; prevent_continuation?: unknown }
@@ -405,12 +407,17 @@ export function InformationalView({ msg }: { msg: SdkMessage }) {
   if (!body) return null
   const level = typeof m.level === 'string' ? m.level : 'info'
   const prominent = level === 'warning' || level === 'suggestion'
+  const label = prominent ? level : null
   return (
     <div
       className={`msg informational${prominent ? ` informational--${level}` : ''}`}
       aria-label={`informational (${level})`}
     >
-      {level === 'warning' && <span className="result-mark" aria-hidden="true">⚠</span>}
+      {label && (
+        <div className="msg-header">
+          <span>{label}</span>
+        </div>
+      )}
       <span className="informational-body">{body}</span>
     </div>
   )
