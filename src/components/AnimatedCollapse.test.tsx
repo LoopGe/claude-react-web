@@ -15,8 +15,14 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-/** happy-dom has no layout, so getBoundingClientRect returns a zero rect
- *  everywhere: the rendered height of a box has to be mocked per element.
+/** happy-dom has no layout, so a box's height has to be mocked per element — on
+ *  the metric the component reads, the used height (`offsetHeight`), which the
+ *  pin and every comparison go through. (One exception: the mount path's initial
+ *  pin reads the content's `scrollHeight`; a test that exercises that pin fakes
+ *  it on the prototype.) Deliberately NOT the rect: nothing in the component
+ *  reads one, and faking the rect to the same number would hide a rect read
+ *  reintroduced later. A test that models an ancestor transform overrides the
+ *  rect itself, and there it is meant to disagree.
  *
  *  "Not being rendered" is NOT mocked this way. It is modelled with an actual
  *  `display: none` wrapper (see renderInPanel) — the real shape, the same one the
@@ -24,8 +30,8 @@ afterEach(() => {
  *  against a DOM state instead of against a stub of the very API under test.
  *  happy-dom answers `checkVisibility()` correctly there (verified: false under
  *  a display:none ancestor, true for a rendered zero-height box). */
-function mockRectHeight(el: Element, height: number) {
-  vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({ height } as DOMRect)
+function mockLayoutHeight(el: HTMLElement, height: number) {
+  vi.spyOn(el, 'offsetHeight', 'get').mockReturnValue(height)
 }
 
 /** Render `ui` inside a wrapper that can be taken out of rendering — the
@@ -51,8 +57,8 @@ function renderInPanel(ui: ReactNode, { hidden = false }: { hidden?: boolean } =
 describe('AnimatedCollapse — exit keeps the last visible content', () => {
   /** The body must be tall enough to tween (happy-dom has no layout). */
   function armTween(body: HTMLElement, content: HTMLElement) {
-    mockRectHeight(body, 40)
-    mockRectHeight(content, 40)
+    mockLayoutHeight(body, 40)
+    mockLayoutHeight(content, 40)
   }
 
   it('renders the last OPEN children while the exit tween runs (not an empty box)', () => {
@@ -121,8 +127,8 @@ describe('AnimatedCollapse — intrinsic content growth while open', () => {
     )
     const body = container.querySelector('.animated-collapse') as HTMLElement
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
-    mockRectHeight(body, 60)
-    mockRectHeight(content, 100)
+    mockLayoutHeight(body, 60)
+    mockLayoutHeight(content, 100)
 
     act(() => fireResize(content))
 
@@ -143,8 +149,8 @@ describe('AnimatedCollapse — intrinsic content growth while open', () => {
     )
     const body = container.querySelector('.animated-collapse') as HTMLElement
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
-    mockRectHeight(body, 60)
-    mockRectHeight(content, 100)
+    mockLayoutHeight(body, 60)
+    mockLayoutHeight(content, 100)
 
     act(() => fireResize(content))
 
@@ -179,12 +185,8 @@ describe('AnimatedCollapse — intrinsic content growth while open', () => {
     )
     const body = container.querySelector('.animated-collapse') as HTMLElement
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
-    mockRectHeight(body, 60)
-    mockRectHeight(content, 100)
-    // happy-dom reports offsetHeight 0, which reads as "ancestor clamped the
-    // body" once a nonzero height is pinned — give the body its mocked rendered
-    // height for the clamp probe (real browsers report the laid-out box).
-    vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(60)
+    mockLayoutHeight(body, 60)
+    mockLayoutHeight(content, 100)
 
     // Fire 1 — isolated → the discrete-jump tween starts.
     act(() => fireResize(content))
@@ -192,7 +194,7 @@ describe('AnimatedCollapse — intrinsic content growth while open', () => {
 
     // Fire 2 one frame later (same tick = well inside the coalesce window) —
     // the continuous sequence takes over: cancel the tween, follow exactly.
-    mockRectHeight(content, 140)
+    mockLayoutHeight(content, 140)
     act(() => fireResize(content))
     expect(body.style.height).toBe('140px')
     expect(body.classList.contains('animating')).toBe(false)
@@ -218,7 +220,7 @@ describe('AnimatedCollapse — intrinsic content growth while open', () => {
     )
     const body = container.querySelector('.animated-collapse') as HTMLElement
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
-    mockRectHeight(content, 100)
+    mockLayoutHeight(content, 100)
 
     rerender(
       <AnimatedCollapse open animateResize unmountOnExit={false}>
@@ -265,8 +267,8 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     )
     const body = container.querySelector('.animated-collapse') as HTMLElement
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
-    mockRectHeight(body, 0)
-    mockRectHeight(content, 100)
+    mockLayoutHeight(body, 0)
+    mockLayoutHeight(content, 100)
     act(() => fireResize(content))
     expect(body.style.height).toBe('100px')
 
@@ -279,7 +281,7 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
       </AnimatedCollapse>,
       true,
     )
-    mockRectHeight(content, 0)
+    mockLayoutHeight(content, 0)
     act(() => fireResize(content))
 
     // The pin has to survive the hidden period, or the card is header-only the
@@ -298,15 +300,94 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     )
     const body = container.querySelector('.animated-collapse') as HTMLElement
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
-    mockRectHeight(body, 0)
-    mockRectHeight(content, 100)
+    mockLayoutHeight(body, 0)
+    mockLayoutHeight(content, 100)
     act(() => fireResize(content))
     expect(body.style.height).toBe('100px')
 
     // The last row is gone — nothing hidden about it, the box is just empty.
-    mockRectHeight(content, 0)
+    mockLayoutHeight(content, 0)
     act(() => fireResize(content))
     expect(body.style.height).toBe('0px')
+  })
+
+  it('adopts the used height, not a rect scaled by an ancestor transform', () => {
+    // The chat panel enters with `scale(0.98)` (layout.css), and every rect read
+    // under it reports 98% of the layout height — verified in the browser: a
+    // 100px box under scale(0.98) measures rect 98 / offsetHeight 100. A pinned
+    // height is a LAYOUT height, so it must not carry that scale: pinned 2%
+    // short, the card clips its last row until something re-measures it. (The
+    // clamped branch already read offsetHeight for exactly this reason; the
+    // other branch quietly did not.)
+    const { container } = renderInPanel(
+      <AnimatedCollapse open remeasureWhileClamped>
+        {list}
+      </AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    mockLayoutHeight(body, 0)
+    mockLayoutHeight(content, 100)
+    // …but the rect carries the ancestor's scale, as it does in the browser.
+    vi.spyOn(content, 'getBoundingClientRect').mockReturnValue({ height: 98 } as DOMRect)
+
+    act(() => fireResize(content))
+
+    expect(body.style.height).toBe('100px')
+  })
+
+  it('starts a close fold from the used height, not a scaled rect', () => {
+    // The scale reaches the BODY-side reads too (this one and the observer's
+    // comparison below), so they need the same treatment as the content's.
+    vi.useFakeTimers()
+    const { container, rerender } = renderInPanel(
+      <AnimatedCollapse open unmountOnExit={false}>
+        {list}
+      </AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    mockLayoutHeight(body, 100)
+    mockLayoutHeight(content, 100)
+    body.style.height = '100px' // pinned by an earlier observation
+    // Under the entrance's scale(0.98) the body's rect reads 98 while its used
+    // height stays 100.
+    vi.spyOn(body, 'getBoundingClientRect').mockReturnValue({ height: 98 } as DOMRect)
+
+    rerender(
+      <AnimatedCollapse open={false} unmountOnExit={false}>
+        {list}
+      </AnimatedCollapse>,
+      false,
+    )
+
+    // The tween starts from the used height, so the fold never jumps…
+    expect(body.style.height).toBe('100px')
+    act(() => {
+      vi.advanceTimersByTime(400)
+    })
+    // …and settles shut.
+    expect(body.style.height).toBe('0px')
+  })
+
+  it('does not treat a scaled body rect as a content change', () => {
+    // The observer's no-op guard compares the content's used height against the
+    // body's. Reading the body's rect under a transform would see it 2% smaller
+    // and start a needless tween on every observation.
+    const { container } = renderInPanel(
+      <AnimatedCollapse open animateResize>
+        {list}
+      </AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    mockLayoutHeight(body, 100)
+    mockLayoutHeight(content, 100)
+    vi.spyOn(body, 'getBoundingClientRect').mockReturnValue({ height: 98 } as DOMRect)
+
+    act(() => fireResize(content))
+
+    expect(body.classList.contains('animating')).toBe(false)
   })
 
   it('does not pin a zero height when it mounts inside a subtree that is not rendered', () => {
@@ -327,7 +408,7 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     // Standing down is not giving up: once the panel renders, a fold cycle pins
     // the body again. (The observer cannot — an unpinned body's own box already
     // equals its content's height, so it has nothing to detect.)
-    mockRectHeight(content, 100)
+    mockLayoutHeight(content, 100)
     rerender(
       <AnimatedCollapse open={false} unmountOnExit={false}>
         {list}
@@ -353,7 +434,8 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     // The collapse flag is per-session localStorage that syncs across tabs
     // (useLocalStorage's 'storage' listener), so a card sitting in a
     // keep-alive-cached panel can be opened while it is hidden. The fold's
-    // target — content rect, falling back to scrollHeight — reads 0 there.
+    // target — the content's used height, falling back to scrollHeight — reads 0
+    // there.
     const { container, rerender } = renderInPanel(
       <AnimatedCollapse open={false} unmountOnExit={false}>
         {list}
@@ -376,7 +458,7 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     // a fold cycle pins it again. Nothing re-pins an auto-height body on its own.
     vi.useFakeTimers()
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
-    mockRectHeight(content, 100)
+    mockLayoutHeight(content, 100)
     rerender(
       <AnimatedCollapse open={false} unmountOnExit={false}>
         {list}
@@ -414,8 +496,8 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     )
     const body = container.querySelector('.animated-collapse') as HTMLElement
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
-    mockRectHeight(body, 100)
-    mockRectHeight(content, 100)
+    mockLayoutHeight(body, 100)
+    mockLayoutHeight(content, 100)
 
     // Collapse it — the close fold is in flight.
     rerender(
@@ -473,8 +555,8 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     const body = container.querySelector('.animated-collapse') as HTMLElement
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
     Object.defineProperty(content, 'checkVisibility', { value: undefined })
-    mockRectHeight(body, 0)
-    mockRectHeight(content, 100)
+    mockLayoutHeight(body, 0)
+    mockLayoutHeight(content, 100)
     act(() => fireResize(content))
     expect(body.style.height).toBe('100px')
 
@@ -484,7 +566,7 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
       </AnimatedCollapse>,
       true,
     )
-    mockRectHeight(content, 0)
+    mockLayoutHeight(content, 0)
     act(() => fireResize(content))
     expect(body.style.height).toBe('100px')
   })

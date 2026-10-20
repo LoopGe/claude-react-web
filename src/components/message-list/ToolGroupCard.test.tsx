@@ -873,10 +873,13 @@ describe('ToolGroupCard', () => {
       expect(isOpen(container)).toBe(true)
       const body = container.querySelector('.tool-group-collapse') as HTMLElement
       const content = container.querySelector('.tool-group-body') as HTMLElement
-      // jsdom has no layout — mock the rendered heights (same technique as
-      // AnimatedCollapse.test.tsx).
-      vi.spyOn(body, 'getBoundingClientRect').mockReturnValue({ height: 60 } as DOMRect)
-      vi.spyOn(content, 'getBoundingClientRect').mockReturnValue({ height: 100 } as DOMRect)
+      // happy-dom has no layout — mock the laid-out height on the metric the
+      // collapse reads (same technique as AnimatedCollapse.test.tsx: the pin and
+      // its comparisons go through the used height, which an ancestor transform
+      // cannot scale). The rect is deliberately left alone: nothing reads it, and
+      // faking it to the same number would hide a rect read reintroduced later.
+      vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(60)
+      vi.spyOn(content, 'offsetHeight', 'get').mockReturnValue(100)
 
       act(() => fireResize(content))
 

@@ -18,10 +18,10 @@ const TRANSITION = [
 
 /** Two resize observations closer together than this are ONE continuous
  *  layout run — an inner animation (a nested collapse, a grid-rows reveal)
- *  feeding the observer every frame — and are followed exactly (snap per
- *  observation, so the body is never more than a frame behind the content).
- *  An observation isolated past the window is a discrete jump (a card
- *  mounting) and gets the animateResize tween instead. */
+ *  feeding the observer every frame — and are followed as they come (a snap per
+ *  observation, at the pin's whole-pixel resolution, so the body is never more
+ *  than a frame behind the content). An observation isolated past the window is
+ *  a discrete jump (a card mounting) and gets the animateResize tween instead. */
 const RESIZE_COALESCE_MS = 80
 
 /** Is this element actually being rendered — does it have a box at all? A box
@@ -82,26 +82,27 @@ function measureAdoptableHeight(
   content: HTMLDivElement,
   keepWhileClamped: boolean,
 ): { height: number; pinned: number; clamped: boolean } | null {
-  const contentHeight = content.getBoundingClientRect().height
+  // The USED height (`offsetHeight`), never a rect. getBoundingClientRect
+  // carries every ancestor transform, and this app puts one over the whole
+  // measuring subtree: the chat panel enters with `scale(0.98)`, so a rect read
+  // under it reports 98% of the layout height — and a pin taken from one leaves
+  // the card 2% short (a clipped last row) until something re-measures it.
+  // offsetHeight is the used height, rounded to a whole pixel: that rounding is
+  // the price of a metric no descendant transform can distort, and it keeps the
+  // probe, the pin and every comparison in one coordinate. The mount path's
+  // initial pin is the deliberate exception — it reads the content's
+  // scrollHeight, because before anything is pinned that is what reads PAST an
+  // ancestor's flex clamp — and the observer's first measurement replaces it.
+  const contentHeight = content.offsetHeight
   // Only a ZERO reading needs the rendered-ness probe: a non-zero one proves the
   // box exists, and this runs per growth frame while an inner animation feeds
   // the observer (see RESIZE_COALESCE_MS), so the ancestor walk in isRendered
   // stays off that path.
   if (contentHeight === 0 && !isRendered(content)) return null
   const pinned = Number.parseFloat(body.style.height)
-  // The LAYOUT height (`offsetHeight`), not a rect: getBoundingClientRect
-  // includes ancestor transforms, and the chat panel plus the overlay panels
-  // enter with `scale(0.98)` — every body inside one would read as clamped for
-  // the length of that entrance. offsetHeight is the used height, which is what
-  // "the ancestor handed us less than we pinned" actually means.
   const clamped = Number.isFinite(pinned) && body.offsetHeight < pinned - 1
   if (clamped && !keepWhileClamped) return null
-  // Under a clamp the reading we pin must be in the same coordinate space as
-  // the pin: a rect would carry the same ancestor scale that the probe above
-  // just discounted, and pinning 98% of the content leaves the card a few px
-  // short (a stray scrollbar and a clipped last row) until something else
-  // resizes the content.
-  return { height: clamped ? content.offsetHeight : contentHeight, pinned, clamped }
+  return { height: contentHeight, pinned, clamped }
 }
 
 interface AnimatedCollapseProps {
@@ -380,11 +381,12 @@ export function AnimatedCollapse({
     previousOpenRef.current = open
 
     if (open) {
-      // Measure the target with getBoundingClientRect, not scrollHeight:
-      // under the body's `overflow-y: clip`, scrollHeight can return the
-      // body's pinned height rather than the content's true height (see the
-      // ResizeObserver note below). The content is laid out by now (the
-      // <details> just opened), so its bounding box is the true height.
+      // Measure the target with the USED height, never scrollHeight: under the
+      // body's `overflow-y: clip`, scrollHeight can return the body's pinned
+      // height rather than the content's true height (see the ResizeObserver
+      // note below). The content is laid out by now (the <details> just
+      // opened), so its used height is the truth — and unlike a rect it carries
+      // no ancestor transform.
       //
       // Opened while the subtree is not being rendered: the persisted collapse
       // flag syncs across tabs, so a card in a cached panel can be opened while
@@ -394,12 +396,12 @@ export function AnimatedCollapse({
         standDown(body)
         return
       }
-      const target = content.getBoundingClientRect().height || content.scrollHeight
+      const target = content.offsetHeight || content.scrollHeight
       animateHeight(0, target, true, true)
       return
     }
 
-    const startHeight = body.getBoundingClientRect().height || lastHeightRef.current || content.scrollHeight
+    const startHeight = body.offsetHeight || lastHeightRef.current || content.scrollHeight
     animateHeight(startHeight, 0, false, true)
   }, [animateHeight, appear, open, rendered, standDown, unmountOnExit])
 
@@ -436,13 +438,14 @@ export function AnimatedCollapse({
     // canceling).
     const observer = new ResizeObserver(() => {
       if (!previousOpenRef.current) return
-      // Measure the content's RENDERED height, not scrollHeight. Under
+      // Measure the content's USED height, not scrollHeight. Under
       // `overflow-y: clip` on the body, content.scrollHeight can return the
       // body's pinned height rather than the true content height (observed:
       // body=232, group-sessions child=152, yet content.scrollHeight=232),
       // which pins the collapse to a stale height and leaves whitespace
-      // after a drag-out. getBoundingClientRect reflects the actual layout
-      // box and is immune to the overflow-clip scrollHeight quirk.
+      // after a drag-out. offsetHeight is the used height, immune both to that
+      // overflow-clip quirk and to an ancestor transform (see
+      // measureAdoptableHeight).
       const measured = measureAdoptableHeight(body, content, remeasureWhileClamped)
       if (!measured) return
       if (measured.clamped) {
@@ -463,7 +466,7 @@ export function AnimatedCollapse({
         body.style.height = `${measured.height}px`
         return
       }
-      const currentHeight = body.getBoundingClientRect().height
+      const currentHeight = body.offsetHeight
       if (Math.abs(measured.height - currentHeight) < 1) return
       lastHeightRef.current = measured.height
       if (animatingRef.current) {
