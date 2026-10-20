@@ -1,7 +1,10 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { parseDaemonArgv, isSingletonBlocked, type DaemonStatusLike } from './main.js'
+import { tempDir, rmRf } from '../__test-utils__/index.js'
+import { writeMarker, readMarker } from './control.js'
+import { parseDaemonArgv, isSingletonBlocked, openServerLogStream, sweepStaleMarkers, type DaemonStatusLike } from './main.js'
 
 describe('parseDaemonArgv', () => {
   it('reads --state-dir in both spellings and defaults to ~/.claude-react-web', () => {
@@ -29,5 +32,38 @@ describe('isSingletonBlocked', () => {
   })
   it('allows when there is no status file at all', () => {
     expect(isSingletonBlocked(null, alive)).toBe(false)
+  })
+})
+
+describe('openServerLogStream (review fix #1)', () => {
+  let dir: string
+  beforeEach(() => { dir = tempDir('daemon-log') })
+  afterEach(() => rmRf(dir))
+
+  it('creates <stateDir>/daemon on first spawn and opens server.log for append', async () => {
+    // Regression: on a FRESH state dir the daemon/ subdir does not exist when
+    // the first child spawns — createWriteStream fired an unhandled ENOENT
+    // and crashed the daemon before its first heartbeat.
+    expect(existsSync(join(dir, 'daemon'))).toBe(false)
+    const stream = openServerLogStream(dir)
+    await new Promise<void>((resolve) => stream.once('open', () => resolve()))
+    expect(existsSync(join(dir, 'daemon', 'server.log'))).toBe(true)
+    stream.end()
+  })
+})
+
+describe('sweepStaleMarkers (review fix #2/#3)', () => {
+  let dir: string
+  beforeEach(() => { dir = tempDir('daemon-sweep') })
+  afterEach(() => rmRf(dir))
+
+  it('clears orphaned stop/restart/start markers at daemon boot', async () => {
+    await writeMarker(dir, 'stop')
+    await writeMarker(dir, 'restart')
+    await writeMarker(dir, 'start')
+    await sweepStaleMarkers(dir)
+    expect(await readMarker(dir, 'stop')).toBe(false)
+    expect(await readMarker(dir, 'restart')).toBe(false)
+    expect(await readMarker(dir, 'start')).toBe(false)
   })
 })

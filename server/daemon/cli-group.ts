@@ -2,8 +2,7 @@
 // is one of the two surfaces (with /api/daemon) onto the same semantics.
 import type { CliGroup, Subcommand } from '../cli/types.js'
 import type { ParsedOptions } from '../cli/parser.js'
-import { daemonStatus, daemonEnable, daemonDisable, daemonStopBySignal, spawnDaemonDetached } from './ops.js'
-import { readStatusFile, isStatusFresh, writeMarker } from './control.js'
+import { daemonStatus, daemonEnable, daemonDisable, daemonStopAll, daemonStopBySignal, daemonRequestStart } from './ops.js'
 
 type RunCtx = { stateDir: string }
 
@@ -24,14 +23,14 @@ export const daemonGroup: CliGroup = {
     sub('install', 'daemon install', 'Register OS auto-start and start the daemon now',
       async (ctx) => {
         const snap = await daemonEnable(ctx.stateDir)
-        await spawnDaemonDetached(ctx.stateDir)
+        await daemonRequestStart(ctx.stateDir)
         return snap
       },
       (d) => `Auto-start registered via ${(d as { mechanism: string }).mechanism}; daemon started.`),
     sub('uninstall', 'daemon uninstall', 'Unregister auto-start AND stop the daemon and server',
       async (ctx) => {
         const snap = await daemonDisable(ctx.stateDir)
-        await daemonStopBySignal(ctx.stateDir)
+        await daemonStopAll(ctx.stateDir)
         return snap
       },
       () => 'Auto-start unregistered; daemon and server stopping.'),
@@ -50,17 +49,11 @@ export const daemonGroup: CliGroup = {
         return lines.join('\n')
       }),
     sub('start', 'daemon start', 'Start the daemon now (no-op if already running)',
-      async (ctx) => {
-        const status = await readStatusFile(ctx.stateDir)
-        if (isStatusFresh(status)) {
-          // Daemon alive: let its poll loop pick up the start marker.
-          await writeMarker(ctx.stateDir, 'start')
-          return { started: 'marker' }
-        }
-        await spawnDaemonDetached(ctx.stateDir)
-        return { started: 'spawn' }
-      },
-      (d) => `daemon start requested (${(d as { started: string }).started}).`),
+      async (ctx) => daemonRequestStart(ctx.stateDir),
+      (d) => {
+        const started = (d as { started: string }).started
+        return started === 'already-running' ? 'daemon already running.' : `daemon start requested (${started}).`
+      }),
     sub('stop', 'daemon stop', 'Stop the supervised server (the daemon keeps running)',
       async (ctx) => { await daemonStopBySignal(ctx.stateDir); return { stopped: true } },
       () => 'Stop requested — the supervisor will not restart this server.'),

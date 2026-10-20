@@ -79,6 +79,23 @@ export async function daemonStatus(stateDir: string, runner: CommandRunner = exe
   return snapshot(stateDir, runner)
 }
 
+/** Start request from either surface. Daemon alive + child stopped → the
+ *  supervisor poll picks up the start marker; daemon alive + child running →
+ *  a no-op (NEVER a marker — a stale one would resurrect the server after a
+ *  later intentional stop); no daemon → detached spawn. */
+export async function daemonRequestStart(stateDir: string): Promise<{ started: 'marker' | 'spawn' | 'already-running' }> {
+  const status = await readStatusFile(stateDir)
+  if (isStatusFresh(status)) {
+    if (status!.state === 'stopped') {
+      await writeMarker(stateDir, 'start')
+      return { started: 'marker' }
+    }
+    return { started: 'already-running' }
+  }
+  await spawnDaemonDetached(stateDir)
+  return { started: 'spawn' }
+}
+
 /** Start the daemon NOW as a detached, hidden process. Resolves once the OS
  *  actually spawned it; rejects with the raw spawn error (e.g. ENOENT) so
  *  callers surface it instead of leaking an unhandled exception. */
@@ -88,9 +105,9 @@ export function spawnDaemonDetached(stateDir: string): Promise<void> {
     const child = spawn(nodePath, [daemonEntry, '--state-dir', stateDir], {
       detached: true,
       stdio: 'ignore',
-      // The daemon process is NOT a daemon child itself — strip the marker so
-      // an inherited CRW_DAEMON_CHILD from a daemon-spawned server can't leak.
-      env: { ...process.env, CRW_DAEMON_CHILD: '' },
+      // The daemon process is NOT a daemon child itself — REMOVE the marker
+      // instead of blanking it, so nothing downstream can misread '' as set.
+      env: (() => { const e = { ...process.env }; delete e.CRW_DAEMON_CHILD; return e })(),
       windowsHide: true,
     })
     child.once('error', reject)
@@ -100,11 +117,23 @@ export function spawnDaemonDetached(stateDir: string): Promise<void> {
 
 /** CLI-side stop: marker FIRST (so the supervisor treats the exit as
  *  intentional), then SIGTERM the recorded child. On Windows SIGTERM is a
- *  hard kill — the marker still guarantees "no restart". */
+ *  hard kill — the marker still guarantees "no restart".
+ *  Guarded on a LIVE child: a marker written while nothing runs would be
+ *  orphaned and later swallow the daemon's first real crash as "intentional". */
 export async function daemonStopBySignal(stateDir: string): Promise<void> {
-  await writeMarker(stateDir, 'stop')
   const status = await readStatusFile(stateDir)
-  if (status?.childPid != null) {
-    try { process.kill(status.childPid, 'SIGTERM') } catch { /* already gone */ }
+  if (status?.childPid == null || !isAlive(status.childPid)) return
+  await writeMarker(stateDir, 'stop')
+  try { process.kill(status.childPid, 'SIGTERM') } catch { /* already gone */ }
+}
+
+/** `daemon uninstall` semantics (spec §5/§6): stop the supervised server AND
+ *  the daemon itself — otherwise the daemon lingers, holding the singleton
+ *  and reporting alive until the next logout. */
+export async function daemonStopAll(stateDir: string): Promise<void> {
+  const status = await readStatusFile(stateDir)
+  await daemonStopBySignal(stateDir)
+  if (status != null && isAlive(status.daemonPid)) {
+    try { process.kill(status.daemonPid, 'SIGTERM') } catch { /* already gone */ }
   }
 }

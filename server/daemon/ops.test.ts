@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tempDir, rmRf } from '../__test-utils__/index.js'
-import { daemonEnable, daemonDisable, daemonStatus } from './ops.js'
-import { writeStatusFile } from './control.js'
+import { daemonEnable, daemonDisable, daemonStatus, daemonRequestStart, daemonStopBySignal } from './ops.js'
+import { writeStatusFile, readMarker } from './control.js'
 
 vi.mock('./paths.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./paths.js')>()
@@ -88,5 +88,55 @@ describe('daemon ops', () => {
     await expect(daemonEnable(dir, noopRunner)).rejects.toMatchObject({ status: 400 })
     const after = JSON.parse(await import('node:fs/promises').then((m) => m.readFile(join(dir, 'config.json'), 'utf8')))
     expect(after).toEqual(before)
+  })
+})
+
+describe('review fixes — ops', () => {
+  let dir: string
+  beforeEach(() => { dir = tempDir('daemon-ops-fix') })
+  afterEach(() => rmRf(dir))
+
+  function seedStatus(over: Record<string, unknown>): Promise<void> {
+    return writeStatusFile(dir, {
+      daemonPid: process.pid, childPid: null, state: 'stopped', startedAt: Date.now(),
+      childStartedAt: null, restartCount: 0, consecutiveFailures: 0,
+      lastError: null, lastExitReason: null, updatedAt: Date.now(), ...over,
+    })
+  }
+
+  it('daemonRequestStart writes the marker ONLY when the child is stopped (review fix #3)', async () => {
+    await seedStatus({ state: 'stopped' })
+    const r1 = await daemonRequestStart(dir)
+    expect(r1.started).toBe('marker')
+    expect(await readMarker(dir, 'start')).toBe(true)
+  })
+
+  it('daemonRequestStart does NOT write a marker while the child is running (review fix #3)', async () => {
+    await seedStatus({ state: 'running', childPid: 1, childStartedAt: Date.now() })
+    const r2 = await daemonRequestStart(dir)
+    expect(r2.started).toBe('already-running')
+    expect(await readMarker(dir, 'start')).toBe(false)
+  })
+
+  it('daemonStopBySignal leaves NO marker when there is no live child (review fix #2)', async () => {
+    // no status file at all → nothing to stop, marker must not be orphaned
+    await daemonStopBySignal(dir)
+    expect(await readMarker(dir, 'stop')).toBe(false)
+  })
+
+  it('daemonStopBySignal marks + signals a LIVE child, and daemonStopAll also stops the daemon (review fix #2/#4)', async () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    await seedStatus({ state: 'running', childPid: 4242 })
+    await daemonStopBySignal(dir)
+    expect(await readMarker(dir, 'stop')).toBe(true)
+    expect(killSpy.mock.calls.some((c) => c[0] === 4242 && c[1] === 'SIGTERM')).toBe(true)
+
+    // uninstall semantics: the daemon itself is SIGTERMed too (review fix #4)
+    killSpy.mockClear()
+    const { daemonStopAll } = await import('./ops.js')
+    await daemonStopAll(dir)
+    expect(killSpy.mock.calls.some((c) => c[0] === 4242 && c[1] === 'SIGTERM')).toBe(true)
+    expect(killSpy.mock.calls.some((c) => c[0] === process.pid && c[1] === 'SIGTERM')).toBe(true)
+    killSpy.mockRestore()
   })
 })

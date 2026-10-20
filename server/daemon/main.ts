@@ -7,12 +7,31 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawn } from 'node:child_process'
-import { createWriteStream } from 'node:fs'
-import { readStatusFile, HEARTBEAT_FRESH_MS } from './control.js'
+import { mkdirSync, createWriteStream, type WriteStream } from 'node:fs'
+import { readStatusFile, clearMarker, HEARTBEAT_FRESH_MS } from './control.js'
 import { startSupervisor } from './supervisor.js'
 import { resolveDaemonEntryPaths } from './paths.js'
 
 export interface DaemonStatusLike { daemonPid: number; state: string; updatedAt: number }
+
+/** Open the supervised server's log, creating <stateDir>/daemon first — on a
+ *  fresh state dir the first child spawns BEFORE the first heartbeat would
+ *  have created the directory, and a bare createWriteStream there crashed the
+ *  whole daemon with an unhandled ENOENT. */
+export function openServerLogStream(stateDir: string): WriteStream {
+  mkdirSync(join(stateDir, 'daemon'), { recursive: true })
+  return createWriteStream(join(stateDir, 'daemon', 'server.log'), { flags: 'a' })
+}
+
+/** Clear markers orphaned by a previous daemon (crashed between writing a
+ *  marker and consuming it, or written by the CLI while nothing ran). Called
+ *  AFTER the singleton check so a LIVE daemon's in-flight markers are never
+ *  swept by a second boot attempt. */
+export async function sweepStaleMarkers(stateDir: string): Promise<void> {
+  await clearMarker(stateDir, 'stop')
+  await clearMarker(stateDir, 'restart')
+  await clearMarker(stateDir, 'start')
+}
 
 export function parseDaemonArgv(argv: string[]): { stateDir: string } {
   let stateDir: string | undefined
@@ -45,19 +64,20 @@ async function main(): Promise<void> {
     // scheduled task fires twice or the user starts one manually).
     process.exit(0)
   }
-  const { serverEntry } = resolveDaemonEntryPaths()
+  await sweepStaleMarkers(stateDir)
+  const { nodePath, serverEntry } = resolveDaemonEntryPaths()
 
   startSupervisor({
     stateDir,
     spawnChild: () => {
-      const child = spawn(process.execPath, [serverEntry, '--state-dir', stateDir, '--no-open'], {
+      const child = spawn(nodePath, [serverEntry, '--state-dir', stateDir, '--no-open'], {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, CRW_DAEMON_CHILD: '1' },
         windowsHide: true,
       })
       // The supervised server's stdout/stderr → <stateDir>/daemon/server.log,
       // so the daemon's platform redirection (daemon.log) stays daemon-only.
-      const out = createWriteStream(join(stateDir, 'daemon', 'server.log'), { flags: 'a' })
+      const out = openServerLogStream(stateDir)
       child.stdout?.pipe(out)
       child.stderr?.pipe(out)
       return {

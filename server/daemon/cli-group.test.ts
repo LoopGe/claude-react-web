@@ -62,14 +62,27 @@ describe('daemon CLI group', () => {
     expect((data as { mechanism: string }).mechanism).toBeTruthy()
   })
 
-  it('stop writes the stop marker so the supervisor will not restart the server', async () => {
+  it('stop marks + signals a LIVE child; a dead child writes no marker', async () => {
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
     await writeStatusFile(dir, {
-      daemonPid: 1, childPid: 123, state: 'running', startedAt: Date.now(),
+      daemonPid: 1, childPid: process.pid, state: 'running', startedAt: Date.now(),
       childStartedAt: Date.now(), restartCount: 0, consecutiveFailures: 0,
       lastError: null, lastExitReason: null, updatedAt: Date.now(),
     })
-    // childPid 123 does not exist — the kill throws ESRCH and is swallowed
     await expect(sub('stop').run(ctx, parseArgs([]))).resolves.toBeTruthy()
     expect(await readMarker(dir, 'stop')).toBe(true)
+    expect(killSpy.mock.calls.some((c) => c[0] === process.pid && c[1] === 'SIGTERM')).toBe(true)
+    killSpy.mockRestore()
+
+    // dead child → nothing to stop → no orphan marker
+    await writeStatusFile(dir, {
+      daemonPid: 1, childPid: 999999, state: 'running', startedAt: Date.now(),
+      childStartedAt: Date.now(), restartCount: 0, consecutiveFailures: 0,
+      lastError: null, lastExitReason: null, updatedAt: Date.now(),
+    })
+    const { clearMarker } = await import('./control.js')
+    await clearMarker(dir, 'stop')
+    await sub('stop').run(ctx, parseArgs([]))
+    expect(await readMarker(dir, 'stop')).toBe(false)
   })
 })

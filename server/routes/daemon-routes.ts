@@ -2,10 +2,9 @@
 // daemon/ops.ts; the stop route is the one place the HTTP layer touches the
 // daemon protocol (marker) and the shutdown seam directly.
 import { Hono } from 'hono'
-import { daemonStatus, daemonEnable, daemonDisable, spawnDaemonDetached } from '../daemon/ops.js'
+import { daemonStatus, daemonEnable, daemonDisable, daemonRequestStart } from '../daemon/ops.js'
 import { requestStop } from '../daemon/server-bridge.js'
 import { requestShutdown } from '../daemon/shutdown-request.js'
-import { readStatusFile, isStatusFresh, writeMarker } from '../daemon/control.js'
 
 export function buildDaemonRouter(stateDir: string): Hono {
   const app = new Hono()
@@ -16,15 +15,8 @@ export function buildDaemonRouter(stateDir: string): Hono {
   app.post('/daemon/disable', async (c) => c.json(await daemonDisable(stateDir)))
 
   app.post('/daemon/start', async (c) => {
-    const status = await readStatusFile(stateDir)
-    if (isStatusFresh(status)) {
-      // Daemon alive: hand over via the supervisor poll (harmless no-op while
-      // the child is already running; spawns it when it is stopped).
-      await writeMarker(stateDir, 'start')
-    } else {
-      await spawnDaemonDetached(stateDir)
-    }
-    return c.json({ ok: true })
+    const { started } = await daemonRequestStart(stateDir)
+    return c.json({ ok: true, started })
   })
 
   app.post('/daemon/stop', async (c) => {
