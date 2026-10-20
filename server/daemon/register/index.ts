@@ -4,22 +4,25 @@
 // Platform adapters land in Tasks 5–7; until each one exists its branch
 // returns a stub that fails loudly, keeping every commit typecheck-green.
 import type { PlatformRegister } from './types.js'
+import { WindowsRegister } from './windows.js'
 
 let cached: PlatformRegister | null = null
 
 export function getPlatformRegister(): PlatformRegister {
   if (cached) return cached
+  let platform: PlatformRegister
   switch (process.platform) {
     case 'win32':
-      cached = stubRegister('schtasks')
+      platform = new WindowsRegister()
       break
     case 'darwin':
-      cached = stubRegister('launchd')
+      platform = stubRegister('launchd')
       break
     default:
-      cached = stubRegister('systemd')
+      platform = stubRegister('systemd')
       break
   }
+  cached = platform
   return cached
 }
 

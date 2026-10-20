@@ -8,6 +8,8 @@ export interface PlatformRegister {
   mechanism: 'schtasks' | 'launchd' | 'systemd'
   isSupported(runner: CommandRunner): Promise<{ supported: boolean; reason?: string }>
   register(paths: DaemonEntryPaths, stateDir: string, runner: CommandRunner): Promise<void>
+  /** unregister/query need no stateDir: schtasks /delete, launchctl bootout
+   *  and systemctl disable all address the fixed registration id. */
   unregister(paths: DaemonEntryPaths, runner: CommandRunner): Promise<void>
   query(paths: DaemonEntryPaths, runner: CommandRunner): Promise<{ registered: boolean; targetMissing: boolean }>
 }
