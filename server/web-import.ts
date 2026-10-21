@@ -108,10 +108,14 @@ export interface SourceMarketplaces {
   cloneExists: Record<string, boolean>
 }
 
-/** 源目录里的 marketplace，含每个市场的启用标志与克隆目录存在性。 */
+/** 源目录里的 marketplace，含每个市场的启用标志与克隆目录存在性。
+ *
+ *  `load({ readOnly: true })`：MpStore 的默认 load 会自愈过期缓存（重解析
+ *  clone 里的 manifest 并回写 marketplaces.json）。读别人的 state 目录不能
+ *  这样——那等于桌面版去改网页版的配置文件。代价是过期缓存会被原样返回。 */
 export async function readSourceMarketplaces(dir: string): Promise<SourceMarketplaces> {
   const store = new MpStore({ stateDir: dir })
-  const entries = await store.load()
+  const entries = await store.load({ readOnly: true })
   const enabled: Record<string, Record<string, boolean>> = {}
   const cloneExists: Record<string, boolean> = {}
   for (const entry of entries) {
