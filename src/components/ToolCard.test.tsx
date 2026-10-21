@@ -147,6 +147,17 @@ describe('ToolStatusBadge (standalone)', () => {
 })
 
 describe('ToolResultSection — result reveal', () => {
+  // Scoped to THIS describe on purpose. A file-wide `vi.restoreAllMocks()`
+  // resets the hoisted context mocks the file's other tests drive (measured:
+  // three of them went red). But an inline restore at the end of the test body
+  // is skipped whenever an assertion throws, leaking fake timers and a
+  // prototype-wide scrollHeight mock into every later test in the file — which
+  // is the cascade this hook avoids.
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
   it('drives the grid track in whole pixels, then clears it', () => {
     vi.useFakeTimers()
     // The tween reads its target in a LAYOUT EFFECT at mount, so the height has
@@ -164,11 +175,5 @@ describe('ToolResultSection — result reveal', () => {
 
     act(() => { vi.advanceTimersByTime(400) })
     expect(el.style.gridTemplateRows).toBe('')
-    vi.useRealTimers()
-    // Restore the prototype spy HERE, not in a shared afterEach: this file's
-    // other tests drive hoisted vi.fn() context mocks, and a file-wide
-    // `vi.restoreAllMocks()` resets their implementations out from under them
-    // (measured: three context-reading tests went red).
-    vi.restoreAllMocks()
   })
 })

@@ -9,11 +9,6 @@ import { revealDurationMs } from '../utils/reveal-duration'
  *  entrance) so the cleanup schedules can't drift apart. */
 const FALLBACK_MS = 160
 
-/** Read `--motion-duration-moderate` (the reveal duration) from the theme so
- *  the fallback cleanup tracks CSS edits instead of hardcoding 240ms.
- *  (Lives in `utils/reveal-duration.ts` since the rAF track tween reads the
- *  same value and must not import from `hooks/`.) */
-
 /**
  * One-shot reveal class latch, shared by the entrance animations that grow a
  * parent box (see `.grid-clip-reveal` / `.tool-group-member-enter` in
