@@ -288,3 +288,88 @@ describe('POST /api/config/web-import — credentials', () => {
     expect(config.recapModel).toBe('keep-me')
   })
 })
+
+describe('POST /api/config/web-import — mcp', () => {
+  let stateDir: string
+  let sourceDir: string
+  beforeEach(() => {
+    stateDir = tempDir('web-import-dst')
+    sourceDir = tempDir('web-import-src')
+    mkdirSync(sourceDir, { recursive: true })
+    // 源 mcp-config.json 的真实形状：**扁平键值对象**（键就是 name），不是
+    // 导出用的 `{version, servers: []}` 信封——信封会被 store 读成一台名叫
+    // "servers" 的假服务器。
+    writeFileSync(join(sourceDir, 'mcp-config.json'), JSON.stringify({
+      ctx7: { name: 'ctx7', type: 'stdio', command: 'npx', args: ['-y', 'ctx7'], env: { API_KEY: 'sekret' }, enabled: true },
+      remote: { name: 'remote', type: 'http', url: 'https://mcp.example.com', enabled: false },
+    }), 'utf8')
+  })
+  afterEach(() => { rmRf(stateDir); rmRf(sourceDir) })
+
+  async function post(body: unknown) {
+    const app = await makeRouter(stateDir, sourceDir)
+    return await app.request('/api/config/web-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('imports the named servers with their secrets, enabled', async () => {
+    const res = await post({ mcp: ['ctx7'] })
+    const body = await res.json() as { mcp: { imported: string[]; skipped: string[]; failed: unknown[] } }
+    expect(body.mcp.imported).toEqual(['ctx7'])
+    expect(body.mcp.failed).toEqual([])
+    // 密钥值绝不进响应体（只在服务端内存 / 桌面版自己的 store 里）。
+    expect(JSON.stringify(body)).not.toContain('sekret')
+
+    const store = new McpConfigStore({ stateDir })
+    const loaded = await store.load()
+    expect(loaded.map((s) => s.name)).toEqual(['ctx7'])
+    expect(loaded[0].env).toEqual({ API_KEY: 'sekret' })
+    expect(loaded[0].enabled).toBe(true)
+  })
+
+  it('skips a name the desktop store already has', async () => {
+    // 预置一台同名服务器：导入必须跳过它、保留桌面版的版本，不覆盖。
+    const seeded = new McpConfigStore({ stateDir })
+    await seeded.load()
+    seeded.upsert({ name: 'ctx7', type: 'stdio', command: 'other', enabled: true, createdAt: 1, updatedAt: 1 })
+    await seeded.flush()
+
+    const res = await post({ mcp: ['ctx7'] })
+    const body = await res.json() as { mcp: { imported: string[]; skipped: string[] } }
+    expect(body.mcp.skipped).toEqual(['ctx7'])
+    expect(body.mcp.imported).toEqual([])
+    const after = await new McpConfigStore({ stateDir }).load()
+    expect(after[0].command).toBe('other')
+    expect(after[0].env).toBeUndefined()
+  })
+
+  it('fails the missing name without failing the request', async () => {
+    const res = await post({ mcp: ['nope', 'ctx7'] })
+    const body = await res.json() as { mcp: { imported: string[]; failed: Array<{ name: string; error: string }> } }
+    expect(body.mcp.failed).toEqual([{ name: 'nope', error: expect.stringContaining('not found') }])
+    expect(body.mcp.imported).toEqual(['ctx7'])
+  })
+
+  // 源的 mcp-config.json 存在但读不动：与 GET 的 mcpError 同一语义——整栏失败，
+  // 每个被请求的名字各记一条，POST 仍是 200（逐项失败隔离，不 500 整次请求）。
+  it('reports every requested name as failed when the source file is corrupt', async () => {
+    writeFileSync(join(sourceDir, 'mcp-config.json'), 'not json', 'utf8')
+    const res = await post({ mcp: ['ctx7', 'remote'] })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { mcp: { imported: string[]; skipped: string[]; failed: Array<{ name: string; error: string }> } }
+    expect(body.mcp.failed.map((f) => f.name)).toEqual(['ctx7', 'remote'])
+    for (const f of body.mcp.failed) expect(f.error).toContain('mcp-config.json')
+    expect(body.mcp.imported).toEqual([])
+    expect(body.mcp.skipped).toEqual([])
+  })
+
+  it('rejects a string where an array is required (no char-by-char iteration)', async () => {
+    // Review Focus 5。
+    const res = await post({ mcp: 'ctx7' })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toContain('mcp must be an array')
+  })
+})

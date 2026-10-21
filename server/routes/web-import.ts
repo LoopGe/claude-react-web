@@ -14,7 +14,7 @@ import { DEFAULT_PROFILE, LEGACY_PROFILE_KEYS, queueConfigWrite, config as serve
 import { coerceProfileEntries, maskToken, profileFromLegacyFields, resolveActiveProfile, type LegacyProfileFields } from '../profiles.js'
 import { maskSecrets, validateMcpServer } from '../mcp-config.js'
 import type { MpStore } from '../mp-store.js'
-import type { McpConfigStore } from '../mcp-config.js'
+import type { McpConfigStore, StoredMcpServer } from '../mcp-config.js'
 import { readSourceCredentials, readSourceMcp, readSourceMarketplaces, webStateDir } from '../web-import.js'
 import type { WebImportCollectionResult, WebImportEnumeration, WebImportMarketplaceView, WebImportMcpView, WebImportResult } from '../../shared/web-import.js'
 
@@ -171,6 +171,50 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
     return { imported: true, configured: !!serverConfig.authToken }
   }
 
+  /** 按名字导入源目录的全局 MCP 服务器。
+   *  同名跳过（不覆盖桌面版已有的）、校验不过报该项 failed、其余项继续——
+   *  与 POST /api/mcp-config/claude-import 的语义逐条一致。 */
+  async function importMcpServers(sourceDir: string, names: string[]): Promise<WebImportCollectionResult> {
+    const result = emptyCollection()
+    if (names.length === 0) return result
+    let servers: StoredMcpServer[]
+    try {
+      servers = await readSourceMcp(sourceDir)
+    } catch (err) {
+      // 源 mcp-config.json 存在但读不动：整栏失败（与 GET 的 mcpError 同一语义）。
+      // 每个被请求的名字各记一条，POST 本身仍 200 —— 逐项失败隔离，
+      // 不因为它坏掉而 500 掉整次请求（凭证那一栏已经可能写成功了）。
+      const error = (err as Error).message
+      for (const name of names) result.failed.push({ name, error })
+      return result
+    }
+    const byName = new Map(servers.map((s) => [s.name, s]))
+    for (const name of names) {
+      try {
+        const server = byName.get(name)
+        if (!server) {
+          result.failed.push({ name, error: `not found in ${join(sourceDir, 'mcp-config.json')}` })
+          continue
+        }
+        const errors = validateMcpServer(server)
+        if (errors.length > 0) {
+          result.failed.push({ name, error: errors.join('; ') })
+          continue
+        }
+        if (deps.mcpStore.get(server.name)) {
+          result.skipped.push(server.name)
+          continue
+        }
+        deps.mcpStore.upsert({ ...server, enabled: true })
+        result.imported.push(server.name)
+      } catch (err) {
+        result.failed.push({ name, error: (err as Error).message })
+      }
+    }
+    await deps.mcpStore.flush()
+    return result
+  }
+
   app.post('/config/web-import', async (c) => {
     const body = await safeJson<{ credentials?: unknown; mcp?: unknown; marketplaces?: unknown }>(c.req)
     if (body.credentials !== undefined && typeof body.credentials !== 'boolean') {
@@ -193,10 +237,9 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
 
     const result: WebImportResult = {
       credentials,
-      mcp: emptyCollection(),
+      mcp: await importMcpServers(sourceDir, mcpNames),
       marketplaces: emptyCollection(),
     }
-    void mcpNames
     void mpIds
     return c.json(result)
   })
