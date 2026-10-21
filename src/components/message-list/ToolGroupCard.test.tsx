@@ -5,7 +5,7 @@ import { ToolGroupCard } from './ToolGroupCard'
 import { ToolStatusProvider, ToolResultProvider } from '../../hooks/usePlanStatus'
 import { BackgroundToolProvider } from '../../hooks/useBackgroundTool'
 import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../../test/resize-observer-stub'
-import type { ActiveSubagent, ToolStatus } from '../../session-store/types'
+import type { ActiveSubagent, ToolResultEntry, ToolStatus } from '../../session-store/types'
 import type { SdkMessage } from '../../types'
 
 // Stub scrollIntoView — jsdom lacks it, and the failed badge scrolls the
@@ -49,9 +49,11 @@ function renderGroup({
   closed,
   subagentStatuses,
   autoExpandRunningGroups,
+  toolResults,
 }: {
   members: SdkMessage[]
   toolStatus: Map<string, ToolStatus>
+  toolResults?: Map<string, ToolResultEntry>
   searchQuery?: string
   activeMemberItemIndex?: number
   activeMatchInItem?: number
@@ -62,7 +64,7 @@ function renderGroup({
 }) {
   return render(
     <ToolStatusProvider value={toolStatus}>
-      <ToolResultProvider value={new Map()}>
+      <ToolResultProvider value={toolResults ?? new Map()}>
         <BackgroundToolProvider value={undefined}>
           <ToolGroupCard
             members={members}
@@ -1017,5 +1019,78 @@ describe('ToolGroupCard', () => {
       })
       expect(memberOf(container, 't2-tu').className).not.toContain('tool-group-member-enter')
     })
+  })
+})
+
+/** happy-dom has no layout: the pin and every comparison read the USED height
+ *  (`offsetHeight`), so a test models a box by faking that metric — the same
+ *  approach (and the same reason) as AnimatedCollapse.test.tsx. */
+function mockLayoutHeight(el: HTMLElement, height: number) {
+  vi.spyOn(el, 'offsetHeight', 'get').mockReturnValue(height)
+}
+
+describe('ToolGroupCard — a member fold inside the group body', () => {
+  const membersWithResult = (): { members: SdkMessage[]; toolStatus: Map<string, ToolStatus>; toolResults: Map<string, ToolResultEntry> } => ({
+    members: [toolMsg('t1', 'Bash', { command: 'find . -maxdepth 1 -type f' })],
+    toolStatus: new Map<string, ToolStatus>([['t1-tu', 'success']]),
+    toolResults: new Map<string, ToolResultEntry>([['t1-tu', { content: 'x\ny\nz', isError: false }]]),
+  })
+
+  it('releases the group body pin when a member result row expands', () => {
+    // The reported bug: the group body's pin relays the member fold's growth to
+    // the transcript one ResizeObserver broadcast late, which paints the cards
+    // below the group one growth-step low, every frame.
+    vi.useFakeTimers()
+    const { container } = renderGroup(membersWithResult())
+    // Both boxes exist before the first open (unmountOnExit=false renders the
+    // body and its content even while folded), and the heights must be faked
+    // BEFORE the click: the open fold reads the content's used height in the
+    // same commit, and happy-dom reports 0 for every box.
+    const groupBody = container.querySelector('.tool-group-collapse') as HTMLElement
+    const groupContent = container.querySelector('.tool-group-body') as HTMLElement
+    mockLayoutHeight(groupBody, 300)
+    mockLayoutHeight(groupContent, 300)
+    fireEvent.click(container.querySelector('.tool-group-toggle')!) // members mount on first open
+    act(() => { vi.advanceTimersByTime(400) })
+    expect(groupBody.style.height).toBe('300px') // settled open, pinned
+
+    const summary = container.querySelector('.tool-result-summary') as HTMLElement
+    const nestedBody = summary.parentElement!.querySelector('.animated-collapse') as HTMLElement
+    const nestedContent = summary.parentElement!.querySelector('.animated-collapse-content') as HTMLElement
+    mockLayoutHeight(nestedBody, 0)
+    mockLayoutHeight(nestedContent, 400)
+    fireEvent.click(summary)
+
+    // The member fold owns the height now: the group must not clip it.
+    expect(nestedBody.classList.contains('animating')).toBe(true)
+    expect(groupBody.style.height).toBe('')
+
+    act(() => { vi.advanceTimersByTime(400) })
+    // Settled: the member content is still rendered inside the group.
+    expect(container.querySelector('.tool-result-details')).not.toBeNull()
+  })
+
+  it("keeps a folded group's 0px pin (a search-forced result row inside it)", () => {
+    // ToolResultDetails force-expands itself on a search hit, which can open a
+    // member's result inside a group that is itself folded. Releasing the folded
+    // body's 0px pin there would spill the whole group open.
+    vi.useFakeTimers()
+    const { container } = renderGroup(membersWithResult())
+    const groupBody = container.querySelector('.tool-group-collapse') as HTMLElement
+    const groupContent = container.querySelector('.tool-group-body') as HTMLElement
+    mockLayoutHeight(groupBody, 300)
+    mockLayoutHeight(groupContent, 300)
+    const toggle = container.querySelector('.tool-group-toggle') as HTMLElement
+    fireEvent.click(toggle) // open once: members mount and the body pins to a real height
+    act(() => { vi.advanceTimersByTime(400) })
+    expect(groupBody.style.height).toBe('300px')
+
+    fireEvent.click(toggle) // fold it back
+    act(() => { vi.advanceTimersByTime(400) })
+    expect(groupBody.style.height).toBe('0px')
+
+    fireEvent.click(container.querySelector('.tool-result-summary')!)
+
+    expect(groupBody.style.height).toBe('0px')
   })
 })
