@@ -406,9 +406,9 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     const content = container.querySelector('.animated-collapse-content') as HTMLElement
     expect(body.style.height).toBe('')
 
-    // Standing down is not giving up: once the panel renders, a fold cycle pins
-    // the body again. (The observer cannot — an unpinned body's own box already
-    // equals its content's height, so it has nothing to detect.)
+    // Standing down is not giving up: once the panel renders, the observer
+    // re-pins the body from the content box's 0→∞ change — and a fold cycle
+    // pins it too (the cycles below are what this case drives).
     mockLayoutHeight(content, 100)
     rerender(
       <AnimatedCollapse open={false} unmountOnExit={false}>
@@ -631,9 +631,10 @@ describe('AnimatedCollapse — a nested fold is never relayed through an ancesto
     rerender(<Nested innerOpen />)
 
     // The nested fold owns the height now: the ancestor must not clip it, or
-    // its own observer would relay the growth one broadcast late. (This path is
-    // already live from the registry side — setCollapseAnimating releases — so
-    // it pins the wiring rather than the layout-effect call below.)
+    // its own observer would relay the growth one broadcast late. The release
+    // lives in animateHeight, so this pins the ANIMATED fold path — the
+    // reduced-motion case below pins the instant one, and Task 3's group test
+    // pins the same wiring through a real ToolGroupCard.
     expect(outer.style.height).toBe('')
     expect(inner.classList.contains('animating')).toBe(true)
   })
@@ -693,14 +694,10 @@ describe('AnimatedCollapse — a nested fold is never relayed through an ancesto
     // opt-in the TaskList card carries.
     const { container } = render(<Nested innerOpen={false} outerRemeasureWhileClamped />)
     const { outer, inner, outerContent } = parts(container)
+    outer.style.height = '100px'
     mockLayoutHeight(outer, 40) // clamped: the used height is shorter than the pin
     mockLayoutHeight(outerContent, 400)
     setCollapseAnimating(inner, true)
-    // The pin goes on AFTER the registration: starting an animation releases
-    // ancestor pins (releaseAncestorCollapsePins), so pinning first would erase
-    // the very pre-condition this case needs. A pin that comes back while the
-    // nested fold still runs is the state the ordering protects.
-    outer.style.height = '100px'
 
     act(() => fireResize(outerContent))
 

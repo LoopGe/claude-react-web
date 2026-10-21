@@ -155,9 +155,11 @@ export function AnimatedCollapse({
 
   /** Stand down from an OPEN body whose box cannot be measured (see isRendered):
    *  cancel any fold still in flight, then drop the pin — its natural height is
-   *  already the right answer (nothing re-pins an auto-height body on its own;
-   *  the next fold pins it explicitly, and under a flex clamp the observer does,
-   *  because the body's box then differs from its content). The cancel is
+   *  already the right answer (an unpinned body is NOT stranded: the observer
+   *  re-pins it from the content on its next observation — a shown-again
+   *  panel's 0→∞ content box fires one — the next fold pins it explicitly too,
+   *  and under a flex clamp the observer adopts the content, because the body's
+   *  box then differs from it). The cancel is
    *  unconditional because it is a no-op when nothing is animating, and one shape
    *  for both stand-down sites (a mount in an unrendered subtree, an open in one)
    *  is what keeps them from drifting apart. Clearing the transition is part of

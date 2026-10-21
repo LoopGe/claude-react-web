@@ -37,7 +37,9 @@ export function anyCollapseAnimatingInside(root: ParentNode | null): boolean {
   return false
 }
 
-/** Drop the pinned height of every collapse body ABOVE `el`.
+/** Drop the pinned height of the collapse bodies above `el`, stopping at the
+ *  first folded (0px) one — see the walk's `break` for why that is the end of
+ *  the chain that can be affected.
  *
  *  A pinned ancestor body is a COPY of its content's height, written by that
  *  ancestor's own ResizeObserver — i.e. one RO broadcast AFTER this fold wrote
@@ -59,9 +61,16 @@ export function anyCollapseAnimatingInside(root: ParentNode | null): boolean {
  *    releasing it there would spill the folded card open. Nothing needs
  *    relaying while it is shut.
  *
- *  The released body stays unpinned: the same resting state `standDown` leaves
- *  (an unpinned body's own box already equals its content, so the observer has
- *  nothing to detect), and the next fold cycle pins it again. */
+ *  The released body does NOT stay unpinned for good: the observer re-pins it
+ *  from its content on the next observation after the fold — an auto box
+ *  already equals its content, so that pin is invisible, and it is what keeps an
+ *  animateResize body able to tween when content grows again — and a fold cycle
+ *  pins it too.
+ *
+ *  Only AnimatedCollapse's animateHeight calls this, once per height it writes.
+ *  Anything else that starts an animation (registering a body through
+ *  setCollapseAnimating directly) must release here as well, or that fold
+ *  inherits the one-frame dip. */
 export function releaseAncestorCollapsePins(el: HTMLElement): void {
   for (let node = el.parentElement; node; node = node.parentElement) {
     if (!node.classList.contains('animated-collapse')) continue
