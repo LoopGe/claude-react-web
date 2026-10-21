@@ -252,13 +252,16 @@
 .grid-clip-enter.grid-clip-entering .grid-clip-enter-inner {
   overflow: hidden;
 }
+/* Only the opacity beat lives in CSS now: the row's height is driven from rAF
+   in whole CSS px (`src/utils/grid-track-tween.ts`), because a fractional
+   `grid-template-rows` tween re-phases every glyph below the row on every
+   frame. The base track stays `1fr` — the tween writes an inline px value and
+   clears it again, so nothing constrains later content growth. */
 @keyframes grid-clip-reveal {
   from {
-    grid-template-rows: 0fr;
     opacity: 0;
   }
   to {
-    grid-template-rows: 1fr;
     opacity: 1;
   }
 }
