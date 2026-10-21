@@ -14,6 +14,8 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 
+import { runNpm } from './run-npm.mjs'
+
 const root = process.cwd()
 const argv = process.argv.slice(2)
 
@@ -187,7 +189,10 @@ if (opts.dryRun) {
 
 if (opts.verify) {
   console.log(`release: running npm run verify (${pkg.version} -> ${version})`)
-  run('npm', ['run', 'verify'])
+  // runNpm, not execFileSync('npm'): npm is a .cmd shim on Windows and
+  // Node >= 18.20 refuses to spawn one without a shell — the bare call
+  // fails ENOENT there and the release aborts before the verify step.
+  runNpm('npm', ['run', 'verify'], { cwd: root })
 }
 
 const originalPkg = readFileSync(pkgPath, 'utf8')

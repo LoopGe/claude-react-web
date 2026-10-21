@@ -18,16 +18,26 @@
 //   mkdir -p .electron-dist && (cd .electron-dist && \
 //     unzip ~/Library/Caches/electron-builder/electron/electron-v<VERSION>-darwin-arm64.zip)
 
-import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+import { runNpm } from '../scripts/run-npm.mjs'
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-function run(command, args) {
-  const res = spawnSync(command, args, { cwd: root, stdio: 'inherit', shell: false })
-  if (res.status !== 0) process.exit(res.status ?? 1)
+function run(bin, args) {
+  // npm/npx are .cmd shims on Windows and Node >= 18.20 refuses to spawn a
+  // .cmd without a shell (CVE-2024-27980) — this script used to exit 1 there
+  // silently (the spawn error was swallowed, output empty). runNpm routes
+  // through node + npm's own cli entry instead: no shell, exact argv, so the
+  // flag passthrough below keeps its quoting semantics on every platform.
+  try {
+    runNpm(bin, args, { cwd: root })
+  } catch (err) {
+    console.error(`[package] ${bin} ${args.join(' ')} failed:`, err)
+    process.exit(1)
+  }
 }
 
 run('npm', ['run', 'build:client'])
