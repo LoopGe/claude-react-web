@@ -38,7 +38,7 @@
 
 import { execSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { createLogger } from './log.js'
 import { isSdkSpawnable, resolveCmdShim } from './cmd-shim.js'
@@ -72,11 +72,11 @@ export interface BundledBinaryOptions {
  */
 export function detectMusl(
   platform: NodeJS.Platform = process.platform,
-  report: { header?: { glibcVersionRuntime?: string } } | null = (typeof process.report
-    ?.getReport === 'function'
+  report: { header?: { glibcVersionRuntime?: string } } | null = typeof process.report?.getReport ===
+  'function'
     ? // @types/node types getReport()'s return as a bare `object`.
       (process.report.getReport() as { header?: { glibcVersionRuntime?: string } } | null)
-    : null),
+    : null,
 ): boolean {
   if (platform !== 'linux') return false
   return report != null && report.header?.glibcVersionRuntime === undefined
@@ -104,6 +104,29 @@ export function bundledBinaryCandidates(
 }
 
 /**
+ * Electron packages the desktop app into app.asar with the whole SDK tree
+ * asarUnpack'd to the physical app.asar.unpacked sibling
+ * (desktop/electron-builder.yml). Inside the packaged main process,
+ * require.resolve returns the IN-ARCHIVE path — Electron's fs shim reports it
+ * as existing (the archive index lists unpacked files), but child_process
+ * spawn/execFile hit the real filesystem, where only the unpacked twin
+ * exists → ENOENT ("Claude CLI was not detected" on the desktop setup page).
+ *
+ * Rewrite an app.asar path to its unpacked sibling when that exists on disk.
+ * Returns undefined for an in-archive path WITHOUT a physical twin: the
+ * in-archive path can never be spawned, so returning it would violate the
+ * module's never-return-unspawnable invariant — undefined makes the caller
+ * fall through to the next strategy (PATH lookup) instead.
+ * Inert under plain Node, where no resolved path contains an app.asar segment.
+ */
+function unpackAsarPath(p: string): string | undefined {
+  const marker = `${sep}app.asar${sep}`
+  if (!p.includes(marker)) return p
+  const unpacked = p.replace(marker, `${sep}app.asar.unpacked${sep}`)
+  return existsSync(unpacked) ? unpacked : undefined
+}
+
+/**
  * Resolve the native binary bundled with the installed SDK version. Returns
  * undefined when no platform package resolves (e.g. --no-optional installs,
  * exotic platforms) — the caller falls through to the PATH lookup.
@@ -120,13 +143,15 @@ function resolveBundledBinary(
   // SDK's own node_modules, where a dist-anchored require would never find
   // them.
   const requireResolve =
-    opts?.resolve ??
-    ((spec: string) => createRequire(hostRequire.resolve(SDK_PKG)).resolve(spec))
+    opts?.resolve ?? ((spec: string) => createRequire(hostRequire.resolve(SDK_PKG)).resolve(spec))
   const arch = opts?.arch ?? process.arch
   const preferMusl = opts?.preferMusl ?? detectMusl(platform)
   for (const spec of bundledBinaryCandidates(platform, arch, preferMusl)) {
     try {
-      return requireResolve(spec)
+      const resolved = unpackAsarPath(requireResolve(spec))
+      // undefined = in-asar path with no unpacked twin; another triple (on
+      // linux both may be installed) can still resolve to a usable binary.
+      if (resolved !== undefined) return resolved
     } catch {
       /* platform package not installed — try the next candidate */
     }
@@ -216,7 +241,10 @@ export function resolveClaudeBinary(
       // take the first candidate in PATH order that survives the spawnability
       // gate: .cmd shims are resolved to their script, .exe is spawnable,
       // extensionless sh shims and .ps1 are skipped.
-      const candidates = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+      const candidates = out
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean)
       for (const candidate of candidates) {
         if (isWin && /\.(cmd|bat)$/i.test(candidate)) {
           const resolved = resolveCmdShim(candidate)

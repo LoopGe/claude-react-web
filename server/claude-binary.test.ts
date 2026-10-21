@@ -170,7 +170,9 @@ describe('resolveClaudeBinary — Windows never returns an unspawnable path', ()
     // either — result must be null, not node.exe (bare interactive node) or the .cjs.
     writeCmdShim(dir, 'claude.cmd', shimTarget(dir, 'cli.cjs'))
 
-    expect(resolveClaudeBinary(join(dir, 'claude.cmd'), 'win32', { resolve: noBundledResolve })).toBeUndefined()
+    expect(
+      resolveClaudeBinary(join(dir, 'claude.cmd'), 'win32', { resolve: noBundledResolve }),
+    ).toBeUndefined()
   })
 
   it('rejects uppercase-extension script paths (the SDK routes scripts case-sensitively)', () => {
@@ -270,6 +272,71 @@ describe('resolveClaudeBinary — SDK-bundled binary (forced version pinning)', 
         arch: 'arm64',
       }),
     ).toBe(bundled)
+  })
+
+  it('rewrites an in-asar bundled path to its physical app.asar.unpacked twin (packaged desktop)', () => {
+    // What require.resolve returns inside the packaged Electron main process:
+    // a path under the app.asar ARCHIVE. Electron's fs shim reports such a
+    // path as existing (the archive index lists unpacked files), but
+    // child_process.spawn/execFile hit the real filesystem, where only the
+    // asarUnpack'd app.asar.unpacked twin exists — spawn ENOENT, the exact
+    // "Claude CLI was not detected" setup-page failure of the packaged app.
+    const dir = makeTmpDir()
+    const pkg = join(
+      'node_modules',
+      '@anthropic-ai',
+      'claude-agent-sdk',
+      'node_modules',
+      '@anthropic-ai',
+      'claude-agent-sdk-win32-x64',
+    )
+    const unpacked = join(dir, 'app.asar.unpacked', pkg, 'claude.exe')
+    mkdirSync(join(unpacked, '..'), { recursive: true })
+    writeFileSync(unpacked, 'MZ fake')
+    const onPath = join(dir, 'path-claude.exe')
+    writeFileSync(onPath, 'MZ fake')
+    mockedExecSync.mockReturnValue(onPath)
+
+    expect(
+      resolveClaudeBinary(undefined, 'win32', {
+        resolve: fakeResolve({
+          '@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe': join(dir, 'app.asar', pkg, 'claude.exe'),
+        }),
+        arch: 'x64',
+      }),
+    ).toBe(unpacked)
+  })
+
+  it('falls through to the PATH lookup when the in-asar path has no app.asar.unpacked twin', () => {
+    // The in-archive path can never be spawned (child_process bypasses the
+    // fs shim that makes existsSync(asar path) true in Electron), so keeping
+    // it would hand back a guaranteed ENOENT and violate the module's
+    // never-return-unspawnable invariant — the resolver must degrade to the
+    // PATH lookup instead.
+    const dir = makeTmpDir()
+    const pkg = join(
+      'node_modules',
+      '@anthropic-ai',
+      'claude-agent-sdk',
+      'node_modules',
+      '@anthropic-ai',
+      'claude-agent-sdk-win32-x64',
+    )
+    const inAsar = join(dir, 'app.asar', pkg, 'claude.exe')
+    // A real directory literally named app.asar simulates the electron fs
+    // shim's "exists" answer in a plain-node test run.
+    mkdirSync(join(inAsar, '..'), { recursive: true })
+    writeFileSync(inAsar, 'MZ fake')
+    const onPath = join(dir, 'path-claude.exe')
+    writeFileSync(onPath, 'MZ fake')
+    mockedExecSync.mockReturnValue(onPath)
+
+    expect(
+      resolveClaudeBinary(undefined, 'win32', {
+        resolve: fakeResolve({ '@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe': inAsar }),
+        arch: 'x64',
+      }),
+    ).toBe(onPath)
   })
 
   it('explicit --claude-binary still wins over the bundled binary', () => {
@@ -379,9 +446,9 @@ describe('bundled-binary drift guard', () => {
     // installed SDK's own optionalDependencies so CI catches the drift.
     const hostRequire = createRequire(import.meta.url)
     const sdkMain = hostRequire.resolve('@anthropic-ai/claude-agent-sdk')
-    const sdkPkg = JSON.parse(
-      readFileSync(join(dirname(sdkMain), 'package.json'), 'utf8'),
-    ) as { optionalDependencies?: Record<string, string> }
+    const sdkPkg = JSON.parse(readFileSync(join(dirname(sdkMain), 'package.json'), 'utf8')) as {
+      optionalDependencies?: Record<string, string>
+    }
     const declared = Object.keys(sdkPkg.optionalDependencies ?? {})
 
     const generated = new Set<string>()
