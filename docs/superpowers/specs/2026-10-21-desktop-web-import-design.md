@@ -95,33 +95,39 @@
 ```jsonc
 {
   "sourceDir": "C:\\Users\\me\\.claude-react-web",   // 服务端实际读的路径
-  "exists": true,
+  "exists": true,                                    // config.json / mcp-config.json / marketplaces.json 至少一个在
   "credentials": {
     "available": true,
-    "profileName": "my-work",
     "hasToken": true,
-    "authTokenMasked": "sk-ant-…nMmf",               // 复用 maskToken，不发明文
+    "profileName": "my-work",
+    "authTokenMasked": "****nMmf",                   // maskToken() 的结果；源没有 token 时省略该字段
     "baseUrl": "https://api.example.com",
-    "modelList": ["…"],
-    "modelGroups": ["…"],
-    "recapModel": "…",
-    "commitMessageModel": "…"
+    "modelCount": 12
   },
-  "mcp": {
-    "servers": [
-      { "name": "…", "type": "stdio", "command": "…", "envKeys": ["…"],
-        "exists": false, "importErrors": [] }
-    ]
-  },
+  "credentialsError": "…",                           // 可选：读源 config.json 失败时的原始错误（与 credentials: null 同时出现）
+  "mcp": [
+    { "name": "…", "type": "stdio", "command": "…", "envKeys": ["…"],
+      "exists": false, "importErrors": [] }
+  ],
+  "mcpError": "…",                                   // 可选：读源 mcp-config.json 失败时的原始错误（与 mcp: [] 同时出现）
   "marketplaces": [
     { "id": "claude-code", "displayName": "…", "sourceUrl": "…", "ref": "main",
-      "enabledPluginCount": 3, "cloneExists": true, "exists": false,
-      "sizeBytes": 39845888 }   // 可选：best-effort 目录枚举求和，读不到就省略该字段
-  ]
+      "pluginCount": 3, "cloneExists": true, "exists": false }
+  ],
+  "marketplacesError": "…"                           // 可选：读源 marketplaces.json 失败时的原始错误
 }
 ```
 
-`credentials` 在源无可用 profile 时为 `null`。源文件缺失 / 损坏 → `exists: false` 或该项 `available: false` + 原因，**不是 500**。
+> 枚举只回屏幕真正渲染的字段：模型分组 / recap / commit 模型只由服务端在导入时
+> 读取、界面不展示，因此不上线；MCP 行只带 `name / type / command / url / envKeys /
+> exists / importErrors`；marketplace 行只带 `id / displayName / sourceUrl / ref /
+> pluginCount / cloneExists / exists`（原本的 `sizeBytes` 不做——每次枚举都整目录
+> 遍历不值得）。
+
+`credentials` 只在源 `config.json` 不存在 / 读不动时为 `null`（同时带
+`credentialsError`）；能读但没有 token 是 `hasToken: false`。三栏各自独立读取：
+任一栏读失败只塌掉它自己（该栏为 `[]` + 对应的 `…Error`），另外两栏照常枚举，
+**不是 500**。
 
 **6.2 应用** `POST /api/config/web-import`
 
@@ -150,8 +156,10 @@
 | 情形 | 处理 |
 |---|---|
 | 源目录不存在 | `GET` 返回 `exists: false`；前置屏显示"未找到网页版配置"（复用 `setup-health-row-fail` 形状）+ 报服务端实际探测的路径，并允许继续进向导 |
-| 源 config.json 损坏 / 不可读 | 该项 `available: false` + 原始错误；不影响 MCP / marketplace 两栏 |
-| 源 config 无可用 profile | `credentials: null`；其它两栏照常 |
+| 源 config.json 不存在 / 读不动 | `credentials: null` + `credentialsError: <原始错误>`；MCP / marketplace 两栏照常枚举 |
+| 源 config 能读但没有 token | `credentials.hasToken: false`（仍是一栏，可以只搬模型）；导入后 `configured` 为 false，客户端继续走向导 |
+| 源 mcp-config.json 存在但读不动 | `mcp: []` + `mcpError: <原始错误>`；凭证与 marketplace 两栏照常枚举 |
+| 源 marketplaces.json 存在但读不动 | `marketplaces: []` + `marketplacesError: <原始错误>`；其余两栏照常枚举 |
 | 桌面版已有同名 MCP / 同 id 市场 | 跳过并计入 `skipped`，不覆盖（沿用导入约定） |
 | 源 marketplace clone 目录缺失 | 该项 `failed`，其余项继续 |
 | clone 拷贝中途失败 | 清理临时目录，该项 `failed`，不留半拷贝 |
@@ -172,7 +180,9 @@
 | 找不到 / 读不了 | step 3 的 `setup-health-row-fail` `:1045` | `setup-health-icon` + `.setup-prefilled-hint` 报实际路径 + `Retry`（`styles.secondaryBtn`），并允许继续 |
 
 - **状态词逐字复用**：`idle / importing / imported / exists / failed` → `Importing…`（`:1135`）/ `Imported`（`IconCheck size={12}`，`:1145`）/ `Already exists`（`:1148`）/ `Failed`。不新造词。
-- **状态机同形**：惰性探测 + `probeCancelRef` 取消竞态 + `Record<name, status>` + `useRef` 镜像（供异步 handler 读最新值）+ `Import all` 的 predicate 与提交 filter 同构。
+- **状态机同形**：惰性探测 + `probeCancelRef` 取消竞态 + `Record<name, status>` +
+  `Import all` 的 predicate 与提交 filter 同构（这里不需要向导 step 3 那个
+  `mcpImportStatusRef` 镜像——没有异步 handler 要在回调里读最新状态）。
 - **收尾**：凭证项导入成功 → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）。未导入凭证 → 进入 step 0。
 - **不新增 CSS**：只用 `src/styles/setup-page.css` 既有类 + `styles.*` 内联对象 + 主题变量（CLAUDE.md：禁止硬编码颜色，新颜色必须同时定义 dark / light）。
 - **与"最后才写盘"原则的冲突（刻意保留）**：现有向导刻意到最后一步才写 `config.json`（`SetupPage.tsx` 的注释：中途关掉浏览器不留半份 config）。导入屏会**立即写盘**。保留该行为，理由是：导入本身就是"配置"这一动作；若改成只预填，则要么写两次盘（导入一次 + `/config/setup` 一次），要么用户还得再走完 6 步。副作用"导入后直接关窗 → 桌面版已配置"正是本需求的目标。
