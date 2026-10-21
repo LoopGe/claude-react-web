@@ -1570,8 +1570,8 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     return () => { probeCancelRef.current?.() }
   }, [probe])
 
-  /** 发一次导入请求。成功后：只要服务端已 configured 就收尾（这正是用户选的
-   *  "凭证导入成功即收尾"），否则留在本屏让状态位更新。 */
+  /** 发一次导入请求：只导入并落状态位，**不做任何跳转**——收尾是用户按 Next 时
+   *  才发生的导航决定（见 handleNext；收尾时机在验收实测后改过一次）。 */
   const runImport = useCallback(async (sel: { credentials: boolean; mcp: string[]; marketplaces: string[] }) => {
     if (submitting) return
     setSubmitting(true)
@@ -1883,7 +1883,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 6 的 `SetupWebImport`、既有 `isDesktopHost()`（`src/host-capabilities.ts`）、既有 `Props.onConfigured`
-- Produces: 桌面宿主上 `SetupPage` 先渲染前置屏；点 Next 进 step 0；凭证导入成功调 `onConfigured({ openNewSession: true })`
+- Produces: 桌面宿主上 `SetupPage` 先渲染前置屏；点 Next 进 step 0；行勾选与 Import all **只导入不跳转**，凭证导入成功后**再点 Next** 才调 `onConfigured({ openNewSession: true })`（收尾时机由验收实测改过一次，见 spec §2 需求基线与 §8）
 
 - [ ] **Step 1: 改桌面向导测试（先让它红）**
 

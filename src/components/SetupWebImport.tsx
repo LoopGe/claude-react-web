@@ -166,7 +166,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     try {
       await onConfigured()
     } catch (err) {
-      console.error('[SetupWebImport] hand-off after web import failed:', err)
+      console.error('[SetupWebImport] hand-off on Next failed:', err)
     }
   }, [configured, onContinue, onConfigured])
 
