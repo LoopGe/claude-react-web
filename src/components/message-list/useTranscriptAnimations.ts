@@ -134,9 +134,10 @@ export function useTranscriptAnimations({
   //     many ids at once — skipped by the prevLen>0 + batch-size guards.
   //   - loadOlder prepend — ids appear at the FRONT, not at indices >= prevLen
   //     — not tail-appends — skipped.
-  //   - optimistic echo swap — in-place replace at an existing index, list
-  //     length unchanged — no index >= prevLen — skipped (the optimistic
-  //     insert already animated the pop).
+  //   - optimistic echo swap — the optimistic insert never armed a pop (see
+  //     the row.sending guard in the arming loop), and the replace is
+  //     length-preserving, so there is no flag to transfer to the server
+  //     uuid — skipped.
   //   - scroll re-mount — id already in knownIdsRef and already consumed from
   //     enterIdsRef — skipped.
   // receivedAt recency disambiguates a freshly-typed first message (animate)
@@ -200,21 +201,23 @@ export function useTranscriptAnimations({
       for (let i = prevLen; i < curLen; i++) {
         const row = rows[i]
         if (knownIdsRef.current.has(row.id)) continue
+        // Optimistic sends never pop: the placeholder row lives only until the
+        // server echo / POST ack re-keys it to the server uuid (typically tens
+        // of ms later), and that re-key REMOUNTS the row. A 240ms entrance pop
+        // started here would be cut short mid-flight by the remount, snapping
+        // the bubble from near-transparent to full opacity — the "sending →
+        // acked" flash. The user's own send should render settled immediately.
+        if (row.sending) continue
         if (typeof row.receivedAt === 'number' && now - row.receivedAt < ENTER_MAX_AGE_MS) {
           enterIdsRef.current.add(row.id)
         }
       }
     }
-    // Echo-replacement consumption: when the server echo (or the POST ack)
-    // re-keys the optimistic placeholder to the server uuid, the tail row's
-    // React key changes and Virtuoso REMOUNTS it. A fresh DOM node restarts a
-    // CSS animation from its `from` keyframe, so transferring the entering
-    // flag to the new id (the original behaviour) replayed the entrance from
-    // opacity 0 — the sent bubble visibly blinked out and re-ran the pop
-    // ("sent message flashes"). The pop belongs to the insert event only:
-    // consume the flag here so the swapped-in row mounts settled, straight
-    // into its acknowledged state (spinner gone, full opacity) — the correct
-    // end state of the insert's animation, with no replay.
+    // Tail-swap bookkeeping. When the server echo (or the POST ack) re-keys
+    // the optimistic placeholder to the server uuid, the tail row's React key
+    // changes and Virtuoso REMOUNTS it. The arming guard above (`row.sending`)
+    // means the optimistic insert never armed a pop, so the remount lands
+    // settled on its own — there is no flag to transfer. What remains here:
     //
     // Scoped to delta === 0 (the swap is length-preserving: one item appended
     // to mirror.items, the placeholder dropped from intent). A genuine tail
@@ -231,13 +234,16 @@ export function useTranscriptAnimations({
     //
     // Two independent effects, both keyed on that swap shape:
     //   1. Record the swapped-in uuid as seen — unconditionally, not gated on
-    //      the pop's flag: a slow ack (>240ms) lands after animationend has
-    //      already consumed the flag, and the uuid must still be marked seen
-    //      so a later evict + re-append inside the recency window (e.g. a
-    //      retraction followed by a narrow reconnect replay) can't re-arm a
-    //      pop the user already saw.
-    //   2. Consume the previous tail's entering flag (delete is a no-op when
-    //      animationend got there first).
+    //      any pop flag: a slow ack lands after the optimistic placeholder has
+    //      already been replaced, and the uuid must still be marked seen so a
+    //      later evict + re-append inside the recency window (e.g. a retraction
+    //      followed by a narrow reconnect replay) can't re-arm a pop the user
+    //      already saw. This is the load-bearing half for the optimistic→server
+    //      swap.
+    //   2. Consume the previous tail's entering flag — a no-op for the
+    //      optimistic swap (it never armed) but still real for the general
+    //      delta-0 tail swap where the departed tail was a genuine armed
+    //      arrival.
     // A swap that landed MID-LIST (second send queued before the first echo)
     // matches neither shape here — its swapped-in id is recorded by the next
     // delta!==0 render and its dead flag lives out ENTER_CLEANUP_MS. The
@@ -318,8 +324,17 @@ export function useTranscriptAnimations({
   // belong to the current rows closes that stale-DOM variant the same way the
   // rowsRendered gate closed the empty-DOM one.
   const pendingRowIdsRef = useRef<Set<string>>(new Set())
+  // Ids of the CURRENT rows that are optimistic placeholders — excluded from
+  // the reveal snapshot so the user's own send renders settled instead of
+  // fading in with the whole transcript (its echo re-key would cut that fade
+  // short exactly like the msg-enter pop did). Same refresh contract as
+  // pendingRowIdsRef below.
+  const pendingSendingIdsRef = useRef<Set<string>>(new Set())
   if (isTranscriptRevealPending) {
     pendingRowIdsRef.current = new Set(rows.map((r) => r.id))
+    pendingSendingIdsRef.current = new Set(
+      rows.filter((r) => r.sending).map((r) => r.id),
+    )
   }
   /* eslint-enable react-hooks/refs */
 
@@ -414,6 +429,8 @@ export function useTranscriptAnimations({
       snapshotRows.forEach((row, index) => {
         const id = row.dataset.messageId
         if (!id) return
+        // Optimistic sends render settled — never part of the reveal fade.
+        if (pendingSendingIdsRef.current.has(id)) return
         rowIds.add(id)
         staggerById.set(id, Math.max(0, index - staggerFloor) * REVEAL_STAGGER_STEP_MS)
       })
