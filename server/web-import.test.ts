@@ -53,7 +53,7 @@ describe('readSourceCredentials', () => {
 
   it('throws when the source config.json is not a JSON object', async () => {
     writeFileSync(join(dir, 'config.json'), '["not", "an", "object"]', 'utf8')
-    await expect(readSourceCredentials(dir)).rejects.toThrow()
+    await expect(readSourceCredentials(dir)).rejects.toThrow(/not a JSON object/)
   })
 })
 
@@ -76,6 +76,70 @@ describe('readSourceMcp / readSourceMarketplaces', () => {
     const servers = await readSourceMcp(dir)
     expect(servers.map((s) => s.name)).toEqual(['ctx7'])
     expect(servers[0].env).toEqual({ API_KEY: 'sekret' })
+  })
+
+  // 损坏 ≠ 没有。store 会把两者都折叠成空值+warn，导入页于是只说"没有可
+  // 导入的东西"，用户只好手敲一遍——正是这个功能要消灭的场景。
+  it('throws when mcp-config.json exists but is not valid JSON', async () => {
+    writeFileSync(join(dir, 'mcp-config.json'), '{not json', 'utf8')
+    await expect(readSourceMcp(dir)).rejects.toThrow(/mcp-config\.json is not valid JSON/)
+  })
+
+  it('throws when marketplaces.json exists but is not valid JSON', async () => {
+    writeFileSync(join(dir, 'marketplaces.json'), '{not json', 'utf8')
+    await expect(readSourceMarketplaces(dir)).rejects.toThrow(/marketplaces\.json is not valid JSON/)
+  })
+
+  // 刻意与上两条相反：合法 JSON 只是形状不对（顶层不是对象），交给 store 的
+  // 宽容路径 → 空值。这条不对称是设计，别"统一"成 throw。
+  it('stays tolerant (empty) for valid JSON with an unexpected shape', async () => {
+    writeFileSync(join(dir, 'mcp-config.json'), '"just a string"', 'utf8')
+    writeFileSync(join(dir, 'marketplaces.json'), '[]', 'utf8')
+    expect(await readSourceMcp(dir)).toEqual([])
+    expect(await readSourceMarketplaces(dir)).toEqual({ entries: [], enabled: {}, cloneExists: {} })
+  })
+})
+
+/** 两个市场：`alpha` 的 clone 存在、启用了 `shared`；`beta` 的 cloneDir
+ *  刻意不存在、启用了 `other`。enabledPlugins 用 `<plugin>@<marketplace>`
+ *  复合 key —— 两个 key 的插件名不同，才能钉住"每个市场只看自己那条"，
+ *  否则两边返回同一个 map 也照样通过。 */
+function seedTwoMarketplaces(dir: string): void {
+  const alphaClone = join(dir, 'marketplace-cache', 'alpha')
+  mkdirSync(alphaClone, { recursive: true })
+  const entry = (id: string, sha: string, cloneDir: string) => ({
+    id,
+    displayName: id,
+    source: { type: 'https', url: `https://example.com/${id}.git` },
+    cloneDir,
+    addedAt: 1_700_000_000_000,
+    lastRefreshedAt: 1_700_000_000_000,
+    lastSha: sha.repeat(40),
+    manifest: { name: id, plugins: [{ name: 'shared' }] },
+  })
+  writeFileSync(join(dir, 'marketplaces.json'), JSON.stringify({
+    version: 1,
+    marketplaces: {
+      alpha: entry('alpha', 'a', alphaClone),
+      beta: entry('beta', 'b', join(dir, 'marketplace-cache', 'beta')),
+    },
+    enabledPlugins: { 'shared@alpha': true, 'other@beta': true },
+  }), 'utf8')
+}
+
+describe('readSourceMarketplaces side state', () => {
+  let dir: string
+  beforeEach(() => { dir = tempDir('web-import-src') })
+  afterEach(() => rmRf(dir))
+
+  it('reports each marketplace’s enabled plugins and clone existence', async () => {
+    seedTwoMarketplaces(dir)
+    const res = await readSourceMarketplaces(dir)
+    expect(res.entries.map((e) => e.id)).toEqual(['alpha', 'beta'])
+    // 复合 key 按 `@<marketplace>` 归属：各自只看到自己那条，不串味。
+    expect(res.enabled.alpha).toEqual({ shared: true })
+    expect(res.enabled.beta).toEqual({ other: true })
+    expect(res.cloneExists).toEqual({ alpha: true, beta: false })
   })
 })
 

@@ -22,7 +22,12 @@ export function webStateDir(): string {
 }
 
 /** 源 profile 里"确实存在"的字段。导入只写为 true 的字段；false 表示
- *  "源里没有"（不是"请清空"），必须保留桌面版的现状。 */
+ *  "源里没有"（不是"请清空"），必须保留桌面版的现状。
+ *
+ *  语义边界：true 只表示"磁盘上写了这个键"，**不表示这个值有意义**。
+ *  raw `modelList: ['']`（coercion 后整条回退成 fallback）或一个没有任何
+ *  tier slot 的 modelGroups 条目都会让 flag 为 true，而 coercion 之后的
+ *  值仍是空的/回退的。写入侧不得把 true 当成"值可用"的证据。 */
 export interface PresentFields {
   authToken: boolean
   baseUrl: boolean
@@ -93,9 +98,41 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
   }
 }
 
+/** 读文件做一次 JSON 校验：不存在 → 返回（下面的 store 会给出空值）；
+ *  存在但读不动 → 原样抛出；存在但不是合法 JSON → throw（消息带文件路径
+ *  和解析失败原因，与 readSourceCredentials 同一条规则）。
+ *
+ *  为什么不把这条规则放进 store：store 是 app 自己读写自己文件的组件，
+ *  "损坏 → 空" 对它自己是合理的；只有"读别人的目录"才需要把"没有"和
+ *  "读不动"分开。文件很小，多读一次的代价可以忽略（这样也不用动 store）。 */
+async function assertParseableJson(file: string): Promise<void> {
+  let raw: string
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+    throw err
+  }
+  try {
+    JSON.parse(raw)
+  } catch (err) {
+    throw new Error(`${file} is not valid JSON: ${(err as Error).message}`)
+  }
+}
+
 /** 源目录里的全局 MCP 服务器。用同一个 McpConfigStore 类读源目录，解析规则
- *  与桌面版自己的 store 完全一致（ENOENT → []，损坏 → [] + warn）。 */
+ *  与桌面版自己的 store 完全一致。
+ *
+ *  两种"读不到"刻意分开，这个不对称是设计，不要"统一"掉：
+ *    - 文件不存在 → 空数组（用户就是没配过）
+ *    - 存在但不是合法 JSON → throw。store 会把"损坏"也折叠成 [] + warn，
+ *      导入页于是只能说"没有可导入的东西"，用户又得手敲一遍——正是本功能
+ *      要消灭的场景。
+ *    - 合法 JSON 但形状不对（如顶层是数组）→ 仍走 store 的宽容路径 → 空数组。
+ *      这与 app 自己的 store 对自己文件的规则一致，也与
+ *      /mcp-config/claude-import 对 Claude CLI 文件的规则一致。 */
 export async function readSourceMcp(dir: string): Promise<StoredMcpServer[]> {
+  await assertParseableJson(join(dir, 'mcp-config.json'))
   return await new McpConfigStore({ stateDir: dir }).load()
 }
 
@@ -110,10 +147,15 @@ export interface SourceMarketplaces {
 
 /** 源目录里的 marketplace，含每个市场的启用标志与克隆目录存在性。
  *
+ *  与 readSourceMcp 同一条不对称规则（是设计，不是遗漏）：文件不存在 →
+ *  空值；存在但不是合法 JSON → throw；合法 JSON 但形状不对 → store 的
+ *  宽容路径 → 空值。
+ *
  *  `load({ readOnly: true })`：MpStore 的默认 load 会自愈过期缓存（重解析
  *  clone 里的 manifest 并回写 marketplaces.json）。读别人的 state 目录不能
  *  这样——那等于桌面版去改网页版的配置文件。代价是过期缓存会被原样返回。 */
 export async function readSourceMarketplaces(dir: string): Promise<SourceMarketplaces> {
+  await assertParseableJson(join(dir, 'marketplaces.json'))
   const store = new MpStore({ stateDir: dir })
   const entries = await store.load({ readOnly: true })
   const enabled: Record<string, Record<string, boolean>> = {}
