@@ -92,6 +92,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
       for (const id of sel.marketplaces) next[mpRow(id)] = 'importing'
       return next
     })
+    let handOff = false
     try {
       const res = await api.post<WebImportResult>('/config/web-import', sel)
       setStatus((prev) => {
@@ -106,12 +107,22 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
         return next
       })
       // 逐项失败不弹错、不阻断：行上的 Failed 就是信号（与 step 3 一致）。
-      if (res.credentials?.configured) {
-        await onConfigured()
-        return
-      }
+      handOff = !!res.credentials?.configured
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed')
+    }
+    if (handOff) {
+      // 收尾（hand-off）刻意放在导入那个 try **之外**：onConfigured 是 parent
+      // 的 best-effort 收尾（App.tsx 的 handleConfigured 会吞掉自己那次 /config
+      // 刷新的失败）。它抛错时这次导入其实**已经成功了**——上面刚把行标成
+      // Imported——借 import 的 catch 把这句说成 "Import failed" 是谎报。
+      // 于是照 handleConfigured 那一侧的先例：只记一行日志，不改屏上状态。
+      try {
+        await onConfigured()
+      } catch (err) {
+        console.error('[SetupWebImport] hand-off after web import failed:', err)
+      }
+      return
     }
     setSubmitting(false)
   }, [submitting, onConfigured])
@@ -132,12 +143,16 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
    *    - cloneExists 为 false 的市场：源的克隆目录不在了，导入必然
    *      `clone dir is missing`（shared/web-import.ts 的 cloneExists 注释
    *      也是这么约定的——该行不可导入）。
-   *  行上禁用勾选框用的是同一条判据（不含 idle 那半，因为 done/importing
-   *  已经由 checkbox 自己处理）。 */
+   *  状态那一半只排除 doneOrRunning（imported / exists / importing），
+   *  **failed 不排除**——这就是 step 3 的 rowDisabled 判据：一次批量导入把某行
+   *  弄成 Failed 之后，那一行还能重试，Import all 也不会因为"没有 idle 的项"
+   *  而整个消失。
+   *  行上禁用勾选框用的也是同一条状态判据（写成 done || importing，等价于
+   *  doneOrRunning），另加"结构上导不进去"的 unimportable。 */
   const mcpImportable = (s: WebImportMcpView) =>
-    s.importErrors.length === 0 && statusOf(mcpRow(s.name)) === 'idle'
+    s.importErrors.length === 0 && !doneOrRunning(mcpRow(s.name))
   const mpImportable = (m: WebImportMarketplaceView) =>
-    m.cloneExists && statusOf(mpRow(m.id)) === 'idle'
+    m.cloneExists && !doneOrRunning(mpRow(m.id))
 
   const importing = submitting
   const nothingToImport = data !== undefined && !probeError && (
@@ -273,7 +288,11 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
 
                 {/* 全局 MCP */}
                 {data.mcp.map((s) => (
-                  <div key={s.name} style={styles.row}>
+                  <div
+                    key={s.name}
+                    // 校验不过的行整行压暗（step 3 对 invalid 行的同一处置）。
+                    style={{ ...styles.row, opacity: s.importErrors.length > 0 ? 0.55 : 1 }}
+                  >
                     {checkbox(mcpRow(s.name), `Import ${s.name}`, () => void runImport({ credentials: false, mcp: [s.name], marketplaces: [] }), s.importErrors.length > 0)}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
@@ -306,7 +325,11 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
 
                 {/* Marketplaces */}
                 {data.marketplaces.map((m) => (
-                  <div key={m.id} style={styles.row}>
+                  <div
+                    key={m.id}
+                    // 克隆目录不在的行整行压暗，与上面的 invalid MCP 行同一处置。
+                    style={{ ...styles.row, opacity: !m.cloneExists ? 0.55 : 1 }}
+                  >
                     {checkbox(mpRow(m.id), `Import ${m.id}`, () => void runImport({ credentials: false, mcp: [], marketplaces: [m.id] }), !m.cloneExists)}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>

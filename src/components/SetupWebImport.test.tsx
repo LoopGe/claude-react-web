@@ -161,4 +161,65 @@ describe('SetupWebImport', () => {
       marketplaces: [],
     })
   })
+
+  // 一次导入把某些行弄成 Failed 之后，那些行要能重试、按钮不能因此消失
+  // （step 3 的 rowDisabled 只排除 imported/exists/importing，failed 不算）。
+  it('keeps offering Import all after a failed import, and retries that row', async () => {
+    // 凭证那一栏故意缺席：留着它的话，凭证行自己就会把 Import all 撑住，
+    // "按钮会不会因为 failed 而消失"这一半就测不到了。
+    vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, credentials: null })
+    vi.mocked(api.post)
+      .mockResolvedValueOnce({
+        credentials: null,
+        mcp: { imported: [], skipped: [], failed: [{ name: 'ctx7', error: 'boom' }] },
+        marketplaces: { imported: [], skipped: [], failed: [] },
+      })
+      .mockResolvedValueOnce({
+        credentials: null,
+        mcp: { imported: ['ctx7'], skipped: [], failed: [] },
+        marketplaces: { imported: [], skipped: [], failed: [] },
+      })
+    const onConfigured = vi.fn()
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={onConfigured} />)
+    await screen.findByText('ctx7')
+
+    fireEvent.click(screen.getByText('Import all'))
+    // ctx7 落成 Failed —— 此时已经没有 idle 的项了。
+    await waitFor(() => expect(screen.getAllByText('Failed')).toHaveLength(1))
+
+    // 按钮仍在，且下一次 POST 又把 ctx7 带上（failed 行重新可导入）。
+    fireEvent.click(screen.getByText('Import all'))
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.post)).toHaveBeenLastCalledWith('/config/web-import', {
+      credentials: false,
+      mcp: ['ctx7'],
+      marketplaces: [],
+    })
+    expect(onConfigured).not.toHaveBeenCalled()
+  })
+
+  // onConfigured 是 parent 的 best-effort 收尾：它抛错时导入其实已经成功了，
+  // 绝不能借导入的 catch 把这句说成 Import failed。
+  it('does not report the import as failed when the hand-off itself rejects', async () => {
+    vi.mocked(api.post).mockResolvedValue({
+      credentials: { imported: true, configured: true },
+      mcp: { imported: ['ctx7'], skipped: [], failed: [] },
+      marketplaces: { imported: [], skipped: [], failed: [] },
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onConfigured = vi.fn(async () => { throw new Error('refresh blew up') })
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={onConfigured} />)
+    await screen.findByText('Work')
+
+    fireEvent.click(screen.getByText('Import all'))
+    await waitFor(() => expect(onConfigured).toHaveBeenCalledTimes(1))
+    // 失败进 console（与 App.handleConfigured 同侧），不是顶部的 Import failed。
+    await waitFor(() => expect(errSpy).toHaveBeenCalled())
+    errSpy.mockRestore()
+
+    // 导入本身成功：行上还是 Imported，没有 "Import failed"，也没有原始错误文案。
+    expect((screen.getByLabelText('Import credentials') as HTMLInputElement).checked).toBe(true)
+    expect(screen.queryByText('Import failed')).toBeNull()
+    expect(screen.queryByText('refresh blew up')).toBeNull()
+  })
 })
