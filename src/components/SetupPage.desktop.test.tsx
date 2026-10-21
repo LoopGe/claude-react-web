@@ -44,6 +44,9 @@ beforeEach(() => {
   ;(window as unknown as { __CRW_DESKTOP__?: unknown }).__CRW_DESKTOP__ = { platform: 'win32' }
   vi.mocked(api.get).mockImplementation((url: string) => {
     if (url.startsWith('/health/claude')) return Promise.resolve({ ok: true, version: '1.0.0' })
+    // 前置屏（SetupWebImport）的枚举探测：源目录不存在 ⇒ 三栏全空。
+    if (url === '/config/web-import')
+      return Promise.resolve({ sourceDir: '/tmp/.claude-react-web', exists: false, credentials: null, mcp: [], marketplaces: [] })
     if (url === '/profiles') return Promise.resolve({ profiles: [], activeProfileId: 'default' })
     if (url === '/mcp-config/claude-import') return Promise.resolve({ servers: [] })
     if (url === '/config/claude-defaults')
@@ -82,16 +85,31 @@ async function importDesktopSetupPage() {
   return mod.SetupPage
 }
 
-/** Step 0's Continue, the token, then Next up to the Finish step. */
+/** 桌面宿主的向导之前有一屏"从网页版导入"（SetupWebImport）——先点 Next 跳过它。
+ *  Step 0's Continue, the token, then Next up to the Finish step. */
 async function walkToFinish() {
-  fireEvent.click(await screen.findByText('Continue'))
+  fireEvent.click(await screen.findByText('Next'))          // 前置屏 → step 0
+  fireEvent.click(await screen.findByText('Continue'))      // step 0 → step 1
   fireEvent.change(screen.getByPlaceholderText('sk-ant-...'), { target: { value: 'sk-test' } })
-  // Desktop: 1→2→3→4→5→7 is five Nexts (pre-fix the fifth renders step id 6
-  // and throws).
+  // Desktop: 1→2→3→4→5→7 —— 前置屏已经占用了一次 Next，这里仍是 5 次
+  // （pre-fix the fifth renders step id 6 and throws）。
   for (let i = 0; i < 5; i++) fireEvent.click(screen.getByText('Next'))
 }
 
 describe('SetupPage — desktop wizard (no Autostart step)', () => {
+  it('renders the web-import pre-screen first, and Next reveals step 1 of 7', async () => {
+    const SetupPage = await importDesktopSetupPage()
+    render(<SetupPage onConfigured={vi.fn(async () => {})} />)
+
+    // 前置屏：没有进度点、没有步数计数器。
+    expect(await screen.findByText(/Reading your Claude Web config|Nothing to import from the web version/)).toBeTruthy()
+    expect(screen.queryByText(/^Step \d+ of \d+$/)).toBeNull()
+
+    fireEvent.click(screen.getByText('Next'))
+    expect(await screen.findByText('Step 1 of 7')).toBeTruthy()
+    expect(screen.getByText('Continue')).toBeTruthy()
+  })
+
   it('advances Updates → Finish without crashing on the missing id 6', async () => {
     const SetupPage = await importDesktopSetupPage()
     render(<SetupPage onConfigured={vi.fn(async () => {})} />)
