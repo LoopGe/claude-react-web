@@ -33,10 +33,10 @@ describe('SetupWebImport', () => {
     expect(screen.getByText('Already exists')).toBeTruthy()
   })
 
-  it('reports "nothing to import" instead of an empty list when the source has nothing', async () => {
+  it('reports "nothing importable" instead of an empty list when the source has nothing', async () => {
     vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, exists: false, credentials: null, mcp: [], marketplaces: [] })
     render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
-    expect(await screen.findByText('Nothing to import from the web version.')).toBeTruthy()
+    expect(await screen.findByText('Nothing importable from the web version.')).toBeTruthy()
     // 真正探测到的目录照常显示，用户可以自己去看那一份。
     expect(screen.getByText(ENUMERATION.sourceDir)).toBeTruthy()
   })
@@ -63,7 +63,10 @@ describe('SetupWebImport', () => {
       credentials: true,
       mcp: ['ctx7'],
       marketplaces: [],
-    })
+      // 明确给足超时：这次 POST 要拷最多上百 MB，transport 的 30 s 默认值
+      // 够得着（客户端 abort 时服务端照旧跑完并落盘，用户会误以为失败）。
+      // 硬编码 180_000 就是那一条要求的钉子，改小这里必须是有意的。
+    }, { timeoutMs: 180_000 })
   })
 
   it('stays on the screen when the import leaves the server unconfigured', async () => {
@@ -133,7 +136,10 @@ describe('SetupWebImport', () => {
       credentials: true,
       mcp: ['ctx7'],
       marketplaces: [],
-    })
+      // 明确给足超时：这次 POST 要拷最多上百 MB，transport 的 30 s 默认值
+      // 够得着（客户端 abort 时服务端照旧跑完并落盘，用户会误以为失败）。
+      // 硬编码 180_000 就是那一条要求的钉子，改小这里必须是有意的。
+    }, { timeoutMs: 180_000 })
   })
 
   // 校验不过的 MCP 行同理：服务端会逐项判 failed，不提供一个必然失败的点击；
@@ -159,7 +165,10 @@ describe('SetupWebImport', () => {
       credentials: true,
       mcp: ['ctx7'],
       marketplaces: [],
-    })
+      // 明确给足超时：这次 POST 要拷最多上百 MB，transport 的 30 s 默认值
+      // 够得着（客户端 abort 时服务端照旧跑完并落盘，用户会误以为失败）。
+      // 硬编码 180_000 就是那一条要求的钉子，改小这里必须是有意的。
+    }, { timeoutMs: 180_000 })
   })
 
   // 一次导入把某些行弄成 Failed 之后，那些行要能重试、按钮不能因此消失
@@ -194,7 +203,7 @@ describe('SetupWebImport', () => {
       credentials: false,
       mcp: ['ctx7'],
       marketplaces: [],
-    })
+    }, { timeoutMs: 180_000 })
     expect(onConfigured).not.toHaveBeenCalled()
   })
 
@@ -221,5 +230,51 @@ describe('SetupWebImport', () => {
     expect((screen.getByLabelText('Import credentials') as HTMLInputElement).checked).toBe(true)
     expect(screen.queryByText('Import failed')).toBeNull()
     expect(screen.queryByText('refresh blew up')).toBeNull()
+  })
+
+  // 交接自己抛错时本屏没被卸载 —— submitting 必须复位，否则 Next、每个勾选框
+  // 和 Import all 会永久禁用，用户连重试交接都做不到。
+  it('re-enables the controls when the hand-off rejects', async () => {
+    vi.mocked(api.post).mockResolvedValue({
+      credentials: { imported: true, configured: true },
+      mcp: { imported: ['ctx7'], skipped: [], failed: [] },
+      marketplaces: { imported: [], skipped: [], failed: [] },
+    })
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onConfigured = vi.fn(async () => { throw new Error('refresh blew up') })
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={onConfigured} />)
+    await screen.findByText('Work')
+
+    fireEvent.click(screen.getByText('Import all'))
+    await waitFor(() => expect(errSpy).toHaveBeenCalled())
+    errSpy.mockRestore()
+
+    expect((screen.getByText('Next') as HTMLButtonElement).disabled).toBe(false)
+    // 已经 Imported 的凭证行照旧勾上、且可交互判定不变；市场那一行（源里
+    // already exists）也没被这半条路径改坏。
+    expect((screen.getByLabelText('Import credentials') as HTMLInputElement).checked).toBe(true)
+  })
+
+  // 请求本身抛了（超时 / 网络 / 5xx / 400）：被选中的行必须落 Failed 而不是
+  // 永远停在 Importing… —— 否则行被禁用、anyImportable 把 importing 当"在飞"、
+  // Import all 直接消失，用户没有任何重试口。
+  it('marks the selected rows Failed (and keeps Import all) when the request itself rejects', async () => {
+    // 凭证那栏故意缺席：留着它的话，凭证行自己会把 Import all 撑住，
+    // "按钮会不会因为 importing 而消失"这一半就测不到了。
+    vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, credentials: null, marketplaces: [] })
+    vi.mocked(api.post).mockRejectedValue(new Error('Request timed out after 180s'))
+    const onConfigured = vi.fn()
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={onConfigured} />)
+    await screen.findByText('ctx7')
+
+    fireEvent.click(screen.getByText('Import all'))
+    await waitFor(() => expect(screen.getByText('Failed')).toBeTruthy())
+    // 错误行照常渲染（role=alert 就是那句 error 行）。
+    expect(screen.getByRole('alert').textContent).toContain('Request timed out after 180s')
+    // 行可重试：勾选框不再禁用。
+    expect((screen.getByLabelText('Import ctx7') as HTMLInputElement).disabled).toBe(false)
+    // Import all 仍在（不是被 importing 卡成 Importing… 而消失）。
+    expect(screen.getByText('Import all')).toBeTruthy()
+    expect(onConfigured).not.toHaveBeenCalled()
   })
 })

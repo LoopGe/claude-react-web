@@ -29,6 +29,14 @@ const CREDENTIALS_ROW = 'credentials'
 const mcpRow = (name: string) => `mcp:${name}`
 const mpRow = (id: string) => `mp:${id}`
 
+/** 这一次 POST 的超时。spec 把它定成"一次请求里要拷最多上百 MB"（本机 6 个
+ *  市场共 122 MB），transport 的 30 s 默认值（src/transport/web.ts 的
+ *  DEFAULT_TIMEOUT_MS）在慢盘 / 开着实时扫描的 Windows 上够得着。客户端一旦
+ *  超时 abort，服务端**照旧跑完并落盘**（含 config.json），用户会停在超时文案上
+ *  而 app 其实已经配好了——所以这个上限必须给足。180 s 与市场拉取
+ *  （src/marketplace-update.ts 的 MARKETPLACE_PULL_TIMEOUT_MS）同量级。 */
+const WEB_IMPORT_TIMEOUT_MS = 180_000
+
 export function SetupWebImport({ onContinue, onConfigured }: Props) {
   const setPageOs = useOverlayScrollbar({ autoHide: 'leave' })
   const [data, setData] = useState<WebImportEnumeration | undefined>(undefined)
@@ -73,14 +81,40 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     return () => { probeCancelRef.current?.() }
   }, [probe])
 
+  /** 把一次导入的**选择集**落成状态位。成功与失败共用这一步——不是巧合，
+   *  是两个分支必须同构：
+   *    - 先整批落 'failed'（请求本身抛了时这就是最终答案；成功时下面用服务端
+   *      的逐项结果覆盖）；
+   *    - 再用服务端的 imported / skipped / failed 三个桶覆盖。
+   *  早先失败分支只调 setError，被选中的行会永远停在 Importing… ——而
+   *  anyImportable 把 'importing' 当"在飞"，Import all 会跟着消失，用户没有
+   *  重试口。落 'failed'（而非回到 'idle'）与 step 3 的 importMcp /
+   *  importAllMcp 的 catch 同一处置：行可重试、按钮不消失。
+   *  落底那一遍同时兜住"服务端没把某项列进任何桶"的情况（否则同样停在
+   *  Importing…）。 */
+  const settleStatuses = useCallback(
+    (sel: { credentials: boolean; mcp: string[]; marketplaces: string[] }, res: WebImportResult | null) => {
+      setStatus((prev) => {
+        const next = { ...prev }
+        if (sel.credentials) next[CREDENTIALS_ROW] = 'failed'
+        for (const n of sel.mcp) next[mcpRow(n)] = 'failed'
+        for (const id of sel.marketplaces) next[mpRow(id)] = 'failed'
+        if (!res) return next
+        if (sel.credentials) next[CREDENTIALS_ROW] = res.credentials?.imported ? 'imported' : 'failed'
+        for (const n of res.mcp.imported) next[mcpRow(n)] = 'imported'
+        for (const n of res.mcp.skipped) next[mcpRow(n)] = 'exists'
+        for (const f of res.mcp.failed) next[mcpRow(f.name)] = 'failed'
+        for (const id of res.marketplaces.imported) next[mpRow(id)] = 'imported'
+        for (const id of res.marketplaces.skipped) next[mpRow(id)] = 'exists'
+        for (const f of res.marketplaces.failed) next[mpRow(f.name)] = 'failed'
+        return next
+      })
+    },
+    [],
+  )
+
   /** 发一次导入请求。成功后：只要服务端已 configured 就收尾（这正是用户选的
-   *  "凭证导入成功即收尾"），否则留在本屏让状态位更新。
-   *
-   *  成功且 configured 的分支**刻意不 reset `submitting`**：parent（SetupPage）
-   *  会因为已配置而卸载本屏，`setSubmitting(false)` 只是在卸载后写 state
-   *  （dev 下会报 set-state-on-unmounted）——与 SetupPage.finalize 的收尾同形，
-   *  不要"顺手修"成 finally。另一个分支（导入了但服务端仍未 configured）留在
-   *  本屏，必须复位，否则 Next / Import all 会永久禁用。 */
+   *  "凭证导入成功即收尾"），否则留在本屏让状态位更新。 */
   const runImport = useCallback(async (sel: { credentials: boolean; mcp: string[]; marketplaces: string[] }) => {
     if (submitting) return
     setSubmitting(true)
@@ -94,21 +128,13 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     })
     let handOff = false
     try {
-      const res = await api.post<WebImportResult>('/config/web-import', sel)
-      setStatus((prev) => {
-        const next = { ...prev }
-        if (sel.credentials) next[CREDENTIALS_ROW] = res.credentials?.imported ? 'imported' : 'failed'
-        for (const n of res.mcp.imported) next[mcpRow(n)] = 'imported'
-        for (const n of res.mcp.skipped) next[mcpRow(n)] = 'exists'
-        for (const f of res.mcp.failed) next[mcpRow(f.name)] = 'failed'
-        for (const id of res.marketplaces.imported) next[mpRow(id)] = 'imported'
-        for (const id of res.marketplaces.skipped) next[mpRow(id)] = 'exists'
-        for (const f of res.marketplaces.failed) next[mpRow(f.name)] = 'failed'
-        return next
-      })
+      const res = await api.post<WebImportResult>('/config/web-import', sel, { timeoutMs: WEB_IMPORT_TIMEOUT_MS })
+      settleStatuses(sel, res)
       // 逐项失败不弹错、不阻断：行上的 Failed 就是信号（与 step 3 一致）。
       handOff = !!res.credentials?.configured
     } catch (err) {
+      // 请求本身抛了（超时 / 网络 / 5xx / 400）：整批落 Failed，行因此可重试。
+      settleStatuses(sel, null)
       setError(err instanceof Error ? err.message : 'Import failed')
     }
     if (handOff) {
@@ -119,13 +145,20 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
       // 于是照 handleConfigured 那一侧的先例：只记一行日志，不改屏上状态。
       try {
         await onConfigured()
+        // 交接成功：parent 会因为已配置而卸载本屏，所以**刻意不 reset
+        // `submitting`**——setSubmitting(false) 只是在卸载后写 state（dev 下会
+        // 报 set-state-on-unmounted），与 SetupPage.finalize 的收尾同形，
+        // 不要"顺手修"成 finally。
+        return
       } catch (err) {
         console.error('[SetupWebImport] hand-off after web import failed:', err)
+        // 相反地，onConfigured 抛错时本屏**没有**被卸载（parent 的收尾没能
+        // 完成），必须往下走去复位 submitting——否则 Next、每个勾选框和
+        // Import all 会一直禁用下去，用户连重试交接都做不到。
       }
-      return
     }
     setSubmitting(false)
-  }, [submitting, onConfigured])
+  }, [submitting, onConfigured, settleStatuses])
 
   /** 渲染期一律读 state，不读 ref：ref 是给异步 handler 读"最新值"用的，在这里
    *  没有任何异步 handler 需要它，用 ref 反而会慢一帧（anyImportable 这类派生值
@@ -234,15 +267,17 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
 
         {/* 三栏全空 —— 明确说明，而不是渲染一张空清单。
             措辞必须对两种情况都成立：真的是空的，以及三个源文件都读不动。
-            后者由下面这一屏之外的 *Error 行负责说原因，所以这里不能写
-            "No Claude Web config found."（那等于替对面应用宣布"它没有配置"，
-            与错误行自相矛盾）。 */}
+            后者下面那三行 `…unavailable:` 会在同一屏里说清是**读不动**，所以
+            这里只能断言"没有**能导入**的东西"，不能断言对面应用没有东西——
+            "No Claude Web config found." 那种写法会与本屏的错误行自相矛盾。
+            同理也不用 "Nothing to import from the web version."：文件读不动时
+            "import from" 读起来像"这款应用没有什么可导出的"。 */}
         {data !== undefined && nothingToImport && (
           <>
             <div className="setup-health-row setup-health-row-fail">
               <span className="setup-health-icon" aria-hidden="true">!</span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ ...styles.hint, color: 'var(--fg)' }}>Nothing to import from the web version.</p>
+                <p style={{ ...styles.hint, color: 'var(--fg)' }}>Nothing importable from the web version.</p>
                 <p className="setup-prefilled-hint">{data.sourceDir}</p>
               </div>
             </div>
