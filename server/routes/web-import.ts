@@ -7,14 +7,16 @@
 import { Hono } from 'hono'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { createErrorHandler } from '../errors.js'
+import { createErrorHandler, HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
-import { maskToken } from '../profiles.js'
+import { safeJson } from './index.js'
+import { DEFAULT_PROFILE, LEGACY_PROFILE_KEYS, queueConfigWrite, config as serverConfig } from '../config.js'
+import { coerceProfileEntries, maskToken, profileFromLegacyFields, resolveActiveProfile, type LegacyProfileFields } from '../profiles.js'
 import { maskSecrets, validateMcpServer } from '../mcp-config.js'
 import type { MpStore } from '../mp-store.js'
 import type { McpConfigStore } from '../mcp-config.js'
 import { readSourceCredentials, readSourceMcp, readSourceMarketplaces, webStateDir } from '../web-import.js'
-import type { WebImportEnumeration, WebImportMarketplaceView, WebImportMcpView } from '../../shared/web-import.js'
+import type { WebImportCollectionResult, WebImportEnumeration, WebImportMarketplaceView, WebImportMcpView, WebImportResult } from '../../shared/web-import.js'
 
 const log = createLogger('web-import')
 
@@ -29,6 +31,16 @@ export interface WebImportRouterDeps {
   /** 源目录覆盖，仅测试用；生产缺省走 webStateDir()。 */
   sourceDir?: string
 }
+
+/** body 里的字符串数组字段：给了但不是数组就是调用方错误。刻意不把字符串
+ *  逐字符迭代（与 POST /sessions 的 enabledMcpServers 同一约定）。 */
+function stringArrayOrThrow(value: unknown, field: string): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new HttpError(400, `${field} must be an array of strings`)
+  return value.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+}
+
+const emptyCollection = (): WebImportCollectionResult => ({ imported: [], skipped: [], failed: [] })
 
 export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
   const app = new Hono()
@@ -112,6 +124,81 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
       ...(marketplacesError ? { marketplacesError } : {}),
     }
     return c.json(body)
+  })
+
+  /** 把源 profile 写进桌面版 active profile。
+   *
+   *  profile 的选点与 heal 逻辑与 POST /config/setup 完全同源（coerceProfileEntries
+   *  → resolveActiveProfile → 用 entries 的 raw index 落笔）。不另写一份：读写两侧
+   *  的目标 profile 一旦漂移，就是 SetupPage 注释里记的那个 P0 缺陷
+   *  （token 写进了 profiles[0]，而读的是 active）。
+   *
+   *  只写源里确实存在的字段：源没有的保留桌面版现状，不清空。 */
+  async function importCredentials(sourceDir: string): Promise<WebImportResult['credentials']> {
+    const cred = await readSourceCredentials(sourceDir)
+    await queueConfigWrite(deps.configDir, (existing) => {
+      const rawActiveId = typeof existing.activeProfileId === 'string' ? existing.activeProfileId.trim() : ''
+      let entries = coerceProfileEntries(existing.profiles, DEFAULT_PROFILE)
+      if (entries.length === 0) {
+        // 与 /config/setup 同一手 heal：把读取侧本来就会回退到的那条 profile
+        // 实体化，而不是让写入落进一个没人读的位置。
+        const seeded = profileFromLegacyFields(existing as unknown as LegacyProfileFields, DEFAULT_PROFILE)
+        const raw = Array.isArray(existing.profiles) ? (existing.profiles as unknown[]) : []
+        existing.profiles = [seeded, ...raw]
+        entries = coerceProfileEntries(existing.profiles, DEFAULT_PROFILE)
+      }
+      for (const key of LEGACY_PROFILE_KEYS) delete existing[key]
+      const active = resolveActiveProfile(
+        entries.map((entry) => entry.profile),
+        rawActiveId || DEFAULT_PROFILE.id,
+        DEFAULT_PROFILE,
+      )
+      if (existing.activeProfileId !== active.id) existing.activeProfileId = active.id
+      const hit = entries.find((entry) => entry.profile === active)
+      if (!hit) throw new HttpError(500, 'no resolvable provider profile after config heal')
+      const profilesArr = existing.profiles as unknown[]
+      const prof = { ...(profilesArr[hit.index] as Record<string, unknown>) }
+      if (cred.present.authToken) prof.authToken = cred.authToken
+      if (cred.present.baseUrl) prof.baseUrl = cred.baseUrl
+      if (cred.present.modelList) prof.modelList = cred.modelList
+      if (cred.present.modelGroups) prof.modelGroups = cred.modelGroups
+      if (cred.present.recapModel) prof.recapModel = cred.recapModel
+      if (cred.present.commitMessageModel) prof.commitMessageModel = cred.commitMessageModel
+      profilesArr[hit.index] = prof
+    })
+    // queueConfigWrite 内部会 applyParsedConfig，所以 serverConfig 已是写入后的
+    // 值——`configured` 因此镜像 GET /config 的同名字段（同一个表达式）。
+    return { imported: true, configured: !!serverConfig.authToken }
+  }
+
+  app.post('/config/web-import', async (c) => {
+    const body = await safeJson<{ credentials?: unknown; mcp?: unknown; marketplaces?: unknown }>(c.req)
+    if (body.credentials !== undefined && typeof body.credentials !== 'boolean') {
+      throw new HttpError(400, 'credentials must be a boolean')
+    }
+    const mcpNames = stringArrayOrThrow(body.mcp, 'mcp')
+    const mpIds = stringArrayOrThrow(body.marketplaces, 'marketplaces')
+    const sourceDir = sourceDirOf()
+
+    let credentials: WebImportResult['credentials'] = null
+    if (body.credentials === true) {
+      // 读源失败是这一项的失败，不是整次请求的失败——其余项照常。
+      try {
+        credentials = await importCredentials(sourceDir)
+      } catch (err) {
+        credentials = { imported: false, configured: !!serverConfig.authToken }
+        log.warn(`credentials import failed: ${(err as Error).message}`)
+      }
+    }
+
+    const result: WebImportResult = {
+      credentials,
+      mcp: emptyCollection(),
+      marketplaces: emptyCollection(),
+    }
+    void mcpNames
+    void mpIds
+    return c.json(result)
   })
 
   return app

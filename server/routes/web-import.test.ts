@@ -8,6 +8,7 @@ import { buildWebImportRouter } from './web-import.js'
 import { MpStore } from '../mp-store.js'
 import { McpConfigStore } from '../mcp-config.js'
 import { SessionStore } from '../persistence.js'
+import { loadConfig, config } from '../config.js'
 
 /** 造一份"网页版"的 state 目录。 */
 function seedSource(dir: string): void {
@@ -124,5 +125,92 @@ describe('GET /api/config/web-import', () => {
     expect(typeof body.marketplacesError).toBe('string')
     expect(body.credentialsError).toBeUndefined()
     expect((body.credentials as Record<string, unknown>).profileName).toBe('Work')
+  })
+})
+
+describe('POST /api/config/web-import — credentials', () => {
+  let stateDir: string
+  let sourceDir: string
+  beforeEach(async () => {
+    stateDir = tempDir('web-import-dst')
+    sourceDir = tempDir('web-import-src')
+    // 桌面版自己的 config.json：一个脚手架留下的空 profile（真实场景）。
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, 'config.json'), JSON.stringify({
+      profiles: [{ id: 'default', name: 'Default', authToken: '', baseUrl: 'https://api.anthropic.com', modelList: ['claude-haiku-3-5-20241022'], recapModel: 'keep-me' }],
+      activeProfileId: 'default',
+    }), 'utf8')
+    await loadConfig(stateDir)
+  })
+  afterEach(() => { rmRf(stateDir); rmRf(sourceDir) })
+
+  it('writes the source ACTIVE profile and flips configured to true', async () => {
+    // Review Focus 3：源 active 是数组第二条，不是 profiles[0]。
+    mkdirSync(sourceDir, { recursive: true })
+    writeFileSync(join(sourceDir, 'config.json'), JSON.stringify({
+      profiles: [
+        { id: 'old', name: 'Old', authToken: 'sk-ant-wrong', baseUrl: 'https://old.example.com', modelList: ['wrong-model'] },
+        { id: 'work', name: 'Work', authToken: 'sk-ant-right', baseUrl: 'https://work.example.com', modelList: ['m-a', 'm-b'] },
+      ],
+      activeProfileId: 'work',
+    }), 'utf8')
+
+    const app = await makeRouter(stateDir, sourceDir)
+    const res = await app.request('/api/config/web-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credentials: true }),
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { credentials: { imported: boolean; configured: boolean } }
+    expect(body.credentials).toEqual({ imported: true, configured: true })
+
+    await loadConfig(stateDir)
+    expect(config.authToken).toBe('sk-ant-right')
+    expect(config.baseUrl).toBe('https://work.example.com')
+    expect(config.modelList).toEqual(['m-a', 'm-b'])
+  })
+
+  it('does not clobber a destination field the source does not have', async () => {
+    // Review Focus 4：源没有 recapModel → 桌面版的 recapModel 必须原样保留。
+    seedSource(sourceDir) // 该 fixture 不含 recapModel / commitMessageModel
+    const app = await makeRouter(stateDir, sourceDir)
+    await app.request('/api/config/web-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credentials: true }),
+    })
+    await loadConfig(stateDir)
+    expect(config.recapModel).toBe('keep-me')
+  })
+
+  it('leaves configured false when the source carries no token', async () => {
+    mkdirSync(sourceDir, { recursive: true })
+    writeFileSync(join(sourceDir, 'config.json'), JSON.stringify({
+      profiles: [{ id: 'default', name: 'Empty', authToken: '', baseUrl: 'https://api.example.com', modelList: ['m-a'] }],
+      activeProfileId: 'default',
+    }), 'utf8')
+    const app = await makeRouter(stateDir, sourceDir)
+    const res = await app.request('/api/config/web-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credentials: true }),
+    })
+    const body = await res.json() as { credentials: { imported: boolean; configured: boolean } }
+    // modelList 被搬过来了，但没有 token → configured 仍为 false，
+    // 客户端据此继续走向导而不是收尾。
+    expect(body.credentials.configured).toBe(false)
+    await loadConfig(stateDir)
+    expect(config.modelList).toEqual(['m-a'])
+  })
+
+  it('rejects a non-boolean credentials flag', async () => {
+    const app = await makeRouter(stateDir, sourceDir)
+    const res = await app.request('/api/config/web-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credentials: 'yes' }),
+    })
+    expect(res.status).toBe(400)
   })
 })
