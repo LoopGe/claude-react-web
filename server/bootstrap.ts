@@ -49,6 +49,11 @@ export interface ServerContextOptions {
   dev?: boolean
   /** Bind info surfaced by GET /api/access-info (web host only). */
   bind?: { host: string; port: number }
+  /** Which host is serving the app. Defaults to 'web'. The desktop host passes
+   *  'desktop' so desktop-only routes (e.g. /api/config/web-import) mount at all.
+   *  Explicit rather than inferred from `!bind`: bind being web-only is a
+   *  current accident, not a contract. */
+  host?: 'web' | 'desktop'
 }
 
 export interface ServerContext {
@@ -202,6 +207,7 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
     defaults: { model: opts.model, claudeBinary },
     configDir: stateDir,
     bind: opts.bind,
+    host: opts.host,
     trustDevOrigins,
   })
 

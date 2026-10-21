@@ -8,6 +8,7 @@ import { SessionManager } from '../session-manager.js'
 import { HttpError, createErrorHandler } from '../errors.js'
 import { isJsonContentType } from '../request-guard.js'
 import type { MpStore } from '../mp-store.js'
+import type { McpConfigStore } from '../mcp-config.js'
 import type { UploadStore } from '../upload-store.js'
 import type { AgentDefinitionStore } from '../agent-definition-store.js'
 import { buildSessionRouter } from './sessions.js'
@@ -22,6 +23,7 @@ import { buildDaemonRouter } from './daemon-routes.js'
 import { buildProfilesRouter } from './profiles.js'
 import { buildHealthRouter } from './health-routes.js'
 import { buildMpRouter } from './mp-marketplace.js'
+import { buildWebImportRouter } from './web-import.js'
 import { buildGitWriteRouter } from './git-write.js'
 import { buildUpdateRouter } from './update-routes.js'
 import { buildSearchRouter } from './search.js'
@@ -105,6 +107,8 @@ export function buildApiRouter(
   claudeBinary?: string,
   uploadStore?: UploadStore,
   agentDefinitionStore?: AgentDefinitionStore,
+  host: 'web' | 'desktop' = 'web',
+  mcpConfigStore?: McpConfigStore,
 ): Hono {
   const app = new Hono()
 
@@ -162,6 +166,17 @@ export function buildApiRouter(
   // tooling) skip it cleanly.
   if (mpStore) {
     app.route('/', buildMpRouter(sm, mpStore))
+  }
+  // Desktop-only: importing the web build's config into the desktop state dir.
+  // Mounted ONLY on the desktop host — the web host has nothing to import from
+  // (source and target would be the same dir), and an unmounted path falls
+  // through to app.notFound's JSON 404.
+  //
+  // mcpConfigStore is the SAME instance SessionManager holds (bootstrap hands
+  // one BuildApp, which hands it to both) — the import must not construct a
+  // second store, or the two would write over each other's mcp-config.json.
+  if (host === 'desktop' && configDir && mpStore && mcpConfigStore) {
+    app.route('/', buildWebImportRouter({ configDir, mpStore, mcpStore: mcpConfigStore }))
   }
   app.route('/', buildGitWriteRouter(sm))
   // Update checker — exposes GET /update-info for the in-app upgrade

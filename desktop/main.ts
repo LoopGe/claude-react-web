@@ -279,7 +279,7 @@ async function boot(): Promise<void> {
   // `which claude` for a system install, which is the right fallback here.
 
   const cwd = await resolveDefaultCwd(stateDir)
-  ctx = await createServerContext({ stateDir, appPlugins: true, cwd })
+  ctx = await createServerContext({ stateDir, appPlugins: true, cwd, host: 'desktop' })
   log.info(`desktop host ready (state=${stateDir})`)
 
   await registerProtocol()
