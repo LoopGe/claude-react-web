@@ -102,6 +102,8 @@ export interface AppOptions {
    *  build the LAN URLs + QR codes shown in the "open on phone" dialog.
    *  When omitted, access-info reports no LAN reachability. */
   bind?: { host: string; port: number }
+  /** Which host is serving the app (see ServerContextOptions.host). */
+  host?: 'web' | 'desktop'
   /** Trust the Vite dev-server origins (`devOrigins()`) for writes, WS and
    *  CORS. Set only in a dev runtime (bootstrap passes isDevRuntime). */
   trustDevOrigins?: boolean
@@ -245,7 +247,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
     }
   })
 
-  const apiRouter = buildApiRouter(sessionManager, opts.configDir, opts.mpStore, opts.defaults?.claudeBinary, opts.uploadStore, opts.agentDefinitionStore)
+  const apiRouter = buildApiRouter(sessionManager, opts.configDir, opts.mpStore, opts.defaults?.claudeBinary, opts.uploadStore, opts.agentDefinitionStore, opts.host, opts.mcpConfigStore)
   // Expose server defaults to the UI (used to prefill the "new session" form).
   // The fallback model string is sent through to the SDK unchanged when the
   // user doesn't override it; CLI `--model` and UI field both win over this.

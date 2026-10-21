@@ -2001,9 +2001,11 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 - [ ] **Step 1: 起桌面宿主（开发态）**
 
-Run: `npm run dev:desktop`（若不存在该脚本，用 README/`desktop/build.mjs` 记录的方式启动 Electron；否则先 `npm run build:client` 再按 `desktop/electron-builder.yml` 的说明跑未打包的 Electron）
+Run: `npm run desktop`（实测确认：`package.json` 里是 `desktop: npm run build:client && npm run build:desktop && electron dist/desktop/main.mjs`；`dev:desktop` 不存在，其形状是与 `dev` 不同的"先 build 再起 Electron"）
 
 预期：窗口打开即出现导入前置屏，副标题为 Import your existing Claude Web configuration…，且探测行随后变成三栏清单（本机应能列出 Mify 的凭证行、若干 MCP 行、6 个市场行）。
+
+> 注意：`npm run desktop` 从本 worktree 启动 Electron，但 Electron 的 userData 是按 app 名解析的，所以它读写的是**你真实的** `%APPDATA%/claude-react-web/state`——这正是要验收的目标，但意味着这一步会改动真实数据（下面的备份步骤就是为此）。
 
 - [ ] **Step 2: 验证"本地复制克隆目录"这一条（本机数据是真的）**
 

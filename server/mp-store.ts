@@ -149,13 +149,22 @@ export class MpStore extends JsonFileStore<MpEntry> {
   }
 
   /** Load both halves of the file into memory. Same shape as
-   *  McpConfigStore.load() — missing/corrupt → empty store. */
-  async load(): Promise<MpEntry[]> {
+   *  McpConfigStore.load() — missing/corrupt → empty store.
+   *
+   *  `readOnly: true` skips the manifest self-heal (reparseCachedManifests),
+   *  which rewrites THIS file when a cached manifest is stale against its
+   *  clone. Callers reading someone ELSE's state dir (the desktop's
+   *  web-import) must pass it: rewriting another app's state file from a
+   *  read is a side effect the import contract promises not to have. The
+   *  desktop's own store keeps the default (self-heal on). The cost of
+   *  skipping it is that a stale cached manifest is returned as-is — the
+   *  caller gets exactly what the other app last persisted. */
+  async load(opts: { readOnly?: boolean } = {}): Promise<MpEntry[]> {
     try {
       const raw = await fs.readFile(this.file, 'utf8')
       const entries = this.parseItems(raw)
       this.initEntries(entries)
-      await this.reparseCachedManifests(entries)
+      if (!opts.readOnly) await this.reparseCachedManifests(entries)
       return this.list()
     } catch (err) {
       const e = err as NodeJS.ErrnoException

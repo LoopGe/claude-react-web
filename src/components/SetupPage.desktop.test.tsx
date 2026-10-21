@@ -13,7 +13,7 @@
 // exercising the real host gate rather than mocking the step list.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { api } from '../hooks/useApi'
 
@@ -40,26 +40,34 @@ vi.mock('../hooks/useUpdateInfo', () => ({
 }))
 vi.mock('../hooks/useOverlayScrollbar', () => ({ useOverlayScrollbar: () => () => {} }))
 
+/** Default GET map for the desktop wizard. Extracted so a test can special-case
+ *  one path (e.g. the pre-screen's enumeration) and delegate the rest here,
+ *  instead of re-implementing the whole map. */
+function defaultGet(url: string): Promise<unknown> {
+  if (url.startsWith('/health/claude')) return Promise.resolve({ ok: true, version: '1.0.0' })
+  // 前置屏（SetupWebImport）的枚举探测：源目录不存在 ⇒ 三栏全空。
+  if (url === '/config/web-import')
+    return Promise.resolve({ sourceDir: '/tmp/.claude-react-web', exists: false, credentials: null, mcp: [], marketplaces: [] })
+  if (url === '/profiles') return Promise.resolve({ profiles: [], activeProfileId: 'default' })
+  if (url === '/mcp-config/claude-import') return Promise.resolve({ servers: [] })
+  if (url === '/config/claude-defaults')
+    return Promise.resolve({ hasKey: true, settingsPath: '/tmp/settings.json' })
+  if (url === '/daemon/status')
+    return Promise.resolve({
+      supported: false,
+      mechanism: null,
+      configEnabled: false,
+      osRegistered: false,
+      drift: false,
+      daemonAlive: false,
+      child: null,
+    })
+  return Promise.resolve({})
+}
+
 beforeEach(() => {
   ;(window as unknown as { __CRW_DESKTOP__?: unknown }).__CRW_DESKTOP__ = { platform: 'win32' }
-  vi.mocked(api.get).mockImplementation((url: string) => {
-    if (url.startsWith('/health/claude')) return Promise.resolve({ ok: true, version: '1.0.0' })
-    if (url === '/profiles') return Promise.resolve({ profiles: [], activeProfileId: 'default' })
-    if (url === '/mcp-config/claude-import') return Promise.resolve({ servers: [] })
-    if (url === '/config/claude-defaults')
-      return Promise.resolve({ hasKey: true, settingsPath: '/tmp/settings.json' })
-    if (url === '/daemon/status')
-      return Promise.resolve({
-        supported: false,
-        mechanism: null,
-        configEnabled: false,
-        osRegistered: false,
-        drift: false,
-        daemonAlive: false,
-        child: null,
-      })
-    return Promise.resolve({})
-  })
+  vi.mocked(api.get).mockImplementation(defaultGet)
 })
 
 afterEach(() => {
@@ -82,16 +90,78 @@ async function importDesktopSetupPage() {
   return mod.SetupPage
 }
 
-/** Step 0's Continue, the token, then Next up to the Finish step. */
+/** 桌面宿主的向导之前有一屏"从网页版导入"（SetupWebImport）——先点 Next 跳过它。
+ *  Step 0's Continue, the token, then Next up to the Finish step. */
 async function walkToFinish() {
-  fireEvent.click(await screen.findByText('Continue'))
+  fireEvent.click(await screen.findByText('Next'))          // 前置屏 → step 0
+  fireEvent.click(await screen.findByText('Continue'))      // step 0 → step 1
   fireEvent.change(screen.getByPlaceholderText('sk-ant-...'), { target: { value: 'sk-test' } })
-  // Desktop: 1→2→3→4→5→7 is five Nexts (pre-fix the fifth renders step id 6
-  // and throws).
+  // Desktop: 1→2→3→4→5→7 —— 前置屏已经占用了一次 Next，这里仍是 5 次
+  // （pre-fix the fifth renders step id 6 and throws）。
   for (let i = 0; i < 5; i++) fireEvent.click(screen.getByText('Next'))
 }
 
 describe('SetupPage — desktop wizard (no Autostart step)', () => {
+  // 头号路径：凭证经前置屏导入 ⇒ SetupPage 走既有收尾路径交接
+  // （onConfigured({ openNewSession: true })），用户不必重走一遍向导。
+  // 这条链此前没有自动化覆盖：desktop 用例里前置屏一直是 exists:false，
+  // SetupWebImport 的用例只到组件自己那一层（onConfigured 是个 spy）。
+  it('hands over to onConfigured({ openNewSession: true }) after importing credentials', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) =>
+      url === '/config/web-import'
+        ? Promise.resolve({
+          sourceDir: '/tmp/.claude-react-web',
+          exists: true,
+          credentials: {
+            available: true, hasToken: true, profileName: 'Work',
+            authTokenMasked: '****1234', baseUrl: 'https://api.example.com', modelCount: 1,
+          },
+          mcp: [],
+          marketplaces: [],
+        })
+        : defaultGet(url))
+    vi.mocked(api.post).mockResolvedValue({
+      credentials: { imported: true, configured: true },
+      mcp: { imported: [], skipped: [], failed: [] },
+      marketplaces: { imported: [], skipped: [], failed: [] },
+    })
+
+    const SetupPage = await importDesktopSetupPage()
+    const onConfigured = vi.fn(async () => {})
+    render(<SetupPage onConfigured={onConfigured} />)
+
+    // 前置屏列出凭证那一行 → Import all 把它一次 POST 出去。
+    expect(await screen.findByText('Work')).toBeTruthy()
+    fireEvent.click(screen.getByText('Import all'))
+
+    await waitFor(() => expect(onConfigured).toHaveBeenCalledWith({ openNewSession: true }))
+    expect(onConfigured).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith(
+      '/config/web-import',
+      { credentials: true, mcp: [], marketplaces: [] },
+      { timeoutMs: 180_000 },
+    )
+  })
+
+  it('renders the web-import pre-screen first, and Next reveals step 1 of 7', async () => {
+    const SetupPage = await importDesktopSetupPage()
+    render(<SetupPage onConfigured={vi.fn(async () => {})} />)
+
+    // 前置屏：没有进度点、没有步数计数器。
+    expect(await screen.findByText(/Reading your Claude Web config|Nothing importable from the web version/)).toBeTruthy()
+    expect(screen.queryByText(/^Step \d+ of \d+$/)).toBeNull()
+    // 进度点只有 aria-label、没有可匹配的文本，上面那条正则抓不到它 —— 必须
+    // 单独按 DOM 选择器钉一次，否则"前置屏不出现进度点"这半条要求是漏测的。
+    expect(document.querySelector('.setup-progress')).toBeNull()
+
+    fireEvent.click(screen.getByText('Next'))
+    expect(await screen.findByText('Step 1 of 7')).toBeTruthy()
+    expect(screen.getByText('Continue')).toBeTruthy()
+    // 同一个选择器在向导里必须抓得到（否则上面那句 toBeNull 只证明选择器写错了，
+    // 证明不了进度点不存在）。
+    expect(document.querySelector('.setup-progress')).not.toBeNull()
+  })
+
   it('advances Updates → Finish without crashing on the missing id 6', async () => {
     const SetupPage = await importDesktopSetupPage()
     render(<SetupPage onConfigured={vi.fn(async () => {})} />)
