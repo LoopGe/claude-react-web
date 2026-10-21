@@ -1041,6 +1041,12 @@
   background: var(--bg-elev-2);
   color: var(--fg-muted);
   min-width: 0;
+  /* The open-state separator is reserved in BOTH states (transparent when
+     closed, coloured below) so toggling a group never shifts the layout:
+     measured live, the border appearing only on `[data-state="open"]` made
+     the header jump 36→37px at click — an un-animated 1px step of everything
+     below it, on top of the fold animation. */
+  border-bottom: 1px solid transparent;
 }
 .tool-group-summary-inner:hover {
   background: var(--btn-hover-bg);
@@ -1079,7 +1085,7 @@ button.tool-group-failed-jump:focus-visible {
   outline-offset: 1px;
 }
 .tool-group-card[data-state="open"] > .tool-group-summary-inner {
-  border-bottom: 1px solid var(--border);
+  border-bottom-color: var(--border);
 }
 .tool-group-chevron {
   display: inline-flex;

@@ -1,5 +1,7 @@
 import { prefersReducedMotion } from '../utils/reduced-motion'
 import { isRendered } from '../utils/rendered'
+import { easeStandard } from '../utils/cubic-bezier'
+import { setCollapseAnimating } from './collapse-animation'
 import {
   type DetailsHTMLAttributes,
   type MouseEvent,
@@ -12,10 +14,13 @@ import {
 } from 'react'
 
 const DEFAULT_DURATION_MS = 240
-const TRANSITION = [
-  'height var(--motion-duration-moderate) var(--motion-ease-standard)',
-  'opacity var(--motion-duration-fast) var(--motion-ease-standard)',
-].join(', ')
+/** Opacity fade length. The height tween runs `durationMs`, but the fade keeps
+ *  the old CSS transition's split timing — `opacity` used to animate over
+ *  `--motion-duration-fast` (120ms) while height ran 240ms, so content became
+ *  readable long before the box finished moving. Driving the fade with the
+ *  full durationMs (the first rAF-tween version did) silently doubled every
+ *  fold's fade and stretched it to any custom durationMs. */
+const FADE_DURATION_MS = 120
 
 /** Two resize observations closer together than this are ONE continuous
  *  layout run — an inner animation (a nested collapse, a grid-rows reveal)
@@ -198,6 +203,7 @@ export function AnimatedCollapse({
     body.style.opacity = ''
     body.style.transition = ''
     body.classList.remove('animating')
+    setCollapseAnimating(body, false)
     animatingRef.current = false
     // If the content's true height drifted while the open animation played
     // (ResizeObserver snaps are deferred during the animation so it can play
@@ -222,6 +228,7 @@ export function AnimatedCollapse({
       body.style.opacity = '0'
       body.style.transition = ''
       body.classList.remove('animating')
+      setCollapseAnimating(body, false)
     }
     animatingRef.current = false
     // The fold has settled: for a body that stays mounted (unmountOnExit off),
@@ -247,6 +254,7 @@ export function AnimatedCollapse({
 
     let done = false
     body.classList.add('animating')
+    setCollapseAnimating(body, true)
     body.style.transition = 'none'
     body.style.height = `${Math.max(0, from)}px`
     if (fade) body.style.opacity = nextOpen ? '0' : '1'
@@ -255,36 +263,70 @@ export function AnimatedCollapse({
 
     animKindRef.current = kind
     animatingRef.current = true
-    const raf = window.requestAnimationFrame(() => {
-      body.style.transition = TRANSITION
-      body.style.height = `${Math.max(0, to)}px`
-      if (fade) body.style.opacity = nextOpen ? '1' : '0'
-    })
+
+    // Per-frame INTEGER height tween (rAF), not a CSS height transition. The
+    // transition interpolates at fractional px per frame, which re-phases
+    // every glyph raster downstream of the animated box: Chrome snaps glyphs
+    // to the device-pixel grid at LAYOUT positions, so a fractional layout
+    // step re-rasterizes the text at a new sub-pixel phase every frame — the
+    // cards below the fold visibly shimmer for the whole fold even when the
+    // scroll machinery holds their visual offset constant (measured on a live
+    // session: DOM rects steady, user still sees "抖动"). Rounding each frame
+    // to whole CSS px keeps every downstream layout step integer, so the
+    // transcript's fold-lockstep compensation matches it 1:1 in scroll and
+    // nothing below the fold ever re-phases. The curve is tokens.css'
+    // --motion-ease-standard — the one the CSS transition declared; only the
+    // per-frame granularity differs.
+    const ease = easeStandard
+    const startedAt = performance.now()
+    let raf = 0
+    const step = () => {
+      if (done) return
+      const now = performance.now()
+      const t = Math.min(1, (now - startedAt) / durationMs)
+      const p = ease(t)
+      body.style.height = `${Math.max(0, Math.round(from + (to - from) * p))}px`
+      if (fade) {
+        // The fade keeps the OLD transition's split timing: same standard
+        // ease, but over --motion-duration-fast (120ms), not the height's
+        // full durationMs — see FADE_DURATION_MS.
+        const pFade = ease(Math.min(1, (now - startedAt) / FADE_DURATION_MS))
+        body.style.opacity = String(nextOpen ? pFade : 1 - pFade)
+      }
+      if (t < 1) raf = window.requestAnimationFrame(step)
+      else finish()
+    }
+    raf = window.requestAnimationFrame(step)
 
     const finish = () => {
       if (done) return
       done = true
       window.cancelAnimationFrame(raf)
       window.clearTimeout(timer)
-      body.removeEventListener('transitionend', onEnd)
       cleanupRef.current = null
+      // Registry delete MUST happen here, not only inside finishOpen /
+      // finishClosed: those read bodyRef.current, which React nulls during an
+      // unmount commit BEFORE this pending rAF/timeout fires — they then
+      // early-return on the null guard and skip the delete, while the unmount
+      // cleanup below early-returns on `done`. A fold interrupted by unmount
+      // would otherwise leave the detached element (its whole subtree with it)
+      // retained in the module-level Set forever. `body` is the captured,
+      // still-non-null element; delete is idempotent.
+      setCollapseAnimating(body, false)
       if (nextOpen) finishOpen(to)
       else finishClosed()
     }
 
-    const onEnd = (event: TransitionEvent) => {
-      if (event.target === body && event.propertyName === 'height') finish()
-    }
-
+    // Safety net: the tween finishes itself on its last frame; the timer only
+    // covers a stalled rAF clock (and is what fake-timer tests ride on).
     const timer = window.setTimeout(finish, durationMs + 120)
-    body.addEventListener('transitionend', onEnd)
     cleanupRef.current = () => {
       if (done) return
       done = true
       window.cancelAnimationFrame(raf)
       window.clearTimeout(timer)
-      body.removeEventListener('transitionend', onEnd)
       body.classList.remove('animating')
+      setCollapseAnimating(body, false)
       animatingRef.current = false
     }
   }, [cleanupAnimation, durationMs, finishClosed, finishOpen])

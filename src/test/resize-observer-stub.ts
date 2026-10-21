@@ -7,12 +7,22 @@ import { vi } from 'vitest'
 // content growth behave exactly as they would under a no-op stub. Shared by
 // AnimatedCollapse.test.tsx and ToolGroupCard.test.tsx — a behavioral fix to
 // the stub must land in ONE place.
-const roObserved = new Map<Element, Array<() => void>>()
+const roObserved = new Map<Element, Array<(entries: ResizeObserverEntry[]) => void>>()
 
 /** Fire the observation callbacks registered for `el` (what a real
- *  ResizeObserver does after a layout change of the observed box). */
+ *  ResizeObserver does after a layout change of the observed box). Delivers a
+ *  minimal entries array — one entry for `el` with a borderBoxSize derived
+ *  from its (stubbed or zero) rect — so observers that read the observation
+ *  (the transcript's fold-lockstep compensation reads the fractional block
+ *  size) get the shape a real browser delivers. Callbacks that ignore the
+ *  argument are unaffected. */
 export function fireResize(el: Element) {
-  for (const cb of roObserved.get(el) ?? []) cb()
+  const rect = (el as HTMLElement).getBoundingClientRect?.()
+  const entry = {
+    target: el,
+    borderBoxSize: [{ inlineSize: rect?.width ?? 0, blockSize: rect?.height ?? 0 }],
+  }
+  for (const cb of roObserved.get(el) ?? []) cb([entry] as unknown as ResizeObserverEntry[])
 }
 
 /** Register the stub globally — call from beforeEach. */
@@ -20,7 +30,7 @@ export function stubResizeObserver() {
   vi.stubGlobal(
     'ResizeObserver',
     class {
-      constructor(private cb: () => void) {}
+      constructor(private cb: (entries: ResizeObserverEntry[]) => void) {}
       observe(el: Element) {
         const list = roObserved.get(el) ?? []
         list.push(this.cb)
