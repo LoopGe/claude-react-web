@@ -18,6 +18,15 @@
 .setup-card {
   width: 100%;
   max-width: 480px;
+  /* Centering lives on the CHILD, not on the container's `align-items: center`.
+     On a scroll container that combination clips: once the card is taller than
+     the viewport, the flex line starts above the container's top edge and that
+     overflow is not part of the scrollable region — the title is cut off while
+     the bottom still scrolls. Auto margins center when there is room and
+     collapse to 0 when there is not, so a tall card (e.g. the web-import
+     pre-screen, which lists every MCP server and marketplace) stays fully
+     reachable. Same idiom as `.empty-state` in layout.css. */
+  margin: auto;
   padding: 40px 36px;
   box-sizing: border-box;
   background: var(--bg-elev);
