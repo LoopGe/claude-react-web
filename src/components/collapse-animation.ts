@@ -11,6 +11,10 @@
  * inside AnimatedCollapse, so the two cannot drift apart. Animations are
  * bounded (~240ms, one body per fold), so the registry holds at most a
  * handful of elements.
+ *
+ * Starting an animation ALSO releases the pinned heights of the bodies above it
+ * (releaseAncestorCollapsePins) — a pinned ancestor is what turns a nested fold
+ * into a one-frame dip of the content below it.
  */
 
 const animatingBodies = new Set<HTMLElement>()
@@ -18,8 +22,10 @@ const animatingBodies = new Set<HTMLElement>()
 /** Record a body's animation state. Called by AnimatedCollapse immediately
  *  before/after the matching `classList.add/remove('animating')`. */
 export function setCollapseAnimating(el: HTMLElement, animating: boolean): void {
-  if (animating) animatingBodies.add(el)
-  else animatingBodies.delete(el)
+  if (animating) {
+    animatingBodies.add(el)
+    releaseAncestorCollapsePins(el)
+  } else animatingBodies.delete(el)
 }
 
 /** True when any AnimatedCollapse inside `root` is mid-animation (an
@@ -30,4 +36,38 @@ export function anyCollapseAnimatingInside(root: ParentNode | null): boolean {
     if (root.contains(el)) return true
   }
   return false
+}
+
+/** Drop the pinned height of every collapse body ABOVE `el`.
+ *
+ *  A pinned ancestor body is a COPY of its content's height, written by that
+ *  ancestor's own ResizeObserver — i.e. one RO broadcast AFTER this fold wrote
+ *  its per-frame height. Anything that compensates from box observations reads
+ *  those boxes in the same broadcast, so it can only ever compensate the
+ *  PREVIOUS frame's geometry: every frame of a fold nested inside a pinned body
+ *  paints the content below it one growth-step low, then snaps back on the next
+ *  frame. Measured live on a ToolGroupCard's result row (a nested collapse
+ *  inside the group's pinned body): the assistant card below the group was
+ *  painted 115-132px lower on the fold's steep frames and 15/7/4/2px on its
+ *  tail. Released, the ancestor's box tracks its content in the SAME layout pass
+ *  as the fold's height write — the phase the compensation needs.
+ *
+ *  Two ancestors are deliberately left alone:
+ *  - one that is itself animating: its tween owns that pin and rewrites it
+ *    every frame anyway;
+ *  - one that is folded (`0px`): that pin is the fold, not a copy of its
+ *    content, and a search-forced result row can open inside a folded group —
+ *    releasing it there would spill the folded card open. Nothing needs
+ *    relaying while it is shut.
+ *
+ *  The released body stays unpinned: the same resting state `standDown` leaves
+ *  (an unpinned body's own box already equals its content, so the observer has
+ *  nothing to detect), and the next fold cycle pins it again. */
+export function releaseAncestorCollapsePins(el: HTMLElement): void {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    if (!node.classList.contains('animated-collapse')) continue
+    if (animatingBodies.has(node)) continue
+    if (node.style.height === '' || node.style.height === '0px') continue
+    node.style.height = ''
+  }
 }
