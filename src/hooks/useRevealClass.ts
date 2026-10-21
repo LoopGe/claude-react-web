@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type AnimationEvent } from 'react'
+import { revealDurationMs } from '../utils/reveal-duration'
 
 /** How long past the CSS reveal before the `-enter`-family class is
  *  force-cleared as a fallback. Slight buffer so the precise `animationend`
@@ -9,12 +10,9 @@ import { useEffect, useLayoutEffect, useRef, useState, type AnimationEvent } fro
 const FALLBACK_MS = 160
 
 /** Read `--motion-duration-moderate` (the reveal duration) from the theme so
- *  the fallback cleanup tracks CSS edits instead of hardcoding 240ms. */
-export const revealDurationMs = () => {
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--motion-duration-moderate')
-  const n = parseFloat(v)
-  return Number.isFinite(n) ? n : 240
-}
+ *  the fallback cleanup tracks CSS edits instead of hardcoding 240ms.
+ *  (Lives in `utils/reveal-duration.ts` since the rAF track tween reads the
+ *  same value and must not import from `hooks/`.) */
 
 /**
  * One-shot reveal class latch, shared by the entrance animations that grow a
