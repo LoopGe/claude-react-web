@@ -8,6 +8,17 @@ import { cx } from '../utils/cx'
 import { isDesktopHost } from '../host-capabilities'
 import { IconBell, IconBellOff, IconX, IconCheck } from './icons/ToolIcons'
 import { Switch } from './Switch'
+import {
+  FIRST_STEP,
+  LAST_STEP,
+  STEPS,
+  TOTAL_STEPS,
+  nextStepId,
+  prevStepId,
+  stepIndex,
+  stepMeta,
+  type Step,
+} from './setup-steps'
 import type { McpServerConfigMeta } from '../types'
 
 interface Props {
@@ -30,36 +41,6 @@ const DEFAULT_MODELS = [
   'claude-opus-4-20250514',
   'claude-haiku-3-5-20241022',
 ]
-
-/** Single source of truth for wizard steps. Adding a step is a
- *  one-element edit here — the Step union, TOTAL_STEPS, the progress
- *  map, and the subtitle/short-name lookups all derive from this.
- *
- *  Step 0 (Environment) is the CLI-binary check. We keep it at id 0
- *  rather than reusing 1 so persisted ?step=N URLs (if we ever add
- *  them) keep their meaning. The progress dots / counters use array
- *  index, not id, so 0-indexing here doesn't leak into the UI labels. */
-const STEPS = [
-  { id: 0, short: 'Environment', subtitle: 'Checking the local Claude CLI environment.' },
-  { id: 1, short: 'Auth Token', subtitle: 'Configure your Anthropic API credentials to get started.' },
-  { id: 2, short: 'Models', subtitle: 'Pick the models you want available in new sessions.' },
-  { id: 3, short: 'MCP', subtitle: 'Import MCP servers from your Claude CLI config.' },
-  { id: 4, short: 'Notifications', subtitle: 'Decide how you want to be notified when a turn completes.' },
-  { id: 5, short: 'Updates', subtitle: 'Choose the npm registry used to check for updates.' },
-  // Web host only — the desktop app has no TCP server to auto-start (Electron
-  // login items are a separate future feature).
-  ...(isDesktopHost() ? [] : [{ id: 6, short: 'Autostart', subtitle: 'Run Claude Web automatically when you log in.' }]),
-  { id: 7, short: 'Finish', subtitle: "You're ready — let's open your first session." },
-] as const
-
-type Step = (typeof STEPS)[number]['id']
-const TOTAL_STEPS = STEPS.length
-/** id→meta lookup by Map: ids no longer align with array positions now that
- *  a host-conditional step can be absent (desktop has no Autostart step). */
-const STEP_BY_ID = new Map<number, (typeof STEPS)[number]>(STEPS.map((s) => [s.id, s]))
-const stepMeta = (id: Step) => STEP_BY_ID.get(id)!
-const FIRST_STEP: Step = STEPS[0].id
-const LAST_STEP: Step = STEPS[STEPS.length - 1].id
 
 interface ClaudeHealth {
   ok: boolean
@@ -182,7 +163,9 @@ export function SetupPage({ onConfigured }: Props) {
   // handlers without re-creating them on every status flip. Updated in an
   // effect (not during render) per the refs rule.
   const mcpImportStatusRef = useRef(mcpImportStatus)
-  useEffect(() => { mcpImportStatusRef.current = mcpImportStatus }, [mcpImportStatus])
+  useEffect(() => {
+    mcpImportStatusRef.current = mcpImportStatus
+  }, [mcpImportStatus])
 
   /** Cancels the in-flight probe (effect cleanup or a re-probe). Stored in a
    *  ref rather than returned from the effect so the Retry button can share
@@ -196,7 +179,9 @@ export function SetupPage({ onConfigured }: Props) {
   const probeClaudeMcp = useCallback(() => {
     probeCancelRef.current?.()
     let cancelled = false
-    probeCancelRef.current = () => { cancelled = true }
+    probeCancelRef.current = () => {
+      cancelled = true
+    }
     setClaudeMcpError(null)
     void api
       .get<{ servers: ClaudeMcpCandidate[]; configPath?: string }>('/mcp-config/claude-import')
@@ -226,7 +211,9 @@ export function SetupPage({ onConfigured }: Props) {
     if (step !== 3 || claudeMcp !== undefined) return
     // eslint-disable-next-line react-hooks/set-state-in-effect
     probeClaudeMcp()
-    return () => { probeCancelRef.current?.() }
+    return () => {
+      probeCancelRef.current?.()
+    }
   }, [step, claudeMcp, probeClaudeMcp])
 
   /** Import a single native MCP server by name. Re-reads happen server-side
@@ -238,10 +225,11 @@ export function SetupPage({ onConfigured }: Props) {
     if (cur === 'importing' || cur === 'imported' || cur === 'exists') return
     setMcpImportStatus((prev) => ({ ...prev, [name]: 'importing' }))
     try {
-      const r = await api.post<{ imported: string[]; skipped: string[]; failed: { name: string; error: string }[] }>(
-        '/mcp-config/claude-import',
-        { names: [name] },
-      )
+      const r = await api.post<{
+        imported: string[]
+        skipped: string[]
+        failed: { name: string; error: string }[]
+      }>('/mcp-config/claude-import', { names: [name] })
       setMcpImportStatus((s) => {
         // Don't downgrade a newer terminal status set by a concurrent action.
         const existing = s[name]
@@ -263,10 +251,11 @@ export function SetupPage({ onConfigured }: Props) {
    *  server's per-name outcome. */
   const importAllMcp = useCallback(async () => {
     const candidates = (claudeMcp ?? []).filter(
-      (c) => c.importErrors.length === 0
-        && mcpImportStatus[c.name] !== 'imported'
-        && mcpImportStatus[c.name] !== 'exists'
-        && mcpImportStatus[c.name] !== 'importing',
+      (c) =>
+        c.importErrors.length === 0 &&
+        mcpImportStatus[c.name] !== 'imported' &&
+        mcpImportStatus[c.name] !== 'exists' &&
+        mcpImportStatus[c.name] !== 'importing',
     )
     if (!candidates.length) return
     setMcpImportStatus((s) => {
@@ -275,10 +264,11 @@ export function SetupPage({ onConfigured }: Props) {
       return next
     })
     try {
-      const r = await api.post<{ imported: string[]; skipped: string[]; failed: { name: string; error: string }[] }>(
-        '/mcp-config/claude-import',
-        { names: candidates.map((c) => c.name) },
-      )
+      const r = await api.post<{
+        imported: string[]
+        skipped: string[]
+        failed: { name: string; error: string }[]
+      }>('/mcp-config/claude-import', { names: candidates.map((c) => c.name) })
       setMcpImportStatus((s) => {
         const next = { ...s }
         for (const name of r.imported) next[name] = 'imported'
@@ -325,9 +315,13 @@ export function SetupPage({ onConfigured }: Props) {
   // Pre-fill from the CLI's settings.json if available.
   useEffect(() => {
     void api
-      .get<{ hasKey?: boolean; keySuffix?: string; baseUrl?: string; modelList?: string[]; settingsPath?: string }>(
-        '/config/claude-defaults',
-      )
+      .get<{
+        hasKey?: boolean
+        keySuffix?: string
+        baseUrl?: string
+        modelList?: string[]
+        settingsPath?: string
+      }>('/config/claude-defaults')
       .then((r) => {
         if (r.settingsPath) setSettingsPath(r.settingsPath)
         if (r.hasKey) {
@@ -356,9 +350,10 @@ export function SetupPage({ onConfigured }: Props) {
   // "the user changed this" rather than "we guessed".
   useEffect(() => {
     void api
-      .get<{ profiles?: Array<{ id: string; recapModel?: string; commitMessageModel?: string }>; activeProfileId?: string }>(
-        '/profiles',
-      )
+      .get<{
+        profiles?: Array<{ id: string; recapModel?: string; commitMessageModel?: string }>
+        activeProfileId?: string
+      }>('/profiles')
       .then((r) => {
         const active = r.profiles?.find((p) => p.id === r.activeProfileId) ?? r.profiles?.[0]
         if (!active) return
@@ -374,9 +369,7 @@ export function SetupPage({ onConfigured }: Props) {
   const probeClaudeHealth = useCallback(async (force: boolean) => {
     setHealthChecking(true)
     try {
-      const result = await api.get<ClaudeHealth>(
-        force ? '/health/claude?force=1' : '/health/claude',
-      )
+      const result = await api.get<ClaudeHealth>(force ? '/health/claude?force=1' : '/health/claude')
       setHealth(result)
     } catch (err) {
       // The endpoint itself failed (server down, network glitch). Treat as
@@ -529,8 +522,8 @@ export function SetupPage({ onConfigured }: Props) {
           // on a wrong diagnosis, while GET /config would have let them in.
           if (res.configured === false) {
             throw new Error(
-              'Setup could not be finalized: the server still reports no active credential — '
-              + 'the token did not reach the active profile. Fix the active profile in your config file, then retry.',
+              'Setup could not be finalized: the server still reports no active credential — ' +
+                'the token did not reach the active profile. Fix the active profile in your config file, then retry.',
             )
           }
           setSetupCompleted(true)
@@ -542,8 +535,8 @@ export function SetupPage({ onConfigured }: Props) {
               await api.post('/daemon/enable', {})
             } catch (enableErr) {
               setDaemonWarning(
-                `Auto-start could not be enabled: ${enableErr instanceof Error ? enableErr.message : String(enableErr)}`
-                + ' — you can enable it later from Settings → Server.',
+                `Auto-start could not be enabled: ${enableErr instanceof Error ? enableErr.message : String(enableErr)}` +
+                  ' — you can enable it later from Settings → Server.',
               )
             }
           }
@@ -574,7 +567,21 @@ export function SetupPage({ onConfigured }: Props) {
       // flipped isConfigured), so calling setSubmitting(false) would warn
       // about state-on-unmounted in dev.
     },
-    [authToken, baseUrl, modelList, recapModel, commitMessageModel, recapModelTouched, commitModelTouched, updateRegistry, onConfigured, setupCompleted, tokenPrefilled, daemonEnabled, daemonSupported],
+    [
+      authToken,
+      baseUrl,
+      modelList,
+      recapModel,
+      commitMessageModel,
+      recapModelTouched,
+      commitModelTouched,
+      updateRegistry,
+      onConfigured,
+      setupCompleted,
+      tokenPrefilled,
+      daemonEnabled,
+      daemonSupported,
+    ],
   )
 
   // ── Navigation helpers ──
@@ -586,9 +593,10 @@ export function SetupPage({ onConfigured }: Props) {
       return
     }
     setError(null)
-    if (step < LAST_STEP) {
+    const next = nextStepId(step)
+    if (next !== undefined) {
       setStepDirection('forward')
-      setStep(((step + 1) as Step))
+      setStep(next)
     }
   }, [step, tokenValid])
   const goBack = useCallback(() => {
@@ -604,9 +612,10 @@ export function SetupPage({ onConfigured }: Props) {
     // after the /config/setup POST succeeds, so any error visible while
     // it's still false originated pre-finalize.
     if (!setupCompleted) setError(null)
-    if (step > FIRST_STEP) {
+    const prev = prevStepId(step)
+    if (prev !== undefined) {
       setStepDirection('back')
-      setStep(((step - 1) as Step))
+      setStep(prev)
     }
   }, [step, setupCompleted])
 
@@ -633,9 +642,7 @@ export function SetupPage({ onConfigured }: Props) {
     <div className="setup-page" ref={setPageOs}>
       <div className="setup-card">
         <h1 className="setup-title">Welcome to Claude Web</h1>
-        <p className="setup-subtitle">
-          {stepMeta(step).subtitle}
-        </p>
+        <p className="setup-subtitle">{stepMeta(step).subtitle}</p>
 
         {/* Progress dots — clickable for already-visited steps so the user
          *  can jump back without mashing the Back button.
@@ -679,589 +686,647 @@ export function SetupPage({ onConfigured }: Props) {
           })}
         </ol>
         <p className="setup-step-counter">
-          Step {step + 1} of {TOTAL_STEPS}
+          Step {stepIndex(step) + 1} of {TOTAL_STEPS}
         </p>
 
         <form onSubmit={(e) => e.preventDefault()} onKeyDown={handleKeyDown} className="setup-form">
           <div key={step} className={`setup-step-body setup-step-${stepDirection}`}>
-          {step === 0 && (
-            <div className="setup-field setup-field-environment">
-              <label className="setup-label">Claude CLI Environment</label>
+            {step === 0 && (
+              <div className="setup-field setup-field-environment">
+                <label className="setup-label">Claude CLI Environment</label>
 
-              {healthChecking && (
-                <div className="setup-health-row setup-health-row-checking">
-                  <span className="setup-spinner spinner" aria-hidden="true" />
-                  <span className="setup-hint">Probing local Claude CLI…</span>
-                </div>
-              )}
+                {healthChecking && (
+                  <div className="setup-health-row setup-health-row-checking">
+                    <span className="setup-spinner spinner" aria-hidden="true" />
+                    <span className="setup-hint">Probing local Claude CLI…</span>
+                  </div>
+                )}
 
-              {!healthChecking && health?.ok && (
-                <>
-                  <div className="setup-health-row setup-health-row-ok">
-                    <span className="setup-health-icon" aria-hidden="true"><IconCheck size={14} /></span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ ...styles.hint, color: 'var(--fg)' }}>
-                        Claude CLI is ready
-                        {health.version ? ` — ${health.version}` : '.'}
-                      </p>
-                      {health.binary && (
-                        <p className="setup-prefilled-hint">
-                          Detected at <code style={styles.code}>{health.binary}</code>
+                {!healthChecking && health?.ok && (
+                  <>
+                    <div className="setup-health-row setup-health-row-ok">
+                      <span className="setup-health-icon" aria-hidden="true">
+                        <IconCheck size={14} />
+                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ ...styles.hint, color: 'var(--fg)' }}>
+                          Claude CLI is ready
+                          {health.version ? ` — ${health.version}` : '.'}
                         </p>
-                      )}
+                        {health.binary && (
+                          <p className="setup-prefilled-hint">
+                            Detected at <code style={styles.code}>{health.binary}</code>
+                          </p>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </>
-              )}
+                  </>
+                )}
 
-              {!healthChecking && health && !health.ok && (
-                <>
-                  <div className="setup-health-row setup-health-row-fail">
-                    <span className="setup-health-icon" aria-hidden="true">!</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ ...styles.hint, color: 'var(--fg)' }}>
-                        Claude CLI was not detected on this server.
-                      </p>
-                      {health.error && (
-                        <p className="setup-prefilled-hint">{health.error}</p>
-                      )}
+                {!healthChecking && health && !health.ok && (
+                  <>
+                    <div className="setup-health-row setup-health-row-fail">
+                      <span className="setup-health-icon" aria-hidden="true">
+                        !
+                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ ...styles.hint, color: 'var(--fg)' }}>
+                          Claude CLI was not detected on this server.
+                        </p>
+                        {health.error && <p className="setup-prefilled-hint">{health.error}</p>}
+                      </div>
                     </div>
-                  </div>
-                  <p className="setup-label">Install</p>
-                  <p className="setup-hint">
-                    Run this in a terminal on the machine hosting this server:
-                  </p>
-                  <pre className="setup-code-block">
-                    <code>npm install -g @anthropic-ai/claude-code</code>
-                  </pre>
-                  <p className="setup-hint">
-                    Or, if the binary already exists somewhere unusual, set
-                    {' '}
-                    <code style={styles.code}>CLAUDE_CODE_BINARY</code> to its
-                    path and restart the server. Once installed, click Recheck.
-                  </p>
-                  <p className="setup-hint">
-                    You can still continue without it — sessions will fail to
-                    start until the CLI is available, but you can finish the
-                    rest of setup now.
-                  </p>
-                </>
-              )}
-            </div>
-          )}
+                    <p className="setup-label">Install</p>
+                    <p className="setup-hint">Run this in a terminal on the machine hosting this server:</p>
+                    <pre className="setup-code-block">
+                      <code>npm install -g @anthropic-ai/claude-code</code>
+                    </pre>
+                    <p className="setup-hint">
+                      Or, if the binary already exists somewhere unusual, set{' '}
+                      <code style={styles.code}>CLAUDE_CODE_BINARY</code> to its path and restart the server.
+                      Once installed, click Recheck.
+                    </p>
+                    <p className="setup-hint">
+                      You can still continue without it — sessions will fail to start until the CLI is
+                      available, but you can finish the rest of setup now.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
 
-          {step === 1 && (
-            <>
-              <div className="setup-field">
-                <label className="setup-label" htmlFor="auth-token">
-                  Auth Token <span style={styles.required} aria-hidden="true">*</span>
-                </label>
-                <p id="auth-token-hint" className="setup-hint">
-                  Your Anthropic API key. You can find it at{' '}
-                  <a
-                    href="https://console.anthropic.com/settings/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={styles.link}
-                  >
-                    console.anthropic.com
-                  </a>
-                </p>
-                <div style={styles.tokenRow}>
+            {step === 1 && (
+              <>
+                <div className="setup-field">
+                  <label className="setup-label" htmlFor="auth-token">
+                    Auth Token{' '}
+                    <span style={styles.required} aria-hidden="true">
+                      *
+                    </span>
+                  </label>
+                  <p id="auth-token-hint" className="setup-hint">
+                    Your Anthropic API key. You can find it at{' '}
+                    <a
+                      href="https://console.anthropic.com/settings/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={styles.link}
+                    >
+                      console.anthropic.com
+                    </a>
+                  </p>
+                  <div style={styles.tokenRow}>
+                    <input
+                      ref={tokenInputRef}
+                      id="auth-token"
+                      type={showToken ? 'text' : 'password'}
+                      value={authToken}
+                      onChange={(e) => {
+                        setAuthToken(e.target.value)
+                        setTokenPrefilled(false)
+                        if (error) setError(null)
+                      }}
+                      placeholder="sk-ant-..."
+                      style={styles.input}
+                      autoFocus
+                      aria-required="true"
+                      aria-invalid={error ? true : undefined}
+                      aria-describedby={error ? 'auth-token-hint auth-token-error' : 'auth-token-hint'}
+                      autoComplete="off"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowToken(!showToken)}
+                      style={styles.toggleBtn}
+                      title={showToken ? 'Hide token' : 'Show token'}
+                      aria-pressed={showToken}
+                    >
+                      {showToken ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  {tokenPrefilled && (
+                    <p className="setup-prefilled-hint">
+                      {authToken.trim() ? (
+                        <>
+                          Pre-filled from{' '}
+                          <code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Edit to
+                          override.
+                        </>
+                      ) : (
+                        <>
+                          Key already configured from{' '}
+                          <code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Enter a
+                          new one to override.
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {/* Error rendering lives in the wizard footer so it
+                   *  survives back/forward navigation across steps. The
+                   *  auth-token input's aria-describedby still references
+                   *  `auth-token-error` — that id lives on the footer
+                   *  message, which is mounted whenever `error` is set. */}
+                </div>
+
+                <div className="setup-field">
+                  <label className="setup-label" htmlFor="base-url">
+                    Base URL <span style={styles.optional}>(optional)</span>
+                  </label>
+                  <p id="base-url-hint" className="setup-hint">
+                    Override the API endpoint if using a proxy or relay. Defaults to{' '}
+                    <code style={styles.code}>https://api.anthropic.com</code>.
+                  </p>
                   <input
-                    ref={tokenInputRef}
-                    id="auth-token"
-                    type={showToken ? 'text' : 'password'}
-                    value={authToken}
+                    id="base-url"
+                    type="url"
+                    value={baseUrl}
                     onChange={(e) => {
-                      setAuthToken(e.target.value)
-                      setTokenPrefilled(false)
+                      setBaseUrl(e.target.value)
+                      setBaseUrlPrefilled(false)
+                      // Editing base-url is a plausible recovery from a
+                      // /config/setup failure (proxy / relay misconfig), so
+                      // clear the lingering error like auth-token does.
                       if (error) setError(null)
                     }}
-                    placeholder="sk-ant-..."
+                    placeholder="https://api.anthropic.com"
                     style={styles.input}
-                    autoFocus
-                    aria-required="true"
-                    aria-invalid={error ? true : undefined}
-                    aria-describedby={
-                      error ? 'auth-token-hint auth-token-error' : 'auth-token-hint'
-                    }
+                    aria-describedby="base-url-hint"
                     autoComplete="off"
                     autoCapitalize="off"
                     autoCorrect="off"
                     spellCheck={false}
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowToken(!showToken)}
-                    style={styles.toggleBtn}
-                    title={showToken ? 'Hide token' : 'Show token'}
-                    aria-pressed={showToken}
-                  >
-                    {showToken ? 'Hide' : 'Show'}
-                  </button>
+                  {baseUrlPrefilled && (
+                    <p className="setup-prefilled-hint">
+                      Pre-filled from{' '}
+                      <code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Edit to
+                      override.
+                    </p>
+                  )}
                 </div>
-                {tokenPrefilled && (
-                  <p className="setup-prefilled-hint">
-                    {authToken.trim()
-                      ? <>Pre-filled from{' '}<code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Edit to override.</>
-                      : <>Key already configured from{' '}<code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Enter a new one to override.</>
-                    }
+              </>
+            )}
+
+            {step === 2 && (
+              <>
+                <div className="setup-field">
+                  <label className="setup-label">Available Models</label>
+                  <p className="setup-hint">First model is the default. Add model IDs one at a time.</p>
+                  {modelsPrefilled && (
+                    <p className="setup-prefilled-hint">
+                      Pre-filled from{' '}
+                      <code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>{' '}
+                      (ANTHROPIC_DEFAULT_*_MODEL). Edit to override.
+                    </p>
+                  )}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {modelList.map((m, i) => (
+                      <div key={m} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span
+                          style={{
+                            fontSize: 'var(--fs-xs)',
+                            color: 'var(--fg-muted)',
+                            width: 18,
+                            textAlign: 'right',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {i === 0 ? '★' : ''}
+                        </span>
+                        <code
+                          style={{
+                            flex: 1,
+                            fontSize: 'var(--fs-sm)',
+                            padding: '4px 8px',
+                            background: 'var(--bg-elev-2)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 'var(--radius-xs)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {m}
+                        </code>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={styles.smallIconBtn}
+                          onClick={() => removeModel(m)}
+                          title="Remove"
+                          aria-label={`Remove ${m}`}
+                        >
+                          <IconX size={12} />
+                        </button>
+                      </div>
+                    ))}
+                    <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                      <input
+                        id="new-model"
+                        className="input"
+                        style={{ flex: 1, fontSize: 'var(--fs-lg)', minHeight: 32 }}
+                        value={newModel}
+                        onChange={(e) => setNewModel(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            addModel()
+                          }
+                        }}
+                        aria-label="New model ID"
+                        placeholder="model-id (e.g. claude-sonnet-4-20250514)"
+                      />
+                      <button type="button" className="btn" style={styles.smallAddBtn} onClick={addModel}>
+                        Add
+                      </button>
+                    </div>
+                    {duplicateMsg && (
+                      <p role="status" className="setup-duplicate-msg">
+                        {duplicateMsg}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="setup-field">
+                  <label className="setup-label" htmlFor="setup-recap-model">
+                    Recap Model <span style={styles.optional}>(optional)</span>
+                  </label>
+                  <p className="setup-hint">
+                    Model used for AI session summaries. (default) uses the session's aux model — the model
+                    group's haiku slot, else the session's own model.
+                  </p>
+                  <select
+                    className="input"
+                    id="setup-recap-model"
+                    value={recapModel}
+                    onChange={(e) => {
+                      setRecapModel(e.target.value)
+                      setRecapModelTouched(true)
+                    }}
+                  >
+                    <option value="">(default)</option>
+                    {/* Keep an explicit-but-unlisted model selectable, so the
+                      select never renders blank while a model is stored. */}
+                    {recapModel && !modelList.includes(recapModel) ? (
+                      <option value={recapModel}>{recapModel} (not in this list)</option>
+                    ) : null}
+                    {modelList.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="setup-field">
+                  <label className="setup-label" htmlFor="setup-commit-message-model">
+                    Commit Message Model <span style={styles.optional}>(optional)</span>
+                  </label>
+                  <p className="setup-hint">
+                    Model used for AI-generated commit messages in the Git panel. (default) uses the session's
+                    aux model — the model group's haiku slot, else the session's own model.
+                  </p>
+                  <select
+                    className="input"
+                    id="setup-commit-message-model"
+                    value={commitMessageModel}
+                    onChange={(e) => {
+                      setCommitMessageModel(e.target.value)
+                      setCommitModelTouched(true)
+                    }}
+                  >
+                    <option value="">(default)</option>
+                    {commitMessageModel && !modelList.includes(commitMessageModel) ? (
+                      <option value={commitMessageModel}>{commitMessageModel} (not in this list)</option>
+                    ) : null}
+                    {modelList.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <p className="setup-hint">
+                  You can edit the model list later from the global settings panel.
+                </p>
+              </>
+            )}
+
+            {step === 3 && (
+              <div className="setup-field">
+                <label className="setup-label">MCP Servers</label>
+                <p className="setup-hint">
+                  Import MCP servers configured in your Claude CLI
+                  {mcpConfigPath ? (
+                    <>
+                      {' '}
+                      (<code style={styles.code}>{mcpConfigPath}</code>)
+                    </>
+                  ) : null}
+                  . Imported servers become global and are available to every new session.
+                </p>
+
+                {/* Probing */}
+                {claudeMcp === undefined && !claudeMcpError && (
+                  <div className="setup-health-row setup-health-row-checking">
+                    <span className="setup-spinner spinner" aria-hidden="true" />
+                    <span className="setup-hint">Reading your Claude CLI config…</span>
+                  </div>
+                )}
+
+                {/* Probe error — guarded on claudeMcp === undefined so a stale
+                  error can never co-render with a successfully loaded list. */}
+                {claudeMcpError && claudeMcp === undefined && (
+                  <div className="setup-health-row setup-health-row-fail">
+                    <span className="setup-health-icon" aria-hidden="true">
+                      !
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <p style={{ ...styles.hint, color: 'var(--fg)' }}>
+                        Could not read your Claude CLI config.
+                      </p>
+                      {/* The server's message names the file it actually tried,
+                        which is not ~/.claude.json once the config dir has
+                        been relocated — so don't restate a path here. */}
+                      <p className="setup-prefilled-hint">{claudeMcpError}</p>
+                    </div>
+                    <button type="button" onClick={retryClaudeMcp} style={styles.secondaryBtn}>
+                      Retry
+                    </button>
+                  </div>
+                )}
+
+                {/* Empty / no servers */}
+                {claudeMcp !== undefined && claudeMcp.length === 0 && (
+                  <p className="setup-hint">
+                    No MCP servers found in your Claude CLI config. You can add servers later from the global
+                    settings panel.
                   </p>
                 )}
-                {/* Error rendering lives in the wizard footer so it
-                 *  survives back/forward navigation across steps. The
-                 *  auth-token input's aria-describedby still references
-                 *  `auth-token-error` — that id lives on the footer
-                 *  message, which is mounted whenever `error` is set. */}
-              </div>
 
+                {/* Candidate list */}
+                {claudeMcp && claudeMcp.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {claudeMcp.map((c) => {
+                      const invalid = c.importErrors.length > 0
+                      const status = mcpImportStatus[c.name]
+                      const done = status === 'imported' || status === 'exists'
+                      const rowDisabled = invalid || status === 'importing' || done
+                      return (
+                        <div
+                          key={c.name}
+                          style={{
+                            display: 'flex',
+                            gap: 8,
+                            alignItems: 'flex-start',
+                            padding: '6px 8px',
+                            background: 'var(--bg-elev-2)',
+                            border: '1px solid var(--border)',
+                            borderRadius: 'var(--radius-xs)',
+                            opacity: invalid ? 0.55 : 1,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={done}
+                            disabled={rowDisabled}
+                            onChange={() => void importMcp(c.name)}
+                            style={{ marginTop: 3, flexShrink: 0 }}
+                            aria-label={`Import ${c.name}`}
+                          />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div
+                              style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}
+                            >
+                              <code style={{ ...styles.code, fontSize: 'var(--fs-sm)' }}>{c.name}</code>
+                              <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)' }}>
+                                {c.type}
+                                {c.command ? ` · ${c.command}` : ''}
+                                {c.url ? ` · ${c.url}` : ''}
+                              </span>
+                            </div>
+                            {c.envKeys && c.envKeys.length > 0 && (
+                              <p className="setup-hint" style={{ fontSize: 'var(--fs-xs)', marginTop: 2 }}>
+                                env: {c.envKeys.join(', ')}
+                              </p>
+                            )}
+                            {invalid && (
+                              <p
+                                className="setup-hint"
+                                style={{
+                                  fontSize: 'var(--fs-xs)',
+                                  marginTop: 2,
+                                  color: 'var(--msg-error-fg)',
+                                }}
+                              >
+                                {c.importErrors.join('; ')}
+                              </p>
+                            )}
+                          </div>
+                          <span
+                            className="setup-hint"
+                            style={{ fontSize: 'var(--fs-xs)', flexShrink: 0, marginTop: 2 }}
+                          >
+                            {status === 'importing' && 'Importing…'}
+                            {status === 'imported' && (
+                              <span
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 3,
+                                  color: 'var(--accent)',
+                                }}
+                              >
+                                <IconCheck size={12} /> Imported
+                              </span>
+                            )}
+                            {status === 'exists' && 'Already exists'}
+                            {status === 'failed' && (
+                              <span style={{ color: 'var(--msg-error-fg)' }}>Failed</span>
+                            )}
+                          </span>
+                        </div>
+                      )
+                    })}
+                    {/* Import-all affordance — only when there's at least one
+                      importable candidate (no errors, not already done or
+                      mid-import). The predicate mirrors importAllMcp's own
+                      filter so the button never shows as a clickable no-op. */}
+                    {claudeMcp.some(
+                      (c) =>
+                        c.importErrors.length === 0 &&
+                        mcpImportStatus[c.name] !== 'imported' &&
+                        mcpImportStatus[c.name] !== 'exists' &&
+                        mcpImportStatus[c.name] !== 'importing',
+                    ) && (
+                      <button
+                        type="button"
+                        onClick={() => void importAllMcp()}
+                        disabled={importingMcp}
+                        style={{ ...styles.secondaryBtn, alignSelf: 'flex-start', marginTop: 4 }}
+                      >
+                        {importingMcp ? 'Importing…' : 'Import all'}
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                <p className="setup-hint">
+                  You can manage MCP servers anytime from the global settings panel.
+                </p>
+              </div>
+            )}
+
+            {step === 4 && (
               <div className="setup-field">
-                <label className="setup-label" htmlFor="base-url">
-                  Base URL <span style={styles.optional}>(optional)</span>
+                <label className="setup-label">Desktop Notifications</label>
+                <p className="setup-hint">
+                  Get notified when Claude finishes a turn while this tab is in the background.
+                </p>
+                {notifications.permission === 'denied' ? (
+                  <p className="setup-hint">
+                    Notifications are blocked. Enable them in your browser's site settings, then reload.
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
+                    onClick={() => void notifications.toggle()}
+                    title={notificationTooltip(notifications.permission, notifications.enabled)}
+                    disabled={notifications.permission === 'unsupported'}
+                    aria-label="Toggle desktop notifications"
+                    style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  >
+                    {notifications.enabled ? (
+                      <>
+                        <IconBell size={14} /> Enabled
+                      </>
+                    ) : (
+                      <>
+                        <IconBellOff size={14} /> Disabled
+                      </>
+                    )}
+                  </button>
+                )}
+                <p className="setup-hint">You can toggle this anytime from the bell icon in the header.</p>
+              </div>
+            )}
+
+            {step === 5 && (
+              <div className="setup-field">
+                <label className="setup-label" htmlFor="update-registry">
+                  Update registry <span style={styles.optional}>(optional)</span>
                 </label>
-                <p id="base-url-hint" className="setup-hint">
-                  Override the API endpoint if using a proxy or relay. Defaults to{' '}
-                  <code style={styles.code}>https://api.anthropic.com</code>.
+                <p id="update-registry-hint" className="setup-hint">
+                  The npm registry probed for the <code style={styles.code}>latest</code> dist-tag to tell you
+                  when a new version of Claude Web is available. Leave empty to disable update checks.
                 </p>
                 <input
-                  id="base-url"
+                  id="update-registry"
                   type="url"
-                  value={baseUrl}
+                  value={updateRegistry}
                   onChange={(e) => {
-                    setBaseUrl(e.target.value)
-                    setBaseUrlPrefilled(false)
-                    // Editing base-url is a plausible recovery from a
-                    // /config/setup failure (proxy / relay misconfig), so
-                    // clear the lingering error like auth-token does.
-                    if (error) setError(null)
+                    setUpdateRegistry(e.target.value)
+                    // A previous probe's result describes the OLD URL — drop it
+                    // the moment the field changes so a stale "up to date" / error
+                    // line doesn't appear to vouch for the newly-type value.
+                    if (updateProbe.info) setProbedRegistry(null)
                   }}
-                  placeholder="https://api.anthropic.com"
+                  placeholder="https://registry.npmjs.org"
                   style={styles.input}
-                  aria-describedby="base-url-hint"
+                  aria-describedby="update-registry-hint"
                   autoComplete="off"
                   autoCapitalize="off"
                   autoCorrect="off"
                   spellCheck={false}
                 />
-                {baseUrlPrefilled && (
-                  <p className="setup-prefilled-hint">
-                    Pre-filled from{' '}
-                    <code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>. Edit
-                    to override.
-                  </p>
-                )}
-              </div>
-            </>
-          )}
-
-          {step === 2 && (
-            <>
-              <div className="setup-field">
-                <label className="setup-label">Available Models</label>
-                <p className="setup-hint">
-                  First model is the default. Add model IDs one at a time.
-                </p>
-                {modelsPrefilled && (
-                  <p className="setup-prefilled-hint">
-                    Pre-filled from{' '}
-                    <code style={styles.code}>{settingsPath ?? 'the CLI settings file'}</code>{' '}
-                    (ANTHROPIC_DEFAULT_*_MODEL). Edit to override.
-                  </p>
-                )}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {modelList.map((m, i) => (
-                    <div key={m} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <span style={{
-                        fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)', width: 18, textAlign: 'right', flexShrink: 0,
-                      }}>
-                        {i === 0 ? '★' : ''}
-                      </span>
-                      <code style={{
-                        flex: 1, fontSize: 'var(--fs-sm)', padding: '4px 8px',
-                        background: 'var(--bg-elev-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-xs)',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>
-                        {m}
-                      </code>
-                      <button
-                        type="button"
-                        className="btn"
-                        style={styles.smallIconBtn}
-                        onClick={() => removeModel(m)}
-                        title="Remove"
-                        aria-label={`Remove ${m}`}
-                      >
-                        <IconX size={12} />
-                      </button>
-                    </div>
-                  ))}
-                  <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                    <input
-                      id="new-model"
-                      className="input"
-                      style={{ flex: 1, fontSize: 'var(--fs-lg)', minHeight: 32 }}
-                      value={newModel}
-                      onChange={(e) => setNewModel(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addModel() } }}
-                      aria-label="New model ID"
-                      placeholder="model-id (e.g. claude-sonnet-4-20250514)"
-                    />
-                    <button
-                      type="button"
-                      className="btn"
-                      style={styles.smallAddBtn}
-                      onClick={addModel}
-                    >
-                      Add
-                    </button>
-                  </div>
-                  {duplicateMsg && (
-                    <p role="status" className="setup-duplicate-msg">
-                      {duplicateMsg}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="setup-field">
-                <label className="setup-label" htmlFor="setup-recap-model">
-                  Recap Model <span style={styles.optional}>(optional)</span>
-                </label>
-                <p className="setup-hint">
-                  Model used for AI session summaries. (default) uses the session's aux model — the
-                  model group's haiku slot, else the session's own model.
-                </p>
-                <select
-                  className="input"
-                  id="setup-recap-model"
-                  value={recapModel}
-                  onChange={(e) => { setRecapModel(e.target.value); setRecapModelTouched(true) }}
-                >
-                  <option value="">(default)</option>
-                  {/* Keep an explicit-but-unlisted model selectable, so the
-                      select never renders blank while a model is stored. */}
-                  {recapModel && !modelList.includes(recapModel) ? (
-                    <option value={recapModel}>{recapModel} (not in this list)</option>
-                  ) : null}
-                  {modelList.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="setup-field">
-                <label className="setup-label" htmlFor="setup-commit-message-model">
-                  Commit Message Model <span style={styles.optional}>(optional)</span>
-                </label>
-                <p className="setup-hint">
-                  Model used for AI-generated commit messages in the Git panel. (default) uses the
-                  session's aux model — the model group's haiku slot, else the session's own model.
-                </p>
-                <select
-                  className="input"
-                  id="setup-commit-message-model"
-                  value={commitMessageModel}
-                  onChange={(e) => { setCommitMessageModel(e.target.value); setCommitModelTouched(true) }}
-                >
-                  <option value="">(default)</option>
-                  {commitMessageModel && !modelList.includes(commitMessageModel) ? (
-                    <option value={commitMessageModel}>{commitMessageModel} (not in this list)</option>
-                  ) : null}
-                  {modelList.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              </div>
-
-              <p className="setup-hint">
-                You can edit the model list later from the global settings panel.
-              </p>
-            </>
-          )}
-
-          {step === 3 && (
-            <div className="setup-field">
-              <label className="setup-label">MCP Servers</label>
-              <p className="setup-hint">
-                Import MCP servers configured in your Claude CLI
-                {mcpConfigPath ? <> (<code style={styles.code}>{mcpConfigPath}</code>)</> : null}.
-                Imported servers become global and are available to every new session.
-              </p>
-
-              {/* Probing */}
-              {claudeMcp === undefined && !claudeMcpError && (
-                <div className="setup-health-row setup-health-row-checking">
-                  <span className="setup-spinner spinner" aria-hidden="true" />
-                  <span className="setup-hint">Reading your Claude CLI config…</span>
-                </div>
-              )}
-
-              {/* Probe error — guarded on claudeMcp === undefined so a stale
-                  error can never co-render with a successfully loaded list. */}
-              {claudeMcpError && claudeMcp === undefined && (
-                <div className="setup-health-row setup-health-row-fail">
-                  <span className="setup-health-icon" aria-hidden="true">!</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <p style={{ ...styles.hint, color: 'var(--fg)' }}>
-                      Could not read your Claude CLI config.
-                    </p>
-                    {/* The server's message names the file it actually tried,
-                        which is not ~/.claude.json once the config dir has
-                        been relocated — so don't restate a path here. */}
-                    <p className="setup-prefilled-hint">{claudeMcpError}</p>
-                  </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 2 }}>
                   <button
                     type="button"
-                    onClick={retryClaudeMcp}
+                    onClick={() => {
+                      setProbedRegistry(updateRegistry.trim())
+                      updateProbe.refresh(updateRegistry)
+                    }}
+                    disabled={updateProbe.refreshing || !updateRegistry.trim()}
                     style={styles.secondaryBtn}
+                    title={!updateRegistry.trim() ? 'Enter a registry URL first.' : undefined}
                   >
-                    Retry
+                    {updateProbe.refreshing ? 'Checking…' : 'Check now'}
                   </button>
-                </div>
-              )}
-
-              {/* Empty / no servers */}
-              {claudeMcp !== undefined && claudeMcp.length === 0 && (
-                <p className="setup-hint">
-                  No MCP servers found in your Claude CLI config. You can add
-                  servers later from the global settings panel.
-                </p>
-              )}
-
-              {/* Candidate list */}
-              {claudeMcp && claudeMcp.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {claudeMcp.map((c) => {
-                    const invalid = c.importErrors.length > 0
-                    const status = mcpImportStatus[c.name]
-                    const done = status === 'imported' || status === 'exists'
-                    const rowDisabled = invalid || status === 'importing' || done
-                    return (
-                      <div
-                        key={c.name}
-                        style={{
-                          display: 'flex', gap: 8, alignItems: 'flex-start',
-                          padding: '6px 8px',
-                          background: 'var(--bg-elev-2)',
-                          border: '1px solid var(--border)', borderRadius: 'var(--radius-xs)',
-                          opacity: invalid ? 0.55 : 1,
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={done}
-                          disabled={rowDisabled}
-                          onChange={() => void importMcp(c.name)}
-                          style={{ marginTop: 3, flexShrink: 0 }}
-                          aria-label={`Import ${c.name}`}
-                        />
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                            <code style={{ ...styles.code, fontSize: 'var(--fs-sm)' }}>{c.name}</code>
-                            <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)' }}>
-                              {c.type}
-                              {c.command ? ` · ${c.command}` : ''}
-                              {c.url ? ` · ${c.url}` : ''}
-                            </span>
-                          </div>
-                          {c.envKeys && c.envKeys.length > 0 && (
-                            <p className="setup-hint" style={{ fontSize: 'var(--fs-xs)', marginTop: 2 }}>
-                              env: {c.envKeys.join(', ')}
-                            </p>
-                          )}
-                          {invalid && (
-                            <p className="setup-hint" style={{ fontSize: 'var(--fs-xs)', marginTop: 2, color: 'var(--msg-error-fg)' }}>
-                              {c.importErrors.join('; ')}
-                            </p>
-                          )}
-                        </div>
-                        <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', flexShrink: 0, marginTop: 2 }}>
-                          {status === 'importing' && 'Importing…'}
-                          {status === 'imported' && (
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--accent)' }}>
-                              <IconCheck size={12} /> Imported
-                            </span>
-                          )}
-                          {status === 'exists' && 'Already exists'}
-                          {status === 'failed' && (
-                            <span style={{ color: 'var(--msg-error-fg)' }}>Failed</span>
-                          )}
-                        </span>
-                      </div>
-                    )
-                  })}
-                  {/* Import-all affordance — only when there's at least one
-                      importable candidate (no errors, not already done or
-                      mid-import). The predicate mirrors importAllMcp's own
-                      filter so the button never shows as a clickable no-op. */}
-                  {claudeMcp.some(
-                    (c) => c.importErrors.length === 0
-                      && mcpImportStatus[c.name] !== 'imported'
-                      && mcpImportStatus[c.name] !== 'exists'
-                      && mcpImportStatus[c.name] !== 'importing',
-                  ) && (
-                    <button
-                      type="button"
-                      onClick={() => void importAllMcp()}
-                      disabled={importingMcp}
-                      style={{ ...styles.secondaryBtn, alignSelf: 'flex-start', marginTop: 4 }}
-                    >
-                      {importingMcp ? 'Importing…' : 'Import all'}
-                    </button>
-                  )}
-                </div>
-              )}
-
-              <p className="setup-hint">
-                You can manage MCP servers anytime from the global settings panel.
-              </p>
-            </div>
-          )}
-
-          {step === 4 && (
-            <div className="setup-field">
-              <label className="setup-label">Desktop Notifications</label>
-              <p className="setup-hint">
-                Get notified when Claude finishes a turn while this tab is in
-                the background.
-              </p>
-              {notifications.permission === 'denied' ? (
-                <p className="setup-hint">
-                  Notifications are blocked. Enable them in your browser's site
-                  settings, then reload.
-                </p>
-              ) : (
-                <button
-                  type="button"
-                  className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
-                  onClick={() => void notifications.toggle()}
-                  title={notificationTooltip(notifications.permission, notifications.enabled)}
-                  disabled={notifications.permission === 'unsupported'}
-                  aria-label="Toggle desktop notifications"
-                  style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}
-                >
-                  {notifications.enabled ? <><IconBell size={14} /> Enabled</> : <><IconBellOff size={14} /> Disabled</>}
-                </button>
-              )}
-              <p className="setup-hint">
-                You can toggle this anytime from the bell icon in the header.
-              </p>
-            </div>
-          )}
-
-          {step === 5 && (
-            <div className="setup-field">
-              <label className="setup-label" htmlFor="update-registry">
-                Update registry <span style={styles.optional}>(optional)</span>
-              </label>
-              <p id="update-registry-hint" className="setup-hint">
-                The npm registry probed for the <code style={styles.code}>latest</code>{' '}
-                dist-tag to tell you when a new version of Claude Web is
-                available. Leave empty to disable update checks.
-              </p>
-              <input
-                id="update-registry"
-                type="url"
-                value={updateRegistry}
-                onChange={(e) => {
-                  setUpdateRegistry(e.target.value)
-                  // A previous probe's result describes the OLD URL — drop it
-                  // the moment the field changes so a stale "up to date" / error
-                  // line doesn't appear to vouch for the newly-type value.
-                  if (updateProbe.info) setProbedRegistry(null)
-                }}
-                placeholder="https://registry.npmjs.org"
-                style={styles.input}
-                aria-describedby="update-registry-hint"
-                autoComplete="off"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 2 }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProbedRegistry(updateRegistry.trim())
-                    updateProbe.refresh(updateRegistry)
-                  }}
-                  disabled={updateProbe.refreshing || !updateRegistry.trim()}
-                  style={styles.secondaryBtn}
-                  title={!updateRegistry.trim() ? 'Enter a registry URL first.' : undefined}
-                >
-                  {updateProbe.refreshing ? 'Checking…' : 'Check now'}
-                </button>
-                {/* Only show a result when it describes the value currently
-                 *  in the box (probedRegistry === the trimmed input). */}
-                {probedRegistry !== null && probedRegistry === updateRegistry.trim() && !updateProbe.refreshing && (
-                  <span className="setup-hint" role="status">
-                    {updateProbe.error || updateProbe.info?.error ? (
-                      <span style={{ color: 'var(--msg-error-fg)' }}>
-                        Couldn’t reach registry: {updateProbe.error || updateProbe.info?.error}
+                  {/* Only show a result when it describes the value currently
+                   *  in the box (probedRegistry === the trimmed input). */}
+                  {probedRegistry !== null &&
+                    probedRegistry === updateRegistry.trim() &&
+                    !updateProbe.refreshing && (
+                      <span className="setup-hint" role="status">
+                        {updateProbe.error || updateProbe.info?.error ? (
+                          <span style={{ color: 'var(--msg-error-fg)' }}>
+                            Couldn’t reach registry: {updateProbe.error || updateProbe.info?.error}
+                          </span>
+                        ) : updateProbe.info?.disabled ? (
+                          'Update checks disabled (empty registry).'
+                        ) : updateProbe.info?.latest ? (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <IconCheck size={12} /> Reachable — latest {updateProbe.info.latest}
+                          </span>
+                        ) : null}
                       </span>
-                    ) : updateProbe.info?.disabled ? (
-                      'Update checks disabled (empty registry).'
-                    ) : updateProbe.info?.latest ? (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <IconCheck size={12} /> Reachable — latest {updateProbe.info.latest}
-                      </span>
-                    ) : null}
-                  </span>
+                    )}
+                </div>
+                <p className="setup-hint">
+                  You can change this later from the About tab in the global settings panel.
+                </p>
+              </div>
+            )}
+
+            {step === 6 && !isDesktopHost() && (
+              <div className="setup-field">
+                <label className="setup-label">Auto-start (daemon)</label>
+                <p className="setup-hint">
+                  Run Claude Web automatically when you log in, supervised in the background — no terminal
+                  window, and it restarts if it crashes. You can change this anytime from Settings → Server.
+                </p>
+                <Switch
+                  label="Run automatically at login"
+                  checked={daemonEnabled}
+                  disabled={!daemonSupported}
+                  onChange={setDaemonEnabled}
+                />
+                {!daemonSupported && (
+                  <p className="setup-hint">Auto-start is not supported on this platform.</p>
                 )}
               </div>
-              <p className="setup-hint">
-                You can change this later from the About tab in the global
-                settings panel.
-              </p>
-            </div>
-          )}
+            )}
 
-          {step === 6 && !isDesktopHost() && (
-            <div className="setup-field">
-              <label className="setup-label">Auto-start (daemon)</label>
-              <p className="setup-hint">
-                Run Claude Web automatically when you log in, supervised in the
-                background — no terminal window, and it restarts if it crashes.
-                You can change this anytime from Settings → Server.
-              </p>
-              <Switch
-                label="Run automatically at login"
-                checked={daemonEnabled}
-                disabled={!daemonSupported}
-                onChange={setDaemonEnabled}
-              />
-              {!daemonSupported && (
-                <p className="setup-hint">Auto-start is not supported on this platform.</p>
-              )}
-            </div>
-          )}
-
-          {step === LAST_STEP && (
-            <div className="setup-field">
-              <label className="setup-label">You're all set</label>
-              {daemonWarning && (
-                <p role="alert" className="setup-field-error">{daemonWarning}</p>
-              )}
-              <p className="setup-hint">
-                Create your first session to start chatting with Claude. You
-                can drop a folder onto the{' '}
-                <code style={styles.code}>+ New session</code> button later to
-                pre-fill the working directory, or press{' '}
-                <kbd style={styles.kbd}>Alt</kbd>+<kbd style={styles.kbd}>N</kbd>
-                {' '}anytime.
-              </p>
-              {/* If the user cleared the token on a different step, the
-               *  Skip / Create buttons go disabled and the user has no
-               *  context for why. This hint surfaces the cause. */}
-              {!tokenValid && (
-                <p role="alert" className="setup-field-error">
-                  Auth token is missing — click step 1 above to fix it.
+            {step === LAST_STEP && (
+              <div className="setup-field">
+                <label className="setup-label">You're all set</label>
+                {daemonWarning && (
+                  <p role="alert" className="setup-field-error">
+                    {daemonWarning}
+                  </p>
+                )}
+                <p className="setup-hint">
+                  Create your first session to start chatting with Claude. You can drop a folder onto the{' '}
+                  <code style={styles.code}>+ New session</code> button later to pre-fill the working
+                  directory, or press <kbd style={styles.kbd}>Alt</kbd>+<kbd style={styles.kbd}>N</kbd>{' '}
+                  anytime.
                 </p>
-              )}
-            </div>
-          )}
-
+                {/* If the user cleared the token on a different step, the
+                 *  Skip / Create buttons go disabled and the user has no
+                 *  context for why. This hint surfaces the cause. */}
+                {!tokenValid && (
+                  <p role="alert" className="setup-field-error">
+                    Auth token is missing — click step 1 above to fix it.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Submission error — rendered in the footer so it persists
@@ -1278,12 +1343,7 @@ export function SetupPage({ onConfigured }: Props) {
           <div style={styles.footer}>
             <div style={styles.footerLeft}>
               {step > FIRST_STEP && (
-                <button
-                  type="button"
-                  onClick={goBack}
-                  disabled={submitting}
-                  style={styles.secondaryBtn}
-                >
+                <button type="button" onClick={goBack} disabled={submitting} style={styles.secondaryBtn}>
                   Back
                 </button>
               )}
