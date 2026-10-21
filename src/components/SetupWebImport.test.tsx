@@ -33,10 +33,12 @@ describe('SetupWebImport', () => {
     expect(screen.getByText('Already exists')).toBeTruthy()
   })
 
-  it('reports "not found" instead of an empty list when the source has nothing', async () => {
+  it('reports "nothing to import" instead of an empty list when the source has nothing', async () => {
     vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, exists: false, credentials: null, mcp: [], marketplaces: [] })
     render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
-    expect(await screen.findByText(/未找到网页版配置|No Claude Web config found/)).toBeTruthy()
+    expect(await screen.findByText('Nothing to import from the web version.')).toBeTruthy()
+    // 真正探测到的目录照常显示，用户可以自己去看那一份。
+    expect(screen.getByText(ENUMERATION.sourceDir)).toBeTruthy()
   })
 
   it('offers Retry when the probe itself fails', async () => {
@@ -109,5 +111,54 @@ describe('SetupWebImport', () => {
     render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
 
     expect(await screen.findByText(/Marketplaces unavailable: marketplaces\.json/)).toBeTruthy()
+  })
+
+  // 源的克隆目录不在了 → 导入必然失败（服务端 `clone dir is missing`），
+  // 所以这一行不可提供：勾选框禁用 + 不进 Import all 的 payload。
+  it('does not offer a marketplace whose clone dir is gone', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      ...ENUMERATION,
+      marketplaces: [{ ...ENUMERATION.marketplaces[0], exists: false, cloneExists: false }],
+    })
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
+    await screen.findByText('Work')
+
+    expect((screen.getByLabelText('Import claude-code') as HTMLInputElement).disabled).toBe(true)
+    // 行上照旧说明原因（复用既有措辞）。
+    expect(screen.getByText(/clone missing/)).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Import all'))
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalled())
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/config/web-import', {
+      credentials: true,
+      mcp: ['ctx7'],
+      marketplaces: [],
+    })
+  })
+
+  // 校验不过的 MCP 行同理：服务端会逐项判 failed，不提供一个必然失败的点击；
+  // 旁边能导入的那条照常进 payload（predicate 与 filter 同构）。
+  it('does not offer an MCP server that fails validation', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      ...ENUMERATION,
+      mcp: [
+        { ...ENUMERATION.mcp[0], name: 'broken', importErrors: ['command is required'] },
+        ENUMERATION.mcp[0],
+      ],
+    })
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
+    await screen.findByText('Work')
+
+    expect((screen.getByLabelText('Import broken') as HTMLInputElement).disabled).toBe(true)
+    // 原因行照旧显示。
+    expect(screen.getByText('command is required')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Import all'))
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalled())
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/config/web-import', {
+      credentials: true,
+      mcp: ['ctx7'],
+      marketplaces: [],
+    })
   })
 })

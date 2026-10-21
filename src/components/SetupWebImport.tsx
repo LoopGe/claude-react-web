@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { IconCheck } from './icons/ToolIcons'
-import type { WebImportEnumeration, WebImportResult } from '../../shared/web-import'
+import type { WebImportEnumeration, WebImportMarketplaceView, WebImportMcpView, WebImportResult } from '../../shared/web-import'
 
 type RowStatus = 'idle' | 'importing' | 'imported' | 'exists' | 'failed'
 
@@ -125,17 +125,31 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     return s === 'importing' || s === 'imported' || s === 'exists'
   }
 
+  /** 一栏里"还能导入"的判定。两处必须同构（step 3 的 importAllMcp 与它那个
+   *  `claudeMcp.some(...)` 是同一写法），否则 Import all 会变成一个点不动的
+   *  按钮、或者选进一个必然失败的项：
+   *    - importErrors 非空的 MCP：服务端会逐项判 failed（校验不过）；
+   *    - cloneExists 为 false 的市场：源的克隆目录不在了，导入必然
+   *      `clone dir is missing`（shared/web-import.ts 的 cloneExists 注释
+   *      也是这么约定的——该行不可导入）。
+   *  行上禁用勾选框用的是同一条判据（不含 idle 那半，因为 done/importing
+   *  已经由 checkbox 自己处理）。 */
+  const mcpImportable = (s: WebImportMcpView) =>
+    s.importErrors.length === 0 && statusOf(mcpRow(s.name)) === 'idle'
+  const mpImportable = (m: WebImportMarketplaceView) =>
+    m.cloneExists && statusOf(mpRow(m.id)) === 'idle'
+
   const importing = submitting
   const nothingToImport = data !== undefined && !probeError && (
     !data.credentials && data.mcp.length === 0 && data.marketplaces.length === 0
   )
 
-  /** 批量导入：把还没导入 / 还没存在的项一次 POST 出去。 */
+  /** 批量导入：把还没导入 / 还没存在的、且确实能导入的项一次 POST 出去。 */
   const importAll = () => {
     const sel = {
       credentials: !doneOrRunning(CREDENTIALS_ROW) && data?.credentials != null,
-      mcp: (data?.mcp ?? []).filter((s) => statusOf(mcpRow(s.name)) === 'idle').map((s) => s.name),
-      marketplaces: (data?.marketplaces ?? []).filter((m) => statusOf(mpRow(m.id)) === 'idle').map((m) => m.id),
+      mcp: (data?.mcp ?? []).filter(mcpImportable).map((s) => s.name),
+      marketplaces: (data?.marketplaces ?? []).filter(mpImportable).map((m) => m.id),
     }
     if (!sel.credentials && sel.mcp.length === 0 && sel.marketplaces.length === 0) return
     void runImport(sel)
@@ -144,8 +158,8 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
   /** 任意一项可导入 ⇒ Import all 有活干（predicate 与 importAll 的 filter 同构）。 */
   const anyImportable = data !== undefined && (
     (data.credentials != null && !doneOrRunning(CREDENTIALS_ROW))
-    || data.mcp.some((s) => statusOf(mcpRow(s.name)) === 'idle')
-    || data.marketplaces.some((m) => statusOf(mpRow(m.id)) === 'idle')
+    || data.mcp.some(mcpImportable)
+    || data.marketplaces.some(mpImportable)
   )
 
   const statusLabel = (key: string) => {
@@ -157,14 +171,19 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     return null
   }
 
-  const checkbox = (key: string, label: string, onCheck: () => void) => {
+  /**
+   * `unimportable`：这一项结构上就导不进去（MCP 校验不过 / 源的克隆目录不在）。
+   * 与 done / importing 一样禁用勾选框——目标是"不要提供一个必然失败的点击"，
+   * 而行上已把原因写着（MCP 的 importErrors 行、市场的 `· clone missing`）。
+   */
+  const checkbox = (key: string, label: string, onCheck: () => void, unimportable = false) => {
     const s = statusOf(key)
     const done = s === 'imported' || s === 'exists'
     return (
       <input
         type="checkbox"
         checked={done}
-        disabled={done || s === 'importing' || submitting}
+        disabled={done || s === 'importing' || submitting || unimportable}
         onChange={onCheck}
         style={{ marginTop: 3, flexShrink: 0 }}
         aria-label={label}
@@ -198,13 +217,17 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
           </div>
         )}
 
-        {/* 源里什么都没有 —— 明确说明，而不是渲染一张空清单。 */}
+        {/* 三栏全空 —— 明确说明，而不是渲染一张空清单。
+            措辞必须对两种情况都成立：真的是空的，以及三个源文件都读不动。
+            后者由下面这一屏之外的 *Error 行负责说原因，所以这里不能写
+            "No Claude Web config found."（那等于替对面应用宣布"它没有配置"，
+            与错误行自相矛盾）。 */}
         {data !== undefined && nothingToImport && (
           <>
             <div className="setup-health-row setup-health-row-fail">
               <span className="setup-health-icon" aria-hidden="true">!</span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ ...styles.hint, color: 'var(--fg)' }}>No Claude Web config found.</p>
+                <p style={{ ...styles.hint, color: 'var(--fg)' }}>Nothing to import from the web version.</p>
                 <p className="setup-prefilled-hint">{data.sourceDir}</p>
               </div>
             </div>
@@ -251,7 +274,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
                 {/* 全局 MCP */}
                 {data.mcp.map((s) => (
                   <div key={s.name} style={styles.row}>
-                    {checkbox(mcpRow(s.name), `Import ${s.name}`, () => void runImport({ credentials: false, mcp: [s.name], marketplaces: [] }))}
+                    {checkbox(mcpRow(s.name), `Import ${s.name}`, () => void runImport({ credentials: false, mcp: [s.name], marketplaces: [] }), s.importErrors.length > 0)}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
                         <code style={{ ...styles.code, fontSize: 'var(--fs-sm)' }}>{s.name}</code>
@@ -284,7 +307,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
                 {/* Marketplaces */}
                 {data.marketplaces.map((m) => (
                   <div key={m.id} style={styles.row}>
-                    {checkbox(mpRow(m.id), `Import ${m.id}`, () => void runImport({ credentials: false, mcp: [], marketplaces: [m.id] }))}
+                    {checkbox(mpRow(m.id), `Import ${m.id}`, () => void runImport({ credentials: false, mcp: [], marketplaces: [m.id] }), !m.cloneExists)}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
                         <code style={{ ...styles.code, fontSize: 'var(--fs-sm)' }}>{m.id}</code>
@@ -328,7 +351,9 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
               type="button"
               onClick={onContinue}
               disabled={submitting}
-              style={styles.submitBtn}
+              // 导入可能是"拷一整个克隆目录"量级的等待，禁用必须看得出来
+              // （step 0 的 Continue / step 4 的两个按钮同一写法）。
+              style={{ ...styles.submitBtn, ...(submitting ? styles.submitBtnDisabled : null) }}
             >
               Next
             </button>
@@ -363,5 +388,9 @@ const styles: Record<string, React.CSSProperties> = {
     minHeight: 44, padding: '0 14px', fontSize: 'var(--fs-base)', fontFamily: 'inherit',
     background: 'var(--bg-elev-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
     color: 'var(--fg)', cursor: 'pointer',
+  },
+  submitBtnDisabled: {
+    opacity: 0.5,
+    cursor: 'not-allowed',
   },
 }
