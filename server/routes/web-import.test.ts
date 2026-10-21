@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { tempDir, rmRf } from '../__test-utils__/index.js'
@@ -371,5 +371,126 @@ describe('POST /api/config/web-import — mcp', () => {
     const res = await post({ mcp: 'ctx7' })
     expect(res.status).toBe(400)
     expect((await res.json() as { error: string }).error).toContain('mcp must be an array')
+  })
+})
+
+/** 造一个最小的 marketplace 克隆目录（足以让 MpStore 的 coerceMpEntry 接受
+ *  这条条目：40 位 sha + 合法 manifest）。 */
+function seedMarketplace(sourceDir: string, id: string, pluginNames: string[]): string {
+  const cloneDir = join(sourceDir, 'marketplace-cache', id)
+  mkdirSync(cloneDir, { recursive: true })
+  writeFileSync(join(cloneDir, 'README.md'), 'clone payload', 'utf8')
+  const manifest = { name: id, plugins: pluginNames.map((n) => ({ name: n, description: `${n} plugin` })) }
+  mkdirSync(sourceDir, { recursive: true })
+  const file = join(sourceDir, 'marketplaces.json')
+  const existing = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { version: 1, marketplaces: {}, enabledPlugins: {} }
+  existing.marketplaces[id] = {
+    id,
+    displayName: id,
+    source: { type: 'https', url: `https://github.com/example/${id}` },
+    cloneDir,
+    addedAt: 1,
+    lastRefreshedAt: 1,
+    lastSha: 'a'.repeat(40),
+    manifest,
+  }
+  writeFileSync(file, JSON.stringify(existing), 'utf8')
+  return cloneDir
+}
+
+describe('POST /api/config/web-import — marketplaces', () => {
+  let stateDir: string
+  let sourceDir: string
+  beforeEach(() => { stateDir = tempDir('web-import-dst'); sourceDir = tempDir('web-import-src') })
+  afterEach(() => { rmRf(stateDir); rmRf(sourceDir) })
+
+  async function post(body: unknown) {
+    const app = await makeRouter(stateDir, sourceDir)
+    return await app.request('/api/config/web-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
+  it('copies the clone into the desktop cache and rewrites cloneDir', async () => {
+    const srcClone = seedMarketplace(sourceDir, 'claude-code', ['review'])
+    const res = await post({ marketplaces: ['claude-code'] })
+    const body = await res.json() as { marketplaces: { imported: string[]; failed: unknown[] } }
+    expect(body.marketplaces).toEqual({ imported: ['claude-code'], skipped: [], failed: [] })
+
+    const store = new MpStore({ stateDir })
+    const entries = await store.load()
+    expect(entries.map((e) => e.id)).toEqual(['claude-code'])
+    expect(entries[0].cloneDir).toBe(store.cloneDirFor('claude-code'))
+    expect(entries[0].cloneDir).not.toBe(srcClone)
+    // 内容真的拷过来了，且没有 .importing 残留。
+    expect(readdirSync(entries[0].cloneDir)).toContain('README.md')
+    expect(readdirSync(join(stateDir, 'marketplace-cache'))).toEqual(['claude-code'])
+  })
+
+  it('carries the enabled-plugin flags for that marketplace', async () => {
+    seedMarketplace(sourceDir, 'claude-code', ['review', 'docs'])
+    // 源侧启用其中一个插件。
+    const srcStore = new MpStore({ stateDir: sourceDir })
+    await srcStore.load()
+    srcStore.setEnabled('review', 'claude-code', true)
+    await srcStore.flush()
+
+    await post({ marketplaces: ['claude-code'] })
+    const dst = new MpStore({ stateDir })
+    await dst.load()
+    expect(dst.enabledMapFor('claude-code')).toEqual({ review: true })
+  })
+
+  it('fails one marketplace whose clone dir is gone, importing the rest', async () => {
+    // Review Focus 2：源 clone 被删 → 该项 failed、其余成功、无临时残留。
+    seedMarketplace(sourceDir, 'gone', ['a'])
+    seedMarketplace(sourceDir, 'alive', ['b'])
+    rmRf(join(sourceDir, 'marketplace-cache', 'gone'))
+
+    const res = await post({ marketplaces: ['gone', 'alive'] })
+    const body = await res.json() as { marketplaces: { imported: string[]; failed: Array<{ name: string; error: string }> } }
+    expect(body.marketplaces.imported).toEqual(['alive'])
+    expect(body.marketplaces.failed).toEqual([{ name: 'gone', error: expect.stringContaining('clone dir is missing') }])
+    const cacheEntries = readdirSync(join(stateDir, 'marketplace-cache'))
+    expect(cacheEntries).toEqual(['alive'])
+    expect(cacheEntries.some((n) => n.endsWith('.importing'))).toBe(false)
+  })
+
+  it('skips an id the desktop already has', async () => {
+    seedMarketplace(sourceDir, 'claude-code', ['review'])
+    const dst = new MpStore({ stateDir })
+    await dst.load()
+    dst.upsert({
+      id: 'claude-code', displayName: 'local', source: { type: 'https', url: 'https://github.com/example/x' },
+      cloneDir: dst.cloneDirFor('claude-code'), addedAt: 1, lastRefreshedAt: 1, lastSha: 'b'.repeat(40),
+      manifest: { name: 'local', plugins: [] },
+    })
+    await dst.flush()
+
+    const res = await post({ marketplaces: ['claude-code'] })
+    const body = await res.json() as { marketplaces: { imported: string[]; skipped: string[] } }
+    expect(body.marketplaces.skipped).toEqual(['claude-code'])
+    expect(body.marketplaces.imported).toEqual([])
+  })
+
+  // 源的 marketplaces.json 存在但读不动：与 GET 的 marketplacesError 同一语义——
+  // 整栏失败，每个被请求的 id 各记一条，POST 仍是 200（逐项失败隔离，
+  // 不因为它坏掉而 500 掉整次请求）。
+  it('reports every requested id as failed when the source file is corrupt', async () => {
+    writeFileSync(join(sourceDir, 'marketplaces.json'), 'not json', 'utf8')
+    const res = await post({ marketplaces: ['a', 'b'] })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { marketplaces: { imported: string[]; skipped: string[]; failed: Array<{ name: string; error: string }> } }
+    expect(body.marketplaces.failed.map((f) => f.name)).toEqual(['a', 'b'])
+    for (const f of body.marketplaces.failed) expect(f.error).toContain('marketplaces.json')
+    expect(body.marketplaces.imported).toEqual([])
+    expect(body.marketplaces.skipped).toEqual([])
+  })
+
+  it('rejects a string where an array is required', async () => {
+    const res = await post({ marketplaces: 'claude-code' })
+    expect(res.status).toBe(400)
   })
 })

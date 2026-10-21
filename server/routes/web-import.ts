@@ -6,7 +6,8 @@
 
 import { Hono } from 'hono'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { cp, mkdir, rename, rm } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import { createErrorHandler, HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
 import { safeJson } from './index.js'
@@ -15,7 +16,7 @@ import { coerceProfileEntries, maskToken, profileFromLegacyFields, resolveActive
 import { maskSecrets, validateMcpServer } from '../mcp-config.js'
 import type { MpStore } from '../mp-store.js'
 import type { McpConfigStore, StoredMcpServer } from '../mcp-config.js'
-import { readSourceCredentials, readSourceMcp, readSourceMarketplaces, webStateDir } from '../web-import.js'
+import { readSourceCredentials, readSourceMcp, readSourceMarketplaces, webStateDir, type SourceMarketplaces } from '../web-import.js'
 import type { WebImportCollectionResult, WebImportEnumeration, WebImportMarketplaceView, WebImportMcpView, WebImportResult } from '../../shared/web-import.js'
 
 const log = createLogger('web-import')
@@ -215,6 +216,64 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
     return result
   }
 
+  /** 按 id 导入 marketplace：把源的克隆目录整份拷到桌面版自己的
+   *  `cloneDirFor(id)`，条目 cloneDir 改写后落盘，启用标志随之一并搬。
+   *
+   *  先拷到 `<目标>.importing` 再 rename 落地：一次中断只会留下临时目录，
+   *  不会留下半个 clone 被 store 当真货（失败时临时目录被清掉）。
+   *
+   *  条目本身直接复用源 store coerce 出来的 MpEntry——它已经满足目标 store
+   *  parseItems 的全部约束（40 位 sha、manifest、cloneDir），只有 cloneDir
+   *  需要改写。不手改 marketplaces.json：store 的 side state（enabledPlugins）
+   *  与并发写保护都在 store 里。 */
+  async function importMarketplaces(sourceDir: string, ids: string[]): Promise<WebImportCollectionResult> {
+    const result = emptyCollection()
+    if (ids.length === 0) return result
+    let src: SourceMarketplaces
+    try {
+      src = await readSourceMarketplaces(sourceDir)
+    } catch (err) {
+      // 源 marketplaces.json 存在但读不动：整栏失败（与 GET 的 marketplacesError
+      // 同一语义）。每个被请求的 id 各记一条，POST 本身仍 200 —— 逐项失败隔离，
+      // 不因为它坏掉而 500 掉整次请求（凭证那一栏已经可能写成功了）。
+      const error = (err as Error).message
+      for (const id of ids) result.failed.push({ name: id, error })
+      return result
+    }
+    const byId = new Map(src.entries.map((e) => [e.id, e]))
+    for (const id of ids) {
+      const entry = byId.get(id)
+      if (!entry) {
+        result.failed.push({ name: id, error: `not found in ${join(sourceDir, 'marketplaces.json')}` })
+        continue
+      }
+      if (deps.mpStore.has(id)) {
+        result.skipped.push(id)
+        continue
+      }
+      const target = deps.mpStore.cloneDirFor(id)
+      const staging = `${target}.importing`
+      try {
+        if (!src.cloneExists[id]) throw new Error(`clone dir is missing: ${entry.cloneDir}`)
+        await mkdir(dirname(target), { recursive: true })
+        await rm(staging, { recursive: true, force: true })
+        await cp(entry.cloneDir, staging, { recursive: true })
+        await rename(staging, target)
+      } catch (err) {
+        await rm(staging, { recursive: true, force: true }).catch(() => {})
+        result.failed.push({ name: id, error: (err as Error).message })
+        continue
+      }
+      deps.mpStore.upsert({ ...entry, cloneDir: target })
+      for (const [plugin, on] of Object.entries(src.enabled[id] ?? {})) {
+        if (on) deps.mpStore.setEnabled(plugin, id, true)
+      }
+      result.imported.push(id)
+    }
+    await deps.mpStore.flush()
+    return result
+  }
+
   app.post('/config/web-import', async (c) => {
     const body = await safeJson<{ credentials?: unknown; mcp?: unknown; marketplaces?: unknown }>(c.req)
     if (body.credentials !== undefined && typeof body.credentials !== 'boolean') {
@@ -238,9 +297,8 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
     const result: WebImportResult = {
       credentials,
       mcp: await importMcpServers(sourceDir, mcpNames),
-      marketplaces: emptyCollection(),
+      marketplaces: await importMarketplaces(sourceDir, mpIds),
     }
-    void mpIds
     return c.json(result)
   })
 
