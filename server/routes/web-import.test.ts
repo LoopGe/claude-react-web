@@ -175,12 +175,21 @@ describe('POST /api/config/web-import — credentials', () => {
     // Review Focus 4：源没有 recapModel → 桌面版的 recapModel 必须原样保留。
     seedSource(sourceDir) // 该 fixture 不含 recapModel / commitMessageModel
     const app = await makeRouter(stateDir, sourceDir)
-    await app.request('/api/config/web-import', {
+    const res = await app.request('/api/config/web-import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ credentials: true }),
     })
+    // 这条用例必须同时钉住两半意图，缺任一半都会在"handler 什么都没做"时通过：
+    //   1) 写入确实发生了 —— 响应 200，且源携带的 token / baseUrl 真的落到了
+    //      桌面版 active profile（`loadConfig` 后从 config 读回）；
+    //   2) 源没有的字段没被清空 —— recapModel 保持桌面版的现状。
+    expect(res.status).toBe(200)
+    const body = await res.json() as { credentials: { imported: boolean } }
+    expect(body.credentials.imported).toBe(true)
     await loadConfig(stateDir)
+    expect(config.authToken).toBe('sk-ant-abcd1234')
+    expect(config.baseUrl).toBe('https://api.example.com')
     expect(config.recapModel).toBe('keep-me')
   })
 
