@@ -31,12 +31,15 @@ interface Props {
    *    1. The wizard's finalize path, after `/config/setup` has succeeded.
    *       Here `openNewSession` reflects whether the user clicked the final
    *       "Create New Session" button (vs Skip / Done).
-   *    2. The desktop pre-screen's credential hand-off
-   *       (`SetupWebImport.onConfigured` → the `showImport` early return
-   *       above), where no `/config/setup` POST happens at all: the import
-   *       endpoint has already written config.json and the server reports
+   *    2. The desktop pre-screen's hand-off (`SetupWebImport.onConfigured`
+   *       → the `showImport` early return above), triggered by the user's
+   *       `Next` and only once an earlier import has left the server
+   *       configured. No `/config/setup` POST happens at all: the import
+   *       endpoint has already written config.json and reported
    *       `configured: true`. It always passes `true`, because a user who
    *       just moved their credentials over wants a session to try them in.
+   *       (A row tick or `Import all` only imports — the hand-off is a
+   *       navigation decision, and `Next` is where the user makes it.)
    *
    *  Both paths land in App.handleConfigured (best-effort /config refresh +
    *  setIsConfigured(true)).
@@ -666,9 +669,10 @@ export function SetupPage({ onConfigured }: Props) {
     return (
       <SetupWebImport
         onContinue={() => setShowImport(false)}
-        // 导入已把 config.json 写好（服务端 configured:true），所以直接走既有
-        // 收尾路径：App 的 handleConfigured 会 refreshConfig + setIsConfigured，
-        // 并自动开 New session 对话框。
+        // 用户在前置屏按了 Next、且此前那次导入已把 config.json 写好（服务端
+        // configured:true）——前置屏只在那种情况下调这个回调。直接走既有收尾
+        // 路径：App 的 handleConfigured 会 refreshConfig + setIsConfigured，
+        // 并自动开 New session 对话框。行勾选与 Import all 不含在这条路上。
         onConfigured={() => onConfigured({ openNewSession: true })}
       />
     )

@@ -18,9 +18,11 @@ import type { WebImportEnumeration, WebImportMarketplaceView, WebImportMcpView, 
 type RowStatus = 'idle' | 'importing' | 'imported' | 'exists' | 'failed'
 
 interface Props {
-  /** 用户没导入凭证（或只导了 MCP / 市场）→ 走向导第一步。 */
+  /** 用户按 Next 时服务端还没 configured（没导入凭证，或只导了 MCP / 市场）
+   *  → 走向导第一步。 */
   onContinue: () => void
-  /** 凭证已写入且服务端 configured → 交给 SetupPage 走既有收尾路径。 */
+  /** 用户按 Next 时服务端已 configured（本次导入写成的）→ 交给 SetupPage 走
+   *  既有收尾路径。 */
   onConfigured: () => void | Promise<void>
 }
 
@@ -44,6 +46,12 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  /** 服务端是否已 configured，只由"这次导入的响应"喂：`WebImportResult.credentials`
+   *  只在请求带了凭证时非 null（shared/web-import.ts 的
+   *  WebImportCredentialsResult 才带 `configured`），而本屏只在服务端未配置时
+   *  渲染，所以 `configured: true` 只可能来自本屏自己那次导入——不必再探一次
+   *  GET /config。它决定按 Next 时是收尾还是进向导。 */
+  const [configured, setConfigured] = useState(false)
   const probeCancelRef = useRef<(() => void) | null>(null)
 
   /** 探测：与 step 3 的 probeClaudeMcp 同形（可取消 + Retry 复用同一条路径）。 */
@@ -113,8 +121,11 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     [],
   )
 
-  /** 发一次导入请求。成功后：只要服务端已 configured 就收尾（这正是用户选的
-   *  "凭证导入成功即收尾"），否则留在本屏让状态位更新。 */
+  /** 发一次导入请求并按结果落状态位。**不跳转**：行勾选与 Import all 都只是
+   *  "导入"，而交出一整屏是一个导航决定，由用户按 Next 做出（见下面的
+   *  `handleNext`）。勾一行读作"导入这一项"，把整屏收掉既不是用户要的，也让
+   *  他没法接着勾下一行。唯一带回来的是"服务端现在 configured 了吗"，它只改
+   *  `configured`，Next 再据此决定去哪。 */
   const runImport = useCallback(async (sel: { credentials: boolean; mcp: string[]; marketplaces: string[] }) => {
     if (submitting) return
     setSubmitting(true)
@@ -126,39 +137,38 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
       for (const id of sel.marketplaces) next[mpRow(id)] = 'importing'
       return next
     })
-    let handOff = false
     try {
       const res = await api.post<WebImportResult>('/config/web-import', sel, { timeoutMs: WEB_IMPORT_TIMEOUT_MS })
       settleStatuses(sel, res)
       // 逐项失败不弹错、不阻断：行上的 Failed 就是信号（与 step 3 一致）。
-      handOff = !!res.credentials?.configured
+      // 请求没带凭证时 res.credentials 是 null（没有 configured 可言）。
+      if (res.credentials?.configured) setConfigured(true)
     } catch (err) {
       // 请求本身抛了（超时 / 网络 / 5xx / 400）：整批落 Failed，行因此可重试。
       settleStatuses(sel, null)
       setError(err instanceof Error ? err.message : 'Import failed')
     }
-    if (handOff) {
-      // 收尾（hand-off）刻意放在导入那个 try **之外**：onConfigured 是 parent
-      // 的 best-effort 收尾（App.tsx 的 handleConfigured 会吞掉自己那次 /config
-      // 刷新的失败）。它抛错时这次导入其实**已经成功了**——上面刚把行标成
-      // Imported——借 import 的 catch 把这句说成 "Import failed" 是谎报。
-      // 于是照 handleConfigured 那一侧的先例：只记一行日志，不改屏上状态。
-      try {
-        await onConfigured()
-        // 交接成功：parent 会因为已配置而卸载本屏，所以**刻意不 reset
-        // `submitting`**——setSubmitting(false) 只是在卸载后写 state（dev 下会
-        // 报 set-state-on-unmounted），与 SetupPage.finalize 的收尾同形，
-        // 不要"顺手修"成 finally。
-        return
-      } catch (err) {
-        console.error('[SetupWebImport] hand-off after web import failed:', err)
-        // 相反地，onConfigured 抛错时本屏**没有**被卸载（parent 的收尾没能
-        // 完成），必须往下走去复位 submitting——否则 Next、每个勾选框和
-        // Import all 会一直禁用下去，用户连重试交接都做不到。
-      }
-    }
     setSubmitting(false)
-  }, [submitting, onConfigured, settleStatuses])
+  }, [submitting, settleStatuses])
+
+  /** 本屏唯一的交接口。服务端已 configured（上面那次带凭证的导入写成的）→ 走
+   *  SetupPage 的既有收尾路径；否则照常进向导 step 0。
+   *  onConfigured 是 parent 的 best-effort 收尾（App.tsx 的 handleConfigured
+   *  自己会吞掉那次 /config 刷新的失败），和上面那次导入是两个独立的动作，
+   *  所以它抛错时照 handleConfigured 那一侧的先例只记一行日志：既不改屏上
+   *  状态（导入早就成功了，说成 "Import failed" 是谎报），本屏也留着——parent
+   *  没能收起它，用户可以直接再按一次 Next。 */
+  const handleNext = useCallback(async () => {
+    if (!configured) {
+      onContinue()
+      return
+    }
+    try {
+      await onConfigured()
+    } catch (err) {
+      console.error('[SetupWebImport] hand-off after web import failed:', err)
+    }
+  }, [configured, onContinue, onConfigured])
 
   /** 渲染期一律读 state，不读 ref：ref 是给异步 handler 读"最新值"用的，在这里
    *  没有任何异步 handler 需要它，用 ref 反而会慢一帧（anyImportable 这类派生值
@@ -407,10 +417,11 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
           <div style={styles.footerRight}>
             <button
               type="button"
-              onClick={onContinue}
+              onClick={() => void handleNext()}
               disabled={submitting}
               // 导入可能是"拷一整个克隆目录"量级的等待，禁用必须看得出来
-              // （step 0 的 Continue / step 4 的两个按钮同一写法）。
+              // （step 0 的 Continue / step 4 的两个按钮同一写法）。导入在飞时
+              // 也不该放用户走——他刚点的那些行还没落定。
               style={{ ...styles.submitBtn, ...(submitting ? styles.submitBtnDisabled : null) }}
             >
               Next

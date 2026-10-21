@@ -102,11 +102,12 @@ async function walkToFinish() {
 }
 
 describe('SetupPage — desktop wizard (no Autostart step)', () => {
-  // 头号路径：凭证经前置屏导入 ⇒ SetupPage 走既有收尾路径交接
-  // （onConfigured({ openNewSession: true })），用户不必重走一遍向导。
+  // 头号路径：凭证经前置屏导入，再由用户按 Next 收尾 ⇒ SetupPage 走既有收尾
+  // 路径交接（onConfigured({ openNewSession: true })），用户不必重走一遍向导。
+  // 导入本身不跳转（勾一行只读作"导入这一项"），所以这里必须点两次。
   // 这条链此前没有自动化覆盖：desktop 用例里前置屏一直是 exists:false，
   // SetupWebImport 的用例只到组件自己那一层（onConfigured 是个 spy）。
-  it('hands over to onConfigured({ openNewSession: true }) after importing credentials', async () => {
+  it('hands over to onConfigured({ openNewSession: true }) after importing credentials and pressing Next', async () => {
     vi.mocked(api.get).mockImplementation((url: string) =>
       url === '/config/web-import'
         ? Promise.resolve({
@@ -133,7 +134,12 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
     // 前置屏列出凭证那一行 → Import all 把它一次 POST 出去。
     expect(await screen.findByText('Work')).toBeTruthy()
     fireEvent.click(screen.getByText('Import all'))
+    // 导入了 ≠ 交接了：Import all 只导入，屏幕留着。
+    await waitFor(() => expect(screen.getByText('Imported')).toBeTruthy())
+    expect(onConfigured).not.toHaveBeenCalled()
 
+    // Next 才是唯一的交接口（此时服务端已 configured）。
+    fireEvent.click(screen.getByText('Next'))
     await waitFor(() => expect(onConfigured).toHaveBeenCalledWith({ openNewSession: true }))
     expect(onConfigured).toHaveBeenCalledTimes(1)
     expect(vi.mocked(api.post)).toHaveBeenCalledWith(

@@ -26,7 +26,7 @@
 成功标准：
 
 1. 桌面版首启 → 导入屏列出可导入项（凭证与模型 / 全局 MCP / Claude Plugin Marketplace），勾选后一键导入；
-2. 凭证导入成功后桌面版即视为已配置，直接进主界面，不再弹 setup；
+2. 凭证导入成功、用户在前置屏按 Next 后桌面版即视为已配置，直接进主界面，不再弹 setup；
 3. 未导入凭证时（跳过、或只导了 MCP / 市场）照常进入原向导；
 4. 明文 token 不经过前端；同名 / 同 id 项跳过而不覆盖；单项失败不影响其它项；
 5. web 宿主不存在该能力（客户端不渲染 + 服务端不可用）。
@@ -41,7 +41,7 @@
 | 源目录 | 固定 `~/.claude-react-web`，不可选（与 `/mcp-config/claude-import` 读固定路径的做法一致） |
 | 克隆目录 | 本地复制到桌面版自己的 `marketplace-cache/<id>/`，并把条目 `cloneDir` 改写为新路径（不按 URL 重 clone，也不依赖旧目录继续存在） |
 | 入口形态 | 向导之前的**前置屏**，不进 `setup-steps.ts` 的 `STEPS`（不改步骤表、不改序号、不动既有 `step === N` 比较） |
-| 导入后行为 | 凭证项导入成功即收尾进主界面（复用 `handleConfigured` 路径）；否则进入 step 0 照常走完 |
+| 导入后行为 | **Next 收尾**：已导入凭证（服务端 `configured`）时点 Next → 收尾进主界面（复用 `handleConfigured` 路径），否则进入 step 0 照常走完。行勾选与 `Import all` 只导入、不跳转——勾一行读作"导入这一项"，不该把整屏收掉 |
 | 密钥处理 | 服务端读源文件后直接写入，明文 token 不过线（沿用 `claude-import` 的做法）；枚举接口只回掩码 |
 
 ## 3. 方案选择
@@ -68,8 +68,8 @@
              ├─ mcp           读源 mcp-config.json → 逐条 mcpStore.upsert，同名跳过
              └─ marketplaces  读源 marketplaces.json → fs.cp(cloneDir → cloneDirFor(id))
                                → 条目 cloneDir 改写后落盘，同 id 跳过
-  └─ 凭证导入成功 → refreshConfigResponse() → setIsConfigured(true) → 主界面
-     未导入凭证   → 进入 step 0，照常走原向导
+  └─ 按 Next 时凭证已导入 → refreshConfigResponse() → setIsConfigured(true) → 主界面
+     按 Next 时未导入凭证 → 进入 step 0，照常走原向导
 ```
 
 宿主门控是**双向**的：客户端 `isDesktopHost()`（`src/host-capabilities.ts:21`，与 Autostart 步骤的门控写法同构）+ 服务端 `host` 标记（非桌面返回 404）。
@@ -183,7 +183,7 @@
 - **状态机同形**：惰性探测 + `probeCancelRef` 取消竞态 + `Record<name, status>` +
   `Import all` 的 predicate 与提交 filter 同构（这里不需要向导 step 3 那个
   `mcpImportStatusRef` 镜像——没有异步 handler 要在回调里读最新状态）。
-- **收尾**：凭证项导入成功 → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）。未导入凭证 → 进入 step 0。
+- **收尾**：**Next 是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点 Next → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 Next → 进入 step 0。行勾选与 `Import all` 只导入、不跳转：勾一行读作"导入这一项"，一次逐行的勾选不该把整屏收掉（用户还要接着勾下一行），跳转是导航决定，由用户按 Next 做出。
 - **不新增 CSS**：只用 `src/styles/setup-page.css` 既有类 + `styles.*` 内联对象 + 主题变量（CLAUDE.md：禁止硬编码颜色，新颜色必须同时定义 dark / light）。
 - **与"最后才写盘"原则的冲突（刻意保留）**：现有向导刻意到最后一步才写 `config.json`（`SetupPage.tsx` 的注释：中途关掉浏览器不留半份 config）。导入屏会**立即写盘**。保留该行为，理由是：导入本身就是"配置"这一动作；若改成只预填，则要么写两次盘（导入一次 + `/config/setup` 一次），要么用户还得再走完 6 步。副作用"导入后直接关窗 → 桌面版已配置"正是本需求的目标。
 

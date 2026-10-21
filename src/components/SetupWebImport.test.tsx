@@ -47,18 +47,26 @@ describe('SetupWebImport', () => {
     expect(await screen.findByText('Retry')).toBeTruthy()
   })
 
-  it('posts every not-yet-imported item from the bulk button, then hands over to onConfigured', async () => {
+  // 行勾选与 Import all 只**导入**，不跳转：勾一行读作"导入这一项"，不该把整屏
+  // 收掉。收尾是 Next 的事（见下面三条用例）。
+  it('posts every not-yet-imported item from the bulk button without handing over', async () => {
     vi.mocked(api.post).mockResolvedValue({
       credentials: { imported: true, configured: true },
       mcp: { imported: ['ctx7'], skipped: [], failed: [] },
       marketplaces: { imported: [], skipped: ['claude-code'], failed: [] },
     })
     const onConfigured = vi.fn()
-    render(<SetupWebImport onContinue={vi.fn()} onConfigured={onConfigured} />)
+    const onContinue = vi.fn()
+    render(<SetupWebImport onContinue={onContinue} onConfigured={onConfigured} />)
     await screen.findByText('Work')
 
     fireEvent.click(screen.getByText('Import all'))
-    await waitFor(() => expect(onConfigured).toHaveBeenCalledTimes(1))
+    // 响应说 configured: true，但 Import all 自己不交接：状态位照常落
+    // （导入行为没变），屏幕留着。
+    await waitFor(() => expect(screen.getAllByText('Imported')).toHaveLength(2))
+    expect(onConfigured).not.toHaveBeenCalled()
+    expect(onContinue).not.toHaveBeenCalled()
+    expect(screen.getByText('Next')).toBeTruthy()
     expect(vi.mocked(api.post)).toHaveBeenCalledWith('/config/web-import', {
       credentials: true,
       mcp: ['ctx7'],
@@ -69,7 +77,71 @@ describe('SetupWebImport', () => {
     }, { timeoutMs: 180_000 })
   })
 
-  it('stays on the screen when the import leaves the server unconfigured', async () => {
+  // 用户勾一行 = "导入这一项"，绝不是"收尾"：即使服务端回 configured: true
+  // （本屏只在未配置时渲染，所以它只可能来自本屏自己那次导入），也必须留在
+  // 屏上等用户自己按 Next。
+  it('does not hand over when only the credentials row is ticked, even if the server reports configured', async () => {
+    vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, mcp: [], marketplaces: [] })
+    vi.mocked(api.post).mockResolvedValue({
+      credentials: { imported: true, configured: true },
+      mcp: { imported: [], skipped: [], failed: [] },
+      marketplaces: { imported: [], skipped: [], failed: [] },
+    })
+    const onConfigured = vi.fn()
+    const onContinue = vi.fn()
+    render(<SetupWebImport onContinue={onContinue} onConfigured={onConfigured} />)
+    await screen.findByText('Work')
+
+    fireEvent.click(screen.getByLabelText('Import credentials'))
+    await waitFor(() => expect(screen.getByText('Imported')).toBeTruthy())
+
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/config/web-import', {
+      credentials: true,
+      mcp: [],
+      marketplaces: [],
+    }, { timeoutMs: 180_000 })
+    expect(onConfigured).not.toHaveBeenCalled()
+    expect(onContinue).not.toHaveBeenCalled()
+    // 屏幕还在（Next 就是它自己的按钮）。
+    expect(screen.getByText('Next')).toBeTruthy()
+  })
+
+  // Next 是本屏唯一的交接口：服务端已 configured（由某次带凭证的导入写成）
+  // 时点 Next 才收尾。
+  it('hands over to onConfigured from Next when an import left the server configured', async () => {
+    vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, mcp: [], marketplaces: [] })
+    vi.mocked(api.post).mockResolvedValue({
+      credentials: { imported: true, configured: true },
+      mcp: { imported: [], skipped: [], failed: [] },
+      marketplaces: { imported: [], skipped: [], failed: [] },
+    })
+    const onConfigured = vi.fn()
+    const onContinue = vi.fn()
+    render(<SetupWebImport onContinue={onContinue} onConfigured={onConfigured} />)
+    await screen.findByText('Work')
+
+    fireEvent.click(screen.getByLabelText('Import credentials'))
+    await waitFor(() => expect(screen.getByText('Imported')).toBeTruthy())
+    expect(onConfigured).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByText('Next'))
+    await waitFor(() => expect(onConfigured).toHaveBeenCalledTimes(1))
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
+  // 什么都没导入（或导入没让服务端 configured）→ Next 照旧进向导。
+  it('goes to onContinue from Next when nothing left the server configured', async () => {
+    const onConfigured = vi.fn()
+    const onContinue = vi.fn()
+    render(<SetupWebImport onContinue={onContinue} onConfigured={onConfigured} />)
+    await screen.findByText('Work')
+
+    fireEvent.click(screen.getByText('Next'))
+    expect(onContinue).toHaveBeenCalledTimes(1)
+    expect(onConfigured).not.toHaveBeenCalled()
+  })
+
+  it('stays on the screen when the import leaves the server unconfigured, and Next continues the wizard', async () => {
     vi.mocked(api.post).mockResolvedValue({
       credentials: { imported: true, configured: false },
       mcp: { imported: [], skipped: [], failed: [] },
@@ -81,10 +153,15 @@ describe('SetupWebImport', () => {
     await screen.findByText('Work')
 
     fireEvent.click(screen.getByText('Import all'))
-    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalled())
+    // 等导入落定：Next 在 submitting 期间禁用（这里也顺带证明导入结束后它
+    // 重新可用）。
+    await waitFor(() => expect(screen.getByText('Imported')).toBeTruthy())
+    await waitFor(() => expect((screen.getByText('Next') as HTMLButtonElement).disabled).toBe(false))
     expect(onConfigured).not.toHaveBeenCalled()
+
     fireEvent.click(screen.getByText('Next'))
     expect(onContinue).toHaveBeenCalledTimes(1)
+    expect(onConfigured).not.toHaveBeenCalled()
   })
 
   // 逐栏失败隔离：坏掉的那一栏必须说清"为什么空"，否则损坏会被读成
@@ -201,8 +278,9 @@ describe('SetupWebImport', () => {
     expect(onConfigured).not.toHaveBeenCalled()
   })
 
-  // onConfigured 是 parent 的 best-effort 收尾：它抛错时导入其实已经成功了，
-  // 绝不能借导入的 catch 把这句说成 Import failed。
+  // onConfigured 是 parent 的 best-effort 收尾（App.handleConfigured 自己吞掉
+  // 那次 /config 刷新的失败），且它与导入是两次独立的动作：抛错只进 console，
+  // 绝不能在屏上冒出 "Import failed"（导入本身早就成功了）。
   it('does not report the import as failed when the hand-off itself rejects', async () => {
     vi.mocked(api.post).mockResolvedValue({
       credentials: { imported: true, configured: true },
@@ -215,6 +293,8 @@ describe('SetupWebImport', () => {
     await screen.findByText('Work')
 
     fireEvent.click(screen.getByText('Import all'))
+    await waitFor(() => expect(screen.getAllByText('Imported')).toHaveLength(2))
+    fireEvent.click(screen.getByText('Next'))
     await waitFor(() => expect(onConfigured).toHaveBeenCalledTimes(1))
     // 失败进 console（与 App.handleConfigured 同侧），不是顶部的 Import failed。
     await waitFor(() => expect(errSpy).toHaveBeenCalled())
@@ -226,9 +306,9 @@ describe('SetupWebImport', () => {
     expect(screen.queryByText('refresh blew up')).toBeNull()
   })
 
-  // 交接自己抛错时本屏没被卸载 —— submitting 必须复位，否则 Next、每个勾选框
-  // 和 Import all 会永久禁用，用户连重试交接都做不到。
-  it('re-enables the controls when the hand-off rejects', async () => {
+  // 交接自己抛错时本屏没被卸载 —— 屏幕必须留在原处且控件可用，用户能再点一次
+  // Next 重试（parent 那次 /config 刷新失败是可恢复的）。
+  it('keeps the screen usable when the hand-off rejects', async () => {
     vi.mocked(api.post).mockResolvedValue({
       credentials: { imported: true, configured: true },
       mcp: { imported: ['ctx7'], skipped: [], failed: [] },
@@ -240,6 +320,8 @@ describe('SetupWebImport', () => {
     await screen.findByText('Work')
 
     fireEvent.click(screen.getByText('Import all'))
+    await waitFor(() => expect(screen.getAllByText('Imported')).toHaveLength(2))
+    fireEvent.click(screen.getByText('Next'))
     await waitFor(() => expect(errSpy).toHaveBeenCalled())
     errSpy.mockRestore()
 
