@@ -243,6 +243,15 @@ export function AnimatedCollapse({
     const body = bodyRef.current
     if (!body) return
 
+    // Release every pinned ancestor BEFORE the first height this body writes.
+    // One place covers every path — an animated or instant fold, an open or a
+    // close, and a resize tween — and a pinned ancestor holds this body's
+    // growth back until its own observer relays it, one ResizeObserver
+    // broadcast later, which paints everything below the fold a step low (see
+    // releaseAncestorCollapsePins). Deliberately above the early return below:
+    // under reduced motion (and for any <2px delta) nothing else would release.
+    releaseAncestorCollapsePins(body)
+
     cleanupAnimation()
 
     const reducedMotion = prefersReducedMotion()
@@ -385,10 +394,7 @@ export function AnimatedCollapse({
       const shouldAnimateInitialOpen = open && (appear || (!initiallyOpenRef.current && unmountOnExit))
       body.style.height = shouldAnimateInitialOpen ? '0px' : (open ? `${nextHeight}px` : '0px')
       body.style.opacity = open && !shouldAnimateInitialOpen ? '' : '0'
-      if (shouldAnimateInitialOpen) {
-        releaseAncestorCollapsePins(body)
-        animateHeight(0, nextHeight, true, true)
-      }
+      if (shouldAnimateInitialOpen) animateHeight(0, nextHeight, true, true)
       return
     }
 
@@ -412,13 +418,6 @@ export function AnimatedCollapse({
         return
       }
       const target = content.offsetHeight || content.scrollHeight
-      // Release any pinned ancestor BEFORE the fold's first frame. A pinned
-      // ancestor would hold this fold's growth back until its own observer
-      // relays it (see releaseAncestorCollapsePins), and under reduced motion —
-      // where animateHeight settles synchronously and never registers — that
-      // relay is the only path, so the whole growth would land one broadcast
-      // late: a full-body-height flash of the content below.
-      releaseAncestorCollapsePins(body)
       animateHeight(0, target, true, true)
       return
     }
@@ -506,13 +505,25 @@ export function AnimatedCollapse({
       // (releaseAncestorCollapsePins); this keeps it off if something re-pinned
       // in between — e.g. this body's own fold finishing after the nested fold
       // began. Deliberately BELOW the clamped branch: a flex-clamped body must
-      // keep healing its pin from the content.
-      if (anyCollapseAnimatingInside(content)) {
+      // keep healing its pin from the content. And never while a tween of ours
+      // is in flight: a RESIZE tween's pin IS its animation, which
+      // releaseAncestorCollapsePins skips for exactly this reason — clearing it
+      // here would snap that glide to an auto box mid-tween.
+      if (!animatingRef.current && anyCollapseAnimatingInside(content)) {
         if (body.style.height !== '') body.style.height = ''
         return
       }
       const currentHeight = body.offsetHeight
-      if (Math.abs(measured.height - currentHeight) < 1) return
+      if (Math.abs(measured.height - currentHeight) < 1) {
+        // Nothing to correct — and nothing here will ever write a pin either:
+        // an auto box already equals its content, so this observer reads no
+        // difference on the next growth, and an animateResize body needs a pin
+        // to tween FROM (the ToolGroupCard's member-append glide). So a body
+        // left unpinned by a release — or by standDown, in the rendered case
+        // that let this measurement through — gets its pin back here.
+        if (body.style.height === '' && measured.height > 0) body.style.height = `${measured.height}px`
+        return
+      }
       lastHeightRef.current = measured.height
       if (animatingRef.current) {
         // A resize tween is in flight (the fold case returned above) — tear it

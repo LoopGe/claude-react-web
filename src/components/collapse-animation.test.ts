@@ -1,9 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import {
-  anyCollapseAnimatingInside,
-  releaseAncestorCollapsePins,
-  setCollapseAnimating,
-} from './collapse-animation'
+import { releaseAncestorCollapsePins, setCollapseAnimating } from './collapse-animation'
 
 /** Build `depth` nested collapse bodies, the shape AnimatedCollapse renders:
  *  body(.animated-collapse) > .animated-collapse-content > body(…) …
@@ -68,13 +64,17 @@ describe('releaseAncestorCollapsePins', () => {
     expect(outer.style.height).toBe('300px')
   })
 
-  it('is wired into the animation start: an animating body releases its ancestors', () => {
-    const [outer, animating] = nest(2)
-    outer.style.height = '400px'
+  it('stops at a folded ancestor instead of releasing the pins above it', () => {
+    // The middle body is folded (0px), so everything inside it is clipped: the
+    // content above cannot move and there is nothing to relay. Walking PAST it
+    // would un-pin an unrelated card's body for no reason.
+    const [outer, middle, animating] = nest(3)
+    outer.style.height = '500px'
+    middle.style.height = '0px'
 
-    setCollapseAnimating(animating, true)
+    releaseAncestorCollapsePins(animating)
 
-    expect(outer.style.height).toBe('')
-    expect(anyCollapseAnimatingInside(outer)).toBe(true)
+    expect(middle.style.height).toBe('0px')
+    expect(outer.style.height).toBe('500px')
   })
 })

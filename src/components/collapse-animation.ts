@@ -12,9 +12,10 @@
  * bounded (~240ms, one body per fold), so the registry holds at most a
  * handful of elements.
  *
- * Starting an animation ALSO releases the pinned heights of the bodies above it
- * (releaseAncestorCollapsePins) — a pinned ancestor is what turns a nested fold
- * into a one-frame dip of the content below it.
+ * Starting a fold ALSO releases the pinned heights of that body's ancestors —
+ * AnimatedCollapse does that from its own animateHeight, before every height it
+ * writes (see releaseAncestorCollapsePins for why a pinned ancestor turns a
+ * nested fold into a one-frame dip of the content below it).
  */
 
 const animatingBodies = new Set<HTMLElement>()
@@ -22,10 +23,8 @@ const animatingBodies = new Set<HTMLElement>()
 /** Record a body's animation state. Called by AnimatedCollapse immediately
  *  before/after the matching `classList.add/remove('animating')`. */
 export function setCollapseAnimating(el: HTMLElement, animating: boolean): void {
-  if (animating) {
-    animatingBodies.add(el)
-    releaseAncestorCollapsePins(el)
-  } else animatingBodies.delete(el)
+  if (animating) animatingBodies.add(el)
+  else animatingBodies.delete(el)
 }
 
 /** True when any AnimatedCollapse inside `root` is mid-animation (an
@@ -67,7 +66,13 @@ export function releaseAncestorCollapsePins(el: HTMLElement): void {
   for (let node = el.parentElement; node; node = node.parentElement) {
     if (!node.classList.contains('animated-collapse')) continue
     if (animatingBodies.has(node)) continue
-    if (node.style.height === '' || node.style.height === '0px') continue
+    if (node.style.height === '') continue
+    // A folded (0px) body clips everything inside it, so nothing above this
+    // point can move and there is nothing to relay: STOP here rather than
+    // un-pinning unrelated bodies further up the chain (a group body above a
+    // folded subagent details, say) — their content cannot change while the
+    // inner fold is clipped to zero.
+    if (node.style.height === '0px') break
     node.style.height = ''
   }
 }

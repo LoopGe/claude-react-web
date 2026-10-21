@@ -722,4 +722,69 @@ describe('AnimatedCollapse — a nested fold is never relayed through an ancesto
     expect(inner.classList.contains('animating')).toBe(false)
     expect(outer.style.height).toBe('300px')
   })
+
+  it('drops the ancestor pin when a nested fold CLOSES instantly (reduced motion)', () => {
+    // The close direction has no animateHeight registration of its own under
+    // reduced motion — the release has to be reached before that early return,
+    // or a pinned ancestor relays the whole shrink one broadcast late: the
+    // content below flashes a full body-height low for one frame.
+    vi.stubGlobal('matchMedia', () => ({
+      matches: true,
+      addEventListener() {},
+      removeEventListener() {},
+    }))
+    const { container, rerender } = render(<Nested innerOpen />)
+    const { outer, inner, innerContent } = parts(container)
+    mockLayoutHeight(innerContent, 400)
+    outer.style.height = '100px' // the ancestor is pinned while the nested card is open
+
+    rerender(<Nested innerOpen={false} />)
+
+    expect(inner.classList.contains('animating')).toBe(false)
+    expect(outer.style.height).toBe('')
+  })
+
+  it('does not un-pin a body whose own resize tween is in flight', () => {
+    // A resize tween's pin IS its animation (releaseAncestorCollapsePins skips
+    // exactly that body for this reason) — so the nested check must not clear it
+    // either, or one observation snaps the glide to an auto box mid-tween.
+    vi.useFakeTimers()
+    const { container } = render(<Nested innerOpen={false} />)
+    const { outer, inner, outerContent } = parts(container)
+    // The used height tracks the pin, as a real box does — a frozen mock reads
+    // as "clamped" against the tween's own per-frame writes.
+    vi.spyOn(outer, 'offsetHeight', 'get').mockImplementation(() => Number.parseFloat(outer.style.height || '0'))
+    outer.style.height = '100px'
+    mockLayoutHeight(outerContent, 400)
+    act(() => fireResize(outerContent)) // discrete → a resize tween owns the pin
+    expect(outer.classList.contains('animating')).toBe(true)
+
+    setCollapseAnimating(inner, true) // a nested collapse starts mid-tween
+    mockLayoutHeight(outerContent, 500)
+    act(() => fireResize(outerContent))
+
+    // The discriminator: the bug wrote '' (auto) here, losing the glide. Both
+    // admissible paths instead leave a real height — cancel-and-replace starts
+    // a new tween from the rendered height, the continuous branch snaps to the
+    // content — so only "not auto, and not below the height it started at" is
+    // asserted.
+    expect(outer.style.height).not.toBe('')
+    expect(Number.parseFloat(outer.style.height)).toBeGreaterThanOrEqual(100)
+  })
+
+  it('re-pins an auto-height body so a later growth can still tween', () => {
+    // A body released by a nested fold (or stood down) carries no pin, and an
+    // auto box equals its content — so its own observer reads no difference on
+    // the next growth and the animateResize glide would be gone for good (the
+    // ToolGroupCard's member-append glide). The observer restores the pin.
+    const { container } = render(<Nested innerOpen={false} />)
+    const { outer, outerContent } = parts(container)
+    outer.style.height = '' // released / stood down
+    mockLayoutHeight(outer, 100)
+    mockLayoutHeight(outerContent, 100)
+
+    act(() => fireResize(outerContent)) // no difference to detect
+
+    expect(outer.style.height).toBe('100px')
+  })
 })
