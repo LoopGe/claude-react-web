@@ -108,7 +108,7 @@ export default defineConfig({
     // (happy-dom — see environmentMatchGlobs below for the measurements).
     // Use workspace-style overrides so both share one `vitest run`.
     environment: 'node',
-    include: ['server/**/*.test.ts', 'src/**/*.test.{ts,tsx}', 'shared/**/*.test.ts', 'plugins/**/*.test.ts', 'packages/**/*.test.ts'],
+    include: ['server/**/*.test.ts', 'src/**/*.test.{ts,tsx}', 'shared/**/*.test.ts', 'plugins/**/*.test.ts', 'packages/**/*.test.ts', 'desktop/**/*.test.ts'],
     // Process-per-file isolation. `threads` was measured as the alternative and
     // is clearly worse here: the full suite went 133s → 178s, with environment
     // 260s → 494s and prepare 49s → 105s of worker time, plus one file failing.
