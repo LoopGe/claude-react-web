@@ -11,7 +11,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_DIR_NAME } from './json-file-store.js'
 import { DEFAULT_PROFILE, type ModelGroupConfig } from './config.js'
-import { coerceModelGroups, coerceProfileEntries, normalizeModelList, resolveActiveProfile } from './profiles.js'
+import { coerceProfileEntries, normalizeModelList, resolveActiveProfile } from './profiles.js'
 import { McpConfigStore, type StoredMcpServer } from './mcp-config.js'
 import { MpStore, type MpEntry } from './mp-store.js'
 
@@ -32,8 +32,9 @@ export function webStateDir(): string {
  *  在 coercion 之后会整条回退成 fallback，raw `modelGroups` 的条目也可能全部被丢
  *  成 [] —— 那样的 pair 会让写入侧拿 DEFAULT_PROFILE 的模型列表覆盖用户的真实列表、
  *  或用 [] 清空用户已有的模型分组。"源里确实存在"指的是**可用的值**，不是键的存在。
- *  六个字段一律由各自 coercion 用的**同一个函数**判定（scalar 是 trim 后非空白检查，
- *  modelList / modelGroups 就是 normalizeModelList / coerceModelGroups）。 */
+ *  六个字段一律由**coercion 本身**判定（scalar 是 trim 后非空白检查，
+ *  modelList 是 normalizeModelList，modelGroups 直接读 coerceProfileEntries
+ *  产物 active.modelGroups 的长度——判据与"要写出去的那个值"是同一个值）。 */
 export interface PresentFields {
   authToken: boolean
   baseUrl: boolean
@@ -82,10 +83,11 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
   // 用 entries 自带的 raw `index`（与 /config/setup 同一手法），不自己按 id
   // 匹配——coerceProfileEntries 会 trim id、重复 id 取后者，手工匹配会错条目。
   //
-  // 但判据是"值活过了 coercion"，不是"键在磁盘上"：下面 modelList / modelGroups
-  // 走的是与 coercion 完全相同的 normalizeModelList / coerceModelGroups，所以
-  // present === true ⟹ 返回的值就是源的；=== false ⟹ 返回值是 fallback / []，
-  // 写入侧不得落笔（写入侧的 `if (cred.present.X)` 闸门由此与值一致）。
+  // 但判据是"值活过了 coercion"，不是"键在磁盘上"：modelList 走的是与
+  // coerceProfileEntries 完全相同的 normalizeModelList，modelGroups 直接量
+  // active.modelGroups，所以 present === true ⟹ 返回的值就是源的；=== false
+  // ⟹ 返回值是 fallback / []，写入侧不得落笔（写入侧的 `if (cred.present.X)`
+  // 闸门由此与值一致）。
   const hit = entries.find((entry) => entry.profile === active)
   const rawList = Array.isArray(obj.profiles) ? (obj.profiles as unknown[]) : []
   const rawEntry = hit ? (rawList[hit.index] as Record<string, unknown> | undefined) : undefined
@@ -102,7 +104,13 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
       authToken: hasStr(rawEntry?.authToken),
       baseUrl: hasStr(rawEntry?.baseUrl),
       modelList: normalizeModelList(rawEntry?.modelList, []).length > 0,
-      modelGroups: coerceModelGroups(rawEntry?.modelGroups).length > 0,
+      // modelGroups 的判据就是**要写出去的那个值**（active.modelGroups 已经是
+      // coerceProfileEntries 里 coerceModelGroups 的产物）：再对同一个
+      // rawEntry.modelGroups coerce 一次，等于让同一处畸形分组每次读取多打一遍
+      // warn，还可能再漂移一次。`hit` 那一半不能省——entries 为空时 active 就是
+      // DEFAULT_PROFILE，那不是源里的值，present 必须落 false（其余五个字段在
+      // hit 为 undefined 时同理全 false），否则写入侧会拿默认分组覆盖用户的分组。
+      modelGroups: hit !== undefined && active.modelGroups.length > 0,
       recapModel: hasStr(rawEntry?.recapModel),
       commitMessageModel: hasStr(rawEntry?.commitMessageModel),
     },

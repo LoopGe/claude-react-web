@@ -206,7 +206,16 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
           result.skipped.push(server.name)
           continue
         }
-        deps.mcpStore.upsert({ ...server, enabled: true })
+        // 刻意不搬 oauth（抛掉它再落 store，不是"顺手"的简化）：
+        //   - 枚举屏不上线它，用户看不到有东西跟着来；
+        //   - app 自己的导出路径（maskSecrets + 导出信封）也从不吐它；
+        //   - 它里面的 redirectUrl 是**宿主相关**的（OAuth 流程从 `c.req.url`
+        //     推出来，见 mcp-routes 的 startMcpOAuth），而桌面宿主把 /api/*
+        //     走 in-process，根本没有 TCP 端口可回——搬过去就是一个静默坏掉的
+        //     回调地址，回调时还会被 `server.oauth?.redirectUrl ?? …` 优先采用。
+        // 代价值得：到 MCP 面板点一次授权即可，而半坏的 OAuth 流看不出来。
+        const { oauth: _oauth, ...withoutOAuth } = server
+        deps.mcpStore.upsert({ ...withoutOAuth, enabled: true })
         result.imported.push(server.name)
       } catch (err) {
         result.failed.push({ name, error: (err as Error).message })

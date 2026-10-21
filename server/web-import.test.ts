@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { writeFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tempDir, rmRf } from './__test-utils__/index.js'
@@ -92,6 +92,42 @@ describe('readSourceCredentials', () => {
     // 已有的 model groups 清空。
     expect(cred.modelGroups).toEqual([])
     expect(cred.present.modelGroups).toBe(false)
+  })
+
+  // present.modelGroups 的判据就是要写出去的那个值（coerceProfileEntries 的产物
+  // active.modelGroups）本身的长度——这一条钉住 true 的那一半：判据若被写成恒
+  // false（或只看磁盘上有没有这个键），下面这条会红。
+  it('reports modelGroups as present when the source carries a usable group', async () => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default',
+        name: 'Grouped',
+        authToken: 'sk-ant-grouped',
+        baseUrl: 'https://grouped.example.com',
+        modelGroups: [{ id: 'g1', name: 'G1', main: 'opus', opus: 'o-1', sonnet: 's-1' }],
+      }],
+      activeProfileId: 'default',
+    }), 'utf8')
+    const cred = await readSourceCredentials(dir)
+    expect(cred.modelGroups).toEqual([{ id: 'g1', name: 'G1', opus: 'o-1', sonnet: 's-1', main: 'opus' }])
+    expect(cred.present.modelGroups).toBe(true)
+  })
+
+  // 畸形分组只该被 coerce 一次。早先 present 那一格对着同一个
+  // rawEntry.modelGroups **又** coerce 了一次，于是每次读取都为同一处畸形多打
+  // 一遍 warn；现在它与 active.modelGroups 是同一个值、同一次 coercion。
+  it('warns about a malformed model group exactly once per read', async () => {
+    seedUnusableFields() // modelGroups: [{ id: 'g1', name: 'G1' }] —— 没有 tier slot
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const cred = await readSourceCredentials(dir)
+      expect(cred.present.modelGroups).toBe(false)
+      const tierWarns = warnSpy.mock.calls.filter((c) => String(c[1]).includes('no tier slots'))
+      expect(tierWarns).toHaveLength(1)
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 })
 

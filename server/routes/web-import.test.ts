@@ -89,6 +89,76 @@ describe('GET /api/config/web-import', () => {
     expect(JSON.stringify(body)).not.toContain('sk-ant-abcd1234')
   })
 
+  // 枚举行的映射此前完全没有覆盖。真实 state 目录里的 mcp-config.json 是
+  // **扁平键值对象**（键就是 name，见 McpConfigStore.parseItems），不是导出用的
+  // `{version, servers: []}` 信封——写成信封会被读成一台名叫 "servers" 的假服务器。
+  it('maps each source MCP server onto a row, with the secret values withheld', async () => {
+    seedSource(sourceDir)
+    writeFileSync(join(sourceDir, 'mcp-config.json'), JSON.stringify({
+      ctx7: { name: 'ctx7', type: 'stdio', command: 'npx', args: ['-y', 'ctx7'], env: { API_KEY: 'sekret' }, enabled: true },
+      remote: { name: 'remote', type: 'http', url: 'https://mcp.example.com', enabled: false },
+      broken: { name: 'broken', type: 'stdio' },
+    }), 'utf8')
+    // 桌面版已有同名服务器：exists 必须反映**桌面** store（它就是"Already exists"
+    // 那半条），不是源里有没有。
+    const dst = new McpConfigStore({ stateDir })
+    await dst.load()
+    dst.upsert({ name: 'ctx7', type: 'stdio', command: 'other', enabled: true, createdAt: 1, updatedAt: 1 })
+    await dst.flush()
+
+    const app = await makeRouter(stateDir, sourceDir)
+    const res = await app.request('/api/config/web-import')
+    expect(res.status).toBe(200)
+    const body = await res.json() as { mcp: Array<Record<string, unknown>> }
+    const byName = new Map(body.mcp.map((s) => [s.name as string, s]))
+
+    // command 型：command 上线、env 只说键名、args 不上线（行上不展示）。
+    expect(byName.get('ctx7')).toEqual({
+      name: 'ctx7', type: 'stdio', command: 'npx', envKeys: ['API_KEY'], exists: true, importErrors: [],
+    })
+    // url 型：没有 command 键（而不是空串）。
+    expect(byName.get('remote')).toEqual({
+      name: 'remote', type: 'http', url: 'https://mcp.example.com', exists: false, importErrors: [],
+    })
+    // 校验不过的行照常枚举：importErrors 就是行压暗 + 禁用勾选框的判据。
+    expect(byName.get('broken')).toEqual({
+      name: 'broken', type: 'stdio', exists: false, importErrors: ['command is required for stdio type'],
+    })
+    // 密钥的**值**绝不进响应体（env 的键名才上线）。
+    expect(JSON.stringify(body)).not.toContain('sekret')
+  })
+
+  it('maps each source marketplace onto a row, flagging a missing clone', async () => {
+    seedMarketplace(sourceDir, 'alive', ['a', 'b'])
+    seedMarketplace(sourceDir, 'gone', ['c'])
+    // gone 的克隆目录被删掉 → cloneExists false（行不可导入 + `· clone missing`）。
+    rmRf(join(sourceDir, 'marketplace-cache', 'gone'))
+    // 桌面版已有 alive：exists 必须反映**桌面** store。
+    const dst = new MpStore({ stateDir })
+    await dst.load()
+    dst.upsert({
+      id: 'alive', displayName: 'local', source: { type: 'https', url: 'https://github.com/example/x' },
+      cloneDir: dst.cloneDirFor('alive'), addedAt: 1, lastRefreshedAt: 1, lastSha: 'b'.repeat(40),
+      manifest: { name: 'local', plugins: [] },
+    })
+    await dst.flush()
+
+    const app = await makeRouter(stateDir, sourceDir)
+    const res = await app.request('/api/config/web-import')
+    expect(res.status).toBe(200)
+    const body = await res.json() as { marketplaces: Array<Record<string, unknown>> }
+    const byId = new Map(body.marketplaces.map((m) => [m.id as string, m]))
+
+    expect(byId.get('alive')).toEqual({
+      id: 'alive', displayName: 'alive', sourceUrl: 'https://github.com/example/alive',
+      pluginCount: 2, cloneExists: true, exists: true,
+    })
+    expect(byId.get('gone')).toEqual({
+      id: 'gone', displayName: 'gone', sourceUrl: 'https://github.com/example/gone',
+      pluginCount: 1, cloneExists: false, exists: false,
+    })
+  })
+
   it('reports a corrupt source config as credentialsError, not a 500', async () => {
     mkdirSync(sourceDir, { recursive: true })
     writeFileSync(join(sourceDir, 'config.json'), 'not json', 'utf8')
@@ -372,6 +442,39 @@ describe('POST /api/config/web-import — mcp', () => {
     expect(res.status).toBe(400)
     expect((await res.json() as { error: string }).error).toContain('mcp must be an array')
   })
+
+  // 刻意不搬 oauth：枚举屏不上线这个块（用户看不到有东西跟着来），而里面的
+  // redirectUrl 是**宿主相关**的——桌面宿主把 /api/* 走 in-process、没有 TCP
+  // 端口可回，搬过去就是一个静默坏掉的回调地址（回调时还会被
+  // `server.oauth?.redirectUrl ?? …` 优先采用）。代价只是去面板点一次授权。
+  it('does not carry the source oauth block into the desktop store', async () => {
+    const src = new McpConfigStore({ stateDir: sourceDir })
+    await src.load()
+    src.upsert({
+      name: 'remote', type: 'http', url: 'https://mcp.example.com', enabled: true, createdAt: 1, updatedAt: 1,
+      oauth: {
+        redirectUrl: 'http://127.0.0.1:3456/api/mcp/oauth/callback',
+        lastAuthorizedAt: 1,
+        tokens: { access_token: 'tok-abc', token_type: 'Bearer' },
+      },
+    })
+    await src.flush()
+    // 先证明源那一侧真的有 oauth —— 否则"目的侧没有"可能只是因为 fixture 没造出来。
+    const srcLoaded = await new McpConfigStore({ stateDir: sourceDir }).load()
+    expect(srcLoaded.find((s) => s.name === 'remote')?.oauth).toBeDefined()
+
+    const res = await post({ mcp: ['remote'] })
+    const body = await res.json() as { mcp: { imported: string[] } }
+    expect(body.mcp.imported).toEqual(['remote'])
+    expect(JSON.stringify(body)).not.toContain('tok-abc')
+
+    const loaded = await new McpConfigStore({ stateDir }).load()
+    const imported = loaded.find((s) => s.name === 'remote')
+    expect(imported?.oauth).toBeUndefined()
+    // 其余字段照常搬过来（只丢 oauth 这一个块）。
+    expect(imported?.url).toBe('https://mcp.example.com')
+    expect(imported?.enabled).toBe(true)
+  })
 })
 
 /** 造一个最小的 marketplace 克隆目录（足以让 MpStore 的 coerceMpEntry 接受
@@ -473,6 +576,43 @@ describe('POST /api/config/web-import — marketplaces', () => {
     const body = await res.json() as { marketplaces: { imported: string[]; skipped: string[] } }
     expect(body.marketplaces.skipped).toEqual(['claude-code'])
     expect(body.marketplaces.imported).toEqual([])
+
+    // 跳过的语义是"桌面版已经有了就不动它"，不是"用源的覆盖它"：既有条目必须
+    // **原封不动**（displayName / cloneDir / lastSha / source 都是桌面版那份），
+    // 源里那份克隆也没有先拷过来再作废。
+    const after = new MpStore({ stateDir })
+    const entries = await after.load()
+    expect(entries).toHaveLength(1)
+    expect(entries[0].displayName).toBe('local')
+    expect(entries[0].cloneDir).toBe(after.cloneDirFor('claude-code'))
+    expect(entries[0].lastSha).toBe('b'.repeat(40))
+    expect(entries[0].source).toEqual({ type: 'https', url: 'https://github.com/example/x' })
+    expect(existsSync(join(stateDir, 'marketplace-cache'))).toBe(false)
+  })
+
+  // 失败路径的清理此前够不着（`clone dir is missing` 在 cp 之前就 throw，走的
+  // 是另一条分支）：把目标目录**预先建成非空**、且不登记进桌面 store 的索引，
+  // cp 就会成功、rename 才失败（POSIX 与 Windows 都拒绝把目录 rename 到已存在
+  // 的非空目录上）。
+  it('cleans staging up and registers nothing when the rename onto an existing dir fails', async () => {
+    seedMarketplace(sourceDir, 'claude-code', ['review'])
+    const target = join(stateDir, 'marketplace-cache', 'claude-code')
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'stale.txt'), 'stale', 'utf8')
+
+    const res = await post({ marketplaces: ['claude-code'] })
+    expect(res.status).toBe(200)
+    const body = await res.json() as { marketplaces: { imported: string[]; failed: Array<{ name: string; error: string }> } }
+    expect(body.marketplaces.imported).toEqual([])
+    expect(body.marketplaces.failed.map((f) => f.name)).toEqual(['claude-code'])
+    expect(body.marketplaces.failed[0].error).toBeTruthy()
+
+    // 条目没被登记（store 索引里没有它）。
+    const store = new MpStore({ stateDir })
+    expect(await store.load()).toEqual([])
+    // 没有 .importing 残留；预先存在的那份也没被当成成功结果（半个 clone 不落地）。
+    expect(readdirSync(join(stateDir, 'marketplace-cache'))).toEqual(['claude-code'])
+    expect(readdirSync(target)).toEqual(['stale.txt'])
   })
 
   // 源的 marketplaces.json 存在但读不动：与 GET 的 marketplacesError 同一语义——
