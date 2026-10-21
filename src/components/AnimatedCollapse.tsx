@@ -1,7 +1,7 @@
 import { prefersReducedMotion } from '../utils/reduced-motion'
 import { isRendered } from '../utils/rendered'
 import { easeStandard } from '../utils/cubic-bezier'
-import { setCollapseAnimating } from './collapse-animation'
+import { anyCollapseAnimatingInside, releaseAncestorCollapsePins, setCollapseAnimating } from './collapse-animation'
 import {
   type DetailsHTMLAttributes,
   type MouseEvent,
@@ -385,7 +385,10 @@ export function AnimatedCollapse({
       const shouldAnimateInitialOpen = open && (appear || (!initiallyOpenRef.current && unmountOnExit))
       body.style.height = shouldAnimateInitialOpen ? '0px' : (open ? `${nextHeight}px` : '0px')
       body.style.opacity = open && !shouldAnimateInitialOpen ? '' : '0'
-      if (shouldAnimateInitialOpen) animateHeight(0, nextHeight, true, true)
+      if (shouldAnimateInitialOpen) {
+        releaseAncestorCollapsePins(body)
+        animateHeight(0, nextHeight, true, true)
+      }
       return
     }
 
@@ -409,6 +412,13 @@ export function AnimatedCollapse({
         return
       }
       const target = content.offsetHeight || content.scrollHeight
+      // Release any pinned ancestor BEFORE the fold's first frame. A pinned
+      // ancestor would hold this fold's growth back until its own observer
+      // relays it (see releaseAncestorCollapsePins), and under reduced motion —
+      // where animateHeight settles synchronously and never registers — that
+      // relay is the only path, so the whole growth would land one broadcast
+      // late: a full-body-height flash of the content below.
+      releaseAncestorCollapsePins(body)
       animateHeight(0, target, true, true)
       return
     }
@@ -450,6 +460,14 @@ export function AnimatedCollapse({
     // canceling).
     const observer = new ResizeObserver(() => {
       if (!previousOpenRef.current) return
+      // HOISTED (it used to sit below the measurement): an open/close fold in
+      // flight owns this body's height. An observation must never tear it down
+      // — that made every open instant — and it must not reach the
+      // nested-collapse check below either, which would un-pin a body mid-fold
+      // and flash its content open for a frame. finishOpen re-measures at
+      // animation end, so growth during the fold is still reconciled. (With the
+      // fold case handled here, `animatingRef` below means a RESIZE tween.)
+      if (animatingRef.current && animKindRef.current === 'fold') return
       // Measure the content's USED height, not scrollHeight. Under
       // `overflow-y: clip` on the body, content.scrollHeight can return the
       // body's pinned height rather than the true content height (observed:
@@ -478,22 +496,30 @@ export function AnimatedCollapse({
         body.style.height = `${measured.height}px`
         return
       }
+      // A collapse animating inside this body IS this box's height motion:
+      // track the content natively (auto) instead of pinning a copy of it. A
+      // pinned copy is written by THIS observer, one broadcast after that
+      // nested fold's own per-frame write, so anything reading the boxes in
+      // this broadcast — the transcript's fold-lockstep — is a frame behind for
+      // the whole fold: the content below a ToolGroupCard painted one
+      // growth-step low on every frame. The pin is dropped when the fold starts
+      // (releaseAncestorCollapsePins); this keeps it off if something re-pinned
+      // in between — e.g. this body's own fold finishing after the nested fold
+      // began. Deliberately BELOW the clamped branch: a flex-clamped body must
+      // keep healing its pin from the content.
+      if (anyCollapseAnimatingInside(content)) {
+        if (body.style.height !== '') body.style.height = ''
+        return
+      }
       const currentHeight = body.offsetHeight
       if (Math.abs(measured.height - currentHeight) < 1) return
       lastHeightRef.current = measured.height
       if (animatingRef.current) {
-        if (animKindRef.current === 'fold') {
-          // An open/close fold is in flight — let it play to its target
-          // rather than tearing it down (which made every open instant /
-          // animation-less). finishOpen re-measures at animation end so any
-          // growth during the fold is still reconciled.
-          return
-        }
-        // A resize tween is in flight — tear it down and let the branch
-        // below replace it. Cancel-and-replace is the animateResize
-        // contract; a blanket guard here used to swallow every observation
-        // after the first, freezing the body at the first frame's (stale)
-        // target until finishOpen snapped to the truth at the end.
+        // A resize tween is in flight (the fold case returned above) — tear it
+        // down and let the branch below replace it. Cancel-and-replace is the
+        // animateResize contract; a blanket guard here used to swallow every
+        // observation after the first, freezing the body at the first frame's
+        // (stale) target until finishOpen snapped to the truth at the end.
         cleanupAnimation()
       }
       // Continuous vs discrete (see RESIZE_COALESCE_MS): an inner animation

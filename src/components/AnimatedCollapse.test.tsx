@@ -2,6 +2,7 @@ import { type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
 import { AnimatedCollapse } from './AnimatedCollapse'
+import { setCollapseAnimating } from './collapse-animation'
 import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
 
 beforeEach(() => {
@@ -584,5 +585,141 @@ describe('AnimatedCollapse — a box that is not being rendered is not a measure
     )
     const body = container.querySelector('.animated-collapse') as HTMLElement
     expect(body.style.height).toBe('100px')
+  })
+})
+
+describe('AnimatedCollapse — a nested fold is never relayed through an ancestor pin', () => {
+  /** An open outer collapse with a pin, wrapping an inner collapse. */
+  function Nested({
+    innerOpen,
+    outerAnimateResize = true,
+    outerRemeasureWhileClamped = false,
+  }: {
+    innerOpen: boolean
+    outerAnimateResize?: boolean
+    outerRemeasureWhileClamped?: boolean
+  }) {
+    return (
+      <AnimatedCollapse
+        open
+        unmountOnExit={false}
+        animateResize={outerAnimateResize}
+        remeasureWhileClamped={outerRemeasureWhileClamped}
+      >
+        <AnimatedCollapse open={innerOpen} unmountOnExit={false}>
+          <ul>
+            <li>A</li>
+          </ul>
+        </AnimatedCollapse>
+      </AnimatedCollapse>
+    )
+  }
+
+  function parts(container: HTMLElement) {
+    const bodies = container.querySelectorAll<HTMLElement>('.animated-collapse')
+    const contents = container.querySelectorAll<HTMLElement>('.animated-collapse-content')
+    return { outer: bodies[0], inner: bodies[1], outerContent: contents[0], innerContent: contents[1] }
+  }
+
+  it('drops the ancestor pin when a nested fold starts animating', () => {
+    vi.useFakeTimers()
+    const { container, rerender } = render(<Nested innerOpen={false} />)
+    const { outer, inner, innerContent } = parts(container)
+    outer.style.height = '100px' // a settled open body, as in the browser
+    mockLayoutHeight(innerContent, 400)
+
+    rerender(<Nested innerOpen />)
+
+    // The nested fold owns the height now: the ancestor must not clip it, or
+    // its own observer would relay the growth one broadcast late. (This path is
+    // already live from the registry side — setCollapseAnimating releases — so
+    // it pins the wiring rather than the layout-effect call below.)
+    expect(outer.style.height).toBe('')
+    expect(inner.classList.contains('animating')).toBe(true)
+  })
+
+  it('drops the ancestor pin even when the fold settles instantly (reduced motion)', () => {
+    // Reduced motion (and any <2px delta) settles synchronously, so
+    // animateHeight never registers — the layout-effect release is the only
+    // path. Without it the ancestor relays the whole growth one broadcast late:
+    // the content below flashes a full body-height lower for one frame.
+    vi.stubGlobal('matchMedia', () => ({
+      matches: true,
+      addEventListener() {},
+      removeEventListener() {},
+    }))
+    const { container, rerender } = render(<Nested innerOpen={false} />)
+    const { outer, innerContent } = parts(container)
+    outer.style.height = '100px'
+    mockLayoutHeight(innerContent, 400)
+
+    rerender(<Nested innerOpen />)
+
+    expect(outer.style.height).toBe('')
+  })
+
+  it('does not re-pin the ancestor while a nested collapse animates', () => {
+    // `outerAnimateResize={false}` so the contrast below is a plain snap rather
+    // than a tween whose first frame is the OLD height (the tween's own
+    // start-value write would make the assertion read the wrong number).
+    const { container } = render(<Nested innerOpen={false} outerAnimateResize={false} />)
+    const { outer, inner, outerContent } = parts(container)
+    outer.style.height = '100px'
+    mockLayoutHeight(outer, 100)
+    mockLayoutHeight(outerContent, 400)
+    // The registry is the signal — the observer consults it, not the DOM class.
+    setCollapseAnimating(inner, true)
+
+    act(() => fireResize(outerContent))
+
+    expect(outer.style.height).toBe('')
+
+    // …and the very same observation pins it once the nested fold is over
+    // (this is the contrast that keeps the guard from silently disabling the
+    // body's normal resize handling).
+    setCollapseAnimating(inner, false)
+    act(() => fireResize(outerContent))
+    expect(outer.style.height).toBe('400px')
+  })
+
+  it('still adopts a clamped reading while a nested collapse animates', () => {
+    // This pins the ORDER of the two guards: the nested check must sit BELOW
+    // the clamped branch, so a flex-clamped body (the TaskList card under
+    // .chat-bottom-stack's cap) keeps healing its pin from the content. It
+    // passes both before and after this change by design — it reddens only if
+    // the nested check is hoisted above the clamped branch. `remeasureWhileClamped`
+    // is what makes a clamped reading adoptable at all (without it
+    // measureAdoptableHeight returns null and nothing is written) — the same
+    // opt-in the TaskList card carries.
+    const { container } = render(<Nested innerOpen={false} outerRemeasureWhileClamped />)
+    const { outer, inner, outerContent } = parts(container)
+    mockLayoutHeight(outer, 40) // clamped: the used height is shorter than the pin
+    mockLayoutHeight(outerContent, 400)
+    setCollapseAnimating(inner, true)
+    // The pin goes on AFTER the registration: starting an animation releases
+    // ancestor pins (releaseAncestorCollapsePins), so pinning first would erase
+    // the very pre-condition this case needs. A pin that comes back while the
+    // nested fold still runs is the state the ordering protects.
+    outer.style.height = '100px'
+
+    act(() => fireResize(outerContent))
+
+    expect(outer.style.height).toBe('400px')
+  })
+
+  it('leaves a stand-down body alone', () => {
+    // The inner card's open lands while its subtree is not rendered (a
+    // keep-alive panel; the cross-tab collapse flag can open a card while it is
+    // hidden). The component stands down instead of animating, so nothing
+    // releases the ancestor pin that keeps a shown-again card from coming back
+    // header-only.
+    const { container, rerender } = renderInPanel(<Nested innerOpen={false} />)
+    const { outer, inner } = parts(container)
+    outer.style.height = '300px' // a settled open body with a pin
+
+    rerender(<Nested innerOpen />, true) // the open lands while the panel is hidden
+
+    expect(inner.classList.contains('animating')).toBe(false)
+    expect(outer.style.height).toBe('300px')
   })
 })
