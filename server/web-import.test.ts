@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { tempDir, rmRf } from './__test-utils__/index.js'
 import { MANIFEST_REL_PATH } from './marketplace-parser.js'
 import { MpStore } from './mp-store.js'
+import { DEFAULT_PROFILE } from './config.js'
 import { readSourceCredentials, readSourceMcp, readSourceMarketplaces } from './web-import.js'
 
 /** 网页版的 config.json：active profile 是数组里的第二条（用户切换过），
@@ -54,6 +55,43 @@ describe('readSourceCredentials', () => {
   it('throws when the source config.json is not a JSON object', async () => {
     writeFileSync(join(dir, 'config.json'), '["not", "an", "object"]', 'utf8')
     await expect(readSourceCredentials(dir)).rejects.toThrow(/not a JSON object/)
+  })
+
+  /** 一条"源里写了字段、但值活不过 coercion"的 profile。缺少 tier slot 的
+   *  modelGroups 条目正是 coerceModelGroups 会丢掉的那一类。 */
+  function seedUnusableFields(): void {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default',
+        name: 'Unusable',
+        authToken: 'sk-ant-unusable',
+        baseUrl: 'https://unusable.example.com',
+        modelList: ['', '  '],
+        modelGroups: [{ id: 'g1', name: 'G1' }],
+      }],
+      activeProfileId: 'default',
+    }), 'utf8')
+  }
+
+  // present 必须与**返回值**一致，而不是与"磁盘上写了这个键"一致：值为 fallback
+  // 时若仍宣称"源里有"，写入侧就会拿 DEFAULT_PROFILE 的模型列表覆盖桌面版的真实
+  // 列表 —— 正是"只写源里确实存在的字段"要防的那种静默清空。
+  it('reports modelList as absent when nothing survives coercion', async () => {
+    seedUnusableFields()
+    const cred = await readSourceCredentials(dir)
+    // 值确实是 fallback（不是源的）——这就是 present 必须为 false 的原因。
+    expect(cred.modelList).toEqual(DEFAULT_PROFILE.modelList)
+    expect(cred.present.modelList).toBe(false)
+  })
+
+  it('reports modelGroups as absent when every entry fails coercion', async () => {
+    seedUnusableFields()
+    const cred = await readSourceCredentials(dir)
+    // 关键：这里的 coerced 值是 []。若 present 为 true，写入侧会用 [] 把桌面版
+    // 已有的 model groups 清空。
+    expect(cred.modelGroups).toEqual([])
+    expect(cred.present.modelGroups).toBe(false)
   })
 })
 

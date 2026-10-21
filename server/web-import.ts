@@ -11,7 +11,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_DIR_NAME } from './json-file-store.js'
 import { DEFAULT_PROFILE, type ModelGroupConfig } from './config.js'
-import { coerceProfileEntries, resolveActiveProfile } from './profiles.js'
+import { coerceModelGroups, coerceProfileEntries, normalizeModelList, resolveActiveProfile } from './profiles.js'
 import { McpConfigStore, type StoredMcpServer } from './mcp-config.js'
 import { MpStore, type MpEntry } from './mp-store.js'
 
@@ -21,13 +21,19 @@ export function webStateDir(): string {
   return join(homedir(), DEFAULT_DIR_NAME)
 }
 
-/** 源 profile 里"确实存在"的字段。导入只写为 true 的字段；false 表示
- *  "源里没有"（不是"请清空"），必须保留桌面版的现状。
+/** 源 profile 里"可以写"的字段。导入只写为 true 的字段。
  *
- *  语义边界：true 只表示"磁盘上写了这个键"，**不表示这个值有意义**。
- *  raw `modelList: ['']`（coercion 后整条回退成 fallback）或一个没有任何
- *  tier slot 的 modelGroups 条目都会让 flag 为 true，而 coercion 之后的
- *  值仍是空的/回退的。写入侧不得把 true 当成"值可用"的证据。 */
+ *  语义边界（**与返回值绑定，不是与磁盘绑定**）：
+ *    - true  → 上面返回的值就是源里的值，可以写进桌面版；
+ *    - false → 源的该键缺失**或值活不过 coercion**（返回的其实是 fallback / []），
+ *              不得写入，必须保留桌面版的现状。
+ *
+ *  刻意**不**用"磁盘上写了这个键"做判据：raw `modelList: ['']`（或全空白条目）
+ *  在 coercion 之后会整条回退成 fallback，raw `modelGroups` 的条目也可能全部被丢
+ *  成 [] —— 那样的 pair 会让写入侧拿 DEFAULT_PROFILE 的模型列表覆盖用户的真实列表、
+ *  或用 [] 清空用户已有的模型分组。"源里确实存在"指的是**可用的值**，不是键的存在。
+ *  六个字段一律由各自 coercion 用的**同一个函数**判定（scalar 是 trim 后非空白检查，
+ *  modelList / modelGroups 就是 normalizeModelList / coerceModelGroups）。 */
 export interface PresentFields {
   authToken: boolean
   baseUrl: boolean
@@ -75,6 +81,11 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
   // 填满，到了 coerced profile 上就分不出"原本没有"和"值恰好等于默认"了。
   // 用 entries 自带的 raw `index`（与 /config/setup 同一手法），不自己按 id
   // 匹配——coerceProfileEntries 会 trim id、重复 id 取后者，手工匹配会错条目。
+  //
+  // 但判据是"值活过了 coercion"，不是"键在磁盘上"：下面 modelList / modelGroups
+  // 走的是与 coercion 完全相同的 normalizeModelList / coerceModelGroups，所以
+  // present === true ⟹ 返回的值就是源的；=== false ⟹ 返回值是 fallback / []，
+  // 写入侧不得落笔（写入侧的 `if (cred.present.X)` 闸门由此与值一致）。
   const hit = entries.find((entry) => entry.profile === active)
   const rawList = Array.isArray(obj.profiles) ? (obj.profiles as unknown[]) : []
   const rawEntry = hit ? (rawList[hit.index] as Record<string, unknown> | undefined) : undefined
@@ -90,8 +101,8 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
     present: {
       authToken: hasStr(rawEntry?.authToken),
       baseUrl: hasStr(rawEntry?.baseUrl),
-      modelList: Array.isArray(rawEntry?.modelList) && rawEntry.modelList.length > 0,
-      modelGroups: Array.isArray(rawEntry?.modelGroups) && rawEntry.modelGroups.length > 0,
+      modelList: normalizeModelList(rawEntry?.modelList, []).length > 0,
+      modelGroups: coerceModelGroups(rawEntry?.modelGroups).length > 0,
       recapModel: hasStr(rawEntry?.recapModel),
       commitMessageModel: hasStr(rawEntry?.commitMessageModel),
     },

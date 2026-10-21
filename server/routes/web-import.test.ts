@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Hono } from 'hono'
 import { tempDir, rmRf } from '../__test-utils__/index.js'
@@ -221,5 +221,70 @@ describe('POST /api/config/web-import — credentials', () => {
       body: JSON.stringify({ credentials: 'yes' }),
     })
     expect(res.status).toBe(400)
+  })
+
+  // 上面那条 "writes the source ACTIVE profile…" 钉的是**源侧**的选点；这条钉
+  // **目的侧**：桌面版 active 不是 profiles[0] 时，落笔必须命中 active 那一条。
+  // 这正是 /config/setup 注释里记的 P0（token 写进了 profiles[0]，而读的是
+  // active）—— 只覆盖源侧是测不到它的。
+  it('writes into the destination ACTIVE profile, not the destination profiles[0]', async () => {
+    writeFileSync(join(stateDir, 'config.json'), JSON.stringify({
+      profiles: [
+        { id: 'first', name: 'First', authToken: 'sk-ant-dst-first', baseUrl: 'https://first.example.com', modelList: ['keep-first'], recapModel: 'first-recap' },
+        { id: 'active', name: 'Active', authToken: '', baseUrl: 'https://api.anthropic.com', modelList: ['keep-active'], recapModel: 'keep-me' },
+      ],
+      activeProfileId: 'active',
+    }), 'utf8')
+    await loadConfig(stateDir)
+    seedSource(sourceDir)
+
+    const app = await makeRouter(stateDir, sourceDir)
+    const res = await app.request('/api/config/web-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credentials: true }),
+    })
+    expect(res.status).toBe(200)
+    await loadConfig(stateDir)
+    // 源的值读回来时来自第二条（active），不是第一条。
+    expect(config.authToken).toBe('sk-ant-abcd1234')
+    expect(config.modelList).toEqual(['m-a'])
+    expect(config.recapModel).toBe('keep-me')
+
+    const raw = JSON.parse(readFileSync(join(stateDir, 'config.json'), 'utf8')) as {
+      profiles: Array<Record<string, unknown>>
+      activeProfileId: string
+    }
+    // profiles[0] 必须原封不动 —— 写错条目的实现会在这里露出来。
+    expect(raw.profiles[0].authToken).toBe('sk-ant-dst-first')
+    expect(raw.profiles[0].modelList).toEqual(['keep-first'])
+    expect(raw.profiles[0].recapModel).toBe('first-recap')
+    // 选点没被写入改掉：还是 active 那条。
+    expect(raw.profiles[1].authToken).toBe('sk-ant-abcd1234')
+    expect(raw.activeProfileId).toBe('active')
+  })
+
+  // 没要求导入凭证 → credentials 为 null（与 GET 的 credentials: null 同形），
+  // 且另外两栏回完整的空集合形状（Task 4/5 往里面填）。
+  it('leaves credentials null when the flag is false or absent', async () => {
+    seedSource(sourceDir)
+    const app = await makeRouter(stateDir, sourceDir)
+    for (const body of [{ credentials: false }, {}]) {
+      const res = await app.request('/api/config/web-import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      expect(res.status).toBe(200)
+      const json = await res.json() as { credentials: unknown; mcp: unknown; marketplaces: unknown }
+      expect(json.credentials).toBeNull()
+      expect(json.mcp).toEqual({ imported: [], skipped: [], failed: [] })
+      expect(json.marketplaces).toEqual({ imported: [], skipped: [], failed: [] })
+    }
+    // 没被要求导入 → 桌面版自己的 config.json 一个字都没动（token 仍是未配置态：
+    // applyParsedConfig 把空白 token 落成 undefined，不是 ''）。
+    await loadConfig(stateDir)
+    expect(config.authToken).toBeUndefined()
+    expect(config.recapModel).toBe('keep-me')
   })
 })
