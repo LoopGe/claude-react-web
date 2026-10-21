@@ -23,15 +23,30 @@ import {
 import type { McpServerConfigMeta } from '../types'
 
 interface Props {
-  /** Called after `/config/setup` has succeeded. `openNewSession` reflects
-   *  whether the user clicked the final "Create New Session" button (vs
-   *  Skip / Done) — the parent uses it to decide whether to auto-open the
-   *  NewSessionDialog once the main UI mounts.
+  /** Called after the config has been written. `openNewSession` reflects
+   *  whether the parent should auto-open the NewSessionDialog once the main
+   *  UI mounts. Two call sites, and only the first goes through
+   *  `/config/setup`:
+   *
+   *    1. The wizard's finalize path, after `/config/setup` has succeeded.
+   *       Here `openNewSession` reflects whether the user clicked the final
+   *       "Create New Session" button (vs Skip / Done).
+   *    2. The desktop pre-screen's credential hand-off
+   *       (`SetupWebImport.onConfigured` → the `showImport` early return
+   *       above), where no `/config/setup` POST happens at all: the import
+   *       endpoint has already written config.json and the server reports
+   *       `configured: true`. It always passes `true`, because a user who
+   *       just moved their credentials over wants a session to try them in.
+   *
+   *  Both paths land in App.handleConfigured (best-effort /config refresh +
+   *  setIsConfigured(true)).
    *
    *  May return a promise; the dialog awaits it so the submit button stays
    *  in its loading state through the parent's post-setup work (currently
    *  a /config refresh). If the parent throws, the rejection surfaces here
-   *  and we render it inline, keeping the user on Step 4 to retry. */
+   *  and we render it inline, keeping the user on Step 4 to retry. (That is
+   *  call site 1's screen; SetupWebImport instead logs a hand-off rejection,
+   *  since its import already succeeded by then.) */
   onConfigured: (opts: { openNewSession: boolean }) => void | Promise<void>
 }
 

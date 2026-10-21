@@ -104,10 +104,16 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
     // 前置屏：没有进度点、没有步数计数器。
     expect(await screen.findByText(/Reading your Claude Web config|Nothing to import from the web version/)).toBeTruthy()
     expect(screen.queryByText(/^Step \d+ of \d+$/)).toBeNull()
+    // 进度点只有 aria-label、没有可匹配的文本，上面那条正则抓不到它 —— 必须
+    // 单独按 DOM 选择器钉一次，否则"前置屏不出现进度点"这半条要求是漏测的。
+    expect(document.querySelector('.setup-progress')).toBeNull()
 
     fireEvent.click(screen.getByText('Next'))
     expect(await screen.findByText('Step 1 of 7')).toBeTruthy()
     expect(screen.getByText('Continue')).toBeTruthy()
+    // 同一个选择器在向导里必须抓得到（否则上面那句 toBeNull 只证明选择器写错了，
+    // 证明不了进度点不存在）。
+    expect(document.querySelector('.setup-progress')).not.toBeNull()
   })
 
   it('advances Updates → Finish without crashing on the missing id 6', async () => {
