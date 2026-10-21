@@ -136,9 +136,6 @@ describe('SetupWebImport', () => {
       credentials: true,
       mcp: ['ctx7'],
       marketplaces: [],
-      // 明确给足超时：这次 POST 要拷最多上百 MB，transport 的 30 s 默认值
-      // 够得着（客户端 abort 时服务端照旧跑完并落盘，用户会误以为失败）。
-      // 硬编码 180_000 就是那一条要求的钉子，改小这里必须是有意的。
     }, { timeoutMs: 180_000 })
   })
 
@@ -165,9 +162,6 @@ describe('SetupWebImport', () => {
       credentials: true,
       mcp: ['ctx7'],
       marketplaces: [],
-      // 明确给足超时：这次 POST 要拷最多上百 MB，transport 的 30 s 默认值
-      // 够得着（客户端 abort 时服务端照旧跑完并落盘，用户会误以为失败）。
-      // 硬编码 180_000 就是那一条要求的钉子，改小这里必须是有意的。
     }, { timeoutMs: 180_000 })
   })
 
