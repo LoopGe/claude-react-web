@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { isTerminalTaskStatus, normalizeTaskType } from './tasks.js'
+import { MAX_TERMINAL_TASKS, isTerminalTaskStatus, normalizeTaskType } from './tasks.js'
+
+describe('MAX_TERMINAL_TASKS', () => {
+  it('is exported and pinned at 50', () => {
+    expect(MAX_TERMINAL_TASKS).toBe(50)
+  })
+})
 
 describe('normalizeTaskType', () => {
   it('folds the frame discriminants onto the friendly labels the UI matches on', () => {

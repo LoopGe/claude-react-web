@@ -54,7 +54,7 @@ interface Props {
   planStatus?: ReadonlyMap<string, PlanStatus>
   planContent?: ReadonlyMap<string, string>
   questionAnswers?: ReadonlyMap<string, QuestionAnswerEntry[]>
-  /** Transcript's collapsible transcript-group-cards pref (tool-group + task-notification folds) (effective value from
+  /** Transcript's collapsible transcript-group-cards pref (tool-group fold) (effective value from
    *  the owning Chat panel) — forwarded so this transcript matches the
    *  main one. */
   toolGroupCards?: boolean

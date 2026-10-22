@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { fireEvent, render } from '@testing-library/react'
 import type { TaskRecordUi } from '../types'
 
 // The panel's data comes from two selectors; drive them directly so the test
@@ -23,15 +23,14 @@ function task(over: Partial<TaskRecordUi> & { taskId: string }): TaskRecordUi {
   return { description: 'work', status: 'running', updatedAt: 0, ...over }
 }
 
-function setup(tasks: TaskRecordUi[]): HTMLElement {
+function renderTasks(tasks: TaskRecordUi[]) {
   tasksRef.current = tasks
   // Derive the mocked counts with the REAL rule (countTaskActivity — what
   // useSessionTaskCounts wraps) rather than a local literal: a hand-rolled copy
   // here is the same drift this work removed from the panel itself, and it
   // would keep passing after a status is added to the canonical list.
   countsRef.current = countTaskActivity(tasks)
-  const { container } = render(<TasksPanel sessionId="s1" onClose={() => {}} />)
-  return container
+  return render(<TasksPanel sessionId="s1" onClose={() => {}} />)
 }
 
 describe('TasksPanel header count', () => {
@@ -40,7 +39,7 @@ describe('TasksPanel header count', () => {
     // housekeeping (the SDK says it may appear in a tasks panel) but must not
     // count it, because the pill reads the same `indicator` value. Counting
     // `active.length` here is what made "panel says 3, bubble says 1".
-    const container = setup([
+    const { container } = renderTasks([
       task({ taskId: 'a' }),
       task({ taskId: 'b', ambient: true }),
       task({ taskId: 'c', skipTranscript: true }),
@@ -53,7 +52,7 @@ describe('TasksPanel header count', () => {
   })
 
   it('surfaces the ambient remainder separately instead of folding it in', () => {
-    const container = setup([
+    const { container } = renderTasks([
       task({ taskId: 'a' }),
       task({ taskId: 'b', ambient: true }),
       task({ taskId: 'c', ambient: true }),
@@ -65,14 +64,14 @@ describe('TasksPanel header count', () => {
 
   it('reads idle with no ambient hint when only ambient work is live', () => {
     // Matches the pill's digit-less ambient state: no user work to report.
-    const container = setup([task({ taskId: 'b', ambient: true })])
+    const { container } = renderTasks([task({ taskId: 'b', ambient: true })])
     const header = container.querySelector('.tasks-panel-count')!
     expect(header.textContent).toContain('idle')
     expect(header.textContent).toContain('+1 ambient')
   })
 
   it('shows no ambient hint when every live task is user work', () => {
-    const container = setup([task({ taskId: 'a' }), task({ taskId: 'b' })])
+    const { container } = renderTasks([task({ taskId: 'a' }), task({ taskId: 'b' })])
     expect(container.querySelector('.tasks-panel-count')!.textContent).toContain('2 running')
     expect(container.querySelector('.tasks-panel-count-ambient')).toBeNull()
   })
@@ -104,7 +103,7 @@ describe('TasksPanel status icons', () => {
     // by a `tasks-row-error` class that could never take effect (the svg carries
     // its own colour), so `stopped` fell through to the error icon along with
     // failed/killed. Locked here so the distinction can't be lost again.
-    const container = setup([
+    const { container } = renderTasks([
       task({ taskId: 'a', description: 'failed one', status: 'failed' }),
       task({ taskId: 'b', description: 'killed one', status: 'killed' }),
       task({ taskId: 'c', description: 'stopped one', status: 'stopped' }),
@@ -122,12 +121,53 @@ describe('TasksPanel status icons', () => {
   })
 
   it('keeps the two muted states on distinct glyphs', () => {
-    const container = setup([
+    const { container } = renderTasks([
       task({ taskId: 'e', description: 'paused one', status: 'paused' }),
       task({ taskId: 'c', description: 'stopped one', status: 'stopped' }),
     ])
     // Same colour class, different shapes — otherwise the two states read
     // identically and the distinction this change restored is cosmetic only.
     expect(svgByDesc(container, 'paused one').innerHTML).not.toBe(svgByDesc(container, 'stopped one').innerHTML)
+  })
+})
+
+describe('TasksPanel result block', () => {
+  it('renders an expand toggle for a terminal task with a result, and the body only after expanding', () => {
+    const tasks = [{
+      taskId: 't1', toolUseId: 'tu1', description: 'bg command',
+      status: 'completed', result: 'THE-OUTPUT-BODY', updatedAt: 1,
+      startedAt: 0, endedAt: 5,
+    }] as TaskRecordUi[]
+    const { container, getByRole } = renderTasks(tasks)
+    // Before expanding: the body must not be in the DOM at all.
+    expect(container.textContent).not.toContain('THE-OUTPUT-BODY')
+    fireEvent.click(getByRole('button', { name: /show output/i }))
+    expect(container.textContent).toContain('THE-OUTPUT-BODY')
+    fireEvent.click(getByRole('button', { name: /hide output/i }))
+    expect(container.textContent).not.toContain('THE-OUTPUT-BODY')
+  })
+
+  it('renders no toggle when result is empty or absent', () => {
+    const tasks = [
+      { taskId: 't1', description: 'a', status: 'completed', updatedAt: 1 },
+      { taskId: 't2', description: 'b', status: 'completed', result: '', updatedAt: 1 },
+    ] as TaskRecordUi[]
+    const { queryByRole } = renderTasks(tasks)
+    expect(queryByRole('button', { name: /show output/i })).toBeNull()
+  })
+
+  it('renders no toggle for a still-running task', () => {
+    const tasks = [{ taskId: 't1', description: 'a', status: 'running', result: 'X', updatedAt: 1 }] as TaskRecordUi[]
+    const { queryByRole } = renderTasks(tasks)
+    expect(queryByRole('button', { name: /show output/i })).toBeNull()
+  })
+
+  it('shows the red error styling for a failed task whose result is empty', () => {
+    // Review focus #2: a failed task with no result must still be visible as a
+    // failed row (it is now the ONLY signal — the transcript no longer shows it).
+    const tasks = [{ taskId: 't1', description: 'a', status: 'failed', updatedAt: 1 }] as TaskRecordUi[]
+    const { container, queryByRole } = renderTasks(tasks)
+    expect(container.querySelector('.tasks-icon-err')).toBeTruthy()
+    expect(queryByRole('button', { name: /show output/i })).toBeNull()
   })
 })

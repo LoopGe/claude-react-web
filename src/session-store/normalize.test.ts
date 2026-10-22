@@ -299,6 +299,35 @@ describe('shouldHideByDefault', () => {
       } as unknown as SdkMessage),
     ).toBe(true)
   })
+
+  it('hides a <task-notification> user injection (output lives in TasksPanel)', () => {
+    expect(shouldHideByDefault({
+      type: 'user',
+      message: { content: [{ type: 'text', text: '<task-notification><tool-use-id>tu1</tool-use-id><status>completed</status></task-notification>' }] },
+    } as unknown as SdkMessage)).toBe(true)
+  })
+
+  it('still returns the item from toTranscriptItem (reducer needs the frame)', () => {
+    const item = toTranscriptItem({
+      type: 'user',
+      uuid: 'u1',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'text', text: '<task-notification><tool-use-id>tu1</tool-use-id><status>completed</status></task-notification>' }] },
+    } as unknown as SdkMessage, undefined)
+    expect(item).not.toBeNull()
+    expect(item!.hiddenByDefault).toBe(true)
+    expect(item!.id).toBe('u1')
+  })
+
+  it('does NOT hide an injection with no <tool-use-id> (nothing to fold — must not vanish)', () => {
+    // Review Focus #6: without tool-use-id the parser returns null, so there
+    // is no Tasks record to route the output to. Hiding it here would drop
+    // the only signal it has. It falls through to MessageView's neutral card.
+    expect(shouldHideByDefault({
+      type: 'user',
+      message: { content: [{ type: 'text', text: '<task-notification><task-id>t1</task-id><status>completed</status></task-notification>' }] },
+    } as unknown as SdkMessage)).toBe(false)
+  })
 })
 
 describe('isHumanUserMessage', () => {

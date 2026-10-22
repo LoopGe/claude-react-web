@@ -344,7 +344,7 @@ export interface SessionInfoBase<PM = string> {
    *  so it survives resume / fork / reload. */
   autoRecap?: boolean
   /** Per-session override for the transcript's collapsible group cards
-   *  (tool-group + task-notification folds). Undefined = inherit the global
+   *  (the tool-group fold). Undefined = inherit the global
    *  default (config.toolGroupCards);
    *  a boolean pins this session to that value. Persisted so it survives
    *  resume / fork / reload. */

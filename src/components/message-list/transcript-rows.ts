@@ -43,7 +43,7 @@
  */
 import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
-import { getBlocks, parseTaskNotification, userMessageHasToolResult } from '../../session-store/normalize'
+import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
 import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
 import { MARKER_TOOL_NAMES, PLAN_TOOL_NAMES } from '../../constants/toolNames'
 import { willRenderEmpty } from './rendering'
@@ -87,15 +87,6 @@ export interface TranscriptRow {
    *  rows. `id` stays the FIRST member's uuid so live 1->2 growth is a
    *  same-key height change + mid-list removal of the second row (I3). */
   toolGroup?: {
-    members: SdkMessage[]
-    memberItemIndices: number[]
-    memberIds: string[]
-  }
-  /** Present only on a folded group of >=2 consecutive COMPLETED
-   *  <task-notification> user rows (the background-task noise reducer).
-   *  failed/stopped never fold — they render as standalone prominent cards.
-   *  Same id contract as toolGroup: first member's uuid. */
-  taskNotifGroup?: {
     members: SdkMessage[]
     memberItemIndices: number[]
     memberIds: string[]
@@ -239,52 +230,6 @@ export function foldToolGroupRows(rows: readonly TranscriptRow[]): TranscriptRow
   return out
 }
 
-/** A row eligible for task-notification folding: a root user message that
- *  parses as a <task-notification> injection with status `completed`.
- *  failed/stopped are decision-relevant — they always render standalone
- *  (the failure突出 half of the noise reducer) and break runs. */
-export function isTaskNotificationEligible(row: TranscriptRow): boolean {
-  if (row.msg.type !== 'user') return false
-  if (row.msg.parent_tool_use_id != null) return false
-  const parsed = parseTaskNotification(row.msg)
-  return parsed?.status === 'completed'
-}
-
-/** Fold consecutive COMPLETED notification runs of length >=2 into one group
- *  row (id = first member's uuid — same live-growth contract as the tool
- *  fold). failed/stopped rows pass through untouched and break runs. */
-export function foldTaskNotificationRows(rows: readonly TranscriptRow[]): TranscriptRow[] {
-  const out: TranscriptRow[] = []
-  let i = 0
-  while (i < rows.length) {
-    if (!isTaskNotificationEligible(rows[i]!)) {
-      out.push(rows[i]!)
-      i += 1
-      continue
-    }
-    let j = i + 1
-    while (j < rows.length && isTaskNotificationEligible(rows[j]!)) j += 1
-    if (j - i < 2) {
-      // Lone completed notification: keep as-is (no fold chrome for one).
-      out.push(rows[i]!)
-      i = j
-      continue
-    }
-    const members = rows.slice(i, j)
-    const first = members[0]!
-    out.push({
-      ...first,
-      taskNotifGroup: {
-        members: members.map((m) => m.msg),
-        memberItemIndices: members.map((m) => m.itemIndex),
-        memberIds: members.map((m) => m.id),
-      },
-    })
-    i = j
-  }
-  return out
-}
-
 export function buildTranscriptRows({
   items,
   parentToolUseIdFilter,
@@ -324,15 +269,12 @@ export function buildTranscriptRows({
 
   // Fold tool-only assistant runs. Must run before nextItemTypeMap so the
   // map keys on the surviving (group) ids. The `toolGroupCards` pref skips
-  // the fold entirely — every tool row stays its own card. The same gate
-  // covers the task-notification fold: it's the same "collapse rows into
-  // group chrome" feature, and the pref's contract is "no fold chrome".
+  // the fold entirely — every tool row stays its own card.
   const folded = toolGroupCards ? foldToolGroupRows(out) : out
-  const foldedNotifs = toolGroupCards ? foldTaskNotificationRows(folded) : folded
 
   const nextItemTypeMap = new Map<string, string>()
-  for (let i = 0; i < foldedNotifs.length - 1; i++) {
-    nextItemTypeMap.set(foldedNotifs[i]!.id, foldedNotifs[i + 1]!.msg.type)
+  for (let i = 0; i < folded.length - 1; i++) {
+    nextItemTypeMap.set(folded[i]!.id, folded[i + 1]!.msg.type)
   }
 
   // I1 is load-bearing now that rows are keyed by id: a duplicate would give
@@ -341,9 +283,9 @@ export function buildTranscriptRows({
   // prevent, but silent. `nextItemTypeMap` is also keyed by id, so a duplicate
   // corrupts the last-row detection too. Dev-only: Vite tree-shakes it out of
   // the shipped bundle (same pattern as the store's debug dump).
-  if (import.meta.env.DEV && nextItemTypeMap.size < foldedNotifs.length - 1) {
+  if (import.meta.env.DEV && nextItemTypeMap.size < folded.length - 1) {
     const seen = new Set<string>()
-    const dupes = foldedNotifs.map((r) => r.id).filter((id) => !seen.add(id))
+    const dupes = folded.map((r) => r.id).filter((id) => !seen.add(id))
     console.error(
       '[transcript-rows] duplicate row ids break virtualization (invariant I1):',
       Array.from(new Set(dupes)),
@@ -351,9 +293,9 @@ export function buildTranscriptRows({
   }
 
   return {
-    rows: foldedNotifs,
-    firstItemId: foldedNotifs[0]?.id,
-    lastItemId: foldedNotifs[foldedNotifs.length - 1]?.id,
+    rows: folded,
+    firstItemId: folded[0]?.id,
+    lastItemId: folded[folded.length - 1]?.id,
     nextItemTypeMap,
   }
 }

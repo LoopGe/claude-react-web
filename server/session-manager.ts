@@ -35,6 +35,7 @@ import { SteeredStore, spliceSteeredIntoPage } from './steered-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
 import { SessionOpLock } from './session-op-lock.js'
 import { ResultFrameStore, type ResultFrameEntry } from './result-frame-store.js'
+import { TaskResultStore } from './task-result-store.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { SnapshotService, type RewindPreview } from './snapshot/snapshot-service.js'
 import { McpConfigStore } from './mcp-config.js'
@@ -64,6 +65,7 @@ import {
   pump as pumpSession,
   applyTaskEvent,
   backgroundSubagentLaunches,
+  pruneAndBroadcastTasks,
   reconcileTasksFromStopHook as reconcileTaskMapFromStopHook,
   settleTasksOnProcessExit,
   type StopHookTaskSummary,
@@ -105,7 +107,7 @@ import { filterClientEnv } from './session-env.js'
 import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting, type WorktreeInfo } from '../shared/session-info.js'
-import { isTerminalTaskStatus } from '../shared/tasks.js'
+import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
 import { type RewindFilesResult } from '../shared/rewind.js'
@@ -804,6 +806,11 @@ export class SessionManager {
   private steeredStore: SteeredStore
   private turnAnchorStore: TurnAnchorStore
   private resultFrameStore: ResultFrameStore
+  /** Durable mirror of the in-memory `session.tasks` map (the TasksPanel's
+   *  record set). Mirrors the resultFrameStore sidecar pattern: one store per
+   *  manager, one JSON file per session, full-replace snapshots. Without it a
+   *  server restart wipes the panel's completed-task history. */
+  private taskResultStore: TaskResultStore
   /** Sidecar store for shadow-repo file snapshots. Holds per-session
    *  metadata (gitDir / worktree / scope / byMessage / patches / last)
    *  used by SnapshotService and accessed directly here for fork/discard
@@ -927,6 +934,7 @@ export class SessionManager {
     this.steeredStore = new SteeredStore(this.store.getDir(), this.historyCap)
     this.turnAnchorStore = new TurnAnchorStore(this.store.getDir(), this.historyCap)
     this.resultFrameStore = new ResultFrameStore(this.store.getDir(), this.historyCap)
+    this.taskResultStore = new TaskResultStore(this.store.getDir())
     // Shadow-repo file snapshots: build the store and service against the
     // same stateDir so direct copyForFork/remove and service-driven capture
     // /rewind share one underlying writer per session. fileSnapshots /
@@ -1004,7 +1012,14 @@ export class SessionManager {
     this.broadcaster = new SessionEventBroadcaster(this.sessions)
 
     this.backgroundWatchers = new BackgroundWatcherRegistry({
-      applyTaskEvent: (s, msg) => applyTaskEvent(s, msg),
+      applyTaskEvent: (s, msg) => {
+        // The watcher's synthesized completions fold OUTSIDE the pump loop
+        // (they bypass the SDK stream), so the pump's recordTasksSnapshot
+        // never sees them — persist here or a completion settled by the
+        // watcher vanishes across a restart.
+        applyTaskEvent(s, msg)
+        this.persistTasks(s)
+      },
       broadcastGlobal: (ev) => this.broadcastGlobal(ev),
       info: (s) => this.info(s),
       historyCap: this.historyCap,
@@ -1105,7 +1120,13 @@ export class SessionManager {
     // The watcher-claimed records are skipped: their async settle folds the
     // real outcome (and re-broadcasts the info frame itself).
     const countBefore = this.backgroundSubagentCount(s)
-    if (settleTasksOnProcessExit(s, watcherTaskIds) && this.backgroundSubagentCount(s) !== countBefore) {
+    const settledNow = settleTasksOnProcessExit(s, watcherTaskIds)
+    // The settle mutates session.tasks OUTSIDE the pump loop, so the pump's
+    // recordTasksSnapshot never fires for it — persist explicitly or the rows
+    // it terminal-izes vanish across a restart (the exact CLI-death path the
+    // sidecar exists for). Gate on the boolean: a no-op settle writes nothing.
+    if (settledNow) this.persistTasks(s)
+    if (settledNow && this.backgroundSubagentCount(s) !== countBefore) {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
 
@@ -1354,6 +1375,35 @@ export class SessionManager {
    *  reset (sessions reappear on restart). */
   async flushStore(): Promise<void> {
     await this.store?.flush()
+  }
+
+  /** Fire-and-forget persist of `session.tasks` to its sidecar. A failed
+   *  write only costs the panel its history across a restart. */
+  private persistTasks(session: Session): void {
+    void this.taskResultStore.save(session.id, Array.from(session.tasks.values())).catch((err) => {
+      log.warn(`[${session.id}] task-result persist failed: ${err}`)
+    })
+  }
+
+  /** Fill `session.tasks` from the durable sidecar after spawn. Fire-and-
+   *  forget: a failed load leaves old tasks invisible (the pre-feature
+   *  behaviour) but never blocks spawn. Only fills MISSING keys so a live
+   *  task frame that already landed wins (spec review focus #3). */
+  private hydrateTasks(id: string, session: Session): void {
+    void (async () => {
+      let records: TaskRecordUi[] | null = null
+      try {
+        records = await this.taskResultStore.load(id)
+      } catch (err) {
+        log.warn(`[${id}] task-result hydrate failed: ${err}`)
+        return
+      }
+      if (!records || records.length === 0) return
+      for (const rec of records) {
+        if (!session.tasks.has(rec.taskId)) session.tasks.set(rec.taskId, rec)
+      }
+      pruneAndBroadcastTasks(session)
+    })()
   }
 
   /** Write a session's metadata to the persistence store without
@@ -2313,6 +2363,19 @@ export class SessionManager {
     // the source's full renderable transcript, which is what the copy will
     // contain.
     const forkId = randomUUID()
+    // The task-result sidecar follows the fork like every other sidecar.
+    // Full copy (no cut-point filter — a task record is not tied to a
+    // specific message, so there is nothing to truncate at). Lives HERE —
+    // pre-spawn — rather than in discard()'s post-fork sidecar block: spawn
+    // fires hydrateTasks on the new id immediately, so a copy that lands
+    // after spawn races (and loses to) the hydrate load and the fork's
+    // tasks map stays blank. Pre-spawn the file is already there when the
+    // hydrate reads it, and a plain fork() (which never reaches discard's
+    // block) inherits too.
+    const inheritedTasks = (await this.taskResultStore.load(id)) ?? []
+    if (inheritedTasks.length > 0) {
+      await this.taskResultStore.save(forkId, inheritedTasks)
+    }
     const bridgedPromptUuids = await this.preseedForkTranscript(forkId, id, { seed: opts?.historySeed })
     const forkInfo = this.spawn(
       forkId,
@@ -2630,6 +2693,7 @@ export class SessionManager {
       // assertion under full-suite load).
       await this.turnAnchorStore.remove(id)
       await this.resultFrameStore.remove(id)
+      await this.taskResultStore.remove(id)
       await this.snapshotStore.remove(id)
       await this.promptUuidStore.remove(id)
       await this.steeredStore.remove(id)
@@ -3346,9 +3410,14 @@ export class SessionManager {
     this.snapshotStore.revive(id)
     this.turnAnchorStore.revive(id)
     this.resultFrameStore.revive(id)
+    this.taskResultStore.revive(id)
     this.promptUuidStore.revive(id)
     this.steeredStore.revive(id)
     this.sessions.set(id, session)
+    // Fill session.tasks from the durable sidecar (fire-and-forget — see the
+    // method). AFTER the map insert so a load that lands late still folds into
+    // the live object everyone else resolves by id.
+    this.hydrateTasks(id, session)
     metrics.gauge('sessions_active', this.sessions.size)
     log.info(`[session ${id}] spawned model=${fullOpts.model ?? 'default'}, permissionMode=${requestedMode ?? 'default'}, resume=${!!fullOpts.resume}`)
     // Zero-turn Context bar seed — fire at spawn, NOT at init: control
@@ -6356,6 +6425,11 @@ export class SessionManager {
     const current = this.sessions.get(id)
     if (!current) return
     const swept = reconcileTaskMapFromStopHook(current, tasks)
+    // The sweep mutates session.tasks OUTSIDE the pump loop (no deps there),
+    // so persist its outcome explicitly — gated on its "anything changed"
+    // boolean to avoid no-op writes. `settled`'s folds are persisted by the
+    // watcher's applyTaskEvent wrapper, which runs per synthesized frame.
+    if (swept) this.persistTasks(current)
     if (settled || swept) {
       // The task map (and with it the sidebar's backgroundSubagentCount)
       // changed — re-broadcast the info frame so the count dot updates in
@@ -6957,6 +7031,8 @@ export class SessionManager {
       void this.turnAnchorStore.remove(id)
       // And the result-frame sidecar (per-turn result summaries).
       void this.resultFrameStore.remove(id)
+      // And the task-result sidecar (background-task records + completions).
+      void this.taskResultStore.remove(id)
       // And the snapshot sidecar (shadow-repo file snapshots + anchors).
       void this.snapshotStore.remove(id)
       // And the transcript seq store (in-memory holder + ndjson sidecar) —
@@ -7841,6 +7917,10 @@ export class SessionManager {
           // Fire-and-forget; a missed frame only means that turn's result
           // summary (cost/duration) won't show on resume.
           void this.resultFrameStore.append(sessionId, { resultUuid, assistantUuid, result })
+        },
+        recordTasksSnapshot: (sessionId) => {
+          const s = this.sessions.get(sessionId)
+          if (s) this.persistTasks(s)
         },
         recordTurnSnapshot: (sessionId, assistantUuid) => {
           // Fire-and-forget on the turn path; a missed patch only means

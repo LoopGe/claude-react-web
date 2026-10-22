@@ -144,11 +144,11 @@ interface ConfigFile {
    *  overrides (SessionMeta.autoRecap) take priority; sessions without an
    *  override inherit this value. Manual recap (Alt+R) is never gated. */
   autoRecap: boolean
-  /** Global default for the transcript's collapsible group cards — both the
-   *  tool-group fold and the completed-background-task-notification fold.
+  /** Global default for the transcript's collapsible group cards — the
+   *  tool-group fold.
    *  Per-session overrides (SessionMeta.toolGroupCards) take priority;
-   *  sessions without an override inherit this value. When false, tool and
-   *  notification rows render individually with no fold chrome. */
+   *  sessions without an override inherit this value. When false, tool rows
+   *  render individually with no fold chrome. */
   toolGroupCards: boolean
   /** Global default for auto-expanding a group that holds a running tool.
    *  Per-session overrides (SessionMeta.autoExpandRunningGroups) take
@@ -267,8 +267,8 @@ export interface ServerConfig {
   /** Global default for idle auto-recap. Sessions without an explicit
    *  override inherit this. */
   readonly autoRecap: boolean
-  /** Global default for the transcript's collapsible group cards (tool-group
-   *  fold + completed-background-task-notification fold).
+  /** Global default for the transcript's collapsible group cards (the
+   *  tool-group fold).
    *  Sessions without an explicit override inherit this. */
   readonly toolGroupCards: boolean
   /** Global default for auto-expanding a group that holds a running tool.

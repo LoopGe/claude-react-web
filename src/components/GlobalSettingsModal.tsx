@@ -833,7 +833,7 @@ function AppearanceTab({
         </SettingsRow>
         <SettingsRow
           title="Use collapsible transcript cards"
-          hint="Folds consecutive tool calls and completed background-task notifications in the transcript into collapsible group cards. When off, every row renders on its own."
+          hint="Folds consecutive tool calls in the transcript into collapsible group cards. When off, every row renders on its own."
         >
           <Switch
             label="Use collapsible transcript cards"

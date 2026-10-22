@@ -246,6 +246,51 @@
 }
 .tasks-row-stop:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* --- on-demand completion-output viewer -------------------------------- */
+
+/* The body is mounted only while expanded (TaskResultBlock in TasksPanel.tsx)
+   — a background command can emit megabytes of stdout, and the snapshot
+   stream re-renders rows often. The expand TOGGLE sits in the row-end
+   control cluster beside .tasks-row-view (spec §3.8: the two are the row's
+   "see more" affordances), so it is sized to the same 24px band as the
+   chips around it. Layout only. */
+.tasks-row-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+}
+.tasks-row-result-toggle {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+  padding: 0;
+  height: var(--size-24px);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.tasks-row-result-toggle:hover {
+  color: var(--fg);
+}
+.tasks-row-result-body {
+  margin: 0;
+  padding: var(--space-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* --- subagent card / overlay progress line ------------------------------ */
 
 .subagent-card-progress {

@@ -15,11 +15,18 @@ import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
 import { isTerminalTaskStatus } from '../../shared/tasks.js'
-import { isTaskNotificationUserMessage, userMessageHasToolResult } from '../../shared/user-frames.js'
+import {
+  isTaskNotificationUserMessage,
+  normalizeTaskStatus,
+  parseTaskNotificationInjection,
+  type TaskNotificationStatus,
+  userMessageHasToolResult,
+} from '../../shared/user-frames.js'
 
 // Re-exported: message-list consumers classify user frames through this
 // module. The single implementation lives in shared/user-frames.ts.
 export { isTaskNotificationUserMessage, userMessageHasToolResult }
+export type { TaskNotificationStatus }
 /** Strings the SDK / canUseTool deny path uses to mean "user said no".
  *  Matched against tool_result.content text — case-insensitive substring
  *  match. Both Anthropic CLI and our own deny path land here.
@@ -59,6 +66,16 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
     msg.subtype !== 'plugin_install'
   ) return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
+  // Background-task completion injection — its output is routed to the
+  // TasksPanel (TaskResultStore-backed), not the transcript. Gate on the
+  // parser SUCCEEDING: a `<task-notification>` with no `<tool-use-id>`
+  // cannot be folded into session.tasks (parseTaskNotificationInjection
+  // returns null), so hiding it would drop the only signal it has. Unparsed
+  // residue falls through to MessageView's neutral synthetic card instead.
+  // The frame MUST still reach the store and the disk JSONL either way: the
+  // reducer's activeSubagents merge and `backfillSubagentCompletions` both
+  // read it (spec §3.3).
+  if (msg.type === 'user' && parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])) return true
   // `command_lifecycle` is a top-level lifecycle marker the `claude` CLI emits
   // to track a command's state machine (queued → started → completed). It
   // carries only ids/state — no renderable content — and isn't in our bundled
@@ -356,26 +373,11 @@ export function isLocalCommandLogUserMessage(msg: SdkMessage): boolean {
   return !!text && LOCAL_COMMAND_LOG_RE.test(text)
 }
 
-/** Extract the inner text of the first `<tag>…</tag>` in `s`, with basic XML
- *  entity unescaping. Local to the task-notification parser — MessageList has
- *  its own copy for bash tags; this one lives in shared territory so the
- *  reducer can parse completion signals without importing from a component. */
-function extractXmlTag(s: string, tag: string): string | null {
-  const open = `<${tag}>`
-  const close = `</${tag}>`
-  const start = s.indexOf(open)
-  if (start < 0) return null
-  const end = s.indexOf(close, start + open.length)
-  if (end < 0) return null
-  return s.slice(start + open.length, end)
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&')
-}
-
-export type TaskNotificationStatus = 'completed' | 'failed' | 'stopped'
+/** The task-notification XML parser (`extractXmlTag` / `normalizeTaskStatus` /
+ *  `parseTaskNotificationInjection`) and `TaskNotificationStatus` live in
+ *  shared/user-frames.ts — one grammar for the server's fold and the client's
+ *  render path, so the two cannot drift. Re-exported above so existing
+ *  consumers keep importing from this module. */
 
 /** A parsed task-notification completion signal, matchable back to the
  *  originating Agent subagent via `toolUseId`.
@@ -390,16 +392,6 @@ export interface ParsedTaskNotification {
   status: TaskNotificationStatus
   summary?: string
   result?: string
-}
-
-function normalizeTaskStatus(raw: string | undefined): TaskNotificationStatus {
-  // Known values pass through. Any UNRECOGNIZED status (e.g. 'error',
-  // 'cancelled', a typo, a future status) defaults to 'failed' — NOT
-  // 'completed' — so a genuinely failed/cancelled task is never misshown as
-  // a successful green check. The reducer treats anything != 'completed' as
-  // an error (→ 'interrupted'), so 'failed' is the safe default.
-  if (raw === 'completed' || raw === 'failed' || raw === 'stopped') return raw
-  return 'failed'
 }
 
 /** Parse a task-notification completion signal into a matchable record.
@@ -427,18 +419,9 @@ export function parseTaskNotification(msg: SdkMessage): ParsedTaskNotification |
       summary: typeof m.summary === 'string' ? m.summary : undefined,
     }
   }
-  if (isTaskNotificationUserMessage(msg)) {
-    const text = leadingUserText(msg) ?? ''
-    const toolUseId = extractXmlTag(text, 'tool-use-id')
-    if (!toolUseId) return null
-    return {
-      toolUseId,
-      status: normalizeTaskStatus(extractXmlTag(text, 'status') ?? undefined),
-      summary: extractXmlTag(text, 'summary') ?? undefined,
-      result: extractXmlTag(text, 'result') ?? undefined,
-    }
-  }
-  return null
+  const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])
+  if (!inj) return null
+  return { toolUseId: inj.toolUseId, status: inj.status, summary: inj.summary, result: inj.result }
 }
 
 /** The SDK `origin.kind` stamped on `SDKUserMessage` (sdk.d.ts:

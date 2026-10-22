@@ -56,7 +56,7 @@ interface Props {
    *  offer the per-card background button too (same session, tool ids are
    *  session-scoped). */
   onBackgroundTool?: (toolUseId: string) => void
-  /** Transcript's collapsible transcript-group-cards pref (tool-group + task-notification folds) (effective value from
+  /** Transcript's collapsible transcript-group-cards pref (tool-group fold) (effective value from
    *  the owning Chat panel) — forwarded so the subagent's inner transcript
    *  matches the main one. */
   toolGroupCards?: boolean

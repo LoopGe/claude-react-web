@@ -77,6 +77,20 @@ const RowTimer = memo(function RowTimer({ startedAt, endedAt }: { startedAt?: nu
   )
 })
 
+/** On-demand body for a task's completion output. Mounted only while the
+ *  row's expand toggle is open — a background command can emit megabytes
+ *  of stdout, and tasks-snapshot re-renders this row often. The toggle
+ *  itself lives in the row-end control cluster beside .tasks-row-view
+ *  (spec §3.8: the two are the row's "see more" affordances), so the
+ *  expand state rides TaskRow and gates this block. */
+function TaskResultBlock({ result }: { result: string }) {
+  return (
+    <span className="tasks-row-result">
+      <pre className="tasks-row-result-body">{result}</pre>
+    </span>
+  )
+}
+
 export const TasksPanel = memo(function TasksPanel({
   sessionId,
   onClose,
@@ -200,6 +214,12 @@ const TaskRow = memo(function TaskRow({
   // Only finished subagent rows can open the disk-transcript viewer: their
   // taskId is the Agent's agentId that keys subagents/agent-<id>.jsonl.
   const canViewTranscript = terminal && (task.taskType === 'subagent' || Boolean(task.subagentType))
+  // Spec §3.8 gate, unchanged: the expand affordance (and its body) exists
+  // only for a terminal task whose `result` is non-empty.
+  const resultBody = terminal && task.result != null && task.result !== '' ? task.result : null
+  // Expand state rides the row because the toggle lives in the row-end
+  // control cluster while the body nests under the row content.
+  const [resultOpen, setResultOpen] = useState(false)
   return (
     <div className={`tasks-row${terminal ? ' tasks-row-terminal' : ''}`}>
       <span className="tasks-row-icon">
@@ -228,6 +248,7 @@ const TaskRow = memo(function TaskRow({
             {task.resourceLinks.map((r) => r.title ?? r.name).join(', ')}
           </span>
         )}
+        {resultBody !== null && resultOpen && <TaskResultBlock result={resultBody} />}
       </span>
       {!terminal && (
         <span className="tasks-row-timer-wrap">
@@ -248,6 +269,16 @@ const TaskRow = memo(function TaskRow({
           onClick={() => onViewTranscript(task)}
         >
           <IconFileText size={12} />
+        </button>
+      )}
+      {resultBody !== null && (
+        <button
+          type="button"
+          className="tasks-row-result-toggle"
+          aria-label={resultOpen ? 'Hide output' : 'Show output'}
+          onClick={() => setResultOpen((v) => !v)}
+        >
+          {resultOpen ? 'Hide output' : 'Show output'}
         </button>
       )}
       {!terminal && (

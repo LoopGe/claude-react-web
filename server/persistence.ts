@@ -128,7 +128,7 @@ export interface SessionMeta {
    *  global config default. Persisted so the override survives reload. */
   autoRecap?: boolean
   /** Per-session override for the transcript's collapsible group cards
-   *  (tool-group + task-notification folds). Undefined = inherit the
+   *  (the tool-group fold). Undefined = inherit the
    *  global config default. Persisted so the override survives reload. */
   toolGroupCards?: boolean
   /** Per-session override for auto-expanding a group that holds a running

@@ -15,10 +15,10 @@ import { formatTokens } from '../../utils/format'
 import { IconUser } from '../icons/ToolIcons'
 import { localCommandOf } from '../../../shared/results.js'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../../search'
-import { getBlocks, isHumanUserMessage, isTaskNotificationUserMessage, userMessageOriginKind } from '../../session-store/normalize'
+import { getBlocks, isHumanUserMessage, userMessageOriginKind } from '../../session-store/normalize'
 import { BlockView, ToolResultBlock } from './blocks'
 import { useResultConsumed } from './result-consumed-context'
-import { extractTag, extractUserText, willRenderEmpty } from './rendering'
+import { extractUserText, willRenderEmpty } from './rendering'
 import { FoldableBody } from './FoldableBody'
 import { userBodyFoldKey } from './fold-key'
 import {
@@ -35,7 +35,6 @@ import {
   PluginInstallView,
   RateLimitErrorDivider,
   RateLimitView,
-  TaskNotificationCard,
   ToolUseSummaryView,
 } from './views/frame-views'
 import { ContextUsageReportCard, UsageReportCard } from './views/structured-reports'
@@ -327,27 +326,6 @@ export const MessageView = memo(function MessageView({
     // has <bash-input>; the server-injected result adds <bash-stdout> etc.
     if (userContent && userContent.includes('<bash-input>')) {
       return <BashMessage text={userContent} sending={sending} onAbort={onAbortBash} searchQuery={searchQuery} activeMatchInItem={activeMatchInItem} />
-    }
-    // Synthetic <task-notification> injection — a background subagent's
-    // result delivered as user-role text by the harness when a background
-    // task settles. NOT human input: render as a neutral result card,
-    // never as a "you" bubble. (The SDK's own task completion is a `system`
-    // / `task_notification` frame, already hidden; this catches the
-    // user-role injection path.)
-    //
-    // Dedup: when the notification's <tool-use-id> matches a subagent whose
-    // result has already been merged into its SubagentCard (the reducer's
-    // task-notification completion branch flipped it background→done and
-    // captured the result), suppress the standalone card — the result is
-    // already shown inline on the subagent card, mirroring how synchronous
-    // subagent results are merged. Falls through to the standalone card
-    // when there's no matching merged record (a background task not spawned
-    // via the Agent tool, or a record that never captured a result) so the
-    // result is never silently lost.
-    if (isTaskNotificationUserMessage(msg)) {
-      const tuId = extractTag(userContent ?? '', 'tool-use-id')
-      if (tuId && isResultConsumed(tuId)) return null
-      return <TaskNotificationCard text={userContent ?? ''} searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />
     }
     // Other synthetic user-role messages the SDK explicitly marks non-human
     // via `origin`/`isSynthetic` (peer / channel / coordinator /
