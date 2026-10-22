@@ -77,6 +77,26 @@ const RowTimer = memo(function RowTimer({ startedAt, endedAt }: { startedAt?: nu
   )
 })
 
+/** On-demand viewer for a task's completion output. The body is NOT in the
+ *  DOM until expanded — a background command can emit megabytes of stdout,
+ *  and tasks-snapshot re-renders this row often. */
+function TaskResultBlock({ result }: { result: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <span className="tasks-row-result">
+      <button
+        type="button"
+        className="tasks-row-result-toggle"
+        aria-label={open ? 'Hide output' : 'Show output'}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? 'Hide output' : 'Show output'}
+      </button>
+      {open && <pre className="tasks-row-result-body">{result}</pre>}
+    </span>
+  )
+}
+
 export const TasksPanel = memo(function TasksPanel({
   sessionId,
   onClose,
@@ -227,6 +247,9 @@ const TaskRow = memo(function TaskRow({
           >
             {task.resourceLinks.map((r) => r.title ?? r.name).join(', ')}
           </span>
+        )}
+        {terminal && task.result != null && task.result !== '' && (
+          <TaskResultBlock result={task.result} />
         )}
       </span>
       {!terminal && (
