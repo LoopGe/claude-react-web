@@ -444,10 +444,13 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
                   // 克隆目录不在的行整行压暗，与上面的 invalid MCP 行同一处置。
                   style={{ ...styles.row, opacity: !m.cloneExists ? 0.55 : 1 }}
                 >
-                  {checkbox(mpRow(m.id), `Import ${m.id}`, !m.cloneExists)}
+                  {checkbox(mpRow(m.id), `Import ${m.displayName}`, !m.cloneExists)}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={styles.metaRow}>
-                      <code style={{ ...styles.code, fontSize: 'var(--fs-sm)', ...styles.wrap }}>{m.id}</code>
+                      {/* 展示名，不是内部 id：设置面板里的市场行也用 displayName
+                          （`MarketplaceTab`），用 id 会让人在两个界面看到不同名字。
+                          导入仍按 id 走后端（importSelected 发的就是 id）。 */}
+                      <code style={{ ...styles.code, fontSize: 'var(--fs-sm)', ...styles.wrap }}>{m.displayName}</code>
                       <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', ...styles.wrap }}>
                         {`${m.pluginCount} plugin(s)`}
                         {m.cloneExists ? '' : ' · clone missing'}
@@ -465,9 +468,20 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
               )}
             </div>
 
-            {/* 一个明确的动作，而不是勾一下就写盘：主按钮只发选中的那些，
-                旁边那条一键把可导入的全勾上（happy path 仍是两击）。 */}
-            <div style={styles.actions}>
+            {/* 两个导入动作与 Skip 同排一行，所以它们住在页脚左侧（见下）；此处
+                不再放一份动作条。 */}
+          </div>
+        )}
+
+        {error && <p role="alert" className="setup-field-error">{error}</p>}
+
+        <div style={styles.footer}>
+          {/* 三个动作同排一行：两个导入动作在左侧（主按钮只发选中的那些，旁边那条
+              一键把可导入的全勾上 —— happy path 仍是两击），Skip 在右侧。向导页脚
+              本身就是"左一组 / 右一组"的写法。它们仍只在有可导入内容时出现（与正文
+              区块同一条件），窗口窄时 footer 允许换行，不裁切。 */}
+          {data !== undefined && data.exists && (
+            <div style={styles.footerLeft}>
               <button
                 type="button"
                 onClick={importSelected}
@@ -485,13 +499,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
                 Select all importable
               </button>
             </div>
-          </div>
-        )}
-
-        {error && <p role="alert" className="setup-field-error">{error}</p>}
-
-        <div style={styles.footer}>
-          <div style={styles.footerLeft} />
+          )}
           <div style={styles.footerRight}>
             <button
               type="button"
@@ -542,11 +550,10 @@ const styles: Record<string, React.CSSProperties> = {
   metaRow: { display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' },
   subLine: { fontSize: 'var(--fs-xs)', marginTop: 2, ...WRAP_ANYWHERE },
   rowStatus: { fontSize: 'var(--fs-xs)', flexShrink: 0, marginTop: 2 },
-  actions: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 },
   wrap: WRAP_ANYWHERE,
   ok: { display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--accent)' },
   fail: { color: 'var(--msg-error-fg)' },
-  footer: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 4 },
+  footer: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 4 },
   footerLeft: { display: 'flex', gap: 8 },
   footerRight: { display: 'flex', gap: 8 },
   submitBtn: {

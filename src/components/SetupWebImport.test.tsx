@@ -13,7 +13,7 @@ const ENUMERATION = {
   exists: true,
   credentials: { available: true, hasToken: true, profileName: 'Work', authTokenMasked: '****1234', baseUrl: 'https://api.example.com', modelCount: 2 },
   mcp: [{ name: 'ctx7', type: 'stdio' as const, command: 'npx', envKeys: ['API_KEY'], exists: false, importErrors: [] }],
-  marketplaces: [{ id: 'claude-code', displayName: 'claude-code', sourceUrl: 'https://github.com/example/claude-code', pluginCount: 3, cloneExists: true, exists: true }],
+  marketplaces: [{ id: 'claude-code', displayName: 'claude-code-plugins', sourceUrl: 'https://github.com/example/claude-code', pluginCount: 3, cloneExists: true, exists: true }],
 }
 
 beforeEach(() => {
@@ -38,7 +38,7 @@ describe('SetupWebImport', () => {
     expect(screen.getByText('MCP servers (1)')).toBeTruthy()
     expect(screen.getByText('Marketplaces (1)')).toBeTruthy()
     expect(screen.getByText('ctx7')).toBeTruthy()
-    expect(screen.getByText('claude-code')).toBeTruthy()
+    expect(screen.getByText('claude-code-plugins')).toBeTruthy()
     // 已有同 id 的市场 → 状态位显示既有措辞。
     expect(screen.getByText('Already exists')).toBeTruthy()
   })
@@ -142,8 +142,8 @@ describe('SetupWebImport', () => {
     expect(box('Import ctx7').checked).toBe(true)
     // 已完成的行（已有同 id 的市场）照旧勾着 + 禁用，但**不进**这份选择：
     // 计数与 payload 都只算"还能导入"的那些。
-    expect(box('Import claude-code').checked).toBe(true)
-    expect(box('Import claude-code').disabled).toBe(true)
+    expect(box('Import claude-code-plugins').checked).toBe(true)
+    expect(box('Import claude-code-plugins').disabled).toBe(true)
     expect(importSelectedBtn().textContent).toBe('Import selected (2)')
 
     fireEvent.click(importSelectedBtn())
@@ -299,7 +299,7 @@ describe('SetupWebImport', () => {
     expect(screen.getByText('Credentials and models (0)')).toBeTruthy()
     expect(screen.getByText('MCP servers (0)')).toBeTruthy()
     // 另外两栏坏掉不影响这一栏：市场照常列出可导入项。
-    expect(screen.getByText('claude-code')).toBeTruthy()
+    expect(screen.getByText('claude-code-plugins')).toBeTruthy()
     expect(screen.getByText('Marketplaces (1)')).toBeTruthy()
   })
 
@@ -325,12 +325,12 @@ describe('SetupWebImport', () => {
     render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
     await screen.findByText('Work')
 
-    expect(box('Import claude-code').disabled).toBe(true)
+    expect(box('Import claude-code-plugins').disabled).toBe(true)
     // 行上照旧说明原因（复用既有措辞）。
     expect(screen.getByText(/clone missing/)).toBeTruthy()
 
     fireEvent.click(selectAllBtn())
-    expect(box('Import claude-code').checked).toBe(false)
+    expect(box('Import claude-code-plugins').checked).toBe(false)
     expect(importSelectedBtn().textContent).toBe('Import selected (2)')
 
     fireEvent.click(importSelectedBtn())
