@@ -55,16 +55,25 @@ const emptyCollection = (): WebImportCollectionResult => ({ imported: [], skippe
  *  重写百分号编码与主机大小写，屏上出现的就不再是源里那条串。所以只做一次扫描
  *  替换，userinfo 之外一个字符都不动（同一函数也保证三处的规则是同一个）。
  *
- *  规则与 URL 语义一致：
- *    - `user:secret@` → 保留 user（用户认得出是哪个账号），secret 换成 `***`；
- *    - 裸 `token@` → 整段 userinfo 都是秘密；
- *    - `user:@`（空 secret）在文本里与裸 token 同形，按更隐蔽的一侧处理。
+ *  规则与 URL 语义一致，两个分支其实是**同一条规则**——userinfo 里 `:` 之后的
+ *  部分才是秘密，没有 `:` 就整段都是秘密：
+ *    - `user:secret@` → 保留 `user`（用户认得出是哪个账号），`secret` 换成 `***`；
+ *    - `user:@`（冒号后是空的）→ 同样保留 `user`，输出 `user:***@`：那个位置本来
+ *      就没有任何东西，被换掉的空串也不是秘密；
+ *    - 裸 `token@`（没有冒号可分）→ 整段 userinfo 都是秘密，输出 `***@`。
+ *  `:` 同样取**最后一个**：`user:p@ss@host` 里 `user:p` 之后的 `@ss` 还是密码的
+ *  一部分（见下面 userinfo 段的贪婪语义）。
  *  没有 `scheme://` 的串（本地路径、普通命令文本）原样返回。 */
 function maskUserinfo(text: string): string {
-  // scheme 段必须带 `://`；userinfo 段不含分隔符（`/ ? # 空白`），所以
-  // `https://host/path?x=a@b` 这种"@ 出现在 path / query 里"的串不会被误伤。
+  // scheme 段必须带 `://`；userinfo 段取到**最后一个**仍在 authority 里的 `@`
+  // （`[^\s/?#]*@` 贪婪到最后一个可能位置，且不得跨过 `/ ? #` 或空白——跨不过去
+  // 正是"还在 authority 里"/"只是 path 里恰好有个 @"的判据）：
+  //   - `https://user:p@ss@host/x` → userinfo 是 `user:p@ss`，输出
+  //     `https://user:***@host/x`（停在第一个 `@` 会把密码尾巴 `ss@host` 留在线上）；
+  //   - `https://host/a@b/c` → 从 `://` 起只到 `host` 就被 `/` 挡住，没有 `@` 可匹配
+  //     → 整串原样返回（**不能**把 path 里的 `@` 当成 userinfo）。
   return text.replace(
-    /([a-z][a-z0-9+.-]*:\/\/)([^\s/@?#]+@)/gi,
+    /([a-z][a-z0-9+.-]*:\/\/)([^\s/?#]*@)/gi,
     (_all, scheme: string, userinfo: string) => {
       const colon = userinfo.lastIndexOf(':')
       return colon === -1 ? `${scheme}***@` : `${scheme}${userinfo.slice(0, colon)}:***@`

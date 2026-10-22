@@ -110,6 +110,9 @@ describe('GET /api/config/web-import', () => {
       // stdio 的 command 里塞一整个远程 URL 是常见形状（`npx -y mcp-remote
       // https://user:tok@host/mcp`），而 command 是**整串**上线的——同一类泄漏。
       wrapped: { name: 'wrapped', type: 'stdio', command: 'npx -y mcp-remote https://user:cmd-tok-xyz@mcp.example.com/mcp', enabled: false },
+      // 同一条规则在**命令文本**里的形状：密码里带 `@`，而命令还在 URL 之后继续
+      // （贪婪取到最后一个 `@` 才不会把 `ss@mcp…/mcp --flag` 留在线上）。
+      padded: { name: 'padded', type: 'stdio', command: 'npx -y mcp-remote https://user:q@ss@mcp.example.com/mcp --transport http', enabled: false },
       broken: { name: 'broken', type: 'stdio' },
     }), 'utf8')
     // 桌面版已有同名服务器：exists 必须反映**桌面** store（它就是"Already exists"
@@ -136,6 +139,9 @@ describe('GET /api/config/web-import', () => {
     expect(byName.get('wrapped')?.command)
       .toBe('npx -y mcp-remote https://user:***@mcp.example.com/mcp')
     expect((byName.get('wrapped')?.importErrors as string[]).length).toBeGreaterThan(0)
+    // 密码里的 `@`：userinfo 贪婪到最后一个 `@`，URL 后面的命令文本逐字保留。
+    expect(byName.get('padded')?.command)
+      .toBe('npx -y mcp-remote https://user:***@mcp.example.com/mcp --transport http')
     // url 型：没有 command 键（而不是空串）。
     expect(byName.get('remote')).toEqual({
       name: 'remote', type: 'http', url: 'https://mcp.example.com', exists: false, importErrors: [],
@@ -154,6 +160,7 @@ describe('GET /api/config/web-import', () => {
     expect(JSON.stringify(body)).not.toContain('sekret')
     expect(JSON.stringify(body)).not.toContain('mcp-tok-abc123')
     expect(JSON.stringify(body)).not.toContain('cmd-tok-xyz')
+    expect(JSON.stringify(body)).not.toContain('q@ss@mcp.example.com')
   })
 
   it('maps each source marketplace onto a row, flagging a missing clone', async () => {
@@ -195,6 +202,9 @@ describe('GET /api/config/web-import', () => {
     seedMarketplace(sourceDir, 'private', ['a'])
     seedMarketplace(sourceDir, 'bare', ['b'])
     seedMarketplace(sourceDir, 'noslash', ['c'])
+    seedMarketplace(sourceDir, 'atpass', ['d'])
+    seedMarketplace(sourceDir, 'atpath', ['e'])
+    seedMarketplace(sourceDir, 'emptysecret', ['f'])
     const file = join(sourceDir, 'marketplaces.json')
     const raw = JSON.parse(readFileSync(file, 'utf8')) as {
       marketplaces: Record<string, { source: { url: string } }>
@@ -204,6 +214,15 @@ describe('GET /api/config/web-import', () => {
     // 裸 host + 凭证（没有 path）：逐字保留的判据 —— 按 URL 往返一次会补出尾斜杠
     // （`https://***@git.example.com/`），屏上就不该是源里那条串了。
     raw.marketplaces.noslash.source.url = 'https://ghp_noslashtoken@git.example.com'
+    // 密码里带 `@`：userinfo 必须取到**最后一个**仍在 authority 里的 `@`，否则
+    // 只换掉第一个 `@` 之前那半截，密码尾巴 `ss@host` 会留在线上。
+    raw.marketplaces.atpass.source.url = 'https://user:p@ss@git.example.com/owner/repo'
+    // 负向对照：`@` 在 **path** 里（不是 userinfo）→ 整串逐字返回，不许把
+    // `a@b` 当 userinfo 打码。它是上面那条贪婪规则的界线。
+    raw.marketplaces.atpath.source.url = 'https://git.example.com/a@b/c'
+    // `user:@`（冒号后是空的）：判据是"有没有冒号"，不是"冒号后有没有东西"——
+    // 保留 user，那个空串换成 ***（它与裸 token 两种形状各有各的分支）。
+    raw.marketplaces.emptysecret.source.url = 'https://user:@git.example.com/owner/repo'
     writeFileSync(file, JSON.stringify(raw), 'utf8')
 
     const app = await makeRouter(stateDir, sourceDir)
@@ -217,11 +236,18 @@ describe('GET /api/config/web-import', () => {
     expect(byId.get('bare')?.sourceUrl).toBe('https://***@git.example.com/owner/other')
     // userinfo 之外一个字符都没动（没有尾斜杠）。
     expect(byId.get('noslash')?.sourceUrl).toBe('https://***@git.example.com')
-    // 令牌在响应体里任何位置都不出现。
+    // 密码里的 `@` 不截断 userinfo：主机与 path 照旧，前半截用户名保留。
+    expect(byId.get('atpass')?.sourceUrl).toBe('https://user:***@git.example.com/owner/repo')
+    // 负向对照：path 里的 `@` 不进 userinfo → 原样。
+    expect(byId.get('atpath')?.sourceUrl).toBe('https://git.example.com/a@b/c')
+    // 空 secret（`user:@`）与 `user:secret@` 同一分支：保留 user。
+    expect(byId.get('emptysecret')?.sourceUrl).toBe('https://user:***@git.example.com/owner/repo')
+    // 令牌在响应体里任何位置都不出现（`p@ss` 那半截尾巴同样不许出现）。
     const text = JSON.stringify(body)
     expect(text).not.toContain('ghp_supersecrettoken')
     expect(text).not.toContain('ghp_baretoken')
     expect(text).not.toContain('ghp_noslashtoken')
+    expect(text).not.toContain('ss@git.example.com')
 
     // 只改视图：源 store 里那条 URL 原样保留。
     const stored = await new MpStore({ stateDir: sourceDir }).load({ readOnly: true })
