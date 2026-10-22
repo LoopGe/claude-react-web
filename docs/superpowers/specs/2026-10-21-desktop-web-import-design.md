@@ -72,13 +72,13 @@
      按 Next 时未导入凭证 → 进入 step 0，照常走原向导
 ```
 
-宿主门控是**双向**的：客户端 `isDesktopHost()`（`src/host-capabilities.ts:21`，与 Autostart 步骤的门控写法同构）+ 服务端 `host` 标记（非桌面返回 404）。
+宿主门控是**双向**的：客户端 `isDesktopHost()`（`src/host-capabilities.ts:21`，与 Autostart 步骤的门控写法同构）+ 服务端 `host` 标记——web 宿主上这条路由**根本不挂载**（导入面不存在），所以别把"未挂载"读成某个状态码：构建过的树里 `dist/client` 存在，未匹配的 GET 会先被 SPA fallback（`server/app.ts` 的 `app.get('*')`）接住并回 `index.html`，`app.notFound` 的 JSON 404 只在没构建客户端时成立。
 
 ## 5. 组件
 
 | 单元 | 职责 | 依赖 |
 |---|---|---|
-| `server/routes/web-import.ts`（新） → `/api/config/web-import` | `GET` 枚举 / `POST` 应用；非桌面宿主 404 | stateDir、mpStore、config 写入路径 |
+| `server/routes/web-import.ts`（新） → `/api/config/web-import` | `GET` 枚举 / `POST` 应用；web 宿主不挂载（见 §4） | stateDir、mpStore、config 写入路径 |
 | `server/bootstrap.ts`（改） | `ServerContextOptions` 新增 `host?: 'web' \| 'desktop'`（默认 `'web'`），透传到路由 | — |
 | `desktop/main.ts`（改） | `createServerContext({ …, host: 'desktop' })` | 上一条 |
 | `server/routes/index.ts`（改） | `buildApiRouter` 挂载新路由 | — |
@@ -163,7 +163,7 @@
 | 桌面版已有同名 MCP / 同 id 市场 | 跳过并计入 `skipped`，不覆盖（沿用导入约定） |
 | 源 marketplace clone 目录缺失 | 该项 `failed`，其余项继续 |
 | clone 拷贝中途失败 | 清理临时目录，该项 `failed`，不留半拷贝 |
-| 非桌面宿主调用 | 404（客户端不渲染 + 服务端仅桌面挂载） |
+| 非桌面宿主调用 | 路由不挂载 ⇒ 响应不是枚举体（客户端也不渲染）；状态码不保证 404（见 §4） |
 | 导入请求中断 | 已完成的项已落盘；重试幂等（同 id 跳过） |
 | 凭证导入成功但客户端 refresh 失败 | 沿用 `handleConfigured` 既有策略（`src/App.tsx:4774`）：吞掉 refresh 错误并照常 `setIsConfigured(true)` |
 
@@ -189,7 +189,7 @@
 
 ## 9. 测试
 
-- **`server/routes/web-import.test.ts`**（新建，镜像 `server/mcp-routes` 的测试风格，临时 state 目录作 fixture）：源不存在 / 源 config 损坏 / 凭证写入 active profile 且不污染其它字段 / MCP 同名跳过 / marketplace clone 被拷到 `cloneDirFor(id)` 且 `cloneDir` 被改写 / 单项失败不影响其它项 / 拷贝失败不残留临时目录 / 非桌面宿主 404 / 重复导入幂等。
+- **`server/routes/web-import.test.ts`**（新建，镜像 `server/mcp-routes` 的测试风格，临时 state 目录作 fixture）：源不存在 / 源 config 损坏 / 凭证写入 active profile 且不污染其它字段 / MCP 同名跳过 / marketplace clone 被拷到 `cloneDirFor(id)` 且 `cloneDir` 被改写 / 单项失败不影响其它项 / 拷贝失败不残留临时目录 / 非桌面宿主拿不到枚举体（路由未挂载；状态码不保证 404，见 §4）/ 重复导入幂等。
 - **`src/components/SetupWebImport.test.tsx`**：三态渲染、勾选后 `POST` body 正确、失败行渲染；沿用 `SetupPage.desktop.test.tsx` 的 `importInHostShape` 技巧（`vi.resetModules` + 预置 `window.__CRW_DESKTOP__`）。
 - **`src/components/SetupPage.desktop.test.tsx`**（改）：mock 补 `GET /config/web-import`；`walkToFinish()` 先处理前置屏。网页版 `SetupPage.test.tsx` 没有桌面 bridge → 不受影响。
 

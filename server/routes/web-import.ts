@@ -108,7 +108,10 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
           name: masked.name,
           type: masked.type,
           ...(masked.command ? { command: masked.command } : {}),
-          ...(masked.url ? { url: masked.url } : {}),
+          // 远程 MCP 的 url 与市场那一栏同一类泄漏：`https://user:<token>@host/mcp`
+          // 的 userinfo 是凭据。视图只用于展示（POST 按名字从**源 store** 导入，
+          // 搬过去的是源里那条完整的 url），所以打码不影响真正导入的值。
+          ...(masked.url ? { url: maskUrlUserinfo(masked.url) } : {}),
           ...(masked.envKeys ? { envKeys: masked.envKeys } : {}),
           exists: deps.mcpStore.get(masked.name) != null,
           importErrors: validateMcpServer(server),

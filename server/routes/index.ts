@@ -169,8 +169,10 @@ export function buildApiRouter(
   }
   // Desktop-only: importing the web build's config into the desktop state dir.
   // Mounted ONLY on the desktop host — the web host has nothing to import from
-  // (source and target would be the same dir), and an unmounted path falls
-  // through to app.notFound's JSON 404.
+  // (source and target would be the same dir), so the import surface simply does
+  // not exist there. Don't read a status code into that: an unmounted GET is
+  // caught by whatever handles unmatched paths, and in a built tree that is
+  // app.ts's SPA fallback (index.html, 200), not app.notFound's JSON 404.
   //
   // mcpConfigStore is the SAME instance SessionManager holds (bootstrap hands
   // one BuildApp, which hands it to both) — the import must not construct a

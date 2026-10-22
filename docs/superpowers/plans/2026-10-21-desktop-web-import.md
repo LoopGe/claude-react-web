@@ -17,7 +17,7 @@
 - 同名 MCP、同 id marketplace 一律 `skipped`，不覆盖（对齐 `/api/mcp-config/claude-import`）。
 - 逐项失败隔离：每项独立 try/catch，原始错误进 `failed[].error`，**不猜测、不加兜底**。
 - 不新增任何 CSS；颜色只用主题变量（`var(--…)`）。UI 文案不新造词。
-- 路由只在桌面宿主挂载：`host === 'desktop'` 才 `app.route`，web 宿主靠 `app.notFound` 回 JSON 404。
+- 路由只在桌面宿主挂载：`host === 'desktop'` 才 `app.route`，web 宿主上导入面根本不存在（**不**依赖状态码：构建过的树里未匹配的 GET 由 SPA fallback 接住，见 spec §4）。
 - 不引入新的 `config.json` 字段（`CONFIG.md` 无需改动）。
 - 源目录在路由层通过 `sourceDir` 依赖注入（测试用），生产走 `webStateDir()`；读取层函数一律显式接收目录参数，不自己读 `homedir()`。
 
@@ -368,14 +368,16 @@ describe('GET /api/config/web-import', () => {
   beforeEach(() => { stateDir = tempDir('web-import-dst'); sourceDir = tempDir('web-import-src') })
   afterEach(() => { rmRf(stateDir); rmRf(sourceDir) })
 
-  it('mounts on the desktop host only (web host answers a JSON 404)', async () => {
+  it('mounts on the desktop host only (no import surface on the web host)', async () => {
     const web = makeGateApp(stateDir, 'web')
     const webRes = await web.request('/api/config/web-import')
-    expect(webRes.status).toBe(404)
-    expect((await webRes.json() as { error: string }).error).toContain('not found')
+    // 不断言状态码（构建过的树里 SPA fallback 会回 index.html）；钉"响应不是枚举体"。
+    expect(await webRes.text()).not.toContain('sourceDir')
 
     const desktop = makeGateApp(stateDir, 'desktop')
-    expect((await desktop.request('/api/config/web-import')).status).toBe(200)
+    const desktopRes = await desktop.request('/api/config/web-import')
+    expect(desktopRes.status).toBe(200)
+    expect(await desktopRes.text()).toContain('sourceDir')
   })
 
   it('reports exists:false when the source dir has none of the three files', async () => {
@@ -550,8 +552,10 @@ export function buildApiRouter(
 ```ts
   // Desktop-only: importing the web build's config into the desktop state dir.
   // Mounted ONLY on the desktop host — the web host has nothing to import from
-  // (source and target would be the same dir), and an unmounted path falls
-  // through to app.notFound's JSON 404.
+  // (source and target would be the same dir), so the import surface simply does
+  // not exist there. Don't read a status code into that: an unmounted GET is
+  // caught by whatever handles unmatched paths, and in a built tree that is
+  // app.ts's SPA fallback (index.html, 200), not app.notFound's JSON 404.
   //
   // mcpConfigStore is the SAME instance SessionManager holds (bootstrap hands
   // one BuildApp, which hands it to both) — the import must not construct a

@@ -52,14 +52,23 @@ describe('GET /api/config/web-import', () => {
   beforeEach(() => { stateDir = tempDir('web-import-dst'); sourceDir = tempDir('web-import-src') })
   afterEach(() => { rmRf(stateDir); rmRf(sourceDir) })
 
-  it('mounts on the desktop host only (web host answers a JSON 404)', async () => {
+  it('mounts on the desktop host only (no import surface on the web host)', async () => {
     const web = makeGateApp(stateDir, 'web')
     const webRes = await web.request('/api/config/web-import')
-    expect(webRes.status).toBe(404)
-    expect((await webRes.json() as { error: string }).error).toContain('not found')
+    // web 宿主上这条路由**没有挂载** ⇒ 响应不是那份枚举。
+    //
+    // 刻意不断言状态码：未匹配的 GET 由谁接住取决于客户端有没有构建——构建过的
+    // 树里 `dist/client` 存在，SPA fallback（`server/app.ts` 的 `app.get('*')`）
+    // 会先接住它并回 index.html（200），`app.notFound` 的 JSON 404 只在**没构建**
+    // 时成立。路由顺序是既有行为，不在这条用例的射程内；这里钉的是
+    // "导入面在 web 宿主不存在"。
+    expect(await webRes.text()).not.toContain('sourceDir')
 
+    // 同一个标记在桌面宿主上必须在 —— 否则上面那条断言在"路由整个消失"时也会通过。
     const desktop = makeGateApp(stateDir, 'desktop')
-    expect((await desktop.request('/api/config/web-import')).status).toBe(200)
+    const desktopRes = await desktop.request('/api/config/web-import')
+    expect(desktopRes.status).toBe(200)
+    expect(await desktopRes.text()).toContain('sourceDir')
   })
 
   it('reports exists:false when the source dir has none of the three files', async () => {
@@ -97,6 +106,7 @@ describe('GET /api/config/web-import', () => {
     writeFileSync(join(sourceDir, 'mcp-config.json'), JSON.stringify({
       ctx7: { name: 'ctx7', type: 'stdio', command: 'npx', args: ['-y', 'ctx7'], env: { API_KEY: 'sekret' }, enabled: true },
       remote: { name: 'remote', type: 'http', url: 'https://mcp.example.com', enabled: false },
+      authed: { name: 'authed', type: 'http', url: 'https://user:mcp-tok-abc123@mcp.example.com/mcp', enabled: false },
       broken: { name: 'broken', type: 'stdio' },
     }), 'utf8')
     // 桌面版已有同名服务器：exists 必须反映**桌面** store（它就是"Already exists"
@@ -120,12 +130,19 @@ describe('GET /api/config/web-import', () => {
     expect(byName.get('remote')).toEqual({
       name: 'remote', type: 'http', url: 'https://mcp.example.com', exists: false, importErrors: [],
     })
+    // 带 userinfo 的 url 型：与 marketplace 的 sourceUrl 同一处置（同一个
+    // maskUrlUserinfo）——秘密不上线，主机与路径照旧认得出。视图只用于展示，
+    // POST 是按名字从**源 store** 导入，所以打码不影响真正搬过去的那条 url。
+    expect(byName.get('authed')).toEqual({
+      name: 'authed', type: 'http', url: 'https://user:***@mcp.example.com/mcp', exists: false, importErrors: [],
+    })
     // 校验不过的行照常枚举：importErrors 就是行压暗 + 禁用勾选框的判据。
     expect(byName.get('broken')).toEqual({
       name: 'broken', type: 'stdio', exists: false, importErrors: ['command is required for stdio type'],
     })
-    // 密钥的**值**绝不进响应体（env 的键名才上线）。
+    // 密钥的**值**绝不进响应体（env 的键名才上线；url 里的 userinfo 也不上线）。
     expect(JSON.stringify(body)).not.toContain('sekret')
+    expect(JSON.stringify(body)).not.toContain('mcp-tok-abc123')
   })
 
   it('maps each source marketplace onto a row, flagging a missing clone', async () => {
