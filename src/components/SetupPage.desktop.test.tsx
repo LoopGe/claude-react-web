@@ -90,25 +90,25 @@ async function importDesktopSetupPage() {
   return mod.SetupPage
 }
 
-/** 桌面宿主的向导之前有一屏"从网页版导入"（SetupWebImport）——先点 Next 跳过它。
+/** 桌面宿主的向导之前有一屏"从网页版导入"（SetupWebImport）——先点 Skip 跳过它。
  *  Step 0's Continue, the token, then Next up to the Finish step. */
 async function walkToFinish() {
-  fireEvent.click(await screen.findByText('Next'))          // 前置屏 → step 0
+  fireEvent.click(await screen.findByText('Skip'))          // 前置屏 → step 0
   fireEvent.click(await screen.findByText('Continue'))      // step 0 → step 1
   fireEvent.change(screen.getByPlaceholderText('sk-ant-...'), { target: { value: 'sk-test' } })
-  // Desktop: 1→2→3→4→5→7 —— 前置屏已经占用了一次 Next，这里仍是 5 次
+  // Desktop: 1→2→3→4→5→7 —— 前置屏那一下是 Skip（不是向导的 Next），这里仍是 5 次
   // （pre-fix the fifth renders step id 6 and throws）。
   for (let i = 0; i < 5; i++) fireEvent.click(screen.getByText('Next'))
 }
 
 describe('SetupPage — desktop wizard (no Autostart step)', () => {
-  // 头号路径：凭证经前置屏导入，再由用户按 Next 收尾 ⇒ SetupPage 走既有收尾
+  // 头号路径：凭证经前置屏导入，再由用户按 Skip 收尾 ⇒ SetupPage 走既有收尾
   // 路径交接（onConfigured({ openNewSession: true })），用户不必重走一遍向导。
   // 导入本身不跳转（勾选只是选择、落盘要按 Import selected），所以这里
-  // 必须先导入、再按 Next 收尾。
+  // 必须先导入、再按 Skip 收尾。
   // 这条链此前没有自动化覆盖：desktop 用例里前置屏一直是 exists:false，
   // SetupWebImport 的用例只到组件自己那一层（onConfigured 是个 spy）。
-  it('hands over to onConfigured({ openNewSession: true }) after importing credentials and pressing Next', async () => {
+  it('hands over to onConfigured({ openNewSession: true }) after importing credentials and pressing Skip', async () => {
     vi.mocked(api.get).mockImplementation((url: string) =>
       url === '/config/web-import'
         ? Promise.resolve({
@@ -141,8 +141,8 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
     await waitFor(() => expect(screen.getByText('Imported')).toBeTruthy())
     expect(onConfigured).not.toHaveBeenCalled()
 
-    // Next 才是唯一的交接口（此时服务端已 configured）。
-    fireEvent.click(screen.getByText('Next'))
+    // Skip 才是唯一的交接口（此时服务端已 configured）。
+    fireEvent.click(screen.getByText('Skip'))
     await waitFor(() => expect(onConfigured).toHaveBeenCalledWith({ openNewSession: true }))
     expect(onConfigured).toHaveBeenCalledTimes(1)
     expect(vi.mocked(api.post)).toHaveBeenCalledWith(
@@ -152,7 +152,7 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
     )
   })
 
-  it('renders the web-import pre-screen first, and Next reveals step 1 of 7', async () => {
+  it('renders the web-import pre-screen first, and Skip reveals step 1 of 7', async () => {
     const SetupPage = await importDesktopSetupPage()
     render(<SetupPage onConfigured={vi.fn(async () => {})} />)
 
@@ -163,7 +163,7 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
     // 单独按 DOM 选择器钉一次，否则"前置屏不出现进度点"这半条要求是漏测的。
     expect(document.querySelector('.setup-progress')).toBeNull()
 
-    fireEvent.click(screen.getByText('Next'))
+    fireEvent.click(screen.getByText('Skip'))
     expect(await screen.findByText('Step 1 of 7')).toBeTruthy()
     expect(screen.getByText('Continue')).toBeTruthy()
     // 同一个选择器在向导里必须抓得到（否则上面那句 toBeNull 只证明选择器写错了，

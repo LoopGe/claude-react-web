@@ -26,7 +26,7 @@
 成功标准：
 
 1. 桌面版首启 → 导入屏列出可导入项（凭证与模型 / 全局 MCP / Claude Plugin Marketplace），勾选后一键导入；
-2. 凭证导入成功、用户在前置屏按 Next 后桌面版即视为已配置，直接进主界面，不再弹 setup；
+2. 凭证导入成功、用户在前置屏按 Skip 后桌面版即视为已配置，直接进主界面，不再弹 setup；
 3. 未导入凭证时（跳过、或只导了 MCP / 市场）照常进入原向导；
 4. 明文 token 不经过前端；同名 / 同 id 项跳过而不覆盖；单项失败不影响其它项；
 5. web 宿主不存在该能力（客户端不渲染 + 服务端不可用）。
@@ -41,7 +41,7 @@
 | 源目录 | 固定 `~/.claude-react-web`，不可选（与 `/mcp-config/claude-import` 读固定路径的做法一致） |
 | 克隆目录 | 本地复制到桌面版自己的 `marketplace-cache/<id>/`，并把条目 `cloneDir` 改写为新路径（不按 URL 重 clone，也不依赖旧目录继续存在） |
 | 入口形态 | 向导之前的**前置屏**，不进 `setup-steps.ts` 的 `STEPS`（不改步骤表、不改序号、不动既有 `step === N` 比较） |
-| 导入后行为 | **Next 收尾**：已导入凭证（服务端 `configured`）时点 Next → 收尾进主界面（复用 `handleConfigured` 路径），否则进入 step 0 照常走完。勾选行与 `Import selected (n)` 只导入、不跳转——下一次导入只发生在用户点那个按钮时，跳转是导航决定，由用户按 Next 做出（**本条为验收时由用户裁定的规则，取代原先"勾一行即导入"的设计**，见 §8） |
+| 导入后行为 | **Skip 收尾**：已导入凭证（服务端 `configured`）时点 Skip → 收尾进主界面（复用 `handleConfigured` 路径），否则进入 step 0 照常走完。勾选行与 `Import selected (n)` 只导入、不跳转——下一次导入只发生在用户点那个按钮时，跳转是导航决定，由用户按 Skip 做出（**本条为验收时由用户裁定的规则，取代原先"勾一行即导入"的设计**，见 §8） |
 | 密钥处理 | 服务端读源文件后直接写入，明文 token 不过线（沿用 `claude-import` 的做法）；枚举接口只回掩码 |
 
 ## 3. 方案选择
@@ -68,8 +68,8 @@
              ├─ mcp           读源 mcp-config.json → 逐条 mcpStore.upsert，同名跳过
              └─ marketplaces  读源 marketplaces.json → fs.cp(cloneDir → cloneDirFor(id))
                                → 条目 cloneDir 改写后落盘，同 id 跳过
-  └─ 按 Next 时凭证已导入 → refreshConfigResponse() → setIsConfigured(true) → 主界面
-     按 Next 时未导入凭证 → 进入 step 0，照常走原向导
+  └─ 按 Skip 时凭证已导入 → refreshConfigResponse() → setIsConfigured(true) → 主界面
+     按 Skip 时未导入凭证 → 进入 step 0，照常走原向导
 ```
 
 宿主门控是**双向**的：客户端 `isDesktopHost()`（`src/host-capabilities.ts:21`，与 Autostart 步骤的门控写法同构）+ 服务端 `host` 标记——web 宿主上这条路由**根本不挂载**（导入面不存在），所以别把"未挂载"读成某个状态码：构建过的树里 `dist/client` 存在，未匹配的 GET 会先被 SPA fallback（`server/app.ts` 的 `app.get('*')`）接住并回 `index.html`，`app.notFound` 的 JSON 404 只在没构建客户端时成立。
@@ -184,7 +184,7 @@
 - **状态机同形**：惰性探测 + `probeCancelRef` 取消竞态 + `Record<name, status>` +
   `Select all importable` 的 predicate 与提交 filter 同构（这里不需要向导 step 3 那个
   `mcpImportStatusRef` 镜像——没有异步 handler 要在回调里读最新状态）。
-- **收尾**：**Next 是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点 Next → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 Next → 进入 step 0。`Import selected (n)` 只导入、不跳转：跳转是导航决定，由用户按 Next 做出。（按本条实现时不要退回"勾选即导入"——那正是验收时被裁定为缺陷的行为。）
+- **收尾**：**Skip 是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点 Skip → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 Skip → 进入 step 0。`Import selected (n)` 只导入、不跳转：跳转是导航决定，由用户按 Skip 做出。（按本条实现时不要退回"勾选即导入"——那正是验收时被裁定为缺陷的行为。）
 - **不新增 CSS**：只用 `src/styles/setup-page.css` 既有类 + `styles.*` 内联对象 + 主题变量（CLAUDE.md：禁止硬编码颜色，新颜色必须同时定义 dark / light）。
 - **与"最后才写盘"原则的冲突（刻意保留）**：现有向导刻意到最后一步才写 `config.json`（`SetupPage.tsx` 的注释：中途关掉浏览器不留半份 config）。导入屏会**立即写盘**。保留该行为，理由是：导入本身就是"配置"这一动作；若改成只预填，则要么写两次盘（导入一次 + `/config/setup` 一次），要么用户还得再走完 6 步。副作用"导入后直接关窗 → 桌面版已配置"正是本需求的目标。
 

@@ -500,9 +500,14 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
               // 导入可能是"拷一整个克隆目录"量级的等待，禁用必须看得出来
               // （step 0 的 Continue / step 4 的两个按钮同一写法）。导入在飞时
               // 也不该放用户走——他刚点的那些行还没落定。
+              //
+              // 标签刻意**不是** Next：本屏的写入按钮是 Import selected，而一个叫
+              // Next 的按钮读起来像"带着我勾的那些继续"，人报过这个误解。Skip =
+              // 不导入、离开本屏：服务端已 configured 就收尾进主界面，否则进向导
+              // step 0。两种读法（跳过导入 / 跳过剩下的向导）都不暗示"会导入"。
               style={{ ...styles.submitBtn, ...(submitting ? styles.submitBtnDisabled : null) }}
             >
-              Next
+              Skip
             </button>
           </div>
         </div>

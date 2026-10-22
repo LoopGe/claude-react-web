@@ -1403,7 +1403,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 > 勾选即写盘、撤不回来；扁平清单也看不出每行属于哪一类。**现行模型**是：三类各自
 > `.setup-label` + 计数 + 一行 `.setup-hint`；勾选只增删 `selected` 集合（零副作用、
 > 可完整撤回）；唯一的写盘动作是 `Import selected (n)`（body 只带选中子集），
-> `Select all importable` 一键勾上所有可导入行；`Next` 仍是唯一交接口。判据以
+> `Select all importable` 一键勾上所有可导入行；`Skip` 仍是唯一交接口（此按钮原先叫 `Next`，验收时因"读起来像带着勾选继续"被改名）。判据以
 > spec §8 的那条规则为准，别照抄本 Task 的 `Import all` 片段。
 
 **Files:**
@@ -1898,7 +1898,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 6 的 `SetupWebImport`、既有 `isDesktopHost()`（`src/host-capabilities.ts`）、既有 `Props.onConfigured`
-- Produces: 桌面宿主上 `SetupPage` 先渲染前置屏；点 Next 进 step 0；导入（勾选 + `Import selected (n)`，**只导入不跳转**）之后按 Next 才调 `onConfigured({ openNewSession: true })`（收尾时机由验收实测改过一次；交互模型又在验收后改过一次，见 Task 6 顶部与 spec §2 需求基线和 §8）
+- Produces: 桌面宿主上 `SetupPage` 先渲染前置屏；点 `Skip` 进 step 0；导入（勾选 + `Import selected (n)`，**只导入不跳转**）之后按 `Skip` 才调 `onConfigured({ openNewSession: true })`（收尾时机由验收实测改过一次；交互模型又在验收后改过一次，见 Task 6 顶部与 spec §2 需求基线和 §8；按钮标签随后由 `Next` 改为 `Skip`）
 
 - [ ] **Step 1: 改桌面向导测试（先让它红）**
 
@@ -2056,7 +2056,7 @@ node dist/cli.mjs doctor --state-dir "$APPDATA/claude-react-web/state"
 mv "$APPDATA/claude-react-web/state" "$APPDATA/claude-react-web/state.bak"
 ```
 
-重启桌面版 → 前置屏出现 → 只勾 MCP 那一行（**不**勾凭证）→ 行上变 Imported，界面**留在本屏**（因为 configured 仍为 false）→ 点 Next → 走进向导 step 0/1/2 → 到 step 3 时，刚导入的服务器应显示 **Already exists**。
+重启桌面版 → 前置屏出现 → 只勾 MCP 那一行（**不**勾凭证）→ 行上变 Imported，界面**留在本屏**（因为 configured 仍为 false）→ 点 `Skip` → 走进向导 step 0/1/2 → 到 step 3 时，刚导入的服务器应显示 **Already exists**。
 
 跑完把备份恢复：
 
