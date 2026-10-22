@@ -719,7 +719,7 @@ export interface Session {
    *  and mirrored into SessionInfo. Pure UI pref — no SDK call. */
   autoRecap?: boolean
   /** Per-session override for the transcript's collapsible group cards
-   *  (tool-group + task-notification folds). Undefined = inherit the global
+   *  (the tool-group fold). Undefined = inherit the global
    *  config default; a boolean pins it. Persisted via SessionMeta and
    *  mirrored into SessionInfo. Pure UI pref — no SDK call. */
   toolGroupCards?: boolean

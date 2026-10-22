@@ -1566,8 +1566,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
         <SettingsRow
           title="Use collapsible transcript cards"
-          hint={<>Folds consecutive tool calls and completed background-task
-            notifications in this transcript into collapsible group cards.
+          hint={<>Folds consecutive tool calls in this transcript into
+            collapsible group cards.
             When off, every row renders on its own.{' '}
             {session.toolGroupCards === undefined
               ? `Inheriting global (${globalPrefs.toolGroupCards ? 'ON' : 'OFF'}).`
