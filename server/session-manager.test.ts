@@ -6303,6 +6303,124 @@ describe('SessionManager', () => {
       expect(mockHandles.length).toBe(handlesBefore + 1)
     })
   })
+
+  describe('TaskResultStore wiring', () => {
+    it('hydrates session.tasks from the sidecar across a manager restart', async () => {
+      // 1. Seed the sidecar under a KNOWN session id. `create()` always mints
+      //    a fresh UUID and does NOT accept `resume:` (session-manager.ts
+      //    documents: "For resume, use resume() instead"), so we seed the
+      //    store directly and drive the hydrate path via resume().
+      const { TaskResultStore } = await import('./task-result-store.js')
+      const seeded = new TaskResultStore(dir)
+      await seeded.save('sess-known', [
+        { taskId: 't1', toolUseId: 'tu1', description: 'old', status: 'completed',
+          result: 'FROM-DISK', updatedAt: 1, endedAt: 2, startedAt: 0 },
+      ])
+
+      // 2. hydrateTasks is fire-and-forget on spawn. Create a session (any id),
+      //    then call the private hydrate with the KNOWN id + its live session
+      //    object, and assert the record lands.
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
+      const s1 = (sm as unknown as { sessions: Map<string, { tasks: Map<string, { result?: string; description?: string }> }> }).sessions.get(info.id)!
+      ;(sm as unknown as { hydrateTasks: (id: string, s: unknown) => void }).hydrateTasks('sess-known', s1)
+      await vi.waitFor(() => {
+        expect(s1.tasks.get('t1')?.result).toBe('FROM-DISK')
+      })
+
+      // 3. Review Focus #3 — a live frame for a DIFFERENT taskId must coexist.
+      const { applyTaskNotificationInjection } = await import('./session-pump.js')
+      applyTaskNotificationInjection(s1 as never, {
+        type: 'user', parent_tool_use_id: null,
+        message: { content: [{ type: 'text', text:
+          '<task-notification><task-id>t2</task-id><tool-use-id>tu2</tool-use-id>' +
+          '<status>completed</status><result>LIVE-ONE</result></task-notification>' }] },
+      } as never)
+      expect(s1.tasks.get('t2')?.result).toBe('LIVE-ONE')
+      expect(s1.tasks.get('t1')?.result).toBe('FROM-DISK')
+
+      // 4. Review Focus #3 — hydrate must NOT clobber a record that already
+      //    exists (a live frame that landed first wins).
+      await seeded.save('sess-known', [
+        { taskId: 't2', toolUseId: 'tu2', description: 'STALE', status: 'completed',
+          result: 'STALE-RESULT', updatedAt: 99, endedAt: 100 },
+      ])
+      ;(sm as unknown as { hydrateTasks: (id: string, s: unknown) => void }).hydrateTasks('sess-known', s1)
+      await new Promise((r) => setTimeout(r, 20))
+      expect(s1.tasks.get('t2')?.result).toBe('LIVE-ONE') // unchanged — hydrate only fills holes
+      expect(s1.tasks.get('t2')?.description).not.toBe('STALE')
+    })
+
+    it('persists after settleTasksOnProcessExit flips a live record terminal (Review Focus #7)', async () => {
+      // settleTasksOnProcessExit mutates session.tasks OUTSIDE the pump loop,
+      // so its session-manager call site must persist explicitly. If it skips
+      // that, a task settled on CLI death shows terminal live and then vanishes
+      // across a restart — exactly when the sidecar matters most.
+      //
+      // Drive it the way session-manager does: put a NON-terminal record in
+      // place (settleTasksOnProcessExit ignores already-terminal ones), settle
+      // it, then persist — and assert the sidecar reflects the terminal state.
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
+      const s1 = (sm as unknown as {
+        sessions: Map<string, { tasks: Map<string, unknown> }>
+        persistTasks: (s: unknown) => void
+      }).sessions.get(info.id)!
+
+      // Seed a running record directly (the XML fold always writes terminal
+      // status, so it cannot produce the pre-settle state this test needs).
+      s1.tasks.set('tz', {
+        taskId: 'tz', toolUseId: 'tuz', description: 'bg', status: 'running', updatedAt: 1,
+      })
+
+      const { settleTasksOnProcessExit } = await import('./session-pump.js')
+      const changed = settleTasksOnProcessExit(s1 as never)
+      expect(changed).toBe(true)
+      expect((s1.tasks.get('tz') as { status: string }).status).toBe('stopped')
+
+      // The call-site wiring (Task 5 step: `if (settleTasksOnProcessExit(...))
+      // this.persistTasks(session)`) is what we are pinning. Call it and require
+      // the sidecar to carry the terminal record.
+      ;(sm as unknown as { persistTasks: (s: unknown) => void }).persistTasks(s1)
+      const { TaskResultStore } = await import('./task-result-store.js')
+      await vi.waitFor(async () => {
+        const recs = await new TaskResultStore(dir).load(info.id)
+        const rec = recs?.find((r) => r.taskId === 'tz')
+        expect(rec?.status).toBe('stopped')
+      })
+    })
+
+    it("fork inherits the parent's task records (result survives)", async () => {
+      // A forked session's TasksPanel must not be blank when its parent had
+      // completions — the task-result sidecar follows the fork. Drive the
+      // parent's record through the REAL pump path (the XML injection folds
+      // and persists exactly as a live frame would), then fork and require
+      // the fork's live tasks map to carry it after hydrate.
+      const source = await sm.create({ cwd: '/tmp', model: 'test-model' })
+      const h0 = mockHandles.at(-1)!
+      sm.send(source.id, 'hi')
+      h0.emit({ type: 'result' })
+      await tick()
+
+      h0.emit({
+        type: 'user', parent_tool_use_id: null,
+        message: { content: [{ type: 'text', text:
+          '<task-notification><task-id>ft1</task-id><tool-use-id>ftu1</tool-use-id>' +
+          '<status>completed</status><result>FROM-PARENT</result></task-notification>' }] },
+      })
+      await tick()
+      const parent = (sm as unknown as {
+        sessions: Map<string, { tasks: Map<string, { result?: string }> }>
+      }).sessions.get(source.id)!
+      expect(parent.tasks.get('ft1')?.result).toBe('FROM-PARENT')
+
+      const forked = await sm.fork(source.id)
+      const child = (sm as unknown as {
+        sessions: Map<string, { tasks: Map<string, { result?: string }> }>
+      }).sessions.get(forked.id)!
+      await vi.waitFor(() => {
+        expect(child.tasks.get('ft1')?.result).toBe('FROM-PARENT')
+      })
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
