@@ -66,6 +66,16 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
     msg.subtype !== 'plugin_install'
   ) return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
+  // Background-task completion injection — its output is routed to the
+  // TasksPanel (TaskResultStore-backed), not the transcript. Gate on the
+  // parser SUCCEEDING: a `<task-notification>` with no `<tool-use-id>`
+  // cannot be folded into session.tasks (parseTaskNotificationInjection
+  // returns null), so hiding it would drop the only signal it has. Unparsed
+  // residue falls through to MessageView's neutral synthetic card instead.
+  // The frame MUST still reach the store and the disk JSONL either way: the
+  // reducer's activeSubagents merge and `backfillSubagentCompletions` both
+  // read it (spec §3.3).
+  if (msg.type === 'user' && parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])) return true
   // `command_lifecycle` is a top-level lifecycle marker the `claude` CLI emits
   // to track a command's state machine (queued → started → completed). It
   // carries only ids/state — no renderable content — and isn't in our bundled
