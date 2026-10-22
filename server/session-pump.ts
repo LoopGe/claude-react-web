@@ -26,10 +26,10 @@ import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
 import type { PluginLoadError } from '../shared/session-info.js'
 import type { CliNotification } from '../shared/ws-protocol.js'
-import { MAX_TERMINAL_TASKS, isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '../shared/tasks.js'
+import { MAX_TERMINAL_TASKS, isTerminalTaskStatus, normalizeTaskType, type TaskRecordUi, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame, localCommandOf } from '../shared/results.js'
-import { isTaskNotificationUserMessage } from '../shared/user-frames.js'
+import { isTaskNotificationUserMessage, parseTaskNotificationInjection } from '../shared/user-frames.js'
 import { isGenuineUserInputFrame, taskToolUseId } from '../shared/task-list.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
@@ -297,8 +297,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     })
   }
 
-  pruneTerminalTasks(session)
-  pushTasksSnapshot(session)
+  pruneAndBroadcastTasks(session)
 }
 
 /** Narrow the SDK's `resource_link` blocks to the fields the UI renders,
@@ -348,6 +347,63 @@ function pushTasksSnapshot(session: Session): void {
   for (const sub of session.taskSubscribers) {
     try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
   }
+}
+
+/** Prune terminal overflow and broadcast the current snapshot. Exported so
+ *  SessionManager's sidecar hydrate path reuses the same cap + fan-out. */
+export function pruneAndBroadcastTasks(session: Session): void {
+  pruneTerminalTasks(session)
+  pushTasksSnapshot(session)
+}
+
+/** Fold a harness `<task-notification>` user-role XML injection into
+ *  `session.tasks`. Today this shape never reaches the task map at all
+ *  (`applyTaskEvent` early-returns for non-system frames), so background
+ *  shell/monitor completions are invisible in the TasksPanel.
+ *
+ *  KEYING (Review Focus #1): `applyTaskEvent` keys the map by `task_id`.
+ *  The XML injection may carry no `<task-id>` at all, in which case
+ *  `inj.taskId` falls back to `<tool-use-id>` — and writing under that key
+ *  would create a SECOND record for a task that `task_started` already
+ *  registered under its `task_id` (two TasksPanel rows for one task, one
+ *  stuck `running`). So: look for an existing record by `toolUseId` FIRST
+ *  and reuse its map key; only when no match exists do we write a new entry
+ *  under `inj.taskId`.
+ *
+ *  `result` is the inline `<result>` body; the `system/task_notification`
+ *  path keeps its body in `output_file` and is left empty here (spec §2 Out). */
+export function applyTaskNotificationInjection(session: Session, msg: SDKMessage): void {
+  const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])
+  if (!inj) return
+  const now = Date.now()
+  // Prefer the key of a record this tool_use_id already owns (created by
+  // task_started under its task_id). Fall back to the injection's own key.
+  let key = inj.taskId
+  let existing: TaskRecordUi | undefined
+  for (const [k, rec] of session.tasks) {
+    if (rec.toolUseId === inj.toolUseId) { key = k; existing = rec; break }
+  }
+  if (!existing) existing = session.tasks.get(key)
+  session.tasks.set(key, {
+    taskId: existing?.taskId ?? inj.taskId,
+    toolUseId: inj.toolUseId,
+    description: existing?.description ?? inj.summary ?? '',
+    subagentType: existing?.subagentType,
+    taskType: existing?.taskType,
+    status: inj.status,
+    isBackgrounded: existing?.isBackgrounded,
+    skipTranscript: existing?.skipTranscript,
+    ambient: existing?.ambient,
+    progressSummary: inj.summary ?? existing?.progressSummary,
+    lastToolName: existing?.lastToolName,
+    result: inj.result ?? existing?.result,
+    resourceLinks: existing?.resourceLinks,
+    runId: existing?.runId,
+    startedAt: existing?.startedAt,
+    endedAt: now,
+    updatedAt: now,
+  })
+  pruneAndBroadcastTasks(session)
 }
 
 /** Fold a `system/background_tasks_changed` frame into `session.tasks`.
@@ -730,6 +786,10 @@ export interface PumpDeps {
    *  is). Optional so test fixtures that don't exercise snapshot behavior
    *  can omit it. */
   recordTurnSnapshot?: (sessionId: string, assistantUuid: string) => void
+  /** Called whenever `session.tasks` changed so the manager can persist the
+   *  durable sidecar. Fire-and-forget; a missed write only costs the panel
+   *  its history across a restart. */
+  recordTasksSnapshot?: (sessionId: string) => void
   /** Request a context-usage reconciliation probe after a result FAILED to
    *  yield a snapshot. The main failure modes: the aggregate-
    *  reporting wire (SDK 0.3.278 + e.g. mify proxies) whose top-level usage
@@ -1036,8 +1096,22 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // (observed live: 83s between the streamed notification frame and the
         // first assistant frame), and that whole lag is otherwise unaccounted
         // turn time (live again, phase reads 'idle' mid-turn).
-        if (session.pendingTurns === 0 && isTaskNotificationUserMessage(msg)) {
+        const isNotif = isTaskNotificationUserMessage(msg)
+        if (session.pendingTurns === 0 && isNotif) {
           stampUnaccountedTurn(session, deps)
+        }
+        // Fold the injection into session.tasks (the task map's XML path —
+        // applyTaskEvent only handles the system-frame shape). Parse once;
+        // null when there is no <tool-use-id>, in which case there is nothing
+        // to key a record on and the frame is left to the transcript filter's
+        // unparsed-residue fallback (Task 6).
+        if (isNotif) {
+          const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])
+          if (inj) {
+            applyTaskNotificationInjection(session, msg)
+            try { deps.recordTasksSnapshot?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
+          }
         }
         log.debug(
           `[session ${session.id}] msg #${msgCount + 1} received d` +
@@ -1319,6 +1393,8 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           const subtype = (msg as { subtype?: string }).subtype
           if (subtype === 'task_started' || subtype === 'task_updated' || subtype === 'task_progress') {
             applyTaskEvent(session, msg)
+            try { deps.recordTasksSnapshot?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
             continue
           }
           // REPLACE-semantics live-set snapshot (see applyBackgroundTasksChanged).
@@ -1326,10 +1402,14 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // history ring or the message channel.
           if (subtype === 'background_tasks_changed') {
             applyBackgroundTasksChanged(session, msg)
+            try { deps.recordTasksSnapshot?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
             continue
           }
           if (subtype === 'task_notification') {
             applyTaskEvent(session, msg)
+            try { deps.recordTasksSnapshot?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
             const toolUseId = (msg as { tool_use_id?: string }).tool_use_id
             if (toolUseId) {
               try { deps.onTaskNotification?.(session.id, toolUseId) }

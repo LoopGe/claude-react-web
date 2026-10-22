@@ -5,6 +5,7 @@ import {
   reconcileTasksFromStopHook,
   settleTasksOnProcessExit,
   applyTaskEvent,
+  applyTaskNotificationInjection,
   backgroundSubagentLaunches,
   compactingOf,
   fastModeStateOf,
@@ -1727,6 +1728,85 @@ describe('applyTaskEvent', () => {
 })
 
 // ---------------------------------------------------------------------------
+// applyTaskNotificationInjection — fold a harness `<task-notification>`
+// user-role XML injection into `session.tasks` (the task map's XML path;
+// applyTaskEvent only handles the system-frame shape).
+// ---------------------------------------------------------------------------
+
+describe('applyTaskNotificationInjection', () => {
+  const xml = (inner: string) =>
+    ({ type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'text', text: inner }] } }) as unknown as SDKMessage
+
+  it('folds a full injection into session.tasks with its result body', () => {
+    const { session } = makeTaskSession()
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><summary>did a thing</summary><result>THE-OUTPUT</result></task-notification>'))
+    const rec = session.tasks.get('t1')!
+    expect(rec.toolUseId).toBe('tu1')
+    expect(rec.status).toBe('completed')
+    expect(rec.result).toBe('THE-OUTPUT')
+    expect(rec.progressSummary).toBe('did a thing')
+  })
+
+  it('keys the record by tool-use-id when task-id is absent', () => {
+    const { session } = makeTaskSession()
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><result>R</result></task-notification>'))
+    expect(session.tasks.get('tu1')).toBeTruthy()
+    expect(session.tasks.get('tu1')!.toolUseId).toBe('tu1')
+  })
+
+  it('does NOT create a second record when task_started already keyed by task_id (Review Focus #1)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, {
+      type: 'system', subtype: 'task_started', task_id: 'abc123',
+      tool_use_id: 'tu1', description: 'bg cmd', task_type: 'local_bash',
+    } as unknown as SDKMessage)
+    // Injection carries NO <task-id> — its own key would be 'tu1'.
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><result>R</result></task-notification>'))
+    expect(session.tasks.size).toBe(1)          // one task, one row
+    expect(session.tasks.get('abc123')).toBeTruthy()  // still under the task_id key
+    expect(session.tasks.get('abc123')!.status).toBe('completed')
+    expect(session.tasks.get('abc123')!.result).toBe('R')
+    expect(session.tasks.get('tu1')).toBeUndefined()
+  })
+
+  it('normalises a missing status to failed and keeps the record terminal', () => {
+    const { session } = makeTaskSession()
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><tool-use-id>tu1</tool-use-id><result>R</result></task-notification>'))
+    expect(session.tasks.get('tu1')!.status).toBe('failed')
+  })
+
+  it('upserts an existing record rather than clobbering its metadata', () => {
+    const { session, snapshots } = makeTaskSession()
+    applyTaskEvent(session, {
+      type: 'system', subtype: 'task_started', task_id: 't1',
+      tool_use_id: 'tu1', description: 'launch desc', task_type: 'local_bash',
+    } as unknown as SDKMessage)
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><result>R</result></task-notification>'))
+    const rec = session.tasks.get('t1')!
+    expect(rec.description).toBe('launch desc')
+    expect(rec.taskType).toBe('shell')
+    expect(rec.result).toBe('R')
+    expect(rec.status).toBe('completed')
+    expect(snapshots.at(-1)).toBeTruthy()
+  })
+
+  it('ignores a non-notification frame', () => {
+    const { session } = makeTaskSession()
+    applyTaskNotificationInjection(session, xml('plain text'))
+    expect(session.tasks.size).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // applyBackgroundTasksChanged — REPLACE-semantics live-set snapshot.
 // ---------------------------------------------------------------------------
 
@@ -2431,6 +2511,47 @@ describe('pump: task lifecycle frames', () => {
     expect(onTaskNotification).not.toHaveBeenCalled()
     // The frame itself still folded + broadcast as usual.
     expect(session.tasks.get('t1')?.status).toBe('completed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pump: recordTasksSnapshot persist hook
+//
+// The manager's durable task sidecar is written ONLY through this dep —
+// every pump-loop site that mutates session.tasks must fire it, or that
+// mutation is silently lost across a restart.
+// ---------------------------------------------------------------------------
+
+describe('pump: recordTasksSnapshot persist hook', () => {
+  it('fires after every pump-loop site that mutates session.tasks', async () => {
+    const notifXml: SDKMessage = {
+      type: 'user', parent_tool_use_id: null,
+      message: {
+        content: [{
+          type: 'text',
+          text: '<task-notification><tool-use-id>tu9</tool-use-id>' +
+            '<status>completed</status><result>R</result></task-notification>',
+        }],
+      },
+    } as unknown as SDKMessage
+    const { session } = makePumpSession([
+      sysFrame('task_started', { task_id: 't1', tool_use_id: 'tu1' }),
+      sysFrame('task_progress', { task_id: 't1', summary: 's' }),
+      sysFrame('background_tasks_changed', { tasks: [{ task_id: 't1' }] }),
+      sysFrame('task_notification', { task_id: 't1', tool_use_id: 'tu1', status: 'completed' }),
+      notifXml,
+      { type: 'result', subtype: 'success', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const recordTasksSnapshot = vi.fn()
+    await pump(session, makePumpDeps({ recordTasksSnapshot }))
+
+    // One fire per mutating frame: task_started, task_progress,
+    // background_tasks_changed, task_notification, and the XML fold.
+    expect(recordTasksSnapshot).toHaveBeenCalledTimes(5)
+    expect(recordTasksSnapshot).toHaveBeenCalledWith('s-pump')
+    // The XML fold landed (tool-use-id fallback key) before its persist fired.
+    expect(session.tasks.get('tu9')?.result).toBe('R')
+    expect(session.tasks.size).toBe(2)
   })
 })
 
