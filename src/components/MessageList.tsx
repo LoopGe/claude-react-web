@@ -37,7 +37,7 @@ import { MessageView } from './message-list/MessageView'
 import { userBodyFoldKey } from './message-list/fold-key'
 import { countMatches } from '../search'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
-import { BottomOverlaySpacer, TaskNotificationGroupRow } from './message-list/views/frame-views'
+import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
   advanceRowAnchor,
   buildTranscriptRows,
@@ -466,18 +466,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // transcriptRevealKey change (session switch / overlay retarget) —
   // expansions from one transcript are meaningless in the next.
   const [expandedBodies, setExpandedBodies] = useState<ReadonlySet<string>>(() => new Set())
-  // Expanded task-notification group rows, keyed by the group row's id
-  // (first member uuid). Lifted here because Virtuoso unmounts off-screen
-  // rows — local state in the row component would reset on every scroll.
-  const [expandedNotifGroups, setExpandedNotifGroups] = useState<ReadonlySet<string>>(() => new Set())
-  const toggleNotifGroup = useCallback((groupId: string) => {
-    setExpandedNotifGroups((prev) => {
-      const next = new Set(prev)
-      if (next.has(groupId)) next.delete(groupId)
-      else next.add(groupId)
-      return next
-    })
-  }, [])
   const toggleBodyExpanded = useCallback((foldKey: string) => {
     setExpandedBodies((prev) => {
       const next = new Set(prev)
@@ -497,10 +485,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   if (prevRevealKey !== transcriptRevealKey) {
     setPrevRevealKey(transcriptRevealKey)
     if (expandedBodies.size > 0) setExpandedBodies(new Set())
-    // Same contract as expandedBodies above: group ids from one transcript
-    // are meaningless in the next (panel keep-alive keeps this instance
-    // alive across session switches — don't let the Set accumulate).
-    if (expandedNotifGroups.size > 0) setExpandedNotifGroups(new Set())
   }
   // Which streaming render mode this transcript uses. Defaults to the module
   // constant (currently 'overlay') so production behavior is unchanged; the
@@ -744,10 +728,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         // Every member's items[] index must resolve to the group row so
         // search seek-to-match lands on the folded card.
         for (const ii of row.toolGroup.memberItemIndices) map.set(ii, vi)
-      } else if (row.taskNotifGroup) {
-        // Same contract: a search hit inside a folded notification lands on
-        // the summary row (expanding is the user's next click).
-        for (const ii of row.taskNotifGroup.memberItemIndices) map.set(ii, vi)
       } else {
         map.set(row.itemIndex, vi)
       }
@@ -1335,29 +1315,16 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       !!searchQuery?.trim() &&
       countMatches(item.plainText, searchQuery.trim()) > 0
     // Which transcript item holds the active search match, when it landed
-    // inside THIS row's group (tool group or notification group — mutually
-    // exclusive). One membership computation shared by both group branches;
-    // the per-member gating (which member gets activeMatchInItem) is owned
-    // inside each group row.
-    const groupMemberIndices =
-      item.toolGroup?.memberItemIndices ?? item.taskNotifGroup?.memberItemIndices
+    // inside THIS row's tool group. The per-member gating (which member gets
+    // activeMatchInItem) is owned inside ToolGroupCard.
+    const groupMemberIndices = item.toolGroup?.memberItemIndices
     const activeGroupMemberIdx =
       searchActiveMsgIdx != null &&
       searchActiveMsgIdx >= 0 &&
       groupMemberIndices?.includes(searchActiveMsgIdx)
         ? searchActiveMsgIdx
         : undefined
-    const rowBody = item.taskNotifGroup ? (
-          <TaskNotificationGroupRow
-            members={item.taskNotifGroup.members}
-            expanded={expandedNotifGroups.has(item.id)}
-            onToggle={() => toggleNotifGroup(item.id)}
-            searchQuery={searchQuery}
-            memberItemIndices={item.taskNotifGroup.memberItemIndices}
-            activeMemberItemIndex={activeGroupMemberIdx}
-            activeMatchIdx={searchActiveMatchInItem}
-          />
-        ) : item.toolGroup ? (
+    const rowBody = item.toolGroup ? (
           <ToolGroupCard
             members={item.toolGroup.members}
             memberItemIndices={item.toolGroup.memberItemIndices}
@@ -1430,7 +1397,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // events, unlike the context values that carry `messages`.
     // revealSnapshot: the reveal row class + frozen stagger come from the
     // flip-time snapshot; identity-stable between reveals.
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, expandedNotifGroups, toggleNotifGroup, subagentCtx?.index, workflowCtx?.index, revealSnapshot])
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, revealSnapshot])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).

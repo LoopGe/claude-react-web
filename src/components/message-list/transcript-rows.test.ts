@@ -845,14 +845,11 @@ describe('shouldLoadOlder: seq-anchored startReached equivalence (Task 9)', () =
   })
 })
 
-// ─── task-notification folding ──────────────────────────────────────────
+// ─── task-notification rows ─────────────────────────────────────────────
 //
-// Consecutive COMPLETED <task-notification> user messages (>=2) fold into one
-// summary row; failed/stopped never fold and always render standalone; any
-// other row breaks a run. Mirrors the toolGroup fold contract (id = first
-// member, I1/I3).
-
-import { foldTaskNotificationRows } from './transcript-rows'
+// <task-notification> user messages are hidden from the transcript entirely
+// (Task 6 routes their output to the TasksPanel), so the row model must not
+// fold them — a fold would resurrect them as rows.
 
 const notifMsg = (uuid: string, status: 'completed' | 'failed' | 'stopped'): SdkMessage =>
   ({
@@ -865,129 +862,23 @@ const notifMsg = (uuid: string, status: 'completed' | 'failed' | 'stopped'): Sdk
     },
   }) as unknown as SdkMessage
 
-const notifRow = (uuid: string, status: 'completed' | 'failed' | 'stopped'): TranscriptRow =>
-  ({
-    id: uuid,
-    msg: notifMsg(uuid, status),
-    isCompactSummary: false,
-    renderableIndex: 0,
-    itemIndex: 0,
+const notifItem = (id: string): TranscriptItem => {
+  const m = notifMsg(id, 'completed')
+  return {
+    id,
+    msg: m,
     plainText: 'notification',
-  })
-
-const assistantRow = (uuid: string): TranscriptRow =>
-  ({
-    id: uuid,
-    msg: {
-      type: 'assistant',
-      uuid,
-      parent_tool_use_id: null,
-      message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
-    } as unknown as SdkMessage,
     isCompactSummary: false,
-    renderableIndex: 0,
-    itemIndex: 0,
-    plainText: 'hi',
-  })
+    hiddenByDefault: false,
+  } as TranscriptItem
+}
 
-describe('foldTaskNotificationRows', () => {
-  it('folds a run of >=2 consecutive completed notifications into one group row keyed by the first member', () => {
-    const rows = foldTaskNotificationRows([notifRow('a', 'completed'), notifRow('b', 'completed'), notifRow('c', 'completed')])
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.id).toBe('a')
-    expect(rows[0]!.taskNotifGroup?.memberIds).toEqual(['a', 'b', 'c'])
-    expect(rows[0]!.taskNotifGroup?.members).toHaveLength(3)
-  })
-
-  it('never folds a single completed notification', () => {
-    const rows = foldTaskNotificationRows([notifRow('a', 'completed')])
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.taskNotifGroup).toBeUndefined()
-  })
-
-  it('never folds failed/stopped notifications — they stand alone and break runs', () => {
-    const rows = foldTaskNotificationRows([
-      notifRow('a', 'completed'),
-      notifRow('b', 'stopped'),
-      notifRow('c', 'completed'),
-    ])
-    expect(rows).toHaveLength(3)
-    expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c'])
-    expect(rows.every((r) => r.taskNotifGroup === undefined)).toBe(true)
-  })
-
-  it('a non-notification row breaks the run', () => {
-    const rows = foldTaskNotificationRows([
-      notifRow('a', 'completed'),
-      assistantRow('asst'),
-      notifRow('b', 'completed'),
-    ])
-    expect(rows).toHaveLength(3)
-    expect(rows.every((r) => r.taskNotifGroup === undefined)).toBe(true)
-  })
-
-  it('leaves non-notification rows untouched in mixed sequences', () => {
-    const rows = foldTaskNotificationRows([
-      notifRow('a', 'completed'),
-      notifRow('b', 'completed'),
-      assistantRow('asst'),
-      notifRow('c', 'completed'),
-      notifRow('d', 'completed'),
-    ])
-    expect(rows).toHaveLength(3)
-    expect(rows[0]!.taskNotifGroup?.memberIds).toEqual(['a', 'b'])
-    expect(rows[1]!.id).toBe('asst')
-    expect(rows[2]!.taskNotifGroup?.memberIds).toEqual(['c', 'd'])
-  })
-
-  it('a completed notification missing/with unparsable body is ineligible (never folded by mistake)', () => {
-    const broken: TranscriptRow = {
-      id: 'x',
-      msg: {
-        type: 'user',
-        uuid: 'x',
-        parent_tool_use_id: null,
-        message: { role: 'user', content: '<task-notification><status>completed</status>' },
-      } as unknown as SdkMessage,
-      isCompactSummary: false,
-      renderableIndex: 0,
-      itemIndex: 0,
-      plainText: 'broken',
-    }
-    const rows = foldTaskNotificationRows([notifRow('a', 'completed'), broken])
-    expect(rows).toHaveLength(2)
-    expect(rows.every((r) => r.taskNotifGroup === undefined)).toBe(true)
-  })
-})
-
-describe('buildTranscriptRows: task-notification fold vs toolGroupCards pref', () => {
-  const notifItem = (id: string): TranscriptItem => {
-    const m = notifMsg(id, 'completed')
-    return {
-      id,
-      msg: m,
-      plainText: 'notification',
-      isCompactSummary: false,
-      hiddenByDefault: false,
-    } as TranscriptItem
-  }
-
-  it('toolGroupCards: true (default) folds consecutive completed notifications', () => {
+describe('buildTranscriptRows: task-notification rows', () => {
+  it('no longer folds task-notifications (they are hidden from the transcript)', () => {
     const { rows } = buildTranscriptRows({
       items: [notifItem('a'), notifItem('b')],
       isResultConsumed: never,
     })
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!.taskNotifGroup?.memberIds).toEqual(['a', 'b'])
-  })
-
-  it('toolGroupCards: false skips the task-notification fold — every row stands alone', () => {
-    const { rows } = buildTranscriptRows({
-      items: [notifItem('a'), notifItem('b')],
-      isResultConsumed: never,
-      toolGroupCards: false,
-    })
-    expect(rows).toHaveLength(2)
-    expect(rows.every((r) => r.taskNotifGroup === undefined)).toBe(true)
+    expect(rows.every((r) => (r as { taskNotifGroup?: unknown }).taskNotifGroup === undefined)).toBe(true)
   })
 })
