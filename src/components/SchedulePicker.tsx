@@ -11,6 +11,14 @@ const PRESET_REL = [
   { label: 'In 1 hour', ms: 60 * 60_000 },
 ] as const
 
+/** Width of the .schedule-picker panel (mirrors the CSS `width: 300px`).
+ *  The JS anchor clamps against this so the panel never overflows the
+ *  viewport; the CSS `max-width: calc(100vw - 16px)` handles the residual
+ *  sub-316px case where even a left edge of 8px can't fit the full width. */
+const PICKER_WIDTH = 300
+/** Minimum gap between the panel and the viewport edges on either side. */
+const EDGE = 8
+
 /** Next occurrence of `hour:minute` local — today if still ahead, else
  *  tomorrow. Presets must never resolve to a past instant. */
 function nextAt(hour: number, minute: number, nowMs: number): { fireAt: number; today: boolean } {
@@ -59,8 +67,18 @@ export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
   const confirmDisabled = !validCustom
 
   const style = {
-    left: Math.max(8, anchorRect.left + anchorRect.width / 2 - 150),
-    top: Math.max(8, anchorRect.top - 300),
+    // Center the panel under the clock button, then clamp BOTH edges. The
+    // right clamp is the important one: the clock sits beside the send
+    // button (bottom-right), so on a narrow viewport the centered `left`
+    // would push the panel past the right edge.
+    left: Math.max(
+      EDGE,
+      Math.min(
+        anchorRect.left + anchorRect.width / 2 - PICKER_WIDTH / 2,
+        window.innerWidth - PICKER_WIDTH - EDGE,
+      ),
+    ),
+    top: Math.max(EDGE, anchorRect.top - 300),
   }
 
   return (

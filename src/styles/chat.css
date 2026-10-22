@@ -1655,6 +1655,11 @@ button.chat-empty-env-chip:hover {
   position: fixed;
   z-index: calc(var(--z-scheduler) + 1);
   width: 300px;
+  /* Same viewport cap as the sibling .subagent-swarm-pop: on sub-316px
+     foldables even a left edge of 8px can't fit the full 300px, so the
+     panel shrinks to the viewport. For wider screens the right edge is
+     clamped by the JS anchor (see SchedulePicker.tsx). */
+  max-width: calc(100vw - 16px);
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);

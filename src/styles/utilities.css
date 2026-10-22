@@ -2763,6 +2763,22 @@ button.tool-group-failed-jump:focus-visible {
     animation-name: subagent-sheet-out;
   }
 
+  /* The Workflow drill-in is a right-edge drawer on desktop
+     (width: min(75%,900px); min-width: 480px) — that min-width is wider
+     than every phone viewport, so the panel punches past the right edge.
+     Give it the same full-width-sheet treatment as the subagent overlay;
+     the sheet keyframes are shared (named for the subagent sheet, the
+     first surface to need them). */
+  .workflow-overlay-panel {
+    width: 100%;
+    min-width: 0;
+    border-left: none;
+    animation-name: subagent-sheet-in;
+  }
+  .workflow-overlay[data-state="closing"] .workflow-overlay-panel {
+    animation-name: subagent-sheet-out;
+  }
+
   /* The slash-command picker floats with min-width:280px which can punch
      past a narrow viewport. Let it shrink and cap it to the screen. */
   .cmd-picker {

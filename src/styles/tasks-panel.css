@@ -291,7 +291,11 @@
 .subagent-transcript {
   display: flex;
   flex-direction: column;
-  min-width: 320px;
+  /* On desktop the modal is ~680px wide and this floor gives the
+     MessageList a stable minimum; on a phone the modal is 92vw, so a bare
+     320px floor would clip the dialog's edges. min() keeps the 320px floor
+     where it fits and lets the card shrink with its container otherwise. */
+  min-width: min(320px, 100%);
   max-width: 100%;
 }
 .subagent-transcript-header {
