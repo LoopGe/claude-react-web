@@ -14,9 +14,10 @@
 // CSS classes so the rows / diffs read identically to the main Git panel.
 
 import { cx } from '../utils/cx'
-import { useId, useRef, useState } from 'react'
+import { useCallback, useId, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { FileViewer } from './FileViewer'
+import { FullDiffViewer } from './FullDiffViewer'
 import { Tooltip } from './Tooltip'
 import { DiffView } from './DiffView'
 import {
@@ -24,7 +25,10 @@ import {
   useGitDiff,
   useGitRangeDiff,
   useGitRangeDiffFile,
+  gitDiffQuery,
+  gitRangeDiffFileQuery,
 } from '../hooks/useGitStatus'
+import { api } from '../hooks/useApi'
 import {
   IconX,
   IconRefresh,
@@ -343,9 +347,14 @@ function RowShell(props: {
   onToggle: () => void
   onOpen: (path: string) => void
   diff: { loading: boolean; error: string | null; data: GitDiff | null }
+  /** Loads the complete diff body for the FullDiffViewer escape hatch. */
+  fetchFullText: (signal?: AbortSignal) => Promise<string>
 }) {
-  const { row, open, onToggle, onOpen, diff } = props
+  const { row, open, onToggle, onOpen, diff, fetchFullText } = props
   const path = row.path
+  // Escape hatch state lives here so both row kinds share one viewer.
+  const [showFull, setShowFull] = useState(false)
+  const openFull = useCallback(() => setShowFull(true), [])
   const isUntracked = row.status[0] === '?'
   const hasCounts = row.insertions != null || row.deletions != null
   // Tracked rows are an accordion: a `.git-file-row-line` holding the toggle
@@ -425,10 +434,21 @@ function RowShell(props: {
           {diff.error && <div className="git-file-diff-error">{diff.error}</div>}
           {diff.data && diff.data.isBinary && <div className="git-file-diff-binary">(binary file)</div>}
           {diff.data && !diff.data.isBinary && (
-            <DiffView text={diff.data.text} truncated={diff.data.truncated} totalLines={diff.data.totalLines} />
+            <DiffView
+              text={diff.data.text}
+              truncated={diff.data.truncated}
+              totalLines={diff.data.totalLines}
+              onShowFull={openFull}
+            />
           )}
         </div>
       )}
+      <FullDiffViewer
+        open={showFull}
+        onClose={() => setShowFull(false)}
+        name={path}
+        fetchText={fetchFullText}
+      />
     </div>
   )
 }
@@ -442,7 +462,21 @@ function UncommittedFileRow(props: {
 }) {
   const { cwd, row, open, onToggle, onOpen } = props
   const { data, loading, error } = useGitDiff(cwd, open ? row.path : undefined, row.staged, open)
-  return <RowShell row={row} open={open} onToggle={onToggle} onOpen={onOpen} diff={{ loading, error, data }} />
+  const fetchFullText = useCallback(
+    (signal?: AbortSignal): Promise<string> =>
+      api.get<GitDiff>(gitDiffQuery(cwd, row.path, row.staged, { full: true }), { signal }).then((d) => d.text),
+    [cwd, row.path, row.staged],
+  )
+  return (
+    <RowShell
+      row={row}
+      open={open}
+      onToggle={onToggle}
+      onOpen={onOpen}
+      diff={{ loading, error, data }}
+      fetchFullText={fetchFullText}
+    />
+  )
 }
 
 function RangeFileRow(props: {
@@ -463,5 +497,26 @@ function RangeFileRow(props: {
     open ? row.path : undefined,
     open,
   )
-  return <RowShell row={row} open={open} onToggle={onToggle} onOpen={onOpen} diff={{ loading, error, data }} />
+  const fetchFullText = useCallback(
+    (signal?: AbortSignal): Promise<string> =>
+      api
+        .get<GitDiff>(
+          gitRangeDiffFileQuery(cwd, rangeProps.baseRef, rangeProps.branchName, mergeBase, row.path, {
+            full: true,
+          }),
+          { signal },
+        )
+        .then((d) => d.text),
+    [cwd, rangeProps.baseRef, rangeProps.branchName, mergeBase, row.path],
+  )
+  return (
+    <RowShell
+      row={row}
+      open={open}
+      onToggle={onToggle}
+      onOpen={onOpen}
+      diff={{ loading, error, data }}
+      fetchFullText={fetchFullText}
+    />
+  )
 }

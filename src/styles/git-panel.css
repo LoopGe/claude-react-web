@@ -417,6 +417,22 @@
 .git-diff-row.meta .git-diff-body { color: var(--fg-muted); }
 .git-diff-row.nonewline .git-diff-body { color: var(--fg-muted); font-style: italic; }
 .git-diff-row.truncated .git-diff-body { color: var(--fg-muted); font-style: italic; }
+/* Escape hatch on the truncation marker: opens FullDiffViewer. */
+.git-diff-show-full {
+  margin-left: var(--space-2);
+  padding: 1px var(--space-1-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3xs);
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  font-style: normal;
+  cursor: pointer;
+}
+.git-diff-show-full:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
 
 /* Recent commits list — compact, hash-prefix, subject mid, meta tail. */
 .git-commits-list {

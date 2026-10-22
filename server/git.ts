@@ -41,7 +41,13 @@ const log = createLogger('git')
 const execFileAsync = promisify(execFile)
 
 const DEFAULT_TIMEOUT_MS = 10_000
-import { MAX_BUFFER_BYTES, MAX_DIFF_LINES, ERROR_DETAIL_CAP } from './constants.js'
+import {
+  MAX_BUFFER_BYTES,
+  MAX_DIFF_LINES,
+  MAX_DIFF_BYTES,
+  MAX_DIFF_LINE_CHARS,
+  ERROR_DETAIL_CAP,
+} from './constants.js'
 /** Server-side log limit ceiling, regardless of what the client asks for. */
 const MAX_LOG_LIMIT = 100
 
@@ -694,22 +700,78 @@ export function validateRepoRelativePath(path: string): string {
   return normalized
 }
 
-/** Truncate a unified-diff body at MAX_DIFF_LINES, preserving the header
- *  and reporting the original line count. */
+/** Clip a unified-diff body to the preview budget and report the original
+ *  line count. Three independent caps, any of which sets `truncated`:
+ *    - MAX_DIFF_LINE_CHARS per line (content past the cap is dropped, the
+ *      line keeps its +/-/space marker so numbering survives; the cut is
+ *      marked with a trailing `…`).
+ *    - MAX_DIFF_LINES total lines.
+ *    - MAX_DIFF_BYTES total size.
+ *  The head is kept (headers + earliest hunks), the tail is dropped. This is
+ *  a PREVIEW contract — `full: true` skips it entirely and returns the
+ *  complete body. */
 function truncateDiff(text: string): { text: string; truncated: boolean; totalLines: number } {
   const lines = text.split('\n')
   const totalLines = lines.length
-  if (totalLines <= MAX_DIFF_LINES) {
-    return { text, truncated: false, totalLines }
+  let truncated = false
+
+  // Single pass over the lines: clip width as we go, stop at whichever of
+  // the line / byte budgets binds first. A pre-pass over every line would
+  // visit and re-allocate the whole pathological body just to keep ≤500 of
+  // it. Bytes of the joined prefix is what the wire costs, so accumulate
+  // the per-line size (content + the '\n' joiner).
+  const kept: string[] = []
+  let bytes = 0
+  for (const line of lines) {
+    if (kept.length >= MAX_DIFF_LINES || bytes + 1 > MAX_DIFF_BYTES) {
+      truncated = true
+      break
+    }
+    // Width clip keeps the first character (the diff marker) so
+    // parseUnifiedDiff still classifies add/del/ctx; only the payload past
+    // MAX_DIFF_LINE_CHARS is lost.
+    let keptLine = line
+    if (line.length > MAX_DIFF_LINE_CHARS) {
+      truncated = true
+      keptLine = line.slice(0, MAX_DIFF_LINE_CHARS - 1) + '…'
+    }
+    const lineBytes = Buffer.byteLength(keptLine, 'utf8')
+    if (bytes + lineBytes > MAX_DIFF_BYTES) {
+      truncated = true
+      break
+    }
+    kept.push(keptLine)
+    // +1 for the '\n' joiner that follows (upper bound; the final line has
+    // none — one byte of slack is irrelevant against a 256 KB budget).
+    bytes += lineBytes + 1
   }
+
+  return { text: kept.join('\n'), truncated, totalLines }
+}
+
+/** The complete, unclipped body shape shared by the `full=1` escape hatch
+ *  of every diff surface. */
+function untruncatedResult(
+  path: string,
+  staged: boolean,
+  stdout: string,
+): GitDiff {
   return {
-    text: lines.slice(0, MAX_DIFF_LINES).join('\n'),
-    truncated: true,
-    totalLines,
+    path,
+    staged,
+    text: stdout,
+    truncated: false,
+    totalLines: stdout.split('\n').length,
+    isBinary: false,
   }
 }
 
-export async function getDiff(cwd: string, path: string, staged: boolean): Promise<GitDiff> {
+export async function getDiff(
+  cwd: string,
+  path: string,
+  staged: boolean,
+  opts?: { full?: boolean },
+): Promise<GitDiff> {
   await ensureGitRepo(cwd)
   const safePath = validateRepoRelativePath(path)
 
@@ -728,6 +790,7 @@ export async function getDiff(cwd: string, path: string, staged: boolean): Promi
   if (staged) diffArgs.push('--cached')
   diffArgs.push('--', safePath)
   const { stdout } = await runGit(cwd, diffArgs)
+  if (opts?.full) return untruncatedResult(safePath, staged, stdout)
   const trunc = truncateDiff(stdout)
   return { path: safePath, staged, ...trunc, isBinary: false }
 }
@@ -836,9 +899,17 @@ export async function getRangeDiffFiles(cwd: string, from: string, to: string, m
   return out
 }
 
-/** Unified diff body for ONE file across a range, clipped at MAX_DIFF_LINES.
+/** Unified diff body for ONE file across a range, clipped at the preview
+ *  budget (MAX_DIFF_LINES / MAX_DIFF_BYTES / MAX_DIFF_LINE_CHARS).
  *  Returns an empty body with isBinary when git flags the file binary. */
-export async function getRangeDiffFile(cwd: string, from: string, to: string, path: string, mergeBase = false): Promise<GitDiff> {
+export async function getRangeDiffFile(
+  cwd: string,
+  from: string,
+  to: string,
+  path: string,
+  mergeBase = false,
+  opts?: { full?: boolean },
+): Promise<GitDiff> {
   validateRef(from)
   validateRef(to)
   await ensureGitRepo(cwd)
@@ -852,6 +923,7 @@ export async function getRangeDiffFile(cwd: string, from: string, to: string, pa
   }
 
   const { stdout } = await runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--no-color', ...refs, '--', safePath])
+  if (opts?.full) return untruncatedResult(safePath, false, stdout)
   const trunc = truncateDiff(stdout)
   return { path: safePath, staged: false, ...trunc, isBinary: false }
 }

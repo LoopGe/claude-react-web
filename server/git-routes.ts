@@ -53,7 +53,10 @@ export function buildGitRouter(): Hono {
     const path = c.req.query('path')
     if (!path) throw new HttpError(400, 'path query param is required')
     const staged = c.req.query('staged') === '1'
-    const diff = await getDiff(cwd, path, staged)
+    // full=1 skips the preview budget (line/byte/width caps) and returns the
+    // complete body — the escape hatch behind the "View full diff" button.
+    const full = c.req.query('full') === '1'
+    const diff = await getDiff(cwd, path, staged, { full })
     return c.json(diff)
   })
 
@@ -86,7 +89,8 @@ export function buildGitRouter(): Hono {
     validateRef(from)
     validateRef(to)
     const mergeBase = c.req.query('mode') === 'mergeBase'
-    const diff = await getRangeDiffFile(cwd, from, to, path, mergeBase)
+    const full = c.req.query('full') === '1'
+    const diff = await getRangeDiffFile(cwd, from, to, path, mergeBase, { full })
     return c.json(diff)
   })
 

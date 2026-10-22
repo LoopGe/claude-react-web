@@ -58,6 +58,19 @@ export const DEFAULT_MAX_UNTRACKED_BYTES = 2 * 1024 * 1024
  *  clip at the same length. */
 export const MAX_DIFF_LINES = 500
 
+/** Per-file unified-diff BYTE cap for the preview body. The line cap alone
+ *  let a 500-line diff of minified/lockfile lines ship 10 MB to the browser,
+ *  which froze the tab while DiffView laid it out. Whichever of the line cap
+ *  and this budget binds first wins; the escape hatch is `full=1`. */
+export const MAX_DIFF_BYTES = 256 * 1024
+
+/** Per-line width cap (chars) in the preview body. A single 2 MB line made
+ *  the diff grid 14 million px wide — `white-space: pre` + a grid `1fr` track
+ *  grows to the longest line's max-content. Content past this is dropped
+ *  from the PREVIEW line (the line itself is kept, so line numbering and the
+ *  +/- marker survive); `full=1` restores it. */
+export const MAX_DIFF_LINE_CHARS = 2000
+
 /** Preview cap (chars) for interpolated payloads in log/error lines —
  *  request/response bodies, rpc dumps, fetched text. Long enough to carry
  *  the diagnosis, short enough to keep log lines scannable. */

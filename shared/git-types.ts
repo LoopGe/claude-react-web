@@ -123,8 +123,11 @@ export interface GitDiff {
   path: string
   /** Whether this is the staged (--cached) diff or the worktree diff. */
   staged: boolean
-  /** True when the diff was clipped at MAX_DIFF_LINES; the trailing
-   *  context is dropped and `text` ends with the last kept line. */
+  /** True when the PREVIEW body was clipped — by line count, total bytes,
+   *  or per-line width (see MAX_DIFF_* in server/constants.ts). The head is
+   *  kept and the tail dropped; the client offers "View full diff" (the
+   *  `full=1` query, which returns this whole object with `truncated:
+   *  false`) when this is set. */
   truncated: boolean
   /** Total line count of the original (un-truncated) diff. */
   totalLines: number

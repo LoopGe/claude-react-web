@@ -182,6 +182,20 @@ export interface UseGitDiffReturn extends BaseFetchState<GitDiff> {
   refresh: () => void
 }
 
+/** Query string for `/git/diff`. The one spelling of the diff-fetch
+ *  contract, shared by the preview hook and the FullDiffViewer escape
+ *  hatch (`full: true` → untruncated body). */
+export function gitDiffQuery(
+  cwd: string,
+  path: string,
+  staged: boolean,
+  opts?: { full?: boolean },
+): string {
+  const qs = new URLSearchParams({ cwd, path, staged: staged ? '1' : '0' })
+  if (opts?.full) qs.set('full', '1')
+  return `/git/diff?${qs.toString()}`
+}
+
 /** Fetch a single file's diff. Pass `enabled: false` to keep the hook
  *  inert until the caller (e.g. an accordion row) flips it on. The diff
  *  endpoint is comparatively expensive — one git invocation per file —
@@ -211,9 +225,8 @@ export function useGitDiff(
     abortRef.current = ctrl
     setLoading(true)
     setError(null)
-    const qs = new URLSearchParams({ cwd, path, staged: staged ? '1' : '0' })
     api
-      .get<GitDiff>(`/git/diff?${qs.toString()}`, { signal: ctrl.signal })
+      .get<GitDiff>(gitDiffQuery(cwd, path, staged), { signal: ctrl.signal })
       .then((res) => {
         if (ctrl.signal.aborted) return
         setData(res)
@@ -303,6 +316,21 @@ export interface UseGitRangeDiffFileReturn extends BaseFetchState<GitDiff> {
   refresh: () => void
 }
 
+/** Query string for `/git/diff-range-file`. Same contract as
+ *  `gitDiffQuery`, for the Worktree-changes rows. */
+export function gitRangeDiffFileQuery(
+  cwd: string,
+  from: string,
+  to: string,
+  mergeBase: boolean,
+  path: string,
+  opts?: { full?: boolean },
+): string {
+  const qs = new URLSearchParams({ cwd, from, to, path, ...(mergeBase ? { mode: 'mergeBase' } : {}) })
+  if (opts?.full) qs.set('full', '1')
+  return `/git/diff-range-file?${qs.toString()}`
+}
+
 /** Fetch ONE file's unified diff across a ref range, lazily on row expand.
  *  Mirrors useGitDiff but with `from`/`to` refs instead of staged/unstaged. */
 export function useGitRangeDiffFile(
@@ -332,9 +360,8 @@ export function useGitRangeDiffFile(
     abortRef.current = ctrl
     setLoading(true)
     setError(null)
-    const qs = new URLSearchParams({ cwd, from, to, path, ...(mergeBase ? { mode: 'mergeBase' } : {}) })
     api
-      .get<GitDiff>(`/git/diff-range-file?${qs.toString()}`, { signal: ctrl.signal })
+      .get<GitDiff>(gitRangeDiffFileQuery(cwd, from, to, mergeBase, path), { signal: ctrl.signal })
       .then((res) => {
         if (ctrl.signal.aborted) return
         setData(res)

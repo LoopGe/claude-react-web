@@ -57,3 +57,29 @@
   flex: 0 0 auto;
   margin-top: var(--space-1-5);
 }
+
+/* FullDiffViewer ("View full diff" escape hatch). Raw text only — no
+   highlight, no per-row grid — so a body with 2 MB lines wraps instead of
+   blowing the layout width out (white-space: pre + a wide track is what
+   froze the panel preview). */
+.full-diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-2-5) var(--space-3);
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.full-diff-more {
+  flex: 0 0 auto;
+  margin-top: var(--space-1-5);
+}

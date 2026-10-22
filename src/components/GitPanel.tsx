@@ -20,10 +20,12 @@
 // checkout) are gated by <ConfirmDialog>.
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { useGitDiff, useGitLog, useGitBranches, useGitStashes } from '../hooks/useGitStatus'
+import { useGitDiff, useGitLog, useGitBranches, useGitStashes, gitDiffQuery } from '../hooks/useGitStatus'
 import { useGitWrite } from '../hooks/useGitWrite'
+import { api } from '../hooks/useApi'
 import { ConfirmDialog } from './ConfirmDialog'
 import { FileViewer } from './FileViewer'
+import { FullDiffViewer } from './FullDiffViewer'
 import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
 import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconSearch } from './icons/ToolIcons'
@@ -33,6 +35,7 @@ import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatePresence } from 'motion/react'
 import type {
+  GitDiff,
   GitFileEntry,
   GitStatusResponse,
 } from '../../shared/git-types'
@@ -769,6 +772,21 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
   const discardBusy = writeOps.busyOps.has(`discard:${file.path}`)
   const anyBusy = stageBusy || unstageBusy || discardBusy
 
+  // Full-diff escape hatch for a truncated preview (see DiffView's marker).
+  // fetchText is stable for a given row so FullDiffViewer's open-effect
+  // can't refetch on unrelated GitPanel re-renders.
+  const [showFull, setShowFull] = useState(false)
+  const fetchFullText = useCallback((signal?: AbortSignal): Promise<string> => {
+    // Loud, not a silent fallback: the button only renders once a preview
+    // diff loaded, and useGitDiff never loads one without a cwd — so a
+    // missing cwd here is a real invariant break that must surface.
+    if (!cwd) throw new Error('viewing a full diff requires a cwd')
+    return api.get<GitDiff>(gitDiffQuery(cwd, file.path, staged, { full: true }), { signal }).then((d) => d.text)
+  }, [cwd, file.path, staged])
+  // Stable so DiffView's memo survives GitPanel re-renders (commit-textarea
+  // typing, status snapshots).
+  const openFull = useCallback(() => setShowFull(true), [])
+
   const handleToggle = () => {
     if (open) {
       // Closing — immediate.
@@ -892,11 +910,22 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
               <div className="git-file-diff-binary">Binary file - no preview</div>
             )}
             {diff && !diff.isBinary && (
-              <DiffView text={diff.text} truncated={diff.truncated} totalLines={diff.totalLines} />
+              <DiffView
+                text={diff.text}
+                truncated={diff.truncated}
+                totalLines={diff.totalLines}
+                onShowFull={openFull}
+              />
             )}
           </div>
         )}
       </AnimatedCollapse>
+      <FullDiffViewer
+        open={showFull}
+        onClose={() => setShowFull(false)}
+        name={file.path}
+        fetchText={fetchFullText}
+      />
     </div>
   )
 }, (prev, next) => {

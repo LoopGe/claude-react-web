@@ -44,6 +44,7 @@ import {
 } from './git.js'
 import { Hono } from 'hono'
 import { createErrorHandler } from './errors.js'
+import { MAX_DIFF_BYTES, MAX_DIFF_LINE_CHARS } from './constants.js'
 import { tempDir, rmRf } from './__test-utils__/index.js'
 
 // Git process startup is noticeably slower on Windows under the full Vitest
@@ -481,6 +482,73 @@ describe('git-routes', () => {
       expect(body.truncated).toBe(true)
       expect(body.totalLines).toBeGreaterThan(500)
       expect(body.text.split('\n').length).toBeLessThanOrEqual(500)
+    })
+
+    it.skipIf(!gitOk)('caps a single very long line at MAX_DIFF_LINE_CHARS', async () => {
+      seedRepo(dir)
+      // a.txt is committed as SEED.a ('alpha\n') — a worktree rewrite with one
+      // 50 KB line is the minified-bundle/lockfile shape that made the diff
+      // grid 14 million px wide and froze the tab.
+      writeFileSync(join(dir, 'a.txt'), 'x'.repeat(50_000) + '\n')
+      const app = buildApp()
+      const res = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=a.txt`)
+      const body = await json<{ truncated: boolean; text: string }>(res)
+      expect(body.truncated).toBe(true)
+      const widths = body.text.split('\n').map((l) => l.length)
+      expect(Math.max(...widths)).toBeLessThanOrEqual(MAX_DIFF_LINE_CHARS)
+    })
+
+    it.skipIf(!gitOk)('caps the preview body at MAX_DIFF_BYTES', async () => {
+      seedRepo(dir)
+      // Rewrite the single-line a.txt ('alpha\n') into 200 × 1900-char lines
+      // ≈ 380 KB across only ~202 diff lines. Both caps must be respected and
+      // neither may be masked by the other: the LINE count stays under
+      // MAX_DIFF_LINES, and the LINE width stays under MAX_DIFF_LINE_CHARS, so
+      // the BYTE budget is the only cap that can bind here. (An earlier
+      // fixture wrote long lines on top of the 700-line big.txt — its 700
+      // short `-orig-N` deletion lines filled the line cap first and the test
+      // passed by accident without the byte budget ever participating.)
+      const line = 'y'.repeat(1900)
+      writeFileSync(join(dir, 'a.txt'), Array.from({ length: 200 }, () => line).join('\n') + '\n')
+      const app = buildApp()
+      const res = await app.request(`/api/git/diff?cwd=${encodeURIComponent(dir)}&path=a.txt`)
+      const body = await json<{ truncated: boolean; totalLines: number; text: string }>(res)
+      expect(body.truncated).toBe(true)
+      expect(Buffer.byteLength(body.text, 'utf8')).toBeLessThanOrEqual(MAX_DIFF_BYTES)
+      expect(body.totalLines).toBeGreaterThan(body.text.split('\n').length)
+    })
+
+    it.skipIf(!gitOk)('full=1 returns the complete body that the preview truncates', async () => {
+      seedRepo(dir) // big.txt = 700 `orig-N` lines
+      const lines2: string[] = []
+      for (let i = 0; i < 700; i++) lines2.push(`new-${i}`)
+      writeFileSync(join(dir, 'big.txt'), lines2.join('\n') + '\n')
+      const app = buildApp()
+      const base = `/api/git/diff?cwd=${encodeURIComponent(dir)}&path=big.txt`
+
+      const preview = await json<{ truncated: boolean; text: string }>(await app.request(base))
+      expect(preview.truncated).toBe(true)
+      expect(preview.text).not.toContain('new-699')
+
+      const full = await json<{ truncated: boolean; totalLines: number; text: string }>(
+        await app.request(`${base}&full=1`),
+      )
+      expect(full.truncated).toBe(false)
+      expect(full.text).toContain('new-699')
+      expect(full.text.split('\n').length).toBe(full.totalLines)
+    })
+
+    it.skipIf(!gitOk)('full=1 keeps a very long line intact', async () => {
+      seedRepo(dir)
+      const long = 'x'.repeat(50_000)
+      writeFileSync(join(dir, 'a.txt'), long + '\n')
+      const app = buildApp()
+      const res = await app.request(
+        `/api/git/diff?cwd=${encodeURIComponent(dir)}&path=a.txt&full=1`,
+      )
+      const body = await json<{ truncated: boolean; text: string }>(res)
+      expect(body.truncated).toBe(false)
+      expect(body.text).toContain(long)
     })
 
     it.skipIf(!gitOk)('marks binary files with isBinary=true and empty text', async () => {
