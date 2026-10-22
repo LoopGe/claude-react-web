@@ -159,6 +159,41 @@ describe('GET /api/config/web-import', () => {
     })
   })
 
+  // marketplace 的 sourceUrl 可以带 userinfo（`https://oauth2:<token>@host/owner/repo`），
+  // 截图里就是明文令牌上屏的。枚举是给人看的，用户只需要认出"是哪个仓库"，
+  // 所以秘密不上线——但**只改视图**：store 里那条 URL 一个字都不动（导入侧
+  // 还要靠它去拉私有仓库）。
+  it('masks the userinfo in a marketplace source url, keeping scheme and host', async () => {
+    seedMarketplace(sourceDir, 'private', ['a'])
+    seedMarketplace(sourceDir, 'bare', ['b'])
+    const file = join(sourceDir, 'marketplaces.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      marketplaces: Record<string, { source: { url: string } }>
+    }
+    raw.marketplaces.private.source.url = 'https://oauth2:ghp_supersecrettoken@git.example.com/owner/repo'
+    raw.marketplaces.bare.source.url = 'https://ghp_baretoken@git.example.com/owner/other'
+    writeFileSync(file, JSON.stringify(raw), 'utf8')
+
+    const app = await makeRouter(stateDir, sourceDir)
+    const res = await app.request('/api/config/web-import')
+    const body = await res.json() as { marketplaces: Array<Record<string, unknown>> }
+    const byId = new Map(body.marketplaces.map((m) => [m.id as string, m]))
+
+    // `user:secret@` → 保留 user（用户认得出是哪个账号），秘密换成 ***。
+    expect(byId.get('private')?.sourceUrl).toBe('https://oauth2:***@git.example.com/owner/repo')
+    // 裸 `token@` → 整段 userinfo 都是秘密。
+    expect(byId.get('bare')?.sourceUrl).toBe('https://***@git.example.com/owner/other')
+    // 令牌在响应体里任何位置都不出现。
+    const text = JSON.stringify(body)
+    expect(text).not.toContain('ghp_supersecrettoken')
+    expect(text).not.toContain('ghp_baretoken')
+
+    // 只改视图：源 store 里那条 URL 原样保留。
+    const stored = await new MpStore({ stateDir: sourceDir }).load({ readOnly: true })
+    expect(stored.find((e) => e.id === 'private')?.source.url)
+      .toBe('https://oauth2:ghp_supersecrettoken@git.example.com/owner/repo')
+  })
+
   it('reports a corrupt source config as credentialsError, not a 500', async () => {
     mkdirSync(sourceDir, { recursive: true })
     writeFileSync(join(sourceDir, 'config.json'), 'not json', 'utf8')
@@ -281,6 +316,43 @@ describe('POST /api/config/web-import — credentials', () => {
     expect(body.credentials.configured).toBe(false)
     await loadConfig(stateDir)
     expect(config.modelList).toEqual(['m-a'])
+  })
+
+  // 源里一条**可用** profile 都没有时（`profiles: []`、字段全空白的 profile、或
+  // 还是 legacy 顶层形状——readSourceCredentials 根本不看那六个顶层键），
+  // 写入循环的六个 `if (cred.present.X)` 全为假：源里的值一个都落不到 profile。
+  // 那种情况必须报 imported: false —— 客户端行上写 Imported 是谎报（用户以为
+  // 凭证搬过来了，桌面版其实还是未配置）。
+  it('reports imported:false when the source has no usable profile to write', async () => {
+    for (const raw of [
+      { profiles: [] },
+      { profiles: [{ id: 'default', name: 'Blank' }] },
+      { authToken: 'sk-ant-legacy', baseUrl: 'https://legacy.example.com', modelList: ['legacy-model'] },
+    ]) {
+      mkdirSync(sourceDir, { recursive: true })
+      writeFileSync(join(sourceDir, 'config.json'), JSON.stringify(raw), 'utf8')
+      const before = readFileSync(join(stateDir, 'config.json'), 'utf8')
+
+      const app = await makeRouter(stateDir, sourceDir)
+      const res = await app.request('/api/config/web-import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ credentials: true }),
+      })
+      expect(res.status).toBe(200)
+      const body = await res.json() as { credentials: { imported: boolean; configured: boolean } }
+      // 没写出东西 → imported: false；configured 仍镜像 GET /config（源里没有
+      // token，桌面版本来就是未配置）。legacy 顶层那份的令牌绝不能顺带搬过来。
+      expect(body.credentials).toEqual({ imported: false, configured: false })
+      // 内容一个字都没变：桌面版自己的 config.json 没有任何字段被源改写
+      // （也没有被 heal 出一个新 profile 的内容差异）。这里比的是解析后的
+      // 结构——queueConfigWrite 落盘时会重新格式化，格式差异不是"写了东西"。
+      expect(JSON.parse(readFileSync(join(stateDir, 'config.json'), 'utf8')))
+        .toEqual(JSON.parse(before))
+      await loadConfig(stateDir)
+      expect(config.authToken).toBeUndefined()
+      expect(config.recapModel).toBe('keep-me')
+    }
   })
 
   it('rejects a non-boolean credentials flag', async () => {

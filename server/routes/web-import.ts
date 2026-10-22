@@ -43,6 +43,33 @@ function stringArrayOrThrow(value: unknown, field: string): string[] {
 
 const emptyCollection = (): WebImportCollectionResult => ({ imported: [], skipped: [], failed: [] })
 
+/** marketplace 的 sourceUrl 可能带 userinfo（`https://oauth2:<token>@git.example.com/owner/repo`），
+ *  截图里就是明文令牌上屏的。枚举只做展示，用户只需要认出"是哪个仓库"，
+ *  所以保留 scheme + host/path，把秘密换成 `***`：
+ *    - `user:secret@` → 保留 user（用户认得出是哪个账号），secret 换成 ***；
+ *    - 裸 `token@` → 整段 userinfo 都是秘密。
+ *
+ *  只改**视图**，不改 store 里那条 URL：导入侧还要靠它去拉私有仓库。
+ *  没有 userinfo 时原样返回（不经过 URL 的重排——`new URL(...).toString()`
+ *  会给裸 host 补尾斜杠、做百分号编码等，展示串不该被顺手改写）。
+ *
+ *  判据只能是 URL 解析出的 username / password：`user:@`（空 secret）与
+ *  `token@` 在 URL 里同形，那种情况按"更隐蔽"的一侧处理（整段 userinfo 打掉）。 */
+function maskUrlUserinfo(raw: string): string {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    // 不是绝对 URL（源里理论上只有 https，但这是别人目录里的字符串，
+    // 解析不了就没有 userinfo 可谈）。
+    return raw
+  }
+  if (!url.username && !url.password) return raw
+  if (url.password) url.password = '***'
+  else url.username = '***'
+  return url.toString()
+}
+
 export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
   const app = new Hono()
   app.onError(createErrorHandler('[web-import]'))
@@ -102,7 +129,8 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
         marketplaces.push({
           id: entry.id,
           displayName: entry.displayName,
-          sourceUrl: entry.source.url,
+          // 带凭证的 URL 只把凭证打掉，仓库本身照旧认得出（见 maskUrlUserinfo）。
+          sourceUrl: maskUrlUserinfo(entry.source.url),
           ...(entry.source.ref ? { ref: entry.source.ref } : {}),
           pluginCount: entry.manifest.plugins.length,
           cloneExists: src.cloneExists[entry.id] === true,
@@ -134,9 +162,20 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
    *  的目标 profile 一旦漂移，就是 SetupPage 注释里记的那个 P0 缺陷
    *  （token 写进了 profiles[0]，而读的是 active）。
    *
-   *  只写源里确实存在的字段：源没有的保留桌面版现状，不清空。 */
+   *  只写源里确实存在的字段：源没有的保留桌面版现状，不清空。
+   *
+   *  源里一条**可用** profile 都没有时（`profiles: []`、字段全空白的 profile、
+   *  或还是 legacy 顶层形状——readSourceCredentials 根本不看那六个顶层键），
+   *  下面写入循环的六个 `if (cred.present.X)` 全为假：源里的值一个都落不到
+   *  profile。那种情况必须报 imported: false —— 客户端行上写 Imported 是谎报
+   *  （用户以为凭证搬过来了，桌面版其实还是未配置）。
+   *  返回 `nothingWritten` 而不是提前 return：config heal 那一整段（与
+   *  /config/setup 同源的不变量，见上）不因为"没东西可写"而短路。 */
   async function importCredentials(sourceDir: string): Promise<WebImportResult['credentials']> {
     const cred = await readSourceCredentials(sourceDir)
+    const nothingWritten = !cred.present.authToken && !cred.present.baseUrl
+      && !cred.present.modelList && !cred.present.modelGroups
+      && !cred.present.recapModel && !cred.present.commitMessageModel
     await queueConfigWrite(deps.configDir, (existing) => {
       const rawActiveId = typeof existing.activeProfileId === 'string' ? existing.activeProfileId.trim() : ''
       let entries = coerceProfileEntries(existing.profiles, DEFAULT_PROFILE)
@@ -169,7 +208,7 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
     })
     // queueConfigWrite 内部会 applyParsedConfig，所以 serverConfig 已是写入后的
     // 值——`configured` 因此镜像 GET /config 的同名字段（同一个表达式）。
-    return { imported: true, configured: !!serverConfig.authToken }
+    return { imported: !nothingWritten, configured: !!serverConfig.authToken }
   }
 
   /** 按名字导入源目录的全局 MCP 服务器。
