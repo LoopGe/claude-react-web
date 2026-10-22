@@ -1346,19 +1346,29 @@ export function useTranscriptScroll({
       if (scroller.scrollHeight - scroller.clientHeight <= BOTTOM_EPSILON_PX) return
       syncBottomGeometry(scroller, 'disable-now')
     }
-    // True when `node` sits inside a scroll container nested in the transcript
-    // (a Bash card's output block, a code block), i.e. the gesture belongs to
-    // THAT container, not to the transcript. Its scroll events don't bubble, so
-    // latching a leave for it would drop follow while the panel is still parked
-    // at the bottom — and nothing would re-arm it.
-    const isInsideNestedScroller = (node: EventTarget | null): boolean => {
+    // True when a wheel with `deltaY` over `node` will be chained by the
+    // browser up to THIS transcript. `node` may sit inside scroll containers
+    // nested in the transcript (a Bash card's output block, a code block) —
+    // their scroll events don't bubble, so a wheel that scrolls THEM must not
+    // be read as transcript activity. But the browser only lets a nested
+    // container consume a wheel it can actually scroll in the wheel's
+    // direction: parked at the boundary, the wheel chains to the next
+    // scrollable ancestor instead. So the wheel belongs to the transcript
+    // only when EVERY scrollable between `node` and the scroller is itself at
+    // that boundary — a mid-scroll ancestor swallows the chain and the
+    // transcript never moves.
+    const wheelChainsToTranscript = (node: EventTarget | null, deltaY: number): boolean => {
       let cur = node instanceof HTMLElement ? node : null
       while (cur && cur !== el) {
         const overflowY = getComputedStyle(cur).overflowY
-        if ((overflowY === 'auto' || overflowY === 'scroll') && cur.scrollHeight > cur.clientHeight + 1) return true
+        if ((overflowY === 'auto' || overflowY === 'scroll') && cur.scrollHeight > cur.clientHeight + 1) {
+          const consumesDown = cur.scrollTop < cur.scrollHeight - cur.clientHeight - BOTTOM_EPSILON_PX
+          const consumesUp = cur.scrollTop > BOTTOM_EPSILON_PX
+          if (deltaY < 0 ? consumesUp : consumesDown) return false
+        }
         cur = cur.parentElement
       }
-      return false
+      return true
     }
     // Only UPWARD-capable inputs (see SCROLL_UP_KEYS): a wheel-down, a touch
     // drag toward the bottom or a PageDown can't produce a leave, and treating
@@ -1367,7 +1377,18 @@ export function useTranscriptScroll({
     const onWheel = (e: WheelEvent) => {
       // ctrl+wheel is zoom (trackpad pinch), not scrolling.
       if (e.ctrlKey || e.metaKey) return
-      if (isInsideNestedScroller(e.target)) return
+      // A wheel over a nested scroll container normally belongs to THAT
+      // container (scrolling the stdout pre must not drop follow), so it is
+      // ignored. But a container parked at the wheel's boundary can't consume
+      // it — the browser CHAINS the wheel to this transcript, and the chained
+      // scroll arrives with no gesture evidence, because the nested gate is
+      // exactly what skipped the intent stamp. Unattributed, the follow
+      // invariant reads the chained move as a displacement and re-pins the
+      // viewport to the bottom: the user wheeling up out of a long stdout
+      // could never scroll the transcript past the bottom ("stdout 滚到顶部
+      // 滚不动"). Classify first — a wheel that will chain IS a transcript
+      // wheel, and takes the exact transcript path below.
+      if (!wheelChainsToTranscript(e.target, e.deltaY)) return
       // ANY transcript wheel invalidates a pending user-message navigation
       // target; the direction gate below is purely for the follow leave.
       onUserScrollIntentRef.current?.()

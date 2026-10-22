@@ -1567,6 +1567,96 @@ describe('MessageList', () => {
     expect(followingOf(container)).toBe('true')
   })
 
+  it('attributes a wheel-up chained out of a nested stdout scroller at its top edge', () => {
+    // Regression guard for the "stdout 滚到顶部滚不动" report. A `!`-command
+    // card's stdout <pre> is a scroll container nested in the transcript.
+    // Wheels over it belong to the pre (the nested-scroller gate skips them so
+    // pre-scrolling never drops follow) — but when the pre is parked at its
+    // TOP edge, the browser chains the wheel to the transcript, and that
+    // chained scroll arrives with NO gesture evidence (the gate is exactly
+    // what skipped the intent stamp). Unattributed, the follow invariant
+    // re-pins it: the user wheeling up out of a long stdout could never scroll
+    // the transcript past the bottom. A chained wheel at the top edge must be
+    // attributed — it IS a transcript leave.
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 300
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 200 // at the true bottom
+
+    const bash = makeMsg('user', {
+      message: {
+        content:
+          '<bash-input>seq 500</bash-input>\n<bash-exit code="0" />\n<bash-stdout>line\nline\nline</bash-stdout>',
+      },
+    })
+    const { container } = render(<MessageList items={toItems([bash] as SdkMessage[])} />)
+
+    const pre = container.querySelector('.bash-msg-pre') as HTMLElement
+    expect(pre).not.toBeNull()
+    // jsdom has no layout: give the pre the scrollable geometry the
+    // nested-scroller gate reads, and the overflow-y the stylesheet applies.
+    Object.defineProperty(pre, 'scrollHeight', { value: 5000, configurable: true })
+    Object.defineProperty(pre, 'clientHeight', { value: 320, configurable: true })
+    pre.style.overflowY = 'auto'
+    pre.scrollTop = 0 // parked at its top edge — the chain-to-transcript case
+
+    const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+    expect(scroller).not.toBeNull()
+
+    act(() => {
+      // The wheel itself (over the nested scroller, parked at its top edge)...
+      const event = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+      event.deltaY = -120
+      pre.dispatchEvent(event)
+      // ...followed by the chained upward scroll it produces on the transcript.
+      virtuosoMockState.scrollTop = 100
+      fireEvent.scroll(scroller)
+    })
+
+    // The chained scroll is the user's: follow drops and the viewport keeps
+    // the position the chain took (no snap-back to the bottom).
+    expect(scroller.scrollTop).toBe(100)
+    expect(followingOf(container)).toBe('false')
+  })
+
+  it('still ignores a wheel-up over a nested stdout scroller that can consume it', () => {
+    // The other half of the chained-wheel gate: a wheel the nested container
+    // CAN consume (it is mid-scroll, not parked at its top edge) belongs to
+    // that container — its scroll events don't bubble, so latching a leave
+    // for it would drop follow while the transcript is still parked at the
+    // bottom with nothing to re-arm it.
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 300
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 200 // at the true bottom
+
+    const bash = makeMsg('user', {
+      message: {
+        content:
+          '<bash-input>seq 500</bash-input>\n<bash-exit code="0" />\n<bash-stdout>line\nline\nline</bash-stdout>',
+      },
+    })
+    const { container } = render(<MessageList items={toItems([bash] as SdkMessage[])} />)
+
+    const pre = container.querySelector('.bash-msg-pre') as HTMLElement
+    expect(pre).not.toBeNull()
+    Object.defineProperty(pre, 'scrollHeight', { value: 5000, configurable: true })
+    Object.defineProperty(pre, 'clientHeight', { value: 320, configurable: true })
+    pre.style.overflowY = 'auto'
+    pre.scrollTop = 1000 // mid-scroll — the pre consumes this wheel itself
+
+    act(() => {
+      const event = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+      event.deltaY = -120
+      pre.dispatchEvent(event)
+    })
+
+    // Still following: the gesture scrolled the stdout, not the transcript.
+    expect(followingOf(container)).toBe('true')
+  })
+
   it('re-pins to the bottom when settled content grows AFTER the bottom overlay exits', async () => {
     // Regression guard for the "当 StreamingFooter 消失，视图向上弹一段" bug.
     //
