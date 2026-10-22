@@ -509,6 +509,23 @@ function sanitizeTodos(raw: unknown[]): Todo[] {
 // Task* (TaskCreate / TaskUpdate) reconstruction
 // ---------------------------------------------------------------------------
 
+/** Numeric sort key for a Task* row: `#N` ids sort ascending by their numeric
+ *  value; provisional `pending:*` keys (no server id yet) sort after every
+ *  numbered task. TodoWrite rows never pass through here — they go via
+ *  sanitizeTodos / extractLatestTodos and keep their snapshot order. */
+function numericTodoKey(key: string): number {
+  return /^\d+$/.test(key) ? Number(key) : Number.POSITIVE_INFINITY
+}
+
+/** Ascending numeric-id comparator for Task* rows. Equal keys (two provisional
+ *  `pending:*` rows) compare as 0 so Array.prototype.sort's stability keeps
+ *  their transcript order. */
+function compareTodoRows(a: Todo, b: Todo): number {
+  const ka = numericTodoKey(a.key)
+  const kb = numericTodoKey(b.key)
+  return ka === kb ? 0 : ka - kb
+}
+
 /** Fold the whole TaskCreate/TaskUpdate stream into the current list.
  *
  *  Unlike TodoWrite (a per-turn full snapshot), Task* state is cumulative
@@ -517,7 +534,9 @@ function sanitizeTodos(raw: unknown[]): Todo[] {
  *  `buildTaskStateMap` (`src/utils/task-events.ts`); this wrapper applies
  *  the visibility cleanup on top — stale-completed tasks (resolved AND last
  *  touched before the latest user-input turn) and stale provisional orphans
- *  are dropped. Returns null when no Task* events exist. */
+ *  are dropped — and then orders the survivors by ascending numeric id, so
+ *  the panel reads `#1, #2, …` regardless of transcript/merge order.
+ *  Returns null when no Task* events exist. */
 function extractFromTaskEvents(messages: SdkMessage[], serverTasks: TasklistSnapshotPayload | null | undefined): Todo[] | null {
   const windowTasks = buildTaskStateMap(messages)
   const merged = mergeTaskList(serverTasks, windowTasks)
@@ -542,5 +561,6 @@ function extractFromTaskEvents(messages: SdkMessage[], serverTasks: TasklistSnap
       ...(t.description !== undefined ? { description: t.description } : {}),
     })
   }
+  out.sort(compareTodoRows)
   return out
 }

@@ -708,6 +708,57 @@ describe('TodoChecklist — serverTasks integration', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Task* id ordering — rows render in ascending numeric id (`#1`, `#2`, …),
+// not transcript/merge order. Provisional creates (no server id yet) sort
+// after every numbered task, keeping their own relative order.
+// ---------------------------------------------------------------------------
+
+describe('TodoChecklist — Task* id ordering', () => {
+  it('orders tasks by ascending numeric id regardless of merge order', () => {
+    // Window fold yields #5 then #6; mergeTaskList appends snapshot-only
+    // entries AFTER the window fold (merge order #5, #6, #2, #1). The panel
+    // must sort by numeric id: #1, #2, #5, #6.
+    const msgs = [
+      ...created('tc5', 5, 'Five'),
+      ...created('tc6', 6, 'Six'),
+    ]
+    const serverTasks = {
+      rev: 1,
+      tasks: [
+        { id: '2', subject: 'Two', status: 'pending' as const, stale: false },
+        { id: '1', subject: 'One', status: 'pending' as const, stale: false },
+      ],
+    }
+    const { container } = render(<TodoChecklist messages={msgs} serverTasks={serverTasks} working />)
+    const texts = [...container.querySelectorAll('.todo-text')].map((n) => n.textContent)
+    expect(texts).toEqual(['One', 'Two', 'Five', 'Six'])
+  })
+
+  it('sorts provisional (id-less) creates after numbered tasks', () => {
+    // A provisional create appears FIRST in the transcript (its tool_result
+    // hasn't landed yet), then #2. Numeric sort puts #2 before the id-less
+    // row instead of the transcript order.
+    const msgs = [
+      taskUseMsg('cX', 'TaskCreate', { subject: 'In flight', description: 'In flight' }),
+      ...created('tc2', 2, 'Two'),
+    ]
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    const texts = [...container.querySelectorAll('.todo-text')].map((n) => n.textContent)
+    expect(texts).toEqual(['Two', 'In flight'])
+  })
+
+  it('keeps the relative order of multiple provisional creates (stable sort)', () => {
+    const msgs = [
+      taskUseMsg('cA', 'TaskCreate', { subject: 'First', description: 'First' }),
+      taskUseMsg('cB', 'TaskCreate', { subject: 'Second', description: 'Second' }),
+    ]
+    const { container } = render(<TodoChecklist messages={msgs} working />)
+    const texts = [...container.querySelectorAll('.todo-text')].map((n) => n.textContent)
+    expect(texts).toEqual(['First', 'Second'])
+  })
+})
+
+// ---------------------------------------------------------------------------
 // collapsed dock + header rotor — the collapsed card docks behind the composer
 // and its header rotates through the in_progress tasks
 // ---------------------------------------------------------------------------
