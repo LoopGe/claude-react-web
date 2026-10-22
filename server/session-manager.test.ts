@@ -6352,17 +6352,22 @@ describe('SessionManager', () => {
 
     it('persists after settleTasksOnProcessExit flips a live record terminal (Review Focus #7)', async () => {
       // settleTasksOnProcessExit mutates session.tasks OUTSIDE the pump loop,
-      // so its session-manager call site must persist explicitly. If it skips
-      // that, a task settled on CLI death shows terminal live and then vanishes
+      // so the CLI-death call site must persist explicitly. If it skips that,
+      // a task settled on CLI death shows terminal live and then vanishes
       // across a restart — exactly when the sidecar matters most.
       //
-      // Drive it the way session-manager does: put a NON-terminal record in
-      // place (settleTasksOnProcessExit ignores already-terminal ones), settle
-      // it, then persist — and assert the sidecar reflects the terminal state.
+      // Drive the REAL call-site wiring (handleProcessExit's
+      // `if (settledNow) this.persistTasks(s)`) — the test must never invoke
+      // persistTasks itself, so deleting that line fails here. The mock Query
+      // has no ProcessMonitor behind it (the SDK mock bypasses the CLI spawn),
+      // so the cheapest real-path trigger is the registered onProcessExit
+      // callback body — the same seam the crash-recovery suite's fireCrash
+      // uses. NON-clean exit shape (`code: 1`): the clean-exit branch defers
+      // to pump cleanup and never reaches this settle (that half is covered
+      // by the cleanup-tail test below).
       const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
       const s1 = (sm as unknown as {
         sessions: Map<string, { tasks: Map<string, unknown> }>
-        persistTasks: (s: unknown) => void
       }).sessions.get(info.id)!
 
       // Seed a running record directly (the XML fold always writes terminal
@@ -6371,15 +6376,12 @@ describe('SessionManager', () => {
         taskId: 'tz', toolUseId: 'tuz', description: 'bg', status: 'running', updatedAt: 1,
       })
 
-      const { settleTasksOnProcessExit } = await import('./session-pump.js')
-      const changed = settleTasksOnProcessExit(s1 as never)
-      expect(changed).toBe(true)
-      expect((s1.tasks.get('tz') as { status: string }).status).toBe('stopped')
+      ;(sm as unknown as { handleProcessExit: (i: unknown) => void }).handleProcessExit({
+        sessionId: info.id, code: 1, signal: null, killed: false,
+      })
 
-      // The call-site wiring (Task 5 step: `if (settleTasksOnProcessExit(...))
-      // this.persistTasks(session)`) is what we are pinning. Call it and require
-      // the sidecar to carry the terminal record.
-      ;(sm as unknown as { persistTasks: (s: unknown) => void }).persistTasks(s1)
+      // The exit path settled the record terminal and its call-site persist
+      // wrote the sidecar. Assert the durable half.
       const { TaskResultStore } = await import('./task-result-store.js')
       await vi.waitFor(async () => {
         const recs = await new TaskResultStore(dir).load(info.id)
