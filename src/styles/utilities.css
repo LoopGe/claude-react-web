@@ -191,22 +191,24 @@
 /* One-shot entrance for the merged tool_result section. The `-enter` class
    is added by useEnterOnArrival only when the result genuinely lands (the
    nullish → non-nullish transition), so a Virtuoso scroll-back remount never
-   replays it. Fade + rise + expand: opacity/translateY are layout-agnostic,
-   while grid-template-rows 0fr→1fr animates the real box height so the
-   content below the card slides open instead of jumping. */
+   replays it. Fade + rise are the class's; the "expand" — the section's real
+   box height — is driven from rAF in whole CSS px by
+   src/utils/grid-track-tween.ts, so the content below slides open without a
+   fractional layout step re-phasing its glyphs. */
 .tool-card-result.tool-card-result-enter {
   animation: tool-result-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
+/* Opacity + rise only: the section's height is driven from rAF in whole CSS px
+   (`src/utils/grid-track-tween.ts`) so a fractional grid track can't re-phase
+   the glyphs below it every frame. */
 @keyframes tool-result-enter {
   from {
     opacity: 0;
     transform: translateY(var(--motion-distance-sm));
-    grid-template-rows: 0fr;
   }
   to {
     opacity: 1;
     transform: translateY(0);
-    grid-template-rows: 1fr;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -218,10 +220,12 @@
 /* Generic grid-clip entrance — a faithful generalization of the
    `.tool-card-result` reveal above, for any single row whose mount would
    otherwise snap the surrounding box taller. The wrapper is a 1-row grid;
-   the `-inner` child holds `min-height:0` + `overflow:hidden` so animating
-   the track from `0fr→1fr` collapses/expands the row's REAL box height
-   (padding + border included, since they live on `-inner`), smoothly sliding
-   content below rather than jumping it.
+   the `-inner` child holds `min-height:0` + `overflow:hidden` so the row's
+   REAL box height (padding + border included, since they live on `-inner`)
+   can be collapsed and expanded — driven from rAF in whole CSS px by
+   src/utils/grid-track-tween.ts, which slides the content below rather than
+   jumping it and avoids the sub-pixel glyph re-phasing a fractional track
+   causes.
 
    The animation lives only on the gated `-entering` modifier (GridClipEnter
    sets it from a parent `useEnterOnArrival` gate), so the clip plays exactly
@@ -252,13 +256,16 @@
 .grid-clip-enter.grid-clip-entering .grid-clip-enter-inner {
   overflow: hidden;
 }
+/* Only the opacity beat lives in CSS now: the row's height is driven from rAF
+   in whole CSS px (`src/utils/grid-track-tween.ts`), because a fractional
+   `grid-template-rows` tween re-phases every glyph below the row on every
+   frame. The base track stays `1fr` — the tween writes an inline px value and
+   clears it again, so nothing constrains later content growth. */
 @keyframes grid-clip-reveal {
   from {
-    grid-template-rows: 0fr;
     opacity: 0;
   }
   to {
-    grid-template-rows: 1fr;
     opacity: 1;
   }
 }

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type AnimationEvent } from 'react'
+import { revealDurationMs } from '../utils/reveal-duration'
 
 /** How long past the CSS reveal before the `-enter`-family class is
  *  force-cleared as a fallback. Slight buffer so the precise `animationend`
@@ -7,14 +8,6 @@ import { useEffect, useLayoutEffect, useRef, useState, type AnimationEvent } fro
  *  Shared by every one-shot reveal (GridClipEnter, ToolGroupCard's member
  *  entrance) so the cleanup schedules can't drift apart. */
 const FALLBACK_MS = 160
-
-/** Read `--motion-duration-moderate` (the reveal duration) from the theme so
- *  the fallback cleanup tracks CSS edits instead of hardcoding 240ms. */
-export const revealDurationMs = () => {
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--motion-duration-moderate')
-  const n = parseFloat(v)
-  return Number.isFinite(n) ? n : 240
-}
 
 /**
  * One-shot reveal class latch, shared by the entrance animations that grow a

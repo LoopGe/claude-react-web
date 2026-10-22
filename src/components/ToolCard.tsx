@@ -11,7 +11,7 @@
 //   ToolStatusBadge — running/success/error pill, also used standalone
 //                     by some tool views
 
-import { Fragment, memo, useEffect, useRef, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useRef, type ReactNode } from 'react'
 import {
   IconAlertCircle,
   IconArrowDown,
@@ -20,6 +20,7 @@ import {
   IconLoader,
 } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
+import { tweenGridTrack } from '../utils/grid-track-tween'
 import { useToolResult, useResolvedToolStatus, useToolStatus } from '../hooks/usePlanStatus'
 import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
 import { useRevealClass } from '../hooks/useRevealClass'
@@ -482,13 +483,29 @@ export const ToolCard = memo(function ToolCard({
  *  is the shared useRevealClass latch. */
 export const ToolResultSection = memo(function ToolResultSection({ result, entering = false, searchQuery, activeMatchIdx }: { result: ToolResultEntry; entering?: boolean; searchQuery?: string; activeMatchIdx?: number }) {
   const { revealing, handleAnimationEnd } = useRevealClass(entering, 'tool-result-enter')
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const innerRef = useRef<HTMLDivElement>(null)
+
+  // The reveal's height is driven from rAF in whole CSS px: a fractional
+  // `grid-template-rows` tween re-phases every glyph below the section each
+  // frame (the reported shimmer when expanding a tool result inside a card).
+  // `entering` still supplies the class's opacity/rise beat.
+  useLayoutEffect(() => {
+    if (!revealing) return
+    const el = wrapperRef.current
+    const inner = innerRef.current
+    if (!el || !inner) return
+    // Cancel on unmount: a card recycled mid-reveal must not keep an inline track.
+    return tweenGridTrack(el, inner)
+  }, [revealing])
 
   return (
     <div
+      ref={wrapperRef}
       className={`tool-card-result${result.isError ? ' tool-card-result-error' : ''}${revealing ? ' tool-card-result-enter' : ''}`}
       onAnimationEnd={handleAnimationEnd}
     >
-      <div className="tool-card-result-inner">
+      <div className="tool-card-result-inner" ref={innerRef}>
         <ToolResultDetails content={result.content} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
       </div>
     </div>

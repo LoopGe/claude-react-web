@@ -4,8 +4,8 @@
 // the button unmounts without extra state). Runs in jsdom (src/** .tsx).
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, cleanup, fireEvent } from '@testing-library/react'
-import { ToolCard, ToolStatusBadge } from './ToolCard'
+import { render, cleanup, fireEvent, act } from '@testing-library/react'
+import { ToolCard, ToolStatusBadge, ToolResultSection } from './ToolCard'
 import { ToolUseBlock } from './ToolUseBlock'
 import { ToolStatusProvider } from '../hooks/usePlanStatus'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
@@ -143,5 +143,37 @@ describe('ToolStatusBadge (standalone)', () => {
     )
     expect(useToolStatusMock).toHaveBeenCalledWith('tu-1')
     expect(container.querySelector('.tool-status-label')?.textContent).toBe('failed')
+  })
+})
+
+describe('ToolResultSection — result reveal', () => {
+  // Scoped to THIS describe on purpose. A file-wide `vi.restoreAllMocks()`
+  // resets the hoisted context mocks the file's other tests drive (measured:
+  // three of them went red). But an inline restore at the end of the test body
+  // is skipped whenever an assertion throws, leaking fake timers and a
+  // prototype-wide scrollHeight mock into every later test in the file — which
+  // is the cascade this hook avoids.
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('drives the grid track in whole pixels, then clears it', () => {
+    vi.useFakeTimers()
+    // The tween reads its target in a LAYOUT EFFECT at mount, so the height has
+    // to be mocked on the prototype BEFORE the render (a per-element mock
+    // installed afterwards is too late — the tween would see 0 and no-op).
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(260)
+    const { container } = render(
+      <ToolResultSection result={{ content: 'line', isError: false }} entering />,
+    )
+    const el = container.querySelector('.tool-card-result') as HTMLElement
+
+    act(() => { vi.advanceTimersByTime(16) })
+    act(() => { vi.advanceTimersByTime(16) })
+    expect(el.style.gridTemplateRows).toMatch(/^\d+px$/)
+
+    act(() => { vi.advanceTimersByTime(400) })
+    expect(el.style.gridTemplateRows).toBe('')
   })
 })

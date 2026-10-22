@@ -24,6 +24,7 @@ import { GridClipEnter } from './GridClipEnter'
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 describe('GridClipEnter', () => {
@@ -86,5 +87,23 @@ describe('GridClipEnter', () => {
     act(() => { vi.advanceTimersByTime(500) })
     expect(el.className).not.toContain('grid-clip-entering')
     cleanup()
+  })
+
+  it('drives the track in whole pixels while revealing, then clears it', () => {
+    vi.useFakeTimers()
+    // The tween reads its target in a LAYOUT EFFECT at mount, so the height must
+    // be mocked on the prototype BEFORE the render — a per-element mock installed
+    // afterwards is too late, the tween sees 0 and no-ops.
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(320)
+    const { container } = render(<GridClipEnter entering={true}><div className="child" /></GridClipEnter>)
+    const el = container.querySelector('.grid-clip-enter') as HTMLElement
+
+    act(() => { vi.advanceTimersByTime(16) })
+    act(() => { vi.advanceTimersByTime(16) })
+    expect(el.style.gridTemplateRows).toMatch(/^\d+px$/)
+
+    act(() => { vi.advanceTimersByTime(400) })
+    // cleared, so the CSS base 1fr governs and later growth is unconstrained
+    expect(el.style.gridTemplateRows).toBe('')
   })
 })
