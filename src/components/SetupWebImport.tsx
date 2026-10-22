@@ -5,8 +5,10 @@
 //
 // DOM / 类名 / 文案 / 状态机照抄既有两处模式：
 //   - step 0 与 step 3 的 health 行：探测中 / 失败 + Retry，且都允许继续；
-//   - step 3 的 MCP 导入清单：行内 checkbox 即时导入、Import all 批量导入、
-//     状态位文案 Importing… / Imported / Already exists / Failed。
+//   - step 3 的 MCP 导入清单：每类自己的 `.setup-label` + `.setup-hint` 表头、
+//     行内 checkbox、状态位文案 Importing… / Imported / Already exists / Failed。
+// 一处有意**不**照抄 step 3：那里的 checkbox 勾上就立刻写盘，本屏的 checkbox 只是
+// 选择（人报的"勾了就撤不回来"），落盘只发生在 Import selected 那一次 POST 上。
 // 不新增 CSS，颜色只用主题变量。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -26,7 +28,8 @@ interface Props {
   onConfigured: () => void | Promise<void>
 }
 
-/** 行 key：credentials / mcp:<name> / mp:<id> —— 一个字典管三栏的状态位。 */
+/** 行 key：credentials / mcp:<name> / mp:<id> —— 一个字典管三栏的状态位，
+ *  同一个 key 也是选择集里的成员标识。 */
 const CREDENTIALS_ROW = 'credentials'
 const mcpRow = (name: string) => `mcp:${name}`
 const mpRow = (id: string) => `mp:${id}`
@@ -44,6 +47,9 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
   const [data, setData] = useState<WebImportEnumeration | undefined>(undefined)
   const [probeError, setProbeError] = useState<string | null>(null)
   const [status, setStatus] = useState<Record<string, RowStatus>>({})
+  /** 这次要导入哪些行。勾选**只**改它（一个请求都不发），落盘只发生在
+   *  Import selected 那一次 POST 上——一次误勾必须能整条撤回。 */
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   /** 服务端是否已 configured，只由"这次导入的响应"喂：`WebImportResult.credentials`
@@ -95,7 +101,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
    *      的逐项结果覆盖）；
    *    - 再用服务端的 imported / skipped / failed 三个桶覆盖。
    *  早先失败分支只调 setError，被选中的行会永远停在 Importing… ——而
-   *  anyImportable 把 'importing' 当"在飞"，Import all 会跟着消失，用户没有
+   *  anyImportable 把 'importing' 当"在飞"，Select all 会跟着消失，用户没有
    *  重试口。落 'failed'（而非回到 'idle'）与 step 3 的 importMcp /
    *  importAllMcp 的 catch 同一处置：行可重试、按钮不消失。
    *  落底那一遍同时兜住"服务端没把某项列进任何桶"的情况（否则同样停在
@@ -121,11 +127,10 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     [],
   )
 
-  /** 发一次导入请求并按结果落状态位。**不跳转**：行勾选与 Import all 都只是
-   *  "导入"，而交出一整屏是一个导航决定，由用户按 Next 做出（见下面的
-   *  `handleNext`）。勾一行读作"导入这一项"，把整屏收掉既不是用户要的，也让
-   *  他没法接着勾下一行。唯一带回来的是"服务端现在 configured 了吗"，它只改
-   *  `configured`，Next 再据此决定去哪。 */
+  /** 发一次导入请求并按结果落状态位。**不跳转**：Import selected 只是"导入"，
+   *  而交出一整屏是一个导航决定，由用户按 Next 做出（见下面的 `handleNext`）。
+   *  唯一带回来的是"服务端现在 configured 了吗"，它只改 `configured`，Next 再
+   *  据此决定去哪。 */
   const runImport = useCallback(async (sel: { credentials: boolean; mcp: string[]; marketplaces: string[] }) => {
     if (submitting) return
     setSubmitting(true)
@@ -171,24 +176,26 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
   }, [configured, onContinue, onConfigured])
 
   /** 渲染期一律读 state，不读 ref：ref 是给异步 handler 读"最新值"用的，在这里
-   *  没有任何异步 handler 需要它，用 ref 反而会慢一帧（anyImportable 这类派生值
+   *  没有任何异步 handler 需要它，用 ref 反而会慢一帧（selectedCount 这类派生值
    *  会因此算错）。 */
   const statusOf = (key: string): RowStatus => status[key] ?? 'idle'
-  const doneOrRunning = (key: string) => {
+  const done = (key: string) => {
     const s = statusOf(key)
-    return s === 'importing' || s === 'imported' || s === 'exists'
+    return s === 'imported' || s === 'exists'
   }
+  const doneOrRunning = (key: string) => statusOf(key) === 'importing' || done(key)
 
-  /** 一栏里"还能导入"的判定。两处必须同构（step 3 的 importAllMcp 与它那个
-   *  `claudeMcp.some(...)` 是同一写法），否则 Import all 会变成一个点不动的
-   *  按钮、或者选进一个必然失败的项：
+  /** 一栏里"还能导入"的判定。下面三处必须同构（step 3 的 importAllMcp 与它那个
+   *  `claudeMcp.some(...)` 是同一写法）——selection 算 payload、selectAllImportable
+   *  算"全勾上"、anyImportable 算按钮能不能点，任何一个漂移都会让按钮变成一个
+   *  点不动的空转、或者选进一个必然失败的项：
    *    - importErrors 非空的 MCP：服务端会逐项判 failed（校验不过）；
    *    - cloneExists 为 false 的市场：源的克隆目录不在了，导入必然
    *      `clone dir is missing`（shared/web-import.ts 的 cloneExists 注释
    *      也是这么约定的——该行不可导入）。
    *  状态那一半只排除 doneOrRunning（imported / exists / importing），
-   *  **failed 不排除**——这就是 step 3 的 rowDisabled 判据：一次批量导入把某行
-   *  弄成 Failed 之后，那一行还能重试，Import all 也不会因为"没有 idle 的项"
+   *  **failed 不排除**——这就是 step 3 的 rowDisabled 判据：一次导入把某行
+   *  弄成 Failed 之后，那一行还能重试，Select all 也不会因为"没有 idle 的项"
    *  而整个消失。
    *  行上禁用勾选框用的也是同一条状态判据（写成 done || importing，等价于
    *  doneOrRunning），另加"结构上导不进去"的 unimportable。 */
@@ -196,28 +203,53 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     s.importErrors.length === 0 && !doneOrRunning(mcpRow(s.name))
   const mpImportable = (m: WebImportMarketplaceView) =>
     m.cloneExists && !doneOrRunning(mpRow(m.id))
+  const credentialsImportable = data?.credentials != null && !doneOrRunning(CREDENTIALS_ROW)
 
-  const importing = submitting
-  const nothingToImport = data !== undefined && !probeError && (
-    !data.credentials && data.mcp.length === 0 && data.marketplaces.length === 0
+  /** 这次"Import selected"真正会发出去的子集：选择集与"还能导入"的**交集**。
+   *  交集而不是直接信任选择集本身——一次导入之后行会变成 imported / exists，
+   *  它们留在 set 里也没有意义（勾选框已禁用、服务端只会回 skipped），按交集算
+   *  计数与 payload，那些"已经落定的勾"就自动不参与（按钮计数随之归零）。 */
+  const selection = {
+    credentials: selected.has(CREDENTIALS_ROW) && credentialsImportable,
+    mcp: (data?.mcp ?? []).filter((s) => selected.has(mcpRow(s.name)) && mcpImportable(s)).map((s) => s.name),
+    marketplaces: (data?.marketplaces ?? []).filter((m) => selected.has(mpRow(m.id)) && mpImportable(m)).map((m) => m.id),
+  }
+  const selectedCount = (selection.credentials ? 1 : 0) + selection.mcp.length + selection.marketplaces.length
+
+  /** 任意一项可导入 ⇒ Select all 有活干（predicate 与 selection 的 filter 同构）。 */
+  const anyImportable = data !== undefined && (
+    credentialsImportable || data.mcp.some(mcpImportable) || data.marketplaces.some(mpImportable)
   )
 
-  /** 批量导入：把还没导入 / 还没存在的、且确实能导入的项一次 POST 出去。 */
-  const importAll = () => {
-    const sel = {
-      credentials: !doneOrRunning(CREDENTIALS_ROW) && data?.credentials != null,
-      mcp: (data?.mcp ?? []).filter(mcpImportable).map((s) => s.name),
-      marketplaces: (data?.marketplaces ?? []).filter(mpImportable).map((m) => m.id),
-    }
-    if (!sel.credentials && sel.mcp.length === 0 && sel.marketplaces.length === 0) return
-    void runImport(sel)
+  const importing = submitting
+
+  /** 勾选**只改选择集**：不发请求、不改任何行状态位。撤回就是再点一次，
+   *  完整回到勾之前的样子。 */
+  const toggleSelected = (key: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
   }
 
-  /** 任意一项可导入 ⇒ Import all 有活干（predicate 与 importAll 的 filter 同构）。 */
-  const anyImportable = data !== undefined && (
-    (data.credentials != null && !doneOrRunning(CREDENTIALS_ROW))
-    || data.mcp.some(mcpImportable)
-    || data.marketplaces.some(mpImportable)
+  /** 一键把所有可导入的行勾上（happy path 仍是两击：Select all importable →
+   *  Import selected）。**替换**选择集而不是并集：勾选是"这次要导入哪些"的
+   *  声明，替换与它的字面意思一致，也顺手丢掉上一轮留下的死键。 */
+  const selectAllImportable = () => {
+    const next = new Set<string>()
+    if (credentialsImportable) next.add(CREDENTIALS_ROW)
+    for (const s of data?.mcp ?? []) if (mcpImportable(s)) next.add(mcpRow(s.name))
+    for (const m of data?.marketplaces ?? []) if (mpImportable(m)) next.add(mpRow(m.id))
+    setSelected(next)
+  }
+
+  /** 只发选中的那些：按钮在 0 个选中时是禁用的，所以这里不必再挡一次。 */
+  const importSelected = () => { void runImport(selection) }
+
+  const nothingToImport = data !== undefined && !probeError && (
+    !data.credentials && data.mcp.length === 0 && data.marketplaces.length === 0
   )
 
   const statusLabel = (key: string) => {
@@ -230,19 +262,24 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
   }
 
   /**
-   * `unimportable`：这一项结构上就导不进去（MCP 校验不过 / 源的克隆目录不在）。
-   * 与 done / importing 一样禁用勾选框——目标是"不要提供一个必然失败的点击"，
-   * 而行上已把原因写着（MCP 的 importErrors 行、市场的 `· clone missing`）。
+   * 行的勾选框：勾上 = "这次把它一起导"。
+   *   - 已落定（imported / exists）→ 勾着 + 禁用（终态，与 step 3 一致）；
+   *   - importing / 请求在飞 → 禁用；
+   *   - `unimportable`：这一项结构上就导不进去（MCP 校验不过 / 源的克隆目录
+   *     不在）→ 禁用，目标是"不要提供一个必然失败的点击"，而行上已把原因写着
+   *     （MCP 的 importErrors 行、市场的 `· clone missing`）。
+   *  aria-label 沿用 `Import <name>`（与 step 3 的行同名）：它描述的是"这一行
+   *  会被导入"，而落盘动作只有底下那个 Import selected 一个。
    */
-  const checkbox = (key: string, label: string, onCheck: () => void, unimportable = false) => {
+  const checkbox = (key: string, label: string, unimportable = false) => {
     const s = statusOf(key)
-    const done = s === 'imported' || s === 'exists'
+    const isDone = s === 'imported' || s === 'exists'
     return (
       <input
         type="checkbox"
-        checked={done}
-        disabled={done || s === 'importing' || submitting || unimportable}
-        onChange={onCheck}
+        checked={isDone || selected.has(key)}
+        disabled={isDone || s === 'importing' || submitting || unimportable}
+        onChange={() => toggleSelected(key)}
         style={{ marginTop: 3, flexShrink: 0 }}
         aria-label={label}
       />
@@ -298,116 +335,140 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
         )}
 
         {data !== undefined && data.exists && (
-          <>
-            <div className="setup-field">
-              <label className="setup-label">From the web version</label>
+          <div className="setup-field">
+            <label className="setup-label">From the web version</label>
+            <p className="setup-hint">
+              Read from <code style={styles.code}>{data.sourceDir}</code>. Everything you
+              import is copied into this app; the web version is left untouched.
+            </p>
+
+            {/* ① 凭证与模型 —— 有凭证才渲染这一行；`available` 是常量 true，
+                不是信号，不要拿它做闸门。 */}
+            <div style={styles.section}>
+              <label className="setup-label">Credentials and models ({data.credentials ? 1 : 0})</label>
               <p className="setup-hint">
-                Read from <code style={styles.code}>{data.sourceDir}</code>. Everything you
-                import is copied into this app; the web version is left untouched.
+                The token and model list are copied into this app's active profile.
               </p>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {/* 凭证与模型 —— 有凭证才渲染这一行；`available` 是常量 true，
-                    不是信号，不要拿它做闸门。 */}
-                {data.credentials && (
-                  <div style={styles.row}>
-                    {checkbox(CREDENTIALS_ROW, 'Import credentials', () => void runImport({ credentials: true, mcp: [], marketplaces: [] }))}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                        <code style={{ ...styles.code, fontSize: 'var(--fs-sm)' }}>{data.credentials.profileName}</code>
-                        <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)' }}>
-                          credentials + models
-                          {data.credentials.authTokenMasked ? ` · ${data.credentials.authTokenMasked}` : ''}
-                          {` · ${data.credentials.modelCount} model(s)`}
-                        </span>
-                      </div>
+              {data.credentials && (
+                <div style={styles.row}>
+                  {checkbox(CREDENTIALS_ROW, 'Import credentials')}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={styles.metaRow}>
+                      <code style={{ ...styles.code, fontSize: 'var(--fs-sm)', ...styles.wrap }}>{data.credentials.profileName}</code>
+                      <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', ...styles.wrap }}>
+                        credentials + models
+                        {data.credentials.authTokenMasked ? ` · ${data.credentials.authTokenMasked}` : ''}
+                        {` · ${data.credentials.modelCount} model(s)`}
+                      </span>
                     </div>
-                    <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', flexShrink: 0, marginTop: 2 }}>
-                      {statusLabel(CREDENTIALS_ROW)}
-                    </span>
                   </div>
-                )}
-                {data.credentialsError && (
-                  <p className="setup-hint">Credentials unavailable: {data.credentialsError}</p>
-                )}
-
-                {/* 全局 MCP */}
-                {data.mcp.map((s) => (
-                  <div
-                    key={s.name}
-                    // 校验不过的行整行压暗（step 3 对 invalid 行的同一处置）。
-                    style={{ ...styles.row, opacity: s.importErrors.length > 0 ? 0.55 : 1 }}
-                  >
-                    {checkbox(mcpRow(s.name), `Import ${s.name}`, () => void runImport({ credentials: false, mcp: [s.name], marketplaces: [] }), s.importErrors.length > 0)}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                        <code style={{ ...styles.code, fontSize: 'var(--fs-sm)' }}>{s.name}</code>
-                        <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)' }}>
-                          {s.type}
-                          {s.command ? ` · ${s.command}` : ''}
-                          {s.url ? ` · ${s.url}` : ''}
-                        </span>
-                      </div>
-                      {s.envKeys && s.envKeys.length > 0 && (
-                        <p className="setup-hint" style={{ fontSize: 'var(--fs-xs)', marginTop: 2 }}>
-                          env: {s.envKeys.join(', ')}
-                        </p>
-                      )}
-                      {s.importErrors.length > 0 && (
-                        <p className="setup-hint" style={{ fontSize: 'var(--fs-xs)', marginTop: 2, color: 'var(--msg-error-fg)' }}>
-                          {s.importErrors.join('; ')}
-                        </p>
-                      )}
-                    </div>
-                    <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', flexShrink: 0, marginTop: 2 }}>
-                      {statusLabel(mcpRow(s.name))}
-                    </span>
-                  </div>
-                ))}
-                {data.mcpError && (
-                  <p className="setup-hint">MCP servers unavailable: {data.mcpError}</p>
-                )}
-
-                {/* Marketplaces */}
-                {data.marketplaces.map((m) => (
-                  <div
-                    key={m.id}
-                    // 克隆目录不在的行整行压暗，与上面的 invalid MCP 行同一处置。
-                    style={{ ...styles.row, opacity: !m.cloneExists ? 0.55 : 1 }}
-                  >
-                    {checkbox(mpRow(m.id), `Import ${m.id}`, () => void runImport({ credentials: false, mcp: [], marketplaces: [m.id] }), !m.cloneExists)}
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                        <code style={{ ...styles.code, fontSize: 'var(--fs-sm)' }}>{m.id}</code>
-                        <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)' }}>
-                          {`${m.pluginCount} plugin(s)`}
-                          {m.cloneExists ? '' : ' · clone missing'}
-                        </span>
-                      </div>
-                      <p className="setup-hint" style={{ fontSize: 'var(--fs-xs)', marginTop: 2 }}>{m.sourceUrl}</p>
-                    </div>
-                    <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', flexShrink: 0, marginTop: 2 }}>
-                      {statusLabel(mpRow(m.id))}
-                    </span>
-                  </div>
-                ))}
-                {data.marketplacesError && (
-                  <p className="setup-hint">Marketplaces unavailable: {data.marketplacesError}</p>
-                )}
-
-                {anyImportable && (
-                  <button
-                    type="button"
-                    onClick={importAll}
-                    disabled={importing}
-                    style={{ ...styles.secondaryBtn, alignSelf: 'flex-start', marginTop: 4 }}
-                  >
-                    {importing ? 'Importing…' : 'Import all'}
-                  </button>
-                )}
-              </div>
+                  <span className="setup-hint" style={styles.rowStatus}>
+                    {statusLabel(CREDENTIALS_ROW)}
+                  </span>
+                </div>
+              )}
+              {data.credentialsError && (
+                <p className="setup-hint">Credentials unavailable: {data.credentialsError}</p>
+              )}
             </div>
-          </>
+
+            {/* ② 全局 MCP */}
+            <div style={styles.section}>
+              <label className="setup-label">MCP servers ({data.mcp.length})</label>
+              <p className="setup-hint">
+                Imported servers become global and are available to every new session.
+              </p>
+              {data.mcp.map((s) => (
+                <div
+                  key={s.name}
+                  // 校验不过的行整行压暗（step 3 对 invalid 行的同一处置）。
+                  style={{ ...styles.row, opacity: s.importErrors.length > 0 ? 0.55 : 1 }}
+                >
+                  {checkbox(mcpRow(s.name), `Import ${s.name}`, s.importErrors.length > 0)}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={styles.metaRow}>
+                      <code style={{ ...styles.code, fontSize: 'var(--fs-sm)', ...styles.wrap }}>{s.name}</code>
+                      <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', ...styles.wrap }}>
+                        {s.type}
+                        {s.command ? ` · ${s.command}` : ''}
+                        {s.url ? ` · ${s.url}` : ''}
+                      </span>
+                    </div>
+                    {s.envKeys && s.envKeys.length > 0 && (
+                      <p className="setup-hint" style={styles.subLine}>
+                        env: {s.envKeys.join(', ')}
+                      </p>
+                    )}
+                    {s.importErrors.length > 0 && (
+                      <p className="setup-hint" style={{ ...styles.subLine, color: 'var(--msg-error-fg)' }}>
+                        {s.importErrors.join('; ')}
+                      </p>
+                    )}
+                  </div>
+                  <span className="setup-hint" style={styles.rowStatus}>
+                    {statusLabel(mcpRow(s.name))}
+                  </span>
+                </div>
+              ))}
+              {data.mcpError && (
+                <p className="setup-hint">MCP servers unavailable: {data.mcpError}</p>
+              )}
+            </div>
+
+            {/* ③ Marketplaces */}
+            <div style={styles.section}>
+              <label className="setup-label">Marketplaces ({data.marketplaces.length})</label>
+              <p className="setup-hint">
+                Imported marketplaces are copied into this app together with their enabled plugins.
+              </p>
+              {data.marketplaces.map((m) => (
+                <div
+                  key={m.id}
+                  // 克隆目录不在的行整行压暗，与上面的 invalid MCP 行同一处置。
+                  style={{ ...styles.row, opacity: !m.cloneExists ? 0.55 : 1 }}
+                >
+                  {checkbox(mpRow(m.id), `Import ${m.id}`, !m.cloneExists)}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={styles.metaRow}>
+                      <code style={{ ...styles.code, fontSize: 'var(--fs-sm)', ...styles.wrap }}>{m.id}</code>
+                      <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', ...styles.wrap }}>
+                        {`${m.pluginCount} plugin(s)`}
+                        {m.cloneExists ? '' : ' · clone missing'}
+                      </span>
+                    </div>
+                    <p className="setup-hint" style={styles.subLine}>{m.sourceUrl}</p>
+                  </div>
+                  <span className="setup-hint" style={styles.rowStatus}>
+                    {statusLabel(mpRow(m.id))}
+                  </span>
+                </div>
+              ))}
+              {data.marketplacesError && (
+                <p className="setup-hint">Marketplaces unavailable: {data.marketplacesError}</p>
+              )}
+            </div>
+
+            {/* 一个明确的动作，而不是勾一下就写盘：主按钮只发选中的那些，
+                旁边那条一键把可导入的全勾上（happy path 仍是两击）。 */}
+            <div style={styles.actions}>
+              <button
+                type="button"
+                onClick={importSelected}
+                disabled={importing || selectedCount === 0}
+                style={styles.secondaryBtn}
+              >
+                {importing ? 'Importing…' : `Import selected (${selectedCount})`}
+              </button>
+              <button
+                type="button"
+                onClick={selectAllImportable}
+                disabled={importing || !anyImportable}
+                style={styles.secondaryBtn}
+              >
+                Select all importable
+              </button>
+            </div>
+          </div>
         )}
 
         {error && <p role="alert" className="setup-field-error">{error}</p>}
@@ -433,6 +494,14 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
   )
 }
 
+/** 行上任何一段都可能是任意长的无断点串（市场的 sourceUrl、远程 MCP 的
+ *  url / command、用户起的名字），不处理就会把卡片撑宽、整页横向滚动。
+ *  `overflow-wrap: anywhere` 与 chat.css 的 .streaming-plain 同一处置：它是唯一
+ *  **同时把 min-content 宽度算小**的写法（`word-break: break-word`，像
+ *  messages.css 的 .diff-line 那样，不会），flex 子项因此才会收缩而不是把父级
+ *  顶开。 */
+const WRAP_ANYWHERE: React.CSSProperties = { overflowWrap: 'anywhere' }
+
 const styles: Record<string, React.CSSProperties> = {
   hint: { margin: 0, fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)', lineHeight: 1.4 },
   code: {
@@ -443,6 +512,14 @@ const styles: Record<string, React.CSSProperties> = {
     display: 'flex', gap: 8, alignItems: 'flex-start', padding: '6px 8px',
     background: 'var(--bg-elev-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius-xs)',
   },
+  /** 三类各成一节：`.setup-label` + `.setup-hint` 表头与行拉开一点距离，
+   *  否则节与节之间只剩 .setup-field 的 6px，看不出是三个分组。 */
+  section: { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 8 },
+  metaRow: { display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' },
+  subLine: { fontSize: 'var(--fs-xs)', marginTop: 2, ...WRAP_ANYWHERE },
+  rowStatus: { fontSize: 'var(--fs-xs)', flexShrink: 0, marginTop: 2 },
+  actions: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 },
+  wrap: WRAP_ANYWHERE,
   ok: { display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--accent)' },
   fail: { color: 'var(--msg-error-fg)' },
   footer: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 4 },

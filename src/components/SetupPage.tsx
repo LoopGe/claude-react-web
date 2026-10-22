@@ -38,8 +38,9 @@ interface Props {
    *       endpoint has already written config.json and reported
    *       `configured: true`. It always passes `true`, because a user who
    *       just moved their credentials over wants a session to try them in.
-   *       (A row tick or `Import all` only imports — the hand-off is a
-   *       navigation decision, and `Next` is where the user makes it.)
+   *       (Selecting rows and pressing `Import selected` only imports — the
+   *       hand-off is a navigation decision, and `Next` is where the user
+   *       makes it.)
    *
    *  Both paths land in App.handleConfigured (best-effort /config refresh +
    *  setIsConfigured(true)).
@@ -672,7 +673,7 @@ export function SetupPage({ onConfigured }: Props) {
         // 用户在前置屏按了 Next、且此前那次导入已把 config.json 写好（服务端
         // configured:true）——前置屏只在那种情况下调这个回调。直接走既有收尾
         // 路径：App 的 handleConfigured 会 refreshConfig + setIsConfigured，
-        // 并自动开 New session 对话框。行勾选与 Import all 不含在这条路上。
+        // 并自动开 New session 对话框。勾选行与 Import selected 不含在这条路上。
         onConfigured={() => onConfigured({ openNewSession: true })}
       />
     )

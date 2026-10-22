@@ -104,7 +104,8 @@ async function walkToFinish() {
 describe('SetupPage — desktop wizard (no Autostart step)', () => {
   // 头号路径：凭证经前置屏导入，再由用户按 Next 收尾 ⇒ SetupPage 走既有收尾
   // 路径交接（onConfigured({ openNewSession: true })），用户不必重走一遍向导。
-  // 导入本身不跳转（勾一行只读作"导入这一项"），所以这里必须点两次。
+  // 导入本身不跳转（勾选只是选择、落盘要按 Import selected），所以这里
+  // 必须先导入、再按 Next 收尾。
   // 这条链此前没有自动化覆盖：desktop 用例里前置屏一直是 exists:false，
   // SetupWebImport 的用例只到组件自己那一层（onConfigured 是个 spy）。
   it('hands over to onConfigured({ openNewSession: true }) after importing credentials and pressing Next', async () => {
@@ -131,10 +132,12 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
     const onConfigured = vi.fn(async () => {})
     render(<SetupPage onConfigured={onConfigured} />)
 
-    // 前置屏列出凭证那一行 → Import all 把它一次 POST 出去。
+    // 前置屏列出凭证那一行 → 勾上（Select all importable）+ Import selected
+    // 才把它 POST 出去（勾选本身不写盘）。
     expect(await screen.findByText('Work')).toBeTruthy()
-    fireEvent.click(screen.getByText('Import all'))
-    // 导入了 ≠ 交接了：Import all 只导入，屏幕留着。
+    fireEvent.click(screen.getByText('Select all importable'))
+    fireEvent.click(screen.getByText('Import selected (1)'))
+    // 导入了 ≠ 交接了：导入只导入，屏幕留着。
     await waitFor(() => expect(screen.getByText('Imported')).toBeTruthy())
     expect(onConfigured).not.toHaveBeenCalled()
 
