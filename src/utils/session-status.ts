@@ -1,5 +1,14 @@
 import type { SessionInfo } from '../types'
 
+/** Pure predicate for the sidebar's "waiting" state — a running session whose
+ *  parent turn has COMPLETED but which still has background (async) subagents
+ *  in flight. Mirrors the per-card dot (SessionCard) exactly, so the
+ *  collapsed-group badge and the card can never disagree; statusClass and
+ *  statusLabel reuse it for the same signal. */
+export function isWaiting(s: SessionInfo): boolean {
+  return s.running && !s.working && (s.backgroundSubagentCount ?? 0) > 0
+}
+
 /** Distill a session's liveness/health into a single CSS class used by
  *  the header status dot. Kept separate from the label so colours and
  *  wording can evolve independently. */
@@ -17,7 +26,7 @@ export function statusClass(s: SessionInfo): string {
   // also carries an error — the amber is more informative than the red here,
   // and the error text still surfaces in the card body / title tooltip.
   if (s.working) return 'working'
-  if ((s.backgroundSubagentCount ?? 0) > 0) return 'waiting'
+  if (isWaiting(s)) return 'waiting'
   if (s.error) return 'err'
   return 'live'
 }
@@ -44,7 +53,7 @@ export function statusLabel(s: SessionInfo): string {
   // the underlying cause (missing CLI binary, etc.).
   if (!s.running && s.error) return `Resume failed: ${s.error}`
   if (s.working) return 'Working on a turn'
-  if (s.running && (s.backgroundSubagentCount ?? 0) > 0) {
+  if (isWaiting(s)) {
     const n = s.backgroundSubagentCount!
     return n === 1 ? 'Waiting for a background subagent' : `Waiting for ${n} background subagents`
   }

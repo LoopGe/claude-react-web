@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { statusClass, statusLabel } from './session-status'
+import { isWaiting, statusClass, statusLabel } from './session-status'
 import type { SessionInfo } from '../types'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -13,6 +13,25 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
     ...overrides,
   } as SessionInfo
 }
+
+describe('isWaiting', () => {
+  it('is true when the parent turn is done but a background subagent is in flight', () => {
+    expect(isWaiting(makeSession({ running: true, working: false, backgroundSubagentCount: 1 }))).toBe(true)
+  })
+
+  it('is false while the parent turn is active, even with subagents in flight', () => {
+    expect(isWaiting(makeSession({ running: true, working: true, backgroundSubagentCount: 2 }))).toBe(false)
+  })
+
+  it('is false when there are no background subagents', () => {
+    expect(isWaiting(makeSession({ running: true, working: false }))).toBe(false)
+    expect(isWaiting(makeSession({ running: true, working: false, backgroundSubagentCount: 0 }))).toBe(false)
+  })
+
+  it('is false when the session is not running', () => {
+    expect(isWaiting(makeSession({ running: false, working: false, backgroundSubagentCount: 1 }))).toBe(false)
+  })
+})
 
 describe('statusClass', () => {
   it('returns "waiting" when the parent turn is done but a background subagent is in flight', () => {

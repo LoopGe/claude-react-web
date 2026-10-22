@@ -297,9 +297,10 @@
 }
 /* Aggregate badges shown on a collapsed group header so the user can tell at a
    glance that a hidden group has unread updates / pending permission
-   prompts. Two-tier hierarchy: pending uses --accent (call-to-action) and
-   unread uses a muted dot-style. Both stay compact so they fit inside the
-   pill row without wrapping. */
+   prompts / background work still running. pending is the call-to-action
+   (solid --accent fill), while waiting (amber outline) and unread (accent
+   outline) are lower-priority informational tiers. All stay compact so they
+   fit inside the pill row without wrapping. */
 .group-header-badge {
   font-size: var(--fs-2xs);
   font-weight: 600;
@@ -313,6 +314,15 @@
 .group-header-badge-pending {
   background: var(--accent);
   color: var(--bg);
+}
+/* Waiting is an outline badge (like unread) rather than a solid --warn fill:
+   --warn is too light for --bg ink in light theme (~2.7:1), and there is no
+   --on-warn ink token. The amber border + --warn-text copy reuse the same
+   contrast-guarded ink the per-card "waiting" label already uses. */
+.group-header-badge-waiting {
+  background: var(--bg-elev-3, var(--bg-elev-2));
+  color: var(--warn-text);
+  border: 1px solid var(--warn);
 }
 .group-header-badge-unread {
   background: var(--bg-elev-3, var(--bg-elev-2));

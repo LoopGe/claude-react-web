@@ -6,7 +6,7 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { usePresenceValue } from '../../hooks/useExitPresence'
 import { shortenPath } from '../../utils/paths'
-import { statusLabel } from '../../utils/session-status'
+import { isWaiting, statusLabel } from '../../utils/session-status'
 import { sessionTitleOrFallback } from '../../utils/session-title'
 import { worktreeDeleteWarning } from './worktree-delete-warning'
 import { cx } from '../../utils/cx'
@@ -131,7 +131,7 @@ export const SessionCard = memo(function SessionCard({
   // the main turn ended, but the subagent keeps producing until a
   // task_notification lands. Show a distinct 'waiting' state instead of a
   // plain green 'live' so the sidebar doesn't imply the session is idle.
-  const waiting = s.running && !s.working && (s.backgroundSubagentCount ?? 0) > 0
+  const waiting = isWaiting(s)
   const pendingCount = s.pendingPermissionCount ?? 0
   // Slot-pill modifiers shared by the open pill and its exit clone, so the
   // pill doesn't restyle (filled↔hollow, amber) the instant it starts exiting.

@@ -8,6 +8,7 @@ import { SortableContext, horizontalListSortingStrategy, verticalListSortingStra
 import { dndData, dndPayloadOf } from '../dnd/payload'
 import { SortableNode } from '../dnd/SortableNode'
 import { prepareFlip } from '../utils/flip'
+import { isWaiting } from '../utils/session-status'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import type { NewSessionForm, SessionGroup, SessionInfo, SidebarSection } from '../types'
@@ -731,15 +732,22 @@ export const SessionList = memo(function SessionList({
               // hidden a group still sees something is happening inside it.
               // Unread is "session has a newer turn than user has seen AND
               // isn't currently open"; pending counts permission/question
-              // requests waiting for the user. Both are per-session
-              // signals — we sum across the group's sessions only when
-              // collapsed (when expanded each card carries its own).
+              // requests waiting for the user; waiting counts sessions whose
+              // parent turn ended but still have background subagents running.
+              // All are per-session signals — we sum across the group's
+              // sessions only when collapsed (when expanded each card carries
+              // its own).
               let groupUnread = 0
               let groupPending = 0
+              let groupWaiting = 0
               if (collapsed) {
                 for (const s of sec.sessions) {
                   if (unread?.[s.id]) groupUnread += 1
                   groupPending += s.pendingPermissionCount ?? 0
+                  // Waiting mirrors the per-card status dot: the parent turn
+                  // finished but background (async) subagents are still running.
+                  // Shared isWaiting() keeps this in lockstep with the card.
+                  if (isWaiting(s)) groupWaiting += 1
                 }
               }
               const groupBodyId = `group-body-${sec.group.id}`
@@ -841,6 +849,15 @@ export const SessionList = memo(function SessionList({
                         aria-label={`${groupPending} pending permission${groupPending === 1 ? '' : 's'}`}
                       >
                         {groupPending}
+                      </span>
+                    )}
+                    {collapsed && groupWaiting > 0 && (
+                      <span
+                        className="group-header-badge group-header-badge-waiting"
+                        title={`${groupWaiting} session${groupWaiting === 1 ? '' : 's'} waiting for background subagents`}
+                        aria-label={`${groupWaiting} waiting for background subagents`}
+                      >
+                        {groupWaiting}
                       </span>
                     )}
                     {collapsed && groupUnread > 0 && (
