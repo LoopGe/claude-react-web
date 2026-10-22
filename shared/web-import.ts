@@ -5,14 +5,20 @@
 // 行上要显示的几个键（值 / 密钥永不出现）。
 
 export interface WebImportCredentialsView {
-  /** 源里有一条可读 profile。false 时整栏按"不可用"渲染。 */
+  /** 源 active profile 里**至少有一个**可写字段（token / baseUrl / 模型列表 /
+   *  模型分组 / recap / commit 模型）。false ⇒ 这一行导不进任何东西：客户端
+   *  按"不可用"渲染（压暗 + 禁用 + 一行原因），且不进任何一次提交。
+   *  与写入侧 `imported` 的判据是同一个函数（server/web-import.ts 的
+   *  hasUsableProfileFields），两处不允许各判一遍。 */
   available: boolean
   hasToken: boolean
   profileName: string
   /** maskToken() 的结果；源没有 token 时省略。 */
   authTokenMasked?: string
   baseUrl: string
-  modelCount: number
+  /** 源里确实有可用模型列表时的条数；源没有（或整条活不过 coercion）时省略——
+   *  那时的 modelList 是 fallback，条数不是用户的，显示出来就是谎报。 */
+  modelCount?: number
 }
 
 export interface WebImportMcpView {

@@ -117,6 +117,17 @@ export async function readSourceCredentials(dir: string): Promise<SourceCredenti
   }
 }
 
+/** 源 active profile 里有没有**任何一个**可写字段（语义边界见 PresentFields）。
+ *
+ *  六个都为假 ⇒ 源里没有可用 profile：一次 `credentials` 导入写不出任何东西。
+ *  两个调用方共用这一条判据，不允许各写一遍——枚举侧的 `credentials.available`
+ *  （客户端据此把那一行压暗 + 禁用）与写入侧的 `imported` 一旦漂移，就会出现
+ *  "行上亮着能点、点了却没写"或者反过来的谎报。 */
+export function hasUsableProfileFields(present: PresentFields): boolean {
+  return present.authToken || present.baseUrl || present.modelList
+    || present.modelGroups || present.recapModel || present.commitMessageModel
+}
+
 /** 读文件做一次 JSON 校验：不存在 → 返回（下面的 store 会给出空值）；
  *  存在但读不动 → 原样抛出；存在但不是合法 JSON → throw（消息带文件路径
  *  和解析失败原因，与 readSourceCredentials 同一条规则）。

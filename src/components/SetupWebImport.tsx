@@ -198,12 +198,15 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
    *  弄成 Failed 之后，那一行还能重试，Select all 也不会因为"没有 idle 的项"
    *  而整个消失。
    *  行上禁用勾选框用的也是同一条状态判据（写成 done || importing，等价于
-   *  doneOrRunning），另加"结构上导不进去"的 unimportable。 */
+   *  doneOrRunning），另加"结构上导不进去"的 unimportable——凭证那一行还有
+   *  一条：源里没有可用 profile（`credentials.available === false`）时它一个
+   *  字段都写不出来，判据与写入侧的 `imported` 是同一个函数。 */
   const mcpImportable = (s: WebImportMcpView) =>
     s.importErrors.length === 0 && !doneOrRunning(mcpRow(s.name))
   const mpImportable = (m: WebImportMarketplaceView) =>
     m.cloneExists && !doneOrRunning(mpRow(m.id))
-  const credentialsImportable = data?.credentials != null && !doneOrRunning(CREDENTIALS_ROW)
+  const credentialsImportable = data?.credentials != null && data.credentials.available
+    && !doneOrRunning(CREDENTIALS_ROW)
 
   /** 这次"Import selected"真正会发出去的子集：选择集与"还能导入"的**交集**。
    *  交集而不是直接信任选择集本身——一次导入之后行会变成 imported / exists，
@@ -306,7 +309,8 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
             <span className="setup-health-icon" aria-hidden="true">!</span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <p style={{ ...styles.hint, color: 'var(--fg)' }}>Could not read your Claude Web config.</p>
-              <p className="setup-prefilled-hint">{probeError}</p>
+              {/* 服务端报错里带的是它实际试过的文件路径，同样是任意长的无断点串。 */}
+              <p className="setup-prefilled-hint" style={styles.wrap}>{probeError}</p>
             </div>
             <button type="button" onClick={probe} style={styles.secondaryBtn}>Retry</button>
           </div>
@@ -325,7 +329,9 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
               <span className="setup-health-icon" aria-hidden="true">!</span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <p style={{ ...styles.hint, color: 'var(--fg)' }}>Nothing importable from the web version.</p>
-                <p className="setup-prefilled-hint">{data.sourceDir}</p>
+                {/* `--state-dir` 是用户选的路径：Windows 反斜杠串没有断点，
+                    不折行就会把卡片顶宽（与行上那些 URL 同一处置）。 */}
+                <p className="setup-prefilled-hint" style={styles.wrap}>{data.sourceDir}</p>
               </div>
             </div>
             <p className="setup-hint">
@@ -337,30 +343,41 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
         {data !== undefined && data.exists && (
           <div className="setup-field">
             <label className="setup-label">From the web version</label>
-            <p className="setup-hint">
-              Read from <code style={styles.code}>{data.sourceDir}</code>. Everything you
+            {/* 这句每次渲染都在，而 `<code>` 里是服务端报的实际路径（用户选的
+                `--state-dir`，Windows 反斜杠串没有断点）——不折行就是"卡片比窗口
+                宽、整页横向滚动"最常见的那个入口。 */}
+            <p className="setup-hint" style={styles.wrap}>
+              Read from <code style={{ ...styles.code, ...styles.wrap }}>{data.sourceDir}</code>. Everything you
               import is copied into this app; the web version is left untouched.
             </p>
 
-            {/* ① 凭证与模型 —— 有凭证才渲染这一行；`available` 是常量 true，
-                不是信号，不要拿它做闸门。 */}
+            {/* ① 凭证与模型 —— 有凭证才渲染这一行。`available` 是"源 active profile
+                里至少有一个可写字段"，不是常量：为 false 时这一行一个字段都写不出
+                来，按"不可用"渲染（压暗 + 禁用 + 一行原因），不进任何一次提交。 */}
             <div style={styles.section}>
               <label className="setup-label">Credentials and models ({data.credentials ? 1 : 0})</label>
               <p className="setup-hint">
                 The token and model list are copied into this app's active profile.
               </p>
               {data.credentials && (
-                <div style={styles.row}>
-                  {checkbox(CREDENTIALS_ROW, 'Import credentials')}
+                <div style={{ ...styles.row, opacity: data.credentials.available ? 1 : 0.55 }}>
+                  {checkbox(CREDENTIALS_ROW, 'Import credentials', !data.credentials.available)}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={styles.metaRow}>
                       <code style={{ ...styles.code, fontSize: 'var(--fs-sm)', ...styles.wrap }}>{data.credentials.profileName}</code>
                       <span className="setup-hint" style={{ fontSize: 'var(--fs-xs)', ...styles.wrap }}>
                         credentials + models
                         {data.credentials.authTokenMasked ? ` · ${data.credentials.authTokenMasked}` : ''}
-                        {` · ${data.credentials.modelCount} model(s)`}
+                        {/* 源里没有可用列表时服务端就不报条数（那时的列表是
+                            fallback），这里跟着不显示——报默认值条数是谎报。 */}
+                        {data.credentials.modelCount !== undefined ? ` · ${data.credentials.modelCount} model(s)` : ''}
                       </span>
                     </div>
+                    {!data.credentials.available && (
+                      <p className="setup-hint" style={styles.subLine}>
+                        No token or model list to copy from this profile.
+                      </p>
+                    )}
                   </div>
                   <span className="setup-hint" style={styles.rowStatus}>
                     {statusLabel(CREDENTIALS_ROW)}
@@ -368,7 +385,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
                 </div>
               )}
               {data.credentialsError && (
-                <p className="setup-hint">Credentials unavailable: {data.credentialsError}</p>
+                <p className="setup-hint" style={styles.wrap}>Credentials unavailable: {data.credentialsError}</p>
               )}
             </div>
 
@@ -411,7 +428,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
                 </div>
               ))}
               {data.mcpError && (
-                <p className="setup-hint">MCP servers unavailable: {data.mcpError}</p>
+                <p className="setup-hint" style={styles.wrap}>MCP servers unavailable: {data.mcpError}</p>
               )}
             </div>
 
@@ -444,7 +461,7 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
                 </div>
               ))}
               {data.marketplacesError && (
-                <p className="setup-hint">Marketplaces unavailable: {data.marketplacesError}</p>
+                <p className="setup-hint" style={styles.wrap}>Marketplaces unavailable: {data.marketplacesError}</p>
               )}
             </div>
 
@@ -494,8 +511,10 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
   )
 }
 
-/** 行上任何一段都可能是任意长的无断点串（市场的 sourceUrl、远程 MCP 的
- *  url / command、用户起的名字），不处理就会把卡片撑宽、整页横向滚动。
+/** 规则是**每一行承载服务端文本的地方**都折行，不只是 URL：URL（市场的
+ *  sourceUrl、远程 MCP 的 url / command）、用户选的 `--state-dir` 路径（Windows
+ *  反斜杠串没有断点）、以及服务端报的原始错误（里面就是文件路径）。任一处漏掉
+ *  都会把卡片顶宽、整页横向滚动。
  *  `overflow-wrap: anywhere` 与 chat.css 的 .streaming-plain 同一处置：它是唯一
  *  **同时把 min-content 宽度算小**的写法（`word-break: break-word`，像
  *  messages.css 的 .diff-line 那样，不会），flex 子项因此才会收缩而不是把父级

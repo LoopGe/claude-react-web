@@ -48,7 +48,11 @@ describe('SetupWebImport', () => {
     render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
     expect(await screen.findByText('Nothing importable from the web version.')).toBeTruthy()
     // 真正探测到的目录照常显示，用户可以自己去看那一份。
-    expect(screen.getByText(ENUMERATION.sourceDir)).toBeTruthy()
+    const dirLine = screen.getByText(ENUMERATION.sourceDir)
+    expect(dirLine).toBeTruthy()
+    // 用户选的 `--state-dir` 是任意长的无断点串（Windows 反斜杠没有断点），
+    // 这一行与那些 URL 同一处置。
+    expect((dirLine as HTMLElement).style.overflowWrap).toBe('anywhere')
   })
 
   it('offers Retry when the probe itself fails', async () => {
@@ -383,6 +387,38 @@ describe('SetupWebImport', () => {
     expect(importSelectedBtn().disabled).toBe(true)
   })
 
+  // 源里没有可用 profile（服务端 `available: false`）时那一行**导不进去**：按
+// "不可用"渲染（压暗 + 禁用 + 一行原因），而不是一个既没有原因、也无从成功的
+// `Failed`；它同时不进 Import selected 与 Select all importable。
+  // 顺带钉住 modelCount 不再谎报：源里的列表活不过 coercion，服务端就不报条数
+  // （那时的列表是 fallback 默认值）。
+  it('renders an unusable credentials row as unavailable, and never counts a fallback list', async () => {
+    vi.mocked(api.get).mockResolvedValue({
+      ...ENUMERATION,
+      credentials: { available: false, hasToken: false, profileName: 'Default', baseUrl: 'https://api.anthropic.com' },
+      mcp: [],
+      marketplaces: [],
+    })
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
+    await screen.findByText('Default')
+
+    // 行照旧列出来（用户知道有这么一栏），但不可点、整行压暗。
+    expect(screen.getByText('Credentials and models (1)')).toBeTruthy()
+    expect(box('Import credentials').disabled).toBe(true)
+    expect(box('Import credentials').checked).toBe(false)
+    expect((box('Import credentials').parentElement as HTMLElement).style.opacity).toBe('0.55')
+    // 一行原因，不是没有解释的 Failed。
+    expect(screen.getByText('No token or model list to copy from this profile.')).toBeTruthy()
+    // 不报模型条数（源里那份活不过 coercion）。
+    expect(screen.queryByText(/model\(s\)/)).toBeNull()
+    // 两个控件都把它排除在外。
+    expect(selectAllBtn().disabled).toBe(true)
+    expect(importSelectedBtn().textContent).toBe('Import selected (0)')
+    expect(importSelectedBtn().disabled).toBe(true)
+    // 而且按下 Import selected 也不会发出请求（按钮禁用只是第一层）。
+    expect(vi.mocked(api.post)).not.toHaveBeenCalled()
+  })
+
   // 一次导入把某些行弄成 Failed 之后，那些行要能重试、控件不能因此消失
   // （失败不算"在飞"，也不算"已落定"：failed 行重新可导入，且它仍在选择集里）。
   it('keeps a failed row selectable and retries it without re-ticking', async () => {
@@ -520,5 +556,26 @@ describe('SetupWebImport', () => {
     // 市场那一行整条 URL 自己占一行（块级），MCP 那条在描述行里。
     expect((screen.getByText(longUrl) as HTMLElement).style.overflowWrap).toBe('anywhere')
     expect((screen.getByText(/some\/very\/long\/path/) as HTMLElement).style.overflowWrap).toBe('anywhere')
+  })
+
+  // Minor 1 的规则：**每一行承载服务端文本的地方**都折行，不只 URL。这句引导语
+  // 每次渲染都在，里面是服务端报的实际路径（用户选的 `--state-dir`）。
+  it('wraps every line that carries server-supplied text', async () => {
+    const longDir = `C:\\Users\\${'a'.repeat(120)}\\claude-react-web`
+    vi.mocked(api.get).mockResolvedValue({
+      ...ENUMERATION,
+      sourceDir: longDir,
+      mcp: [],
+      mcpError: `mcp-config.json is not valid JSON: Unexpected token < at position ${'9'.repeat(80)}`,
+    })
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
+
+    // 引导语里的实际路径：`<code>` 自己、以及它所在的那一行。
+    const code = (await screen.findByText(longDir)) as HTMLElement
+    expect(code.style.overflowWrap).toBe('anywhere')
+    expect((code.closest('p') as HTMLElement).style.overflowWrap).toBe('anywhere')
+    // 那一栏的服务端原始报错（里面也是文件路径）。
+    expect((screen.getByText(/MCP servers unavailable:/) as HTMLElement).style.overflowWrap)
+      .toBe('anywhere')
   })
 })

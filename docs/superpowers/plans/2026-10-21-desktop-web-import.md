@@ -593,7 +593,10 @@ import { buildWebImportRouter } from './web-import.js'
 ```ts
 // 桌面版初始化时"从网页版导入配置"的端点。
 //
-// 只在桌面宿主挂载（server/routes/index.ts），web 宿主上路径不存在 → 404。
+// 只在桌面宿主挂载（server/routes/index.ts）：web 宿主上导入面根本不存在，
+// 别把"未挂载"读成某个状态码——构建过的树里未匹配的 GET 由 app.ts 的 SPA
+// fallback 接住（index.html, 200），app.notFound 的 JSON 404 只在没构建客户端
+// 时成立。
 // 语义对齐 /api/mcp-config/claude-import：密钥不过线、同名/同 id 跳过、
 // 逐项失败隔离、返回 imported/skipped/failed。
 
@@ -1395,6 +1398,14 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 ### Task 6: 前置屏组件 `src/components/SetupWebImport.tsx`
 
+> **交互模型已被验收裁定取代（读本 Task 的代码片段前先看这条）**：下面写的是当时
+> 落地的"行内 checkbox 即时导入 + `Import all`"。验收时用户裁定它有两个缺陷——
+> 勾选即写盘、撤不回来；扁平清单也看不出每行属于哪一类。**现行模型**是：三类各自
+> `.setup-label` + 计数 + 一行 `.setup-hint`；勾选只增删 `selected` 集合（零副作用、
+> 可完整撤回）；唯一的写盘动作是 `Import selected (n)`（body 只带选中子集），
+> `Select all importable` 一键勾上所有可导入行；`Next` 仍是唯一交接口。判据以
+> spec §8 的那条规则为准，别照抄本 Task 的 `Import all` 片段。
+
 **Files:**
 - Create: `src/components/SetupWebImport.tsx`
 - Test: `src/components/SetupWebImport.test.tsx`
@@ -1887,7 +1898,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: Task 6 的 `SetupWebImport`、既有 `isDesktopHost()`（`src/host-capabilities.ts`）、既有 `Props.onConfigured`
-- Produces: 桌面宿主上 `SetupPage` 先渲染前置屏；点 Next 进 step 0；行勾选与 Import all **只导入不跳转**，凭证导入成功后**再点 Next** 才调 `onConfigured({ openNewSession: true })`（收尾时机由验收实测改过一次，见 spec §2 需求基线与 §8）
+- Produces: 桌面宿主上 `SetupPage` 先渲染前置屏；点 Next 进 step 0；导入（勾选 + `Import selected (n)`，**只导入不跳转**）之后按 Next 才调 `onConfigured({ openNewSession: true })`（收尾时机由验收实测改过一次；交互模型又在验收后改过一次，见 Task 6 顶部与 spec §2 需求基线和 §8）
 
 - [ ] **Step 1: 改桌面向导测试（先让它红）**
 
@@ -2013,13 +2024,14 @@ Run: `npm run desktop`（实测确认：`package.json` 里是 `desktop: npm run 
 
 - [ ] **Step 2: 验证"本地复制克隆目录"这一条（本机数据是真的）**
 
-Run（在点击 Import all 之前先记下目标目录为空）：
+Run（在导入之前先记下目标目录为空）：
 
 ```bash
 ls "$APPDATA/claude-react-web/state/marketplace-cache" 2>/dev/null || echo "(empty — expected)"
 ```
 
-点 **Import all**。预期：按钮变 Importing…（市场克隆约 122 MB，会停留数秒）→ 随后窗口直接进入主界面（导入凭证成功 ⇒ configured）。
+点 **`Select all importable` → `Import selected (n)`**（现行模型；原先是一击
+`Import all`，见 Task 6 顶部）。预期：按钮变 Importing…（市场克隆约 122 MB，会停留数秒）→ 随后窗口直接进入主界面（导入凭证成功 ⇒ configured）。
 
 再验证：
 

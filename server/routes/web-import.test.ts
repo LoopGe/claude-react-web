@@ -107,6 +107,9 @@ describe('GET /api/config/web-import', () => {
       ctx7: { name: 'ctx7', type: 'stdio', command: 'npx', args: ['-y', 'ctx7'], env: { API_KEY: 'sekret' }, enabled: true },
       remote: { name: 'remote', type: 'http', url: 'https://mcp.example.com', enabled: false },
       authed: { name: 'authed', type: 'http', url: 'https://user:mcp-tok-abc123@mcp.example.com/mcp', enabled: false },
+      // stdio 的 command 里塞一整个远程 URL 是常见形状（`npx -y mcp-remote
+      // https://user:tok@host/mcp`），而 command 是**整串**上线的——同一类泄漏。
+      wrapped: { name: 'wrapped', type: 'stdio', command: 'npx -y mcp-remote https://user:cmd-tok-xyz@mcp.example.com/mcp', enabled: false },
       broken: { name: 'broken', type: 'stdio' },
     }), 'utf8')
     // 桌面版已有同名服务器：exists 必须反映**桌面** store（它就是"Already exists"
@@ -126,6 +129,13 @@ describe('GET /api/config/web-import', () => {
     expect(byName.get('ctx7')).toEqual({
       name: 'ctx7', type: 'stdio', command: 'npx', envKeys: ['API_KEY'], exists: true, importErrors: [],
     })
+    // command 里的 `scheme://userinfo@` 与 url 同一处置：只打掉 userinfo，命令文本
+    // 其余部分逐字保留。这一行照旧带校验错误（`npx -y …` 不是白名单里的可执行
+    // 名），但**打码与校验无关**——校验用的是源里那条原始 server，而压暗的行
+    // 也照样把 command 显示出来，所以它同样要打码。
+    expect(byName.get('wrapped')?.command)
+      .toBe('npx -y mcp-remote https://user:***@mcp.example.com/mcp')
+    expect((byName.get('wrapped')?.importErrors as string[]).length).toBeGreaterThan(0)
     // url 型：没有 command 键（而不是空串）。
     expect(byName.get('remote')).toEqual({
       name: 'remote', type: 'http', url: 'https://mcp.example.com', exists: false, importErrors: [],
@@ -140,9 +150,10 @@ describe('GET /api/config/web-import', () => {
     expect(byName.get('broken')).toEqual({
       name: 'broken', type: 'stdio', exists: false, importErrors: ['command is required for stdio type'],
     })
-    // 密钥的**值**绝不进响应体（env 的键名才上线；url 里的 userinfo 也不上线）。
+    // 密钥的**值**绝不进响应体（env 的键名才上线；url / command 里的 userinfo 也不上线）。
     expect(JSON.stringify(body)).not.toContain('sekret')
     expect(JSON.stringify(body)).not.toContain('mcp-tok-abc123')
+    expect(JSON.stringify(body)).not.toContain('cmd-tok-xyz')
   })
 
   it('maps each source marketplace onto a row, flagging a missing clone', async () => {
@@ -183,12 +194,16 @@ describe('GET /api/config/web-import', () => {
   it('masks the userinfo in a marketplace source url, keeping scheme and host', async () => {
     seedMarketplace(sourceDir, 'private', ['a'])
     seedMarketplace(sourceDir, 'bare', ['b'])
+    seedMarketplace(sourceDir, 'noslash', ['c'])
     const file = join(sourceDir, 'marketplaces.json')
     const raw = JSON.parse(readFileSync(file, 'utf8')) as {
       marketplaces: Record<string, { source: { url: string } }>
     }
     raw.marketplaces.private.source.url = 'https://oauth2:ghp_supersecrettoken@git.example.com/owner/repo'
     raw.marketplaces.bare.source.url = 'https://ghp_baretoken@git.example.com/owner/other'
+    // 裸 host + 凭证（没有 path）：逐字保留的判据 —— 按 URL 往返一次会补出尾斜杠
+    // （`https://***@git.example.com/`），屏上就不该是源里那条串了。
+    raw.marketplaces.noslash.source.url = 'https://ghp_noslashtoken@git.example.com'
     writeFileSync(file, JSON.stringify(raw), 'utf8')
 
     const app = await makeRouter(stateDir, sourceDir)
@@ -200,15 +215,39 @@ describe('GET /api/config/web-import', () => {
     expect(byId.get('private')?.sourceUrl).toBe('https://oauth2:***@git.example.com/owner/repo')
     // 裸 `token@` → 整段 userinfo 都是秘密。
     expect(byId.get('bare')?.sourceUrl).toBe('https://***@git.example.com/owner/other')
+    // userinfo 之外一个字符都没动（没有尾斜杠）。
+    expect(byId.get('noslash')?.sourceUrl).toBe('https://***@git.example.com')
     // 令牌在响应体里任何位置都不出现。
     const text = JSON.stringify(body)
     expect(text).not.toContain('ghp_supersecrettoken')
     expect(text).not.toContain('ghp_baretoken')
+    expect(text).not.toContain('ghp_noslashtoken')
 
     // 只改视图：源 store 里那条 URL 原样保留。
     const stored = await new MpStore({ stateDir: sourceDir }).load({ readOnly: true })
     expect(stored.find((e) => e.id === 'private')?.source.url)
       .toBe('https://oauth2:ghp_supersecrettoken@git.example.com/owner/repo')
+  })
+
+  // 源里一条可写字段都没有（`profiles: []` / 字段全空白的 profile / legacy 顶层
+  // 形状）时，凭证那一行导入写不出任何东西——枚举侧必须如实说：
+  //   - `available: false`（客户端据此压暗 + 禁用那一行；判据与写入侧的
+  //     `imported` 是同一个函数）；
+  //   - **不报** modelCount：那时的 modelList 是 coercion 的 fallback，
+  //     报出来是默认值条数，不是用户的。
+  it('reports an unusable source profile as unavailable, without a model count', async () => {
+    mkdirSync(sourceDir, { recursive: true })
+    writeFileSync(join(sourceDir, 'config.json'), JSON.stringify({
+      profiles: [{ id: 'default', name: 'Blank' }],
+    }), 'utf8')
+
+    const app = await makeRouter(stateDir, sourceDir)
+    const res = await app.request('/api/config/web-import')
+    expect(res.status).toBe(200)
+    const body = await res.json() as { credentials: Record<string, unknown> }
+    expect(body.credentials.available).toBe(false)
+    expect(body.credentials.hasToken).toBe(false)
+    expect(body.credentials.modelCount).toBeUndefined()
   })
 
   it('reports a corrupt source config as credentialsError, not a 500', async () => {

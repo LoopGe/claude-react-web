@@ -41,7 +41,7 @@
 | 源目录 | 固定 `~/.claude-react-web`，不可选（与 `/mcp-config/claude-import` 读固定路径的做法一致） |
 | 克隆目录 | 本地复制到桌面版自己的 `marketplace-cache/<id>/`，并把条目 `cloneDir` 改写为新路径（不按 URL 重 clone，也不依赖旧目录继续存在） |
 | 入口形态 | 向导之前的**前置屏**，不进 `setup-steps.ts` 的 `STEPS`（不改步骤表、不改序号、不动既有 `step === N` 比较） |
-| 导入后行为 | **Next 收尾**：已导入凭证（服务端 `configured`）时点 Next → 收尾进主界面（复用 `handleConfigured` 路径），否则进入 step 0 照常走完。行勾选与 `Import all` 只导入、不跳转——勾一行读作"导入这一项"，不该把整屏收掉 |
+| 导入后行为 | **Next 收尾**：已导入凭证（服务端 `configured`）时点 Next → 收尾进主界面（复用 `handleConfigured` 路径），否则进入 step 0 照常走完。勾选行与 `Import selected (n)` 只导入、不跳转——下一次导入只发生在用户点那个按钮时，跳转是导航决定，由用户按 Next 做出（**本条为验收时由用户裁定的规则，取代原先"勾一行即导入"的设计**，见 §8） |
 | 密钥处理 | 服务端读源文件后直接写入，明文 token 不过线（沿用 `claude-import` 的做法）；枚举接口只回掩码 |
 
 ## 3. 方案选择
@@ -176,21 +176,22 @@
 | 状态 | 照抄自 | 形状 |
 |---|---|---|
 | 探测中 | step 0 / step 3 的 `setup-health-row-checking` | `.setup-spinner.spinner` + `.setup-hint`（"Reading your Claude Web config…"，对齐现有 "Reading your Claude CLI config…" `:1038`） |
-| 找到可导入项 | step 3 的行清单 `:1036-1180` | checkbox + `<code>` 名称 + `.setup-hint` 元信息（`type · command`、`env: …`）+ 右侧状态位；`Import all` 仅在确有可导入项时渲染 |
+| 找到可导入项 | step 3 的行清单 `:1036-1180` | 三类各自一节（`.setup-label` + 计数 + 一行 `.setup-hint`）；行 = checkbox + `<code>` 名称 + `.setup-hint` 元信息（`type · command`、`env: …`）+ 右侧状态位；不可导入的行压暗 + 禁用 |
 | 找不到 / 读不了 | step 3 的 `setup-health-row-fail` `:1045` | `setup-health-icon` + `.setup-prefilled-hint` 报实际路径 + `Retry`（`styles.secondaryBtn`），并允许继续 |
 
 - **状态词逐字复用**：`idle / importing / imported / exists / failed` → `Importing…`（`:1135`）/ `Imported`（`IconCheck size={12}`，`:1145`）/ `Already exists`（`:1148`）/ `Failed`。不新造词。
+- **选择与提交分离（验收时由用户裁定的规则，取代原先"勾一行即导入"的设计）**：勾选框**只**增删 `selected` 集合——不发请求、不写盘，勾错再点一次即完整撤回（原先的勾选即时导入被用户判为"撤不回来"）。唯一的写盘动作是 `Import selected (n)`：禁用条件是 0 个选中或请求在飞，body 只带选中的子集（选择集与"还能导入"的交集）；`Select all importable` 一键勾上所有可导入行，happy path 仍是两击。已落定（`imported` / `exists`）与结构上不可导入的行保持"勾着 + 禁用"/"压暗 + 禁用"，`failed` 行留在选择集里可直接重试。
 - **状态机同形**：惰性探测 + `probeCancelRef` 取消竞态 + `Record<name, status>` +
-  `Import all` 的 predicate 与提交 filter 同构（这里不需要向导 step 3 那个
+  `Select all importable` 的 predicate 与提交 filter 同构（这里不需要向导 step 3 那个
   `mcpImportStatusRef` 镜像——没有异步 handler 要在回调里读最新状态）。
-- **收尾**：**Next 是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点 Next → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 Next → 进入 step 0。行勾选与 `Import all` 只导入、不跳转：勾一行读作"导入这一项"，一次逐行的勾选不该把整屏收掉（用户还要接着勾下一行），跳转是导航决定，由用户按 Next 做出。
+- **收尾**：**Next 是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点 Next → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 Next → 进入 step 0。`Import selected (n)` 只导入、不跳转：跳转是导航决定，由用户按 Next 做出。（按本条实现时不要退回"勾选即导入"——那正是验收时被裁定为缺陷的行为。）
 - **不新增 CSS**：只用 `src/styles/setup-page.css` 既有类 + `styles.*` 内联对象 + 主题变量（CLAUDE.md：禁止硬编码颜色，新颜色必须同时定义 dark / light）。
 - **与"最后才写盘"原则的冲突（刻意保留）**：现有向导刻意到最后一步才写 `config.json`（`SetupPage.tsx` 的注释：中途关掉浏览器不留半份 config）。导入屏会**立即写盘**。保留该行为，理由是：导入本身就是"配置"这一动作；若改成只预填，则要么写两次盘（导入一次 + `/config/setup` 一次），要么用户还得再走完 6 步。副作用"导入后直接关窗 → 桌面版已配置"正是本需求的目标。
 
 ## 9. 测试
 
 - **`server/routes/web-import.test.ts`**（新建，镜像 `server/mcp-routes` 的测试风格，临时 state 目录作 fixture）：源不存在 / 源 config 损坏 / 凭证写入 active profile 且不污染其它字段 / MCP 同名跳过 / marketplace clone 被拷到 `cloneDirFor(id)` 且 `cloneDir` 被改写 / 单项失败不影响其它项 / 拷贝失败不残留临时目录 / 非桌面宿主拿不到枚举体（路由未挂载；状态码不保证 404，见 §4）/ 重复导入幂等。
-- **`src/components/SetupWebImport.test.tsx`**：三态渲染、勾选后 `POST` body 正确、失败行渲染；沿用 `SetupPage.desktop.test.tsx` 的 `importInHostShape` 技巧（`vi.resetModules` + 预置 `window.__CRW_DESKTOP__`）。
+- **`src/components/SetupWebImport.test.tsx`**：三态渲染、勾选只改选择集且可完整撤回、`Import selected (n)` 的 body 只带选中子集（含"不可导入的行不进提交"）、失败行渲染与重试；沿用 `SetupPage.desktop.test.tsx` 的 `importInHostShape` 技巧（`vi.resetModules` + 预置 `window.__CRW_DESKTOP__`）。
 - **`src/components/SetupPage.desktop.test.tsx`**（改）：mock 补 `GET /config/web-import`；`walkToFinish()` 先处理前置屏。网页版 `SetupPage.test.tsx` 没有桌面 bridge → 不受影响。
 
 ## 10. 非目标与后续

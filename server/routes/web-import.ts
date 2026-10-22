@@ -1,6 +1,9 @@
 // 桌面版初始化时"从网页版导入配置"的端点。
 //
-// 只在桌面宿主挂载（server/routes/index.ts），web 宿主上路径不存在 → 404。
+// 只在桌面宿主挂载（server/routes/index.ts）：web 宿主上导入面根本不存在，
+// 别把"未挂载"读成某个状态码——构建过的树里未匹配的 GET 由 app.ts 的 SPA
+// fallback 接住（index.html, 200），app.notFound 的 JSON 404 只在没构建客户端
+// 时成立。
 // 语义对齐 /api/mcp-config/claude-import：密钥不过线、同名/同 id 跳过、
 // 逐项失败隔离、返回 imported/skipped/failed。
 
@@ -16,7 +19,7 @@ import { coerceProfileEntries, maskToken, profileFromLegacyFields, resolveActive
 import { maskSecrets, validateMcpServer } from '../mcp-config.js'
 import type { MpStore } from '../mp-store.js'
 import type { McpConfigStore, StoredMcpServer } from '../mcp-config.js'
-import { readSourceCredentials, readSourceMcp, readSourceMarketplaces, webStateDir, type SourceMarketplaces } from '../web-import.js'
+import { readSourceCredentials, readSourceMcp, readSourceMarketplaces, webStateDir, hasUsableProfileFields, type SourceMarketplaces } from '../web-import.js'
 import type { WebImportCollectionResult, WebImportEnumeration, WebImportMarketplaceView, WebImportMcpView, WebImportResult } from '../../shared/web-import.js'
 
 const log = createLogger('web-import')
@@ -43,31 +46,30 @@ function stringArrayOrThrow(value: unknown, field: string): string[] {
 
 const emptyCollection = (): WebImportCollectionResult => ({ imported: [], skipped: [], failed: [] })
 
-/** marketplace 的 sourceUrl 可能带 userinfo（`https://oauth2:<token>@git.example.com/owner/repo`），
- *  截图里就是明文令牌上屏的。枚举只做展示，用户只需要认出"是哪个仓库"，
- *  所以保留 scheme + host/path，把秘密换成 `***`：
- *    - `user:secret@` → 保留 user（用户认得出是哪个账号），secret 换成 ***；
- *    - 裸 `token@` → 整段 userinfo 都是秘密。
+/** 打码文本里 `scheme://userinfo@` 的 userinfo —— 三处都会碰到它：市场的
+ *  `sourceUrl`、远程 MCP 的 `url`、以及 stdio MCP 的 `command`
+ *  （`npx -y mcp-remote https://user:tok@host/mcp` 是常见形状）。
  *
- *  只改**视图**，不改 store 里那条 URL：导入侧还要靠它去拉私有仓库。
- *  没有 userinfo 时原样返回（不经过 URL 的重排——`new URL(...).toString()`
- *  会给裸 host 补尾斜杠、做百分号编码等，展示串不该被顺手改写）。
+ *  刻意**不做 URL 解析**：command 是一整条命令行，解析不了；而且"逐字保留"就是
+ *  这里的契约——`new URL(…).toString()` 会给裸 host 补尾斜杠、归一化 `..` 段、
+ *  重写百分号编码与主机大小写，屏上出现的就不再是源里那条串。所以只做一次扫描
+ *  替换，userinfo 之外一个字符都不动（同一函数也保证三处的规则是同一个）。
  *
- *  判据只能是 URL 解析出的 username / password：`user:@`（空 secret）与
- *  `token@` 在 URL 里同形，那种情况按"更隐蔽"的一侧处理（整段 userinfo 打掉）。 */
-function maskUrlUserinfo(raw: string): string {
-  let url: URL
-  try {
-    url = new URL(raw)
-  } catch {
-    // 不是绝对 URL（源里理论上只有 https，但这是别人目录里的字符串，
-    // 解析不了就没有 userinfo 可谈）。
-    return raw
-  }
-  if (!url.username && !url.password) return raw
-  if (url.password) url.password = '***'
-  else url.username = '***'
-  return url.toString()
+ *  规则与 URL 语义一致：
+ *    - `user:secret@` → 保留 user（用户认得出是哪个账号），secret 换成 `***`；
+ *    - 裸 `token@` → 整段 userinfo 都是秘密；
+ *    - `user:@`（空 secret）在文本里与裸 token 同形，按更隐蔽的一侧处理。
+ *  没有 `scheme://` 的串（本地路径、普通命令文本）原样返回。 */
+function maskUserinfo(text: string): string {
+  // scheme 段必须带 `://`；userinfo 段不含分隔符（`/ ? # 空白`），所以
+  // `https://host/path?x=a@b` 这种"@ 出现在 path / query 里"的串不会被误伤。
+  return text.replace(
+    /([a-z][a-z0-9+.-]*:\/\/)([^\s/@?#]+@)/gi,
+    (_all, scheme: string, userinfo: string) => {
+      const colon = userinfo.lastIndexOf(':')
+      return colon === -1 ? `${scheme}***@` : `${scheme}${userinfo.slice(0, colon)}:***@`
+    },
+  )
 }
 
 export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
@@ -85,12 +87,17 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
     try {
       const cred = await readSourceCredentials(sourceDir)
       credentials = {
-        available: true,
+        // 不是常量：源 active profile 里一个可写字段都没有时（profiles: []、
+        // 字段全空白的 profile、legacy 顶层形状）这一行导不进去，客户端据此
+        // 压暗 + 禁用（判据与写入侧的 `imported` 是同一个函数）。
+        available: hasUsableProfileFields(cred.present),
         hasToken: cred.authToken.length > 0,
         profileName: cred.profileName,
         ...(cred.authToken ? { authTokenMasked: maskToken(cred.authToken) } : {}),
         baseUrl: cred.baseUrl,
-        modelCount: cred.modelList.length,
+        // 只在源里**确实有**可用列表时报条数：否则 cred.modelList 是 coercion 的
+        // fallback（DEFAULT_PROFILE 那份），报出来的是默认值条数，不是用户的。
+        ...(cred.present.modelList ? { modelCount: cred.modelList.length } : {}),
       }
     } catch (err) {
       // 没有 / 读不动 源 config.json：这一栏不可用，但 MCP 与 marketplace
@@ -107,14 +114,17 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
         mcp.push({
           name: masked.name,
           type: masked.type,
-          ...(masked.command ? { command: masked.command } : {}),
-          // 远程 MCP 的 url 与市场那一栏同一类泄漏：`https://user:<token>@host/mcp`
-          // 的 userinfo 是凭据。视图只用于展示（POST 按名字从**源 store** 导入，
-          // 搬过去的是源里那条完整的 url），所以打码不影响真正导入的值。
-          ...(masked.url ? { url: maskUrlUserinfo(masked.url) } : {}),
+          // 只改**视图**（store 里那条 URL 一个字都不动：导入侧还要靠它去拉
+          // 私有仓库、远程 MCP 还要靠它去连），见 maskUserinfo。
+          ...(masked.command ? { command: maskUserinfo(masked.command) } : {}),
+          ...(masked.url ? { url: maskUserinfo(masked.url) } : {}),
           ...(masked.envKeys ? { envKeys: masked.envKeys } : {}),
           exists: deps.mcpStore.get(masked.name) != null,
-          importErrors: validateMcpServer(server),
+          // 校验用的是源里那条原始 server，而它的报错会把违规的 command / url
+          // **原样**引回去（"command '…' is not in the allowlist"）——所以报错
+          // 文本同样要过一遍 maskUserinfo，否则 command 那一处的打码从这条
+          // 缝又漏回线上（行上的红字也照旧显示）。
+          importErrors: validateMcpServer(server).map(maskUserinfo),
         })
       }
     } catch (err) {
@@ -132,8 +142,8 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
         marketplaces.push({
           id: entry.id,
           displayName: entry.displayName,
-          // 带凭证的 URL 只把凭证打掉，仓库本身照旧认得出（见 maskUrlUserinfo）。
-          sourceUrl: maskUrlUserinfo(entry.source.url),
+          // 带凭证的 URL 只把凭证打掉，仓库本身照旧认得出（见 maskUserinfo）。
+          sourceUrl: maskUserinfo(entry.source.url),
           ...(entry.source.ref ? { ref: entry.source.ref } : {}),
           pluginCount: entry.manifest.plugins.length,
           cloneExists: src.cloneExists[entry.id] === true,
@@ -176,9 +186,7 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
    *  /config/setup 同源的不变量，见上）不因为"没东西可写"而短路。 */
   async function importCredentials(sourceDir: string): Promise<WebImportResult['credentials']> {
     const cred = await readSourceCredentials(sourceDir)
-    const nothingWritten = !cred.present.authToken && !cred.present.baseUrl
-      && !cred.present.modelList && !cred.present.modelGroups
-      && !cred.present.recapModel && !cred.present.commitMessageModel
+    const nothingWritten = !hasUsableProfileFields(cred.present)
     await queueConfigWrite(deps.configDir, (existing) => {
       const rawActiveId = typeof existing.activeProfileId === 'string' ? existing.activeProfileId.trim() : ''
       let entries = coerceProfileEntries(existing.profiles, DEFAULT_PROFILE)
