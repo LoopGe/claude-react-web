@@ -55,14 +55,15 @@ const emptyCollection = (): WebImportCollectionResult => ({ imported: [], skippe
  *  重写百分号编码与主机大小写，屏上出现的就不再是源里那条串。所以只做一次扫描
  *  替换，userinfo 之外一个字符都不动（同一函数也保证三处的规则是同一个）。
  *
- *  规则与 URL 语义一致，两个分支其实是**同一条规则**——userinfo 里 `:` 之后的
- *  部分才是秘密，没有 `:` 就整段都是秘密：
+ *  规则与 URL 语义一致，两个分支其实是**同一条规则**——userinfo 里**第一个** `:`
+ *  之后的**全部**内容才是秘密（WHATWG 的 username / password 正是在第一个冒号处
+ *  切分），没有 `:` 就整段 userinfo 都是秘密：
  *    - `user:secret@` → 保留 `user`（用户认得出是哪个账号），`secret` 换成 `***`；
+ *    - `user:pa:ss@` → 第一个冒号之后全是密码 → `user:***@`（按**最后**一个冒号切
+ *      会只换掉 `ss`，把中间那段 `pa:` 留在屏上）；
  *    - `user:@`（冒号后是空的）→ 同样保留 `user`，输出 `user:***@`：那个位置本来
  *      就没有任何东西，被换掉的空串也不是秘密；
  *    - 裸 `token@`（没有冒号可分）→ 整段 userinfo 都是秘密，输出 `***@`。
- *  `:` 同样取**最后一个**：`user:p@ss@host` 里 `user:p` 之后的 `@ss` 还是密码的
- *  一部分（见下面 userinfo 段的贪婪语义）。
  *  没有 `scheme://` 的串（本地路径、普通命令文本）原样返回。 */
 function maskUserinfo(text: string): string {
   // scheme 段必须带 `://`；userinfo 段取到**最后一个**仍在 authority 里的 `@`
@@ -72,10 +73,12 @@ function maskUserinfo(text: string): string {
   //     `https://user:***@host/x`（停在第一个 `@` 会把密码尾巴 `ss@host` 留在线上）；
   //   - `https://host/a@b/c` → 从 `://` 起只到 `host` 就被 `/` 挡住，没有 `@` 可匹配
   //     → 整串原样返回（**不能**把 path 里的 `@` 当成 userinfo）。
+  // `@` 取最后、`:` 取最先：两段都是 URL 语义（authority 的 userinfo 到最后一个
+  // `@` 为止，username / password 在第一个 `:` 处切分），不是随手挑的。
   return text.replace(
     /([a-z][a-z0-9+.-]*:\/\/)([^\s/?#]*@)/gi,
     (_all, scheme: string, userinfo: string) => {
-      const colon = userinfo.lastIndexOf(':')
+      const colon = userinfo.indexOf(':')
       return colon === -1 ? `${scheme}***@` : `${scheme}${userinfo.slice(0, colon)}:***@`
     },
   )

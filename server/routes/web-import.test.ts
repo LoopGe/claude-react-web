@@ -205,6 +205,7 @@ describe('GET /api/config/web-import', () => {
     seedMarketplace(sourceDir, 'atpass', ['d'])
     seedMarketplace(sourceDir, 'atpath', ['e'])
     seedMarketplace(sourceDir, 'emptysecret', ['f'])
+    seedMarketplace(sourceDir, 'multicolon', ['g'])
     const file = join(sourceDir, 'marketplaces.json')
     const raw = JSON.parse(readFileSync(file, 'utf8')) as {
       marketplaces: Record<string, { source: { url: string } }>
@@ -223,6 +224,9 @@ describe('GET /api/config/web-import', () => {
     // `user:@`（冒号后是空的）：判据是"有没有冒号"，不是"冒号后有没有东西"——
     // 保留 user，那个空串换成 ***（它与裸 token 两种形状各有各的分支）。
     raw.marketplaces.emptysecret.source.url = 'https://user:@git.example.com/owner/repo'
+    // 多个冒号：秘密在**第一个**冒号之后（WHATWG 就是在第一个冒号处切分
+    // username / password）——按最后一个切只会换掉 `ss`，把 `pa:` 留在屏上。
+    raw.marketplaces.multicolon.source.url = 'https://user:pa:ss-tok@git.example.com/owner/repo'
     writeFileSync(file, JSON.stringify(raw), 'utf8')
 
     const app = await makeRouter(stateDir, sourceDir)
@@ -242,12 +246,15 @@ describe('GET /api/config/web-import', () => {
     expect(byId.get('atpath')?.sourceUrl).toBe('https://git.example.com/a@b/c')
     // 空 secret（`user:@`）与 `user:secret@` 同一分支：保留 user。
     expect(byId.get('emptysecret')?.sourceUrl).toBe('https://user:***@git.example.com/owner/repo')
+    // 多冒号：第一个冒号之后（含中间的 `pa:` 段）整段都是秘密。
+    expect(byId.get('multicolon')?.sourceUrl).toBe('https://user:***@git.example.com/owner/repo')
     // 令牌在响应体里任何位置都不出现（`p@ss` 那半截尾巴同样不许出现）。
     const text = JSON.stringify(body)
     expect(text).not.toContain('ghp_supersecrettoken')
     expect(text).not.toContain('ghp_baretoken')
     expect(text).not.toContain('ghp_noslashtoken')
     expect(text).not.toContain('ss@git.example.com')
+    expect(text).not.toContain('pa:ss-tok')
 
     // 只改视图：源 store 里那条 URL 原样保留。
     const stored = await new MpStore({ stateDir: sourceDir }).load({ readOnly: true })
