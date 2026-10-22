@@ -3788,7 +3788,7 @@ describe('MessageList', () => {
       expect(container.textContent).toContain('hello world')
     })
 
-    it('renders the <event> body of a <task-notification> card', () => {
+    it('renders an unparseable <task-notification> body via the neutral card fallback', () => {
       const notification = [
         '<task-notification>',
         '<task-id>b69rtzfqh</task-id>',
