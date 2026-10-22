@@ -49,9 +49,8 @@ export interface ConfigResponse {
   /** Global default for idle auto-recap. Sessions without an explicit
    *  override inherit this. */
   autoRecap?: boolean
-  /** Global default for the transcript's collapsible group cards — both the
-   *  tool-group fold and the completed-background-task-notification fold.
-   *  When off, every tool/notification row renders on its own. Sessions
+  /** Global default for the transcript's collapsible group cards — the
+   *  tool-group fold. When off, every tool row renders on its own. Sessions
    *  without an explicit override inherit this. */
   toolGroupCards?: boolean
   /** Global default for auto-expanding a group that holds a running tool.
@@ -110,8 +109,8 @@ export interface FullServerConfig {
   showPinnedUserMessage: boolean
   /** Global default for idle auto-recap. */
   autoRecap: boolean
-  /** Global default for the transcript's collapsible group cards (tool-group
-   *  fold + completed-background-task-notification fold). */
+  /** Global default for the transcript's collapsible group cards (the
+   *  tool-group fold). */
   toolGroupCards: boolean
   /** Global default for auto-expanding a group that holds a running tool.
    *  Only meaningful while `toolGroupCards` is on. */
