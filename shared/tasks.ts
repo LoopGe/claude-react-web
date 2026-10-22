@@ -33,6 +33,11 @@ export const TERMINAL_TASK_STATUSES: readonly TaskStatus[] = [
   'stopped',
 ]
 
+/** Cap on terminal (completed/failed/killed/stopped) task records kept in
+ *  `session.tasks` and its sidecar. Terminal records linger so the
+ *  TasksPanel can show recent completions; oldest are evicted beyond this. */
+export const MAX_TERMINAL_TASKS = 50
+
 export function isTerminalTaskStatus(status: string): boolean {
   return (TERMINAL_TASK_STATUSES as readonly string[]).includes(status)
 }

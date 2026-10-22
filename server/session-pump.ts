@@ -26,7 +26,7 @@ import { createLogger } from './log.js'
 import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/hooks.js'
 import type { PluginLoadError } from '../shared/session-info.js'
 import type { CliNotification } from '../shared/ws-protocol.js'
-import { isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '../shared/tasks.js'
+import { MAX_TERMINAL_TASKS, isTerminalTaskStatus, normalizeTaskType, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame, localCommandOf } from '../shared/results.js'
 import { isTaskNotificationUserMessage } from '../shared/user-frames.js'
@@ -109,12 +109,6 @@ export function backgroundSubagentLaunches(
   }
   return out
 }
-
-/** Cap on terminal (completed/failed/killed/stopped) task records kept in
- *  `session.tasks`. Terminal records linger so the TasksPanel can show
- *  recent completions, but an unbounded map would grow forever in a long
- *  session — oldest terminals are evicted beyond this many. */
-const MAX_TERMINAL_TASKS = 50
 
 /** System subtypes folded into `session.tasks` by applyTaskEvent. The
  *  first three are EPHEMERAL task-state events — the pump early-continues
