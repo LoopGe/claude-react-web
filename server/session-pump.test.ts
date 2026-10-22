@@ -1799,6 +1799,29 @@ describe('applyTaskNotificationInjection', () => {
     expect(snapshots.at(-1)).toBeTruthy()
   })
 
+  it('upsert preserves workflowName and reason set by earlier system frames', () => {
+    const { session } = makeTaskSession()
+    // task_started registers the workflow's name; a later task_notification
+    // carries the stop reason — both pre-date the XML completion.
+    applyTaskEvent(session, {
+      type: 'system', subtype: 'task_started', task_id: 't1',
+      tool_use_id: 'tu1', task_type: 'local_workflow', workflow_name: 'wf-x',
+    } as unknown as SDKMessage)
+    applyTaskEvent(session, {
+      type: 'system', subtype: 'task_notification', task_id: 't1',
+      tool_use_id: 'tu1', status: 'stopped', reason: 'worker_restart',
+    } as unknown as SDKMessage)
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><result>R</result></task-notification>'))
+    const rec = session.tasks.get('t1')!
+    expect(rec.result).toBe('R')
+    expect(rec.status).toBe('completed')
+    // Upsert, not replace: the system frames' metadata survives the fold.
+    expect(rec.workflowName).toBe('wf-x')
+    expect(rec.reason).toBe('worker_restart')
+  })
+
   it('ignores a non-notification frame', () => {
     const { session } = makeTaskSession()
     applyTaskNotificationInjection(session, xml('plain text'))
