@@ -45,7 +45,8 @@ vi.mock('../hooks/useOverlayScrollbar', () => ({ useOverlayScrollbar: () => () =
  *  instead of re-implementing the whole map. */
 function defaultGet(url: string): Promise<unknown> {
   if (url.startsWith('/health/claude')) return Promise.resolve({ ok: true, version: '1.0.0' })
-  // 前置屏（SetupWebImport）的枚举探测：源目录不存在 ⇒ 三栏全空。
+  // 前置屏（SetupWebImport）的枚举探测：源目录里三份可移植文件一份都不在
+  // ⇒ 前置屏自己让位（onContinue），向导直接从 step 0 开始。
   if (url === '/config/web-import')
     return Promise.resolve({ sourceDir: '/tmp/.claude-react-web', exists: false, credentials: null, mcp: [], marketplaces: [] })
   if (url === '/profiles') return Promise.resolve({ profiles: [], activeProfileId: 'default' })
@@ -90,14 +91,14 @@ async function importDesktopSetupPage() {
   return mod.SetupPage
 }
 
-/** 桌面宿主的向导之前有一屏"从网页版导入"（SetupWebImport）——先点 Skip 跳过它。
+/** 桌面宿主的向导之前有一屏"从网页版导入"（SetupWebImport），但本文件默认的
+ *  mock 是"源目录里一份可移植文件都没有"——那种情形下前置屏自己让位
+ *  （onContinue），所以这里没有那一击，向导直接从 step 0 开始。
  *  Step 0's Continue, the token, then Next up to the Finish step. */
 async function walkToFinish() {
-  fireEvent.click(await screen.findByText('Skip'))          // 前置屏 → step 0
   fireEvent.click(await screen.findByText('Continue'))      // step 0 → step 1
   fireEvent.change(screen.getByPlaceholderText('sk-ant-...'), { target: { value: 'sk-test' } })
-  // Desktop: 1→2→3→4→5→7 —— 前置屏那一下是 Skip（不是向导的 Next），这里仍是 5 次
-  // （pre-fix the fifth renders step id 6 and throws）。
+  // Desktop: 1→2→3→4→5→7 —— 5 次 Next（pre-fix the fifth renders step id 6 and throws）。
   for (let i = 0; i < 5; i++) fireEvent.click(screen.getByText('Next'))
 }
 
@@ -106,8 +107,9 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
   // 路径交接（onConfigured({ openNewSession: true })），用户不必重走一遍向导。
   // 导入本身不跳转（勾选只是选择、落盘要按 Import selected），所以这里
   // 必须先导入、再按 Skip 收尾。
-  // 这条链此前没有自动化覆盖：desktop 用例里前置屏一直是 exists:false，
-  // SetupWebImport 的用例只到组件自己那一层（onConfigured 是个 spy）。
+  // 这条链此前没有自动化覆盖：desktop 用例里前置屏只到"出现 / 不出现"这一层
+  // （默认那个空源目录现在根本不会渲染它），SetupWebImport 的用例只到组件
+  // 自己那一层（onConfigured 是个 spy）。
   it('hands over to onConfigured({ openNewSession: true }) after importing credentials and pressing Skip', async () => {
     vi.mocked(api.get).mockImplementation((url: string) =>
       url === '/config/web-import'
@@ -152,12 +154,27 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
     )
   })
 
+  // 前置屏只在源目录里**有**可导入的东西时出现（默认 mock 那种空源目录会让它
+  // 自己让位），所以这条用例单独给它一份 exists: true + 一行凭证。
   it('renders the web-import pre-screen first, and Skip reveals step 1 of 7', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) =>
+      url === '/config/web-import'
+        ? Promise.resolve({
+          sourceDir: '/tmp/.claude-react-web',
+          exists: true,
+          credentials: {
+            available: true, hasToken: true, profileName: 'Work',
+            authTokenMasked: '****1234', baseUrl: 'https://api.example.com', modelCount: 1,
+          },
+          mcp: [],
+          marketplaces: [],
+        })
+        : defaultGet(url))
     const SetupPage = await importDesktopSetupPage()
     render(<SetupPage onConfigured={vi.fn(async () => {})} />)
 
     // 前置屏：没有进度点、没有步数计数器。
-    expect(await screen.findByText(/Reading your Claude Web config|Nothing importable from the web version/)).toBeTruthy()
+    expect(await screen.findByText('Credentials and models (1)')).toBeTruthy()
     expect(screen.queryByText(/^Step \d+ of \d+$/)).toBeNull()
     // 进度点只有 aria-label、没有可匹配的文本，上面那条正则抓不到它 —— 必须
     // 单独按 DOM 选择器钉一次，否则"前置屏不出现进度点"这半条要求是漏测的。

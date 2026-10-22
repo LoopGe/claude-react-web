@@ -10,6 +10,9 @@
 // 一处有意**不**照抄 step 3：那里的 checkbox 勾上就立刻写盘，本屏的 checkbox 只是
 // 选择（人报的"勾了就撤不回来"），落盘只发生在 Import selected 那一次 POST 上。
 // 不新增 CSS，颜色只用主题变量。
+//
+// 源目录里三份可移植文件一份都不在时本屏**不出现**：探测到 `exists: false` 即
+// 让位（见下面的交接 effect）——没跑过网页版的用户不该多挨一屏讲"网页版"的步骤。
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
@@ -59,6 +62,8 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
    *  GET /config。它决定按 Next 时是收尾还是进向导。 */
   const [configured, setConfigured] = useState(false)
   const probeCancelRef = useRef<(() => void) | null>(null)
+  /** 已经因为"源目录里什么都没有"交接过一次（见下面的 effect）。 */
+  const handedOffRef = useRef(false)
 
   /** 探测：与 step 3 的 probeClaudeMcp 同形（可取消 + Retry 复用同一条路径）。 */
   const probe = useCallback(() => {
@@ -94,6 +99,25 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     probe()
     return () => { probeCancelRef.current?.() }
   }, [probe])
+
+  /** 探测成功、且源目录里三份可移植文件（config.json / mcp-config.json /
+   *  marketplaces.json）一份都不在（服务端 `exists`）→ 本屏无事可做：立刻进
+   *  向导 step 0，三栏与"没有可导入的东西"那一态都不渲染。没跑过网页版的用户
+   *  因此不再多挨一屏讲"网页版"的步骤。
+   *
+   *  判据必须是服务端的 `exists`，不是"三栏都没报错"：源 config.json 缺失时
+   *  readSourceCredentials 会抛，`credentialsError` 恰好在"对面根本没配过"这个
+   *  最常见的情形里被置上——按"没有错误"来判，正好会把本屏最需要跳过的那个场景
+   *  挡在门外（`exists` 由 server/routes/web-import.ts 的
+   *  `PORTABLE_FILES.some(existsSync…)` 算出）。
+   *
+   *  ref 挡住第二次：onContinue 的标识会随 parent 每次渲染变（SetupPage 里是
+   *  内联箭头），effect 因此会重跑，而一次落定的探测只该交接一次。 */
+  useEffect(() => {
+    if (data?.exists !== false || handedOffRef.current) return
+    handedOffRef.current = true
+    onContinue()
+  }, [data, onContinue])
 
   /** 把一次导入的**选择集**落成状态位。成功与失败共用这一步——不是巧合，
    *  是两个分支必须同构：
@@ -251,7 +275,13 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
   /** 只发选中的那些：按钮在 0 个选中时是禁用的，所以这里不必再挡一次。 */
   const importSelected = () => { void runImport(selection) }
 
-  const nothingToImport = data !== undefined && !probeError && (
+  /** 三栏全空 —— 明确说明，而不是渲染一张空清单。
+   *  `data.exists` 是这一态的可达条件：`exists === false`（三份可移植文件一份
+   *  都不在）时本屏自己让位（见上面的交接 effect），一个渲染都不该出来；它只剩
+   *  "源目录里有东西、却一行都导不进来"这一条路（例如只有一个空的
+   *  marketplaces.json）。
+   *  措辞见下面 JSX 里的那段注释。 */
+  const nothingToImport = data !== undefined && data.exists && !probeError && (
     !data.credentials && data.mcp.length === 0 && data.marketplaces.length === 0
   )
 

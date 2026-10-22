@@ -43,16 +43,66 @@ describe('SetupWebImport', () => {
     expect(screen.getByText('Already exists')).toBeTruthy()
   })
 
-  it('reports "nothing importable" instead of an empty list when the source has nothing', async () => {
+  // 探测成功但源目录里三份可移植文件（config.json / mcp-config.json /
+  // marketplaces.json）一份都不在（服务端 `exists: false`）→ 本屏自己让位：
+  // 直接调 onContinue() 进向导 step 0，三栏与"没有可导入的东西"那一态都不渲染。
+  // 没跑过网页版的用户因此不再多挨一屏讲"网页版"的步骤。
+  it('hands over immediately when the source dir has none of the portable files', async () => {
+    const onContinue = vi.fn()
+    vi.mocked(api.get).mockResolvedValue({
+      ...ENUMERATION,
+      exists: false,
+      // 真实的 exists: false 一定长这样：源 config.json 缺失时
+      // readSourceCredentials 会抛，credentialsError 被置上（见下面那条用例，
+      // 判据因此必须是 `exists`，不是"三栏都没报错"）。
+      credentials: null,
+      credentialsError: 'config.json is not found',
+      mcp: [],
+      marketplaces: [],
+    })
+    render(<SetupWebImport onContinue={onContinue} onConfigured={vi.fn()} />)
+
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1))
+    // 让位的那一态一律不渲染：既没有"没有可导入的东西"，也没有三栏。
+    expect(screen.queryByText('Nothing importable from the web version.')).toBeNull()
+    expect(screen.queryByText(/^Credentials and models/)).toBeNull()
+    expect(screen.queryByText(/^MCP servers/)).toBeNull()
+    expect(screen.queryByText(/^Marketplaces/)).toBeNull()
+  })
+
+  // 同一次落定的探测只交接一次：onContinue 的标识会随 parent 每次渲染变
+  // （SetupPage 里是内联箭头），effect 因此会重跑，重跑不能再调一遍。
+  // 计数跨所有 spy 累加——每次 rerender 传的是新 spy，只盯第一个就看不到
+  // 第二次交接（那正是这条用例要钉的东西）。
+  it('hands over only once even when the parent re-renders with a new onContinue', async () => {
     vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, exists: false, credentials: null, mcp: [], marketplaces: [] })
-    render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
+    let handOffs = 0
+    const onContinue = () => { handOffs++ }
+    const { rerender } = render(<SetupWebImport onContinue={onContinue} onConfigured={vi.fn()} />)
+    await waitFor(() => expect(handOffs).toBe(1))
+
+    // 新标识 → effect 依赖变了、必然重跑。
+    rerender(<SetupWebImport onContinue={() => { handOffs++ }} onConfigured={vi.fn()} />)
+    rerender(<SetupWebImport onContinue={() => { handOffs++ }} onConfigured={vi.fn()} />)
+    expect(handOffs).toBe(1)
+  })
+
+  // `exists: true` 但一行都没有（例如源里只有一个空的 marketplaces.json）→
+  // "没有可导入的东西"这一态仍要渲染（复制这条路依然可达），且绝不自作主张
+  // 往下走：用户自己按 Skip。
+  it('keeps the "nothing importable" state when the source dir exists but has no rows', async () => {
+    const onContinue = vi.fn()
+    vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, exists: true, credentials: null, mcp: [], marketplaces: [] })
+    render(<SetupWebImport onContinue={onContinue} onConfigured={vi.fn()} />)
+
     expect(await screen.findByText('Nothing importable from the web version.')).toBeTruthy()
-    // 真正探测到的目录照常显示，用户可以自己去看那一份。
-    const dirLine = screen.getByText(ENUMERATION.sourceDir)
-    expect(dirLine).toBeTruthy()
-    // 用户选的 `--state-dir` 是任意长的无断点串（Windows 反斜杠没有断点），
-    // 这一行与那些 URL 同一处置。
-    expect((dirLine as HTMLElement).style.overflowWrap).toBe('anywhere')
+    // 真正探测到的目录照常显示，用户可以自己去看那一份（三栏区块里还有一份，
+    // 所以按那个专用类名取）。用户选的 `--state-dir` 是任意长的无断点串
+    // （Windows 反斜杠没有断点），这一行与那些 URL 同一处置。
+    const dirLine = document.querySelector('.setup-prefilled-hint') as HTMLElement
+    expect(dirLine.textContent).toBe(ENUMERATION.sourceDir)
+    expect(dirLine.style.overflowWrap).toBe('anywhere')
+    expect(onContinue).not.toHaveBeenCalled()
   })
 
   it('offers Retry when the probe itself fails', async () => {

@@ -155,7 +155,7 @@
 
 | 情形 | 处理 |
 |---|---|
-| 源目录不存在 | `GET` 返回 `exists: false`；前置屏显示"未找到网页版配置"（复用 `setup-health-row-fail` 形状）+ 报服务端实际探测的路径，并允许继续进向导 |
+| 源目录里三份可移植文件一份都不在 | `GET` 返回 `exists: false`；**前置屏自己让位**——直接调 `onContinue()` 进向导 step 0，三栏与"未找到网页版配置"那一态都不渲染（判据必须是服务端的 `exists`：源 `config.json` 缺失时 `credentialsError` 恰好会被置上，按"三栏都没报错"来判会把本屏最需要跳过的那个场景挡在门外）。**本条为验收时由用户裁定，取代原先"显示未找到网页版配置 + 报探测路径 + 允许继续"的设计**——没跑过网页版的用户不该多挨一屏讲"网页版"的步骤 |
 | 源 config.json 不存在 / 读不动 | `credentials: null` + `credentialsError: <原始错误>`；MCP / marketplace 两栏照常枚举 |
 | 源 config 能读但没有 token | `credentials.hasToken: false`（仍是一栏，可以只搬模型）；导入后 `configured` 为 false，客户端继续走向导 |
 | 源 mcp-config.json 存在但读不动 | `mcp: []` + `mcpError: <原始错误>`；凭证与 marketplace 两栏照常枚举 |
@@ -184,7 +184,7 @@
 - **状态机同形**：惰性探测 + `probeCancelRef` 取消竞态 + `Record<name, status>` +
   `Select all importable` 的 predicate 与提交 filter 同构（这里不需要向导 step 3 那个
   `mcpImportStatusRef` 镜像——没有异步 handler 要在回调里读最新状态）。
-- **收尾**：**Skip 是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点 Skip → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 Skip → 进入 step 0。`Import selected (n)` 只导入、不跳转：跳转是导航决定，由用户按 Skip 做出。（按本条实现时不要退回"勾选即导入"——那正是验收时被裁定为缺陷的行为。）
+- **收尾**：**Skip 是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点 Skip → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 Skip → 进入 step 0。`Import selected (n)` 只导入、不跳转：跳转是导航决定，由用户按 Skip 做出。（按本条实现时不要退回"勾选即导入"——那正是验收时被裁定为缺陷的行为。）唯一的例外是"源目录里什么都没有"：那一态本屏根本不出现，探测一落定就自己调 `onContinue()`（见 §7，验收时裁定的规则）。
 - **不新增 CSS**：只用 `src/styles/setup-page.css` 既有类 + `styles.*` 内联对象 + 主题变量（CLAUDE.md：禁止硬编码颜色，新颜色必须同时定义 dark / light）。
 - **与"最后才写盘"原则的冲突（刻意保留）**：现有向导刻意到最后一步才写 `config.json`（`SetupPage.tsx` 的注释：中途关掉浏览器不留半份 config）。导入屏会**立即写盘**。保留该行为，理由是：导入本身就是"配置"这一动作；若改成只预填，则要么写两次盘（导入一次 + `/config/setup` 一次），要么用户还得再走完 6 步。副作用"导入后直接关窗 → 桌面版已配置"正是本需求的目标。
 
@@ -197,7 +197,7 @@
 ## 10. 非目标与后续
 
 - 后台任务 / WS 进度帧 / 可中止可续的拷贝；
-- 源目录选择器（用 `--state-dir` 跑过网页版的用户不在本期覆盖，届时只会看到"未找到配置"）；
+- 源目录选择器（用 `--state-dir` 跑过网页版的用户不在本期覆盖：探测的是默认目录，那种情形下 `exists: false`，本屏因此**静默让位**，一处都不提示，见 §7）；
 - App Plugin、UI 偏好、snippets、ui-state、会话历史的搬运；
 - 反向导出（桌面版 → 网页版）；
 - 让两个宿主共用同一 state 目录（`sessions.json` 的并发写风险，见 `desktop/main.ts:273-274` 的隔离意图）。
