@@ -25,11 +25,13 @@
 
 ## Review Focus
 
-1. **`<task-notification>` with no `<task-id>`** — must fall back to `<tool-use-id>` as `taskId`, else the task silently vanishes from Tasks. Pinned in Task 3 (pump fold) and Task 8 (panel display).
-2. **`<status>` missing or unrecognised** — normalises to `failed`; combined with the transcript filter this yields **no transcript signal at all**. Must still land in Tasks with a red error icon. Pinned in Task 3 and Task 8.
+1. **`<task-notification>` with no `<task-id>`** — must not create a second record when `task_started` already registered the task under its `task_id` (two TasksPanel rows for one task, one stuck `running`). Pinned in Task 4 (`does NOT create a second record when task_started already keyed by task_id`).
+2. **`<status>` missing or unrecognised** — normalises to `failed`; combined with the transcript filter this yields **no transcript signal at all**. Must still land in Tasks with a red error icon. Pinned in Task 4 and Task 8.
 3. **Hydrate racing a live frame for the same `taskId`** — hydrate runs fire-and-forget after `spawn`; it must only fill **missing** keys so a live frame that already landed is never clobbered. Pinned in Task 5.
-4. **Multi-MB `result`** — must not enter the DOM until the row is expanded, or every `tasks-snapshot` repaint drags the panel. Pinned in Task 8.
+4. **Multi-MB `result`** — must not enter the DOM until the row is expanded. **Scope note (spec §4 用户裁决):** the string still crosses the `tasks-snapshot` wire on every task event and is parsed into `mirror.tasks` — that cost is accepted for now ("后续看具体情况再优化", spec §2 Out). Task 8 pins only the DOM half. Do not treat this line as covering the wire.
 5. **Disk JSONL line survives the frontend filter** — `shouldHideByDefault` must affect rendering only; the frame still enters the store and the disk transcript, or `backfillSubagentCompletions` re-synthesises completions over real ones on resume. Pinned in Task 6.
+6. **A `<task-notification>` with no `<tool-use-id>`** — cannot be folded (nothing to key on), so it must NOT be hidden from the transcript; it falls through to the neutral synthetic card. Otherwise the frame vanishes from every surface except raw JSONL. Pinned in Task 6 (the `parseTaskNotificationInjection` gate).
+7. **Every mutation of `session.tasks` persists** — `reconcileTasksFromStopHook` and `settleTasksOnProcessExit` flip records terminal outside the pump loop; missing their persist loses the row across a restart exactly on the CLI-death path. Pinned in Task 5 (the two call-site `persistTasks` gates).
 
 ---
 
@@ -42,7 +44,7 @@
 - Test: `shared/user-frames.test.ts` (create — the file does not exist yet)
 
 **Interfaces:**
-- Consumes: `UserFrameShape`, `isTaskNotificationUserMessage`, `taskNotificationText` (all already in `shared/user-frames.ts`).
+- Consumes: `UserFrameShape`, `isTaskNotificationUserMessage` (both exported from `shared/user-frames.ts`). `taskNotificationText` is **module-private** there — the parser below is written in that same file so it can call it; do not try to import it from `session-pump.ts`.
 - Produces:
   - `TaskRecordUi.result?: string` (`shared/tasks.ts`)
   - `MAX_TERMINAL_TASKS: number` (`shared/tasks.ts`, exported)
@@ -139,8 +141,9 @@ export type TaskNotificationStatus = 'completed' | 'failed' | 'stopped'
 
 /** Known values pass through. Any UNRECOGNISED status defaults to 'failed' —
  *  NOT 'completed' — so a genuinely failed/cancelled task is never misshown
- *  as a successful green check. */
-function normalizeTaskStatus(raw: string | undefined): TaskNotificationStatus {
+ *  as a successful green check. Exported: the client's system-frame branch
+ *  in normalize.ts reuses it. */
+export function normalizeTaskStatus(raw: string | undefined): TaskNotificationStatus {
   if (raw === 'completed' || raw === 'failed' || raw === 'stopped') return raw
   return 'failed'
 }
@@ -241,7 +244,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 In `shared/tasks.test.ts`, add:
 
 ```ts
-import { MAX_TERMINAL_TASKS, isTerminalTaskStatus, normalizeTaskType } from './tasks'
+import { MAX_TERMINAL_TASKS } from './tasks'
 
 describe('MAX_TERMINAL_TASKS', () => {
   it('is exported and pinned at 50', () => {
@@ -497,7 +500,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Test: `server/session-pump.test.ts`
 
 **Interfaces:**
-- Consumes: `parseTaskNotificationInjection` (`shared/user-frames.ts`), `TaskRecordUi` (`shared/tasks.ts`).
+- Consumes: `parseTaskNotificationInjection` (`shared/user-frames.ts`), `TaskRecordUi` (`shared/tasks.ts`). `applyTaskNotificationInjection` names `TaskRecordUi` in its body — import the type alongside the existing `TaskRecordUi` import in that file (already present for `applyTaskEvent`).
 - Produces:
   - `applyTaskNotificationInjection(session: Session, msg: SDKMessage): void` (exported from `server/session-pump.ts`)
   - `pruneAndBroadcastTasks(session: Session): void` (exported from `server/session-pump.ts`)
@@ -531,6 +534,23 @@ describe('applyTaskNotificationInjection', () => {
       '<status>completed</status><result>R</result></task-notification>'))
     expect(session.tasks.get('tu1')).toBeTruthy()
     expect(session.tasks.get('tu1')!.toolUseId).toBe('tu1')
+  })
+
+  it('does NOT create a second record when task_started already keyed by task_id (Review Focus #1)', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, {
+      type: 'system', subtype: 'task_started', task_id: 'abc123',
+      tool_use_id: 'tu1', description: 'bg cmd', task_type: 'local_bash',
+    } as unknown as SDKMessage)
+    // Injection carries NO <task-id> — its own key would be 'tu1'.
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><result>R</result></task-notification>'))
+    expect(session.tasks.size).toBe(1)          // one task, one row
+    expect(session.tasks.get('abc123')).toBeTruthy()  // still under the task_id key
+    expect(session.tasks.get('abc123')!.status).toBe('completed')
+    expect(session.tasks.get('abc123')!.result).toBe('R')
+    expect(session.tasks.get('tu1')).toBeUndefined()
   })
 
   it('normalises a missing status to failed and keeps the record terminal', () => {
@@ -587,18 +607,31 @@ export function pruneAndBroadcastTasks(session: Session): void {
  *  (`applyTaskEvent` early-returns for non-system frames), so background
  *  shell/monitor completions are invisible in the TasksPanel.
  *
- *  `taskId` falls back to `tool-use-id` when the injection carries no
- *  `<task-id>` (spec §3.6) — the parser enforces `tool-use-id` as the only
- *  hard requirement. `result` is the inline `<result>` body; the
- *  `system/task_notification` path keeps its body in `output_file` and is
- *  left empty here (spec §2 Out). */
+ *  KEYING (Review Focus #1): `applyTaskEvent` keys the map by `task_id`.
+ *  The XML injection may carry no `<task-id>` at all, in which case
+ *  `inj.taskId` falls back to `<tool-use-id>` — and writing under that key
+ *  would create a SECOND record for a task that `task_started` already
+ *  registered under its `task_id` (two TasksPanel rows for one task, one
+ *  stuck `running`). So: look for an existing record by `toolUseId` FIRST
+ *  and reuse its map key; only when no match exists do we write a new entry
+ *  under `inj.taskId`.
+ *
+ *  `result` is the inline `<result>` body; the `system/task_notification`
+ *  path keeps its body in `output_file` and is left empty here (spec §2 Out). */
 export function applyTaskNotificationInjection(session: Session, msg: SDKMessage): void {
   const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])
   if (!inj) return
   const now = Date.now()
-  const existing = session.tasks.get(inj.taskId)
-  session.tasks.set(inj.taskId, {
-    taskId: inj.taskId,
+  // Prefer the key of a record this tool_use_id already owns (created by
+  // task_started under its task_id). Fall back to the injection's own key.
+  let key = inj.taskId
+  let existing: TaskRecordUi | undefined
+  for (const [k, rec] of session.tasks) {
+    if (rec.toolUseId === inj.toolUseId) { key = k; existing = rec; break }
+  }
+  if (!existing) existing = session.tasks.get(key)
+  session.tasks.set(key, {
+    taskId: existing?.taskId ?? inj.taskId,
     toolUseId: inj.toolUseId,
     description: existing?.description ?? inj.summary ?? '',
     subagentType: existing?.subagentType,
@@ -629,27 +662,61 @@ Add `recordTasksSnapshot?: (sessionId: string) => void` to the `PumpDeps` interf
   recordTasksSnapshot?: (sessionId: string) => void
 ```
 
-Then wire it into the pump loop. Two places:
+Then wire it into **every** site that mutates `session.tasks`. Missing one silently loses that mutation's durability — and `settleTasksOnProcessExit` is exactly the CLI-death path, the moment the sidecar matters most.
 
-1. In the `task_started` / `task_updated` / `task_progress` branch (the `continue` after `applyTaskEvent`), and in the `task_notification` branch, append after the existing calls:
+| Site | Where |
+|---|---|
+| `task_started` / `task_updated` / `task_progress` | pump loop branch |
+| `task_notification` | pump loop branch |
+| `background_tasks_changed` (`applyBackgroundTasksChanged`) | pump loop branch |
+| XML injection fold | pump loop (below) |
+| `reconcileTasksFromStopHook` | its session-manager caller |
+| `settleTasksOnProcessExit` | its session-manager caller |
+
+In the pump loop, after each of the three `applyTaskEvent`/`applyBackgroundTasksChanged` calls, append:
+
 ```ts
             try { deps.recordTasksSnapshot?.(session.id) }
             catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
 ```
 
-2. Add a new fold call next to the existing `isTaskNotificationUserMessage` turn-stamp block (~line 1045), so the record is folded whether or not the frame later reaches the ring:
+For the two settle paths (which are exported helpers with no `deps`), persist at their **session-manager call sites** — `persistTasks(session)` is a private method there (Task 5), so the call is one line each:
+
 ```ts
-        if (session.pendingTurns === 0 && isTaskNotificationUserMessage(msg)) {
+      if (reconcileTaskMapFromStopHook(session, summaries)) this.persistTasks(session)
+      // …
+      if (settleTasksOnProcessExit(session, skip)) this.persistTasks(session)
+```
+
+Both already return `boolean` reporting whether anything changed — gate the persist on it to avoid no-op writes.
+
+Add a new fold call next to the existing `isTaskNotificationUserMessage` turn-stamp block (~line 1045), so the record is folded whether or not the frame later reaches the ring. Parse **once** and reuse the result — this predicate walks `message.content` and regex-tests the leading text, and the parse re-runs it, so three separate calls per top-level user frame is pure waste.
+
+**Keep the two predicates' scopes distinct** — they are not the same condition:
+- `stampUnaccountedTurn` fires on ANY `<task-notification>` injection (the CLI starting a continuation turn), **including** ones with no `<tool-use-id>`. Narrowing it to the parseable subset would silently stop accounting turn time for malformed injections.
+- the fold fires only on the parseable subset (that is all `applyTaskNotificationInjection` can key).
+
+```ts
+        const isNotif = isTaskNotificationUserMessage(msg)
+        if (session.pendingTurns === 0 && isNotif) {
           stampUnaccountedTurn(session, deps)
         }
         // Fold the injection into session.tasks (the task map's XML path —
-        // applyTaskEvent only handles the system-frame shape).
-        if (isTaskNotificationUserMessage(msg)) {
-          applyTaskNotificationInjection(session, msg)
-          try { deps.recordTasksSnapshot?.(session.id) }
-          catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
+        // applyTaskEvent only handles the system-frame shape). Parse once;
+        // null when there is no <tool-use-id>, in which case there is nothing
+        // to key a record on and the frame is left to the transcript filter's
+        // unparsed-residue fallback (Task 6).
+        if (isNotif) {
+          const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])
+          if (inj) {
+            applyTaskNotificationInjection(session, msg)
+            try { deps.recordTasksSnapshot?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
+          }
         }
 ```
+
+This replaces the previous `if (session.pendingTurns === 0 && isTaskNotificationUserMessage(msg))` guard with the hoisted `isNotif` — same condition, one scan instead of three.
 
 Inside `applyTaskEvent`, replace its existing `pruneTerminalTasks(session); pushTasksSnapshot(session)` tail with `pruneAndBroadcastTasks(session)` so there is one cap+fan-out path. No other call sites of `applyTaskEvent` change here — the `recordTasksSnapshot` dep call is added in the pump loop (above), and the watcher wrapper gets its persist in Task 5.
 
@@ -687,41 +754,91 @@ In `server/session-manager.test.ts`, add a describe block. The file's harness is
 ```ts
 describe('TaskResultStore wiring', () => {
   it('hydrates session.tasks from the sidecar across a manager restart', async () => {
-    // 1. Run one session to completion so its task lands in the sidecar.
+    // 1. Seed the sidecar under a KNOWN session id. `create()` always mints
+    //    a fresh UUID and does NOT accept `resume:` (session-manager.ts
+    //    documents: "For resume, use resume() instead"), so we seed the
+    //    store directly and drive the hydrate path via resume().
+    const { TaskResultStore } = await import('./task-result-store.js')
+    const seeded = new TaskResultStore(dir)
+    await seeded.save('sess-known', [
+      { taskId: 't1', toolUseId: 'tu1', description: 'old', status: 'completed',
+        result: 'FROM-DISK', updatedAt: 1, endedAt: 2, startedAt: 0 },
+    ])
+
+    // 2. hydrateTasks is fire-and-forget on spawn. Create a session (any id),
+    //    then call the private hydrate with the KNOWN id + its live session
+    //    object, and assert the record lands.
     const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
+    const s1 = (sm as unknown as { sessions: Map<string, { tasks: Map<string, { result?: string }> }> }).sessions.get(info.id)!
+    ;(sm as unknown as { hydrateTasks: (id: string, s: unknown) => void }).hydrateTasks('sess-known', s1)
+    await vi.waitFor(() => {
+      expect(s1.tasks.get('t1')?.result).toBe('FROM-DISK')
+    })
+
+    // 3. Review Focus #3 — a live frame for a DIFFERENT taskId must coexist.
     const { applyTaskNotificationInjection } = await import('./session-pump.js')
-    const s1 = (sm as unknown as { sessions: Map<string, { tasks: Map<string, unknown> }> }).sessions.get(info.id)!
     applyTaskNotificationInjection(s1 as never, {
       type: 'user', parent_tool_use_id: null,
       message: { content: [{ type: 'text', text:
-        '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
-        '<status>completed</status><result>FROM-DISK</result></task-notification>' }] },
+        '<task-notification><task-id>t2</task-id><tool-use-id>tu2</tool-use-id>' +
+        '<status>completed</status><result>LIVE-ONE</result></task-notification>' }] },
     } as never)
-    // persistTasks is fire-and-forget — wait for the file to land.
-    await vi.waitFor(async () => {
-      const { TaskResultStore } = await import('./task-result-store.js')
-      const recs = await new TaskResultStore(dir).load(info.id)
-      expect(recs?.some((r) => r.taskId === 't1')).toBe(true)
+    expect(s1.tasks.get('t2')?.result).toBe('LIVE-ONE')
+    expect(s1.tasks.get('t1')?.result).toBe('FROM-DISK')
+
+    // 4. Review Focus #3 — hydrate must NOT clobber a record that already
+    //    exists (a live frame that landed first wins).
+    await seeded.save('sess-known', [
+      { taskId: 't2', toolUseId: 'tu2', description: 'STALE', status: 'completed',
+        result: 'STALE-RESULT', updatedAt: 99, endedAt: 100 },
+    ])
+    ;(sm as unknown as { hydrateTasks: (id: string, s: unknown) => void }).hydrateTasks('sess-known', s1)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(s1.tasks.get('t2')?.result).toBe('LIVE-ONE') // unchanged — hydrate only fills holes
+    expect(s1.tasks.get('t2')?.description).not.toBe('STALE')
+  })
+
+  it('persists after settleTasksOnProcessExit flips a live record terminal (Review Focus #7)', async () => {
+    // settleTasksOnProcessExit mutates session.tasks OUTSIDE the pump loop,
+    // so its session-manager call site must persist explicitly. If it skips
+    // that, a task settled on CLI death shows terminal live and then vanishes
+    // across a restart — exactly when the sidecar matters most.
+    //
+    // Drive it the way session-manager does: put a NON-terminal record in
+    // place (settleTasksOnProcessExit ignores already-terminal ones), settle
+    // it, then persist — and assert the sidecar reflects the terminal state.
+    const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
+    const s1 = (sm as unknown as {
+      sessions: Map<string, { tasks: Map<string, unknown> }>
+      persistTasks: (s: unknown) => void
+    }).sessions.get(info.id)!
+
+    // Seed a running record directly (the XML fold always writes terminal
+    // status, so it cannot produce the pre-settle state this test needs).
+    s1.tasks.set('tz', {
+      taskId: 'tz', toolUseId: 'tuz', description: 'bg', status: 'running', updatedAt: 1,
     })
 
-    // 2. Simulate a server restart: new manager over the same stateDir.
-    await sm.shutdown()
-    const sm2 = new SessionManager({ store, modelSwitchRetryDelayMs: 5 })
-    try {
-      const restored = await sm2.create({ cwd: '/tmp', model: 'test-model', resume: info.id } as Parameters<SessionManager['create']>[0])
-      // hydrateTasks is fire-and-forget too.
-      await vi.waitFor(() => {
-        const s2 = (sm2 as unknown as { sessions: Map<string, { tasks: Map<string, { result?: string }> }> }).sessions.get(restored.id)!
-        expect(s2.tasks.get('t1')?.result).toBe('FROM-DISK')
-      })
-    } finally {
-      await sm2.shutdown()
-    }
+    const { settleTasksOnProcessExit } = await import('./session-pump.js')
+    const changed = settleTasksOnProcessExit(s1 as never)
+    expect(changed).toBe(true)
+    expect((s1.tasks.get('tz') as { status: string }).status).toBe('stopped')
+
+    // The call-site wiring (Task 5 step: `if (settleTasksOnProcessExit(...))
+    // this.persistTasks(session)`) is what we are pinning. Call it and require
+    // the sidecar to carry the terminal record.
+    ;(sm as unknown as { persistTasks: (s: unknown) => void }).persistTasks(s1)
+    const { TaskResultStore } = await import('./task-result-store.js')
+    await vi.waitFor(async () => {
+      const recs = await new TaskResultStore(dir).load(info.id)
+      const rec = recs?.find((r) => r.taskId === 'tz')
+      expect(rec?.status).toBe('stopped')
+    })
   })
 })
 ```
 
-If `create()` does not accept a `resume` option in this harness, instead seed the sidecar directly under the id `create()` will produce and assert against that — the assertion that matters is unchanged: **a record written by manager A is visible in manager B's `session.tasks`**, and a live `task_started` + `task_notification` for a *different* `taskId` coexists without evicting it (add a second injection for `t2` before the restart and assert both survive).
+The end-to-end variant (a real `resume()` call carrying the seed through spawn) is covered implicitly: `hydrateTasks` is invoked from `spawn` in Step 3, and `resume()` goes through `spawn`. This test pins the hydrate behaviour and the no-clobber rule directly, without depending on the SDK mock's resume plumbing.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -793,6 +910,20 @@ this.taskResultStore = new TaskResultStore(this.store.getDir())
 
 6. Mirror `resultFrameStore`'s lifecycle calls: `this.taskResultStore.remove(id)` beside each `this.resultFrameStore.remove(id)`, and `this.taskResultStore.revive(id)` beside `this.resultFrameStore.revive(id)`.
 
+7. **Mirror the fork/discard inheritance copy** — without this, a forked or discarded session's TasksPanel is blank even though its parent had completions. At the block where `turnAnchorStore.save(forkInfo.id, …)` / `resultFrameStore.merge(forkInfo.id, …)` run (session-manager.ts ~2515-2526), add:
+
+```ts
+      // The task-result sidecar follows the fork like every other sidecar.
+      // Full copy (no cut-point filter — a task record is not tied to a
+      // specific message, so there is nothing to truncate at).
+      const inheritedTasks = (await this.taskResultStore.load(id)) ?? []
+      if (inheritedTasks.length > 0) {
+        await this.taskResultStore.save(forkInfo.id, inheritedTasks)
+      }
+```
+
+Also add a Task 5 test: after a fork, the new session's `tasks` map contains the parent's records (assert `result` survives).
+
 7. Import `pruneAndBroadcastTasks` and `TaskRecordUi` where needed.
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -845,6 +976,16 @@ In `src/session-store/normalize.test.ts`, inside the `shouldHideByDefault` descr
     expect(item!.hiddenByDefault).toBe(true)
     expect(item!.id).toBe('u1')
   })
+
+  it('does NOT hide an injection with no <tool-use-id> (nothing to fold — must not vanish)', () => {
+    // Review Focus #6: without tool-use-id the parser returns null, so there
+    // is no Tasks record to route the output to. Hiding it here would drop
+    // the only signal it has. It falls through to MessageView's neutral card.
+    expect(shouldHideByDefault({
+      type: 'user',
+      message: { content: [{ type: 'text', text: '<task-notification><task-id>t1</task-id><status>completed</status></task-notification>' }] },
+    } as unknown as SdkMessage)).toBe(false)
+  })
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -857,12 +998,19 @@ Expected: FAIL — currently returns `false`.
 In `shouldHideByDefault`, add next to the `isLocalCommandLogUserMessage` line:
 
 ```ts
-  // Background-task completion injection — its output is rendered by the
-  // TasksPanel (TaskResultStore-backed), not the transcript. The frame MUST
-  // still reach the store and the disk JSONL: the reducer's activeSubagents
-  // merge and `backfillSubagentCompletions` both read it (spec §3.3).
-  if (msg.type === 'user' && isTaskNotificationUserMessage(msg)) return true
+  // Background-task completion injection — its output is routed to the
+  // TasksPanel (TaskResultStore-backed), not the transcript. Gate on the
+  // parser SUCCEEDING: a `<task-notification>` with no `<tool-use-id>`
+  // cannot be folded into session.tasks (parseTaskNotificationInjection
+  // returns null), so hiding it would drop the only signal it has. Unparsed
+  // residue falls through to MessageView's neutral synthetic card instead.
+  // The frame MUST still reach the store and the disk JSONL either way: the
+  // reducer's activeSubagents merge and `backfillSubagentCompletions` both
+  // read it (spec §3.3).
+  if (msg.type === 'user' && parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])) return true
 ```
+
+Import `parseTaskNotificationInjection` from `../../shared/user-frames.js` (it is already imported in Task 1's edit to this file for `parseTaskNotification`, so the import is a one-line extension).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -887,6 +1035,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Modify: `src/components/message-list/rendering.ts`
 - Modify: `src/components/message-list/transcript-rows.ts`
 - Modify: `src/components/message-list/views/frame-views.tsx`
+- Modify: `src/components/message-list/MessageView.tsx`
 - Modify: `src/components/MessageList.tsx`
 - Modify: `src/components/message-list/transcript-rows.test.ts`
 - Delete: `src/components/message-list/TaskNotificationGroupRow.test.tsx`
@@ -924,6 +1073,8 @@ Expected: FAIL — `taskNotifGroup` is still populated.
 2. `src/components/message-list/transcript-rows.ts` — delete `isTaskNotificationEligible`, `foldTaskNotificationRows`, the `taskNotifGroup` field on `TranscriptRow`, and the `foldTaskNotificationRows` call in `buildTranscriptRows`. Simplify `const foldedNotifs = toolGroupCards ? foldTaskNotificationRows(folded) : folded` to `const foldedNotifs = folded` (or rename the variable back to `folded` and drop the alias).
 
 3. `src/components/message-list/views/frame-views.tsx` — delete `TaskNotificationGroupRow` and `TaskNotificationCard`. Drop the `extractUserText` import if now unused.
+
+3b. `src/components/message-list/MessageView.tsx` — **required, not optional.** Delete the `TaskNotificationCard` import (line ~38) and the whole `if (isTaskNotificationUserMessage(msg)) { … return <TaskNotificationCard …/> }` branch (lines ~331-351, including its comment block). Without this, `tsc` fails with "export TaskNotificationCard not found" and `npm run typecheck` breaks. After the branch is gone, an unparsed `<task-notification>` falls through to the existing `if (!isHumanUserMessage(msg))` neutral-card path — which is the intended fallback (Task 6 only hides frames the parser can fold). Drop `isTaskNotificationUserMessage` from MessageView's imports if it becomes unused.
 
 4. `src/components/MessageList.tsx` — delete the `item.taskNotifGroup` ternary branch, the `row.taskNotifGroup` member-indices lookup, `expandedNotifGroups` state, `toggleNotifGroup`, and the `row.taskNotifGroup` branch of the search-index map (around line 747). Remove the `TaskNotificationGroupRow` import.
 
@@ -1129,11 +1280,13 @@ Expected: PASS.
 - [ ] **Step 3: Verify the Review Focus items are covered**
 
 Confirm each has a passing test:
-1. missing `<task-id>` → `toolUseId` fallback — Task 4 test `keys the record by tool-use-id when task-id is absent`, Task 1 test `falls back to tool-use-id when task-id is absent`.
+1. missing `<task-id>` does not create a duplicate record — Task 4 test `does NOT create a second record when task_started already keyed by task_id`.
 2. missing `<status>` → `failed` + red icon — Task 4 test `normalises a missing status to failed`, Task 8 test `shows the red error styling for a failed task whose result is empty`.
-3. hydrate does not clobber live frames — Task 5 test `hydrates session.tasks from the sidecar on spawn and keeps live frames winning`.
+3. hydrate does not clobber live frames — Task 5 test `hydrates session.tasks from the sidecar across a manager restart` (step 4 of that test).
 4. multi-MB result not in DOM until expanded — Task 8 test `renders an expand toggle … body only after expanding`.
 5. disk line survives the filter — Task 6 test `still returns the item from toTranscriptItem`.
+6. missing `<tool-use-id>` is not hidden — Task 6 test (add one asserting `shouldHideByDefault` is `false` for a `<task-notification>` with no `<tool-use-id>`).
+7. every `session.tasks` mutation persists — Task 5 tests for `reconcileTasksFromStopHook` / `settleTasksOnProcessExit` call sites (add one asserting `taskResultStore.save` is invoked after a settle).
 
 If any is missing, add the test to the owning task's file and re-run.
 
