@@ -103,14 +103,15 @@ async function walkToFinish() {
 }
 
 describe('SetupPage — desktop wizard (no Autostart step)', () => {
-  // 头号路径：凭证经前置屏导入，再由用户按 Skip 收尾 ⇒ SetupPage 走既有收尾
+  // 头号路径：凭证经前置屏导入，再由用户按 Finish 收尾 ⇒ SetupPage 走既有收尾
   // 路径交接（onConfigured({ openNewSession: true })），用户不必重走一遍向导。
   // 导入本身不跳转（勾选只是选择、落盘要按 Import selected），所以这里
-  // 必须先导入、再按 Skip 收尾。
+  // 必须先导入、再按 Finish 收尾——导入把服务端写成 configured 后，离开按钮
+  // 的标签就从 Skip 换成 Finish 了。
   // 这条链此前没有自动化覆盖：desktop 用例里前置屏只到"出现 / 不出现"这一层
   // （默认那个空源目录现在根本不会渲染它），SetupWebImport 的用例只到组件
   // 自己那一层（onConfigured 是个 spy）。
-  it('hands over to onConfigured({ openNewSession: true }) after importing credentials and pressing Skip', async () => {
+  it('hands over to onConfigured({ openNewSession: true }) after importing credentials and pressing the leave button', async () => {
     vi.mocked(api.get).mockImplementation((url: string) =>
       url === '/config/web-import'
         ? Promise.resolve({
@@ -143,8 +144,8 @@ describe('SetupPage — desktop wizard (no Autostart step)', () => {
     await waitFor(() => expect(screen.getByText('Imported')).toBeTruthy())
     expect(onConfigured).not.toHaveBeenCalled()
 
-    // Skip 才是唯一的交接口（此时服务端已 configured）。
-    fireEvent.click(screen.getByText('Skip'))
+    // 离开按钮才是唯一的交接口（此时服务端已 configured → 标签是 Finish）。
+    fireEvent.click(screen.getByText('Finish'))
     await waitFor(() => expect(onConfigured).toHaveBeenCalledWith({ openNewSession: true }))
     expect(onConfigured).toHaveBeenCalledTimes(1)
     expect(vi.mocked(api.post)).toHaveBeenCalledWith(

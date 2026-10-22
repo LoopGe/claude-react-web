@@ -24,6 +24,8 @@ afterEach(() => vi.clearAllMocks())
 
 /** 主按钮的文案带选中数（`Import selected (2)`），这里只按前缀取。 */
 const importSelectedBtn = () => screen.getByText(/^Import selected \(/) as HTMLButtonElement
+/** 批量按钮"全勾"那一面：可导入的行全勾上之后它会换成 Clear selection，所以
+ *  这个 helper 只在还没全勾时用。 */
 const selectAllBtn = () => screen.getByText('Select all importable') as HTMLButtonElement
 const box = (label: string) => screen.getByLabelText(label) as HTMLInputElement
 
@@ -174,7 +176,9 @@ describe('SetupWebImport', () => {
     await waitFor(() => expect(screen.getAllByText('Imported')).toHaveLength(2))
     expect(onConfigured).not.toHaveBeenCalled()
     expect(onContinue).not.toHaveBeenCalled()
-    expect(screen.getByText('Skip')).toBeTruthy()
+    // 这次导入把服务端写成了 configured → 离开按钮的标签换成 Finish
+    // （与向导最后一步同一个词）。
+    expect(screen.getByText('Finish')).toBeTruthy()
   })
 
   // happy path 仍是两击：Select all importable → Import selected (n)。
@@ -203,6 +207,43 @@ describe('SetupWebImport', () => {
       mcp: ['ctx7'],
       marketplaces: [],
     }, { timeoutMs: 180_000 })
+  })
+
+  // 一键全勾必须能一键退回：同一个按钮在"可导入的行全勾上了"时换成 Clear
+  // selection，再点一次就把选择清空（此前只能一行行手动取消勾选）。刻意仍是
+  // **一个**按钮——那排已经三个了。
+  it('turns Select all importable into Clear selection once everything is ticked, and clears it', async () => {
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
+    await screen.findByText('Work')
+
+    // 什么都没勾：按钮是"全勾"，可点。
+    expect((screen.getByText('Select all importable') as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(selectAllBtn())
+    expect(box('Import credentials').checked).toBe(true)
+    expect(box('Import ctx7').checked).toBe(true)
+    expect(importSelectedBtn().textContent).toBe('Import selected (2)')
+
+    // 全勾上了 → 同一个按钮换了身份（清空那半不能被 disabled 关在门外：
+    // fireEvent 点不动 disabled 按钮，这一击就是那条判据的钉子）。
+    fireEvent.click(screen.getByText('Clear selection'))
+    expect(box('Import credentials').checked).toBe(false)
+    expect(box('Import ctx7').checked).toBe(false)
+    // 清空 = 一个都不导：主按钮回到 0 并禁用。
+    expect(importSelectedBtn().textContent).toBe('Import selected (0)')
+    expect(importSelectedBtn().disabled).toBe(true)
+    // 还能再勾回来：按钮回到"全勾"。
+    expect((screen.getByText('Select all importable') as HTMLButtonElement).disabled).toBe(false)
+    expect(vi.mocked(api.post)).not.toHaveBeenCalled()
+  })
+
+  // 页脚与上面那一摞行卡片要拉开距离（4px 是照抄向导页脚的——那边邻着的是
+  // 一个表单字段，这里邻着的是一叠卡片，贴着读起来是挤在一起的）。
+  it('keeps the footer clear of the row cards above it', async () => {
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
+    await screen.findByText('Work')
+
+    const footer = document.querySelector('.setup-card > div:last-child') as HTMLElement
+    expect(footer.style.marginTop).toBe('var(--space-5)')
   })
 
   it('disables both controls while a request is in flight', async () => {
@@ -243,7 +284,7 @@ describe('SetupWebImport', () => {
 
   // 用户勾一行 = "这次要导入这一项"，绝不是"收尾"：即使服务端回 configured: true
   // （本屏只在未配置时渲染，所以它只可能来自本屏自己那次导入），也必须留在
-  // 屏上等用户自己按 Skip。
+  // 屏上等用户自己按 Finish。
   it('does not hand over when only the credentials row is selected, even if the server reports configured', async () => {
     vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, mcp: [], marketplaces: [] })
     vi.mocked(api.post).mockResolvedValue({
@@ -267,13 +308,36 @@ describe('SetupWebImport', () => {
     }, { timeoutMs: 180_000 })
     expect(onConfigured).not.toHaveBeenCalled()
     expect(onContinue).not.toHaveBeenCalled()
-    // 屏幕还在（Skip 就是它自己的按钮）。
-    expect(screen.getByText('Skip')).toBeTruthy()
+    // 屏幕还在（Finish 就是它自己的按钮）。
+    expect(screen.getByText('Finish')).toBeTruthy()
   })
 
-  // Skip 是本屏唯一的交接口：服务端已 configured（由某次带凭证的导入写成）
-  // 时点 Skip 才收尾。
-  it('hands over to onConfigured from Skip when an import left the server configured', async () => {
+  // 离开按钮的标签跟状态走：本屏那次导入把服务端写成了 configured → Finish
+  // （与向导最后一步同一个词，此时只剩"离开"这一个动作），否则 → Skip。
+  // 人报的原始问题就是"导完凭证后屏幕没变、不知道该按哪个"。
+  it('labels the leave button Finish once an import configured the server, and Skip before that', async () => {
+    vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, mcp: [], marketplaces: [] })
+    vi.mocked(api.post).mockResolvedValue({
+      credentials: { imported: true, configured: true },
+      mcp: { imported: [], skipped: [], failed: [] },
+      marketplaces: { imported: [], skipped: [], failed: [] },
+    })
+    render(<SetupWebImport onContinue={vi.fn()} onConfigured={vi.fn()} />)
+    await screen.findByText('Work')
+
+    // 还没导入：服务端未配置 → Skip。
+    expect(screen.getByText('Skip')).toBeTruthy()
+    expect(screen.queryByText('Finish')).toBeNull()
+
+    fireEvent.click(box('Import credentials'))
+    fireEvent.click(importSelectedBtn())
+    await waitFor(() => expect(screen.getByText('Finish')).toBeTruthy())
+    expect(screen.queryByText('Skip')).toBeNull()
+  })
+
+  // 离开按钮是本屏唯一的交接口：服务端已 configured（由某次带凭证的导入写成）
+  // 时点 Finish 才收尾。
+  it('hands over to onConfigured from Finish when an import left the server configured', async () => {
     vi.mocked(api.get).mockResolvedValue({ ...ENUMERATION, mcp: [], marketplaces: [] })
     vi.mocked(api.post).mockResolvedValue({
       credentials: { imported: true, configured: true },
@@ -290,7 +354,7 @@ describe('SetupWebImport', () => {
     await waitFor(() => expect(screen.getByText('Imported')).toBeTruthy())
     expect(onConfigured).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByText('Skip'))
+    fireEvent.click(screen.getByText('Finish'))
     await waitFor(() => expect(onConfigured).toHaveBeenCalledTimes(1))
     expect(onContinue).not.toHaveBeenCalled()
   })
@@ -527,7 +591,7 @@ describe('SetupWebImport', () => {
     fireEvent.click(selectAllBtn())
     fireEvent.click(importSelectedBtn())
     await waitFor(() => expect(screen.getAllByText('Imported')).toHaveLength(2))
-    fireEvent.click(screen.getByText('Skip'))
+    fireEvent.click(screen.getByText('Finish'))
     await waitFor(() => expect(onConfigured).toHaveBeenCalledTimes(1))
     // 失败进 console（与 App.handleConfigured 同侧），不是顶部的 Import failed。
     await waitFor(() => expect(errSpy).toHaveBeenCalled())
@@ -540,7 +604,7 @@ describe('SetupWebImport', () => {
   })
 
   // 交接自己抛错时本屏没被卸载 —— 屏幕必须留在原处且控件可用，用户能再点一次
-  // Skip 重试（parent 那次 /config 刷新失败是可恢复的）。
+  // Finish 重试（parent 那次 /config 刷新失败是可恢复的）。
   it('keeps the screen usable when the hand-off rejects', async () => {
     vi.mocked(api.post).mockResolvedValue({
       credentials: { imported: true, configured: true },
@@ -555,11 +619,11 @@ describe('SetupWebImport', () => {
     fireEvent.click(selectAllBtn())
     fireEvent.click(importSelectedBtn())
     await waitFor(() => expect(screen.getAllByText('Imported')).toHaveLength(2))
-    fireEvent.click(screen.getByText('Skip'))
+    fireEvent.click(screen.getByText('Finish'))
     await waitFor(() => expect(errSpy).toHaveBeenCalled())
     errSpy.mockRestore()
 
-    expect((screen.getByText('Skip') as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByText('Finish') as HTMLButtonElement).disabled).toBe(false)
     // 已经 Imported 的凭证行照旧勾上、且可交互判定不变；市场那一行（源里
     // already exists）也没被这半条路径改坏。
     expect(box('Import credentials').checked).toBe(true)

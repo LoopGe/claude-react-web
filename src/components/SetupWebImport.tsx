@@ -272,6 +272,20 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
     setSelected(next)
   }
 
+  /** "全勾"的反向那一半：清空选择集。勾选本来就是"这次要导入哪些"的声明，
+   *  一个都不导与它字面一致。同一个按钮承担这两个方向（见下面的 JSX）——那排
+   *  已经三个按钮了，再加一个"取消全选"挤不下。 */
+  const clearSelection = () => setSelected(new Set())
+
+  /** 还能导入的行**全都**勾上了 → 同一个按钮换成"清空选择"。判据与
+   *  selectAllImportable / selection 同构，只数"还能导入"的那些行（终态行勾着
+   *  只是终态，清不掉也不该算数）；`anyImportable` 保证可导入的集合非空——
+   *  一个都没得可勾时，"全勾"是空话，不该冒出一个清空口。 */
+  const allImportableSelected = data !== undefined && anyImportable
+    && (credentialsImportable ? selected.has(CREDENTIALS_ROW) : true)
+    && data.mcp.every((s) => !mcpImportable(s) || selected.has(mcpRow(s.name)))
+    && data.marketplaces.every((m) => !mpImportable(m) || selected.has(mpRow(m.id)))
+
   /** 只发选中的那些：按钮在 0 个选中时是禁用的，所以这里不必再挡一次。 */
   const importSelected = () => { void runImport(selection) }
 
@@ -498,8 +512,8 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
               )}
             </div>
 
-            {/* 两个导入动作与 Skip 同排一行，所以它们住在页脚左侧（见下）；此处
-                不再放一份动作条。 */}
+            {/* 两个导入动作与离开按钮同排一行，所以它们住在页脚左侧（见下）；
+                此处不再放一份动作条。 */}
           </div>
         )}
 
@@ -507,9 +521,9 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
 
         <div style={styles.footer}>
           {/* 三个动作同排一行：两个导入动作在左侧（主按钮只发选中的那些，旁边那条
-              一键把可导入的全勾上 —— happy path 仍是两击），Skip 在右侧。向导页脚
-              本身就是"左一组 / 右一组"的写法。它们仍只在有可导入内容时出现（与正文
-              区块同一条件），窗口窄时 footer 允许换行，不裁切。 */}
+              一键把可导入的全勾上 / 一键清空 —— happy path 仍是两击），离开按钮在
+              右侧。向导页脚本身就是"左一组 / 右一组"的写法。它们仍只在有可导入内容
+              时出现（与正文区块同一条件），窗口窄时 footer 允许换行，不裁切。 */}
           {data !== undefined && data.exists && (
             <div style={styles.footerLeft}>
               <button
@@ -520,13 +534,16 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
               >
                 {importing ? 'Importing…' : `Import selected (${selectedCount})`}
               </button>
+              {/* 同一个按钮的两个方向：还能导入的行全勾上了 → 清空；否则 → 全勾。
+                  能点 = 还有可勾的（anyImportable）**或**已经勾上了什么
+                  （selectedCount）——只判前者会把"清空"那一半关在门外。 */}
               <button
                 type="button"
-                onClick={selectAllImportable}
-                disabled={importing || !anyImportable}
+                onClick={allImportableSelected ? clearSelection : selectAllImportable}
+                disabled={importing || (!anyImportable && selectedCount === 0)}
                 style={styles.secondaryBtn}
               >
-                Select all importable
+                {allImportableSelected ? 'Clear selection' : 'Select all importable'}
               </button>
             </div>
           )}
@@ -540,12 +557,17 @@ export function SetupWebImport({ onContinue, onConfigured }: Props) {
               // 也不该放用户走——他刚点的那些行还没落定。
               //
               // 标签刻意**不是** Next：本屏的写入按钮是 Import selected，而一个叫
-              // Next 的按钮读起来像"带着我勾的那些继续"，人报过这个误解。Skip =
-              // 不导入、离开本屏：服务端已 configured 就收尾进主界面，否则进向导
-              // step 0。两种读法（跳过导入 / 跳过剩下的向导）都不暗示"会导入"。
+              // Next 的按钮读起来像"带着我勾的那些继续"，人报过这个误解。
+              //
+              // 标签跟状态走（人报的"导完凭证后屏幕没变、不知道该按哪个"）：服务端
+              // 已 configured（本屏那次导入写成了凭证）→ `Finish`，与向导最后一步
+              // 同一个词——此时只剩"离开"这一个动作，`Skip` 读起来像"什么都没发生"；
+              // 否则 `Skip`：不导入、离开本屏进向导 step 0。两种读法（跳过导入 /
+              // 跳过剩下的向导）都不暗示"会导入"。
+              // 模型不变：什么都不自动导航，导完凭证还能接着导市场。
               style={{ ...styles.submitBtn, ...(submitting ? styles.submitBtnDisabled : null) }}
             >
-              Skip
+              {configured ? 'Finish' : 'Skip'}
             </button>
           </div>
         </div>
@@ -583,7 +605,9 @@ const styles: Record<string, React.CSSProperties> = {
   wrap: WRAP_ANYWHERE,
   ok: { display: 'inline-flex', alignItems: 'center', gap: 3, color: 'var(--accent)' },
   fail: { color: 'var(--msg-error-fg)' },
-  footer: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 4 },
+  /** 页脚与上面那一摞行卡片要拉开距离：4px 是照抄向导页脚的，那边页脚邻着的是
+   *  一个表单字段，这里邻着的是一叠卡片，贴着读起来是挤在一起的。 */
+  footer: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 'var(--space-5)' },
   footerLeft: { display: 'flex', gap: 8 },
   footerRight: { display: 'flex', gap: 8 },
   submitBtn: {

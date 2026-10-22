@@ -26,7 +26,7 @@
 成功标准：
 
 1. 桌面版首启 → 导入屏列出可导入项（凭证与模型 / 全局 MCP / Claude Plugin Marketplace），勾选后一键导入；
-2. 凭证导入成功、用户在前置屏按 Skip 后桌面版即视为已配置，直接进主界面，不再弹 setup；
+2. 凭证导入成功、用户在前置屏按离开按钮（这一态下它的标签是 `Finish`，见下）后桌面版即视为已配置，直接进主界面，不再弹 setup；
 3. 未导入凭证时（跳过、或只导了 MCP / 市场）照常进入原向导；
 4. 明文 token 不经过前端；同名 / 同 id 项跳过而不覆盖；单项失败不影响其它项；
 5. web 宿主不存在该能力（客户端不渲染 + 服务端不可用）。
@@ -41,7 +41,7 @@
 | 源目录 | 固定 `~/.claude-react-web`，不可选（与 `/mcp-config/claude-import` 读固定路径的做法一致） |
 | 克隆目录 | 本地复制到桌面版自己的 `marketplace-cache/<id>/`，并把条目 `cloneDir` 改写为新路径（不按 URL 重 clone，也不依赖旧目录继续存在） |
 | 入口形态 | 向导之前的**前置屏**，不进 `setup-steps.ts` 的 `STEPS`（不改步骤表、不改序号、不动既有 `step === N` 比较） |
-| 导入后行为 | **Skip 收尾**：已导入凭证（服务端 `configured`）时点 Skip → 收尾进主界面（复用 `handleConfigured` 路径），否则进入 step 0 照常走完。勾选行与 `Import selected (n)` 只导入、不跳转——下一次导入只发生在用户点那个按钮时，跳转是导航决定，由用户按 Skip 做出（**本条为验收时由用户裁定的规则，取代原先"勾一行即导入"的设计**，见 §8） |
+| 导入后行为 | **离开按钮收尾**：已导入凭证（服务端 `configured`）时点离开按钮 → 收尾进主界面（复用 `handleConfigured` 路径），否则进入 step 0 照常走完。离开按钮的**标签跟状态走**（验收时由用户裁定）：已 configured → `Finish`（与向导最后一步同一个词），否则 → `Skip`——此前那个按钮恒为 `Skip`，导完凭证的人盯着没变的屏幕不知道该按哪个。勾选行与 `Import selected (n)` 只导入、不跳转——下一次导入只发生在用户点那个按钮时，跳转是导航决定，由用户按离开按钮做出（**本条为验收时由用户裁定的规则，取代原先"勾一行即导入"的设计**，见 §8） |
 | 密钥处理 | 服务端读源文件后直接写入，明文 token 不过线（沿用 `claude-import` 的做法）；枚举接口只回掩码 |
 
 ## 3. 方案选择
@@ -68,8 +68,8 @@
              ├─ mcp           读源 mcp-config.json → 逐条 mcpStore.upsert，同名跳过
              └─ marketplaces  读源 marketplaces.json → fs.cp(cloneDir → cloneDirFor(id))
                                → 条目 cloneDir 改写后落盘，同 id 跳过
-  └─ 按 Skip 时凭证已导入 → refreshConfigResponse() → setIsConfigured(true) → 主界面
-     按 Skip 时未导入凭证 → 进入 step 0，照常走原向导
+  └─ 按离开按钮时凭证已导入（标签是 Finish）→ refreshConfigResponse() → setIsConfigured(true) → 主界面
+     按离开按钮时未导入凭证（标签是 Skip）→ 进入 step 0，照常走原向导
 ```
 
 宿主门控是**双向**的：客户端 `isDesktopHost()`（`src/host-capabilities.ts:21`，与 Autostart 步骤的门控写法同构）+ 服务端 `host` 标记——web 宿主上这条路由**根本不挂载**（导入面不存在），所以别把"未挂载"读成某个状态码：构建过的树里 `dist/client` 存在，未匹配的 GET 会先被 SPA fallback（`server/app.ts` 的 `app.get('*')`）接住并回 `index.html`，`app.notFound` 的 JSON 404 只在没构建客户端时成立。
@@ -180,11 +180,11 @@
 | 找不到 / 读不了 | step 3 的 `setup-health-row-fail` `:1045` | `setup-health-icon` + `.setup-prefilled-hint` 报实际路径 + `Retry`（`styles.secondaryBtn`），并允许继续 |
 
 - **状态词逐字复用**：`idle / importing / imported / exists / failed` → `Importing…`（`:1135`）/ `Imported`（`IconCheck size={12}`，`:1145`）/ `Already exists`（`:1148`）/ `Failed`。不新造词。
-- **选择与提交分离（验收时由用户裁定的规则，取代原先"勾一行即导入"的设计）**：勾选框**只**增删 `selected` 集合——不发请求、不写盘，勾错再点一次即完整撤回（原先的勾选即时导入被用户判为"撤不回来"）。唯一的写盘动作是 `Import selected (n)`：禁用条件是 0 个选中或请求在飞，body 只带选中的子集（选择集与"还能导入"的交集）；`Select all importable` 一键勾上所有可导入行，happy path 仍是两击。已落定（`imported` / `exists`）与结构上不可导入的行保持"勾着 + 禁用"/"压暗 + 禁用"，`failed` 行留在选择集里可直接重试。
+- **选择与提交分离（验收时由用户裁定的规则，取代原先"勾一行即导入"的设计）**：勾选框**只**增删 `selected` 集合——不发请求、不写盘，勾错再点一次即完整撤回（原先的勾选即时导入被用户判为"撤不回来"）。唯一的写盘动作是 `Import selected (n)`：禁用条件是 0 个选中或请求在飞，body 只带选中的子集（选择集与"还能导入"的交集）；`Select all importable` 一键勾上所有可导入行，happy path 仍是两击。**它同时是"清空"**（验收时由用户裁定）：可导入的行全勾上了 → 同一个按钮换成 `Clear selection` 并清空选择集（此前只能一行行手动取消勾选），可点判据是"还有可勾的**或**已经勾上了什么"；刻意仍是**一个**按钮，那排已经三个了。已落定（`imported` / `exists`）与结构上不可导入的行保持"勾着 + 禁用"/"压暗 + 禁用"，`failed` 行留在选择集里可直接重试。
 - **状态机同形**：惰性探测 + `probeCancelRef` 取消竞态 + `Record<name, status>` +
-  `Select all importable` 的 predicate 与提交 filter 同构（这里不需要向导 step 3 那个
+  `Select all importable` / `Clear selection` 这对 predicate 与提交 filter 同构（这里不需要向导 step 3 那个
   `mcpImportStatusRef` 镜像——没有异步 handler 要在回调里读最新状态）。
-- **收尾**：**Skip 是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点 Skip → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 Skip → 进入 step 0。`Import selected (n)` 只导入、不跳转：跳转是导航决定，由用户按 Skip 做出。（按本条实现时不要退回"勾选即导入"——那正是验收时被裁定为缺陷的行为。）唯一的例外是"源目录里什么都没有"：那一态本屏根本不出现，探测一落定就自己调 `onContinue()`（见 §7，验收时裁定的规则）。
+- **收尾**：**离开按钮是本屏唯一的交接口**——此前导入过凭证（服务端 `configured`）时点它 → 复用 `handleConfigured`（`src/App.tsx:4774`）：`refreshConfigResponse()` → `setIsConfigured(true)`（可选 `setNewSessionDialogOpen(true)`）；否则 → 进入 step 0。`Import selected (n)` 只导入、不跳转：跳转是导航决定，由用户按这个按钮做出。（按本条实现时不要退回"勾选即导入"——那正是验收时被裁定为缺陷的行为。）唯一的例外是"源目录里什么都没有"：那一态本屏根本不出现，探测一落定就自己调 `onContinue()`（见 §7，验收时裁定的规则）。
 - **不新增 CSS**：只用 `src/styles/setup-page.css` 既有类 + `styles.*` 内联对象 + 主题变量（CLAUDE.md：禁止硬编码颜色，新颜色必须同时定义 dark / light）。
 - **与"最后才写盘"原则的冲突（刻意保留）**：现有向导刻意到最后一步才写 `config.json`（`SetupPage.tsx` 的注释：中途关掉浏览器不留半份 config）。导入屏会**立即写盘**。保留该行为，理由是：导入本身就是"配置"这一动作；若改成只预填，则要么写两次盘（导入一次 + `/config/setup` 一次），要么用户还得再走完 6 步。副作用"导入后直接关窗 → 桌面版已配置"正是本需求的目标。
 
@@ -192,7 +192,7 @@
 
 - **`server/routes/web-import.test.ts`**（新建，镜像 `server/mcp-routes` 的测试风格，临时 state 目录作 fixture）：源不存在 / 源 config 损坏 / 凭证写入 active profile 且不污染其它字段 / MCP 同名跳过 / marketplace clone 被拷到 `cloneDirFor(id)` 且 `cloneDir` 被改写 / 单项失败不影响其它项 / 拷贝失败不残留临时目录 / 非桌面宿主拿不到枚举体（路由未挂载；状态码不保证 404，见 §4）/ 重复导入幂等。
 - **`src/components/SetupWebImport.test.tsx`**：三态渲染、勾选只改选择集且可完整撤回、`Import selected (n)` 的 body 只带选中子集（含"不可导入的行不进提交"）、失败行渲染与重试；沿用 `SetupPage.desktop.test.tsx` 的 `importInHostShape` 技巧（`vi.resetModules` + 预置 `window.__CRW_DESKTOP__`）。
-- **`src/components/SetupPage.desktop.test.tsx`**（改）：mock 补 `GET /config/web-import`；`walkToFinish()` 先处理前置屏。网页版 `SetupPage.test.tsx` 没有桌面 bridge → 不受影响。
+- **`src/components/SetupPage.desktop.test.tsx`**（改）：mock 补 `GET /config/web-import`（默认那份 `exists: false` 会让前置屏自己让位，所以 `walkToFinish()` 从 step 0 的 `Continue` 开始；需要前置屏出现的用例自己给一份 `exists: true` + 一行可导入项）。网页版 `SetupPage.test.tsx` 没有桌面 bridge → 不受影响。
 
 ## 10. 非目标与后续
 
