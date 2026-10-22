@@ -14,7 +14,7 @@ import {
   accentStrongFor,
   onAccentFor,
 } from '../theme'
-import { applySkin, applyTheme, getStoredSkin, getStoredTheme, onSystemThemeChange, toggleTheme, type Skin, type Theme } from '../utils/theme'
+import { applySkin, applyTheme, applyTransparency, getStoredSkin, getStoredTheme, onSystemThemeChange, toggleTheme, TRANSPARENCY_KEY, type Skin, type Theme } from '../utils/theme'
 
 export interface UseThemeResult {
   theme: Theme
@@ -27,6 +27,9 @@ export interface UseThemeResult {
   setSkin: (skin: Skin) => void
   accentColor: string
   setAccentColor: (v: string) => void
+  /** Global frosted-glass translucency — on (default) or off (opaque). */
+  transparency: boolean
+  setTransparency: (v: boolean) => void
 }
 
 export function useTheme(): UseThemeResult {
@@ -116,6 +119,16 @@ export function useTheme(): UseThemeResult {
     root.setProperty('--on-accent', onAccentFor(accentColor))
   }, [accentColor, skin])
 
+  // --- Global transparency (frosted-glass surfaces) ----------------------
+  const [transparency, setTransparency] = useLocalStorage<boolean>(
+    TRANSPARENCY_KEY,
+    true,
+    { validate: (v): v is boolean => typeof v === 'boolean' },
+  )
+  useEffect(() => {
+    applyTransparency(transparency)
+  }, [transparency])
+
   return {
     theme,
     toggleThemeNext,
@@ -124,5 +137,7 @@ export function useTheme(): UseThemeResult {
     setSkin,
     accentColor,
     setAccentColor,
+    transparency,
+    setTransparency,
   }
 }

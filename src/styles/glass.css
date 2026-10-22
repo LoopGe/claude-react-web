@@ -31,6 +31,27 @@
    contrast stays predictable.
    ════════════════════════════════════════════════════════════════════ */
 
+/* ════════════════════════════════════════════════════════════════════
+   GLOBAL TRANSPARENCY SWITCH
+   ────────────────────────────────────────────────────────────────────
+   `data-transparency="off"` on <html> makes every frosted-glass surface
+   render opaque: it collapses the translucent fill to the solid --bg-elev,
+   drops the blur, and removes the edge highlight — the same token recipe
+   the a11y skins already use. `:root` IS <html>, so this selector ties
+   the highest-specificity skin token block ([data-skin=…][data-theme=light],
+   0-2-0) and wins by cascade order (glass.css loads after tokens.css).
+   The wallpaper-driven chrome translucency (--app-chrome-alpha /
+   --app-surface-alpha) is deliberately NOT touched — that remains the
+   Background section's sliders.
+   ════════════════════════════════════════════════════════════════════ */
+:root[data-transparency="off"] {
+  --glass-surface-bg: var(--bg-elev);
+  --glass-surface-border: var(--border);
+  --glass-blur: none;
+  --glass-blur-strong: none;
+  --glass-edge-highlight: none;
+}
+
 /* Surfaces that sit ABOVE app content and want the frosted-glass read.
    Grouped because they all share the same translucent-bg + blur recipe;
    per-surface box-shadow rules below override the original elevation
@@ -173,16 +194,16 @@
    the High Contrast skin (hc): its flat pure-bg aesthetic relies on 1px
    solid borders, and a faint fg wash would undermine it.
    ════════════════════════════════════════════════════════════════════ */
-html:not([data-skin="glow"]):not([data-skin="hc"]) .modal,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .palette,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .settings-overlay > .settings-panel,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .git-overlay > .git-panel,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .panel-overlay > .panel-overlay-card,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .perm-overlay > .perm-card,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .ctx-menu,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .model-picker,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .cmd-picker,
-html:not([data-skin="glow"]):not([data-skin="hc"]) .appearance-panel {
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .modal,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .palette,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .settings-overlay > .settings-panel,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .git-overlay > .git-panel,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .panel-overlay > .panel-overlay-card,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .perm-overlay > .perm-card,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .ctx-menu,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .model-picker,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .cmd-picker,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .appearance-panel {
   background-image: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--fg) 4%, transparent) 0%,
@@ -191,16 +212,16 @@ html:not([data-skin="glow"]):not([data-skin="hc"]) .appearance-panel {
 }
 /* Light theme: keep the wash but cooler — too much white-over-white
    crushes the soft tint, so we use a near-transparent slate-ish fill. */
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .modal,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .palette,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .settings-overlay > .settings-panel,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .git-overlay > .git-panel,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .panel-overlay > .panel-overlay-card,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .perm-overlay > .perm-card,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .ctx-menu,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .model-picker,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .cmd-picker,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]) .appearance-panel {
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .modal,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .palette,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .settings-overlay > .settings-panel,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .git-overlay > .git-panel,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .panel-overlay > .panel-overlay-card,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .perm-overlay > .perm-card,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .ctx-menu,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .model-picker,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .cmd-picker,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-transparency="off"]) .appearance-panel {
   background-image: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--fg) 2.5%, transparent) 0%,

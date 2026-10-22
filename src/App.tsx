@@ -449,6 +449,8 @@ export function App() {
     setSkin,
     accentColor,
     setAccentColor,
+    transparency,
+    setTransparency,
   } = useTheme()
   // Global background (default/glow skins). Depends on `skin` so a switch to a
   // background-locked skin suppresses the effect but keeps the stored choice
@@ -5135,6 +5137,8 @@ export function App() {
               onAccent={(v) => setAccentColor(v ?? ACCENT_COLORS[0].accent)}
               background={backgroundSetting}
               onBackgroundChange={setBackgroundSetting}
+              transparency={transparency}
+              onTransparency={setTransparency}
               className="btn btn-icon"
             />
             <button

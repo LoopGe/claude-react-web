@@ -6,6 +6,7 @@
 
 export const THEME_KEY = 'claude-react-web:theme'
 export const SKIN_KEY = 'claude-react-web:skin'
+export const TRANSPARENCY_KEY = 'claude-react-web:transparency'
 
 export type Theme = 'dark' | 'light' | 'system'
 
@@ -50,6 +51,14 @@ export function isBackgroundLocked(skin: Skin | undefined | null): boolean {
   return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc'
 }
 
+/** True for skins whose glass tokens are already fully opaque (solid
+ *  --bg-elev, no blur) — `hc` and `soft-hc` — so the global transparency
+ *  toggle would be a dead control there. `anthropic` keeps its warm tinted
+ *  glass, so it is NOT locked (unlike the background/accent locks above). */
+export function isTransparencyLocked(skin: Skin | undefined | null): boolean {
+  return skin === 'hc' || skin === 'soft-hc'
+}
+
 /** Apply a skin by toggling the `data-skin` attribute on <html>. The
  *  'default' skin removes the attribute entirely so the base :root /
  *  [data-theme] rules apply untouched. */
@@ -62,6 +71,21 @@ export function applySkin(skin: Skin): void {
   try {
     window.localStorage.setItem(SKIN_KEY, skin)
   } catch { /* ignored */ }
+}
+
+/** Apply the global transparency preference by toggling the
+ *  `data-transparency` attribute on <html>. Absent = on (the default and the
+ *  historical look); `"off"` makes every frosted-glass floating surface render
+ *  opaque (see glass.css's `:root[data-transparency="off"]` override). The
+ *  `hc` / `soft-hc` skins already force opaque glass and are visually
+ *  unaffected; the `anthropic` skin keeps its warm tinted glass and therefore
+ *  DOES go opaque when off. */
+export function applyTransparency(on: boolean): void {
+  if (on) {
+    document.documentElement.removeAttribute('data-transparency')
+  } else {
+    document.documentElement.setAttribute('data-transparency', 'off')
+  }
 }
 
 /** Resolve the OS-level colour scheme preference. */

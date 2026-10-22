@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { AppearancePanel } from './AppearancePanel'
 import { expectPortaledToBody } from './portal-test-utils'
@@ -85,5 +85,51 @@ describe('AppearancePanel trigger toggle', () => {
     await openPanel()
     fireEvent.mouseDown(document.body)
     expect(screen.queryByRole('dialog', { name: 'Theme' })).toBeNull()
+  })
+})
+
+describe('AppearancePanel transparency toggle', () => {
+  it('shows the Transparency section with the switch on by default', async () => {
+    renderPanel('default')
+    await openPanel()
+    expect(screen.getByText('Transparency')).toBeTruthy()
+    expect(screen.getByText('Frosted glass surfaces')).toBeTruthy()
+    expect(screen.getByRole('switch', { name: 'Frosted glass surfaces' }).getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('shows the toggle on anthropic — its warm glass is still translucent', async () => {
+    renderPanel('anthropic')
+    await openPanel()
+    expect(screen.getByText('Frosted glass surfaces')).toBeTruthy()
+  })
+
+  it('hides the toggle on hc / soft-hc — their glass is already opaque', async () => {
+    for (const skin of ['hc', 'soft-hc'] as const) {
+      const { unmount } = renderPanel(skin)
+      await openPanel()
+      expect(screen.queryByText('Frosted glass surfaces')).toBeNull()
+      unmount()
+    }
+  })
+
+  it('reports the next state when toggled', async () => {
+    const onTransparency = vi.fn()
+    render(
+      <AppearancePanel
+        skin="default"
+        mode="dark"
+        accentColor="#7b8cde"
+        onSkin={() => {}}
+        onMode={() => {}}
+        onAccent={() => {}}
+        background={noBg}
+        onBackgroundChange={() => {}}
+        transparency
+        onTransparency={onTransparency}
+      />,
+    )
+    await openPanel()
+    fireEvent.click(screen.getByRole('switch', { name: 'Frosted glass surfaces' }))
+    expect(onTransparency).toHaveBeenCalledWith(false)
   })
 })

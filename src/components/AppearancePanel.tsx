@@ -16,12 +16,13 @@ import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
 import type { RefObject } from 'react'
 import type { Skin, Theme } from '../utils/theme'
-import { isBackgroundLocked } from '../utils/theme'
+import { isBackgroundLocked, isTransparencyLocked } from '../utils/theme'
 import { ACCENT_COLORS, markPortaledSurface } from '../theme'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import type { BackgroundSetting } from '../theme'
 import { AccentSwatchGrid } from './AccentPicker'
 import { BackgroundPicker } from './BackgroundPicker'
+import { Switch } from './Switch'
 import { IconSparkles, IconSun, IconMoon, IconMonitor, IconCheck } from './icons/ToolIcons'
 
 interface Props {
@@ -33,6 +34,8 @@ interface Props {
   onAccent: (color: string) => void
   background?: BackgroundSetting
   onBackgroundChange?: (next: BackgroundSetting) => void
+  transparency?: boolean
+  onTransparency?: (on: boolean) => void
   className?: string
 }
 
@@ -77,6 +80,8 @@ function AppearancePopover({
   onAccent,
   background = BACKGROUND_DEFAULT,
   onBackgroundChange = () => {},
+  transparency = true,
+  onTransparency = () => {},
   anchor,
   triggerRef,
   onClose,
@@ -89,6 +94,8 @@ function AppearancePopover({
   onAccent: (color: string) => void
   background?: BackgroundSetting
   onBackgroundChange?: (next: BackgroundSetting) => void
+  transparency?: boolean
+  onTransparency?: (on: boolean) => void
   anchor: { x: number; y: number }
   /** The Theme button — a TOGGLE, so it must be exempt from the outside-press
    *  dismissal or it can never close this popover (see the hook). */
@@ -190,6 +197,24 @@ function AppearancePopover({
         </div>
       </div>
 
+      {/* Transparency — hidden on hc / soft-hc, whose glass is already
+          fully opaque so the toggle would be a dead control. */}
+      {!isTransparencyLocked(skin) && (
+        <div className="appearance-section">
+          <div className="appearance-heading">Transparency</div>
+          <div className="appearance-transparency-row">
+            <span className="appearance-transparency-label">
+              Frosted glass surfaces
+            </span>
+            <Switch
+              checked={transparency}
+              onChange={onTransparency}
+              label="Frosted glass surfaces"
+            />
+          </div>
+        </div>
+      )}
+
       {/* Accent */}
       <div className="appearance-section">
         <div className="appearance-heading">Accent</div>
@@ -256,6 +281,8 @@ export function AppearancePanel({
   onAccent,
   background = BACKGROUND_DEFAULT,
   onBackgroundChange = () => {},
+  transparency = true,
+  onTransparency = () => {},
   className,
 }: Props) {
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -295,6 +322,8 @@ export function AppearancePanel({
           onAccent={onAccent}
           background={background}
           onBackgroundChange={onBackgroundChange}
+          transparency={transparency}
+          onTransparency={onTransparency}
           anchor={anchor}
           triggerRef={triggerRef}
           onClose={() => {
