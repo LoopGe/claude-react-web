@@ -108,3 +108,60 @@ export function taskNotificationToolUseId(msg: UserFrameShape): string | null {
  *  opaque hex/uuid-ish tokens — no entity decoding needed (matching the
  *  client's parser, which unescapes but ids never carry entities). */
 const TASK_NOTIFICATION_TOOL_USE_ID_RE = /<tool-use-id>([\s\S]*?)<\/tool-use-id>/
+
+/** Extract the inner text of the first `<tag>…</tag>` in `s`, with basic XML
+ *  entity unescaping. Mirrors the parser the client's reducer uses, lifted
+ *  here so server and client cannot drift. */
+function extractXmlTag(s: string, tag: string): string | null {
+  const open = `<${tag}>`
+  const close = `</${tag}>`
+  const start = s.indexOf(open)
+  if (start < 0) return null
+  const end = s.indexOf(close, start + open.length)
+  if (end < 0) return null
+  return s.slice(start + open.length, end)
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
+export type TaskNotificationStatus = 'completed' | 'failed' | 'stopped'
+
+/** Known values pass through. Any UNRECOGNISED status defaults to 'failed' —
+ *  NOT 'completed' — so a genuinely failed/cancelled task is never misshown
+ *  as a successful green check. */
+export function normalizeTaskStatus(raw: string | undefined): TaskNotificationStatus {
+  if (raw === 'completed' || raw === 'failed' || raw === 'stopped') return raw
+  return 'failed'
+}
+
+/** A parsed harness `<task-notification>` user-role XML injection. */
+export interface TaskNotificationInjection {
+  /** Record key: `<task-id>` when present, else `<tool-use-id>` (spec §3.6).
+   *  `toolUseId` is the only hard requirement the parser enforces. */
+  taskId: string
+  toolUseId: string
+  status: TaskNotificationStatus
+  summary?: string
+  /** The completion's output body. Empty/absent when the injection carries
+   *  none (e.g. the `system/task_notification` path keeps it in output_file). */
+  result?: string
+}
+
+/** Parse a harness `<task-notification>` user-role XML injection. Returns
+ *  null when the frame is not an injection, or carries no `<tool-use-id>`. */
+export function parseTaskNotificationInjection(msg: UserFrameShape): TaskNotificationInjection | null {
+  if (!isTaskNotificationUserMessage(msg)) return null
+  const text = taskNotificationText(msg)
+  const toolUseId = extractXmlTag(text, 'tool-use-id')
+  if (!toolUseId) return null
+  return {
+    taskId: extractXmlTag(text, 'task-id') ?? toolUseId,
+    toolUseId,
+    status: normalizeTaskStatus(extractXmlTag(text, 'status') ?? undefined),
+    summary: extractXmlTag(text, 'summary') ?? undefined,
+    result: extractXmlTag(text, 'result') ?? undefined,
+  }
+}
