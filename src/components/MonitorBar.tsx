@@ -31,7 +31,7 @@
 // stream — so a text scan would falsely hide a RUNNING monitor. Showing a
 // finished monitor slightly too long is far better than hiding a live one.
 
-import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { SdkMessage } from '../types'
 import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
@@ -43,6 +43,8 @@ import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useRotor } from '../hooks/useRotor'
 import { isTaskNotificationUserMessage } from '../session-store/normalize'
 import { extractTags } from './message-list/rendering'
+import { MonitorDetailPopover, type MonitorDetail } from './MonitorDetailPopover'
+import type { AnchorRect } from './AnchoredPopover'
 
 interface MonitorInfo {
   /** tool_use id of the Monitor call — stable key. */
@@ -51,6 +53,9 @@ interface MonitorInfo {
   taskId?: string
   description: string
   persistent: boolean
+  /** The Monitor tool's full `command` input — shown in the detail popover
+   *  (the row's label is the description, or the command's first line). */
+  command?: string
 }
 
 interface Props {
@@ -142,7 +147,65 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing, session
   const rotorItem = rotorActive ? renderList[rotor.index] : null
   const rotorLabel = rotorItem ? rotorItem.description : ''
 
+  // --- click-open detail popover ----------------------------------------
+  // Behavior parity with the TaskList card (TodoChecklist): clicking a row
+  // opens MonitorDetailPopover anchored to it — the full description, the
+  // background task id, and the command the row's one-line label drops.
+  const [openDetail, setOpenDetail] = useState<{ key: string; anchor: AnchorRect } | null>(null)
+  const openRowRef = useRef<HTMLElement | null>(null)
+  // The open row's Monitor, re-derived every render — if the monitor vanishes
+  // (settles, TaskStop, timeout) the popover closes with it.
+  const openMonitor = openDetail ? renderList.find((m) => m.key === openDetail.key) : undefined
+  const closeDetail = useCallback(() => setOpenDetail(null), [])
+  // The detail object is built from the open monitor's PRIMITIVES, not from
+  // `openMonitor` itself: renderList is a fresh array on every `now` tick (5s)
+  // and every messages change, so an object keyed on the found record would
+  // change identity constantly and defeat MonitorDetailPopover's memo for the
+  // whole life of the bar.
+  const openDescription = openMonitor?.description
+  const openTaskId = openMonitor?.taskId
+  const openCommand = openMonitor?.command
+  const openPersistent = openMonitor?.persistent === true
+  const detail: MonitorDetail | null = useMemo(() => {
+    if (openDescription === undefined) return null
+    return {
+      description: openDescription,
+      ...(openTaskId !== undefined ? { taskId: openTaskId } : {}),
+      ...(openCommand !== undefined ? { command: openCommand } : {}),
+      persistent: openPersistent,
+    }
+  }, [openDescription, openTaskId, openCommand, openPersistent])
+
+  // Collapse hides the rows the popover anchors to — close it with them.
+  useEffect(() => {
+    if (collapsed) setOpenDetail(null)
+  }, [collapsed])
+  // The open monitor vanishing (stale cleanup, TaskStop, timeout, /clear)
+  // unmounts the popover — but `openDetail` must be cleared too, or a later
+  // monitor reusing the same key re-opens the popover with no user click.
+  useEffect(() => {
+    if (openDetail && !openMonitor) setOpenDetail(null)
+  }, [openDetail, openMonitor])
+
+  const onItemActivate = (e: React.SyntheticEvent<HTMLLIElement>, key: string) => {
+    // Held-key auto-repeat would toggle the popover open/shut every ~30ms.
+    if (e.nativeEvent instanceof KeyboardEvent && e.nativeEvent.repeat) return
+    const el = e.currentTarget
+    const r = el.getBoundingClientRect()
+    openRowRef.current = el
+    setOpenDetail((prev) =>
+      prev?.key === key
+        ? null
+        : { key, anchor: { top: r.top, bottom: r.bottom, left: r.left, width: r.width, height: r.height } },
+    )
+  }
+
   return (
+    <>
+    {/* NOT inside the AnimatePresence below: AnimatePresence holds an
+        unmounting child through its exit animation with props frozen, which
+        is right for the bar but wrong for the popover — a dismissed popover
+        must unmount instantly (same convention as TodoChecklist's). */}
     <AnimatePresence initial={false}>
       {renderList.length > 0 && (
         <BottomCardMotion key="monitor-bar">
@@ -192,7 +255,24 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing, session
             <AnimatedCollapse open={!collapsed} unmountOnExit={false} id={listId} animateResize remeasureWhileClamped>
               <ul ref={setListOs} className="monitor-bar-list">
                 {renderList.map((m) => (
-                  <li key={m.key} className="monitor-item">
+                  <li
+                    // Key on the tool_use id (stable) so an open popover's
+                    // triggerRef keeps pointing at ITS row when sibling rows
+                    // are added/removed above it.
+                    key={m.key}
+                    className="monitor-item monitor-item-clickable"
+                    role="button"
+                    tabIndex={0}
+                    aria-haspopup="dialog"
+                    aria-expanded={openDetail?.key === m.key}
+                    onClick={(e) => onItemActivate(e, m.key)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        onItemActivate(e, m.key)
+                      }
+                    }}
+                  >
                     <span className="monitor-icon" aria-hidden>
                       <IconCircleDot size={12} />
                     </span>
@@ -208,6 +288,15 @@ export const MonitorBar = memo(function MonitorBar({ messages, clearing, session
         </BottomCardMotion>
       )}
     </AnimatePresence>
+    {detail && openDetail && (
+      <MonitorDetailPopover
+        detail={detail}
+        anchor={openDetail.anchor}
+        triggerRef={openRowRef}
+        onClose={closeDetail}
+      />
+    )}
+    </>
   )
 })
 
@@ -276,6 +365,7 @@ function extractRunningMonitors(messages: SdkMessage[], now: number): MonitorInf
         taskId,
         description,
         persistent,
+        command: str(input?.command),
         timeoutEnd: !persistent && start && timeoutMs ? start + timeoutMs : undefined,
       })
     }

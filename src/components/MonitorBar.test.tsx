@@ -21,15 +21,18 @@ function resultMsg(toolUseId: string, text: string): SdkMessage {
 }
 
 /** A persistent Monitor that's still running (started result, no TaskStop,
- *  persistent so the timeout heuristic never fires). */
-function runningMonitor(toolUseId: string, description: string): SdkMessage[] {
+ *  persistent so the timeout heuristic never fires). `taskId` is the server
+ *  background task id stamped into the start result — callers that put more
+ *  than one monitor in a list MUST pass distinct ids, or a settle notification
+ *  for one id evicts them all and a row-level test proves nothing. */
+function runningMonitor(toolUseId: string, description: string, taskId = 'abc123'): SdkMessage[] {
   return [
     monitorUseMsg(toolUseId, 'Monitor', {
       description,
       command: `echo ${description}`,
       persistent: true,
     }),
-    resultMsg(toolUseId, `Monitor started (task abc123, shell sh-1)`),
+    resultMsg(toolUseId, `Monitor started (task ${taskId}, shell sh-1)`),
   ]
 }
 
@@ -426,6 +429,147 @@ describe('MonitorBar — collapsed dock + header rotor', () => {
     rerender(<MonitorBar messages={two} />)
     expect(rotorText(container)).toBe('Watch build')
     expect(container.querySelector('.dock-rotor-index')?.textContent).toBe('1/2')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// row click → detail popover — behavior parity with the TaskList card's
+// TodoDetailPopover: a row is a button, clicking opens an anchored detail
+// popover (full description, task id, the command the row truncates), and the
+// popover closes on re-click / Escape / outside mousedown / collapse / the row
+// vanishing.
+// ---------------------------------------------------------------------------
+
+describe('MonitorBar — monitor detail popover', () => {
+  // Distinct task ids per monitor — a shared one would make a settle
+  // notification drop BOTH rows, and the row-vanish close below would pass
+  // without proving the open-row-only path it names.
+  const two = [
+    ...runningMonitor('m1', 'Watch build', 'abc123'),
+    ...runningMonitor('m2', 'Watch tests', 'def456'),
+  ]
+
+  it('marks monitor rows clickable', () => {
+    const { container } = render(<MonitorBar messages={two} />)
+    expect(container.querySelectorAll('.monitor-item-clickable').length).toBe(2)
+    const row = container.querySelector('.monitor-item')!
+    expect(row.getAttribute('role')).toBe('button')
+    expect(row.getAttribute('aria-haspopup')).toBe('dialog')
+  })
+
+  it('opens a detail popover when a monitor row is clicked', () => {
+    const { container } = render(<MonitorBar messages={two} />)
+    fireEvent.click(container.querySelectorAll('.monitor-item')[0])
+
+    const pop = document.querySelector('.monitor-detail-pop')
+    expect(pop).not.toBeNull()
+    // Head: the row is a live-monitor list, so the status chip is always
+    // "Running"; beside it the task id parsed out of the
+    // "Monitor started (task abc123, …)" result.
+    expect(pop!.textContent).toContain('Running')
+    expect(pop!.textContent).toContain('abc123')
+    // Full description (the row truncates it).
+    expect(pop!.textContent).toContain('Watch build')
+    // The full command — the row shows only the description.
+    expect(pop!.querySelector('.monitor-detail-cmd')?.textContent).toBe('echo Watch build')
+  })
+
+  it('shows no task-id chip when the start result carried none', () => {
+    const msgs = [
+      monitorUseMsg('m1', 'Monitor', { description: 'Watch build', command: 'echo hi', persistent: true }),
+      resultMsg('m1', 'Monitor started'),
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    fireEvent.click(container.querySelector('.monitor-item')!)
+
+    const pop = document.querySelector('.monitor-detail-pop')!
+    expect(pop.textContent).toContain('Watch build')
+    expect(pop.querySelector('.monitor-detail-id')).toBeNull()
+  })
+
+  it('shows no command block when the Monitor input carried none', () => {
+    const msgs = [
+      monitorUseMsg('m1', 'Monitor', { description: 'Watch build', persistent: true }),
+      resultMsg('m1', 'Monitor started (task abc123)'),
+    ]
+    const { container } = render(<MonitorBar messages={msgs} />)
+    fireEvent.click(container.querySelector('.monitor-item')!)
+
+    const pop = document.querySelector('.monitor-detail-pop')!
+    expect(pop.textContent).toContain('Watch build')
+    expect(pop.querySelector('.monitor-detail-cmd')).toBeNull()
+  })
+
+  it('switches content when another row is clicked', () => {
+    const { container } = render(<MonitorBar messages={two} />)
+    fireEvent.click(container.querySelectorAll('.monitor-item')[0])
+    expect(document.querySelector('.monitor-detail-pop')!.textContent).toContain('Watch build')
+
+    fireEvent.click(container.querySelectorAll('.monitor-item')[1])
+    const pop = document.querySelector('.monitor-detail-pop')!
+    expect(pop.textContent).toContain('Watch tests')
+    expect(pop.textContent).not.toContain('Watch build')
+  })
+
+  it('re-clicking the same row closes the popover', () => {
+    const { container } = render(<MonitorBar messages={two} />)
+    fireEvent.click(container.querySelectorAll('.monitor-item')[0])
+    expect(document.querySelector('.monitor-detail-pop')).not.toBeNull()
+
+    fireEvent.click(container.querySelectorAll('.monitor-item')[0])
+    expect(document.querySelector('.monitor-detail-pop')).toBeNull()
+  })
+
+  it('collapsing the bar closes an open popover', () => {
+    const { container } = render(<MonitorBar messages={two} />)
+    fireEvent.click(container.querySelectorAll('.monitor-item')[0])
+    expect(document.querySelector('.monitor-detail-pop')).not.toBeNull()
+
+    fireEvent.click(container.querySelector('.monitor-bar-collapse')!)
+    expect(document.querySelector('.monitor-detail-pop')).toBeNull()
+  })
+
+  it('closes on Escape', () => {
+    const { container } = render(<MonitorBar messages={two} />)
+    fireEvent.click(container.querySelectorAll('.monitor-item')[0])
+    expect(document.querySelector('.monitor-detail-pop')).not.toBeNull()
+
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(document.querySelector('.monitor-detail-pop')).toBeNull()
+  })
+
+  it('closes on an outside mousedown', () => {
+    const { container } = render(<MonitorBar messages={two} />)
+    fireEvent.click(container.querySelectorAll('.monitor-item')[0])
+    expect(document.querySelector('.monitor-detail-pop')).not.toBeNull()
+
+    fireEvent.mouseDown(document.body)
+    expect(document.querySelector('.monitor-detail-pop')).toBeNull()
+  })
+
+  it('closes when the open monitor settles and its row vanishes', () => {
+    const { container, rerender } = render(<MonitorBar messages={two} />)
+    fireEvent.click(container.querySelectorAll('.monitor-item')[0])
+    expect(document.querySelector('.monitor-detail-pop')).not.toBeNull()
+
+    // m1 settles (its own task id) → its row drops out while m2's stays. The
+    // popover is portaled to document.body, so only document.querySelector is
+    // load-bearing here.
+    const settled = [
+      ...two,
+      {
+        type: 'user',
+        message: { content: [{ type: 'text', text: [
+          '<task-notification>',
+          '<task-id>abc123</task-id>',
+          '<summary>Monitor expired</summary>',
+          '</task-notification>',
+        ].join('\n') }] },
+      } as unknown as SdkMessage,
+    ]
+    rerender(<MonitorBar messages={settled} />)
+    expect(container.querySelectorAll('.monitor-item').length).toBe(1)
+    expect(document.querySelector('.monitor-detail-pop')).toBeNull()
   })
 })
 

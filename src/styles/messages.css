@@ -2279,22 +2279,9 @@
   outline-offset: -1px;
 }
 /* Detail popover (TodoDetailPopover) — portaled to <body>, position: fixed.
-   Coordinates come from the component (measured + clamped); CSS owns shape. */
-.todo-detail-pop {
-  position: fixed;
-  z-index: var(--z-overlay);
-  width: min(360px, calc(100vw - 16px));
-  max-height: 280px;
-  overflow-y: auto;
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--card-shadow);
-  font-size: var(--fs-base);
-  color: var(--fg);
-  pointer-events: auto;
-}
+   Coordinates come from the component (measured + clamped); CSS owns shape.
+   The .monitor-detail-pop sibling shares this rule — see the Monitor section
+   further down (the group is declared there, next to its other classes). */
 .todo-detail-head {
   display: flex;
   align-items: center;
@@ -2615,6 +2602,77 @@
 .monitor-bar.monitor-bar-clearing {
   animation: clear-blur-fade var(--motion-duration-slow) var(--motion-ease-exit) both;
   pointer-events: none;
+}
+
+/* Clickable monitor rows — click opens the detail popover (behavior parity
+   with .todo-item-clickable on the TaskList card). */
+.monitor-item-clickable {
+  cursor: pointer;
+}
+.monitor-item-clickable:hover {
+  background: var(--btn-hover-bg);
+}
+.monitor-item-clickable:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+/* Detail popover (MonitorDetailPopover). The shell shape is deliberately
+   IDENTICAL to .todo-detail-pop — the two bottom cards' rows share one click
+   contract (AnchoredPopover), so their popovers read as one family. The body
+   is monitor-specific (status/task-id head, command block). */
+.todo-detail-pop,
+.monitor-detail-pop {
+  position: fixed;
+  z-index: var(--z-overlay);
+  width: min(360px, calc(100vw - 16px));
+  max-height: 280px;
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--card-shadow);
+  font-size: var(--fs-base);
+  color: var(--fg);
+  pointer-events: auto;
+}
+.monitor-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+.monitor-detail-status {
+  font-size: var(--fs-xs);
+  padding: 1px var(--space-1-5);
+  border-radius: var(--radius-xs);
+  background: var(--btn-hover-bg);
+  /* The bar only lists live monitors — the chip's "Running" is the accent
+     variant, not the muted one a settled task would get. */
+  color: var(--accent-text);
+}
+.monitor-detail-id {
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.monitor-detail-subject {
+  font-weight: 600;
+  margin-bottom: var(--space-0-5);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* The Monitor's full command — the row's one-line label drops it. */
+.monitor-detail-cmd {
+  margin: var(--space-1) 0 0;
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
 }
 
 /* Inline TodoWrite tool-use rendering (inside the message transcript).
