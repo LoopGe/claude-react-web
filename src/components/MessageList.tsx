@@ -32,7 +32,7 @@ import { OverlayStreamingRegion } from './message-list/OverlayStreamingRegion'
 import { ChatEmptyState } from './ChatEmptyState'
 import { ErrorBoundary } from './ErrorBoundary'
 import { ResultConsumedCtx } from './message-list/result-consumed-context'
-import { extractUserText, makeResultConsumed } from './message-list/rendering'
+import { extractUserText, makeResultConsumed, toolResultConsumedKey } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
 import { userBodyFoldKey } from './message-list/fold-key'
 import { countMatches } from '../search'
@@ -382,15 +382,20 @@ const EMPTY_TOOL_RESULTS: ReadonlyMap<string, ToolResultEntry> = new Map()
  *  Plain `useMemo(() => new Set(...), [dep])` rebuilds a brand-new Set on
  *  every dep change even when the derived contents are identical (e.g.
  *  `items` got a new array reference from a streaming token flush that
- *  didn't add any EnterPlanMode). That new identity then flows into
- *  `makeResultConsumed` → `ResultConsumedCtx.Provider value` → defeats
- *  every `MessageView`'s `memo`, re-rendering the whole visible transcript
- *  on each new completed message.
+ *  didn't add any EnterPlanMode).
+ *
+ *  The value of that stability is NOT the context any more — the context
+ *  value is the identity-stable `resultConsumedCtx` wrapper and never
+ *  changes (see below). It is `buildTranscriptRows`'s `useMemo`, which lists
+ *  `isResultConsumed` among its deps: a spurious new Set would make the
+ *  predicate a new function and force a full O(n) row-model rebuild for a
+ *  change that alters no row's fate. Keep this — deleting it because "the
+ *  context never changes anyway" re-introduces those rebuilds.
  *
  *  This guard compares the candidate to the previously-returned Set (same
  *  size + every element of the candidate already present in the previous)
- *  and reuses the previous reference when equal, so the context value only
- *  changes when the predicate would actually answer differently. */
+ *  and reuses the previous reference when equal, so the predicate identity
+ *  only changes when its answer would actually change. */
 function useStableSet(candidate: Set<string>): Set<string> {
   // Referential-stability memo: cache the previous Set and reuse it when the
   // candidate is content-equal, so context consumers don't re-render on every
@@ -568,9 +573,49 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     return set
   }, [workflowCtx]))
 
+  // The result-consumed predicate. TWO identities, on purpose:
+  //
+  //  `isResultConsumed` is rebuilt whenever any source Map/Set changes, and
+  //  its identity is a `buildTranscriptRows` dependency — rows must vanish
+  //  the moment their tool_result is merged into a card (invariant I3).
+  //
+  //  `resultConsumedCtx` is the CONTEXT VALUE and is identity-stable for the
+  //  life of the component. Every MessageView reads it via `useResultConsumed`,
+  //  and a fresh function per Map change churns the context, which re-renders
+  //  every mounted MessageView and defeats its own `memo`. Measured on a
+  //  20-row window: 13 MessageView re-renders per tool_result with churn, 0
+  //  with a stable value, identical row output (pinned by
+  //  `result-consumed-identity.test.tsx`). This is the same intent
+  //  `useStableSet` above documents — "the context value only changes when the
+  //  predicate would actually answer differently" — carried to its conclusion:
+  //  the wrapper delegates to the current predicate, so the identity never
+  //  changes AND any render that does happen always sees fresh truth.
+  //
+  //  Stability alone would go too far the other way — a row that stays
+  //  MOUNTED across a predicate flip would keep its stale filtered output —
+  //  so MessageView also gets `consumedKey` as a memo signal. See
+  //  `toolResultConsumedKey`.
+  //
+  //  The two stay separate because collapsing them would be a behavior
+  //  regression: a stable identity in `buildTranscriptRows`'s dep list would
+  //  stop the rebuild that drops the row, leaving a merged tool_result on
+  //  screen.
   const isResultConsumed = useMemo(
     () => makeResultConsumed(toolResults, planStatus, questionAnswers, enterPlanIds, subagentResultIds, workflowResultIds),
     [toolResults, planStatus, questionAnswers, enterPlanIds, subagentResultIds, workflowResultIds],
+  )
+  // Latest predicate behind a ref; the context value is the one stable
+  // wrapper below. The ref is written during render (not in an effect) so a
+  // MessageView committing in the SAME pass as a tool_result reads the truth
+  // for that pass — an effect would leave it one commit stale. Mirrors the
+  // render-time ref use in `useStableSet` and the row-anchor block below.
+  /* eslint-disable react-hooks/refs -- intentional render-time ref use for referential stability */
+  const isResultConsumedRef = useRef(isResultConsumed)
+  isResultConsumedRef.current = isResultConsumed
+  /* eslint-enable react-hooks/refs */
+  const resultConsumedCtx = useCallback(
+    (id: string) => isResultConsumedRef.current(id),
+    [],
   )
 
   // Rows the parent_tool_use_id filter can't reach: a subagent's input prompt
@@ -1363,6 +1408,13 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             foldExpanded={expandedBodies.has(foldKey)}
             foldSearchHit={foldSearchHit}
             onToggleFold={toggleBodyExpanded}
+            // Memo signal for the orphan-bubble filter. The predicate is
+            // shared over an identity-stable context (see resultConsumedCtx),
+            // so without this prop a row that stays mounted across a predicate
+            // flip — a frame carrying user text beside its tool_results, which
+            // willRenderEmpty deliberately keeps — would keep drawing the
+            // bubble that was just merged into its card.
+            consumedKey={toolResultConsumedKey(item.msg, resultConsumedCtx)}
           />
         )
     // One handler per row, dispatched by animationName: an element plays
@@ -1397,7 +1449,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // events, unlike the context values that carry `messages`.
     // revealSnapshot: the reveal row class + frozen stagger come from the
     // flip-time snapshot; identity-stable between reveals.
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, revealSnapshot])
+    // resultConsumedCtx: identity-stable (useCallback []), listed because
+    // itemContent reads it for `consumedKey` — a no-op for invalidation.
+  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, revealSnapshot, resultConsumedCtx])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).
@@ -1535,7 +1589,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     <ToolResultProvider value={toolResults}>
     <TaskInfoProvider value={taskInfoMap}>
     <McpAppsProvider sessionId={sessionId}>
-    <ResultConsumedCtx.Provider value={isResultConsumed}>
+    <ResultConsumedCtx.Provider value={resultConsumedCtx}>
     {/* data-following mirrors the follow gate for the test suite's
         FOLLOWING/AWAY assertions (see useTranscriptScroll's setFollowing) —
         no runtime CSS or JS reads it; drop it with the tests if the

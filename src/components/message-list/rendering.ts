@@ -37,6 +37,52 @@ export function makeResultConsumed(
     workflowResultIds.has(id)
 }
 
+/** A stable-by-value key that changes exactly when one of THIS message's
+ *  `tool_result` blocks flips consumed-state — i.e. exactly when MessageView's
+ *  orphan-bubble filter (MessageView.tsx, the `toolBlocks` filter) would
+ *  produce different output.
+ *
+ *  This exists so MessageView's `memo` has a real signal for that change. The
+ *  predicate itself is shared over an identity-stable context value (see
+ *  MessageList's `resultConsumedCtx`) — a fresh function per source-Map change
+ *  would churn the context and re-render every mounted MessageView, defeating
+ *  `memo` (measured: 13 MessageView re-renders per tool_result). But once the
+ *  context value is stable, a row that STAYS MOUNTED across a predicate flip
+ *  would otherwise keep its stale filtered output.
+ *
+ *  "Stays mounted" is real, not hypothetical: `willRenderEmpty` deliberately
+ *  keeps a frame that carries user text alongside its tool_results
+ *  (`return !hasOrphanResults && !userContent`), so when the result is merged
+ *  into its card the row survives and must drop just that bubble. A string
+ *  (not an array/Set) so memo's `Object.is` comparison is precise and
+ *  allocation-free on the compare path.
+ *
+ *  Only `tool_result` blocks are keyed: that is the entire surface the
+ *  predicate changes about a row's render output (MessageView's other
+ *  predicate reads — the `willRenderEmpty` guards — are decided by the same
+ *  orphan count this key encodes). */
+export function toolResultConsumedKey(
+  msg: SdkMessage,
+  isResultConsumed: (id: string) => boolean,
+): string {
+  // Only user frames can carry tool_result blocks — and only when content is
+  // an array. `getBlocks` allocates a 1-element array for string content, and
+  // `itemContent` calls this for every visible row on every rebuild, so the
+  // common case (prose) must not touch the block path at all. Deliberately
+  // unguarded inside the loop, matching the two sibling filters this must
+  // stay in lockstep with (MessageView's `toolBlocks` filter and
+  // `willRenderEmpty`'s) — a null block is a data bug and should throw there,
+  // not be silently keyed as "not consumed" here.
+  if (msg.type !== 'user' || typeof msg.message?.content === 'string') return ''
+  const blocks = getBlocks(msg)
+  let key = ''
+  for (const b of blocks) {
+    if (b.type !== 'tool_result') continue
+    key += typeof b.tool_use_id === 'string' && isResultConsumed(b.tool_use_id) ? '1' : '0'
+  }
+  return key
+}
+
 /** Would MessageView render nothing for this message? Mirrors the merged
  *  tool-result/subagent-heartbeat and empty assistant branches so callers can
  *  drop empty messages before they become Virtuoso rows. */

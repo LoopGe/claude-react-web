@@ -98,6 +98,9 @@ export const MessageView = memo(function MessageView({
   foldExpanded,
   foldSearchHit,
   onToggleFold,
+  // `consumedKey` is deliberately NOT destructured: it is a pure memo signal
+  // (memo compares the props object, so an undeclared binding is enough) and
+  // the body must not read it. See its doc below.
 }: {
   msg: SdkMessage
   isCompactSummary?: boolean
@@ -157,6 +160,17 @@ export const MessageView = memo(function MessageView({
   /** Toggle this row's body expansion. Stable callback from MessageList;
    *  receives userBodyFoldKey(msg). Required — see foldExpanded. */
   onToggleFold: (foldKey: string) => void
+  /** `toolResultConsumedKey(msg, isResultConsumed)` — a stable-by-value string
+   *  that flips exactly when one of this message's `tool_result` blocks changes
+   *  consumed-state. It is the ONLY thing that makes this component's `memo`
+   *  re-render for that change: the predicate itself is shared over an
+   *  identity-stable context value (so a source-Map change doesn't churn every
+   *  mounted row), which means a row that stays mounted across a predicate flip
+   *  would otherwise keep drawing a bubble that was just merged into its card.
+   *  See `willRenderEmpty`'s `&& !userContent` clause — a frame carrying user
+   *  text beside its tool_results is deliberately kept on screen, so that
+   *  row's filter output genuinely has to change without the row going away. */
+  consumedKey: string
 }) {
   const type = msg.type
 
@@ -248,10 +262,15 @@ export const MessageView = memo(function MessageView({
     return undefined
   }, [blocks, searchQuery, activeMatchInItem])
 
-  // The result-consumed predicate is built ONCE by MessageList and shared via
-  // context, so willRenderEmpty (the item filter) and this render path use the
-  // exact same instance — they can't drift. Read unconditionally per
+  // The result-consumed predicate, read from context. Read unconditionally per
   // rules-of-hooks even though only the user branch uses it.
+  //
+  // NOTE: this is NOT the same function instance `buildTranscriptRows` /
+  // `willRenderEmpty` are called with. The context value is an identity-stable
+  // wrapper (MessageList's `resultConsumedCtx`) delegating to the newest
+  // predicate, while the item filter gets the changing `isResultConsumed` whose
+  // identity is what rebuilds the row model. Two functions over one ref — see
+  // result-consumed-context.ts before "simplifying" them back into one.
   const isResultConsumed = useResultConsumed()
 
   if (type === 'user') {
