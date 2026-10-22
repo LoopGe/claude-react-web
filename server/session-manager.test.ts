@@ -6420,6 +6420,28 @@ describe('SessionManager', () => {
         expect(child.tasks.get('ft1')?.result).toBe('FROM-PARENT')
       })
     })
+
+    it('persists the clean-exit settle to the sidecar when the pump ends (cleanup tail)', async () => {
+      // The pump's CLEAN-exit tail (session-pump cleanupPump →
+      // settleTasksOnProcessExit) is a fifth mutation site outside the four
+      // fold branches — its recordTasksSnapshot fire is the only thing that
+      // makes those rows durable. End the stream normally with one running
+      // record and require the sidecar to carry the terminal state; without
+      // the cleanup-tail persist the load finds nothing (or the stale
+      // 'running' row) and this fails.
+      const info = await sm.create({ cwd: '/tmp', model: 'test-model' })
+      const s1 = (sm as unknown as {
+        sessions: Map<string, { tasks: Map<string, unknown> }>
+      }).sessions.get(info.id)!
+      s1.tasks.set('tc', { taskId: 'tc', toolUseId: 'tuc', description: 'bg', status: 'running', updatedAt: 1 })
+
+      mockHandles.at(-1)!.finish()
+      const { TaskResultStore } = await import('./task-result-store.js')
+      await vi.waitFor(async () => {
+        const recs = await new TaskResultStore(dir).load(info.id)
+        expect(recs?.find((r) => r.taskId === 'tc')?.status).toBe('stopped')
+      })
+    })
   })
 })
 

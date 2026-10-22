@@ -1856,7 +1856,15 @@ async function cleanupPump(session: Session, deps: PumpDeps, pumpHandle: Provide
     // session's life. Runs before endAllSubscribers so the snapshot reaches
     // live panels, and before persist so the terminating broadcast below reads
     // the settled counts.
-    settleTasksOnProcessExit(session)
+    if (settleTasksOnProcessExit(session)) {
+      // The settle is the FIFTH session.tasks mutation site — outside the
+      // four fold branches above — so the manager's durable sidecar must be
+      // told about it explicitly or a record terminal-ized on the clean-exit
+      // path is lost across a restart. Same guarded fire as the loop sites,
+      // gated on the settle's "anything changed" boolean to skip no-op writes.
+      try { deps.recordTasksSnapshot?.(session.id) }
+      catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
+    }
     // Only set terminatedReason if it hasn't already been set by
     // handleProcessExit (which provides more specific values like
     // 'process_killed' or 'process_exited').

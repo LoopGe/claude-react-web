@@ -2576,6 +2576,28 @@ describe('pump: recordTasksSnapshot persist hook', () => {
     expect(session.tasks.get('tu9')?.result).toBe('R')
     expect(session.tasks.size).toBe(2)
   })
+
+  it('fires for the clean-exit settle when it flips a running record terminal', async () => {
+    // The cleanup tail's settleTasksOnProcessExit is the FIFTH session.tasks
+    // mutation site — it runs outside the four fold branches above (a CLEAN
+    // stream end that declines to resume, vs. the crash path in the manager).
+    // Without its own fire, a record terminal-ized there is live-settled and
+    // then lost across a restart. One mutating frame (task_started, leaves a
+    // NON-terminal record) + a normal stream end: the settle flips it and the
+    // hook must fire for that mutation too. The test above pins the other
+    // half of the gate: an all-terminal map makes the settle a no-op and the
+    // count stays at 5.
+    const { session } = makePumpSession([
+      sysFrame('task_started', { task_id: 't1', tool_use_id: 'tu1' }),
+    ])
+    const recordTasksSnapshot = vi.fn()
+    await pump(session, makePumpDeps({ recordTasksSnapshot }))
+
+    expect(session.tasks.get('t1')?.status).toBe('stopped')
+    // One fire per mutation: the task_started fold + the settle flip.
+    expect(recordTasksSnapshot).toHaveBeenCalledTimes(2)
+    expect(recordTasksSnapshot).toHaveBeenCalledWith('s-pump')
+  })
 })
 
 // ---------------------------------------------------------------------------
