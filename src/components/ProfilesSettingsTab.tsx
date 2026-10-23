@@ -17,7 +17,7 @@ import { api } from '../hooks/useApi'
 import { prepareFlip } from '../utils/flip'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useProfiles } from '../hooks/useProfiles'
-import { useProfileListDnd } from '../hooks/useProfileListDnd'
+import { useProfileListDnd, type ProfileModelRow } from '../hooks/useProfileListDnd'
 import { useAppDndSensors } from '../dnd/sensors'
 import { dndData } from '../dnd/payload'
 import { DragGhost } from '../dnd/DragGhost'
@@ -39,6 +39,19 @@ interface ProfileTestResult {
   status?: number
   error?: string
   baseUrl?: string
+}
+
+/** Rewrite model-id references in group tier slots (`opus`/`sonnet`/`haiku`).
+ *  `to === undefined` clears the slot back to "(inherit main)". Slots holding
+ *  any other value — including already-dangling ones — are left alone. */
+function rewriteGroupSlots(groups: ModelGroupConfig[], from: string, to: string | undefined): ModelGroupConfig[] {
+  if (!groups.some((g) => g.opus === from || g.sonnet === from || g.haiku === from)) return groups
+  return groups.map((g) => ({
+    ...g,
+    opus: g.opus === from ? to : g.opus,
+    sonnet: g.sonnet === from ? to : g.sonnet,
+    haiku: g.haiku === from ? to : g.haiku,
+  }))
 }
 
 /** Generic dnd-kit sortable wrapper for the two ordered lists. Renders
@@ -288,11 +301,24 @@ function ProfileCard({
   const [baseUrl, setBaseUrl] = useState(profile.baseUrl ?? '')
   const [authToken, setAuthToken] = useState('')
   const [authTokenDirty, setAuthTokenDirty] = useState(false)
-  const [modelList, setModelList] = useState<string[]>(profile.modelList ?? [])
+  const [modelList, setModelList] = useState<ProfileModelRow[]>(
+    () => (profile.modelList ?? []).map((id) => ({ uid: randomId(), id })),
+  )
   const [modelGroups, setModelGroups] = useState<ModelGroupConfig[]>(profile.modelGroups ?? [])
   const [recapModel, setRecapModel] = useState(profile.recapModel ?? '')
   const [commitMessageModel, setCommitMessageModel] = useState(profile.commitMessageModel ?? '')
   const [newModel, setNewModel] = useState('')
+  // Inline model-id edit buffer, keyed by the row's stable uid (not its
+  // position — rows reorder around a live edit). Enter/blur commits.
+  const [editDraft, setEditDraft] = useState<{ uid: string; value: string } | null>(null)
+  // Escape's keydown handler reverts and then blur()s synchronously — that
+  // blur runs before the revert re-renders, so its closure still holds the
+  // cancelled draft (same race SettingsPanel's title input guards with this
+  // ref). Set before the blur, consumed by the onBlur below.
+  const skipCommitRef = useRef(false)
+  // Latest commitModelEdit, for the fold effect below (which runs after the
+  // latest commitModelEdit closure would otherwise be stale).
+  const commitModelEditRef = useRef<(rowUid: string) => void>(() => {})
 
   // — Card-local UI state ?
   const [saving, setSaving] = useState(false)
@@ -325,7 +351,7 @@ function ProfileCard({
       const updates: Record<string, unknown> = {
         name: name.trim(),
         baseUrl: baseUrl.trim() || null,
-        modelList: modelList.length > 0 ? modelList : null,
+        modelList: modelList.length > 0 ? modelList.map((r) => r.id) : null,
         modelGroups: modelGroups.length > 0 ? modelGroups : null,
         recapModel: recapModel.trim() || null,
         commitMessageModel: commitMessageModel.trim() || null,
@@ -362,7 +388,7 @@ function ProfileCard({
       // Test the model this card would actually save, not the last one
       // persisted — the server falls back to the saved modelList[0] when
       // this is omitted, which would probe a model the user just replaced.
-      if (modelList[0]) body.model = modelList[0]
+      if (modelList[0]) body.model = modelList[0].id
       const r = await api.post<ProfileTestResult>(
         `/profiles/${encodeURIComponent(profile.id)}/test`,
         body,
@@ -378,65 +404,117 @@ function ProfileCard({
   }
 
   // — Model-list handlers (adapted from the old ModelsTab) ?
+  // All list mutations use the functional setter form: blur-commit, a click
+  // on another row's control and a dnd live-move can queue in one gesture,
+  // and snapshot-based replacements last-write-wins the earlier edit away
+  // (the hook's setModelList contract is updater-only for the same reason).
   const addModel = () => {
     const m = newModel.trim()
-    if (!m || modelList.includes(m)) return
-    setModelList([...modelList, m])
+    if (!m || modelList.some((r) => r.id === m)) return
+    setModelList((prev) => [...prev, { uid: randomId(), id: m }])
     setNewModel('')
     setDirty(true)
   }
-  const removeModel = (model: string) => {
-    setModelList(modelList.filter((m) => m !== model))
-    if (recapModel === model) setRecapModel('')
-    if (commitMessageModel === model) setCommitMessageModel('')
+  const removeModel = (rowUid: string) => {
+    setEditDraft((d) => (d?.uid === rowUid ? null : d))
+    const model = modelList.find((r) => r.uid === rowUid)?.id
+    setModelList((prev) => prev.filter((r) => r.uid !== rowUid))
+    setDirty(true)
+    // Unlink references to the removed row. Precondition: the row exists (×
+    // is only clickable on a live row) — nothing to unlink if it is gone.
+    if (model === undefined) return
+    setRecapModel((prev) => (prev === model ? '' : prev))
+    setCommitMessageModel((prev) => (prev === model ? '' : prev))
+    // A tier slot pointing at the removed model would spawn sessions against
+    // a dead id — clear it back to "(inherit main)".
+    setModelGroups((prev) => rewriteGroupSlots(prev, model, undefined))
+  }
+  /** Commit a row's inline id edit (Enter/blur). A rename is a rename, not
+   *  delete+add: recap/commit and group tier slots pointing at the old id
+   *  follow it. Empty and colliding drafts revert — remove is the × button
+   *  and addModel rejects duplicates the same way. */
+  const commitModelEdit = (rowUid: string) => {
+    const draft = editDraft
+    if (!draft || draft.uid !== rowUid) return
+    const oldId = modelList.find((r) => r.uid === rowUid)?.id
+    const newId = draft.value.trim()
+    setEditDraft(null)
+    // Precondition: the row still exists — commit is only reachable from a
+    // live row's input or the fold effect with that row's pending draft.
+    // The check also keeps rewriteGroupSlots from matching already-cleared
+    // slots (`g.opus === undefined`) if `from` were ever undefined.
+    if (oldId === undefined || newId === oldId) return
+    if (!newId || modelList.some((r) => r.uid !== rowUid && r.id === newId)) return
+    setModelList((prev) => prev.map((r) => (r.uid === rowUid ? { ...r, id: newId } : r)))
+    setRecapModel((prev) => (prev === oldId ? newId : prev))
+    setCommitMessageModel((prev) => (prev === oldId ? newId : prev))
+    setModelGroups((prev) => rewriteGroupSlots(prev, oldId, newId))
     setDirty(true)
   }
   // FLIP selectors scoped to this profile card so two cards briefly
   // co-mounted during an accordion collapse/expand don't share keys.
   const modelFlip = () =>
-    prepareFlip(`[data-profile-card="${CSS.escape(profile.id)}"] [data-profile-model-id]`, 'data-profile-model-id')
+    prepareFlip(`[data-profile-card="${CSS.escape(profile.id)}"] [data-profile-model-uid]`, 'data-profile-model-uid')
   const groupFlip = () =>
     prepareFlip(`[data-profile-card="${CSS.escape(profile.id)}"] [data-profile-group-id]`, 'data-profile-group-id')
 
   const moveModel = (index: number, direction: -1 | 1) => {
     const target = index + direction
     if (target < 0 || target >= modelList.length) return
-    const next = [...modelList]
-    ;[next[index], next[target]] = [next[target], next[index]]
     const animateMove = modelFlip()
-    setModelList(next)
+    setModelList((prev) => {
+      if (index >= prev.length || target >= prev.length) return prev
+      const next = [...prev]
+      ;[next[index], next[target]] = [next[target], next[index]]
+      return next
+    })
     setDirty(true)
     animateMove()
   }
   const sortModels = () => {
     const animateMove = modelFlip()
-    setModelList([...modelList].sort((a, b) => a.localeCompare(b)))
+    setModelList((prev) => [...prev].sort((a, b) => a.id.localeCompare(b.id)))
     setDirty(true)
     animateMove()
   }
+  // Keep the unmount-cleanup ref on the latest closure (same pattern as
+  // handleSaveRef above — a render that never commits must not stick).
+  useLayoutEffect(() => {
+    commitModelEditRef.current = commitModelEdit
+  })
+  // Accordion fold unmounts the body (AnimatedCollapse unmountOnExit) without
+  // ever firing blur — commit a pending inline draft instead of leaving it
+  // sitting on a card that Save would then serialize without it.
+  useEffect(() => {
+    if (!expanded && editDraft) commitModelEditRef.current(editDraft.uid)
+  }, [expanded, editDraft])
 
-  // — Model-group handlers (adapted from the old ModelGroupsTab) ?
+  // — Model-group handlers (adapted from the old ModelGroupsTab) —
+  // Functional setter form, same contract as the model-list handlers above.
   const addModelGroup = () => {
     const id = randomId()
-    setModelGroups([...modelGroups, { id, name: `Group ${modelGroups.length + 1}`, main: 'opus' }])
+    setModelGroups((prev) => [...prev, { id, name: `Group ${prev.length + 1}`, main: 'opus' }])
     setDirty(true)
   }
   const removeModelGroup = (id: string) => {
-    setModelGroups(modelGroups.filter((g) => g.id !== id))
+    setModelGroups((prev) => prev.filter((g) => g.id !== id))
     setDirty(true)
   }
   const moveModelGroup = (index: number, direction: -1 | 1) => {
-    const next = [...modelGroups]
     const j = index + direction
-    if (j < 0 || j >= next.length) return
-    ;[next[index], next[j]] = [next[j], next[index]]
+    if (j < 0 || j >= modelGroups.length) return
     const animateMove = groupFlip()
-    setModelGroups(next)
+    setModelGroups((prev) => {
+      if (index >= prev.length || j >= prev.length) return prev
+      const next = [...prev]
+      ;[next[index], next[j]] = [next[j], next[index]]
+      return next
+    })
     setDirty(true)
     animateMove()
   }
   const updateModelGroup = (id: string, patch: Partial<ModelGroupConfig>) => {
-    setModelGroups(modelGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)))
+    setModelGroups((prev) => prev.map((g) => (g.id === id ? { ...g, ...patch } : g)))
     setDirty(true)
   }
 
@@ -459,13 +537,13 @@ function ProfileCard({
   const renderDragGhost = (): ReactNode => {
     if (!activeDrag || !('id' in activeDrag)) return null
     if (activeDrag.kind === 'profile-model') {
-      const idx = modelList.indexOf(activeDrag.id)
+      const idx = modelList.findIndex((r) => r.uid === activeDrag.id)
       if (idx < 0) return null
       return (
         <DragGhost>
           <div className={`settings-model-row${idx === 0 ? ' default' : ''}`}>
             <span className="settings-model-rank">{idx === 0 ? 'Default' : idx + 1}</span>
-            <code className="settings-model-id">{activeDrag.id}</code>
+            <code className="settings-model-id">{modelList[idx].id}</code>
           </div>
         </DragGhost>
       )
@@ -627,15 +705,17 @@ function ProfileCard({
                     </button>
                   </div>
                 )}
-                <SortableContext items={modelList} strategy={verticalListSortingStrategy}>
-                {modelList.map((m, i) => (
+                <SortableContext items={modelList.map((r) => r.uid)} strategy={verticalListSortingStrategy}>
+                {modelList.map((row, i) => {
+                  const shown = editDraft?.uid === row.uid ? editDraft.value : row.id
+                  return (
                   <SortableItem
-                    key={m}
-                    id={m}
+                    key={row.uid}
+                    id={row.uid}
                     kind="profile-model"
                     disabled={!canDragModels}
                     className={cx('settings-model-row', i === 0 ? 'default' : '')}
-                    dataAttr="data-profile-model-id"
+                    dataAttr="data-profile-model-uid"
                   >
                     {({ setActivatorNodeRef, attributes, listeners }) => (
                       <>
@@ -654,7 +734,44 @@ function ProfileCard({
                         >
                           {i === 0 ? 'Default' : i + 1}
                         </span>
-                        <code className="settings-model-id" title={m}>{m}</code>
+                        <input
+                          className="input settings-model-input"
+                          value={shown}
+                          title={shown}
+                          onChange={(e) => setEditDraft({ uid: row.uid, value: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              // Enter confirms an in-flight IME composition —
+                              // committing here would save a half-composed id.
+                              if (e.nativeEvent.isComposing) return
+                              e.preventDefault()
+                              commitModelEdit(row.uid)
+                            } else if (e.key === 'Escape') {
+                              // Only intercept Escape while this row holds the
+                              // pending edit — otherwise let it propagate so the
+                              // Escape stack closes the settings modal (same
+                              // contract as SettingsPanel's title input). A live
+                              // drag keeps its own Escape (dnd-kit's cancel key,
+                              // heard at the document level): cancelling an
+                              // inline edit must not strand a ghost mid-drag.
+                              if (editDraft?.uid === row.uid) {
+                                e.preventDefault()
+                                if (!activeDrag) e.stopPropagation()
+                                skipCommitRef.current = true
+                                setEditDraft(null)
+                              }
+                              e.currentTarget.blur()
+                            }
+                          }}
+                          onBlur={() => {
+                            if (skipCommitRef.current) {
+                              skipCommitRef.current = false
+                              return
+                            }
+                            commitModelEdit(row.uid)
+                          }}
+                          aria-label={`Model ID ${i + 1}: ${row.id}`}
+                        />
                         <div className="settings-model-move" role="group" aria-label="Move model priority">
                           <button
                             className="btn-icon-sm settings-model-action"
@@ -677,7 +794,7 @@ function ProfileCard({
                         </div>
                         <button
                           className="btn-icon-sm settings-model-action danger"
-                          onClick={() => removeModel(m)}
+                          onClick={() => removeModel(row.uid)}
                           title="Remove"
                           aria-label="Remove"
                         >
@@ -686,14 +803,19 @@ function ProfileCard({
                       </>
                     )}
                   </SortableItem>
-                ))}
+                  )
+                })}
                 </SortableContext>
                 <div className="settings-model-add-row">
                   <input
                     className="input settings-model-input"
                     value={newModel}
                     onChange={(e) => setNewModel(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') addModel() }}
+                    onKeyDown={(e) => {
+                      // Enter confirms an in-flight IME composition — adding
+                      // here would insert a half-composed id.
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) addModel()
+                    }}
                     aria-label="New model ID"
                     placeholder="model-id (e.g. claude-sonnet-4-20250514)"
                   />
@@ -721,11 +843,11 @@ function ProfileCard({
                       option: with no matching option the select renders
                       blank, hiding which model will actually be used (and
                       leaving no way to re-pick or clear it). */}
-                  {recapModel && !modelList.includes(recapModel) ? (
+                  {recapModel && !modelList.some((r) => r.id === recapModel) ? (
                     <option value={recapModel}>{recapModel} (not in this list)</option>
                   ) : null}
-                  {modelList.map((m) => (
-                    <option key={m} value={m}>{m}</option>
+                  {modelList.map((r) => (
+                    <option key={r.uid} value={r.id}>{r.id}</option>
                   ))}
                 </select>
                 <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
@@ -747,11 +869,11 @@ function ProfileCard({
                   onChange={(e) => { setCommitMessageModel(e.target.value); setDirty(true) }}
                 >
                   <option value="">(default)</option>
-                  {commitMessageModel && !modelList.includes(commitMessageModel) ? (
+                  {commitMessageModel && !modelList.some((r) => r.id === commitMessageModel) ? (
                     <option value={commitMessageModel}>{commitMessageModel} (not in this list)</option>
                   ) : null}
-                  {modelList.map((m) => (
-                    <option key={m} value={m}>{m}</option>
+                  {modelList.map((r) => (
+                    <option key={r.uid} value={r.id}>{r.id}</option>
                   ))}
                 </select>
                 <IconChevronDown className="settings-model-select-icon" size={14} aria-hidden />
@@ -876,7 +998,7 @@ function ProfileCard({
                 })}
                 </SortableContext>
                 <datalist id={`${uid}-model-list`}>
-                  {modelList.map((m) => <option key={m} value={m} />)}
+                  {modelList.map((r) => <option key={r.uid} value={r.id} />)}
                 </datalist>
                 <div className="settings-model-add-row">
                   <button className="btn btn-xs settings-model-add-btn" onClick={addModelGroup}>Add Group</button>

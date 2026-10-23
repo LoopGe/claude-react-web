@@ -173,7 +173,7 @@ describe('ProfilesSettingsTab', () => {
      *  clone also renders a `.settings-model-row` and must not count. */
     const modelOrder = (container: HTMLElement) => {
       const list = container.querySelector<HTMLElement>('.settings-model-list')!
-      return [...list.querySelectorAll<HTMLElement>(':scope > .settings-model-row > code')].map((el) => el.textContent)
+      return [...list.querySelectorAll<HTMLInputElement>(':scope > .settings-model-row > input[aria-label^="Model ID"]')].map((el) => el.value)
     }
 
     /** Grip (rank badge) of each row in the Available-Models list, excluding
@@ -578,6 +578,307 @@ describe('ProfilesSettingsTab', () => {
       fireEvent.click(screen.getByRole('button', { name: /^Save( changes)?$/i }))
       await vi.waitFor(() => {
         expect(update).toHaveBeenCalledWith('a', expect.objectContaining({ recapModel: null }))
+      })
+    })
+  })
+
+  describe('inline model-id editing', () => {
+    /** Three models; recap/commit and the group's tier slots point at some of
+     *  them so rename/remove reference-following is observable. */
+    const editable: ProviderProfile[] = [
+      {
+        id: 'a',
+        name: 'A',
+        isActive: true,
+        authTokenMasked: '****cdef',
+        baseUrl: 'https://gw1',
+        modelList: ['ma', 'mb', 'mc'],
+        modelGroups: [{ id: 'g1', name: 'Group 1', main: 'opus', opus: 'mc', sonnet: 'ma', haiku: 'other' }],
+        recapModel: 'ma',
+        commitMessageModel: 'mb',
+      },
+    ]
+
+    function mockEditable() {
+      const update = vi.fn().mockResolvedValue(undefined)
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles: editable,
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create: vi.fn(),
+        update,
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      return update
+    }
+
+    /** Row inputs of the Available-Models list, in order. The add-row's
+     *  "New model ID" input and the group card's slot inputs are excluded by
+     *  the accessible name. */
+    const rowInputs = (container: HTMLElement) =>
+      [...container.querySelectorAll<HTMLInputElement>('.settings-model-list > .settings-model-row input[aria-label^="Model ID"]')]
+
+    const saveAll = () => fireEvent.click(screen.getByRole('button', { name: /^Save( changes)?$/i }))
+
+    it('renders each model id as an editable input, not a static chip', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mb', 'mc'])
+      expect(container.querySelector('.settings-model-list > .settings-model-row > code')).toBeNull()
+    })
+
+    it('commits a trimmed rename on Enter and flushes the new id on Save', async () => {
+      const update = mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      fireEvent.change(rowInputs(container)[1], { target: { value: '  mb-renamed  ' } })
+      fireEvent.keyDown(rowInputs(container)[1], { key: 'Enter' })
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mb-renamed', 'mc'])
+      saveAll()
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({ modelList: ['ma', 'mb-renamed', 'mc'] }))
+      })
+    })
+
+    it('commits a rename on blur', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      fireEvent.change(rowInputs(container)[0], { target: { value: 'ma2' } })
+      fireEvent.blur(rowInputs(container)[0])
+      expect(rowInputs(container)[0].value).toBe('ma2')
+    })
+
+    it('reverts on Escape — the keydown blur must not resurrect the edit', async () => {
+      const update = mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      const input = rowInputs(container)[0]
+      // Focused so the Escape handler's synchronous blur() really fires blur
+      // with the pre-Escape draft still in the handler's closure.
+      act(() => { input.focus() })
+      fireEvent.change(input, { target: { value: 'oops' } })
+      fireEvent.keyDown(input, { key: 'Escape' })
+      expect(rowInputs(container)[0].value).toBe('ma')
+      // A later blur (clicking away) must not commit a cancelled draft either.
+      fireEvent.blur(rowInputs(container)[0])
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mb', 'mc'])
+      saveAll()
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({ modelList: ['ma', 'mb', 'mc'] }))
+      })
+    })
+
+    it('reverts an empty commit — removing a row stays the × button', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      fireEvent.change(rowInputs(container)[1], { target: { value: '   ' } })
+      fireEvent.keyDown(rowInputs(container)[1], { key: 'Enter' })
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mb', 'mc'])
+    })
+
+    it('reverts a commit that collides with another row', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      fireEvent.change(rowInputs(container)[1], { target: { value: 'mc' } })
+      fireEvent.keyDown(rowInputs(container)[1], { key: 'Enter' })
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mb', 'mc'])
+    })
+
+    it('rewrites recap/commit references to the renamed id, leaving other ids alone', async () => {
+      const update = mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      // recapModel points at 'ma'; commitMessageModel points at 'mb'.
+      fireEvent.change(rowInputs(container)[0], { target: { value: 'ma-new' } })
+      fireEvent.keyDown(rowInputs(container)[0], { key: 'Enter' })
+      expect((screen.getByLabelText('Recap Model') as HTMLSelectElement).value).toBe('ma-new')
+      expect((screen.getByLabelText('Commit Message Model') as HTMLSelectElement).value).toBe('mb')
+      saveAll()
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({
+          recapModel: 'ma-new',
+          commitMessageModel: 'mb',
+        }))
+      })
+    })
+
+    it('rewrites model-group tier slots pointing at the renamed id, leaving other slots alone', async () => {
+      const update = mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      // g1 slots: opus='mc', sonnet='ma', haiku='other'.
+      fireEvent.change(rowInputs(container)[2], { target: { value: 'mc-new' } })
+      fireEvent.keyDown(rowInputs(container)[2], { key: 'Enter' })
+      expect((screen.getByLabelText('Opus') as HTMLInputElement).value).toBe('mc-new')
+      expect((screen.getByLabelText('Sonnet') as HTMLInputElement).value).toBe('ma')
+      expect((screen.getByLabelText('Haiku') as HTMLInputElement).value).toBe('other')
+      saveAll()
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({
+          modelGroups: [expect.objectContaining({ opus: 'mc-new', sonnet: 'ma', haiku: 'other' })],
+        }))
+      })
+    })
+
+    it('keeps the default slot and row order when the first row is renamed', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      fireEvent.change(rowInputs(container)[0], { target: { value: 'ma-default-new' } })
+      fireEvent.keyDown(rowInputs(container)[0], { key: 'Enter' })
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma-default-new', 'mb', 'mc'])
+      const rows = [...container.querySelectorAll('.settings-model-list > .settings-model-row')]
+      expect(rows[0].classList.contains('default')).toBe(true)
+      expect(rows[1].classList.contains('default')).toBe(false)
+    })
+
+    it('keeps focus on the row input while typing', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      const input = rowInputs(container)[1]
+      act(() => { input.focus() })
+      fireEvent.change(input, { target: { value: 'm' } })
+      fireEvent.change(input, { target: { value: 'mb' } })
+      fireEvent.change(input, { target: { value: 'mb!' } })
+      // A remount mid-edit (row key tied to the uncommitted text) drops focus.
+      expect(document.activeElement).toBe(input)
+      expect(input.value).toBe('mb!')
+    })
+
+    it('keeps focus on the row input through an Enter commit', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      const input = rowInputs(container)[1]
+      act(() => { input.focus() })
+      fireEvent.change(input, { target: { value: 'mb-new' } })
+      fireEvent.keyDown(input, { key: 'Enter' })
+      // Remounting the row on commit (key tied to the id string) drops focus.
+      expect(rowInputs(container)[1].value).toBe('mb-new')
+      expect(document.activeElement).toBe(rowInputs(container)[1])
+    })
+
+    it('ignores Enter while an IME composition is being confirmed', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      const input = rowInputs(container)[0]
+      // Surround with spaces so a commit (which trims) is observable: the
+      // draft must survive the Enter untrimmed and uncommitted.
+      fireEvent.change(input, { target: { value: '  合成中  ' } })
+      // Enter confirms a CJK candidate; committing here would save a
+      // half-composed id and steal the IME's confirm key. jsdom's
+      // KeyboardEventInit doesn't reliably carry isComposing, so define it
+      // on the instance (matching RichPromptInput.test.ts's pattern).
+      const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      Object.defineProperty(event, 'isComposing', { value: true })
+      // act() so any state from the handler flushes before asserting — a raw
+      // dispatch outside act leaves the DOM one render behind.
+      act(() => { input.dispatchEvent(event) })
+      expect(rowInputs(container)[0].value).toBe('  合成中  ')
+      // A plain Enter afterwards (composition ended) commits the trim.
+      fireEvent.keyDown(input, { key: 'Enter' })
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['合成中', 'mb', 'mc'])
+    })
+
+    it('ignores Enter on the add-row while an IME composition is being confirmed', () => {
+      mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      const input = screen.getByLabelText('New model ID')
+      fireEvent.change(input, { target: { value: '合成中' } })
+      const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+      Object.defineProperty(event, 'isComposing', { value: true })
+      act(() => { input.dispatchEvent(event) })
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mb', 'mc'])
+      expect((screen.getByLabelText('New model ID') as HTMLInputElement).value).toBe('合成中')
+    })
+
+    it('commits a pending draft when the card folds (body unmounts without blur)', async () => {
+      const update = vi.fn().mockResolvedValue(undefined)
+      vi.mocked(useProfiles.useProfiles).mockReturnValue({
+        profiles: [
+          ...editable,
+          { ...editable[0], id: 'b', name: 'B', isActive: false, modelList: ['mb-only'], modelGroups: [], recapModel: '', commitMessageModel: '' },
+        ],
+        activeProfileId: 'a',
+        refresh: vi.fn(),
+        create: vi.fn(),
+        update,
+        remove: vi.fn(),
+        activate: vi.fn(),
+      })
+      const { container } = render(<ProfilesSettingsTab />)
+      fireEvent.change(rowInputs(container)[0], { target: { value: '  ma-folded  ' } })
+      // Clicking B's header folds A. AnimatedCollapse unmounts the body —
+      // no blur ever fires (unlike a browser click, which blurs first), so
+      // the draft must commit on unmount instead of being left behind.
+      fireEvent.click(screen.getByRole('button', { name: 'B' }))
+      // The active card's header button concatenates its name and the Active
+      // badge ("A Active") into its accessible name.
+      fireEvent.click(screen.getByRole('button', { name: 'A Active' }))
+      // Committed (trimmed), not still sitting in the input as a draft.
+      expect(rowInputs(container)[0].value).toBe('ma-folded')
+      // Two cards are mounted — scope the Save to card A.
+      fireEvent.click(
+        within(container.querySelector('[data-profile-card="a"]')!).getByRole('button', { name: /^Save( changes)?$/i }),
+      )
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({ modelList: ['ma-folded', 'mb', 'mc'] }))
+      })
+    })
+
+    it('a same-row Remove click after typing still removes the row', async () => {
+      const update = mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      const input = rowInputs(container)[1]
+      act(() => { input.focus() })
+      fireEvent.change(input, { target: { value: 'mb-new' } })
+      const removeBtn = container
+        .querySelectorAll('.settings-model-list > .settings-model-row')[1]
+        .querySelector('button[aria-label="Remove"]')!
+      // Browsers blur the input on the button's mousedown (focus moves). If
+      // that blur's commit remounts the row (key = the id string), the button
+      // dies before mouseup and the click never lands.
+      fireEvent.mouseDown(removeBtn)
+      fireEvent.blur(input)
+      fireEvent.click(removeBtn)
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mc'])
+      // commitMessageModel pointed at 'mb': the rename re-followed it to
+      // 'mb-new', and removing the row must unlink that too — not leave the
+      // card pointing at a model the list no longer has.
+      expect((screen.getByLabelText('Commit Message Model') as HTMLSelectElement).value).toBe('')
+      saveAll()
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({
+          modelList: ['ma', 'mc'],
+          commitMessageModel: null,
+        }))
+      })
+    })
+
+    it('blur-commit rewrites recap/commit/group references like Enter does', async () => {
+      const update = mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      fireEvent.change(rowInputs(container)[2], { target: { value: 'mc-new' } })
+      fireEvent.blur(rowInputs(container)[2])
+      expect((screen.getByLabelText('Opus') as HTMLInputElement).value).toBe('mc-new')
+      saveAll()
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({
+          modelList: ['ma', 'mb', 'mc-new'],
+          modelGroups: [expect.objectContaining({ opus: 'mc-new' })],
+        }))
+      })
+    })
+
+    it('clears model-group tier slots when their model row is removed', async () => {
+      const update = mockEditable()
+      const { container } = render(<ProfilesSettingsTab />)
+      // g1.opus === 'mc'; remove the 'mc' row.
+      const rows = container.querySelectorAll('.settings-model-list > .settings-model-row')
+      fireEvent.click(rows[2].querySelector('button[aria-label="Remove"]')!)
+      expect(rowInputs(container).map((el) => el.value)).toEqual(['ma', 'mb'])
+      expect((screen.getByLabelText('Opus') as HTMLInputElement).value).toBe('')
+      saveAll()
+      await vi.waitFor(() => {
+        expect(update).toHaveBeenCalledWith('a', expect.objectContaining({
+          modelList: ['ma', 'mb'],
+          modelGroups: [expect.objectContaining({ sonnet: 'ma', haiku: 'other' })],
+        }))
       })
     })
   })

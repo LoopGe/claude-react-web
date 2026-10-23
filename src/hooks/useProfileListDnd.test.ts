@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { dndData } from '../dnd/payload'
-import { useProfileListDnd } from './useProfileListDnd'
+import { useProfileListDnd, type ProfileModelRow } from './useProfileListDnd'
 import type { DragStartEvent, DragOverEvent } from '@dnd-kit/core'
 import type { ModelGroupConfig } from '../types/config'
 
@@ -10,6 +10,10 @@ const groups: ModelGroupConfig[] = [
   { id: 'g2', name: 'Group 2', main: 'sonnet' },
   { id: 'g3', name: 'Group 3', main: 'haiku' },
 ]
+
+/** Rows where uid === id: the drag events below address models by that
+ *  shared string, which the hook resolves against `uid`. */
+const rows = (...ids: string[]): ProfileModelRow[] => ids.map((id) => ({ uid: id, id }))
 
 function startEvent(kind: string, id: string): DragStartEvent {
   return { active: { id, data: { current: dndData({ kind, id } as never) } } } as unknown as DragStartEvent
@@ -24,11 +28,11 @@ function overEvent(activeKind: string, activeId: string, overKind: string | null
   } as unknown as DragOverEvent
 }
 
-function setup(modelList = ['ma', 'mb', 'mc'], modelGroups = groups, initialDirty = false) {
+function setup(modelList = rows('ma', 'mb', 'mc'), modelGroups = groups, initialDirty = false) {
   let models = modelList
   let groupsState = modelGroups
   let dirty = initialDirty
-  const setModelList = vi.fn((updater: (prev: string[]) => string[]) => {
+  const setModelList = vi.fn((updater: (prev: ProfileModelRow[]) => ProfileModelRow[]) => {
     models = updater(models)
   })
   const setModelGroups = vi.fn((updater: (prev: ModelGroupConfig[]) => ModelGroupConfig[]) => {
@@ -63,7 +67,7 @@ function setup(modelList = ['ma', 'mb', 'mc'], modelGroups = groups, initialDirt
     setModelGroups,
     setDirty,
     sync,
-    modelsRef: () => models,
+    modelsRef: () => models.map((r) => r.id),
     groupsRef: () => groupsState,
     dirtyRef: () => dirty,
   }
@@ -140,12 +144,29 @@ describe('useProfileListDnd', () => {
   })
 
   it('drag cancel keeps dirty when the card was already dirty before pickup', () => {
-    const { get, dirtyRef, sync } = setup(['ma', 'mb', 'mc'], groups, true)
+    const { get, dirtyRef, sync } = setup(rows('ma', 'mb', 'mc'), groups, true)
     act(() => get().handleDragStart(startEvent('profile-model', 'ma')))
     act(() => get().handleDragOver(overEvent('profile-model', 'ma', 'profile-model', 'mc')))
     sync()
     act(() => get().handleDragCancel())
     sync()
+    expect(dirtyRef()).toBe(true)
+  })
+
+  it('drag cancel restores the pre-drag order but keeps a mid-drag id edit', () => {
+    const { get, setModelList, modelsRef, dirtyRef, sync } = setup()
+    act(() => get().handleDragStart(startEvent('profile-model', 'ma')))
+    act(() => get().handleDragOver(overEvent('profile-model', 'ma', 'profile-model', 'mc')))
+    sync()
+    // A rename committed mid-drag (keyboard sensor + focus into the row
+    // input) is not part of the drag — cancel must not clobber it.
+    act(() => setModelList((prev) => prev.map((r) => (r.uid === 'ma' ? { ...r, id: 'ma-new' } : r))))
+    sync()
+    act(() => get().handleDragCancel())
+    sync()
+    expect(modelsRef()).toEqual(['ma-new', 'mb', 'mc'])
+    // The surviving edit keeps the card dirty even though the pickup
+    // snapshot was clean.
     expect(dirtyRef()).toBe(true)
   })
 

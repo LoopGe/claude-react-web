@@ -28,8 +28,9 @@ export type DragPayload =
    *  extra on the droppable data picks before/after geometry. */
   | { kind: 'group-card'; id: string }
   /** A model row dragged inside Global Settings → Profiles → Available
-   *  Models. `id` is the model id string itself (unique within a profile's
-   *  modelList). Accepted only by other model rows in the same list. */
+   *  Models. `id` is the row's stable `ProfileModelRow.uid` — NOT the model
+   *  id string, which is mutable via inline edit and must not double as
+   *  identity. Accepted only by other model rows in the same list. */
   | { kind: 'profile-model'; id: string }
   /** A model-group card dragged inside Global Settings → Profiles →
    *  Model Groups. `id` is `ModelGroupConfig.id`. Accepted only by other
