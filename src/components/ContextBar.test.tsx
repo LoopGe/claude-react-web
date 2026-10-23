@@ -306,13 +306,13 @@ describe('ContextBar', () => {
     ).toBe('until —')
   })
 
-  it('shows compact off / until — and a disabled marker when CLI auto-compact is off', () => {
+  it('shows compact off / until — and a disabled non-draggable marker when CLI auto-compact is off', () => {
+    const onSetWindow = vi.fn()
     const { container } = render(
-      <ContextBar usage={{ ...usage, autoCompactEnabled: false }} editable custom onSetWindow={vi.fn()} />,
+      <ContextBar usage={{ ...usage, autoCompactEnabled: false }} editable custom onSetWindow={onSetWindow} />,
     )
-    // A formula threshold may still position the marker (drag = enable+pin),
-    // but the readout must say "off" rather than a percentage that will never
-    // fire.
+    // Product rule: when the CLI reports off, the marker is display-only —
+    // dragging must not commit a pin (and must not claim slider semantics).
     expect(container.querySelector('.ctx-bar-stat-compact')?.getAttribute('aria-label')).toBe(
       'compact off',
     )
@@ -322,8 +322,15 @@ describe('ContextBar', () => {
     const marker = container.querySelector('.ctx-bar-marker')
     expect(marker).not.toBeNull()
     expect(marker?.classList.contains('ctx-bar-marker-disabled')).toBe(true)
-    // Still interactive: dragging is how the user enables + pins.
-    expect(marker?.getAttribute('role')).toBe('slider')
+    expect(marker?.getAttribute('role')).toBeNull()
+    expect(marker?.getAttribute('aria-hidden')).toBe('true')
+
+    stubTrackRect(container)
+    const wrap = container.querySelector('.ctx-bar-track-wrap')!
+    fireEvent.pointerDown(wrap, { pointerId: 1, button: 0, clientX: 0 })
+    fireEvent.pointerMove(wrap, { pointerId: 1, button: 0, clientX: 100 })
+    fireEvent.pointerUp(wrap, { pointerId: 1 })
+    expect(onSetWindow).not.toHaveBeenCalled()
   })
 
   it('keeps the percentage readout when auto-compact is enabled', () => {

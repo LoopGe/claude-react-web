@@ -48,7 +48,9 @@ describe('ClaudeProvider.createSession sandbox', () => {
     await flush()
 
     expect(q.applyFlagSettings).toHaveBeenCalledWith({ sandbox })
-    expect(q.applyFlagSettings).toHaveBeenCalledTimes(1)
+    // Exactly 2: the sandbox flag plus the unconditional autoCompactEnabled
+    // stamp (product rule — auto-compact never turns off in this app).
+    expect(q.applyFlagSettings).toHaveBeenCalledTimes(2)
   })
 
   it('does not applyFlagSettings for sandbox when opts.sandbox is absent', async () => {
@@ -59,6 +61,23 @@ describe('ClaudeProvider.createSession sandbox', () => {
     await flush()
 
     expect(q.applyFlagSettings).not.toHaveBeenCalledWith({ sandbox: expect.anything() })
+  })
+
+  it('always stamps autoCompactEnabled:true on spawn, with or without a pinned window', async () => {
+    const q = fakeQuery()
+    queryMock.mockReturnValue(q)
+
+    makeProvider().createSession({ id: 's-ac-1' })
+    await flush()
+    expect(q.applyFlagSettings).toHaveBeenCalledWith({ autoCompactEnabled: true })
+
+    q.applyFlagSettings.mockClear()
+    makeProvider().createSession({ id: 's-ac-2', autoCompactWindow: 180000 })
+    await flush()
+    expect(q.applyFlagSettings).toHaveBeenCalledWith({
+      autoCompactWindow: 180000,
+      autoCompactEnabled: true,
+    })
   })
 
   it('injects in-process hooks into sdkOptions when inProcessHookForward is provided', async () => {

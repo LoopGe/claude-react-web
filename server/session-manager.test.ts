@@ -2754,14 +2754,15 @@ describe('SessionManager', () => {
     expect(updated.autoCompactWindow).toBe(180001)
   })
 
-  it('setAutoCompactWindow() with null clears back to "auto"', async () => {
+  it('setAutoCompactWindow() with null clears the window but keeps auto-compact enabled', async () => {
     const info = await sm.create({})
     await sm.setAutoCompactWindow(info.id, 180000)
     expect(sm.get(info.id).autoCompactWindow).toBe(180000)
     const updated = await sm.setAutoCompactWindow(info.id, null)
+    // Product rule: auto-compact stays ON — clear only drops the pin.
     expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({
       autoCompactWindow: null,
-      autoCompactEnabled: null,
+      autoCompactEnabled: true,
     })
     expect(updated.autoCompactWindow).toBeUndefined()
     expect(sm.get(info.id).autoCompactWindow).toBeUndefined()

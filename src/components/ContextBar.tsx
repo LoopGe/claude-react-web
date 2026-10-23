@@ -118,7 +118,11 @@ export const ContextBar = memo(function ContextBar({
     }
   }, [])
 
-  const interactive = editable && !disabled && onSetWindow != null
+  // CLI reports auto-compact OFF → the marker is display-only. Product rule:
+  // drag is not "enable + pin" here, so the handle must not take pointer or
+  // keyboard input (and must not commit a window).
+  const autoCompactOff = usage?.autoCompactEnabled === false
+  const interactive = editable && !disabled && !autoCompactOff && onSetWindow != null
 
   // % of the model window → absolute Settings.autoCompactWindow tokens such
   // that the derived threshold lands exactly at pct% (inverse of the pump's
@@ -142,11 +146,13 @@ export const ContextBar = memo(function ContextBar({
 
   const commit = useCallback(
     (pct: number | null) => {
-      if (!onSetWindow) return
+      // Re-check at commit time: a drag that started while enabled must not
+      // pin after a mid-drag flip to off.
+      if (!onSetWindow || usage?.autoCompactEnabled === false) return
       if (pct == null) onSetWindow(null)
       else onSetWindow(pctToWindow(pct))
     },
-    [onSetWindow, pctToWindow],
+    [onSetWindow, pctToWindow, usage?.autoCompactEnabled],
   )
 
   // The bar always shows the same three percentages (used / auto-compact
@@ -165,11 +171,9 @@ export const ContextBar = memo(function ContextBar({
 
   const displayPct = draftPct ?? thresholdPct
 
-  // CLI says auto-compact will not fire. The threshold (if any) still
-  // positions the marker — dragging it is how the user enables + pins — but
-  // the readout must not show a percentage that will never trigger. A live
-  // drag overrides: the draft is the position you're about to commit.
-  const autoCompactOff = usage?.autoCompactEnabled === false && draftPct == null
+  // CLI says auto-compact will not fire: show `off` rather than a percentage
+  // that will never trigger. Drag is already disabled (see `interactive`), so
+  // there is no draft to override this.
   const compactStat: number | null | 'off' = autoCompactOff ? 'off' : displayPct
   const untilStat: number | null = autoCompactOff ? null : percentLeft
 
@@ -328,7 +332,7 @@ export const ContextBar = memo(function ContextBar({
     // not stay dashed/muted while the stat already shows the draft %.
     (autoCompactOff ? ' ctx-bar-marker-disabled' : '') +
     (dragging ? ' ctx-bar-marker-dragging' : '') +
-    (editable ? ' ctx-bar-marker-interactive' : '')
+    (interactive ? ' ctx-bar-marker-interactive' : '')
 
   return (
     <div className={`ctx-bar ctx-bar-${barLevel}${revealed ? ' ctx-bar-revealed' : ''}`}>
@@ -378,7 +382,7 @@ export const ContextBar = memo(function ContextBar({
         </span>
       </div>
       <div
-        className={`ctx-bar-track-wrap${editable ? ' ctx-bar-track-editable' : ''}`}
+        className={`ctx-bar-track-wrap${interactive ? ' ctx-bar-track-editable' : ''}`}
         ref={wrapRef}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}

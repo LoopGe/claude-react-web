@@ -4904,6 +4904,10 @@ export class SessionManager {
     const forwarded = settings && typeof settings === 'object' && !Array.isArray(settings)
       ? { ...(settings as Record<string, unknown>) }
       : {}
+    // Product rule: auto-compact never turns off in this app. The raw-JSON
+    // settings box can send `autoCompactEnabled: false` — coerce before the
+    // SDK sees it so a stray toggle cannot disable compaction.
+    if ('autoCompactEnabled' in forwarded) forwarded.autoCompactEnabled = true
     const hooksResult = 'hooks' in forwarded
       ? validateSessionHooksConfig(forwarded.hooks ?? {})
       : null
@@ -4956,13 +4960,10 @@ export class SessionManager {
         // Same immediate refresh as the dedicated setAutoCompactWindow path —
         // the generic /settings route also moves the effective threshold —
         // followed by the same background probe for the CLI's real answer.
-        reapplyAutoCompactWindow(s, s.autoCompactWindow)
+        reapplyAutoCompactWindow(s, s.autoCompactWindow, { autoCompactEnabled: true })
         this.probeAutoCompactFacts(s)
       }
-      // `autoCompactEnabled` on its own doesn't pin a window, but it does
-      // decide whether the CLI compacts at all, so anything we cached about
-      // its threshold is no longer trustworthy.
-      else if ('autoCompactEnabled' in forwarded) {
+      if ('autoCompactEnabled' in forwarded) {
         s.lastSdkAutoCompact = undefined
         this.probeAutoCompactFacts(s)
       }
@@ -5303,9 +5304,10 @@ export class SessionManager {
    *  setMemorySettings. */
   async setAutoCompactWindow(id: string, tokens: number | null): Promise<SessionInfo> {
     const window = tokens && tokens > 0 ? Math.round(tokens) : undefined
+    // Product rule: auto-compact stays ON — clear only drops the window pin.
     const flags: Record<string, unknown> = window
       ? { autoCompactWindow: window, autoCompactEnabled: true }
-      : { autoCompactWindow: null, autoCompactEnabled: null }
+      : { autoCompactWindow: null, autoCompactEnabled: true }
     return this.applyFlagSettingAndPersist(id, flags, 'auto-compact window', (s) => {
       s.autoCompactWindow = window
       // Refresh the cached context-usage snapshot NOW so every live ContextBar
@@ -5313,10 +5315,9 @@ export class SessionManager {
       // derives from the next turn's `result`, leaving the bar (and the
       // "Compact at X%" label) stuck on the stale auto position, which reads
       // as a failed commit. This is the DERIVED (approximate) threshold, and
-      // it also drops any now-stale CLI-reported one. Pin also sends
-      // autoCompactEnabled:true to the SDK (drag is enable+pin); clear sends
-      // null and must not keep claiming a CLI answer we just reset.
-      reapplyAutoCompactWindow(s, window, { autoCompactEnabled: window ? true : null })
+      // it also drops any now-stale CLI-reported one. Auto-compact stays
+      // enabled on both pin and clear.
+      reapplyAutoCompactWindow(s, window, { autoCompactEnabled: true })
       // Then ask the CLI what it actually decided, in the background, and
       // re-broadcast if its answer differs from our approximation. This is
       // what makes a pin verifiable rather than merely optimistic.

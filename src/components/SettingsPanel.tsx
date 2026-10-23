@@ -1675,8 +1675,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
             onSetWindow={commitWindow}
           />
           <span className="hint">
-            Drag the marker to pin when the conversation auto-compacts
-            (20–100%, step 5). Double-click it to reset to the model default.
+            {usage?.autoCompactEnabled === false
+              ? 'Auto-compact is off for this session (CLI-reported), so the marker is display-only.'
+              : 'Drag the marker to pin when the conversation auto-compacts (20–100%). Double-click it to reset to the model default.'}
           </span>
           <span className="hint">
             Auto-compact triggers when the conversation reaches the marked share
