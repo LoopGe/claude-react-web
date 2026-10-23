@@ -779,7 +779,7 @@ export async function getDiff(
   const numArgs = ['-c', 'core.quotepath=false', 'diff', '--numstat']
   if (staged) numArgs.push('--cached')
   numArgs.push('--', safePath)
-  const numRes = await runGit(cwd, numArgs)
+  const numRes = await runGit(cwd, numArgs, { noOptionalLocks: true })
   const isBinary = /^-\s+-\s+/.test(numRes.stdout.trim())
 
   if (isBinary) {
@@ -789,7 +789,7 @@ export async function getDiff(
   const diffArgs = ['-c', 'core.quotepath=false', 'diff', '--no-color']
   if (staged) diffArgs.push('--cached')
   diffArgs.push('--', safePath)
-  const { stdout } = await runGit(cwd, diffArgs)
+  const { stdout } = await runGit(cwd, diffArgs, { noOptionalLocks: true })
   if (opts?.full) return untruncatedResult(safePath, staged, stdout)
   const trunc = truncateDiff(stdout)
   return { path: safePath, staged, ...trunc, isBinary: false }
@@ -870,8 +870,8 @@ export async function getRangeDiffFiles(cwd: string, from: string, to: string, m
 
   const refs = rangeRefArgs(from, to, mergeBase)
   const [numRes, stRes] = await Promise.all([
-    runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--numstat', '-z', ...refs]),
-    runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--name-status', '-z', ...refs]),
+    runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--numstat', '-z', ...refs], { noOptionalLocks: true }),
+    runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--name-status', '-z', ...refs], { noOptionalLocks: true }),
   ])
   const counts = parseNumstatZ(numRes.stdout)
 
@@ -916,13 +916,13 @@ export async function getRangeDiffFile(
   const safePath = validateRepoRelativePath(path)
   const refs = rangeRefArgs(from, to, mergeBase)
 
-  const numRes = await runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--numstat', ...refs, '--', safePath])
+  const numRes = await runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--numstat', ...refs, '--', safePath], { noOptionalLocks: true })
   const isBinary = /^-\s+-\s+/.test(numRes.stdout.trim())
   if (isBinary) {
     return { path: safePath, staged: false, truncated: false, totalLines: 0, text: '', isBinary: true }
   }
 
-  const { stdout } = await runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--no-color', ...refs, '--', safePath])
+  const { stdout } = await runGit(cwd, ['-c', 'core.quotepath=false', 'diff', '--no-color', ...refs, '--', safePath], { noOptionalLocks: true })
   if (opts?.full) return untruncatedResult(safePath, false, stdout)
   const trunc = truncateDiff(stdout)
   return { path: safePath, staged: false, ...trunc, isBinary: false }
@@ -948,6 +948,7 @@ export async function getLog(cwd: string, limitRaw: number): Promise<GitCommit[]
     // buffer, but keep the timeout snug to defend against pathological
     // cases (e.g. shallow-converting a huge repo on demand).
     timeoutMs: 8_000,
+    noOptionalLocks: true,
   })
 
   const out: GitCommit[] = []
@@ -1366,7 +1367,7 @@ export async function getStagedDiff(cwd: string): Promise<{ text: string; trunca
   const { stdout } = await runGit(cwd, [
     '-c', 'core.quotepath=false',
     'diff', '--no-color', '--cached',
-  ])
+  ], { noOptionalLocks: true })
   return trimDiffToCap(stdout)
 }
 

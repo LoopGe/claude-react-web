@@ -795,7 +795,12 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
       return
     }
     if (pendingOpen) {
-      // User clicked again before the deferred open resolved — cancel.
+      // Second click while the deferred open is still waiting on the fetch:
+      // the user is saying "open it NOW", not "cancel". The row looks dead
+      // during the pending window (chevron flipped, body not yet grown), so
+      // treating the retry as a cancel left the row permanently shut — the
+      // "展不开" symptom. Open immediately and show the loading placeholder.
+      setOpen(true)
       setPendingOpen(false)
       return
     }
