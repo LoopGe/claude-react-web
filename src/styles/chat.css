@@ -116,6 +116,11 @@
      Setting overflow-y: hidden prevents a double-scrollbar. */
   overflow-y: hidden;
   overflow-x: hidden;
+  /* Disable browser scroll anchoring: Virtuoso manages scroll position
+     itself (fold-lockstep, follow, etc.). Native anchoring fights it when
+     offsetTop (virtualization padding) shifts — the "Ctrl+F 全部卡片闪烁"
+     report. */
+  overflow-anchor: none;
   /* No container inset: the top/bottom breathing room now lives on each
      .virtuoso-item-wrapper (padding-block: calc(var(--chat-row-gap) / 2)) so
      the gap belongs to the messages themselves rather than a fixed container
@@ -123,6 +128,18 @@
      composer, while the between-message gap is the full --chat-row-gap — the
      same rhythm the folded tool-group body uses internally (it reads the same
      token), so a group card is one uniform beat with the messages around it. */
+}
+/* Disable browser scroll anchoring on Virtuoso's scroller: Virtuoso manages
+   scroll position itself. Native anchoring fights it when offsetTop shifts. */
+.chat-virtuoso-scroller {
+  overflow-anchor: none;
+}
+/* Isolate the item-list's internal layout: Virtuoso's virtualization padding
+   (offsetTop/offsetBottom) shifts when it re-measures, and those shifts are
+   counted as CLS against every card in the list. contain:layout keeps the
+   shifts local. */
+[data-testid="virtuoso-item-list"] {
+  contain: layout;
 }
 /* The native scrollbar on .chat-virtuoso-scroller is hidden by the overlay
    scrollbar (useOverlayScrollbar in MessageList), so scrollbar-gutter is no

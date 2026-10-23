@@ -89,6 +89,11 @@ export interface TranscriptRow {
    *  itemContent's foldSearchHit predicate so the user-body force-open
    *  uses exactly the text the match counter and <mark> renderer see. */
   plainText: string | null
+  /** Search-highlight tick. When the search query changes, matching rows get
+   *  a new `searchTick` value (new object identity) so Virtuoso re-renders
+   *  ONLY those rows. Non-matching rows keep their identity and skip the
+   *  re-render — this is what prevents the "Ctrl+F 全部卡片闪烁" mass-flash. */
+  searchTick?: string
   /** Present only on a folded group of >=2 consecutive tool-only assistant
    *  rows. `id` stays the FIRST member's uuid so live 1->2 growth is a
    *  same-key height change + mid-list removal of the second row (I3). */

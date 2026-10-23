@@ -790,7 +790,11 @@ mark.search-hl {
   background: color-mix(in srgb, var(--warn) 40%, transparent);
   color: inherit;
   border-radius: var(--radius-2xs);
-  padding: 0 1px;
+  /* No padding: even 1px inline padding changes text metrics when marks
+     appear/disappear, which re-wraps lines, changes row heights, and shifts
+     Virtuoso's offsetTop — the "Ctrl+F 全部卡片闪烁" report. The background
+     highlight alone is sufficient visual affordance. */
+  padding: 0;
 }
 mark.search-hl.search-hl-active {
   background: var(--warn);

@@ -41,11 +41,16 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
     // eslint-disable-next-line react-hooks/exhaustive-deps -- currentIdx excluded to avoid infinite loop
   }, [activeIndex])
 
-  // Focus input on open. Query state is reset by remounting this component
-  // with a new key per open cycle; keeping the outer search bar present lets
-  // its close animation finish.
+  // Reset query state and focus input on open. Previously the parent forced
+  // a remount via `key={search-${searchInstance}}` to reset state, but the
+  // unmount+mount cycle caused a layout flash (the bar's height going 38→0→38
+  // resized the messages area) — the "Ctrl+F 全部卡片闪烁" report. Now we
+  // reset in-place: the bar stays mounted (close animation intact) and the
+  // state reset is invisible.
   useEffect(() => {
     if (!open) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on open
+    setQuery(initialQuery ?? '')
     requestAnimationFrame(() => {
       const el = inputRef.current
       if (!el) return

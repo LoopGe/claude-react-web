@@ -771,6 +771,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // closes the bar, while the active-index prop has no `searchOpen` gate and
   // stays >= 0 until the emptied query finishes propagating. Keying on both
   // means the seek can never read an empty map in that window.
+  // Search state lives in refs so `itemContent` stays identity-stable across
+  // query changes. Virtuoso re-renders every row when itemContent's identity
+  // changes — which on a search keystroke meant a mass re-render that shifted
+  // Virtuoso's offsetTop and flashed all cards ("Ctrl+F 全部卡片闪烁").
+  // Rows that need highlighting re-render via the searchTick field on
+  // virtuosoData (see below); non-matching rows see no data change and skip.
+  /* eslint-disable react-hooks/refs -- render-time ref write; documented above:
+     itemContent must read the LATEST search state without being recreated. */
+  const searchRef = useRef({ searchQuery, searchActiveMsgIdx, searchActiveMatchInItem })
+  searchRef.current = { searchQuery, searchActiveMsgIdx, searchActiveMatchInItem }
+  /* eslint-enable react-hooks/refs */
   const searchLive = !!searchQuery?.trim() || (searchActiveMsgIdx != null && searchActiveMsgIdx >= 0)
   const itemToVirtIdx = useMemo(() => {
     if (!searchLive) return EMPTY_VIRT_IDX
@@ -1291,6 +1302,9 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   }, [onRegisterNavigate, navigate, navigateToIndex, jumpToBottom])
 
   const itemContent = useCallback((_index: number, virtuosoItem: VirtuosoItem) => {
+    // Search state read from a ref (not closure) so this callback stays
+    // identity-stable across query changes — see searchRef above.
+    const { searchQuery: sq, searchActiveMsgIdx: sami, searchActiveMatchInItem: samii } = searchRef.current
     if (isStreamingRowItem(virtuosoItem)) {
       // Inline-mode live turn row (spec §1). No data-message-id, no
       // enter-animation hooks, no reveal snapshot: it is not a message and
@@ -1315,10 +1329,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // hit to another even within the same message —without per-match
     // resolution we'd be stuck at message granularity.
     const isActiveItem =
-      searchActiveMsgIdx != null &&
-      searchActiveMsgIdx >= 0 &&
-      item.itemIndex === searchActiveMsgIdx
-    const activeMatchInItem = isActiveItem ? searchActiveMatchInItem : undefined
+      sami != null &&
+      sami >= 0 &&
+      item.itemIndex === sami
+    const activeMatchInItem = isActiveItem ? samii : undefined
     // One-shot entrance animation for genuinely-new arrivals. The flag is
     // armed in the gate block above. Unlike the previous "delete on first
     // render" approach, we KEEP the flag (and thus the `msg-enter` class)
@@ -1365,8 +1379,18 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // works with an empty expansion Set — the common case.
     const foldSearchHit =
       isHumanRow &&
-      !!searchQuery?.trim() &&
-      countMatches(item.plainText, searchQuery.trim()) > 0
+      !!sq?.trim() &&
+      countMatches(item.plainText, sq.trim()) > 0
+    // Only forward `searchQuery` to rows that actually carry a match (or
+    // whose plainText is unknown). When the query changes, non-matching rows
+    // keep `undefined` — their memo'd MessageView/ToolGroupCard see no prop
+    // change and skip the re-render.
+    const searchQueryForRow =
+      !sq?.trim()
+        ? undefined
+        : item.plainText == null || countMatches(item.plainText, sq.trim()) > 0
+          ? sq
+          : undefined
     // Which transcript item holds the active search match, when it landed
     // inside THIS row's tool group. The per-member gating (which member gets
     // activeMatchInItem) is owned inside ToolGroupCard.
@@ -1381,7 +1405,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           <ToolGroupCard
             members={item.toolGroup.members}
             memberItemIndices={item.toolGroup.memberItemIndices}
-            searchQuery={searchQuery}
+            searchQuery={searchQueryForRow}
             working={working}
             autoExpandRunningGroups={autoExpandRunningGroups}
             // Agent/Task/Explore and Workflow are absent from toolStatus by
@@ -1404,7 +1428,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           <MessageView
             msg={item.msg}
             isCompactSummary={item.isCompactSummary}
-            searchQuery={searchQuery}
+            searchQuery={searchQueryForRow}
             activeMatchInItem={activeMatchInItem}
             sending={item.sending}
             deliveryStatus={item.deliveryStatus}
@@ -1459,7 +1483,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // flip-time snapshot; identity-stable between reveals.
     // resultConsumedCtx: identity-stable (useCallback []), listed because
     // itemContent reads it for `consumedKey` — a no-op for invalidation.
-  }, [searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, revealSnapshot, resultConsumedCtx])
+  }, [isRowEntering, handleEnterAnimationEnd, handleRevealRowAnimationEnd, enterNodeRef, working, showMessageHeaders, autoExpandRunningGroups, firstItemId, lastItemId, nextItemTypeMap, onSwitchModel, onAbortBash, expandedBodies, toggleBodyExpanded, subagentCtx?.index, workflowCtx?.index, revealSnapshot, resultConsumedCtx])
 
   // Key rows by their stable message id instead of Virtuoso's default
   // (offset-space index).
@@ -1521,13 +1545,35 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // stay valid; `handleRangeChanged` reads only `range.startIndex` (a number —
   // a tail append can never become startIndex while rows exist), so it needs
   // no guard.
-  const virtuosoData: VirtuosoItem[] = useMemo(
-    () =>
+  // Search tick: increments when the debounced query changes. Injected into
+  // matching items so Virtuoso re-renders ONLY those rows (non-matching items
+  // see no data change and skip). Without this, itemContent's stability means
+  // rows never re-render and marks never appear; with a full-list rewrite the
+  // mass re-render flashes all cards.
+  const searchTick = useMemo(() => (searchQuery?.trim() ? searchQuery : ''), [searchQuery])
+  const virtuosoData: VirtuosoItem[] = useMemo(() => {
+    const base: VirtuosoItem[] =
       resolvedMode === 'inline' && liveStreamingContent != null
         ? [...renderableItems, { kind: 'streaming', content: liveStreamingContent }]
-        : renderableItems,
-    [renderableItems, resolvedMode, liveStreamingContent],
-  )
+        : renderableItems
+    if (!searchTick) return base
+    // Shallow-copy only matching items (new object identity = Virtuoso
+    // re-render). Non-matching items keep their identity.
+    let copied = false
+    const out: VirtuosoItem[] = new Array(base.length)
+    for (let i = 0; i < base.length; i++) {
+      const it = base[i]
+      if ('kind' in it) { out[i] = it; continue }
+      const matches = it.plainText == null || countMatches(it.plainText, searchTick.trim()) > 0
+      if (matches) {
+        if (!copied) { for (let j = 0; j < i; j++) out[j] = base[j]; copied = true }
+        out[i] = { ...it, searchTick } as TranscriptRow
+      } else {
+        out[i] = it
+      }
+    }
+    return copied ? out : base
+  }, [renderableItems, resolvedMode, liveStreamingContent, searchTick])
 
   // Virtuoso Footer is reserved for transcript metadata and invisible bottom
   // breathing room. The bottom overlay stack (live streaming bubble + task

@@ -19,6 +19,14 @@ export function usePresenceValue<T>(value: T | null | undefined | false, duratio
   }))
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // When the value becomes non-null, adopt it SYNCHRONOUSLY (during render)
+  // rather than in an effect. An effect-based update runs after paint, so the
+  // element renders one frame late — its layout change falls outside the
+  // browser's hadRecentInput window and is counted as CLS ("Ctrl+F 全部卡片
+  // 闪烁"). The exit path still uses the effect + timer (that's its job).
+  const activeValue = normalizedValue != null ? normalizedValue : presence.value
+  const isExitingNow = normalizedValue == null && presence.isExiting
+
   /* eslint-disable react-hooks/set-state-in-effect -- presence mirrors the open prop and delays only the exit unmount */
   useEffect(() => {
     if (timerRef.current) {
@@ -56,5 +64,5 @@ export function usePresenceValue<T>(value: T | null | undefined | false, duratio
     if (timerRef.current) clearTimeout(timerRef.current)
   }, [])
 
-  return presence
+  return { value: activeValue, isExiting: isExitingNow }
 }
