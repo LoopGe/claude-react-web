@@ -475,8 +475,12 @@ export interface ServerMirror {
   /** Transient thinking-token estimate for the CURRENT thinking block
    *  (`system/thinking_tokens` frames — mirrored like `apiRetry`). Lives
    *  outside items/messages/IDB: purely a WorkingBubble progress hint.
-   *  Updated per frame during the redacted-thinking phase; cleared on the
-   *  `result` (turn end) or `user` (new turn) message. Null when no
+   *  Updated per frame while the thinking block streams (the frame carries no
+   *  origin — sets are origin-blind); cleared at any main-thread block
+   *  boundary (ANY `content_block_start`, or the per-block `assistant`
+   *  finalize — the durable one, so replays clear too) and on the `result`
+   *  (turn end). Not cleared by `user` frames: steer echoes / task-notification
+   *  injections arrive mid-block and would wipe a live estimate. Null when no
    *  estimate is in flight. */
   thinkingTokens: number | null
   /** Latest authoritative CLI session state (`system/session_state_changed`).

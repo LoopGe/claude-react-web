@@ -80,8 +80,8 @@ export interface ChatStream {
   apiRetry: SdkMessage | null
   // NOTE: the live-turn telemetry is deliberately NOT exposed here —
   // `streamingContent` (the 12.5 Hz LIVE_TURN_FLUSH field), `tokenRate`,
-  // `activePhase` and `thinkingTokens` (one frame per delta during redacted
-  // thinking). Every field this hook subscribes to re-renders its host — the
+  // `activePhase` and `thinkingTokens` (one frame per delta while the current
+  // thinking block streams). Every field this hook subscribes to re-renders its host — the
   // whole Chat body, or ChatPanel for the side chat — so the leaves that
   // DISPLAY them subscribe directly instead (useSessionField):
   //   - streamingContent → MessageList's OverlayStreamingRegion (and, in the

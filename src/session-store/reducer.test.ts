@@ -421,6 +421,17 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(state.mirror.apiRetry).toBeNull()
   })
 
+  it('clears the transient thinkingTokens slot at SESSION_TERMINATED', () => {
+    // Same reasoning as apiRetry above: the slot's terminal clearer is the
+    // `result` frame, which a terminated session never delivers.
+    let state = createInitialSessionState('s1')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 26) })
+    expect(state.mirror.thinkingTokens).toBe(26)
+
+    state = reduceSessionState(state, { type: 'SESSION_TERMINATED' })
+    expect(state.mirror.thinkingTokens).toBeNull()
+  })
+
   it('is a true no-op when re-dispatched after the sweep (no subscriber churn)', () => {
     // The dispatcher re-fires after every replay of a terminated session, so
     // a second dispatch must return the IDENTICAL state — otherwise each
@@ -4054,7 +4065,14 @@ describe('reducer: api_retry transient slot', () => {
 // discipline as api_retry: never an item, never advancing lastMessageUuid.
 // Unlike api_retry it is NOT cleared by every other message (stream_event
 // deltas interleave with the estimates during the same thinking phase —
-// clearing on them would flicker); it clears on `result` / `user`.
+// clearing on them would flicker). It clears at any main-thread block
+// boundary (ANY content_block_start — the block it described is over, and a
+// stale estimate must not ride into the next tool call — or the per-block
+// durable `assistant` finalize, which also covers reconnect replays and
+// includePartialMessages:false sessions) and on `result`. NOT on `user`:
+// steer echoes / queued-input echoes / <task-notification> injections are
+// parentless user frames that arrive mid-block. Sidechain frames never clear
+// the slot; SETS are origin-blind (the frame carries no parent).
 // ---------------------------------------------------------------------------
 
 describe('reducer: thinking_tokens transient slot', () => {
@@ -4082,21 +4100,138 @@ describe('reducer: thinking_tokens transient slot', () => {
     expect(state.mirror.thinkingTokens).toBe(500)
   })
 
-  it('keeps the estimate across assistant frames mid-turn (only result/user clear it)', () => {
+  function blockStartMsg(uuid: string, contentBlock: Record<string, unknown>, parent?: string): SdkMessage {
+    return {
+      type: 'stream_event',
+      uuid,
+      ...(parent != null ? { parent_tool_use_id: parent } : {}),
+      event: { type: 'content_block_start', index: 0, content_block: contentBlock },
+    } as unknown as SdkMessage
+  }
+
+  it('clears the estimate when a text block starts (the thinking block it described is over)', () => {
     let state = createInitialSessionState('s')
     state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'text') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: blockStartMsg('se1', { type: 'text', text: '' }) })
+    expect(state.mirror.thinkingTokens).toBeNull()
+  })
+
+  it('clears the estimate when a tool_use block starts (the "~N tok" chip must not ride through a tool call)', () => {
+    // Regression: a long tool call (Bash sleep, …) left the last thinking
+    // estimate on the WorkingBubble for the whole run ("Calling Bash… ~26
+    // tok"), because nothing cleared the slot between the thinking block's
+    // end and the tool_result's `user` frame at the very end.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 26) })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: blockStartMsg('se1', { type: 'tool_use', id: 'tu1', name: 'Bash', input: {} }),
+    })
+    expect(state.mirror.thinkingTokens).toBeNull()
+  })
+
+  it('clears the estimate when a NEW thinking block starts (one block\'s total must not ride the next)', () => {
+    // SDKThinkingTokensMessage: "estimated_tokens is the running total for the
+    // current thinking block". A new block start is a block boundary — the old
+    // total is stale, and if the new block streams no estimates of its own
+    // (not every model digests estimated_tokens) nothing would overwrite it.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: blockStartMsg('se1', { type: 'thinking', thinking: '' }),
+    })
+    expect(state.mirror.thinkingTokens).toBeNull()
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt2', 76) })
+    expect(state.mirror.thinkingTokens).toBe(76)
+  })
+
+  it('clears the estimate on a redacted_thinking block start (same block-boundary rule)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: blockStartMsg('se1', { type: 'redacted_thinking', data: '' }),
+    })
+    expect(state.mirror.thinkingTokens).toBeNull()
+  })
+
+  it('a sidechain content_block_start does not clear the main-thread estimate', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: blockStartMsg('se1', { type: 'text', text: '' }, 'toolu_sub_1'),
+    })
     expect(state.mirror.thinkingTokens).toBe(500)
   })
 
-  it('clears the slot on the result frame (turn end) and on a new user turn', () => {
+  it('clears on the per-block assistant finalize (durable boundary — covers missed stream_events)', () => {
+    // SDKAssistantMessage: "one assistant message per completed content block".
+    // Unlike stream_events this frame is ring-persisted, so it also runs on a
+    // reconnect replay (missed content_block_starts are never re-served) and
+    // in includePartialMessages:false sessions — without it a stale "~N tok"
+    // rides a whole tool call (the original bug) on those paths.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'text') })
+    expect(state.mirror.thinkingTokens).toBeNull()
+  })
+
+  it('a sidechain user frame (parent set) does not clear the main-thread estimate', () => {
+    // A subagent's tool_result is a `user` frame with parent_tool_use_id set;
+    // it must not null the main thread's live estimate. Top-level user frames
+    // (new turn) still do — pinned by the result/new-turn test below.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'user',
+        uuid: 'u-sub',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_sub', content: '' }] },
+        parent_tool_use_id: 'toolu_sub_1',
+      } as unknown as SdkMessage,
+    })
+    expect(state.mirror.thinkingTokens).toBe(500)
+  })
+
+  it('a sidechain assistant finalize (parent set) does not clear the main-thread estimate', () => {
+    // A subagent's per-block `assistant` finalize must not null the main
+    // thread's live estimate — the assistant-clear branch is main-thread-only
+    // for the same reason the two sidechain clears above are.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'assistant',
+        uuid: 'a-sub',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'sub' }] },
+        parent_tool_use_id: 'toolu_sub_1',
+      } as unknown as SdkMessage,
+    })
+    expect(state.mirror.thinkingTokens).toBe(500)
+  })
+
+  it('clears the slot on the result frame (turn end)', () => {
     let state = createInitialSessionState('s')
     state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 500) })
     state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg('r1') })
     expect(state.mirror.thinkingTokens).toBeNull()
-    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt2', 700) })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('u1', 'again') })
-    expect(state.mirror.thinkingTokens).toBeNull()
+  })
+
+  it('a top-level user frame mid-block does NOT clear (steer echo / task-notification injection)', () => {
+    // SessionManager.send() broadcasts the user echo immediately — mid-block
+    // when the model is still thinking — and the harness injects
+    // <task-notification> user frames the same way. Clearing on `user` would
+    // wipe a live estimate until the next one (seconds during a ping-only
+    // stretch). Real turn changes are covered by `result` + the block
+    // boundaries; the new turn's first content_block_start clears anyway.
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 700) })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('u1', 'steer') })
+    expect(state.mirror.thinkingTokens).toBe(700)
   })
 
   it('ignores malformed estimates (non-numeric) instead of crashing', () => {
@@ -4808,6 +4943,22 @@ describe('live turn finalized-text pruning', () => {
     expect(state.mirror.liveTurn).not.toBeNull()
     expect(state.mirror.liveTurn?.phase).toBe('writing')
     expect(state.mirror.liveTurn?.flushedText).toEqual([{ text: 'child ', sidechain: true }])
+  })
+
+  it('classifies a redacted_thinking block start as the thinking phase', () => {
+    // redacted_thinking is the block the thinking-tokens estimate was built
+    // for. Without this the phase stays null/stale and the WorkingBubble
+    // labels that estimate's own phase "Working" (or the previous tool's).
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'stream_event',
+        uuid: 'se-r',
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'redacted_thinking', data: '' } },
+      } as unknown as SdkMessage,
+    })
+    expect(state.mirror.liveTurn?.phase).toBe('thinking')
   })
 
   it('a flush after pruning cannot resurrect the pruned text', () => {

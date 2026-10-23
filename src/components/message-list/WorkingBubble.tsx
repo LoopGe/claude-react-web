@@ -145,9 +145,9 @@ export interface WorkingBubbleProps {
   activeSubagents?: ActiveSubagent[]
   tokenRate?: number | null
   /** Live thinking-token estimate for the current thinking block
-   *  (`system/thinking_tokens` frames — redacted-thinking progress, where
+   *  (`system/thinking_tokens` frames — thinking-phase progress, where
    *  tokenRate stays silent because no text deltas stream). Approximate;
-   *  cleared at turn end. */
+   *  cleared when the thinking block ends / at turn end. */
   thinkingTokens?: number | null
   activePhase?: import('../../hooks/useChatStream').ActivePhase
   /** True while the CLI is compacting the transcript mid-turn (SDK
@@ -251,6 +251,18 @@ export const WorkingBubble = memo(function WorkingBubble({
   // token-rate readout glides instead of jumping.
   const countRate = Math.round(useCountUp(tokenRate ?? 0, 250))
 
+  // The two chips are mutually exclusive, and the thinking estimate WINS
+  // while the phase is 'thinking'. `tokenRate` is never reset mid-turn, so
+  // its absence is not a reliable "no rate yet" signal: after the turn has
+  // streamed any text, a frozen M tok/s would otherwise crowd the estimate
+  // out (the old `tokenRate == null` gate) and keep rendering under the
+  // "Thinking..." label where it measures nothing. The `tokenRate == null`
+  // fallback keeps phase-less configs (includePartialMessages:false) working.
+  const estimateTok = thinkingTokens != null && thinkingTokens > 0
+    && (activePhase === 'thinking' || tokenRate == null)
+    ? thinkingTokens
+    : null
+
   // The idle collapse (turn ended, not waiting) used to keep the tasks pill
   // alive as the TasksPanel entry; that entry now lives in the composer bar,
   // so an idle bubble with no subagents has nothing left to render. Return
@@ -286,17 +298,17 @@ export const WorkingBubble = memo(function WorkingBubble({
         // stamped a start.
         <ElapsedTimer startedAt={startedAt} live fallbackToMount className="working-timer" />
       )}
-      {!waiting && !idle && tokenRate != null && tokenRate > 0 && (
+      {!waiting && !idle && estimateTok == null && tokenRate != null && tokenRate > 0 && (
         <span className="working-rate">
           {countRate} tok/s
         </span>
       )}
-      {/* Redacted-thinking progress: no text deltas stream (tokenRate stays
+      {/* Thinking-phase progress: no text deltas stream (tokenRate stays
           silent), so the SDK's own token estimate is the only signal. "~"
           marks it as an approximation of the current thinking block. */}
-      {!waiting && !idle && thinkingTokens != null && thinkingTokens > 0 && tokenRate == null && (
+      {!waiting && !idle && estimateTok != null && (
         <span className="working-rate">
-          ~{formatTokens(thinkingTokens)} tok
+          ~{formatTokens(estimateTok)} tok
         </span>
       )}
       {/* Retry pill: wait time + attempt count ("26s 7/10"), to the right of
@@ -329,7 +341,7 @@ export type LiveWorkingBubbleProps = Omit<WorkingBubbleProps, 'tokenRate' | 'act
    *  (usePhaseDwell), so sub-300ms blips don't churn it. The main panel's
    *  behaviour; the side drawer shows the raw phase. */
   dwellPhase?: boolean
-  /** Show the redacted-thinking token estimate (`thinkingTokens`). The main
+  /** Show the thinking-phase token estimate (`thinkingTokens`). The main
    *  panel's behaviour; the side drawer never showed it. */
   showThinkingTokens?: boolean
 }

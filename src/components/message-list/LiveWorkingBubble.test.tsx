@@ -154,7 +154,7 @@ describe('LiveWorkingBubble', () => {
     await waitFor(() => expect(container.querySelector('.working-bar')).toBeNull())
   })
 
-  it('shows the redacted-thinking estimate only when showThinkingTokens is set', () => {
+  it('shows the thinking-phase estimate only when showThinkingTokens is set', () => {
     const sid = 'lwb-thinking'
     const { container } = render(
       <>
@@ -170,5 +170,25 @@ describe('LiveWorkingBubble', () => {
     const side = container.querySelector('[data-testid="side"]') as HTMLElement
     expect(main.querySelector('.working-rate')?.textContent).toContain('~4.2k tok')
     expect(side.querySelector('.working-rate')).toBeNull()
+  })
+
+  it('the thinking estimate wins over a frozen rate while the phase is thinking', () => {
+    // `tokenRate` is never reset mid-turn, so after the turn has streamed any
+    // text a later thinking block must still show its own estimate — not the
+    // frozen M tok/s from that earlier text (which measures nothing while
+    // thinking).
+    const sid = 'lwb-estimate-wins'
+    const { container } = render(<LiveWorkingBubble sessionId={sid} active showThinkingTokens />)
+    act(() => {
+      send(sid, blockStart({ type: 'text', text: '' }))
+      seedRate(sid)
+    })
+    expect(container.querySelector('.working-rate')?.textContent).toContain('tok/s')
+    act(() => {
+      send(sid, blockStart({ type: 'thinking' }))
+      send(sid, { type: 'system', subtype: 'thinking_tokens', uuid: 'tt', estimated_tokens: 4200 } as unknown as SdkMessage)
+    })
+    expect(container.querySelector('.working-rate')?.textContent).toContain('~4.2k tok')
+    expect(container.querySelector('.working-rate')?.textContent).not.toContain('tok/s')
   })
 })

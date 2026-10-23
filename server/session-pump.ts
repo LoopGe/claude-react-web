@@ -1337,7 +1337,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           continue
         }
         // `system/thinking_tokens`: live thinking-token estimate for the
-        // current thinking block (redacted-thinking phase progress). Purely
+        // current thinking block (live thinking-phase progress). Purely
         // transient — forwarded to live subscribers only, never entering the
         // history ring (a long thinking phase emits one frame per delta, and
         // these must not evict durable content) nor surviving replay. The

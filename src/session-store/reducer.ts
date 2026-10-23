@@ -202,13 +202,15 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       // retry is in flight", and its ONLY clearer is the next non-retry
       // message — which a terminated session never delivers. Without this a
       // "Retrying in Ns…" divider hangs on a session that can never retry.
-      // (`thinkingTokens` needs nothing here: it is rendered only by the
-      // WorkingBubble, which does not mount once the session is terminated.)
-      const transientCleared = state.mirror.liveTurn !== null || state.mirror.apiRetry !== null
+      // `thinkingTokens` for the same reason: its terminal clearer is the
+      // `result` frame, which a terminated session never delivers either.
+      const transientCleared = state.mirror.liveTurn !== null
+        || state.mirror.apiRetry !== null
+        || state.mirror.thinkingTokens != null
       if (swept === state.mirror && !transientCleared && intent === state.intent) return state
       return {
         sessionId: state.sessionId,
-        mirror: { ...swept, liveTurn: null, apiRetry: null },
+        mirror: { ...swept, liveTurn: null, apiRetry: null, thinkingTokens: null },
         intent,
       }
     }
@@ -2257,10 +2259,11 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // api_retry routes to its slot. Unlike api_retry it is NOT cleared by every
   // other message: stream_event deltas interleave with thinking_tokens frames
   // during the same thinking phase, and clearing on them would flicker the
-  // display off between estimates. It clears on `result` (turn end) and on
-  // `user` (a new turn starts). It also must not advance lastMessageUuid —
-  // the server never stores it in the ring, so a sinceUuid pointing at it
-  // would miss the ring and force full replays.
+  // display off between estimates. It clears when the thinking block it
+  // describes ends (any main-thread block-boundary frame — content_block_start
+  // or the per-block `assistant` finalize) and on `result` (turn end). It also
+  // must not advance lastMessageUuid — the server never stores it in the ring,
+  // so a sinceUuid pointing at it would miss the ring and force full replays.
   const isThinkingTokens = message.type === 'system' && message.subtype === 'thinking_tokens'
   // `stream_event` is a live-streaming delta (one per content chunk — hundreds
   // per heavy turn). It must NOT advance lastMessageUuid: the uuid-anchored WS
@@ -2285,10 +2288,35 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
 
   let thinkingTokens: number | null = mirror.thinkingTokens
   if (isThinkingTokens) {
+    // NOTE: SDKThinkingTokensMessage carries no parent_tool_use_id — the
+    // estimate is origin-blind at this layer (and the pump forwards every
+    // frame). There is nothing to gate on; see the lifecycle note above.
     const estimate = (incomingMessage as { estimated_tokens?: unknown }).estimated_tokens
     thinkingTokens = typeof estimate === 'number' && Number.isFinite(estimate) ? estimate : null
-  } else if (incomingMessage.type === 'result' || incomingMessage.type === 'user') {
+  } else if (incomingMessage.type === 'result') {
     thinkingTokens = null
+  } else if (incomingParent == null && incomingMessage.type === 'assistant') {
+    // Durable per-block finalize ("one assistant message per completed content
+    // block" — SDKAssistantMessage). Clears the estimate when its thinking
+    // block completes, and — unlike the stream_event boundary below — this
+    // frame is ring-persisted, so it also runs on a reconnect replay (missed
+    // stream_events are never re-served) and in includePartialMessages:false
+    // sessions. Without it a stale "~N tok" could ride a whole tool call.
+    thinkingTokens = null
+  } else if (incomingParent == null && isStreamEvent) {
+    // Live block boundary: ANY content_block_start means the thinking block
+    // the estimate described ("running total for the current thinking block"
+    // — SDKThinkingTokensMessage) is over. Any block type clears, including
+    // another thinking/redacted_thinking start — that is a NEW block whose own
+    // estimates repaint within ms, while keeping the old count would let one
+    // block's total ride the next (and never be overwritten if the new block
+    // streams no estimates at all). Deliberately NO `user` clear: steer echoes,
+    // queued-input echoes and <task-notification> injections are parentless
+    // `user` frames that arrive mid-block and would wipe a live estimate, and
+    // real turn changes are already covered by `result` (turn end) plus these
+    // block boundaries (the new turn's first block).
+    const ev = (incomingMessage as { event?: { type?: string } }).event
+    if (ev?.type === 'content_block_start') thinkingTokens = null
   }
 
   const workingMirror: ServerMirror = {
@@ -3530,8 +3558,15 @@ function updateLiveTurnMirror(mirror: ServerMirror, message: SdkMessage): Server
       if (block?.type === 'text' && liveTurn.writingStartedAt == null) {
         liveTurn = { ...liveTurn, writingStartedAt: Date.now() }
       }
-    } else if (block?.type === 'thinking') {
-      liveTurn = { ...liveTurn, phase: 'thinking' }
+    } else if (block?.type === 'thinking' || block?.type === 'redacted_thinking') {
+      // redacted_thinking is the block the thinking-tokens estimate was
+      // originally built for — without this the phase stays null/stale and
+      // the WorkingBubble labels the estimate's own phase "Working". Skip the
+      // spread when the phase already matches so the identity short-circuit
+      // below still holds for a no-op start (thinking → thinking).
+      if (liveTurn.phase !== 'thinking') {
+        liveTurn = { ...liveTurn, phase: 'thinking' }
+      }
     } else if (block?.type === 'text') {
       // Mark when actual writing starts (skip thinking phase)
       liveTurn = {
