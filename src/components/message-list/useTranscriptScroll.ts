@@ -42,7 +42,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
-import { anyCollapseAnimatingInside } from '../collapse-animation'
+import { anyCollapseAnimatingInside, bodyHeightDelta, snapshotBodyHeights, type BodyHeightSnapshot } from '../collapse-animation'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { scrollDebug as dbg } from './scroll-debug'
 import { clamp } from '../../utils/clamp'
@@ -961,6 +961,12 @@ export function useTranscriptScroll({
     // sub-pixel content change — the fold-lockstep compensation below needs
     // the FRACTIONAL delta to keep the bottom exactly still.
     let lastItemListH: number | null = null
+    /** Previous frame's animating-body height snapshot — the fold-lockstep's
+     *  reference for computing the fold's own height contribution as a
+     *  per-body delta (so a body that just registered or just settled
+     *  contributes 0, not its full height). Null until the first
+     *  observation of a fold. */
+    let lastBodySnap: BodyHeightSnapshot | null = null
     // The fold-lockstep LEDGER: the compensation's own fractional scrollTop.
     // Measured on this very page (dpr=2): `scrollTop = x.5` reads back `x` —
     // Chrome floors scrollTop to whole CSS px on write AND read. An
@@ -1028,14 +1034,14 @@ export function useTranscriptScroll({
       // fired the instant re-pin with scrollTop = scrollHeight = 0 on the
       // hidden element. Same stand-down contract as syncBottomGeometry and
       // the scroller-RO backstop: decide nothing from collapsed geometry.
-      if (scroller.clientHeight === 0) { dbg('itemlist-RO collapsed-skip', () => ({})); lastItemListH = null; ledger = null; return }
+      if (scroller.clientHeight === 0) { dbg('itemlist-RO collapsed-skip', () => ({})); lastItemListH = null; lastBodySnap = null; ledger = null; return }
       // This frame's observation of the item-list box. borderBoxSize carries
       // the fractional block size; the rect fallback covers engines without
       // the entries API shape. RO is state-based: one entry per element per
       // callback, so the last entry IS this frame's geometry.
       const entry = entries[entries.length - 1]
       const itemListH = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height
-      if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); lastItemListH = itemListH; ledger = null; return }
+      if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); lastItemListH = itemListH; lastBodySnap = snapshotBodyHeights(scroller); ledger = null; return }
       const contentH = contentHeightOf(scroller)
 
       // Lockstep bottom-pinning while a collapse fold is in flight anywhere in
@@ -1084,11 +1090,34 @@ export function useTranscriptScroll({
       // zero-delta fire degenerates to a no-op — scrollTop is unchanged).
       if (anyCollapseAnimatingInside(scroller)) {
         dbg('itemlist-RO fold-lockstep', () => ({}))
+        // The fold's height delta is read from the ANIMATING BODIES' per-body
+        // heights, not the item-list border box. The item-list height is
+        // polluted by Virtuoso's virtualization spacer (`paddingTop:
+        // offsetTop`), which updates asynchronously via React and lands in a
+        // different layout pass from the fold's per-frame height write —
+        // compensating from that delta over/under-shoots by the padding
+        // change on the frames where Virtuoso rebalances its window
+        // (measured live: 3–26px per-frame movement of the cards below a
+        // collapsing ToolGroupCard). The bodies' heights are the direct cause
+        // and change in the same layout pass as the transcript's boxes.
+        //
+        // `bodyHeightDelta` returns the sum of per-body height CHANGES
+        // (excluding bodies that just registered or just settled, whose full
+        // height is not a frame-to-frame change). On the first observation of
+        // a fold (no previous snapshot) it returns null — fall back to the
+        // item-list delta so the frame is still compensated.
+        const bodySnap = snapshotBodyHeights(scroller)
+        const foldDelta = bodyHeightDelta(lastBodySnap, bodySnap)
+        lastBodySnap = bodySnap
+        // Keep the item-list baseline current for the non-fold path below.
         const itemDelta = lastItemListH == null ? null : itemListH - lastItemListH
         lastItemListH = itemListH
         lastContentHeight = contentH
+        // Primary signal: the bodies' per-body height delta. Fall back to the
+        // item-list delta on the first fold frame.
+        const delta = foldDelta ?? itemDelta
         const domTop = scroller.scrollTop
-        if (itemDelta == null) {
+        if (delta == null) {
           // No fractional reference (first observation after a baseline
           // reset): fall back to the integer pin for this frame.
           pinToBottom(scroller, { reason: 'fold-lockstep', verify: false })
@@ -1101,8 +1130,8 @@ export function useTranscriptScroll({
           // layout pass (the clamp is what keeps the bottom pinned — adding
           // the delta again double-scrolls, measured at 2× per frame), so
           // the ledger starts FROM the clamped value.
-          if (ledger == null) ledger = itemDelta < 0 ? domTop : domTop + itemDelta
-          else ledger += itemDelta
+          if (ledger == null) ledger = delta < 0 ? domTop : domTop + delta
+          else ledger += delta
           const max = scroller.scrollHeight - scroller.clientHeight
           if (ledger > max) ledger = max
           if (ledger < 0) ledger = 0
@@ -1126,6 +1155,7 @@ export function useTranscriptScroll({
         return
       }
       lastItemListH = itemListH
+      lastBodySnap = null
       ledger = null
       clearFoldTransform()
 
@@ -1179,6 +1209,7 @@ export function useTranscriptScroll({
       // delta. `lastContentHeight` keeps its content-based seed — scrollHeight
       // is transform-free.
       lastItemListH = null
+      lastBodySnap = null
       ro.observe(itemList)
     }
     attach()

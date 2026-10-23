@@ -1995,15 +1995,23 @@ describe('MessageList', () => {
     fold.className = 'animated-collapse animating'
     scroller.appendChild(fold)
     setCollapseAnimating(fold, true)
+    // The fold-lockstep now reads the ANIMATING BODIES' heights as its delta
+    // signal (see bodyHeightDelta / snapshotBodyHeights), so the synthetic body needs a
+    // mocked offsetHeight that tracks the same growth the itemList drives.
+    // In the real app AnimatedCollapse's rAF tween writes this per-frame.
+    let foldBodyH = 0
+    Object.defineProperty(fold, 'offsetHeight', { configurable: true, get: () => foldBodyH })
 
     // …and from then on even a SUB-BAND growth pins immediately — no band,
     // no trailing pin. Each write is the exact new bottom (growth + spacer
     // − viewport).
+    foldBodyH = 2
     contentHeight = 202
     itemListH = 202
     act(() => { fireResize(itemList) })
     expect(appWrites).toBe(writesAtBaseline + 1)
     expect(scroller.scrollTop).toBe(182)
+    foldBodyH = 3
     contentHeight = 203
     itemListH = 203
     act(() => { fireResize(itemList) })
@@ -2015,6 +2023,7 @@ describe('MessageList', () => {
     // viewport at (the stub's clamping getter models that state), so the
     // visible scrollTop is unchanged; the write is the ledger staying in
     // authority instead of deferring to the clamp.
+    foldBodyH = 1
     contentHeight = 201
     itemListH = 201
     act(() => { fireResize(itemList) })
@@ -2022,6 +2031,7 @@ describe('MessageList', () => {
     expect(scroller.scrollTop).toBe(181)
 
     // Growth resumes (still folding): the lockstep rides again.
+    foldBodyH = 3
     contentHeight = 203
     itemListH = 203
     act(() => { fireResize(itemList) })

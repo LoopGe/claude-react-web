@@ -85,3 +85,37 @@ export function releaseAncestorCollapsePins(el: HTMLElement): void {
     node.style.height = ''
   }
 }
+
+/** Per-body height snapshot for delta computation across frames. The
+ *  fold-lockstep needs the height CHANGE of bodies that were already
+ *  animating last frame — a body that just registered (or just settled)
+ *  must contribute 0 to the delta, not its full height. See
+ *  `bodyHeightDelta`. */
+export type BodyHeightSnapshot = Map<HTMLElement, number>
+
+/** Capture the current heights of all animating bodies inside `root`. */
+export function snapshotBodyHeights(root: ParentNode | null): BodyHeightSnapshot {
+  const snap: BodyHeightSnapshot = new Map()
+  if (!root) return snap
+  for (const el of animatingBodies) {
+    if (root.contains(el)) snap.set(el, el.offsetHeight)
+  }
+  return snap
+}
+
+/** Height delta attributable to bodies that were animating in BOTH the
+ *  previous and current snapshots. Bodies new to the current snapshot (a
+ *  fold just started) and bodies missing from it (a fold just settled) are
+ *  excluded — their full height is not a frame-to-frame change.
+ *
+ *  Returns null when there is no previous snapshot (the caller should fall
+ *  back to the item-list delta for that first frame). */
+export function bodyHeightDelta(prev: BodyHeightSnapshot | null, current: BodyHeightSnapshot): number | null {
+  if (prev == null) return null
+  let delta = 0
+  for (const [el, h] of current) {
+    const prevH = prev.get(el)
+    if (prevH != null) delta += h - prevH
+  }
+  return delta
+}
