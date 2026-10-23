@@ -6,7 +6,7 @@
 // shows the size hint rather than a broken <img>.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { render, fireEvent, screen } from '@testing-library/react'
 import { FileViewer } from './FileViewer'
 import { ImageViewerProvider } from '../hooks/useImageViewer'
 import { useReadFile } from '../hooks/useReadFile'
@@ -123,5 +123,50 @@ describe('FileViewer image preview', () => {
       contents: PNG_B64,
     })
     expect(document.body.querySelector('img.msg-image')).not.toBeNull()
+  })
+
+  it('renders a markdown file as formatted markdown, not code', () => {
+    const src = `# Hello
+
+**bold** text`
+    renderViewer('README.md', '/repo/README.md', {
+      data: { available: true, contents: src },
+      contents: src,
+    })
+    const md = document.body.querySelector('.file-viewer-md')
+    expect(md).not.toBeNull()
+    // The transcript pipeline demotes heading levels; assert the heading
+    // text lands in some heading, not a specific rank.
+    expect(md?.querySelector('h1,h2,h3,h4,h5,h6')?.textContent).toBe('Hello')
+    expect(md?.querySelector('strong')?.textContent).toBe('bold')
+    expect(document.body.querySelector('.file-viewer-code')).toBeNull()
+  })
+
+  it('flips a markdown file to its raw source and back', () => {
+    const src = `# Hello
+
+plain`
+    renderViewer('README.md', '/repo/README.md', {
+      data: { available: true, contents: src },
+      contents: src,
+    })
+    expect(document.body.querySelector('.file-viewer-code')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /view source/i }))
+    const code = document.body.querySelector('.file-viewer-code')
+    expect(code).not.toBeNull()
+    expect(code?.textContent).toContain('# Hello')
+
+    fireEvent.click(screen.getByRole('button', { name: /view preview/i }))
+    expect(document.body.querySelector('.file-viewer-md')).not.toBeNull()
+  })
+
+  it('decides markdown-vs-code from the read path, not the display name', () => {
+    renderViewer('Notes', '/repo/README.md', {
+      data: { available: true, contents: '# Hi' },
+      contents: '# Hi',
+    })
+    expect(document.body.querySelector('.file-viewer-md')).not.toBeNull()
+    expect(document.body.querySelector('.file-viewer-code')).toBeNull()
   })
 })

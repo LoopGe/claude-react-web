@@ -1,13 +1,15 @@
 // Per-session read-only file content viewer (SDK Query.readFile). Reads a
 // file's CURRENT content through a live session — gated by that session's
 // Read-permission rules inside the SDK. Content is viewed, never edited.
-// Binary image files preview as images (MsgImage → the app-wide Lightbox);
-// everything else renders as code.
+// Binary image files preview as images (MsgImage → the app-wide Lightbox),
+// Markdown renders formatted (the same pipeline the transcript uses) with a
+// source toggle; everything else renders as code.
 
+import { useState } from 'react'
 import { Overlay } from './Overlay'
-import { CodeBlock } from './Markdown'
+import { CodeBlock, Markdown } from './Markdown'
 import { MsgImage } from './MsgImage'
-import { imageMediaTypeOf, splitFilePath } from '../utils/file-display'
+import { detectLanguage, imageMediaTypeOf, splitFilePath } from '../utils/file-display'
 import { imageDataUrl } from '../utils/image-block'
 import { useReadFile } from '../hooks/useReadFile'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -42,8 +44,17 @@ export function FileViewer({ open, onClose, sessionId, path, name }: Props) {
   )
   const imageSrc =
     mediaType && data?.encoding === 'base64' && contents ? imageDataUrl(mediaType, contents) : null
-  // Custom thin scrollbar on the scrolling <pre> (CodeBlock forwards the
-  // preRef — same pattern DiffView uses for the diff body).
+  // Same rule as the image decision: content kind follows the read path.
+  const isMarkdown = path ? detectLanguage(path) === 'markdown' : false
+  // Markdown renders formatted by default; the source toggle keeps the code
+  // view (and its copy button) one click away. Sticky per open — FileViewer
+  // unmounts when its caller clears the target, so no per-path reset needed.
+  const [showSource, setShowSource] = useState(false)
+  // Custom thin scrollbar on whichever body scrolls: the code view's <pre>
+  // (CodeBlock forwards the preRef — same pattern DiffView uses for the diff
+  // body) or the markdown preview container. The two are mutually exclusive
+  // in the tree, so one ref callback covers both without stealing the
+  // attach/destroy lifecycle from the other.
   const setCodeOs = useOverlayScrollbar({ autoHide: 'leave' })
   // `data === null` means no response has landed yet (initial paint before the
   // fetch effect, or an in-flight request) — don't flash the "needs permission"
@@ -91,8 +102,42 @@ export function FileViewer({ open, onClose, sessionId, path, name }: Props) {
             ) : (
               <MsgImage src={imageSrc} alt={title} decoding="async" />
             )
+          ) : isMarkdown && !showSource ? (
+            <>
+              <button
+                type="button"
+                className="btn file-viewer-source-toggle"
+                onClick={() => setShowSource(true)}
+              >
+                View source
+              </button>
+              {/* Same renderer the transcript uses — GFM, math, syntax
+                  highlighting, and embedded images already wire into the
+                  Lightbox. Inner .md pre/.md table scrollbars are already
+                  CSS-hidden (overlay-scrollbar.css) — only this outer
+                  container scrolls natively, so it gets the overlay thumb
+                  too and toggling source↔preview doesn't swap scrollbar
+                  chrome. */}
+              <div className="file-viewer-md" ref={setCodeOs}>
+                <Markdown text={contents} />
+              </div>
+              {truncated && (
+                <div className="hint file-viewer-truncated">
+                  File is large — content truncated by the read cap (default 1&nbsp;MB).
+                </div>
+              )}
+            </>
           ) : (
             <>
+              {isMarkdown && (
+                <button
+                  type="button"
+                  className="btn file-viewer-source-toggle"
+                  onClick={() => setShowSource(false)}
+                >
+                  View preview
+                </button>
+              )}
               <CodeBlock lang={splitFilePath(title).base || title} className="file-viewer-code" showCopy preRef={setCodeOs}>
                 {contents}
               </CodeBlock>

@@ -83,3 +83,23 @@
   flex: 0 0 auto;
   margin-top: var(--space-1-5);
 }
+/* Markdown preview body (FileViewer). Scrolls like the code view; the
+   rendered pipeline is the transcript's, so images inside it already open
+   the Lightbox. */
+.file-viewer-md {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2-5) var(--space-3);
+  background: var(--code-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+}
+
+/* Source/preview switch on markdown files. */
+.file-viewer-source-toggle {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-bottom: var(--space-1-5);
+}
