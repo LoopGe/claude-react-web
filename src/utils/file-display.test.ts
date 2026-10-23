@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  imageMediaTypeOf,
   splitFilePath,
   shortenDir,
   getFileLanguage,
@@ -93,5 +94,32 @@ describe('detectLanguage', () => {
 
   it('returns null for unknown paths', () => {
     expect(detectLanguage('/some/path/random.xyz')).toBe(null)
+  })
+})
+
+describe('imageMediaTypeOf', () => {
+  it('maps the binary image extensions browsers render to media types', () => {
+    expect(imageMediaTypeOf('app-home.png')).toBe('image/png')
+    expect(imageMediaTypeOf('photo.jpeg')).toBe('image/jpeg')
+    expect(imageMediaTypeOf('photo.jpg')).toBe('image/jpeg')
+    expect(imageMediaTypeOf('anim.gif')).toBe('image/gif')
+    expect(imageMediaTypeOf('shot.webp')).toBe('image/webp')
+    expect(imageMediaTypeOf('icon.bmp')).toBe('image/bmp')
+    expect(imageMediaTypeOf('favicon.ico')).toBe('image/x-icon')
+    expect(imageMediaTypeOf('pic.avif')).toBe('image/avif')
+  })
+
+  it('is case-insensitive and handles windows paths', () => {
+    expect(imageMediaTypeOf('pic.PNG')).toBe('image/png')
+    expect(imageMediaTypeOf('C:\\shots\\pic.png')).toBe('image/png')
+  })
+
+  it('returns null for non-images and extensionless names', () => {
+    expect(imageMediaTypeOf('src/components/Foo.tsx')).toBe(null)
+    expect(imageMediaTypeOf('Makefile')).toBe(null)
+    expect(imageMediaTypeOf('photo.png.bak')).toBe(null)
+    // svg is text — it stays in the code view (EXT_TO_LANG maps it to xml)
+    // rather than being downgraded to an <img>.
+    expect(imageMediaTypeOf('logo.svg')).toBe(null)
   })
 })

@@ -72,4 +72,17 @@ describe('useReadFile', () => {
     await waitFor(() => expect(result.current.contents).toBe('v2'))
     expect(mockGet).toHaveBeenCalledTimes(2)
   })
+
+  it('requests base64 encoding and a raised cap for image previews', async () => {
+    mockGet.mockResolvedValue({ available: true, contents: 'AAAA', encoding: 'base64' })
+    const { result } = renderHook(() =>
+      useReadFile('s1', '/repo/pic.png', { encoding: 'base64', maxBytes: 5242880 }),
+    )
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(mockGet).toHaveBeenCalledWith(
+      '/sessions/s1/read-file?path=%2Frepo%2Fpic.png&encoding=base64&maxBytes=5242880',
+    )
+    expect(result.current.contents).toBe('AAAA')
+    expect(result.current.data?.encoding).toBe('base64')
+  })
 })

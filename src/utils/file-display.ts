@@ -77,11 +77,19 @@ export function shortenDir(dir: string, maxLen = 40): string {
  *  keep them in sync.  Returns `null` for unknown extensions; the
  *  caller should render plain text in that case (a missing language
  *  causes lowlight.highlight() to throw). */
-export function getFileLanguage(filename: string): string | null {
-  const dot = filename.lastIndexOf('.')
+/** The lowercase extension of a basename, or null when it has none
+ *  (dotless names, leading-dot dotfiles). One spelling of the extension
+ *  rule, shared by the language and media-type tables so they cannot
+ *  drift. */
+function extOf(base: string): string | null {
+  const dot = base.lastIndexOf('.')
   if (dot <= 0) return null
-  const ext = filename.slice(dot + 1).toLowerCase()
-  return EXT_TO_LANG[ext] ?? null
+  return base.slice(dot + 1).toLowerCase()
+}
+
+export function getFileLanguage(filename: string): string | null {
+  const ext = extOf(filename)
+  return ext === null ? null : (EXT_TO_LANG[ext] ?? null)
 }
 
 const EXT_TO_LANG: Readonly<Record<string, string>> = {
@@ -163,4 +171,31 @@ export function detectLanguage(path: string): string | null {
   const { base } = splitFilePath(path)
   if (!base) return null
   return getFileLanguage(base) ?? getFilenameLanguage(base)
+}
+
+
+/** Browsers render these binary formats in <img>, so the file viewer should
+ *  preview them instead of dumping mojibake UTF-8 text. Maps a filename's
+ *  extension to its media type, or null when the file is not a previewable
+ *  image. SVG is deliberately absent: it is text, already displays fine as
+ *  code (EXT_TO_LANG maps it to xml), and the mojibake bug this table exists
+ *  for is binary-only. */
+const EXT_TO_MEDIA_TYPE: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif',
+}
+
+/** The media type of a file's extension, or null when it is not an image
+ *  the browser can preview. Same case/extension handling as
+ *  getFileLanguage — both route through extOf. */
+export function imageMediaTypeOf(path: string): string | null {
+  const { base } = splitFilePath(path)
+  const ext = extOf(base)
+  return ext === null ? null : (EXT_TO_MEDIA_TYPE[ext] ?? null)
 }

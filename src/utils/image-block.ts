@@ -38,5 +38,12 @@ export function imageBlockToDataUrl(block: Block | undefined | null): string | n
   ) {
     return null
   }
-  return `data:${source.media_type};base64,${source.data}`
+  return imageDataUrl(source.media_type, source.data)
+}
+
+
+/** Build a base64 `data:` URL — the one spelling of the data-URL format,
+ *  shared by imageBlockToDataUrl and the file viewer's image preview. */
+export function imageDataUrl(mediaType: string, data: string): string {
+  return `data:${mediaType};base64,${data}`
 }

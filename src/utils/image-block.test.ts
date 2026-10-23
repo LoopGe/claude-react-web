@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { imageBlockToDataUrl } from './image-block'
+import { imageDataUrl, imageBlockToDataUrl } from './image-block'
 import type { Block } from '../types'
 
 /** Build an image block, letting tests override any field. `source` is
@@ -46,5 +46,15 @@ describe('imageBlockToDataUrl', () => {
 
   it('returns null for a non-image media type', () => {
     expect(imageBlockToDataUrl(imageBlock({ source: { type: 'base64', media_type: 'text/plain', data: 'AAAA' } }))).toBeNull()
+  })
+})
+
+describe('imageDataUrl', () => {
+  it('builds a base64 data URL from a media type and payload', () => {
+    expect(imageDataUrl('image/png', 'AAAA')).toBe('data:image/png;base64,AAAA')
+  })
+
+  it('is the same construction imageBlockToDataUrl uses', () => {
+    expect(imageBlockToDataUrl(imageBlock())).toBe(imageDataUrl('image/jpeg', 'AAAA'))
   })
 })

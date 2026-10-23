@@ -8,7 +8,11 @@ import { api } from './useApi'
 import type { FileReadResult } from '../../shared/read-file'
 import { formatError } from '../utils/format-error'
 
-export function useReadFile(sessionId: string, path: string | null) {
+export function useReadFile(
+  sessionId: string,
+  path: string | null,
+  opts?: { encoding?: 'base64'; maxBytes?: number },
+) {
   const [data, setData] = useState<FileReadResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -30,7 +34,11 @@ export function useReadFile(sessionId: string, path: string | null) {
     setLoading(true)
     setError(null)
     api
-      .get<FileReadResult>(`/sessions/${sessionId}/read-file?path=${encodeURIComponent(path)}`)
+      .get<FileReadResult>(
+        `/sessions/${sessionId}/read-file?path=${encodeURIComponent(path)}` +
+          (opts?.encoding ? `&encoding=${opts.encoding}` : '') +
+          (opts?.maxBytes != null ? `&maxBytes=${opts.maxBytes}` : ''),
+      )
       .then((res) => {
         if (cancelled) return
         setData(res)
@@ -45,7 +53,7 @@ export function useReadFile(sessionId: string, path: string | null) {
     return () => {
       cancelled = true
     }
-  }, [sessionId, path, version])
+  }, [sessionId, path, version, opts?.encoding, opts?.maxBytes])
 
   const refetch = useCallback(() => setVersion((v) => v + 1), [])
 

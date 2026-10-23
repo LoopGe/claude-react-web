@@ -1,10 +1,14 @@
 // Per-session read-only file content viewer (SDK Query.readFile). Reads a
 // file's CURRENT content through a live session — gated by that session's
-// Read-permission rules inside the SDK. Content is viewed, never edited;
-// binary files pass through as UTF-8 text (no image preview this pass).
+// Read-permission rules inside the SDK. Content is viewed, never edited.
+// Binary image files preview as images (MsgImage → the app-wide Lightbox);
+// everything else renders as code.
 
 import { Overlay } from './Overlay'
 import { CodeBlock } from './Markdown'
+import { MsgImage } from './MsgImage'
+import { imageMediaTypeOf, splitFilePath } from '../utils/file-display'
+import { imageDataUrl } from '../utils/image-block'
 import { useReadFile } from '../hooks/useReadFile'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { IconX } from './icons/ToolIcons'
@@ -21,13 +25,26 @@ interface Props {
   name?: string
 }
 
+/** Read cap for image previews. The SDK default (1 MB) truncates ordinary
+ *  screenshots, and a truncated base64 payload decodes to an undecodable —
+ *  broken — image, so previews ask for more headroom before giving up. */
+const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
+
 export function FileViewer({ open, onClose, sessionId, path, name }: Props) {
-  const { data, contents, available, truncated, error, loading } = useReadFile(sessionId, open ? path : null)
+  const title = name ?? path ?? '(no file)'
+  // Content kind follows the path actually read, not the display label: `name`
+  // is documented as a title and callers may pass a bare label there.
+  const mediaType = path ? imageMediaTypeOf(path) : null
+  const { data, contents, available, truncated, error, loading } = useReadFile(
+    sessionId,
+    open ? path : null,
+    mediaType ? { encoding: 'base64', maxBytes: IMAGE_PREVIEW_MAX_BYTES } : undefined,
+  )
+  const imageSrc =
+    mediaType && data?.encoding === 'base64' && contents ? imageDataUrl(mediaType, contents) : null
   // Custom thin scrollbar on the scrolling <pre> (CodeBlock forwards the
   // preRef — same pattern DiffView uses for the diff body).
   const setCodeOs = useOverlayScrollbar({ autoHide: 'leave' })
-
-  const title = name ?? path ?? '(no file)'
   // `data === null` means no response has landed yet (initial paint before the
   // fetch effect, or an in-flight request) — don't flash the "needs permission"
   // hint before we actually know the SDK denied/missed the read.
@@ -58,16 +75,34 @@ export function FileViewer({ open, onClose, sessionId, path, name }: Props) {
           <div className="hint">Needs read permission, or the file is missing.</div>
         )}
         {!pending && !error && available && contents !== undefined && (
-          <>
-            <CodeBlock lang={title.split('/').pop() ?? title} className="file-viewer-code" showCopy preRef={setCodeOs}>
-              {contents}
-            </CodeBlock>
-            {truncated && (
+          // An image only becomes a preview when the read really returned
+          // base64: the SDK documents `encoding` as absent when an older CLI
+          // ignored the request, in which case `contents` is utf-8 text and
+          // must NOT be fed to a base64 data URL (broken <img>). An empty
+          // read has no payload to preview either. Both fall back to the
+          // code view, which is exactly what a non-image gets.
+          imageSrc ? (
+            truncated ? (
+              // A truncated base64 payload is an undecodable image — say so
+              // rather than rendering a broken <img>.
               <div className="hint file-viewer-truncated">
-                File is large — content truncated by the read cap (default 1&nbsp;MB).
+                Image is too large to preview (over {IMAGE_PREVIEW_MAX_BYTES / (1024 * 1024)}&nbsp;MB).
               </div>
-            )}
-          </>
+            ) : (
+              <MsgImage src={imageSrc} alt={title} decoding="async" />
+            )
+          ) : (
+            <>
+              <CodeBlock lang={splitFilePath(title).base || title} className="file-viewer-code" showCopy preRef={setCodeOs}>
+                {contents}
+              </CodeBlock>
+              {truncated && (
+                <div className="hint file-viewer-truncated">
+                  File is large — content truncated by the read cap (default 1&nbsp;MB).
+                </div>
+              )}
+            </>
+          )
         )}
       </div>
     </Overlay>
