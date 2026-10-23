@@ -267,6 +267,24 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
               autoExpandRunningGroups={autoExpandRunningGroups}
               showMessageHeaders={showMessageHeaders}
               replayReady
+              // Like SubagentOverlay: the default ChatEmptyState ("Start a
+              // conversation") is for a NEW CHAT, and `items` here is the FULL
+              // session transcript — MessageList's `items.length` empty-state
+              // gate would never fire for this nested view, and the copy would
+              // be wrong even if it did. The right column has no rows when the
+              // focused step hasn't produced (visible) output yet.
+              emptyStateContent={(
+                <div className="chat-messages-empty-side">
+                  <div className="chat-messages-empty-title">
+                    {focusedChild ? 'No output for this step yet' : 'No workflow output yet'}
+                  </div>
+                  <div className="chat-messages-empty-hint">
+                    {focusedChild
+                      ? 'This step has not produced visible output yet.'
+                      : 'Select a step on the left to inspect its conversation.'}
+                  </div>
+                </div>
+              )}
             />
           </div>
         </div>

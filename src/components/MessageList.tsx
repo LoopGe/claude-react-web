@@ -645,7 +645,15 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // The easter-egg game can only open from the default empty state, so fetch
   // its lazy chunk once that state is on screen: the triple-click then swaps
   // the game in at once, instead of showing nothing until the chunk lands.
-  const showsDefaultEmptyState = renderableItems.length === 0 && (!expectHistory || replayReady) && emptyStateContent == null
+  //
+  // `items.length === 0` is the load-bearing half: the default empty state is
+  // for a transcript with NO DATA, not for "data exists but nothing rendered".
+  // The orphan-`result` guard in transcript-rows.ts can drop the last renderable
+  // row of a session that does have history (e.g. a spawn-failure footer) —
+  // keying the empty state on `renderableItems` alone would paint "Start a
+  // conversation" over a failed session and arm the easter-egg prefetch there.
+  const showsDefaultEmptyState =
+    items.length === 0 && renderableItems.length === 0 && (!expectHistory || replayReady) && emptyStateContent == null
   useEffect(() => {
     // A failed prefetch is ignored here: opening the game runs the lazy
     // import itself.
@@ -1458,10 +1466,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   //
   // `renderableItems` is NOT append-only: it's derived from `items` through
   // the parent_tool_use_id filter AND `willRenderEmpty(…, isResultConsumed)`,
-  // and `isResultConsumed` keeps changing during a turn (toolResults,
-  // planStatus, questionAnswers, subagentResultIds, …). So a row that has
-  // already rendered can disappear from the MIDDLE of the list once its
-  // result gets merged into the owning tool card.
+  // AND `pushRow`'s orphan-`result` guard (transcript-rows.ts — drops a turn's
+  // result footer once its user/assistant rows are gone). `isResultConsumed`
+  // keeps changing during a turn (toolResults, planStatus, questionAnswers,
+  // subagentResultIds, …). So a row that has already rendered can disappear
+  // from the MIDDLE of the list — once its result gets merged into the owning
+  // tool card, or (for a result footer) once its turn's content vanishes.
   //
   // With index keys, a mid-list removal makes React re-map every following
   // DOM node one slot up: the node that was rendering message N now renders
@@ -1653,7 +1663,19 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           increaseViewportBy={{ top: 600, bottom: 600 }}
           alignToBottom
         />
-        {renderableItems.length === 0 && (!expectHistory || replayReady) && (
+        {/* The empty-state block, gated on "nothing rendered" AND — for the
+            DEFAULT "Start a conversation" stack — "no transcript data".
+            `emptyStateContent` (Side Chat / SubagentOverlay) still shows on
+            "nothing rendered" alone: a custom empty state is a legitimate
+            answer to "this view has no rows", whereas the new-chat stack is
+            only for a transcript with no items at all. Without the
+            `items.length` half, a session whose every row is filtered out —
+            e.g. a lone orphan `result` dropped by transcript-rows.ts — would
+            paint "Start a conversation" over real history and arm the
+            easter-egg prefetch on it. */}
+        {renderableItems.length === 0 &&
+          (!expectHistory || replayReady) &&
+          (emptyStateContent != null || items.length === 0) && (
           <div className="chat-messages-empty">
             {/* Like the lazy Settings / Git / Tasks panels, the lazy game is
                 paired with an ErrorBoundary: a rejected chunk degrades to "no

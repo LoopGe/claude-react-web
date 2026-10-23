@@ -32,14 +32,20 @@
  *      stable `TranscriptItem`s for them; a fresh object per flush defeats
  *      both the row memo and the front-anchor bookkeeping.
  *
- *  I3  Rows are NOT append-only. `willRenderEmpty(…, isResultConsumed)` drops
- *      a row once its tool_result has been merged into the owning card, and
- *      `isResultConsumed` keeps changing during a turn — so rows can vanish
- *      from the MIDDLE of the list. That is deliberate (it is what keeps the
- *      transcript from accumulating blank gaps after every tool call), and it
- *      is precisely why I1 is mandatory: Virtuoso's size cache is index-keyed
- *      and cannot be told about a middle removal, so the only defence is that
- *      surviving rows keep their identity and their measurement.
+ *  I3  Rows are NOT append-only. Two independent filters can remove a row
+ *      that was previously rendered:
+ *      (a) `willRenderEmpty(…, isResultConsumed)` drops a row once its
+ *          tool_result has been merged into the owning card, and
+ *          `isResultConsumed` keeps changing during a turn;
+ *      (b) the orphan-`result` guard in `pushRow` drops a turn's result
+ *          footer when that turn's user/assistant rows vanish (EVICT_MESSAGES,
+ *          trimFront, messages-withdrawn) — including the TAIL row, which also
+ *          moves `lastItemId` (edge-padding classes).
+ *      Both are deliberate (they keep the transcript from accumulating blank
+ *      gaps), and both are why I1 is mandatory: Virtuoso's size cache is
+ *      index-keyed and cannot be told about a middle removal, so the only
+ *      defence is that surviving rows keep their identity and their
+ *      measurement.
  */
 import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
@@ -147,6 +153,38 @@ function pushRow(
   // after every tool call. Kept in lockstep with MessageView via the shared
   // willRenderEmpty.
   if (willRenderEmpty(item.msg, item.isCompactSummary, isResultConsumed)) return
+  // Orphan `result` footer: a result closes ITS OWN turn, so it is suppressed
+  // when that turn produced no visible user/assistant row — a lone frame, the
+  // head of a partially-loaded history page, or a turn whose content is all
+  // hidden (e.g. only a task-notification user frame and an empty assistant
+  // shell). Turn-scoped, not "any content anywhere above": a result must not
+  // be kept merely because an EARLIER turn has rows. Suppressed uniformly —
+  // interrupted/error orphans go too (the `!` marker is not a carve-out).
+  // System banners do not count as turn content.
+  //
+  // NOT folded into `willRenderEmpty` (which stays the per-message SSOT for
+  // MessageView): orphanhood is a property of the row's neighbours, which a
+  // single-message predicate cannot see. So the layering is two-level —
+  // willRenderEmpty answers "would MessageView paint this message at all",
+  // this guard answers "is there a turn for this footer to close". A caller
+  // that filters on willRenderEmpty alone will keep orphan footers the
+  // transcript drops.
+  //
+  // Lives in pushRow alongside the other visibility filters so a dropped row
+  // never enters the array at all — no post-pass, no index bookkeeping to
+  // renumber afterwards.
+  if (item.msg.type === 'result') {
+    let hasTurnContent = false
+    for (let i = out.length - 1; i >= 0; i--) {
+      const t = out[i]!.msg.type
+      if (t === 'result') break
+      if (t === 'user' || t === 'assistant') {
+        hasTurnContent = true
+        break
+      }
+    }
+    if (!hasTurnContent) return
+  }
   out.push({
     id: item.id,
     msg: item.msg,

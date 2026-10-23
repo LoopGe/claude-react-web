@@ -128,6 +128,56 @@ function toolResultFrame(id: string, toolUseId: string, parent: string | null = 
   } as TranscriptItem
 }
 
+/** A turn-end `result` footer. `extra` overlays wire fields (terminal_reason,
+ *  is_error, …) without disturbing the shape. */
+function resultItem(id: string, extra: Record<string, unknown> = {}): TranscriptItem {
+  return {
+    id,
+    msg: {
+      type: 'result',
+      uuid: id,
+      subtype: 'success',
+      is_error: false,
+      num_turns: 1,
+      result: 'done',
+      ...extra,
+    } as unknown as SdkMessage,
+    plainText: null,
+    isCompactSummary: false,
+    hiddenByDefault: false,
+  } as TranscriptItem
+}
+
+function systemBanner(id: string): TranscriptItem {
+  return {
+    id,
+    msg: {
+      type: 'system',
+      uuid: id,
+      subtype: 'informational',
+    } as unknown as SdkMessage,
+    plainText: null,
+    isCompactSummary: false,
+    hiddenByDefault: false,
+  } as TranscriptItem
+}
+
+/** An assistant shell with no visible blocks — `willRenderEmpty` drops it. */
+function emptyAssistant(id: string): TranscriptItem {
+  return {
+    id,
+    msg: {
+      type: 'assistant',
+      uuid: id,
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content: [] },
+    } as unknown as SdkMessage,
+    plainText: '',
+    isCompactSummary: false,
+    hiddenByDefault: false,
+  } as TranscriptItem
+}
+
 const ids = (rows: readonly TranscriptRow[]) => rows.map((r) => r.id)
 
 describe('buildTranscriptRows: filtering', () => {
@@ -174,6 +224,121 @@ describe('buildTranscriptRows: filtering', () => {
     // mutation Virtuoso's index-keyed size cache cannot represent, hence I1.
     expect(ids(buildTranscriptRows({ items, isResultConsumed: (id) => id === 'tool-1' }).rows))
       .toEqual(['a', 'b'])
+  })
+})
+
+describe('buildTranscriptRows: orphan result rows', () => {
+  // A `result` footer closes a turn. When no user/assistant content precedes
+  // it in the rendered rows (a lone frame, the head of a partial history page,
+  // a turn whose content is all hidden) the footer has nothing to close and
+  // would just paint a bare "ok" chip — suppress it.
+
+  it('drops a lone result row', () => {
+    const { rows } = buildTranscriptRows({
+      items: [resultItem('r')],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual([])
+  })
+
+  it('keeps a result row that follows user/assistant content', () => {
+    const { rows } = buildTranscriptRows({
+      items: [user('u', 'q'), assistant('a', 'r'), resultItem('res')],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['u', 'a', 'res'])
+  })
+
+  it('drops a leading orphan result but keeps the turn-end one after content', () => {
+    // The shape a partially-loaded history page takes: the previous page's
+    // result sits at the top with nothing above it in the loaded window.
+    const { rows } = buildTranscriptRows({
+      items: [resultItem('r1'), user('u', 'q'), assistant('a', 'r'), resultItem('r2')],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['u', 'a', 'r2'])
+  })
+
+  it('does not treat a system banner as turn content', () => {
+    // The banner is a row in its own right and stays — it just doesn't count
+    // as the turn content a result footer could close, so the result goes.
+    const { rows } = buildTranscriptRows({
+      items: [systemBanner('s'), resultItem('r')],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['s'])
+  })
+
+  it('keeps a result preceded by user content with a system banner in between', () => {
+    const { rows } = buildTranscriptRows({
+      items: [user('u', 'q'), systemBanner('s'), resultItem('r')],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual(['u', 's', 'r'])
+  })
+
+  it('drops an interrupted orphan result too (uniform suppression)', () => {
+    // Explicit product choice: the `!` marker is NOT a carve-out. An orphan
+    // result is suppressed whether it ended cleanly, was interrupted, or errored.
+    const interrupted = buildTranscriptRows({
+      items: [resultItem('r', { terminal_reason: 'aborted_tools' })],
+      isResultConsumed: never,
+    })
+    expect(ids(interrupted.rows)).toEqual([])
+
+    const errored = buildTranscriptRows({
+      items: [resultItem('r', { is_error: true, subtype: 'error_max_turns' })],
+      isResultConsumed: never,
+    })
+    expect(ids(errored.rows)).toEqual([])
+  })
+
+  it('drops a startup-failure orphan too — the reason is NOT a carve-out', () => {
+    // Decided explicitly. `startup_failure_reason` is rendered ONLY on this
+    // footer (MessageView's STARTUP_FAILURE_LABELS), so suppressing it loses
+    // the specific cause ("proxy setting is not a valid URL", org policy, …).
+    // The fact that spawn failed is still surfaced elsewhere
+    // (session-status.ts / Composer show "CLI failed to start"), so the loss
+    // is the diagnosis, not the signal — and a uniform rule was chosen over a
+    // one-field carve-out. Don't "helpfully" re-add one without a product
+    // decision.
+    const { rows } = buildTranscriptRows({
+      items: [resultItem('r', { is_error: true, startup_failure_reason: 'proxy_invalid' })],
+      isResultConsumed: never,
+    })
+    expect(ids(rows)).toEqual([])
+  })
+
+  it('is turn-scoped: drops a mid-list result whose OWN turn has no visible content', () => {
+    // Turn 1 is fully visible; turn 2 contributes only a hidden
+    // task-notification user frame and an empty assistant shell (both filtered
+    // out before pushRow). result2 closes a turn the user can see nothing of —
+    // it must not be kept just because turn 1 has rows above it.
+    const items = [
+      user('u1', 'q1'),
+      assistant('a1', 'r1'),
+      resultItem('res1'),
+      { ...user('u2', 'task notification'), hiddenByDefault: true },
+      emptyAssistant('a2'),
+      resultItem('res2'),
+    ]
+    const { rows } = buildTranscriptRows({ items, isResultConsumed: never })
+    expect(ids(rows)).toEqual(['u1', 'a1', 'res1'])
+  })
+
+  it('applies the orphan rule to leadingItems, which bypass the parent filter', () => {
+    // Result frames are root-level (parent null), so a parentToolUseIdFilter
+    // already drops them from `items` BEFORE pushRow — a result-only `items`
+    // array would pin nothing. `leadingItems`/`trailingItems` bypass that
+    // filter entirely and go straight to pushRow, so that is where the orphan
+    // rule has to hold on its own.
+    const { rows } = buildTranscriptRows({
+      items: [assistant('c', 'child', 'agent-1')],
+      parentToolUseIdFilter: 'agent-1',
+      isResultConsumed: never,
+      leadingItems: [resultItem('orphan-r')],
+    })
+    expect(ids(rows)).toEqual(['c'])
   })
 })
 

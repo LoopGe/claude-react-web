@@ -85,7 +85,14 @@ export function toolResultConsumedKey(
 
 /** Would MessageView render nothing for this message? Mirrors the merged
  *  tool-result/subagent-heartbeat and empty assistant branches so callers can
- *  drop empty messages before they become Virtuoso rows. */
+ *  drop empty messages before they become Virtuoso rows.
+ *
+ *  Per-message ONLY. Visibility is a two-level decision and this is just the
+ *  first level: the second is `pushRow`'s orphan-`result` guard in
+ *  transcript-rows.ts, which needs the row's neighbours (is there a visible
+ *  turn for this footer to close?) and therefore cannot live here. Do not
+ *  treat a `false` here as "this message will appear" — an orphan result is
+ *  the counterexample. */
 export function willRenderEmpty(
   msg: SdkMessage,
   isCompactSummary: boolean | undefined,

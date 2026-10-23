@@ -396,6 +396,20 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-messages-empty')).toBeTruthy()
   })
 
+  it('does NOT show the new-chat empty state when items exist but every row is filtered out', () => {
+    // "Start a conversation" is for a transcript with NO data. A session whose
+    // only frame is a dropped orphan result (e.g. a spawn-failure footer) HAS
+    // data — it just renders no rows after the orphan-`result` guard. Showing
+    // the new-chat empty state there would tell the user this is a fresh chat,
+    // and the easter-egg prefetch would arm on a failed session.
+    const msgs = [makeMsg('result', { is_error: true, startup_failure_reason: 'proxy_invalid' })]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} expectHistory replayReady />,
+    )
+    expect(container.querySelector('.chat-empty')).toBeNull()
+    expect(container.textContent).not.toContain('Start a conversation')
+  })
+
   // Keep this the FIRST test that opens the game: the lazy component's payload
   // is module-level, so after any earlier open it would be resolved already
   // and this would pass without exercising the prefetched path.
@@ -3649,7 +3663,11 @@ describe('MessageList', () => {
   })
 
   it('renders result stats with clean separators', () => {
+    // Turn content first \u2014 a lone result is an orphan footer and is
+    // suppressed (see the `orphan result rows` block below).
     const msgs = [
+      makeMsg('user', { message: { content: [{ type: 'text', text: 'go' }] } }),
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'done' }] } }),
       makeMsg('result', {
         num_turns: 3,
         duration_ms: 129100,
@@ -3666,6 +3684,47 @@ describe('MessageList', () => {
     )
 
     expect(container.querySelector('.result-meta')?.textContent).toBe('3 turns \u00b7 129.1s \u00b7 337k in \u00b7 3.1k out \u00b7 $18.8910')
+  })
+
+  describe('orphan result rows', () => {
+    it('does not render a lone result footer', () => {
+      const msgs = [makeMsg('result', { num_turns: 3, duration_ms: 1200 })]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
+      )
+      expect(container.querySelector('.msg.result')).toBeNull()
+      expect(container.querySelector('.result-meta')).toBeNull()
+    })
+
+    it('renders the result footer when turn content precedes it', () => {
+      const msgs = [
+        makeMsg('user', { message: { content: [{ type: 'text', text: 'go' }] } }),
+        makeMsg('assistant', { message: { content: [{ type: 'text', text: 'done' }] } }),
+        makeMsg('result', { num_turns: 1, duration_ms: 1200 }),
+      ]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
+      )
+      expect(container.querySelector('.msg.result')).not.toBeNull()
+    })
+
+    it('drops only the leading orphan, keeping the turn-end footer', () => {
+      const msgs = [
+        makeMsg('result', { num_turns: 1, duration_ms: 900 }),
+        makeMsg('user', { message: { content: [{ type: 'text', text: 'go' }] } }),
+        makeMsg('assistant', { message: { content: [{ type: 'text', text: 'done' }] } }),
+        makeMsg('result', { num_turns: 1, duration_ms: 1200 }),
+      ]
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} />,
+      )
+      // Assert WHICH footer survived, not just how many — a count of 1 would
+      // also pass if the keep/drop decision were inverted (the 900ms orphan
+      // kept, the 1200ms turn-end footer dropped).
+      const footers = container.querySelectorAll('.msg.result')
+      expect(footers.length).toBe(1)
+      expect(footers[0]?.querySelector('.result-meta')?.textContent).toContain('1.2s')
+    })
   })
 
   describe('empty-message filtering (willRenderEmpty)', () => {
