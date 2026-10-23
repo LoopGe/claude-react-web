@@ -286,7 +286,12 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       description: str(raw.description) ?? rec.description,
       runId: nextRunId,
       status,
-      progressSummary: str(raw.summary) ?? rec.progressSummary,
+      // `summary` is a COMPLETION note, not live progress, so it is not folded
+      // into progressSummary — that slot is exclusively task_progress.summary
+      // (see shared/tasks.ts). For a shell task the CLI echoes the task's own
+      // description here, and folding it in made the TasksPanel render the
+      // title and the detail line as the same string. A live task_progress
+      // summary already on the record is kept as-is by the spread.
       // SDK 0.3.273: present only when the task did not end through an
       // ordinary completion/failure/stop (currently 'worker_restart').
       reason: raw.reason === 'worker_restart' ? 'worker_restart' : rec.reason,
@@ -395,7 +400,12 @@ export function applyTaskNotificationInjection(session: Session, msg: SDKMessage
     isBackgrounded: existing?.isBackgrounded,
     skipTranscript: existing?.skipTranscript,
     ambient: existing?.ambient,
-    progressSummary: inj.summary ?? existing?.progressSummary,
+    // `inj.summary` is the completion note, so it may seed `description` above
+    // (a stub with no task_started still needs a title) but must NOT land in
+    // progressSummary — that slot is exclusively live task_progress output.
+    // Writing both fields from `inj.summary` is what made a no-task_started
+    // record show one string twice in the TasksPanel.
+    progressSummary: existing?.progressSummary,
     lastToolName: existing?.lastToolName,
     reason: existing?.reason,
     result: inj.result ?? existing?.result,

@@ -1015,8 +1015,12 @@ describe('SessionManager', () => {
       const settled = sm.subscribeTasks(info.id)!.snapshot
       expect(settled.find((t) => t.taskId === 'agent-tasks')).toMatchObject({
         status: 'completed',
-        progressSummary: 'all done',
       })
+      // The notification's `summary` is a completion payload (here: the
+      // subagent's final text), not live progress — it must not land in
+      // progressSummary. The client's subagent result merge reads the summary
+      // off the raw frame, so nothing is lost by leaving the slot alone.
+      expect(settled.find((t) => t.taskId === 'agent-tasks')!.progressSummary).toBeUndefined()
     } finally {
       if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = realConfigDir
@@ -1064,8 +1068,9 @@ describe('SessionManager', () => {
       const snapshot = sm.subscribeTasks(info.id)!.snapshot
       expect(snapshot.find((t) => t.taskId === 'sdk-task-9')).toMatchObject({
         status: 'completed',
-        progressSummary: 'real record',
       })
+      // Completion summary, not live progress — see the note above.
+      expect(snapshot.find((t) => t.taskId === 'sdk-task-9')!.progressSummary).toBeUndefined()
       expect(snapshot.find((t) => t.taskId === 'agent-mismatch')).toBeUndefined()
     } finally {
       if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR

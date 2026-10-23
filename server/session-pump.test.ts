@@ -1658,9 +1658,42 @@ describe('applyTaskEvent', () => {
     }))
     expect(session.tasks.get('t1')).toMatchObject({
       status: 'failed',
-      progressSummary: 'boom',
       endedAt: 999,
     })
+  })
+
+  // `progressSummary` is the LIVE progress slot (task_progress.summary — the
+  // agentProgressSummaries output, refreshed ~every 30s). `task_notification`'s
+  // own `summary` is a completion note the CLI writes at settle time, and for a
+  // shell task it is the task's description echoed back verbatim (verified
+  // against real frames: `task_started.description = "Run the suite"` /
+  // `task_notification.summary = "Run the suite"`, no description on the
+  // notification). Folding it into progressSummary made the TasksPanel render
+  // the title and the detail line as the same string.
+  it('task_notification does not fold its summary into progressSummary', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', {
+      task_id: 't1', description: 'Run the test suite', task_type: 'local_bash', receivedAt: 100,
+    }))
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 't1', status: 'completed', summary: 'Run the test suite', receivedAt: 999,
+    }))
+    const rec = session.tasks.get('t1')!
+    expect(rec.description).toBe('Run the test suite')
+    expect(rec.progressSummary).toBeUndefined()
+  })
+
+  it('task_notification preserves a live task_progress summary instead of overwriting it', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'd', receivedAt: 1 }))
+    applyTaskEvent(session, sysFrame('task_progress', { task_id: 't1', summary: 'reading files' }))
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 't1',
+      status: 'completed',
+      summary: 'Background command "d" completed (exit code 0)',
+      receivedAt: 9,
+    }))
+    expect(session.tasks.get('t1')!.progressSummary).toBe('reading files')
   })
 
   it('task_notification with a non-terminal status keeps the record status', () => {
@@ -1746,7 +1779,48 @@ describe('applyTaskNotificationInjection', () => {
     expect(rec.toolUseId).toBe('tu1')
     expect(rec.status).toBe('completed')
     expect(rec.result).toBe('THE-OUTPUT')
-    expect(rec.progressSummary).toBe('did a thing')
+  })
+
+  // Same contract as applyTaskEvent's task_notification branch: the injection's
+  // <summary> is a completion note, not live progress. It used to feed BOTH
+  // `description` (as a fallback) and `progressSummary`, so a record that
+  // arrived with no task_started had both fields set to the same string and the
+  // TasksPanel showed it twice.
+  it('does not fold the injection summary into progressSummary', () => {
+    const { session } = makeTaskSession()
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><summary>Background command "x" completed</summary>' +
+      '<result>R</result></task-notification>'))
+    const rec = session.tasks.get('t1')!
+    expect(rec.description).toBe('Background command "x" completed')
+    expect(rec.progressSummary).toBeUndefined()
+  })
+
+  it('keeps a live task_progress summary when the injection settles the record', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_progress', { task_id: 't1', tool_use_id: 'tu1', summary: 'compiling' }))
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><summary>Background command "x" completed</summary>' +
+      '<result>R</result></task-notification>'))
+    expect(session.tasks.get('t1')!.progressSummary).toBe('compiling')
+  })
+
+  it('never duplicates the task_started description into progressSummary', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, {
+      type: 'system', subtype: 'task_started', task_id: 't1',
+      tool_use_id: 'tu1', description: 'bg cmd', task_type: 'local_bash',
+    } as unknown as SDKMessage)
+    // The CLI echoes the description as the notification summary — the exact
+    // shape that made the panel show one string twice.
+    applyTaskNotificationInjection(session, xml(
+      '<task-notification><task-id>t1</task-id><tool-use-id>tu1</tool-use-id>' +
+      '<status>completed</status><summary>bg cmd</summary><result>R</result></task-notification>'))
+    const rec = session.tasks.get('t1')!
+    expect(rec.description).toBe('bg cmd')
+    expect(rec.progressSummary).toBeUndefined()
   })
 
   it('keys the record by tool-use-id when task-id is absent', () => {
