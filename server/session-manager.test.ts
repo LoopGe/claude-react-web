@@ -1576,7 +1576,7 @@ describe('SessionManager', () => {
       sub.unsubscribe()
     })
 
-    it('discard() seeds the fork with subagent frames re-split by origin', async () => {
+    it('discard() seeds the fork from the renderable transcript (subagent inner frames dropped)', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
       sm.send(info.id, 'go investigate')
@@ -1592,21 +1592,14 @@ describe('SessionManager', () => {
 
       const y = await sm.discard(info.id, 'asst-1')
 
-      // Y's seed was the merged view [user, s1, asst-1]; spawn() re-split it
-      // by origin — main ring keeps the (uuid-rewritten) user prompt + the
-      // anchor, the subagent ring keeps s1.
+      // The seed is X's RENDERABLE transcript up to the anchor — the same set
+      // the seq store serves — so the subagent inner frame is not carried into
+      // Y (it is dropped by the shared isRenderableSdkMessage gate, exactly
+      // what a restart of X shows). Main rows keep their chronological order.
       const sY = sessionOf(sm, y.id)
+      expect(uuids(sY.subagentHistory)).toEqual([])
       const mainUuids = uuids(sY.history)
-      expect(mainUuids).toHaveLength(2)
-      expect(mainUuids[mainUuids.length - 1]).toBe('asst-1')
-      expect(uuids(sY.subagentHistory)).toEqual(['s1'])
-      // Merged view of Y shows the subagent frame in its chronological slot.
-      const sub = sm.subscribe(y.id)
-      const merged = uuids(sm.getHistory(y.id) as Array<{ uuid?: string }>)
-      expect(merged).toHaveLength(3)
-      expect(merged[1]).toBe('s1')
-      expect(merged[2]).toBe('asst-1')
-      sub.unsubscribe()
+      expect(mainUuids).toEqual([expect.any(String), 'asst-1', 'res-1'])
     })
 
     it('messageCount counts both rings', async () => {
@@ -8554,6 +8547,72 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(() => sm.get(info.id)).toThrow(/not found/i)
     })
 
+    it('discard() seeds Y with the FULL kept prefix, not just the ring window', async () => {
+      // Ring cap 2: the kept prefix below is 5 frames, so any seed built from
+      // the ring (or a capped tail page) drops the oldest kept messages and
+      // Y's transcript starts mid-conversation.
+      const smSmall = new SessionManager({ store, historyCap: 2, subagentHistoryCap: 2 })
+      try {
+        const info = await smSmall.create({ cwd: dir })
+        const h0 = mockHandles.at(-1)!
+        // Each turn is awaited before the next prompt: send() records the user
+        // row synchronously while the mock's emits land via the pump, so
+        // back-to-back sends would interleave the two prompts ahead of turn 1.
+        smSmall.send(info.id, 'first prompt')
+        completeTurn(h0, info.id, 'asst-1')
+        await waitFor(async () => (await anchorsOf(info.id)).length >= 1)
+        smSmall.send(info.id, 'second prompt')
+        completeTurn(h0, info.id, 'asst-2')
+        await waitFor(async () => (await anchorsOf(info.id)).length >= 2)
+
+        const y = await smSmall.discard(info.id, 'asst-2')
+
+        // Y's transcript window serves the pre-seed — the full kept prefix of
+        // turns 1 and 2, not the last 2 frames the ring could hold.
+        const win = await smSmall.getTranscriptWindow(y.id)
+        const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+        expect(uuids).toEqual([expect.any(String), 'asst-1', 'res-asst-1', expect.any(String), 'asst-2', 'res-asst-2'])
+        expect(win.totalCount).toBe(6)
+      } finally {
+        await smSmall.shutdown()
+      }
+    })
+
+    it("discard() keeps the cut turn's result frame in the seed", async () => {
+      // The result frame closes the anchor turn (its cost/duration summary).
+      // It is part of the kept turn — and Y's result-frame sidecar copy keeps
+      // it too, so a seed that drops it would make Y's restart re-append it
+      // at the tail (out of order).
+      const info = await sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+
+      const y = await sm.discard(info.id, 'asst-1')
+
+      const win = await sm.getTranscriptWindow(y.id)
+      const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+      expect(uuids).toContain('res-asst-1')
+    })
+
+    it('discard() fails loudly when the cut point is not in the transcript', async () => {
+      const info = await sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      completeTurn(h0, info.id, 'asst-1')
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      // Hand-seed an anchor whose message never entered the transcript: the
+      // sidecar says it is a legal cut point, but there is nothing to cut.
+      // Seeding Y with the untruncated tail (the old fallback) would show the
+      // messages the user asked to discard — refuse instead.
+      const smAnchors = sm as unknown as { turnAnchorStore: { save: (id: string, entries: Array<{ assistantUuid: string; completedAt: number }>) => Promise<void> } }
+      await smAnchors.turnAnchorStore.save(info.id, [{ assistantUuid: 'asst-ghost', completedAt: 1000 }])
+
+      await expect(sm.discard(info.id, 'asst-ghost')).rejects.toThrow(/not in the|transcript/i)
+    })
+
     it('discard() of a LIVE session does not mark in-flight background agents stopped', async () => {
       // Launch a background agent whose sidecar has no terminal frame (still
       // in flight — the watcher holds it), then fork. The un-notified ack is
@@ -8592,13 +8651,113 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       }
     })
 
+    it('discard() of a LIVE session with a disk transcript still leaves in-flight agents alone', async () => {
+      // The compose path (ensureTranscriptReconciled → composeTranscriptEntries)
+      // backfills subagent completions UNCONDITIONALLY — it serves the restart
+      // reconcile, where a dead subprocess makes 'stopped' honest. Discarding a
+      // LIVE session must not inherit that: the gate is on the discard seed, and
+      // the reconcile's own synthesis must not leak through the window either.
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const info = await sm.create({ cwd: dir })
+        const h0 = mockHandles.at(-1)!
+        sm.send(info.id, 'hi')
+        completeTurn(h0, info.id, 'asst-1')
+        await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+        await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+        // The ack is on disk (the CLI persists it) but the agent is still
+        // running — no terminal sidecar, no task_notification.
+        const jsonlPath = join(dir, 'projects', encodeCwd(dir), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(
+          jsonlPath,
+          [
+            JSON.stringify({ type: 'user', uuid: 'disk-u1', sessionId: info.id, parent_tool_use_id: null, message: { role: 'user', content: 'hi' } }),
+            ...ackSeed('tu_live_disk', 'agent-live-disk').map((m) => JSON.stringify(m)),
+            JSON.stringify({ type: 'assistant', uuid: 'asst-1', sessionId: info.id, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
+            '',
+          ].join('\n'),
+        )
+
+        const y = await sm.discard(info.id, 'asst-1')
+        const notifications = (sm.getHistory(y.id) ?? []).filter(
+          (m) => (m as { subtype?: string }).subtype === 'task_notification',
+        )
+        expect(notifications).toHaveLength(0)
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+
+    it('discard() does not swallow a queued prompt recorded between the anchor and its result', async () => {
+      // A user turn can land in the seq store AFTER the anchor's assistant
+      // frame but BEFORE that turn's result frame (send() records the prompt
+      // synchronously; the pump records the result when it arrives). Extending
+      // the cut through the result frame by SEQ would pull that prompt — a
+      // message from the discarded future — into Y.
+      const info = await sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'first prompt')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply 1' }] } })
+      await tick()
+      // Queued while turn 1 is still closing: recorded now, result arrives later.
+      sm.send(info.id, 'second prompt (queued)')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-asst-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+
+      const y = await sm.discard(info.id, 'asst-1')
+      const win = await sm.getTranscriptWindow(y.id)
+      const texts = win.messages.map((m) => {
+        const msg = m.msg as { message?: { content?: unknown } }
+        const c = msg.message?.content
+        return typeof c === 'string' ? c : JSON.stringify(c)
+      })
+      expect(texts.join('\n')).not.toContain('second prompt')
+      // The cut turn's own result frame is kept (it closes the kept turn).
+      const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+      expect(uuids).toContain('res-asst-1')
+    })
+
+    it('discard() keeps a task_notification that landed between the anchor and its result', async () => {
+      // The same interleaving as the queued-prompt case, but a DURABLE frame
+      // that belongs to the KEPT history: a background agent whose launch ack
+      // is already in the window completes while this turn is closing. Dropping
+      // the notification strands the subagent card as 'running' on Y.
+      const info = await sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      h0.emit({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tu_gap',
+            content: 'Async agent launched successfully.\nagentId: agent-gap\n',
+          }],
+        },
+      })
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply 1' }] } })
+      await tick()
+      // The agent completes while turn 1 is still closing.
+      h0.emit({ type: 'system', subtype: 'task_notification', task_id: 'agent-gap', tool_use_id: 'tu_gap', status: 'completed', summary: 'DONE', uuid: 'notif-gap' })
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-asst-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      await waitFor(async () => (await anchorsOf(info.id)).length > 0)
+
+      const y = await sm.discard(info.id, 'asst-1')
+      const win = await sm.getTranscriptWindow(y.id)
+      const uuids = win.messages.map((m) => (m.msg as { uuid?: string }).uuid)
+      expect(uuids).toContain('notif-gap')
+      expect(uuids).toContain('res-asst-1')
+    })
+
     it('discard() of a DORMANT session backfills completions and copies the sidecars to the fork', async () => {
       const realConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir
-      const readPage = vi.spyOn(
-        sm as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number; afterUuid?: string }) => Promise<unknown> },
-        'readProviderHistoryPage',
-      )
       try {
         const info = await sm.create({ cwd: dir })
         // The agent really finished — its sidecar transcript is durable.
@@ -8612,17 +8771,21 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         await tick()
         await sm.unload(info.id)
 
-        // The disk page a dormant discard seeds from: the ack, no
-        // task_notification (the CLI never persists one), plus the anchor.
-        readPage.mockResolvedValue({
-          messages: [
-            ...ackSeed('tu_dormant', 'agent-dormant'),
-            { type: 'assistant', uuid: 'asst-1', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } },
-          ],
-          totalCount: 3,
-          startIndex: 0,
-          hasMore: false,
-        })
+        // The on-disk transcript a dormant discard composes its seed from:
+        // the ack, no task_notification (the CLI never persists one), plus
+        // the anchor. Written as a real JSONL because the unified seed path
+        // reads the renderable transcript (ensureTranscriptReconciled →
+        // composeTranscriptEntries), not a paged provider read.
+        const jsonlPath = join(dir, 'projects', encodeCwd(dir), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(
+          jsonlPath,
+          [
+            ...ackSeed('tu_dormant', 'agent-dormant').map((m) => JSON.stringify(m)),
+            JSON.stringify({ type: 'assistant', uuid: 'asst-1', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }),
+            '',
+          ].join('\n'),
+        )
 
         const y = await sm.discard(info.id, 'asst-1')
         const notifications = (sm.getHistory(y.id) ?? []).filter(
@@ -8638,7 +8801,6 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         // heals from the real outcome instead of degrading to 'stopped'.
         expect(existsSync(subagentTranscriptPath(dir, y.id, 'agent-dormant'))).toBe(true)
       } finally {
-        readPage.mockRestore()
         if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
         else process.env.CLAUDE_CONFIG_DIR = realConfigDir
       }
@@ -8673,6 +8835,12 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      // The cut point (and the turn after it) must be real messages too —
+      // the seed is read from the transcript, and a cut point with no
+      // message behind it is refused.
+      h0.emit({ type: 'assistant', uuid: 'asst-2', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply 2' }] } })
+      h0.emit({ type: 'assistant', uuid: 'asst-3', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply 3' }] } })
+      await tick()
 
       // Discard after asst-2 → Y should inherit anchors [asst-1, asst-2]
       // (the cut point inclusive, asst-3 dropped). A later discard on Y
@@ -8774,6 +8942,12 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      // The cut point (and the turn after it) must be real messages too —
+      // the seed is read from the transcript, and a cut point with no
+      // message behind it is refused.
+      h0.emit({ type: 'assistant', uuid: 'asst-2', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply 2' }] } })
+      h0.emit({ type: 'assistant', uuid: 'asst-3', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply 3' }] } })
+      await tick()
 
       // Discard after asst-2 — keep [asst-1, asst-2], drop asst-3.
       const y = await sm.discard(info.id, 'asst-2')
@@ -8783,10 +8957,9 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(toId).toBe(y.id)
       // Patches kept = inherited anchor assistant uuids.
       expect(keepPatch).toEqual(new Set(['asst-1', 'asst-2']))
-      // User message ids kept = user uuids in the seed (the rewritten
-      // historySeed's user messages). The mock SDK emits no real disk
-      // transcript, so the seed comes from the in-memory ring's user
-      // message — the 'hi' we sent. Assert it's included.
+      // User message ids kept = user uuids in the kept-prefix seed. The mock
+      // SDK emits no real disk transcript, so the seed is X's seq store —
+      // which holds the 'hi' we sent. Assert it's included.
       expect(keepMsg.size).toBeGreaterThan(0)
     })
 

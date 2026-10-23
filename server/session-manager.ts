@@ -2358,9 +2358,11 @@ export class SessionManager {
     // forkSession makes the CLI copy the source transcript into the fork's
     // own JSONL only when its subprocess starts, so a post-spawn reconcile
     // could never see the pre-fork rows before the first live ingest.
-    // discard() passes its finalized historySeed (the kept prefix, with
-    // result frames merged and prompt uuids rewritten); a plain fork composes
-    // the source's full renderable transcript, which is what the copy will
+    // discard() passes its finalized historySeed (the kept prefix, already
+    // carrying the source's result frames and rewritten prompt uuids —
+    // composeDiscardSeed cuts the source's reconciled transcript, which
+    // composeTranscriptEntries built that way); a plain fork composes the
+    // source's full renderable transcript, which is what the copy will
     // contain.
     const forkId = randomUUID()
     // The task-result sidecar follows the fork like every other sidecar.
@@ -2498,74 +2500,14 @@ export class SessionManager {
     //    including) the anchor, so the panel shows the kept history
     //    immediately instead of an empty "start a conversation" state.
     //    fork()'s SDK subprocess writes Y's disk transcript async after
-    //    spawn, so we can't read Y's disk at spawn time — read X's disk
-    //    tail and truncate to the anchor, mirroring resume()'s historySeed.
-    //    User-prompt uuids are rewritten via X's promptUuid sidecar so the
-    //    client's uuid-anchored replay dedup works. Older history beyond
-    //    the tail is paged in by the client's loadOlder() scroll-up.
+    //    spawn, so we can't read Y's disk at spawn time — seed from X's
+    //    renderable transcript truncated at the anchor (composeDiscardSeed).
+    //    Older history beyond the seed is paged in by the client's
+    //    loadOlder() scroll-up.
     const liveX = this.sessions.get(id)
     const metaX = liveX ?? this.store?.get(id)
-    const providerX = metaX?.provider ?? this.defaultProvider
-    let historySeed: SDKMessage[] | undefined
-    let seedSource = 'none'
-    try {
-      // Prefer X's in-memory history rings (merged view): they contain result
-      // frames (the SDK doesn't persist result to disk) plus subagent frames
-      // the disk reader drops. Using the rings preserves the per-turn result
-      // summaries (cost/duration/turns) the client renders, which a disk-only
-      // seed would drop. The mixed seed is re-split by frame origin in spawn().
-      const mergedX = liveX ? this.mergedHistory(liveX) : []
-      if (liveX && mergedX.length > 0) {
-        const ringAnchor = mergedX.findIndex((m) => (m as { uuid?: string }).uuid === fromAssistantUuid)
-        if (ringAnchor >= 0) {
-          historySeed = mergedX.slice(0, ringAnchor + 1) as SDKMessage[]
-          seedSource = 'ring'
-        }
-      }
-      // Fall back to disk when the ring is empty (dormant X) or the anchor
-      // is older than the ring's window. Disk lacks result frames but covers
-      // turns outside the ring.
-      if (!historySeed) {
-        const page = await this.readProviderHistoryPage(providerX, id, { limit: this.historyCap })
-        const anchorInPage = page.messages.findIndex((m) => (m as { uuid?: string }).uuid === fromAssistantUuid)
-        historySeed = anchorInPage >= 0
-          ? (page.messages.slice(0, anchorInPage + 1) as SDKMessage[])
-          : (page.messages.length > 0 ? (page.messages as SDKMessage[]) : undefined)
-        seedSource = 'disk'
-      }
-      log.info(`[session ${id}] discard historySeed: ${historySeed?.length ?? 0} msgs (source: ${seedSource})`)
-    } catch (err) {
-      log.warn(`[session ${id}] discard historySeed read failed:`, err)
-    }
-    if (historySeed) {
-      const promptUuids = await this.promptUuidStore.load(id)
-      // Only merge result frames when the seed came from disk (disk lacks
-      // result; the in-memory ring already has them). Avoids double-inserting.
-      if (seedSource === 'disk') {
-        const resultFrames = await this.resultFrameStore.load(id)
-        historySeed = mergeResultFrames(historySeed, resultFrames)
-      }
-      historySeed = rewriteSeedPromptUuids(historySeed, promptUuids)
-      // Same completion backfill resume() does, so a discard of a DORMANT
-      // session heals its stranded background subagents too. The sidecar
-      // transcripts live under X (the session that ran the agents) — pass
-      // X's id, not the fork's. Gated on !liveX: when X's subprocess is
-      // still alive, an un-notified ack means the agent may be IN FLIGHT —
-      // synthesizing 'stopped' would mark live work dead in the fork, a lie
-      // the fork can never retract (the real completion lands in X's world
-      // only). A dormant X's subprocess is provably gone: every agent it
-      // launched is terminal-or-dead, so 'stopped' is honest there.
-      if (!liveX) {
-        const extra = await backfillSubagentCompletions(historySeed, { cwd: metaX?.cwd, sessionId: id })
-        if (extra.length > 0) {
-          log.info(
-            `[session ${id}] backfilled ${extra.length} background-subagent completion(s) ` +
-            `missing from the discard seed (from sidecar transcripts)`,
-          )
-          historySeed = [...historySeed, ...extra]
-        }
-      }
-    }
+    const historySeed = await this.composeDiscardSeed(id, fromAssistantUuid, { live: liveX !== undefined })
+    log.info(`[session ${id}] discard historySeed: ${historySeed.length} msgs`)
     const forkInfo = await this.fork(id, { resumeSessionAt: fromAssistantUuid, historySeed, inheritIdentity: true })
 
     // 3. Copy X's turn-anchor sidecar to Y, truncated to the cut point
@@ -2605,70 +2547,16 @@ export class SessionManager {
     //   - keepPatchMessageIds: the inherited anchor assistant uuids (only
     //     patches for turns at/before the cut survive, so a rewind-to-
     //     anchor on Y doesn't reference patches for dropped turns).
-    //   - keepMessageIds: the user-message uuids at/before the cut. The
-    //     promptUuids sidecar is in send order, and each user message
-    //     starts the next turn, so the first (anchorIdx + 1) entries
-    //     correspond to the kept turns. Combined with any user uuids in
-    //     the (rewritten) historySeed for full coverage when the seed is
-    //     available (ring or disk).
+    //   - keepMessageIds: the user-message uuids at/before the cut, taken
+    //     from the seed (which carries the rewritten server uuids — the
+    //     client's uuid-anchored snapshots key on those).
     {
       const keepPatchIds = new Set(inherited.map((a) => a.assistantUuid))
       const keepMessageIds = new Set<string>()
-      // PRIMARY source: historySeed carries the rewritten user uuids
-      // (server uuids after rewriteSeedPromptUuids) — most accurate when
-      // present. Collect ALL user messages from the seed (up to and
-      // including the anchor), which covers the kept turns.
-      if (historySeed) {
-        for (const m of historySeed) {
-          if ((m as { type?: string }).type === 'user') {
-            const u = (m as { uuid?: string }).uuid
-            if (typeof u === 'string') keepMessageIds.add(u)
-          }
-        }
-      } else {
-        // FALLBACK: no historySeed (both ring and disk read failed).
-        // Use promptUuids positional slice — but this is a lossy
-        // approximation when failed turns are present (promptUuids
-        // entries don't map 1:1 to turn anchors). Walk the history ring
-        // or disk page to collect actual kept user ids instead.
-        const collected: string[] = []
-        if (liveX) {
-          // Walk the in-memory ring up to (and including) the anchor.
-          for (const entry of liveX.history) {
-            const m = entry as { type?: string; uuid?: string; parent_tool_use_id?: string | null }
-            if (m.type === 'user' && m.parent_tool_use_id == null && typeof m.uuid === 'string') {
-              collected.push(m.uuid)
-            }
-            if (m.uuid === fromAssistantUuid) break // anchor reached
-          }
-        }
-        if (collected.length === 0) {
-          // Dormant session — try disk page.
-          try {
-            const page = await this.readProviderHistoryPage(providerX, id, { limit: this.historyCap })
-            for (const m of page.messages) {
-              const msg = m as { type?: string; uuid?: string; parent_tool_use_id?: string | null }
-              if (msg.type === 'user' && msg.parent_tool_use_id == null && typeof msg.uuid === 'string') {
-                collected.push(msg.uuid)
-              }
-              if (msg.uuid === fromAssistantUuid) break
-            }
-          } catch { /* ignore — fall through to promptUuids as last resort */ }
-        }
-        if (collected.length > 0) {
-          for (const u of collected) keepMessageIds.add(u)
-        } else {
-          // Last resort: promptUuids positional slice. Known limitation:
-          // assumes 1:1 between promptUuids entries and turn anchors,
-          // which breaks when failed turns are present.
-          const inMemory = liveX?.promptUuids
-          const list = inMemory && inMemory.length > 0 ? inMemory : await this.promptUuidStore.load(id)
-          if (list) {
-            for (let i = 0; i <= anchorIdx && i < list.length; i++) {
-              const u = list[i].u
-              if (typeof u === 'string') keepMessageIds.add(u)
-            }
-          }
+      for (const m of historySeed) {
+        if ((m as { type?: string }).type === 'user') {
+          const u = (m as { uuid?: string }).uuid
+          if (typeof u === 'string') keepMessageIds.add(u)
         }
       }
       await this.snapshotStore.copyForFork(id, forkInfo.id, keepMessageIds, keepPatchIds)
@@ -2716,6 +2604,114 @@ export class SessionManager {
       (opts?.deleteOriginal ? ' (original transcript deleted)' : ' (original kept on disk)'),
     )
     return forkInfo
+  }
+
+  /** Compose a discard's kept-prefix seed: X's durable renderable transcript
+   *  (the same set the seq window serves the UI) up to and including the
+   *  cut-point message, plus that turn's own result frame. One source, one
+   *  truncation — the old ring-then-disk dual path could only ever seed a
+   *  ring/page WINDOW (the oldest kept messages silently vanished from Y's
+   *  panel) and, when the anchor sat outside that window, seeded the
+   *  UNTRUNCATED tail instead (showing the very turns the user discarded).
+   *
+   *  The seq store is un-capped and already holds result frames (the SDK
+   *  never persists them to disk; `resultFrameStore` re-merges them on a
+   *  rebuild) and steered prompts (seq-assigned at dispatch). Subagent inner
+   *  frames never enter it — the shared isRenderableSdkMessage gate rejects
+   *  `parent_tool_use_id != null` — so they are not carried into Y, matching
+   *  what a restart of X renders.
+   *
+   *  Throws when the cut point is not in the transcript: the anchor sidecar
+   *  lists it as a legal cut, but there is nothing to cut — seeding anything
+   *  else would show the wrong history.
+   */
+  private async composeDiscardSeed(
+    id: string,
+    fromAssistantUuid: string,
+    opts: { live: boolean },
+  ): Promise<SDKMessage[]> {
+    const t = await this.ensureTranscriptReconciled(id)
+    const anchorSeq = t.store.seqOf(fromAssistantUuid)
+    if (anchorSeq === undefined) {
+      throw new HttpError(400, `Cannot discard from this message — it is not in the session transcript.`)
+    }
+    // The cut turn's own result frame lands AFTER its last assistant message
+    // in the stream, so a cut at the anchor alone drops it — while Y's
+    // result-frame sidecar copy below keeps it. On Y's restart the compose
+    // would then re-insert it and backfillFromEntries would append it at the
+    // tail (out of order). Append it BY IDENTITY (the sidecar's
+    // assistantUuid → resultUuid link, the same one mergeResultFrames uses to
+    // position it) rather than widening the cut through its seq: a queued
+    // user prompt can be recorded between the anchor and its result
+    // (send() records the prompt synchronously; the pump records the result
+    // when it arrives), and a seq-wide cut would pull that prompt — a message
+    // from the discarded future — into Y.
+    const win = t.store.window(anchorSeq + 1, anchorSeq + 1)
+    let seed = win.messages.map((m) => m.msg as SDKMessage)
+    // Mirror mergeResultFrames' selection: LAST non-empty entry wins. A
+    // pre-fix placeholder record can sit AHEAD of the real one for the same
+    // assistantUuid (session 07790d71), and a later turn that produced no
+    // assistant output keys its result to the previous turn's assistant —
+    // first-wins would take the wrong frame and diverge from the restart
+    // rebuild (whose loser then tail-appends out of order).
+    const frames = await this.resultFrameStore.load(id)
+    let anchorResult: { resultUuid: string; result?: SDKMessage } | undefined
+    for (const e of frames ?? []) {
+      if (e.assistantUuid !== fromAssistantUuid) continue
+      if (!e.result || isEmptyResultFrame(e.result as { type?: string })) continue
+      anchorResult = e
+    }
+    const resultSeq = anchorResult ? t.store.seqOf(anchorResult.resultUuid) : undefined
+    // An evicted result is a retracted frame: drop it (window() would have
+    // dropped it too) rather than resurrect it from the sidecar copy.
+    const resultEvicted = resultSeq != null && t.store.isEvicted(resultSeq)
+    // Already visible in the window? (A result at a covered seq is only in the
+    // window when it is NOT a tombstone — window() filters those.)
+    const resultInWindow = resultSeq != null && resultSeq <= anchorSeq && !resultEvicted
+    if (!resultInWindow && !resultEvicted) {
+      if (resultSeq != null && resultSeq > anchorSeq) {
+        // Walk the (anchor, result] span instead of appending the result alone:
+        // it can hold other DURABLE frames that belong to the kept history —
+        // most importantly a task_notification whose launch ack is already in
+        // the window, whose loss strands the subagent card as 'running' on Y
+        // (and a live discard never re-synthesizes it). User frames in the span
+        // are dropped: a prompt recorded there was queued while this turn was
+        // closing and belongs to the discarded future.
+        for (let s = anchorSeq + 1; s <= resultSeq; s++) {
+          const entry = t.store.messageAt(s)
+          if (!entry || t.store.isEvicted(s)) continue
+          const msg = entry.msg as SDKMessage
+          if ((msg as { type?: string }).type === 'user') continue
+          seed = [...seed, msg]
+        }
+      } else if (anchorResult?.result) {
+        // The sidecar has the frame but the store does not — take it from the
+        // sidecar so the kept turn still closes, and Y's copied sidecar can't
+        // re-insert it at the tail.
+        seed = [...seed, anchorResult.result]
+      }
+    }
+    // Same completion backfill resume() does, so a discard of a DORMANT
+    // session heals its stranded background subagents too. The sidecar
+    // transcripts live under X (the session that ran the agents) — pass
+    // X's id, not the fork's. Gated on dormant: when X's subprocess is
+    // still alive, an un-notified ack means the agent may be IN FLIGHT —
+    // synthesizing 'stopped' would mark live work dead in the fork, a lie
+    // the fork can never retract (the real completion lands in X's world
+    // only). A dormant X's subprocess is provably gone: every agent it
+    // launched is terminal-or-dead, so 'stopped' is honest there.
+    if (!opts.live) {
+      const meta = this.sessions.get(id) ?? this.store?.get(id)
+      const extra = await backfillSubagentCompletions(seed, { cwd: meta?.cwd, sessionId: id })
+      if (extra.length > 0) {
+        log.info(
+          `[session ${id}] backfilled ${extra.length} background-subagent completion(s) ` +
+          `missing from the discard seed (from sidecar transcripts)`,
+        )
+        seed = [...seed, ...extra]
+      }
+    }
+    return seed
   }
 
   /** Load the turn-anchor sidecar, backfilling from the on-disk transcript
