@@ -403,9 +403,12 @@ describe('advanceRowAnchor', () => {
       isResultConsumed: never,
     }).rows
 
-  it('adopts the ids on the first non-empty build without moving the offset', () => {
+  it('adopts the ids on the first non-empty build, starting at index 0 when no seq anchor', () => {
+    // Index 0 (not the 1e6 prepend reserve): Virtuoso's alignToBottom
+    // deviation = firstItemIndex * itemHeight, and at 1e6 that is ~77M px —
+    // Chrome clamps to 2^25 and the row flickers. See advanceRowAnchor.
     const next = advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']))
-    expect(next.index).toBe(INITIAL_FIRST_ITEM_INDEX)
+    expect(next.index).toBe(0)
     expect(next.rowIds).toEqual(['a', 'b'])
     expect(next.frontShift).toBe(0)
   })
@@ -907,14 +910,12 @@ describe('advanceRowAnchor: external seq anchor (Task 9)', () => {
     expect(next.frontShift).toBe(0)
   })
 
-  it('falls back to INITIAL_FIRST_ITEM_INDEX when the external anchor is null (empty window)', () => {
-    expect(advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']), null).index).toBe(
-      INITIAL_FIRST_ITEM_INDEX,
-    )
-    // Overlay callers pass nothing at all — same fallback.
-    expect(advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b'])).index).toBe(
-      INITIAL_FIRST_ITEM_INDEX,
-    )
+  it('starts at index 0 when the external anchor is null (empty window / fresh session)', () => {
+    // 0, not the 1e6 prepend reserve — the reserve caused a first-message
+    // flicker via Virtuoso's alignToBottom deviation (see advanceRowAnchor).
+    expect(advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b']), null).index).toBe(0)
+    // Overlay callers pass nothing at all — same behaviour.
+    expect(advanceRowAnchor(initialRowAnchor(), rowsFor(['a', 'b'])).index).toBe(0)
   })
 
   it('re-anchors an unrelated rebuild at the external anchor, not 1e6', () => {

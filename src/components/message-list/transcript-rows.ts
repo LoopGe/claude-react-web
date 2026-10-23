@@ -584,7 +584,16 @@ export function advanceRowAnchor(
 
   // First build for this list — adopt the ids and the external seq anchor.
   if (prev.rowIds.length === 0) {
-    return { index: externalAnchor ?? prev.index, rowIds, frontShift: 0 }
+    // When there is no seq anchor (a brand-new session whose first message
+    // just landed, or a caller with no seq window), start at 0 — NOT the
+    // 1e6 prepend reserve. Virtuoso's alignToBottom `deviation` (which feeds
+    // the item-list's margin-top) is computed as `firstItemIndex *
+    // itemHeight`; at 1e6 that is ~77M px, which Chrome clamps to its 2^25
+    // scroll max, Virtuoso unmounts the row as "off-screen", and the list
+    // rebuild resets the index to 0 — a visible first-message flicker. The
+    // 1e6 reserve is only useful when prepending history into an EXISTING
+    // conversation (where the external anchor is available anyway).
+    return { index: externalAnchor ?? 0, rowIds, frontShift: 0 }
   }
 
   const prevFirst = prev.rowIds[0]
