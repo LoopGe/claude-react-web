@@ -165,6 +165,14 @@ export const ContextBar = memo(function ContextBar({
 
   const displayPct = draftPct ?? thresholdPct
 
+  // CLI says auto-compact will not fire. The threshold (if any) still
+  // positions the marker — dragging it is how the user enables + pins — but
+  // the readout must not show a percentage that will never trigger. A live
+  // drag overrides: the draft is the position you're about to commit.
+  const autoCompactOff = usage?.autoCompactEnabled === false && draftPct == null
+  const compactStat: number | null | 'off' = autoCompactOff ? 'off' : displayPct
+  const untilStat: number | null = autoCompactOff ? null : percentLeft
+
   // One percentage cell. The word label is always mounted; it is visually
   // collapsed to zero width / transparent at rest and expands via a CSS
   // max-width transition when the bar carries `.ctx-bar-revealed` (hovered).
@@ -175,17 +183,27 @@ export const ContextBar = memo(function ContextBar({
   const stat = (
     name: string,
     label: string,
-    value: number | null,
+    value: number | null | 'off',
     lvl?: 'warn' | 'danger',
-  ) => (
-    <span
-      className={`ctx-bar-stat ctx-bar-stat-${name}${lvl ? ` ctx-bar-stat-${lvl}` : ''}`}
-      aria-label={value != null ? `${label} ${Math.round(value)}%` : `${label} —`}
-    >
-      <span className="ctx-bar-stat-label">{label}</span>
-      {value != null ? `${Math.round(value)}%` : '—'}
-    </span>
-  )
+  ) => {
+    const text =
+      value === 'off' ? 'off' : value != null ? `${Math.round(value)}%` : '—'
+    const aria =
+      value === 'off'
+        ? `${label} off`
+        : value != null
+          ? `${label} ${Math.round(value)}%`
+          : `${label} —`
+    return (
+      <span
+        className={`ctx-bar-stat ctx-bar-stat-${name}${lvl ? ` ctx-bar-stat-${lvl}` : ''}`}
+        aria-label={aria}
+      >
+        <span className="ctx-bar-stat-label">{label}</span>
+        {text}
+      </span>
+    )
+  }
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!interactive || e.button !== 0) return
@@ -306,6 +324,9 @@ export const ContextBar = memo(function ContextBar({
   const markerClass =
     `ctx-bar-marker` +
     (!custom && !dragging ? ' ctx-bar-marker-auto' : '') +
+    // Same gate as the readout: a live drag is enable+pin, so the handle must
+    // not stay dashed/muted while the stat already shows the draft %.
+    (autoCompactOff ? ' ctx-bar-marker-disabled' : '') +
     (dragging ? ' ctx-bar-marker-dragging' : '') +
     (editable ? ' ctx-bar-marker-interactive' : '')
 
@@ -326,15 +347,19 @@ export const ContextBar = memo(function ContextBar({
             <span className="ctx-bar-sep" aria-hidden>
               {' '}·{' '}
             </span>
-            {stat('compact', 'compact', displayPct)}
+            {stat('compact', 'compact', compactStat)}
             <span className="ctx-bar-sep" aria-hidden>
               {' '}·{' '}
             </span>
             {stat(
               'until',
               'until',
-              percentLeft,
-              untilLevel === 'warn' || untilLevel === 'danger' ? untilLevel : undefined,
+              untilStat,
+              // When compact is off the placeholder is not a warning — never
+              // paint the '—' with warn/danger from the unused-headroom math.
+              !autoCompactOff && (untilLevel === 'warn' || untilLevel === 'danger')
+                ? untilLevel
+                : undefined,
             )}
           </span>
         </span>

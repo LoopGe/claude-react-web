@@ -986,6 +986,19 @@ button.chat-empty-env-chip:hover {
   background: var(--border);
   box-shadow: var(--handle-shadow);
 }
+/* CLI auto-compact is off — the threshold is only a "would fire here" guide
+   and a drag handle (drag = enable + pin), never an active trigger. Compound
+   + reveal rules so the dim survives .ctx-bar-marker-interactive's opacity. */
+.ctx-bar-marker.ctx-bar-marker-disabled {
+  background: var(--bg-elev);
+  border: 2px dashed var(--border);
+  box-shadow: none;
+}
+.ctx-bar-marker.ctx-bar-marker-disabled,
+.ctx-bar:hover .ctx-bar-marker-interactive.ctx-bar-marker-disabled,
+.ctx-bar-marker-interactive.ctx-bar-marker-disabled:focus-visible {
+  opacity: 0.7;
+}
 .ctx-bar-marker-interactive {
   cursor: grab;
   /* Hidden by default; the handle only appears when the user is about to

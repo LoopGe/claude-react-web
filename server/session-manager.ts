@@ -5317,8 +5317,10 @@ export class SessionManager {
       // derives from the next turn's `result`, leaving the bar (and the
       // "Compact at X%" label) stuck on the stale auto position, which reads
       // as a failed commit. This is the DERIVED (approximate) threshold, and
-      // it also drops any now-stale CLI-reported one.
-      reapplyAutoCompactWindow(s, window)
+      // it also drops any now-stale CLI-reported one. Pin also sends
+      // autoCompactEnabled:true to the SDK (drag is enable+pin); clear sends
+      // null and must not keep claiming a CLI answer we just reset.
+      reapplyAutoCompactWindow(s, window, { autoCompactEnabled: window ? true : null })
       // Then ask the CLI what it actually decided, in the background, and
       // re-broadcast if its answer differs from our approximation. This is
       // what makes a pin verifiable rather than merely optimistic.
@@ -5658,7 +5660,16 @@ export class SessionManager {
     // post-pin probe) silently upgrades the live bar to the real threshold.
     const facts = parseSdkAutoCompactFacts(raw)
     if (facts) applySdkAutoCompactFacts(s, facts)
-    return raw
+    // Surface the CLI's on/off as `autoCompactEnabled` (our ContextUsage key).
+    // The raw SDK field is `isAutoCompactEnabled`; clients merging this
+    // detailed payload with the live lite snapshot need the mapped name so the
+    // first paint of the orb popover / settings Context tab already knows.
+    // Read the boolean straight off the payload — parseSdkAutoCompactFacts is
+    // model-gated and would drop a model-less response's answer.
+    const rawEnabled = (raw as { isAutoCompactEnabled?: unknown } | null | undefined)
+      ?.isAutoCompactEnabled
+    if (typeof rawEnabled !== 'boolean') return raw
+    return { ...(raw as Record<string, unknown>), autoCompactEnabled: rawEnabled }
   }
 
   /** Fire-and-forget getContextUsage() purely to learn the CLI's real
@@ -5748,13 +5759,14 @@ export class SessionManager {
             && last.maxTokens === corrected.maxTokens
             && last.model === corrected.model
             && last.autoCompactThreshold === corrected.autoCompactThreshold
+            && last.autoCompactEnabled === corrected.autoCompactEnabled
           ) {
             return
           }
           applyContextUsage(s, corrected)
         }
         // The same response also carries the CLI's auto-compact facts.
-        // Fold ONLY when the response reports a threshold (shared rule —
+        // Fold when it reports a threshold OR an enabled bit (shared rule —
         // see foldSdkAutoCompactFacts). Runs after the correction so the
         // fold lands on the corrected snapshot.
         this.foldSdkAutoCompactFacts(s, raw)
@@ -5863,7 +5875,13 @@ export class SessionManager {
    *  is for the rare paths (pin probe, REST pull). */
   private foldSdkAutoCompactFacts(s: Session, raw: unknown): void {
     const facts = parseSdkAutoCompactFacts(raw)
-    if (facts?.threshold !== undefined) applySdkAutoCompactFacts(s, facts, false)
+    if (!facts) return
+    // Fold when the response reports a threshold (overrides the formula
+    // replica) OR an enabled bit (the disabled shape has no threshold — the
+    // bit alone is still the CLI's answer and must survive the next result).
+    if (facts.threshold !== undefined || typeof facts.enabled === 'boolean') {
+      applySdkAutoCompactFacts(s, facts, false)
+    }
   }
 
   /** Control requests carry no SDK-side timeout (a busy/wedged subprocess can

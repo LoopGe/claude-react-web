@@ -2832,11 +2832,32 @@ describe('SessionManager', () => {
     expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(164500)
   })
 
-  it('contextUsage() still returns the raw response it harvested from', async () => {
+  it('contextUsage() returns the harvested raw response with autoCompactEnabled mapped', async () => {
     const info = await sm.create({})
     const raw = { model: 'm', autoCompactThreshold: 1000, isAutoCompactEnabled: true, categories: [] }
     mockHandles[0].getContextUsage.mockResolvedValueOnce(raw)
-    await expect(sm.contextUsage(info.id)).resolves.toBe(raw)
+    // The raw SDK field is `isAutoCompactEnabled`; we also surface it under our
+    // ContextUsage key so the first paint of the orb popover knows. Everything
+    // else in the payload rides through untouched.
+    await expect(sm.contextUsage(info.id)).resolves.toEqual({
+      ...raw,
+      autoCompactEnabled: true,
+    })
+  })
+
+  it('contextUsage() maps autoCompactEnabled even when the response has no model', async () => {
+    // parseSdkAutoCompactFacts is model-gated (facts need a model to be
+    // trustworthy) — but the boolean is still the CLI's answer and the
+    // detailed-payload readers must see it either way.
+    const info = await sm.create({})
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 10,
+      maxTokens: 100,
+      isAutoCompactEnabled: false,
+      categories: [],
+    })
+    const usage = await sm.contextUsage(info.id) as { autoCompactEnabled?: boolean }
+    expect(usage.autoCompactEnabled).toBe(false)
   })
 
   it('contextUsage() tolerates a response with no auto-compact fields', async () => {
@@ -3272,6 +3293,37 @@ describe('SessionManager', () => {
     emitAggregateResult()
     for (let i = 0; i < 10; i++) await tick()
     expect(usageStateOf(info.id).lastContextUsage).toBe(before)
+  })
+
+  it('a solo autoCompactEnabled flip still replaces the snapshot (not swallowed by no-churn)', async () => {
+    const info = await sm.create({})
+    seedAggregateSnapshot(info.id)
+    // First correction lands with auto-compact ON.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      isAutoCompactEnabled: true,
+      categories: [],
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.autoCompactEnabled !== true; i++) await tick()
+
+    // Same totals / window / model / threshold — only enabled flips off.
+    mockHandles[0].getContextUsage.mockResolvedValueOnce({
+      totalTokens: 155641,
+      maxTokens: 1000000,
+      rawMaxTokens: 1000000,
+      model: 'zhipuai/glm-5.3-flash',
+      autoCompactThreshold: 967000,
+      isAutoCompactEnabled: false,
+      categories: [],
+    })
+    emitAggregateResult()
+    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.autoCompactEnabled !== false; i++) await tick()
+    expect(sm.getCachedContextUsage(info.id)?.autoCompactEnabled).toBe(false)
   })
 
   it('a wedged reconcile probe times out, frees the in-flight flag, and ignores the late resolve', async () => {

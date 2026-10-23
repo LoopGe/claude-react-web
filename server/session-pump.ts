@@ -1543,6 +1543,7 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // unverifiable fallback stays available — see the gate inside.
           const usage = liteContextUsageFromResult(msg, session.autoCompactWindow, session.lastSdkAutoCompact, {
             allowUnverifiableFallback: typeof session.handle?.getContextUsage !== 'function',
+            cached: session.lastContextUsage,
           })
           resultUsage = usage
           // Cold-start instrumentation: log once on the FIRST REAL result —
@@ -1928,6 +1929,14 @@ export interface LiteContextUsage {
    *  a marker position back into Settings.autoCompactWindow exactly instead of
    *  assuming the 20000 floor. Carried forward like the threshold. */
   maxOutputTokens?: number
+  /** Whether the CLI says auto-compact is on (`isAutoCompactEnabled`). Three
+   *  state: `true`/`false` are CLI-authoritative (from getContextUsage facts);
+   *  `null` / absent means unknown — the bar must not claim "off" from a
+   *  formula-only reading. `null` is the explicit "cleared" form so a WS
+   *  frame can overwrite a stale detailed-payload carry in a spread merge
+   *  (JSON drops `undefined` keys, so delete-unknown would lose the race).
+   *  Carried forward onto mid-turn snapshots like the threshold. */
+  autoCompactEnabled?: boolean | null
   /** Set when Guard 1 dropped a corrupt cache bucket, so this snapshot is the
    *  input-only fallback rather than the true prompt size. The pump uses this
    *  to avoid overwriting a healthy last-good value: an intermittently corrupt
@@ -2076,16 +2085,43 @@ export function applySdkAutoCompactFacts(
   facts: SdkAutoCompactFacts,
   logDrift = true,
 ): void {
-  session.lastSdkAutoCompact = facts
+  // Merge into the facts cache: a threshold-less set (the disabled shape) must
+  // not drop a previously seen real threshold, or the next result would
+  // resolve the formula replica over it.
+  const prev = session.lastSdkAutoCompact
+  session.lastSdkAutoCompact =
+    prev && prev.model === facts.model
+      ? {
+          ...facts,
+          threshold: facts.threshold ?? prev.threshold,
+          enabled: facts.enabled ?? prev.enabled,
+          rawMaxTokens: facts.rawMaxTokens ?? prev.rawMaxTokens,
+        }
+      : facts
   const last = session.lastContextUsage
   if (!last) return
   const pinned = session.autoCompactWindow
   const effectiveWindow = pinned && pinned > 0 ? pinned : last.maxTokens
-  const next = resolveAutoCompactThreshold(facts, last.model, effectiveWindow, last.maxOutputTokens, logDrift)
-  if (next === last.autoCompactThreshold) return
+  // A threshold-less fact set (the disabled shape), or one for a different
+  // model, must NOT resolve the local formula here — that would overwrite a
+  // real CLI number with the replica. Keep the threshold we already show and
+  // only fold the enabled bit.
+  const next =
+    facts.threshold !== undefined && facts.model === last.model
+      ? resolveAutoCompactThreshold(facts, last.model, effectiveWindow, last.maxOutputTokens, logDrift)
+      : last.autoCompactThreshold
+  // Same-model boolean facts stamp enabled; a silent or mismatched answer
+  // leaves the last known state alone (never flip to unknown from one probe).
+  const nextEnabled =
+    facts.model === last.model && typeof facts.enabled === 'boolean'
+      ? facts.enabled
+      : last.autoCompactEnabled
+  if (next === last.autoCompactThreshold && nextEnabled === last.autoCompactEnabled) return
   const updated: LiteContextUsage = { ...last }
   if (typeof next === 'number') updated.autoCompactThreshold = next
   else delete updated.autoCompactThreshold
+  if (typeof nextEnabled === 'boolean' || nextEnabled === null) updated.autoCompactEnabled = nextEnabled
+  else delete updated.autoCompactEnabled
   applyContextUsage(session, updated)
 }
 
@@ -2133,6 +2169,7 @@ function assembleLiteUsage(opts: {
   model: string
   autoCompactThreshold?: number
   maxOutputTokens?: number
+  autoCompactEnabled?: boolean | null
   /** Caller tag so the diagnostic log can tell us which path produced a
    *  suspicious payload ('result' = end-of-turn, 'assistant' = mid-turn). */
   source?: 'result' | 'assistant'
@@ -2229,6 +2266,9 @@ function assembleLiteUsage(opts: {
   if (typeof opts.outputTokens === 'number') out.outputTokens = opts.outputTokens
   if (typeof opts.autoCompactThreshold === 'number') out.autoCompactThreshold = opts.autoCompactThreshold
   if (typeof opts.maxOutputTokens === 'number') out.maxOutputTokens = opts.maxOutputTokens
+  if (typeof opts.autoCompactEnabled === 'boolean' || opts.autoCompactEnabled === null) {
+    out.autoCompactEnabled = opts.autoCompactEnabled
+  }
   return out
 }
 
@@ -2391,16 +2431,25 @@ export function liteContextUsageFromSdkUsage(
     out.autoCompactThreshold = Math.round(r.autoCompactThreshold)
   } else if (
     sameModel
-    && r.isAutoCompactEnabled !== false
     && typeof last?.autoCompactThreshold === 'number'
     // A threshold computed for a LARGER window must not tag along onto a
     // smaller adopted one — the client renders the marker at
     // threshold/maxTokens with no clamp, and 967000/200000 pins it at 483%.
     && last.autoCompactThreshold <= maxTokens
   ) {
+    // Carry even when the response says auto-compact is DISABLED: the marker
+    // is the drag handle that re-enables + pins, so it needs a position. The
+    // readout says "off"; dropping the threshold would hide the handle.
     out.autoCompactThreshold = last.autoCompactThreshold
   }
   if (typeof last?.maxOutputTokens === 'number' && sameModel) out.maxOutputTokens = last.maxOutputTokens
+  // `isAutoCompactEnabled` is the CLI's own on/off. Only a present boolean
+  // stamps it; a silent response carries the previous same-model answer rather
+  // than wiping a known state when applyContextUsage replaces the snapshot.
+  if (typeof r.isAutoCompactEnabled === 'boolean') out.autoCompactEnabled = r.isAutoCompactEnabled
+  else if (sameModel && last && last.autoCompactEnabled !== undefined) {
+    out.autoCompactEnabled = last.autoCompactEnabled
+  }
   // Per-call lens buckets: fresh from the response where reported and sane
   // (same shared rule Guard 1 applies on the result path — a bucket must fit
   // BOTH its measuring lens (the response's window) and the rendered
@@ -2440,7 +2489,16 @@ export function liteContextUsageFromSdkUsage(
  *  No-op when there is no cached snapshot yet (fresh session — the bar is
  *  empty regardless, and the next `result` derives the threshold fresh), or
  *  when the recomputed threshold is unchanged (no pointless broadcast). */
-export function reapplyAutoCompactWindow(session: Session, windowOverride?: number): void {
+export function reapplyAutoCompactWindow(
+  session: Session,
+  windowOverride?: number,
+  opts?: {
+    /** Stamp the snapshot's enabled bit. `true`/`false` set it; `null` clears
+     *  to unknown; omit to leave it alone (the generic /settings forward of
+     *  `autoCompactWindow` alone never asked the CLI to enable). */
+    autoCompactEnabled?: boolean | null
+  },
+): void {
   // The pin just moved, so any CLI-reported threshold we cached describes the
   // PREVIOUS window and would pin the marker to a stale position. Drop it and
   // fall back to the local formula for immediate optimistic feedback; the
@@ -2450,10 +2508,14 @@ export function reapplyAutoCompactWindow(session: Session, windowOverride?: numb
   if (!last) return
   const effectiveWindow = windowOverride && windowOverride > 0 ? windowOverride : last.maxTokens
   const next = computeAutoCompactThreshold(effectiveWindow, last.maxOutputTokens)
-  if (next === last.autoCompactThreshold) return
+  const stampEnabled = opts != null && 'autoCompactEnabled' in opts
+  const nextEnabled = stampEnabled ? opts.autoCompactEnabled : last.autoCompactEnabled
+  if (next === last.autoCompactThreshold && nextEnabled === last.autoCompactEnabled) return
   const updated: LiteContextUsage = { ...last }
   if (typeof next === 'number') updated.autoCompactThreshold = next
   else delete updated.autoCompactThreshold
+  if (typeof nextEnabled === 'boolean' || nextEnabled === null) updated.autoCompactEnabled = nextEnabled
+  else delete updated.autoCompactEnabled
   applyContextUsage(session, updated)
 }
 
@@ -2496,7 +2558,15 @@ export function liteContextUsageFromResult(
   msg: SDKMessage,
   windowOverride?: number,
   facts?: SdkAutoCompactFacts,
-  opts?: { allowUnverifiableFallback?: boolean },
+  opts?: {
+    allowUnverifiableFallback?: boolean
+    /** Prior snapshot to carry `autoCompactEnabled` from when facts cannot
+     *  stamp it (no facts / model mismatch). A result rebuilds the snapshot
+     *  from scratch — without this carry, a probe-painted `off` is wiped the
+     *  moment a turn ends. Only the enabled bit is read; `model` gates the
+     *  carry so a switch cannot paint the old model's config on the new bar. */
+    cached?: { model?: string; autoCompactEnabled?: boolean | null }
+  },
 ): LiteContextUsage | null {
   if (msg.type !== 'result') return null
   // The result message's `usage` and `modelUsage` shapes are SDK-specific
@@ -2621,6 +2691,15 @@ export function liteContextUsageFromResult(
     model,
     autoCompactThreshold: resolveAutoCompactThreshold(facts, model, effectiveWindow, maxOutputTokens),
     maxOutputTokens,
+    // Only a same-model fact set may stamp enabled — a model switch makes the
+    // cached answer describe a different CLI configuration. Otherwise carry
+    // the prior snapshot's state so a probe-painted `off` survives turn end.
+    autoCompactEnabled:
+      facts && facts.model === model && typeof facts.enabled === 'boolean'
+        ? facts.enabled
+        : opts?.cached && opts.cached.model === model
+          ? opts.cached.autoCompactEnabled
+          : undefined,
     source: 'result',
   })
 }
@@ -2670,6 +2749,7 @@ export function liteContextUsageFromAssistant(
     // stays live between turn-end refreshes.
     autoCompactThreshold: cached.autoCompactThreshold,
     maxOutputTokens: cached.maxOutputTokens,
+    autoCompactEnabled: cached.autoCompactEnabled,
     source: 'assistant',
   })
 }

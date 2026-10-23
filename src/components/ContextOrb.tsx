@@ -157,7 +157,7 @@ function OrbPopover({
       onMouseLeave={onPointerLeave}
     >
       <ContextBar
-        usage={usage}
+        usage={mergedUsage}
         editable={editable}
         custom={custom}
         disabled={disabled}

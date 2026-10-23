@@ -33,6 +33,11 @@ export interface ContextUsage {
    *  marker can invert a threshold position back into Settings.autoCompactWindow
    *  exactly (mirror of the server's LiteContextUsage.maxOutputTokens). */
   maxOutputTokens?: number
+  /** Whether the CLI says auto-compact is on. Three state: `true`/`false` are
+   *  CLI-authoritative; `null` / absent means unknown — the bar must not claim
+   *  "off" from a formula-only reading. `null` is the explicit cleared form
+   *  (survives JSON + spread-merge over a stale detailed payload). */
+  autoCompactEnabled?: boolean | null
   skills?: {
     includedSkills: number
     totalSkills: number

@@ -306,6 +306,66 @@ describe('ContextBar', () => {
     ).toBe('until —')
   })
 
+  it('shows compact off / until — and a disabled marker when CLI auto-compact is off', () => {
+    const { container } = render(
+      <ContextBar usage={{ ...usage, autoCompactEnabled: false }} editable custom onSetWindow={vi.fn()} />,
+    )
+    // A formula threshold may still position the marker (drag = enable+pin),
+    // but the readout must say "off" rather than a percentage that will never
+    // fire.
+    expect(container.querySelector('.ctx-bar-stat-compact')?.getAttribute('aria-label')).toBe(
+      'compact off',
+    )
+    expect(container.querySelector('.ctx-bar-stat-until')?.getAttribute('aria-label')).toBe(
+      'until —',
+    )
+    const marker = container.querySelector('.ctx-bar-marker')
+    expect(marker).not.toBeNull()
+    expect(marker?.classList.contains('ctx-bar-marker-disabled')).toBe(true)
+    // Still interactive: dragging is how the user enables + pins.
+    expect(marker?.getAttribute('role')).toBe('slider')
+  })
+
+  it('keeps the percentage readout when auto-compact is enabled', () => {
+    const { container } = render(<ContextBar usage={{ ...usage, autoCompactEnabled: true }} />)
+    expect(container.querySelector('.ctx-bar-stat-compact')?.getAttribute('aria-label')).toBe(
+      'compact 84%',
+    )
+    expect(container.querySelector('.ctx-bar-stat-until')?.getAttribute('aria-label')).toBe(
+      'until 70%',
+    )
+    expect(
+      container.querySelector('.ctx-bar-marker')?.classList.contains('ctx-bar-marker-disabled'),
+    ).toBe(false)
+  })
+
+  it('does not claim off when autoCompactEnabled is unknown (absent)', () => {
+    const { container } = render(<ContextBar usage={usage} />)
+    expect(container.querySelector('.ctx-bar-stat-compact')?.getAttribute('aria-label')).toBe(
+      'compact 84%',
+    )
+    expect(
+      container.querySelector('.ctx-bar-marker')?.classList.contains('ctx-bar-marker-disabled'),
+    ).toBe(false)
+  })
+
+  it('does not paint the until placeholder with warn/danger when auto-compact is off', () => {
+    // used = 160k of a 167k threshold → the unused-headroom math would say
+    // "danger", but compact is off so the '—' must stay muted — a red dash
+    // alarms for a trigger that will never fire.
+    const offNear = {
+      ...usage,
+      totalTokens: 160000,
+      percentage: 80,
+      autoCompactEnabled: false as const,
+    }
+    const { container } = render(<ContextBar usage={offNear} />)
+    const until = container.querySelector('.ctx-bar-stat-until')
+    expect(until?.getAttribute('aria-label')).toBe('until —')
+    expect(until?.classList.contains('ctx-bar-stat-danger')).toBe(false)
+    expect(until?.classList.contains('ctx-bar-stat-warn')).toBe(false)
+  })
+
   it('mirrors the compact stat to the marker while dragging', () => {
     const { container } = render(
       <ContextBar usage={usage} editable custom onSetWindow={vi.fn()} />,
