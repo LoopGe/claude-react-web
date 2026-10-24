@@ -405,6 +405,28 @@ Must be a positive integer.
 
 ---
 
+### `autoCompactThresholdPct`
+
+| | |
+|---|---|
+| Type | `number` (percent) |
+| Default | `85` |
+| Range | `20`–`100` (clamped) |
+
+Default **auto-compact threshold** as a share of the model's context window. Brand-new sessions (created without an explicit `autoCompactWindow`) pin `Settings.autoCompactWindow` once the model window is known so the CLI triggers compaction at this percentage — instead of the formula-derived ~97% (`window − min(maxOutputTokens, 20000) − 13000`).
+
+- **New sessions only.** Resume / fork / clear keep whatever window they already have.
+- A user drag on the ContextBar marker always wins after the fact.
+- Small windows clamp: a 200k model cannot reach 85% (max threshold ≈ 83.5%).
+
+```json
+{
+  "autoCompactThresholdPct": 85
+}
+```
+
+---
+
 ### `autoStart`
 
 | | |

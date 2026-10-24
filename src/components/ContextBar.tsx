@@ -24,7 +24,7 @@ import {
 import type { ContextUsage } from '../hooks/useChatStream'
 import { contextUsageStats } from '../utils/context-usage'
 import { formatTokens } from '../utils/format'
-import { windowForAutoCompactThreshold } from '../../shared/auto-compact'
+import { autoCompactWindowForPct } from '../../shared/auto-compact'
 import { clamp } from '../utils/clamp'
 
 /** Marker drag range / grid. Min 20 keeps auto-compact far enough from the
@@ -138,8 +138,9 @@ export const ContextBar = memo(function ContextBar({
   const pctToWindow = useCallback(
     (pct: number) => {
       if (typeof max !== 'number' || max <= 0) return 0
-      const want = windowForAutoCompactThreshold((pct / 100) * max, usage?.maxOutputTokens)
-      return Math.round(Math.min(want, max))
+      // Drag path: clamp to the model window so the highest achievable marker
+      // is still committable (shared inverse; default-pin uses no clamp).
+      return autoCompactWindowForPct(pct, max, usage?.maxOutputTokens, { clampToWindow: true })
     },
     [max, usage?.maxOutputTokens],
   )

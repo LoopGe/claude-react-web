@@ -57,6 +57,10 @@ import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
+import {
+  autoCompactWindowForPct,
+  clampAutoCompactThresholdPct,
+} from '../shared/auto-compact.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
 import { auxFallbackModel, fallbackAliasesFor, resolveConfiguredModelId, resolveGroup } from './model-groups.js'
 import { isSdkForwardedMode } from './permission-modes.js'
@@ -1438,6 +1442,7 @@ export class SessionManager {
       effortLevel: s.effortLevel,
       thinking: s.thinking,
       autoCompactWindow: s.autoCompactWindow,
+      autoCompactDefaultPending: s.autoCompactDefaultPending,
       hooks: s.hooks,
       // Both rings count — parity with the old single mixed ring.
       messageCount: s.history.length + s.subagentHistory.length,
@@ -1517,7 +1522,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; autoCompactDefaultPending?: boolean; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1555,6 +1560,10 @@ export class SessionManager {
         const w = (opts as { autoCompactWindow?: unknown }).autoCompactWindow
         return typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
       })(),
+      // Create-only default-threshold pin (see maybeApplyDefaultAutoCompactWindow).
+      autoCompactDefaultPending: (opts as { autoCompactDefaultPending?: unknown }).autoCompactDefaultPending === true
+        ? true
+        : undefined,
       hooks: settingsHooks,
       // Capture the resolved MCP server names so the client can compute
       // "available" without the flaky mcp-status SDK control request.
@@ -1643,10 +1652,19 @@ export class SessionManager {
     // selected — instead of an undefined that silently resolves to whatever
     // model the `claude` CLI happens to pick. Resume/fork are unaffected:
     // they carry the persisted model forward through their own opts.
-    const withDefault: Options & { provider?: string; modelGroupId?: string } = {
+    const withDefault: Options & { provider?: string; modelGroupId?: string; autoCompactDefaultPending?: boolean } = {
       ...opts,
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? profileDefaultModel(profile),
+    }
+    // Brand-new sessions with no pin: once the model window is known, pin
+    // `autoCompactWindow` so the CLI threshold lands at config
+    // `autoCompactThresholdPct` (default 85%) instead of the formula ~97%.
+    // Create-only — resume/fork/clear never set this flag.
+    {
+      const w = (opts as { autoCompactWindow?: unknown }).autoCompactWindow
+      const hasPin = typeof w === 'number' && Number.isFinite(w) && w > 0
+      if (!hasPin) withDefault.autoCompactDefaultPending = true
     }
     // Create-time per-first-party-server override (app-level `firstPartyTools`
     // body field — NOT an SDK Options key; the provider whitelists what
@@ -3160,6 +3178,8 @@ export class SessionManager {
       // persisted meta; create/fork/clear pass it on opts where snapshotMeta
       // captured it. `??` so an explicit intent survives (undefined = "auto").
       autoCompactWindow: existingMeta?.autoCompactWindow ?? metaSnapshot.autoCompactWindow,
+      autoCompactDefaultPending:
+        existingMeta?.autoCompactDefaultPending ?? metaSnapshot.autoCompactDefaultPending,
       // Auto-memory intent. Resume paths (same id) restore from the
       // persisted meta; create/fork/clear pass the intent on opts where
       // snapshotMeta captured it. `??` so an explicit intent survives.
@@ -4957,6 +4977,9 @@ export class SessionManager {
       if ('autoCompactWindow' in forwarded) {
         const w = forwarded.autoCompactWindow
         s.autoCompactWindow = typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
+        // Same "user wins" rule as setAutoCompactWindow — an explicit clear
+        // must not be overridden by the create-time default pin.
+        delete s.autoCompactDefaultPending
         // Same immediate refresh as the dedicated setAutoCompactWindow path —
         // the generic /settings route also moves the effective threshold —
         // followed by the same background probe for the CLI's real answer.
@@ -5310,6 +5333,8 @@ export class SessionManager {
       : { autoCompactWindow: null, autoCompactEnabled: true }
     return this.applyFlagSettingAndPersist(id, flags, 'auto-compact window', (s) => {
       s.autoCompactWindow = window
+      // A user pin (or explicit clear) always wins over the create-time default.
+      delete s.autoCompactDefaultPending
       // Refresh the cached context-usage snapshot NOW so every live ContextBar
       // jumps to the new threshold immediately — the threshold otherwise only
       // derives from the next turn's `result`, leaving the bar (and the
@@ -5322,6 +5347,33 @@ export class SessionManager {
       // re-broadcast if its answer differs from our approximation. This is
       // what makes a pin verifiable rather than merely optimistic.
       this.probeAutoCompactFacts(s)
+    })
+  }
+
+  /** Apply the create-time default auto-compact pin once the model window is
+   *  known (config `autoCompactThresholdPct`, default 85%). No-op unless the
+   *  session is still `autoCompactDefaultPending` and has no user pin.
+   *  Called after a context-usage snapshot lands with a usable maxTokens. */
+  maybeApplyDefaultAutoCompactWindow(id: string): Promise<void> {
+    const s = this.sessions.get(id)
+    if (!s?.autoCompactDefaultPending) return Promise.resolve()
+    if (s.autoCompactWindow != null && s.autoCompactWindow > 0) {
+      delete s.autoCompactDefaultPending
+      return Promise.resolve()
+    }
+    const usage = s.lastContextUsage
+    if (!usage || !(usage.maxTokens > 0)) return Promise.resolve()
+    const pct = clampAutoCompactThresholdPct(defaultConfig.autoCompactThresholdPct)
+    const window = autoCompactWindowForPct(pct, usage.maxTokens, usage.maxOutputTokens)
+    // 0 = the pct is not achievable on this window (or no window) — leave auto.
+    if (!(window > 0)) {
+      delete s.autoCompactDefaultPending
+      return Promise.resolve()
+    }
+    // Clear pending only after the pin lands; a failed apply must stay pending
+    // so a later usage snapshot can retry.
+    return this.setAutoCompactWindow(id, window).then(() => undefined).catch((err) => {
+      log.warn(`[${id}] applying default auto-compact window ${window} failed:`, err)
     })
   }
 
@@ -5687,6 +5739,7 @@ export class SessionManager {
       onResolved: (raw) => {
         const facts = parseSdkAutoCompactFacts(raw)
         if (facts) applySdkAutoCompactFacts(s, facts)
+        this.maybeApplyDefaultAutoCompactWindow(s.id)
       },
     })
   }
@@ -5758,6 +5811,9 @@ export class SessionManager {
             && last.autoCompactThreshold === corrected.autoCompactThreshold
             && last.autoCompactEnabled === corrected.autoCompactEnabled
           ) {
+            // No-churn snapshot still knows the window — the create-time
+            // default pin must not miss this path.
+            this.maybeApplyDefaultAutoCompactWindow(s.id)
             return
           }
           applyContextUsage(s, corrected)
@@ -5767,6 +5823,7 @@ export class SessionManager {
         // see foldSdkAutoCompactFacts). Runs after the correction so the
         // fold lands on the corrected snapshot.
         this.foldSdkAutoCompactFacts(s, raw)
+        this.maybeApplyDefaultAutoCompactWindow(s.id)
       },
       onSettled: () => {
         if (!stale) return
@@ -5849,6 +5906,7 @@ export class SessionManager {
         const seeded = liteContextUsageFromSdkUsage(raw)
         if (seeded) applyContextUsage(s, seeded)
         this.foldSdkAutoCompactFacts(s, raw)
+        this.maybeApplyDefaultAutoCompactWindow(s.id)
       },
     })
     if (started) s.lastContextUsageSeedAt = Date.now()
@@ -7963,6 +8021,7 @@ export class SessionManager {
         // call (see reconcileContextUsage for the aggregate-payload bug
         // this corrects).
         reconcileContextUsage: (s) => this.reconcileContextUsage(s),
+        onContextUsage: (s) => { void this.maybeApplyDefaultAutoCompactWindow(s.id) },
         // Zero-turn Context bar seed — see seedContextUsage. Fired here on
         // the init handshake as a free retry when the spawn-time probe
         // timed out (the cache/in-flight guards make it a no-op otherwise).

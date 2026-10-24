@@ -76,6 +76,11 @@ export interface SessionMeta {
    *  threshold from the model's context window). Re-applied to the SDK via
    *  applyFlagSettings on every re-spawn (resume / restart / fork). */
   autoCompactWindow?: number
+  /** Set only on brand-new sessions that started without a pinned window:
+   *  once the model context window is known, pin `autoCompactWindow` so the
+   *  CLI threshold lands at config `autoCompactThresholdPct` (default 85%).
+   *  Cleared when the pin is applied or the user pins manually. */
+  autoCompactDefaultPending?: boolean
   /** Structured hook configuration applied via Query.applyFlagSettings(). */
   hooks?: SessionHooksConfig
   /** Monotonic counter of user turns seen; used as a rough "is there
@@ -260,6 +265,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       typeof r.autoCompactWindow === 'number' && Number.isFinite(r.autoCompactWindow) && r.autoCompactWindow > 0
         ? Math.round(r.autoCompactWindow)
         : undefined,
+    autoCompactDefaultPending: r.autoCompactDefaultPending === true ? true : undefined,
     hooks: coerceHooks(r.hooks),
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,

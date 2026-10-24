@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { windowForAutoCompactThreshold } from './auto-compact'
+import {
+  DEFAULT_AUTO_COMPACT_THRESHOLD_PCT,
+  autoCompactWindowForPct,
+  clampAutoCompactThresholdPct,
+  windowForAutoCompactThreshold,
+} from './auto-compact'
 
 // Mirrors the CLI's threshold formula (server: computeAutoCompactThreshold):
 //   threshold = window - min(maxOutputTokens, 20000) - 13000
@@ -32,5 +37,42 @@ describe('windowForAutoCompactThreshold', () => {
 
   it('clamps a degenerate negative sum to zero', () => {
     expect(windowForAutoCompactThreshold(-40000, 32000)).toBe(0)
+  })
+})
+
+describe('clampAutoCompactThresholdPct', () => {
+  it('defaults to 85 and clamps to the marker range 20–100', () => {
+    expect(DEFAULT_AUTO_COMPACT_THRESHOLD_PCT).toBe(85)
+    expect(clampAutoCompactThresholdPct(85)).toBe(85)
+    expect(clampAutoCompactThresholdPct(10)).toBe(20)
+    expect(clampAutoCompactThresholdPct(150)).toBe(100)
+  })
+
+  it('falls back to the default for missing / non-finite values', () => {
+    expect(clampAutoCompactThresholdPct(undefined)).toBe(85)
+    expect(clampAutoCompactThresholdPct(Number.NaN)).toBe(85)
+  })
+})
+
+describe('autoCompactWindowForPct', () => {
+  it('lands the CLI threshold at 85% of a 1M window', () => {
+    // threshold want = 850000; window = 850000 + 20000 + 13000 = 883000
+    expect(autoCompactWindowForPct(85, 1_000_000, 32_000)).toBe(883000)
+    // CLI derives back: 883000 - 20000 - 13000 = 850000 = 85% of 1M.
+    expect(883000 - 20000 - 13000).toBe(850_000)
+  })
+
+  it('returns 0 (leave auto) when the inverse would exceed the model window', () => {
+    // 0.85 × 200k + 33k = 203000 > 200000 → not achievable; do NOT pin the
+    // window itself (that would stick at 83.5% across a later 1M switch).
+    expect(autoCompactWindowForPct(85, 200_000, 32_000)).toBe(0)
+  })
+
+  it('clampToWindow keeps the drag path committable on small windows', () => {
+    expect(autoCompactWindowForPct(85, 200_000, 32_000, { clampToWindow: true })).toBe(200_000)
+  })
+
+  it('returns 0 for a non-positive context window', () => {
+    expect(autoCompactWindowForPct(85, 0)).toBe(0)
   })
 })

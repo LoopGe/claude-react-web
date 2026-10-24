@@ -2775,6 +2775,73 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.autoCompactWindow).toBe(100000)
   })
 
+  it('create() marks autoCompactDefaultPending when no window is supplied', async () => {
+    const info = await sm.create({})
+    expect(store.get(info.id)?.autoCompactDefaultPending).toBe(true)
+    expect(sm.get(info.id).autoCompactWindow).toBeUndefined()
+  })
+
+  it('create() with an explicit window does not mark pending', async () => {
+    const info = await sm.create({ autoCompactWindow: 180000 } as never)
+    expect(store.get(info.id)?.autoCompactDefaultPending).toBeUndefined()
+    expect(sm.get(info.id).autoCompactWindow).toBe(180000)
+  })
+
+  it('applies the default 85% pin once the model window is known, then clears pending', async () => {
+    // 1M window: want threshold 850000 → window 883000.
+    const info = await sm.create({})
+    usageStateOf(info.id).lastContextUsage = {
+      totalTokens: 1000,
+      maxTokens: 1_000_000,
+      rawMaxTokens: 1_000_000,
+      percentage: 0.1,
+      model: 'claude-opus-4-7',
+      maxOutputTokens: 32_000,
+    }
+    await (sm as unknown as { maybeApplyDefaultAutoCompactWindow: (id: string) => Promise<void> })
+      .maybeApplyDefaultAutoCompactWindow(info.id)
+
+    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
+      autoCompactWindow: 883000,
+      autoCompactEnabled: true,
+    })
+    expect(sm.get(info.id).autoCompactWindow).toBe(883000)
+    await store.flush()
+    expect(store.get(info.id)?.autoCompactDefaultPending).toBeFalsy()
+  })
+
+  it('does not apply the default pin over a user pin or a second time', async () => {
+    const info = await sm.create({ autoCompactWindow: 120000 } as never)
+    usageStateOf(info.id).lastContextUsage = {
+      totalTokens: 1000,
+      maxTokens: 1_000_000,
+      rawMaxTokens: 1_000_000,
+      percentage: 0.1,
+      model: 'claude-opus-4-7',
+      maxOutputTokens: 32_000,
+    }
+    ;(sm as unknown as { maybeApplyDefaultAutoCompactWindow: (id: string) => Promise<void> })
+      .maybeApplyDefaultAutoCompactWindow(info.id)
+    expect(sm.get(info.id).autoCompactWindow).toBe(120000)
+
+    const info2 = await sm.create({})
+    usageStateOf(info2.id).lastContextUsage = {
+      totalTokens: 1000,
+      maxTokens: 200_000,
+      rawMaxTokens: 200_000,
+      percentage: 0.5,
+      model: 'm',
+    }
+    const apply = (sm as unknown as { maybeApplyDefaultAutoCompactWindow: (id: string) => Promise<void> })
+      .maybeApplyDefaultAutoCompactWindow.bind(sm)
+    await apply(info2.id)
+    // 85% is not achievable on 200k (inverse exceeds the window) — leave auto
+    // rather than pinning a sticky 200k that mis-fires after a model switch.
+    expect(sm.get(info2.id).autoCompactWindow).toBeUndefined()
+    await store.flush()
+    expect(store.get(info2.id)?.autoCompactDefaultPending).toBeFalsy()
+  })
+
   // --- authoritative auto-compact facts (the CLI's own threshold) ---------
   //
   // The pinned window genuinely reaches the CLI, but the THRESHOLD the

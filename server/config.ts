@@ -22,6 +22,10 @@ import { isFontSizePreset, DEFAULT_FONT_SIZE } from '../shared/font-size.js'
 import type { AnimationSpeedPreset } from '../shared/animation-speed.js'
 import { isAnimationSpeedPreset, DEFAULT_ANIMATION_SPEED } from '../shared/animation-speed.js'
 import {
+  DEFAULT_AUTO_COMPACT_THRESHOLD_PCT,
+  clampAutoCompactThresholdPct,
+} from '../shared/auto-compact.js'
+import {
   enableFileLogging, disableFileLogging, setLogConfig,
   LOG_LEVELS, LOG_LEVEL_FROM_ENV, LOG_SCOPES_FROM_ENV, type LogLevel,
   createLogger,
@@ -217,6 +221,10 @@ interface ConfigFile {
    *  ingest per capture. Files exceeding this limit are skipped.
    *  Default: 2 MiB. */
   fileSnapshotsMaxUntrackedBytes?: number
+  /** Default auto-compact threshold as a percent of the model context window
+   *  (20–100). Applied to brand-new sessions once the window is known.
+   *  Default: 85. */
+  autoCompactThresholdPct?: number
 }
 
 export interface ServerConfig {
@@ -314,6 +322,10 @@ export interface ServerConfig {
   /** Maximum bytes per untracked file the sidecar ingests per capture.
    *  Default: 2 MiB. */
   readonly fileSnapshotsMaxUntrackedBytes: number
+  /** Default auto-compact threshold as a percent of the model context window
+   *  (20–100). Brand-new sessions pin `Settings.autoCompactWindow` so the CLI
+   *  triggers at this share once the window is known. Default: 85. */
+  readonly autoCompactThresholdPct: number
   readonly profiles: readonly ProviderProfile[]
   readonly activeProfileId: string
 }
@@ -370,6 +382,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   steering: true,
   autoStart: false,
   fileSnapshotsMaxUntrackedBytes: DEFAULT_MAX_UNTRACKED_BYTES,
+  autoCompactThresholdPct: DEFAULT_AUTO_COMPACT_THRESHOLD_PCT,
   profiles: Object.freeze([]),
   activeProfileId: 'default',
 })
@@ -771,6 +784,9 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
     ;(merged as { fileSnapshotsMaxUntrackedBytes: number }).fileSnapshotsMaxUntrackedBytes = Math.round(file_.fileSnapshotsMaxUntrackedBytes)
     log.info(`fileSnapshotsMaxUntrackedBytes: ${merged.fileSnapshotsMaxUntrackedBytes}`)
   }
+  if (typeof file_.autoCompactThresholdPct === 'number') {
+    ;(merged as { autoCompactThresholdPct: number }).autoCompactThresholdPct = clampAutoCompactThresholdPct(file_.autoCompactThresholdPct)
+  }
 
   config = Object.freeze(merged)
 
@@ -838,6 +854,7 @@ export const WRITABLE_CONFIG_KEYS = [
   'steering',
   'autoStart',
   'fileSnapshotsMaxUntrackedBytes',
+  'autoCompactThresholdPct',
 ] as const
 
 /** Parse raw config.json text. Shared by BOTH readers so they cannot disagree

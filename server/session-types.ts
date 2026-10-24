@@ -391,6 +391,10 @@ export interface Session {
    *  Undefined means "auto" — the CLI derives the threshold from the model's
    *  context window. */
   autoCompactWindow?: number
+  /** Brand-new session awaiting the default auto-compact pin (config
+   *  `autoCompactThresholdPct`) once the model window is known. Create-only;
+   *  cleared on apply or user pin. */
+  autoCompactDefaultPending?: boolean
   handle: ProviderSessionHandle
   subscribers: Map<string, Subscriber>
   permissionSubscribers: Map<string, PermissionSubscriber>

@@ -819,6 +819,10 @@ export interface PumpDeps {
    *  path never awaits it. Optional so test fixtures that don't exercise
    *  reconciliation can omit it. */
   reconcileContextUsage?: (session: Session) => void
+  /** Called after a context-usage snapshot is applied. The manager uses it to
+   *  pin the create-time default auto-compact window once `maxTokens` is
+   *  known (see SessionManager.maybeApplyDefaultAutoCompactWindow). */
+  onContextUsage?: (session: Session) => void
   /** Seed the session's context-usage snapshot (first `system/init` of a
    *  pump's life — `initAtMs` never resets, so an in-place respawn on the
    *  SAME session object does not re-fire; a fresh Session from
@@ -1569,7 +1573,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
                 ` time_to_request_from_spawn_ms=${typeof r.time_to_request_from_spawn_ms === 'number' ? r.time_to_request_from_spawn_ms : 'n/a'}`,
             )
           }
-          if (usage) applyContextUsage(session, usage)
+          if (usage) {
+            applyContextUsage(session, usage)
+            deps.onContextUsage?.(session)
+          }
         }
         // Also derive a snapshot from each main-thread `assistant` message
         // so the bar refreshes MID-TURN (per API response) instead of only
@@ -1580,7 +1587,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // and we skip. Subagent frames are filtered out inside the helper.
         if (msg.type === 'assistant') {
           const usage = liteContextUsageFromAssistant(msg, session.lastContextUsage)
-          if (usage) applyContextUsage(session, usage)
+          if (usage) {
+            applyContextUsage(session, usage)
+            deps.onContextUsage?.(session)
+          }
         }
         // `result` marks a completed turn.
         //
