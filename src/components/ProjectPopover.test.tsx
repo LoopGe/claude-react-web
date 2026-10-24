@@ -4,7 +4,7 @@
 // layer, and the standard popover closes (Escape, outside mousedown).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { render, fireEvent, waitFor, act } from '@testing-library/react'
 import { AnimatePresence } from 'motion/react'
 
 const { getMock, postMock } = vi.hoisted(() => ({
@@ -154,5 +154,78 @@ describe('ProjectPopover', () => {
     expect(props.onClose).not.toHaveBeenCalled()
     fireEvent.mouseDown(document.body)
     expect(props.onClose).toHaveBeenCalledOnce()
+  })
+
+  // --- Pixel-grid alignment -------------------------------------------------
+  // The enter animation ends with Motion writing `transform: none` (scale and
+  // y hit their defaults), which tears down the composited layer and
+  // re-rasterizes the SVG icons. At fractional left/top the stroke ink snaps
+  // ~1px at that moment — the "icons jump after the animation" bug. measure()
+  // must therefore land on integer CSS pixels.
+
+  it('places the popover at integer left/top even when the chip rect is fractional', () => {
+    getMock.mockReturnValue(new Promise(() => {}))
+    const { trigger } = renderPopover()
+    const pop = document.querySelector('.project-pop') as HTMLElement
+    // A visible chip with fractional viewport coords (header rows routinely
+    // land on subpixels after panel scaling / font metrics). measure() reads
+    // the LAYOUT box (offsetWidth/Height) — unaffected by the enter transform.
+    trigger.getBoundingClientRect = () =>
+      ({ left: 10.7, top: 77.8438, right: 120.7, bottom: 93.8438, width: 110, height: 16, x: 10.7, y: 77.8438, toJSON: () => ({}) }) as DOMRect
+    Object.defineProperty(pop, 'offsetWidth', { value: 340, configurable: true })
+    Object.defineProperty(pop, 'offsetHeight', { value: 127, configurable: true })
+
+    // The measure layout-effect runs on mount (before the mocks above), so
+    // re-run it the way onAnimationComplete does — via the live resize
+    // listener — and flush the setPos re-render.
+    act(() => {
+      window.dispatchEvent(new Event('resize'))
+    })
+
+    expect(pop.style.left).toBe('11px') // round(10.7)
+    expect(pop.style.top).toBe('100px') // round(93.8438 + 6)
+  })
+
+  it('flips above the chip and still lands on whole pixels when there is no room below', () => {
+    getMock.mockReturnValue(new Promise(() => {}))
+    const { trigger } = renderPopover()
+    const pop = document.querySelector('.project-pop') as HTMLElement
+    // Chip near the bottom of a short viewport: y = bottom+6 + 127 overflows,
+    // so measure() places the pop above the chip (r.top - height - 6).
+    const shortVh = 200
+    const prevVh = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { value: shortVh, configurable: true })
+    try {
+      trigger.getBoundingClientRect = () =>
+        ({ left: 10.7, top: 160.3, right: 120.7, bottom: 176.3, width: 110, height: 16, x: 10.7, y: 160.3, toJSON: () => ({}) }) as DOMRect
+      Object.defineProperty(pop, 'offsetWidth', { value: 340, configurable: true })
+      Object.defineProperty(pop, 'offsetHeight', { value: 127, configurable: true })
+
+      act(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+
+      // below: 176.3+6=182.3; 182.3+127 > 200-8 ⇒ flip above
+      // above: 160.3-127-6 = 27.3 → round 27
+      expect(pop.style.left).toBe('11px')
+      expect(pop.style.top).toBe('27px')
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { value: prevVh, configurable: true })
+    }
+  })
+
+  it('renders action icons at 14px so the button content box centers them on whole pixels', async () => {
+    // Icon's default size is 14 (the set's canonical size). 13px in a ~14px
+    // content box lands on a half-pixel; that fractional offset is what makes
+    // the post-`transform: none` re-rasterization visible as a 1px jump.
+    getMock.mockResolvedValue({ local: true })
+    const { findByText } = renderPopover()
+    await findByText(/Reveal in Finder/)
+    const icons = document.querySelectorAll('.project-pop-action svg')
+    expect(icons.length).toBeGreaterThan(0)
+    for (const svg of icons) {
+      expect(svg.getAttribute('width')).toBe('14')
+      expect(svg.getAttribute('height')).toBe('14')
+    }
   })
 })

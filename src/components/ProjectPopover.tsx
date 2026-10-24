@@ -84,12 +84,22 @@ export const ProjectPopover = memo(function ProjectPopover({
       const detached = r.width === 0 && r.height === 0
       setAnchorHidden(detached)
       if (detached) return
-      const rect = el.getBoundingClientRect()
+      // offsetWidth/Height, not getBoundingClientRect: the latter includes
+      // Motion's in-flight enter transform (scale 0.98 ⇒ ~2% short), so the
+      // onAnimationComplete re-measure would move the popover at the exact
+      // moment we're trying to hold it still.
+      const rectW = el.offsetWidth
+      const rectH = el.offsetHeight
       const vw = window.innerWidth
       const vh = window.innerHeight
-      const x = Math.min(Math.max(8, r.left), vw - rect.width - 8)
-      let y = r.bottom + 6
-      if (y + rect.height > vh - 8) y = Math.max(8, r.top - rect.height - 6)
+      // Snap to the DEVICE pixel grid (not just integer CSS px): at Windows
+      // display scaling an integer CSS px is a fractional device px, and the
+      // `transform: none` teardown re-rasterizes the SVG icons on that grid.
+      const dpr = window.devicePixelRatio || 1
+      const snap = (v: number) => Math.round(v * dpr) / dpr
+      const x = snap(Math.min(Math.max(8, r.left), vw - rectW - 8))
+      let y = snap(r.bottom + 6)
+      if (y + rectH > vh - 8) y = snap(Math.max(8, r.top - rectH - 6))
       setPos((prev) => (prev !== null && prev.x === x && prev.y === y ? prev : { x, y }))
     }
     measureRef.current = measure
@@ -161,7 +171,7 @@ export const ProjectPopover = memo(function ProjectPopover({
           className="project-pop-action"
           onClick={() => void copy(() => path)}
         >
-          {copied ? <IconCheck size={13} /> : <IconCopy size={13} aria-hidden />}
+          {copied ? <IconCheck /> : <IconCopy aria-hidden />}
           {copied ? 'Copied' : 'Copy path'}
         </button>
         {local && (
@@ -180,7 +190,7 @@ export const ProjectPopover = memo(function ProjectPopover({
               disabled={pendingTarget !== null}
               onClick={() => openOnServer('terminal')}
             >
-              <IconTerminal size={13} aria-hidden />
+              <IconTerminal aria-hidden />
               {isMacClient() ? 'Open in Terminal' : 'Open in terminal'}
             </button>
           </>

@@ -79,16 +79,24 @@ export const AnchoredPopover = memo(function AnchoredPopover({
       const detached = r.width === 0 && r.height === 0
       setAnchorHidden(detached)
       if (detached) return
-      const rect = el.getBoundingClientRect()
+      // offsetWidth/Height, not getBoundingClientRect: the latter includes
+      // Motion's in-flight enter transform, so the onAnimationComplete
+      // re-measure would move the popover mid-settle. Same device-pixel snap
+      // as ProjectPopover — `transform: none` re-rasterizes SVG children on
+      // the device grid.
+      const rectW = el.offsetWidth
+      const rectH = el.offsetHeight
       const vw = window.innerWidth
       const vh = window.innerHeight
+      const dpr = window.devicePixelRatio || 1
+      const snap = (v: number) => Math.round(v * dpr) / dpr
       // Horizontal: align to the row's left edge, clamped inside the viewport.
-      const x = Math.min(Math.max(8, r.left), vw - rect.width - 8)
+      const x = snap(Math.min(Math.max(8, r.left), vw - rectW - 8))
       // Vertical: above the row; flip below when there's no headroom; last
       // resort clamp against the top edge (bottom-overlay card ⇒ rare).
-      let y = r.top - rect.height - 6
-      if (y < 8) y = r.bottom + 6
-      if (y + rect.height > vh - 8) y = Math.max(8, vh - rect.height - 8)
+      let y = snap(r.top - rectH - 6)
+      if (y < 8) y = snap(r.bottom + 6)
+      if (y + rectH > vh - 8) y = snap(Math.max(8, vh - rectH - 8))
       // Same coordinates → keep the previous object: the capture-phase scroll
       // listener fires per frame during transcript autoscroll, and a fresh
       // object per event would re-render the popover every frame.
