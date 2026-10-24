@@ -1046,7 +1046,16 @@
 }
 .stepper-input::-webkit-outer-spin-button,
 .stepper-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-.stepper-input:focus { outline: none; }
+/* Keyboard focus ring, matching the sibling .stepper-btn. The old
+   `.stepper-input:focus { outline: none }` sat at (0,2,0) — it beat BOTH the
+   global `:focus-visible` (0,1,0) and the glow skin's (0,2,0) rule by source
+   order, so the number field had zero focus indication under every skin.
+   Inset (-2px) like the stepper button: the global ring's +2px offset would
+   spill outside this compact row. */
+.stepper-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .stepper-suffix {
   align-self: center;
   padding-right: var(--space-2);
@@ -1335,7 +1344,12 @@
   min-width: 0;
   background: transparent;
   border: none;
-  outline: none;
+  /* No `outline: none` here. This rule is (0,1,1) — class + type — so it used
+     to beat the global `:focus-visible` (0,1,0) and leave the field with no
+     keyboard indication outside the glow skin (whose [data-skin="glow"]
+     :focus-visible at (0,2,0) happened to rescue it). Dropping the declaration
+     lets the global ring paint, matching .model-picker-input /
+     .git-panel-filter-input / .palette-input which all render that ring. */
   color: var(--fg);
   font-family: var(--sans);
   font-size: var(--fs-base);

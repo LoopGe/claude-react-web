@@ -179,6 +179,21 @@
   cursor: pointer;
   opacity: 0.55;
   flex-shrink: 0;
+  /* Anchor for the ::after hit-area extension below. */
+  position: relative;
+}
+/* Extend the 16x16 glyph box to the WCAG 2.5.8 24px floor without moving
+   layout. Same recipe as .toast-dismiss::after in overlays.css.
+   Horizontal budget: .titlebar-tab has gap: var(--space-1) (4px) between the
+   label/dot and this button, and padding: 0 var(--space-2) (8px) on its right
+   edge. So -4px reaches exactly to the neighbouring element's box on the left
+   (it steals only empty gap, never the label or the aria-hidden dot) and
+   leaves 4px of tab padding untouched on the right. Do not widen this inset
+   beyond those gaps. */
+.titlebar-tab-close::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
 }
 .titlebar-tab-close:hover {
   opacity: 1;

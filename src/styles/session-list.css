@@ -1218,7 +1218,14 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .session-item-id { font-family: var(--mono); font-size: var(--fs-sm); color: var(--fg-muted); }
-.session-item-meta { font-size: var(--fs-sm); color: color-mix(in srgb, var(--fg-muted) 80%, transparent); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Opaque --fg-muted, NOT color-mix(... 80%, transparent). The 80% alpha
+   composited to 3.30:1 (light) / 3.93:1 (dark) on the .session-item surface
+   — below WCAG AA for normal text — while the opaque token is 4.82:1 /
+   5.33:1. This is the session list: the highest-traffic surface in the app.
+   The hierarchy it was reaching for still holds without the alpha, because
+   .session-item-model below is a mix TOWARD --fg and so stays the lighter,
+   louder datum of the two. */
+.session-item-meta { font-size: var(--fs-sm); color: var(--fg-muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The model is the most useful at-a-glance datum in the meta row — lift it
    above the muted msg/viewer counts so the eye lands on it first. Derived
    from theme tokens (no hardcoded hex) so light/dark both adapt. */
