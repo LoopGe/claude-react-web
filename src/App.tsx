@@ -176,6 +176,16 @@ function sessionMetaEqual(a: SessionInfo, b: SessionInfo): boolean {
  *  so the card's React.memo keeps holding across ghost re-renders. */
 function dndNoop(): void {}
 
+/** Idempotent Set-remove updater for the reset-flows' state mirrors
+ *  (clearingIds / handoffingIds in App). Returns the SAME Set when the id is
+ *  absent so the setState call bails out without a re-render. */
+function withoutId(prev: Set<string>, id: string): Set<string> {
+  if (!prev.has(id)) return prev
+  const next = new Set(prev)
+  next.delete(id)
+  return next
+}
+
 /** The main panel grid as a dnd-kit drop zone (dropping a sidebar card on
  *  empty grid space opens the session). Must render INSIDE the App-level
  *  <DndContext> — useDroppable called outside a DndContext is a no-op
@@ -727,10 +737,16 @@ export function App() {
   // State mirror of clearingIdsRef so the panel can re-render to show the
   // clearing blur (view-only — does NOT gate the data swap). The WS guard
   // reads the ref; the UI reads the state. NOT an exact mirror of the ref's
-  // key set: /clear and /discard populate it; /restart arms only the ref (it
-  // swaps X→Y without the blur; /compact is a CLI pass-through and touches
-  // neither). Same state+ref-mirror pattern as openIds/openIdsRef.
+  // key set: /clear, /handoff and /discard populate it; /restart arms only
+  // the ref (it swaps X→Y without the blur; /compact is a CLI pass-through
+  // and touches neither). Same state+ref-mirror pattern as openIds/openIdsRef.
   const [clearingIds, setClearingIds] = useState<Set<string>>(new Set())
+  // Subset of clearingIds currently in a /handoff POST (same lifecycle: armed
+  // in resetSession('handoff'), released in its finally alongside clearingIds).
+  // Drives Chat's "Handing off…" pill + composer lockout — the summarize leg
+  // can run tens of seconds, so the wait needs its own visible state beyond
+  // the shared blur. Cleared sessions never enter this set.
+  const [handoffingIds, setHandoffingIds] = useState<Set<string>>(new Set())
   // Set by the guarded `session-removed` handler when the server has confirmed
   // X's removal during a /clear. Read by handleClear's catch to distinguish
   // "server processed the clear but the POST response was lost" (X is dead →
@@ -4590,33 +4606,49 @@ export function App() {
     [closeResume, resumeIntoPanel],
   )
 
-  /** `/clear` a panel: POST to the server (which atomically spawns a fresh
-   *  session Y and detaches X), then swap X→Y locally in ONE batched
-   *  `swapSession` transaction (sessions/openIds/groups/sidebarOrder/
-   *  lastSeenTurn). swapSession first fades X out (WAAPI, ~160ms) so the
-   *  replacement reads as an in-place X-out/Y-in; data commits right after the
-   *  fade. The WS session-created(Y) / session-removed(X) frames are idempotent
+  /** `/clear` or `/handoff` a panel: POST to the server (which atomically
+   *  spawns a fresh session Y and detaches X — for handoff Y is seeded with
+   *  the aux-LLM hand-off summary, so the POST takes seconds while the aux
+   *  call summarizes), then swap X→Y locally in ONE batched `swapSession`
+   *  transaction (sessions/openIds/groups/sidebarOrder/lastSeenTurn).
+   *  swapSession first fades X out (WAAPI, ~160ms) so the replacement reads
+   *  as an in-place X-out/Y-in; data commits right after the fade. The WS
+   *  session-created(Y) / session-removed(X) frames are idempotent
    *  confirmations (the clearingIdsRef guard keeps X fully alive until the
    *  swap). X's transcript survives on disk, recoverable via the resume
-   *  picker. The cleared panel blurs (view-only, via `clearingIds`) during the
-   *  POST. Y mounts fresh and plays `.entering`. */
+   *  picker. The panel blurs (view-only, via `clearingIds`) during the POST —
+   *  for BOTH kinds: handoff's summarize leg can run tens of seconds, and an
+   *  unmarked wait reads as a frozen panel. `handoffingIds` mirrors the same
+   *  lifecycle for the "Handing off…" pill + composer lockout in Chat.
+   *  Y mounts fresh and plays `.entering`. */
 
   const resetSession = useCallback(
-    async (id: string) => {
+    async (id: string, kind: 'clear' | 'handoff') => {
       // Guard: the server broadcasts session-removed(X) during the reset; the
       // guarded handler skips ALL teardown (incl. setSessions) so X stays
       // fully alive until swapSession replaces it — no sidebar churn, no
       // panel compaction across the WS-vs-POST race.
       clearingIdsRef.current.add(id)
-      // The blur is a /clear affordance: mirror the reset into state.
-      // (/discard is a separate flow and does the same.)
+      // The blur is the "reset in progress" affordance — mirror into state
+      // for both kinds (unlike the pre-native-compact flow, which skipped it
+      // for handoff and left the wait silent). (/discard is a separate flow
+      // and does the same.)
       setClearingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+      if (kind === 'handoff') {
+        setHandoffingIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)))
+      }
       clearingInFlightRef.current.set(id, (clearingInFlightRef.current.get(id) ?? 0) + 1)
       try {
         // POST only — no 180 ms veil gate. Data swaps the instant Y is known.
-        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/clear`, {})
+        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/${kind}`, {})
         const newId = res.session.id
-        if (newId !== id) {
+        // The panel may have been closed while the POST was in flight — a
+        // window the /handoff summarize leg widens from ~100ms (/clear) to
+        // tens of seconds. swapSession requires an OPEN panel (oldId ∈
+        // openIds); skipping the swap keeps the completed server-side swap
+        // consistent: X was removed, Y exists in the sidebar, and there is
+        // no panel left to replace.
+        if (newId !== id && openIdsRef.current.includes(id)) {
           // X hosted a Side Chat? Tear it down (the guarded session-removed
           // skips this; without it the ephemeral session would leak).
           cleanupSideChat(id)
@@ -4632,8 +4664,9 @@ export function App() {
           void deleteDraftImagesForRemovedSession(id)
         }
         // else: server short-circuited (newId === id — another clear is in
-        // flight, or the server's `clearing` flag is stuck). Do nothing here;
-        // the finally cleans up only if this is the last in-flight call.
+        // flight, or the server's `clearing` flag is stuck), or the panel was
+        // closed mid-wait (see above). Do nothing here; the finally cleans up
+        // only if this is the last in-flight call.
       } catch (e) {
         if (clearingServerRemovedRef.current.has(id)) {
           // Server processed the clear (session-removed(X) arrived) but the
@@ -4658,7 +4691,7 @@ export function App() {
             return changed ? next : prev
           })
         }
-        toast.error(`Couldn't clear session: ${(e as Error).message}`)
+        toast.error(`Couldn't ${kind} session: ${(e as Error).message}`)
       } finally {
         // Release the guard + blur only when this is the last in-flight clear
         // for id. A short-circuited second call (same-tab double-/clear) leaves
@@ -4669,12 +4702,8 @@ export function App() {
           clearingInFlightRef.current.delete(id)
           clearingIdsRef.current.delete(id)
           clearingServerRemovedRef.current.delete(id)
-          setClearingIds((prev) => {
-            if (!prev.has(id)) return prev
-            const next = new Set(prev)
-            next.delete(id)
-            return next
-          })
+          setClearingIds((prev) => withoutId(prev, id))
+          setHandoffingIds((prev) => withoutId(prev, id))
         } else {
           clearingInFlightRef.current.set(id, remaining)
         }
@@ -4683,7 +4712,8 @@ export function App() {
     [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession],
   )
 
-  const handleClear = useCallback((id: string) => resetSession(id), [resetSession])
+  const handleClear = useCallback((id: string) => resetSession(id, 'clear'), [resetSession])
+  const handleHandoff = useCallback((id: string) => resetSession(id, 'handoff'), [resetSession])
 
   /** Discard every message after a given assistant message (right-click
    *  "discard from here"). The server forks from the anchor (inclusive) and
@@ -5267,6 +5297,8 @@ export function App() {
                       historyOpen={historyPanelOpen && focusedId === s.id}
                       onCloseHistory={handleCloseHistory}
                       onClearSession={handleClear}
+                      onHandoffSession={handleHandoff}
+                      handoffing={handoffingIds.has(s.id)}
                       onDiscard={handleDiscard}
                       onOpenSettingsTab={openSettingsTab}
                       onShowHelp={showHelpWithCommands}

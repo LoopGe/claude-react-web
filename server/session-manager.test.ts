@@ -2016,20 +2016,29 @@ describe('SessionManager', () => {
 
   it('clear(id, { seedText }) seeds Y with a compact boundary + synthetic summary', async () => {
     const info = await sm.create({})
+    // Assistant frame + result closes the turn: a bare assistant emit leaves
+    // pendingTurns=1 (the doClear seeded-clear guard would rightly 409 on a
+    // 'working' session), while the real /handoff path only ever reaches the
+    // seeded clear from an idle session.
     mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    mockHandles[0].emit({ type: 'result' })
     await tick()
-    expect(sm.getHistory(info.id)!).toHaveLength(1)
+    expect(sm.getHistory(info.id)!.length).toBeGreaterThanOrEqual(1)
 
-    const next = await sm.clear(info.id, { seedText: 'HAND-OFF SUMMARY' })
+    const next = await sm.clear(info.id, { seedText: 'HAND-OFF SUMMARY', handoff: true })
 
     // Y's ring holds exactly [boundary, summary] — nothing else.
     const history = sm.getHistory(next.id)!
     expect(history).toHaveLength(2)
-    // [0] is the client-facing divider (never sent to the SDK).
-    const boundary = history[0] as { type: string; subtype: string; compact_metadata: { trigger: string } }
+    // [0] is the client-facing divider (never sent to the SDK). trigger is
+    // 'manual' + the app-level `handoff` flag — a user-invoked /handoff; the
+    // flag lets the client render the divider with its own identity instead
+    // of the CLI-compact copy.
+    const boundary = history[0] as { type: string; subtype: string; handoff?: boolean; compact_metadata: { trigger: string } }
     expect(boundary.type).toBe('system')
     expect(boundary.subtype).toBe('compact_boundary')
-    expect(boundary.compact_metadata.trigger).toBe('auto')
+    expect(boundary.compact_metadata.trigger).toBe('manual')
+    expect(boundary.handoff).toBe(true)
     // [1] is the user-role summary carrying the hand-off text.
     const seed = history[1] as { type: string; message: { content: string }; isSynthetic: boolean; shouldQuery: boolean }
     expect(seed.type).toBe('user')
@@ -2047,6 +2056,45 @@ describe('SessionManager', () => {
     expect(seedConsumed).toBeDefined()
     expect((seedConsumed as { shouldQuery: boolean }).shouldQuery).toBe(false)
     expect(mockHandles[1].consumed.filter((m) => (m as { isSynthetic?: boolean }).isSynthetic === true)).toHaveLength(1)
+  })
+
+  it('clear(id, { seedText }) without handoff keeps the pre-handoff boundary shape (idle-compact plugin path)', async () => {
+    // seedCompactSummary also serves SessionManager.compact()'s OTHER caller —
+    // the idle-compact plugin's host API, an AUTOMATIC compaction. Its card
+    // must keep the pre-/handoff shape: trigger 'auto', no app-level handoff
+    // flag — otherwise an automatic compaction renders as a user-invoked
+    // "Handoff" card.
+    const info = await sm.create({})
+    const next = await sm.clear(info.id, { seedText: 'AUTO SUMMARY' })
+    const boundary = (sm.getHistory(next.id)!)[0] as { handoff?: boolean; compact_metadata: { trigger: string } }
+    expect(boundary.compact_metadata.trigger).toBe('auto')
+    expect(boundary.handoff).toBeUndefined()
+  })
+
+  it('compact() re-guards the phase after the summarize await (a message raced the window)', async () => {
+    // The entry guard cannot see input that arrives DURING the tens-of-seconds
+    // summarize await (another tab / a scheduled send firing). Without the
+    // post-await re-check that message is silently drained by doClear and
+    // lost in the X→Y swap — the 409 turns the race into a loud retryable
+    // error and X survives with its message intact. summarizeForCompact is
+    // held open (mockImplementationOnce overrides beforeEach's immediate
+    // mockResolvedValue) so the send genuinely lands mid-summarize.
+    let release!: (v: string) => void
+    vi.mocked(summarizeForCompact).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { release = resolve }),
+    )
+    const info = await sm.create({})
+
+    const pending = sm.compact(info.id, { handoff: true })
+    // Input lands in X's queue WHILE the summarize is still in flight.
+    sm.send(info.id, 'raced the window')
+    await tick()
+    release('SUMMARY')
+
+    await expect(pending).rejects.toMatchObject({ status: 409 })
+    // X was NOT cleared: the raced message stays in the session, undrained.
+    expect(sm.get(info.id)).toBeDefined()
+    expect(store.get(info.id)).toBeDefined()
   })
 
   it('clear(id, { seedText }) does not leak the seed into Y persisted metadata', async () => {

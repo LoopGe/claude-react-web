@@ -11,8 +11,11 @@
 // message and the CLI runs its native in-place compact (probe-verified —
 // SDK streaming mode executes the prompt as a command and emits
 // system/compact_boundary, keeping pre-compact history in the same session).
-// The old app-side summarize+clear-with-seed path survives as
-// SessionManager.compact() for the idle-compact plugin's host API.
+// The app-side summarize+clear-with-seed flow is /handoff — a local command
+// that POSTs /sessions/:id/handoff (SessionManager.compact()) and swaps the
+// panel X → Y like /clear. Both entry points share one implementation; they
+// differ in where the compact happens (CLI in-place vs app-side continuation
+// session).
 //
 // Extensibility: to add a new local command, append an entry to LOCAL_COMMANDS
 // and (if it needs a new capability) widen LocalCommandContext. The
@@ -44,6 +47,11 @@ export interface LocalCommandContext {
   showHelp: (commands: SlashCommand[]) => void
   /** Clear this session's conversation context via the server control path. */
   clearSession: (sessionId: string) => void
+  /** `/handoff` this panel — POST /sessions/:id/handoff (summarize + spawn a
+   *  fresh seeded continuation session Y) and swap X → Y like /clear.
+   *  Required (like /clear) so a missing pass-through fails loudly rather
+   *  than silently swallowing `/handoff`. */
+  handoffSession: (sessionId: string) => void
 }
 
 export interface LocalCommand {
@@ -75,6 +83,11 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
     description: 'Clear conversation history and context',
     aliases: ['reset', 'new'],
     run: (ctx) => ctx.clearSession(ctx.sessionId),
+  },
+  {
+    name: 'handoff',
+    description: 'Summarize the conversation and continue in a fresh session',
+    run: (ctx) => ctx.handoffSession(ctx.sessionId),
   },
 ]
 

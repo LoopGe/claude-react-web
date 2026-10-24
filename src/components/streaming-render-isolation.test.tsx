@@ -172,6 +172,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
             onOpenSettingsTab={noop}
             onShowHelp={noop}
             onClearSession={noop}
+            onHandoffSession={noop}
             focused
           />
         </Profiler>

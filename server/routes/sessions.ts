@@ -685,11 +685,20 @@ export function buildSessionRouter(
     return c.json({ ok: true, session })
   })
 
-  // NOTE: there is no POST /sessions/:id/compact route — the UI's `/compact`
-  // passes through as a plain user message and the CLI runs its native
-  // in-place compact (see src/local-commands.ts). The app-side
-  // summarize+clear-with-seed path survives only as SessionManager.compact(),
-  // driven directly by the idle-compact plugin's host API (session-adapter).
+  // Handoff `/handoff` — the app-side summarize + clear-with-seed flow: the
+  // session's history is summarized by the aux LLM and a FRESH continuation
+  // session Y is seeded with the hand-off summary (the client swaps the panel
+  // X → Y exactly like /clear). Distinct from `/compact`, which passes
+  // through as a plain user message and runs the CLI's native in-place
+  // compact (see src/local-commands.ts). Both entry points share the same
+  // SessionManager.compact() implementation (this route and the idle-compact
+  // plugin's host API). Phase guards (working→409 / unknown→404 /
+  // terminated→410 / dormant→412) are thrown by sm.compact and translated by
+  // the app's onError handler.
+  app.post('/sessions/:id/handoff', async (c) => {
+    const session = await sm.compact(c.req.param('id'), { handoff: true })
+    return c.json({ ok: true, session })
+  })
 
   // `!` bash mode — run a shell command directly in the session's cwd.
   // Requires confirm:true (destructive-verb convention from git write

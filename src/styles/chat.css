@@ -69,6 +69,8 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Anchor for the /handoff wait pill (HandoffOverlay, absolutely centered). */
+  position: relative;
 }
 /* One-shot settle when the recap window closes (useRecapSettle toggles the
    class on close; onAnimationEnd with the keyframe's own name removes it, so
@@ -224,6 +226,78 @@
 
 @media (prefers-reduced-motion: reduce) {
   .chat-messages.chat-messages-clearing {
+    animation: none;
+  }
+}
+/* /handoff wait pill — centered over the blurred transcript while the
+   handoff POST runs (the summarize leg can take tens of seconds; an
+   unmarked blur reads as a frozen panel). Purely informational
+   (pointer-events: none) — the composer lockout is the input gate. The
+   elapsed counter ticks in JS (HandoffOverlay) and stays legible under
+   reduced motion, where the spinner is suppressed. Sibling of MessageList
+   inside .chat-messages-area (anchored by its position:relative), so the
+   pill itself stays sharp over the blurred transcript. Card recipe mirrors
+   .working-bar (accent border mix + static glass plate) so the wait reads
+   as part of the same status-card family. */
+.handoff-veil {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 16px;
+  border: 2px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-xl);
+  box-shadow: var(--drawer-shadow);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  pointer-events: none;
+  z-index: 1;
+}
+/* Static glass plate. Owns fill + blur; never animates. */
+.handoff-veil::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg-elev) 48%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  z-index: 0;
+}
+/* Keep status content above the glass plate. */
+.handoff-veil > * {
+  position: relative;
+  z-index: 1;
+}
+.handoff-veil-label {
+  color: var(--accent-text);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.handoff-veil-elapsed {
+  font-variant-numeric: tabular-nums;
+  min-width: 3ch;
+}
+.handoff-veil-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  animation: handoff-spin 0.9s linear infinite;
+}
+@keyframes handoff-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .handoff-veil-spinner {
     animation: none;
   }
 }

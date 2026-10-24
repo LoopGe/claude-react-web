@@ -4145,7 +4145,7 @@ export class SessionManager {
    *
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
-  async clear(id: string, opts?: { seedText?: string }): Promise<SessionInfo> {
+  async clear(id: string, opts?: { seedText?: string; handoff?: boolean }): Promise<SessionInfo> {
     // Idempotency fast path BEFORE queueing on the op lock: a second clear()
     // while one is in flight returns the current info at once, as it always
     // has, instead of waiting for the first to remove X and then 404ing.
@@ -4154,9 +4154,22 @@ export class SessionManager {
     return this.opLock.run(id, () => this.doClear(id, opts))
   }
 
-  private async doClear(id: string, opts?: { seedText?: string }): Promise<SessionInfo> {
+  private async doClear(id: string, opts?: { seedText?: string; handoff?: boolean }): Promise<SessionInfo> {
     const s = this.requireRunnable(id)
     if (s.clearing) return this.info(s)
+
+    // A SEEDED clear (the /handoff continuation, also the idle-compact
+    // plugin's automatic compaction) must not drain input that arrived while
+    // its summarize await was in flight — the drain below would silently
+    // destroy a message the user sent from another tab (or a scheduled send
+    // firing) instead of carrying it into the continuation. Checked here —
+    // under the op lock, immediately before the drain — rather than in
+    // compact(), so no race window exists between the check and the drain.
+    // A plain /clear keeps the drain semantics: wiping IS the user's intent.
+    // Must run BEFORE s.clearing = true — phaseOf maps clearing to 'working'.
+    if (opts?.seedText && this.phaseOf(s) !== 'idle') {
+      throw new HttpError(409, `session ${id} became busy while the hand-off summary was generated; retry when idle`)
+    }
 
     s.clearing = true
     log.info(`[session ${id}] clear: detaching pre-clear conversation`)
@@ -4370,7 +4383,7 @@ export class SessionManager {
       // completes (Y is usable, just without the summary seed).
       if (opts?.seedText) {
         try {
-          this.seedCompactSummary(newYId, opts.seedText)
+          this.seedCompactSummary(newYId, opts.seedText, opts.handoff === true)
         } catch (err) {
           log.warn(`[session ${newYId}] clear: seeding compact summary failed:`, err)
         }
@@ -4415,7 +4428,7 @@ export class SessionManager {
    *  Phase-guarded like recap auto-generation: unknown → 404, terminated →
    *  410, dormant → 412, working (in-flight turn / queued input / unanswered
    *  permission prompt / running background subagent) → 409. */
-  async compact(id: string): Promise<SessionInfo> {
+  async compact(id: string, opts?: { handoff?: boolean }): Promise<SessionInfo> {
     const s = this.require(id)
     switch (this.phaseOf(s)) {
       case 'terminated':
@@ -4430,12 +4443,16 @@ export class SessionManager {
     // frames, including the now-forwarded text/thinking ones).
     const merged = this.mergedHistory(s)
     const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'))
+    // No post-await phase re-check here: doClear owns that invariant (a
+    // seeded clear 409s when input raced the summarize window) and runs it
+    // under the op lock immediately before its drain — a check here would
+    // leave a check-to-drain gap doClear's own guard closes.
     if (!summary) {
       log.info(`[session ${id}] compact: no compressible content, falling back to plain clear`)
       return this.clear(id)
     }
     log.info(`[session ${id}] compact: summarised ${merged.length} messages, seeding fresh session`)
-    return this.clear(id, { seedText: summary })
+    return this.clear(id, { seedText: summary, handoff: opts?.handoff === true })
   }
 
   /** Seed a freshly-spawned session Y with a compact hand-off summary.
@@ -4456,19 +4473,27 @@ export class SessionManager {
    *
    *  The pump's drop-filter discards the seed's eventual text-only echo
    *  (`parent_tool_use_id === null`), so the ring holds exactly one copy. */
-  private seedCompactSummary(sessionId: string, summary: string): void {
+  private seedCompactSummary(sessionId: string, summary: string, handoff: boolean): void {
     const s = this.sessions.get(sessionId)
     if (!s || !s.running) return
 
     // 1) Client-facing divider — never sent to the SDK. pre_tokens reflects
     //    the session's last-known context usage (or 0 before any snapshot).
-    const boundary: import('@anthropic-ai/claude-agent-sdk').SDKCompactBoundaryMessage = {
+    //    A user-invoked /handoff (handoff: true, from the route) gets trigger
+    //    'manual' + the app-level `handoff` flag, which rides the JSON to the
+    //    client (the SDK never sees this frame) so CompactBoundary renders
+    //    its own identity. The idle-compact plugin's AUTOMATIC compaction
+    //    (handoff: false, the default) keeps the pre-handoff shape: trigger
+    //    'auto', no flag — an automatic compaction must not render as a
+    //    user-invoked handoff.
+    const boundary: import('@anthropic-ai/claude-agent-sdk').SDKCompactBoundaryMessage & { handoff?: boolean } = {
       type: 'system',
       subtype: 'compact_boundary',
       uuid: randomUUID(),
       session_id: s.id,
+      ...(handoff ? { handoff: true } : {}),
       compact_metadata: {
-        trigger: 'auto',
+        trigger: handoff ? 'manual' : 'auto',
         pre_tokens: s.lastContextUsage?.totalTokens ?? 0,
       },
     }

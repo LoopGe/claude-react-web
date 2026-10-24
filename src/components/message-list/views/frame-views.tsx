@@ -148,12 +148,18 @@ export function BashMessage({ text, sending, onAbort, searchQuery, activeMatchIn
  *  on the next SDK turn's system prompt, not in this message, but the metadata
  *  here is enough to signal that the preceding transcript was compressed. */
 export function CompactBoundary({ msg }: { msg: SdkMessage }) {
-  const meta = (msg as { compact_metadata?: {
+  const msgShape = msg as { handoff?: boolean; compact_metadata?: {
     trigger?: 'manual' | 'auto'
     pre_tokens?: number
     post_tokens?: number
     duration_ms?: number
-  } }).compact_metadata ?? {}
+  } }
+  const meta = msgShape.compact_metadata ?? {}
+  // App-level marker the server sets on the SYNTHETIC boundary it fabricates
+  // for /handoff (SessionManager.seedCompactSummary) — the CLI never emits it.
+  // A handoff is not an in-place compaction: the label + copy say what
+  // actually happened instead of borrowing the CLI-compact sentence.
+  const handoff = msgShape.handoff === true
   const pre = typeof meta.pre_tokens === 'number' ? meta.pre_tokens : undefined
   const post = typeof meta.post_tokens === 'number' ? meta.post_tokens : undefined
   const trigger = meta.trigger === 'manual' ? 'manual' : 'auto'
@@ -164,14 +170,22 @@ export function CompactBoundary({ msg }: { msg: SdkMessage }) {
   const duration =
     typeof meta.duration_ms === 'number' ? ` · ${Math.round(meta.duration_ms)}ms` : ''
   return (
-    <div className="msg recap" role="separator" aria-label="Conversation recap / compact boundary">
+    <div
+      className="msg recap"
+      role="separator"
+      aria-label={handoff ? 'Conversation handoff boundary' : 'Conversation recap / compact boundary'}
+    >
       <span className="recap-label">
-        <span aria-hidden>↘</span> Recap ({trigger})
+        <span aria-hidden>↘</span> {handoff ? 'Handoff' : `Recap (${trigger})`}
       </span>
       <span className="recap-meta">
-        {pre !== undefined && post !== undefined
-          ? `${formatTokens(pre)} -> ${formatTokens(post)} tokens${savings}${duration}`
-          : 'Conversation compacted to fit the context window.'}
+        {handoff
+          ? pre !== undefined && pre > 0
+            ? `Conversation handed off to a new session — summary below. ${formatTokens(pre)} tokens carried.`
+            : 'Conversation handed off to a new session — summary below.'
+          : pre !== undefined && post !== undefined
+            ? `${formatTokens(pre)} -> ${formatTokens(post)} tokens${savings}${duration}`
+            : 'Conversation compacted to fit the context window.'}
       </span>
     </div>
   )

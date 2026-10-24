@@ -9,16 +9,6 @@
  */
 
 /**
- * Legacy composer alias: `/summarize` was the app-side /compact alias before
- * `/compact` became a CLI pass-through (see local-commands.ts). The CLI has
- * no `/summarize` builtin, so the literal text would reach the model as a
- * plain prompt. Rewritten at this shared chokepoint so the immediate-send and
- * scheduled-send paths can't drift. The explicit end-or-space lookahead keeps
- * `/summarize-x` (never an alias) passing through verbatim.
- */
-const SUMMARIZE_ALIAS = /^\/summarize(?=\s|$)/i
-
-/**
  * Expand pasted-text references.
  *
  * Returns `text` (what the user typed, expanded — the shell and slash-command
@@ -26,11 +16,16 @@ const SUMMARIZE_ALIAS = /^\/summarize(?=\s|$)/i
  *
  * The composer text is trimmed BEFORE expansion so the pasted body keeps its
  * own leading/trailing whitespace.
+ *
+ * No alias rewriting happens here: the old `/summarize` → `/compact` rewrite
+ * died with the app-side compact flow (now /handoff — see local-commands.ts).
+ * A stray `/summarize` reaching the model is benign (the model answers
+ * in-band), and the composer stays honest about what will actually be sent.
  */
 export function composeOutgoing(
   input: string,
   expand: (text: string) => string,
 ): { text: string; full: string } {
-  const text = expand(input.trim().replace(SUMMARIZE_ALIAS, '/compact'))
+  const text = expand(input.trim())
   return { text, full: text }
 }
