@@ -255,7 +255,11 @@
   font-size: var(--fs-sm);
   color: var(--fg-muted);
   pointer-events: none;
-  z-index: 1;
+  /* ABOVE .chat-bottom-stack (z-index: 2): the pill is centered and the stack
+     reaches up to 45% of the panel, so they overlap on short panels. Below it
+     the MonitorBar / task-checklist cards would cover the only "Handing off…"
+     signal during the wait. */
+  z-index: 3;
 }
 /* Static glass plate. Owns fill + blur; never animates. */
 .handoff-veil::before {

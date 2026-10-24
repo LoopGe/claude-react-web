@@ -129,6 +129,7 @@ import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_SCALE, MOTION_DURATION_TOKENS 
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
+import { resetCompletion } from './utils/reset-completion'
 import { buildNewLikeThisForm } from './utils/new-like-this'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
@@ -4644,11 +4645,14 @@ export function App() {
         const newId = res.session.id
         // The panel may have been closed while the POST was in flight — a
         // window the /handoff summarize leg widens from ~100ms (/clear) to
-        // tens of seconds. swapSession requires an OPEN panel (oldId ∈
-        // openIds); skipping the swap keeps the completed server-side swap
-        // consistent: X was removed, Y exists in the sidebar, and there is
-        // no panel left to replace.
-        if (newId !== id && openIdsRef.current.includes(id)) {
+        // tens of seconds. See resetCompletion for the three-way split (swap /
+        // teardown / noop); the two non-swap outcomes used to be conflated.
+        const completion = resetCompletion({
+          oldId: id,
+          newId,
+          panelOpen: openIdsRef.current.includes(id),
+        })
+        if (completion === 'swap') {
           // X hosted a Side Chat? Tear it down (the guarded session-removed
           // skips this; without it the ephemeral session would leak).
           cleanupSideChat(id)
@@ -4662,11 +4666,35 @@ export function App() {
           // session-removed skipped the teardown that usually deletes them).
           pruneSession(id)
           void deleteDraftImagesForRemovedSession(id)
+        } else if (completion === 'teardown') {
+          // Panel closed mid-wait: no slot to swap into. The comment used to
+          // claim "X was removed, Y exists in the sidebar" here — false: the
+          // clearingIds guard swallowed session-removed(X), so X is still a
+          // clickable ghost in `sessions`, and Y is parked behind an evicting
+          // pending marker only swapSession consumes (hidden). Place Y and
+          // tear X down.
+          //
+          // 1. Y may not be in `sessions` yet — the HTTP response can beat the
+          //    WS session-created(Y) frame. Upsert it so the sidebar never
+          //    shows neither session.
+          setSessions((prev) => (prev.some((s) => s.id === newId) ? prev : [...prev, res.session]))
+          // 2. Y takes X's exact group + sidebar-order slot (swapSession's
+          //    placement half, same two calls). teardownRemovedSession's own
+          //    joinGroupOfSource would tail-append Y — the sidebar would jump
+          //    depending only on whether the panel happened to stay open.
+          setGroups((prev) => inheritGroupId(prev, id, newId))
+          setSidebarOrder((prev) => inheritSidebarOrderId(prev, id, newId))
+          // 3. Shared teardown via the ref — the pendingGroupInheritance map
+          //    (a teardownRemovedSession dep) may have changed while the POST
+          //    was in flight, so the closure captured at resetSession creation
+          //    is stale (same reason the WS session-removed handler uses the
+          //    ref). Clears Y's pending marker and evicts X's registries.
+          teardownRemovedSessionRef.current?.(id)
         }
-        // else: server short-circuited (newId === id — another clear is in
-        // flight, or the server's `clearing` flag is stuck), or the panel was
-        // closed mid-wait (see above). Do nothing here; the finally cleans up
-        // only if this is the last in-flight call.
+        // completion === 'noop': server short-circuited (newId === id —
+        // another clear is in flight, or the server's `clearing` flag is
+        // stuck). X is still the live session; the finally cleans up the
+        // guard only if this is the last in-flight call.
       } catch (e) {
         if (clearingServerRemovedRef.current.has(id)) {
           // Server processed the clear (session-removed(X) arrived) but the
@@ -4709,7 +4737,7 @@ export function App() {
         }
       }
     },
-    [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession],
+    [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession, setGroups, setSidebarOrder],
   )
 
   const handleClear = useCallback((id: string) => resetSession(id, 'clear'), [resetSession])

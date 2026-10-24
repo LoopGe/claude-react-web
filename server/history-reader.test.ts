@@ -216,6 +216,35 @@ describe('paginateJsonl — normalization', () => {
     })
   })
 
+  it('passes top-level payloads through for compact_boundary lines (handoff flag + compact_metadata)', () => {
+    const raw = jsonl([
+      {
+        type: 'system', subtype: 'compact_boundary', uuid: 'cb1',
+        handoff: true,
+        compact_metadata: { trigger: 'manual', pre_tokens: 12000 },
+      },
+      {
+        type: 'system', subtype: 'compact_boundary', uuid: 'cb2',
+        compact_metadata: { trigger: 'auto', pre_tokens: 9000, post_tokens: 3000, duration_ms: 420 },
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    expect(page.messages).toHaveLength(2)
+    // /handoff's synthetic boundary must keep the flag + metadata so a
+    // disk-replayed transcript still renders the Handoff card (not the
+    // generic "compacted to fit the context window" copy).
+    expect(page.messages[0]).toMatchObject({
+      type: 'system', subtype: 'compact_boundary',
+      handoff: true,
+      compact_metadata: { trigger: 'manual', pre_tokens: 12000 },
+    })
+    // CLI-native compact boundaries keep their token counts too.
+    expect(page.messages[1]).toMatchObject({
+      type: 'system', subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', pre_tokens: 9000, post_tokens: 3000, duration_ms: 420 },
+    })
+  })
+
   it('drops malformed top-level payload values (wrong shape) instead of passing them through', () => {
     const raw = jsonl([
       {

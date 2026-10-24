@@ -445,6 +445,20 @@ function pickTopLevel(o: RawLine, fields: string[]): Record<string, unknown> {
   return out
 }
 
+/** Pick the known scalar fields of a `compact_metadata` object (the only
+ *  nested object a renderable system frame carries at the top level).
+ *  Returns `{}` when nothing of the right shape is present. */
+function pickCompactMetadata(meta: unknown): Record<string, unknown> {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return {}
+  const m = meta as Record<string, unknown>
+  const picked: Record<string, unknown> = {}
+  if (typeof m.trigger === 'string') picked.trigger = m.trigger
+  if (typeof m.pre_tokens === 'number') picked.pre_tokens = m.pre_tokens
+  if (typeof m.post_tokens === 'number') picked.post_tokens = m.post_tokens
+  if (typeof m.duration_ms === 'number') picked.duration_ms = m.duration_ms
+  return Object.keys(picked).length > 0 ? { compact_metadata: picked } : {}
+}
+
 /** Normalize a raw JSONL line into the live SDKMessage wire shape.
  *  `trim` applies the same oversized tool_result cap the live pump does
  *  (see trimLargeToolResults). The render/replay paths (paginateJsonl —
@@ -531,6 +545,29 @@ export function normalize(o: RawLine, sessionId: string, trim: boolean): unknown
     // tool_use_summary carries its whole payload at the top level.
     ...(o.type === 'tool_use_summary'
       ? pickTopLevel(o, ['summary', 'preceding_tool_use_ids'])
+      : {}),
+    // compact_boundary carries its identity at the TOP LEVEL: the app-level
+    // `handoff` flag (only on the /handoff synthetic boundary) plus
+    // `compact_metadata` (trigger/pre_tokens/post_tokens/duration_ms — from
+    // the CLI's own compaction or the synthetic one). Without carrying them
+    // through, a disk-loaded boundary (resume / scroll-up) reaches the client
+    // with only `message`, so CompactBoundary falls back to the generic
+    // "compacted to fit the context window" copy and loses the Handoff
+    // variant entirely. compact_metadata is a nested object, so it needs its
+    // own field-pick (pickTopLevel only allows primitives / string[]).
+    //
+    // Reachability note: the `handoff` half only fires if a synthetic handoff
+    // boundary is ever routed through normalize(). Today the synthetic
+    // boundary (seedCompactSummary) is "client-only — the SDK never sees it":
+    // it lives in the history ring + transcript sidecar (already-normalized
+    // shape) and never appears in the SDK JSONL this reader parses. The
+    // `compact_metadata` half IS live — CLI-native boundaries are in the
+    // JSONL and lose their token counts otherwise.
+    ...(o.type === 'system' && o.subtype === 'compact_boundary'
+      ? {
+        ...pickTopLevel(o, ['handoff']),
+        ...pickCompactMetadata(o.compact_metadata),
+      }
       : {}),
   }
   // Apply the same oversized tool_result cap the live pump does. Disk lines

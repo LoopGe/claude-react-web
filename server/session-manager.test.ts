@@ -2205,6 +2205,23 @@ describe('SessionManager', () => {
     expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1)
   })
 
+  it('compact(id, { handoff: true }) refuses instead of silently wiping when the summary is empty', async () => {
+    vi.mocked(summarizeForCompact).mockResolvedValueOnce('')
+    const info = await sm.create({})
+    mockHandles[0].emit({ type: 'assistant', uuid: 'before', message: { content: 'before' } })
+    mockHandles[0].emit({ type: 'result', session_id: info.id })
+    await tick()
+    const historyBefore = sm.getHistory(info.id)
+
+    // /handoff's contract is "summarize AND continue in a fresh session".
+    // An empty summary must not silently degrade into a bare /clear — the
+    // user would get a wipe with no boundary and no summary card.
+    await expect(sm.compact(info.id, { handoff: true })).rejects.toThrow(/nothing to summarize/i)
+    // X survives intact — no swap happened.
+    expect(sm.get(info.id)).toBeDefined()
+    expect(sm.getHistory(info.id)).toEqual(historyBefore)
+  })
+
   it('two concurrent compacts never double-spawn a fresh session', async () => {
     vi.mocked(summarizeForCompact).mockResolvedValue('HAND-OFF')
     const info = await sm.create({})

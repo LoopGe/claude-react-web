@@ -4448,6 +4448,14 @@ export class SessionManager {
     // under the op lock immediately before its drain — a check here would
     // leave a check-to-drain gap doClear's own guard closes.
     if (!summary) {
+      // The idle-compact plugin's AUTOMATIC path may treat an empty history as
+      // "nothing to keep" and fall through to a plain clear. /handoff cannot:
+      // its contract is "summarize the conversation and continue in a fresh
+      // session", and a silent bare clear would wipe X with no boundary and no
+      // summary card. Refuse instead — the user can /clear explicitly.
+      if (opts?.handoff === true) {
+        throw new HttpError(422, 'nothing to summarize in this conversation')
+      }
       log.info(`[session ${id}] compact: no compressible content, falling back to plain clear`)
       return this.clear(id)
     }
