@@ -194,12 +194,19 @@ function pushRow(
     id: item.id,
     msg: item.msg,
     isCompactSummary: item.isCompactSummary,
+    // Delegate rather than copy: `item.plainText` is a lazy memoised getter
+    // (see toTranscriptItem) and `buildTranscriptRows` runs on every transcript
+    // render. Copying the value here would force the markdown extraction for
+    // every visible row — exactly the cost the lazy getter exists to avoid.
+    // Same treatment in `foldToolGroupRows`'s group head.
+    get plainText(): string | null {
+      return item.plainText
+    },
     renderableIndex: out.length,
     itemIndex,
     sending: item.sending,
     deliveryStatus: item.deliveryStatus,
     receivedAt: item.receivedAt,
-    plainText: item.plainText,
   })
 }
 
@@ -260,8 +267,27 @@ export function foldToolGroupRows(rows: readonly TranscriptRow[]): TranscriptRow
     while (j < rows.length && isToolGroupEligible(rows[j]!)) j += 1
     const members = rows.slice(i, j)
     const first = members[0]!
+    // Build the group head by hand rather than `{ ...first, toolGroup }`:
+    // `plainText` is a lazy memoised getter and an object spread EVALUATES it,
+    // which would pay the full markdown extraction for every tool-group head
+    // on first render — exactly the Write/Edit bodies the getter exists to
+    // keep lazy. The getter below delegates instead. (Same reason `pushRow`
+    // installs one.) The copied fields must stay in step with TranscriptRow;
+    // a new field added there and forgotten here is the trade-off for keeping
+    // the group head lazy.
     out.push({
-      ...first,
+      id: first.id,
+      msg: first.msg,
+      isCompactSummary: first.isCompactSummary,
+      renderableIndex: first.renderableIndex,
+      itemIndex: first.itemIndex,
+      sending: first.sending,
+      deliveryStatus: first.deliveryStatus,
+      receivedAt: first.receivedAt,
+      searchTick: first.searchTick,
+      get plainText(): string | null {
+        return first.plainText
+      },
       toolGroup: {
         members: members.map((m) => m.msg),
         memberItemIndices: members.map((m) => m.itemIndex),

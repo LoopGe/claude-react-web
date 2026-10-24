@@ -1456,8 +1456,15 @@ function prependMessages(
 function countPromptOverlap(older: SdkMessage[], items: ServerMirror['items']): number {
   // Length of the contiguous top-level-prompt run at the START of the
   // on-screen transcript (i.e. the prompts sitting above the paging anchor).
+  //
+  // The type gate is checked BEFORE touching `.plainText`: plainText is a lazy
+  // getter (see toTranscriptItem) and reading it forces the markdown
+  // extraction. This loop's exit condition is precisely the first item that is
+  // NOT a top-level prompt — the one item we must never pay for — and passing
+  // `items[leadRun].plainText` as a plain argument would evaluate it first.
+  const isTopLevelPrompt = (m: SdkMessage) => m.type === 'user' && m.parent_tool_use_id == null
   let leadRun = 0
-  while (leadRun < items.length && topLevelUserPromptSignature(items[leadRun].msg, items[leadRun].plainText) != null) {
+  while (leadRun < items.length && isTopLevelPrompt(items[leadRun]!.msg)) {
     leadRun++
   }
   let n = 0

@@ -242,6 +242,15 @@ export const SessionList = memo(function SessionList({
   /** Which card is currently in inline-rename mode, and the draft text. */
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  /** Title the card had when inline-rename OPENED. Used to tell "the user
+   *  typed nothing" apart from "the user deliberately re-typed the old value"
+   *  — the first must never send (it would revert a rename some other surface
+   *  made while the field was open), the second must. */
+  const renameOpenedRef = useRef('')
+  /** Id whose rename the editor currently belongs to. A late PATCH failure may
+   *  land after the user has already moved on to renaming a different session;
+   *  it must not steal the editor back. */
+  const renameOwnerRef = useRef<string | null>(null)
   /** Active right-click menu. `id` tells us which session it targets. */
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
   /** Sidebar filter text. Case-insensitive substring match against title,
@@ -367,21 +376,58 @@ export const SessionList = memo(function SessionList({
   const startRename = useCallback((s: SessionInfo) => {
     setRenamingId(s.id)
     setRenameDraft(s.title ?? '')
+    renameOpenedRef.current = s.title ?? ''
+    renameOwnerRef.current = s.id
   }, [])
 
-  const commitRename = useCallback(async (id: string, title: string) => {
-    setRenamingId(null)
-    // The server broadcasts the updated session via WebSocket, so we
-    // don't need to update local state here. If the request fails the
-    // card simply keeps its old title.
-    try {
-      await api.patch<{ session: SessionInfo }>(`/sessions/${id}`, { title })
-    } catch (err) {
-      console.warn('rename failed:', (err as Error).message)
+  /** Commit an inline rename.
+   *
+   *  `previousTitle` is the session's CURRENT title at commit time (the card
+   *  passes `s.title`, which tracks the WS broadcast), not the snapshot taken
+   *  at startRename — a rename that re-asserts the value seen at open must
+   *  still be sent if some other surface (SettingsPanel's title field, fork,
+   *  auto-title) changed the title underneath.
+   *
+   *  The no-op check compares against the STORED value verbatim: only skip
+   *  when the PATCH would write back exactly what is already there. A
+   *  whitespace-only tidy of a padded title IS a change and must be sent. */
+  const commitRename = useCallback(async (id: string, title: string, previousTitle: string) => {
+    const next = title.trim()
+    const close = () => {
+      setRenamingId(null)
+      if (renameOwnerRef.current === id) renameOwnerRef.current = null
     }
-  }, [])
+    // (a) The user typed nothing at all. Do NOT send: while the field was open
+    //     another surface (SettingsPanel's title field, fork, auto-title) may
+    //     have renamed the session, and a blind PATCH here would revert it.
+    // (b) The value we would write is already stored. Nothing to do.
+    //     A whitespace-only tidy of a padded title is NOT this case — the
+    //     stored value is compared verbatim, so trimming padding still sends.
+    if (title === renameOpenedRef.current || next === previousTitle) {
+      close()
+      return
+    }
+    close()
+    try {
+      await api.patch<{ session: SessionInfo }>(`/sessions/${id}`, { title: next })
+    } catch (err) {
+      // Reopen with the typed text only if this rename still owns the editor.
+      // A late failure must not yank focus away from whatever the user is
+      // doing now (they may be mid-typing another rename, or in the composer).
+      if (renameOwnerRef.current == null) {
+        setRenamingId(id)
+        setRenameDraft(next)
+        renameOpenedRef.current = next
+        renameOwnerRef.current = id
+      }
+      toast.error(`Couldn't rename session: ${(err as Error).message}`)
+    }
+  }, [toast])
 
-  const cancelRename = useCallback(() => setRenamingId(null), [])
+  const cancelRename = useCallback(() => {
+    setRenamingId(null)
+    renameOwnerRef.current = null
+  }, [])
 
   /** Extract an absolute path from a drop event. Browsers don't expose
    *  file system paths on File objects (unlike Electron), but on Linux /

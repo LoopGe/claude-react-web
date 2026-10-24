@@ -211,19 +211,58 @@ export function toTranscriptItem(
     ? msg.uuid
     : `${msg.type}:${msg.subtype ?? 'plain'}:${randomId()}`
 
+  // LAZY `plainText`. It used to be computed here, for every message, as
+  // `extractMessagePlainText(msg)` — a full unified (remark) parse per text
+  // block. Measured on real corpora: 0.12 ms for a short user prompt, 0.94 ms
+  // for a ~40-line assistant reply, 19.3 ms for a ~500-line code-heavy one.
+  // `toTranscriptItem` runs once per durable message on ingest
+  // (updateTranscriptMirror) AND once per message of every REST page
+  // (windowPage), so a 200-message history page cost ~0.5 s of synchronous
+  // main-thread work — up to 3.8 s when the page is code-dense — inside a
+  // single dispatch.
+  //
+  // Nobody reads the value until in-session search runs (Chat.tsx's match
+  // counter, MessageList's fold/hit gating — all already gated on an active
+  // query) or a prompt-signature dedup scans a user prompt. So compute it on
+  // first read and memoise; the type is unchanged (`string | null`), and the
+  // getter is enumerable so anything that enumerates the item still sees it.
+  //
+  // KNOWN SPREAD SURFACE: the reducer rewrites USER items with object spreads
+  // — applyOptimisticUserMessage (`{ ...item, sending: true }`), then
+  // applyMessageSteered / applyMessageConsumed (`{ ...item, msg: nextMsg, ... }`).
+  // `{ ...item }` evaluates an enumerable getter and copies the result as a
+  // plain data property, so those user items DO pay the extraction at rewrite
+  // time and the copy freezes the value it read. That is acceptable today:
+  //   • only user prompts are ever spread, and those are the cheap end of the
+  //     corpus (~0.12 ms), while the expensive assistant/tool bodies — the
+  //     reason this getter exists — are never spread and stay lazy;
+  //   • the rewrite paths only ADD timestamp stamps (consumedAt / injectedAt /
+  //     requeuedAt) and never change content, so the frozen value stays true.
+  // If a future path rewrites content on a spread, the copy must re-derive —
+  // either drop the spread (assign the fields explicitly) or re-run the
+  // extraction for the new `msg`. countPromptOverlap additionally gates on
+  // message type BEFORE reading this getter, for the same reason.
+  //
+  // `cachedPlainText` (string | null) short-circuits the pipeline when a
+  // caller already knows the answer. NOTE: no production caller passes it
+  // today — the v3 localStorage/IndexedDB transcript cache it was written for
+  // is gone (see legacy-transcript-cache.ts), and every reducer call site
+  // passes only (msg, prev). It is retained because a null still means "no
+  // extractable text" and must skip the pipeline, and because the tests pin
+  // that contract; `undefined` is the only value that falls through to a live
+  // recompute. Wire a real cache before relying on it being populated.
+  let plainTextMemo: string | null | undefined
+
   const item: TranscriptItem = {
     id,
     msg,
-    // `cachedPlainText` (string | null) skips the markdown-extraction
-    // pipeline on cache hydrate. It is ONLY supplied by loadFromStorage for
-    // v3 caches, where the value was computed once at persist time — running
-    // `extractMessagePlainText` (a full unified markdown parse per content
-    // block) for every cached message on every store construction was the
-    // dominant cost of group-switch / cold-load (hundreds of ms for a
-    // 600-message transcript). A stored null means "no extractable text" and
-    // must also skip the pipeline, so `undefined` (absent entry) is the
-    // only value that falls through to a live recompute.
-    plainText: cachedPlainText !== undefined ? cachedPlainText : extractMessagePlainText(msg),
+    get plainText(): string | null {
+      if (plainTextMemo === undefined) {
+        plainTextMemo =
+          cachedPlainText !== undefined ? cachedPlainText : extractMessagePlainText(msg)
+      }
+      return plainTextMemo
+    },
     isCompactSummary: Boolean(
       msg.type === 'user' &&
       prev?.msg.type === 'system' &&

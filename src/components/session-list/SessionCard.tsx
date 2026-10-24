@@ -46,7 +46,7 @@ export interface SessionCardProps {
    *  so that only the currently-renaming card pays the cost. */
   renameDraft: string
   onRenameDraftChange: (draft: string) => void
-  onCommitRename: (id: string, title: string) => void
+  onCommitRename: (id: string, title: string, previousTitle: string) => void
   onCancelRename: () => void
   onStartRename: (session: SessionInfo) => void
   /** Trigger a custom confirmation dialog instead of window.confirm. */
@@ -219,17 +219,20 @@ export const SessionCard = memo(function SessionCard({
             className="session-item-rename-input"
             value={renameDraft}
             onChange={(e) => onRenameDraftChange(e.target.value)}
-            onBlur={() => void onCommitRename(s.id, renameDraft)}
+            onBlur={() => void onCommitRename(s.id, renameDraft, s.title ?? '')}
             onKeyDown={(e) => {
+              // Always stopPropagation. This input sits inside the card, whose
+              // own onKeyDown opens the session on Enter/Space (it is a
+              // role="button" row). Without this, typing a multi-word title
+              // fired onSelect on every Space and wiped the open panels.
+              e.stopPropagation()
               if (e.key === 'Enter') {
                 e.preventDefault()
-                void onCommitRename(s.id, renameDraft)
+                void onCommitRename(s.id, renameDraft, s.title ?? '')
               } else if (e.key === 'Escape') {
+                // Also keep it out of App's escape chain — idle-Esc opens the
+                // resume picker (escapeAction).
                 e.preventDefault()
-                // stopPropagation: this press cancels the rename edit, it
-                // must not keep bubbling to App's escape chain — idle-Esc
-                // now opens the resume picker (escapeAction).
-                e.stopPropagation()
                 onCancelRename()
               }
             }}
