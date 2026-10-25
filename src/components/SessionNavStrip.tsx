@@ -191,7 +191,7 @@ function SessionNavTab({
           type="button"
           ref={setActivatorNodeRef}
           {...listeners}
-          className={`session-nav-tab${focused ? ' active' : ''}${isDragging ? ' dragging' : ''}`}
+          className={`session-nav-tab${focused ? ' active' : ''}${isDragging ? ' dragging' : ''}${session.working ? ' working' : ''}`}
           aria-pressed={focused}
           title={label}
           onClick={() => onSelect(session.id)}

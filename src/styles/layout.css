@@ -268,7 +268,6 @@ body.resizing-col .app {
 }
 .session-nav-tab:hover {
   background: var(--btn-hover-bg);
-  color: var(--fg);
 }
 .session-nav-tab.active {
   /* Variant B (user-picked from the visual companion): accent wash + accent
@@ -279,12 +278,6 @@ body.resizing-col .app {
      surface, so status-ink-contrast.test.ts sees and verifies this plate. */
   background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   color: var(--accent-text);
-}
-/* Hover on the active tab brightens the label instead of deepening the wash —
-   the wash is already at the AA cap for accent ink (same precedent as the
-   chat mode badge, enforced by status-ink-contrast.test.ts). */
-.session-nav-tab.active:hover {
-  color: var(--fg);
 }
 .session-nav-label {
   overflow: hidden;
@@ -300,14 +293,42 @@ body.resizing-col .app {
   border-radius: var(--radius-circle);
   background: var(--accent);
   flex-shrink: 0;
-  animation: session-nav-pulse 1.2s ease-in-out infinite;
+  /* Same 1.8s period as the whole-tab wash (session-nav-working-pulse), and
+     phase-locked to it: both animations start on the same frame (both begin
+     when .working lands), and the keyframes are inverted so the dot is
+     BRIGHTEST when the wash peaks and dims as it recedes — one shared breath
+     instead of two competing pulses. */
+  animation: session-nav-pulse 1.8s ease-in-out infinite;
 }
 @keyframes session-nav-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+/* Whole-tab breathing for the working state, mirroring the chat WorkingBubble
+   (working-bubble-pulse in chat.css) and the titlebar tab's
+   titlebar-tab-working-pulse: the same accent-wash colour recipe
+   (color-mix ... 18%) and the same 1.8s ease-in-out rhythm. Carried by an
+   INSET box-shadow wash rather than the bubble's outer halo or a
+   background-colour animation, for two reasons: the strip is an
+   overflow-x:auto scroller that would clip an outer shadow at the container
+   edges, and an animated background-color would paint OVER the hover/active
+   fills (animations beat normal declarations in the cascade, killing
+   .session-nav-tab:hover and the active tab's accent-wash plate). An inset
+   shadow sits between background and content, so it composes with both
+   automatically. The huge spread just floods the tab's own border box;
+   nothing paints outside it, so nothing can be clipped. The 6px dot breathes
+   in phase with this wash (see .session-nav-dot) so the two read as one
+   breath. */
+.session-nav-tab.working {
+  animation: session-nav-working-pulse 1.8s ease-in-out infinite;
+}
+@keyframes session-nav-working-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 999px transparent; }
+  50% { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--accent) 18%, transparent); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .session-nav-dot {
+  .session-nav-dot,
+  .session-nav-tab.working {
     animation: none;
   }
 }

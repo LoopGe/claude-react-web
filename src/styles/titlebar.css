@@ -139,12 +139,37 @@
 }
 .titlebar-tab:hover {
   background: var(--btn-hover-bg);
-  color: var(--fg);
 }
 .titlebar-tab.active {
   background: var(--bg-elev-2);
   border-color: var(--border);
   color: var(--fg);
+}
+/* Whole-tab breathing for the working state, mirroring the chat WorkingBubble
+   (working-bubble-pulse in chat.css): the same accent-wash colour recipe
+   (color-mix ... 18%) and the same 1.8s ease-in-out rhythm. Carried by an INSET
+   box-shadow wash rather than the bubble's outer halo or a background-colour
+   animation, for two reasons: .titlebar-tabs is an overflow-x:auto scroller
+   that would clip an outer shadow at the container edges (first tab's left
+   side, top/bottom), and an animated background-color would paint OVER the
+   hover/active fills (animations beat normal declarations in the cascade,
+   killing .titlebar-tab:hover and the active tab's --bg-elev-2 plate). An
+   inset shadow sits between background and content, so it composes with both
+   automatically — one keyframes block serves active and inactive tabs. The
+   huge spread just floods the tab's own border box; nothing paints outside
+   it, so nothing can be clipped. The 6px dot breathes in phase with this
+   wash (see .titlebar-tab-dot) so the two read as one breath. */
+.titlebar-tab.working {
+  animation: titlebar-tab-working-pulse 1.8s ease-in-out infinite;
+}
+@keyframes titlebar-tab-working-pulse {
+  0%, 100% { box-shadow: inset 0 0 0 999px transparent; }
+  50% { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--accent) 18%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .titlebar-tab.working {
+    animation: none;
+  }
 }
 .titlebar-tab.working .titlebar-tab-dot {
   width: 6px;
@@ -152,11 +177,16 @@
   border-radius: var(--radius-circle);
   background: var(--accent);
   flex-shrink: 0;
-  animation: titlebar-tab-pulse 1.2s ease-in-out infinite;
+  /* Same 1.8s period as the whole-tab wash (titlebar-tab-working-pulse), and
+     phase-locked to it: both animations start on the same frame (both begin
+     when .working lands), and the keyframes are inverted so the dot is
+     BRIGHTEST when the wash peaks and dims as it recedes — one shared breath
+     instead of two competing pulses. */
+  animation: titlebar-tab-pulse 1.8s ease-in-out infinite;
 }
 @keyframes titlebar-tab-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
 }
 .titlebar-tab-label {
   overflow: hidden;
