@@ -216,10 +216,18 @@ body.resizing-col .app {
 .session-nav-chip {
   display: inline-flex;
   align-items: center;
-  height: 24px;
+  /* Same height as .session-nav-tab so chips and tabs sit on one visual
+     line in the strip. No border: the fill alone carries the chip shape,
+     and the selected state is TEXT colour (--accent-text, AA-fitted per
+     skin/theme) rather than an accent outline — same dye language the
+     session tabs use. Hover deliberately keeps the label muted (background
+     only) so a hover never reads as a selection. */
+  height: 28px;
   padding: 0 var(--space-2);
   max-width: 140px;
-  border: 1px solid var(--border);
+  /* Explicit none: dropping the old border declaration entirely would let the
+     UA stylesheet's default 2px outset <button> border show through. */
+  border: none;
   border-radius: var(--radius-sm);
   background: var(--bg-elev-2);
   color: var(--fg-muted);
@@ -232,15 +240,13 @@ body.resizing-col .app {
   flex-shrink: 0;
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
-    border-color var(--motion-duration-fast) var(--motion-ease-standard);
+    color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .session-nav-chip:hover {
   background: var(--btn-hover-bg);
-  color: var(--fg);
 }
 .session-nav-chip.active {
-  border-color: var(--accent);
-  color: var(--fg);
+  color: var(--accent-text);
 }
 .session-nav-tab {
   display: inline-flex;
