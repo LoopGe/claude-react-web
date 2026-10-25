@@ -4587,8 +4587,19 @@ describe('SessionManager', () => {
 
   it('setMemorySettings() treats an empty partial as a no-op', async () => {
     const info = await sm.create({})
+    // Create itself fires one applyFlagSettings({ autoCompactEnabled: true })
+    // (ab10bb15: auto-compact is always on) — assert the no-op as "no call
+    // carrying a MEMORY key landed after the capture", not as zero calls:
+    // the spawn stamp is unrelated and must not mask a memory regression.
+    const callsBefore = mockHandles[0].applyFlagSettings.mock.calls.length
     const updated = await sm.setMemorySettings(info.id, {})
-    expect(mockHandles[0].applyFlagSettings).not.toHaveBeenCalled()
+    const memoryCalls = mockHandles[0].applyFlagSettings.mock.calls
+      .slice(callsBefore)
+      .filter(([flags]) => {
+        const f = flags as Record<string, unknown>
+        return 'autoMemoryEnabled' in f || 'autoMemoryDirectory' in f || 'autoDreamEnabled' in f
+      })
+    expect(memoryCalls).toEqual([])
     expect(updated.memory).toBeUndefined()
   })
 

@@ -46,19 +46,30 @@ describe('daemon ops', () => {
 
   it('status aggregates: registered but not running is NOT drift', async () => {
     // The Windows adapter derives targetMissing from the registry stdout's
-    // vbs path (must end in run-hidden.vbs AND exist on disk) — the fake
-    // runner reports a registered value pointing at a real vbs file.
+    // vbs path (must end in run-hidden.vbs AND exist on disk); macOS/Linux
+    // derive it from existsSync(paths.daemonEntry) instead. Point the mocked
+    // daemonEntry AT the real vbs file so both derivations agree: registered
+    // AND present → targetMissing false on every platform.
     const existing = join(dir, 'daemon', 'run-hidden.vbs')
     mkdirSync(join(dir, 'daemon'), { recursive: true })
     writeFileSync(existing, '', 'utf8')
-    const runner = async () => ({ code: 0, stdout: `claude-react-web REG_SZ wscript.exe "${existing}"`, stderr: '' })
-    await daemonEnable(dir, runner)
-    const snap = await daemonStatus(dir, runner)
-    expect(snap.configEnabled).toBe(true)
-    expect(snap.osRegistered).toBe(true)
-    expect(snap.osTargetMissing).toBe(false)
-    expect(snap.daemonAlive).toBe(false) // no heartbeat on disk
-    expect(snap.drift).toBe(false)
+    const { resolveDaemonEntryPaths } = await import('./paths.js')
+    const prev = vi.mocked(resolveDaemonEntryPaths).getMockImplementation()
+    vi.mocked(resolveDaemonEntryPaths).mockImplementation(() => ({ nodePath: process.execPath, daemonEntry: existing, serverEntry: existing }))
+    try {
+      const runner = async () => ({ code: 0, stdout: `claude-react-web REG_SZ wscript.exe "${existing}"`, stderr: '' })
+      await daemonEnable(dir, runner)
+      const snap = await daemonStatus(dir, runner)
+      expect(snap.configEnabled).toBe(true)
+      expect(snap.osRegistered).toBe(true)
+      expect(snap.osTargetMissing).toBe(false)
+      expect(snap.daemonAlive).toBe(false) // no heartbeat on disk
+      expect(snap.drift).toBe(false)
+    } finally {
+      // The module factory always installed an implementation, so prev is
+      // defined — restore it explicitly (mockImplementation rejects undefined).
+      vi.mocked(resolveDaemonEntryPaths).mockImplementation(prev!)
+    }
   })
 
   it('status flags targetMissing as drift when config is enabled', async () => {

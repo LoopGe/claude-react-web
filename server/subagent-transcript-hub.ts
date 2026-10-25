@@ -107,6 +107,12 @@ interface FileState {
    *  have been re-initialized, so resuming from the old byte offset would
    *  drop its head. */
   resetNextTail?: boolean
+  /** Inode of the file at the last tail. A changed inode means the file was
+   *  deleted and recreated (CLI transcript re-init) — possibly within the
+   *  same tick as the dir event, where the dir-level stat-verify sees the
+   *  replacement and cannot detect it. The next tail then forces a FULL
+   *  `reset: true` instead of resuming mid-file from the stale offset. */
+  fileIno?: number
 }
 
 interface WatcherEntry {
@@ -204,7 +210,14 @@ export class SubagentTranscriptHub {
       let raw = Buffer.alloc(0)
       if (main) {
         try {
-          raw = await readFile(subagentTranscriptPath(main.path, state.sessionId, state.agentId))
+          const file = subagentTranscriptPath(main.path, state.sessionId, state.agentId)
+          // Stat BEFORE the read: a file replaced in the read→stat window
+          // would store the replacement's inode while the offset bookkeeping
+          // covers the old content — the next tail would then see ino match
+          // and resume mid-file. Stat-first fails SAFE: a mismatch forces a
+          // spurious-but-harmless full reset on the next tail.
+          state.fileIno = (await stat(file)).ino
+          raw = await readFile(file)
         } catch (err) {
           // ENOENT is the ordinary "no transcript yet" case → empty snapshot.
           // Anything else must surface to the outer catch: pushing a reset
@@ -269,9 +282,15 @@ export class SubagentTranscriptHub {
           // rename flood (full-path filenames, or null) rather than an
           // 'error' — so the error handler below never fires there. Verify
           // the dir still exists and tear the dead handle down when it does
-          // not, so a recreated dir revives via the retry queue. Benign
-          // non-agent child writes (.DS_Store, temp files) stat OK and are
-          // ignored; teardownWatcher is idempotent against the rename flood.
+          // not, so a recreated dir revives via the retry queue. NOTE this
+          // stat CANNOT catch a fast delete+recreate (the stat sees the
+          // replacement) — and on macOS even ordinary child writes coalesce
+          // into self-named `change` events, so the event alone proves
+          // nothing. The recreation case is instead caught at the file
+          // level: tail()'s inode guard detects a replaced file and forces
+          // a FULL reset, independent of any dir event. Benign non-agent
+          // child writes (.DS_Store, temp files) stat OK and are ignored;
+          // teardownWatcher is idempotent against the rename flood.
           stat(dir).then((s) => {
             if (!s.isDirectory()) this.teardownWatcher(dir)
           }).catch(() => this.teardownWatcher(dir))
@@ -438,13 +457,16 @@ export class SubagentTranscriptHub {
         start = 0
         state.tail = ''
       }
-      if (s.size < state.offset) {
-        // Shrink (truncation/rotation): full re-read. The old pending tail
-        // belonged to the pre-truncate content — drop it.
+      if (s.size < state.offset || (state.fileIno !== undefined && state.fileIno !== s.ino)) {
+        // Shrink (truncation/rotation) or RECREATED FILE (new inode — the
+        // fast delete+recreate race the dir-level stat-verify cannot see):
+        // full re-read. The old pending tail belonged to the previous
+        // content — drop it.
         reset = true
         start = 0
         state.tail = ''
       }
+      state.fileIno = s.ino
       if (s.size === start && !reset) return
       // Buffer read + byte-offset slicing: `start` is a true byte offset
       // (always a line boundary), so subarray() cannot split a multibyte

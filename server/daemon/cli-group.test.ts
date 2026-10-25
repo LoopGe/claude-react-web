@@ -11,6 +11,10 @@ vi.mock('./paths.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./paths.js')>()
   return {
     ...actual,
+    // 3a60be8c gates enable/disable behind isBundledDaemon() — under tsx the
+    // real one returns false and the CLI group 400s before reaching the
+    // register/spawn surface these tests exercise. Same mock as ops.test.ts.
+    isBundledDaemon: vi.fn(() => true),
     // nodePath points at the REAL node binary so `daemon install`'s detached
     // spawn succeeds; the fake daemon.mjs path merely exits harmlessly.
     resolveDaemonEntryPaths: vi.fn(() => ({ nodePath: process.execPath, daemonEntry: '/fake/dist/daemon.mjs', serverEntry: '/fake/dist/cli.mjs' })),

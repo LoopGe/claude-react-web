@@ -5406,15 +5406,34 @@ export class SessionManager {
     if (!s?.autoCompactDefaultPending) return Promise.resolve()
     if (s.autoCompactWindow != null && s.autoCompactWindow > 0) {
       delete s.autoCompactDefaultPending
+      this.persist(s)
       return Promise.resolve()
     }
     const usage = s.lastContextUsage
     if (!usage || !(usage.maxTokens > 0)) return Promise.resolve()
+    // A threshold on a PROBE-sourced snapshot is the CLI's own answer and is
+    // authoritative — pinning the 85% default over it would overwrite what
+    // the subprocess actually does and churn every later reconcile that
+    // carries the real number back. Derived snapshots (result/assistant
+    // paths) carry the LOCAL formula replica instead — replacing that with
+    // the configured default is exactly what this pin is FOR (see
+    // CONFIG.md autoCompactThresholdPct). No source stamp = test/seed shape,
+    // treated as derived.
+    if (
+      usage.source === 'probe'
+      && typeof usage.autoCompactThreshold === 'number'
+      && usage.autoCompactThreshold > 0
+    ) {
+      delete s.autoCompactDefaultPending
+      this.persist(s)
+      return Promise.resolve()
+    }
     const pct = clampAutoCompactThresholdPct(defaultConfig.autoCompactThresholdPct)
     const window = autoCompactWindowForPct(pct, usage.maxTokens, usage.maxOutputTokens)
     // 0 = the pct is not achievable on this window (or no window) — leave auto.
     if (!(window > 0)) {
       delete s.autoCompactDefaultPending
+      this.persist(s)
       return Promise.resolve()
     }
     // Clear pending only after the pin lands; a failed apply must stay pending
