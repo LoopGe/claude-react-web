@@ -29,7 +29,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { SessionStore, coerceMemory, type SessionMeta } from './persistence.js'
+import { SessionStore, coerceMemory, coerceTaskBudget, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { SteeredStore, spliceSteeredIntoPage } from './steered-store.js'
 import { TurnAnchorStore, type TurnAnchorEntry } from './turn-anchor-store.js'
@@ -1441,6 +1441,7 @@ export class SessionManager {
       sandbox: s.sandbox,
       effortLevel: s.effortLevel,
       thinking: s.thinking,
+      taskBudget: s.taskBudget,
       autoCompactWindow: s.autoCompactWindow,
       autoCompactDefaultPending: s.autoCompactDefaultPending,
       hooks: s.hooks,
@@ -1522,7 +1523,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; autoCompactWindow?: number; autoCompactDefaultPending?: boolean; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; taskBudget?: { total: number }; autoCompactWindow?: number; autoCompactDefaultPending?: boolean; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1551,6 +1552,10 @@ export class SessionManager {
       // Same for thinking: a create-time Options.thinking becomes the
       // session's initial thinking intent.
       thinking: coerceThinkingSetting(opts.thinking),
+      // Same for taskBudget: a create-time Options.taskBudget becomes the
+      // session's initial budget intent (pure spawn-time key — re-applied on
+      // re-spawn only).
+      taskBudget: coerceTaskBudget(opts.taskBudget),
       // Auto-compact window is an app-level custom opts field (no SDK
       // Options key — it's re-applied post-spawn via applyFlagSettings, like
       // fastMode/effortLevel). Carried through resume/fork/clear opts so a
@@ -1963,6 +1968,7 @@ export class SessionManager {
       title: meta.title,
       effortLevel: meta.effortLevel,
       thinking: meta.thinking,
+      taskBudget: meta.taskBudget,
       autoCompactWindow: meta.autoCompactWindow,
       betas: meta.betas,
       hooks: meta.hooks,
@@ -2050,6 +2056,7 @@ export class SessionManager {
       title: meta.title,
       effortLevel: meta.effortLevel,
       thinking: meta.thinking,
+      taskBudget: meta.taskBudget,
       autoCompactWindow: meta.autoCompactWindow,
       betas: meta.betas,
       hooks: meta.hooks,
@@ -2333,6 +2340,9 @@ export class SessionManager {
       // post-spawn below) it rides the opts directly.
       effortLevel: meta.effortLevel,
       thinking: meta.thinking,
+      // Same for the task budget (Options.taskBudget — pure spawn-time key,
+      // no post-spawn re-apply exists).
+      taskBudget: meta.taskBudget,
       // Same for the auto-compact window (re-applied post-spawn via
       // applyFlagSettings, like fastMode — snapshotMeta captures it from here).
       autoCompactWindow: meta.autoCompactWindow,
@@ -2881,6 +2891,7 @@ export class SessionManager {
       title,
       effort: meta.effortLevel,
       thinking: thinkingForSpawn(meta.thinking),
+      taskBudget: meta.taskBudget,
       autoCompactWindow: meta.autoCompactWindow,
       betas: meta.betas as Options['betas'],
       enabledPlugins: meta.enabledPlugins,
@@ -3368,6 +3379,7 @@ export class SessionManager {
       betas: Array.isArray(fullOpts.betas) ? fullOpts.betas : undefined,
       effortLevel: session.effortLevel,
       thinking: session.thinking,
+      taskBudget: session.taskBudget,
       fastMode: session.fastMode,
       autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,
@@ -4217,6 +4229,7 @@ export class SessionManager {
         title: opts?.seedText ? s.title : undefined,
         effortLevel: s.effortLevel,
         thinking: s.thinking,
+        taskBudget: s.taskBudget,
         autoCompactWindow: s.autoCompactWindow,
         betas: s.betas,
         hooks: s.hooks,
@@ -4298,6 +4311,7 @@ export class SessionManager {
         title: settings.title,
         effortLevel: settings.effortLevel,
         thinking: settings.thinking,
+        taskBudget: settings.taskBudget,
         autoCompactWindow: settings.autoCompactWindow,
         betas: settings.betas,
         hooks: settings.hooks,
@@ -5466,6 +5480,32 @@ export class SessionManager {
       s.lastActivityAt = Date.now()
       this.persist(s)
       return this.info(s)
+    })
+  }
+
+  /** Set or clear the per-session task budget (Options.taskBudget). Pure
+   *  spawn-time intent — the SDK has no Settings key and no control method
+   *  for it, so unlike setEffortLevel/setThinking there is deliberately NO
+   *  SDK round-trip here: the value lands on the session/meta + store and
+   *  reaches the subprocess on the next spawn (resume / fork / respawn).
+   *  Dormant sessions are first-class targets (their next spawn is exactly
+   *  the one the edit is for — same two-tier semantics as rename(): live
+   *  session write, else a field-scoped store patch). */
+  async setTaskBudget(id: string, value: { total: number } | undefined): Promise<SessionInfo> {
+    return this.opLock.run(id, async () => {
+      const live = this.sessions.get(id)
+      if (live) {
+        live.taskBudget = value
+        live.lastActivityAt = Date.now()
+        this.persist(live)
+        return this.info(live)
+      }
+      if (!this.store) throw new HttpError(404, `session ${id} not found`)
+      const nextMeta = this.store.patch(id, { taskBudget: value, lastActivityAt: Date.now() })
+      if (!nextMeta) throw new HttpError(404, `session ${id} not found`)
+      const info = this.infoFromMeta(nextMeta)
+      this.broadcastGlobal({ kind: 'update', session: info })
+      return info
     })
   }
 
@@ -7788,6 +7828,7 @@ export class SessionManager {
     memory?: SessionMemorySettings
     effortLevel?: EffortLevel
     thinking?: ThinkingSetting
+    taskBudget?: { total: number }
     autoCompactWindow?: number
     terminated: boolean
     terminatedReason?: string
@@ -7828,6 +7869,7 @@ export class SessionManager {
       memory: x.memory,
       effortLevel: x.effortLevel,
       thinking: x.thinking,
+      taskBudget: x.taskBudget,
       autoCompactWindow: x.autoCompactWindow,
       terminated: x.terminated,
       terminatedReason: x.terminatedReason,
@@ -8355,6 +8397,7 @@ export class SessionManager {
     title?: string
     effortLevel?: EffortLevel
     thinking?: ThinkingSetting
+    taskBudget?: { total: number }
     autoCompactWindow?: number
     betas?: string[]
     hooks?: SessionHooksConfig
@@ -8375,6 +8418,7 @@ export class SessionManager {
       title: source.title,
       effort: source.effortLevel,
       thinking: thinkingForSpawn(source.thinking),
+      taskBudget: source.taskBudget,
       autoCompactWindow: source.autoCompactWindow,
       betas: source.betas as Options['betas'],
       settings: source.hooks ? ({ hooks: toSdkHooksSettings(source.hooks) } as Settings) : undefined,
@@ -8397,6 +8441,7 @@ export class SessionManager {
       title: session.title,
       effort: session.effortLevel,
       thinking: thinkingForSpawn(session.thinking),
+      taskBudget: session.taskBudget,
       betas: session.betas as Options['betas'],
       settings: session.hooks ? ({ hooks: toSdkHooksSettings(session.hooks) } as Settings) : undefined,
     }
@@ -8491,6 +8536,7 @@ export class SessionManager {
       betas: session.betas,
       effortLevel: session.effortLevel,
       thinking: session.thinking,
+      taskBudget: session.taskBudget,
       fastMode: session.fastMode,
       autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,

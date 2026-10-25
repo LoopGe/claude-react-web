@@ -8,6 +8,7 @@ import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-disp
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
+import { parseTaskBudgetInput } from '../../../shared/session-info'
 import type { ModelGroupConfig } from '../../types/config'
 import { PERMISSION_MODES, EFFORT_LEVELS } from '../../types'
 import { useExitPresence } from '../../hooks/useExitPresence'
@@ -176,6 +177,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [fallbackModel, setFallbackModel] = useState('')
   const [maxTurns, setMaxTurns] = useState('')
   const [maxBudgetUsd, setMaxBudgetUsd] = useState('')
+  const [taskBudget, setTaskBudget] = useState('')
   const [allowedToolsStr, setAllowedToolsStr] = useState('')
   const [disallowedToolsStr, setDisallowedToolsStr] = useState('')
   const [toolsStr, setToolsStr] = useState('')
@@ -496,6 +498,11 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       thinking = budget > 0 ? { type: 'enabled', budgetTokens: budget } : 'enabled'
     }
 
+    // Shared parse: '' → unset; "1e4" → 10000 (never parseInt); garbage →
+    // unset at create time (the field is optional and the user sees the
+    // result immediately, unlike the persisted-clear hazard in SettingsPanel).
+    const taskBudgetValue = parseTaskBudgetInput(taskBudget) ?? undefined
+
     // Parse mcpServers JSON if provided
     let mcpServers: unknown = undefined
     if (mcpServersJson.trim()) {
@@ -528,6 +535,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       fallbackModel: fallbackModel.trim() || undefined,
       maxTurns: maxTurns ? parseInt(maxTurns, 10) || undefined : undefined,
       maxBudgetUsd: maxBudgetUsd ? parseFloat(maxBudgetUsd) || undefined : undefined,
+      taskBudget: taskBudgetValue,
       allowedTools: csv(allowedToolsStr),
       disallowedTools: csv(disallowedToolsStr),
       tools: csv(toolsStr),
@@ -850,6 +858,17 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                       onChange={(e) => setMaxBudgetUsd(e.target.value)}
                     />
                   </div>
+                </div>
+                <div className="settings-field">
+                  <label htmlFor={uid + '-task-budget'}>Task budget (tokens)</label>
+                  <input
+                    className="input"
+                    id={uid + '-task-budget'}
+                    type="number"
+                    placeholder="unlimited"
+                    value={taskBudget}
+                    onChange={(e) => setTaskBudget(e.target.value)}
+                  />
                 </div>
                 <div className="settings-field">
                   <label htmlFor={uid + '-fallback-model'}>Fallback model</label>

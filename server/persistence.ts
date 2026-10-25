@@ -71,6 +71,11 @@ export interface SessionMeta {
   /** User intent: extended-thinking configuration (SDK ThinkingConfig
    *  shape). Re-applied to the SDK on re-spawn (resume / restart / fork). */
   thinking?: ThinkingSetting
+  /** User intent: API-side task budget in tokens (SDK Options.taskBudget).
+   *  Pure spawn-time key — no Settings entry and no control method — so it
+   *  re-applies to the SDK only on re-spawn (resume / restart / fork); a
+   *  running session is never contacted. */
+  taskBudget?: { total: number }
   /** User intent: absolute auto-compact window size in tokens (SDK
    *  Settings.autoCompactWindow). Undefined = "auto" (the CLI derives the
    *  threshold from the model's context window). Re-applied to the SDK via
@@ -228,6 +233,18 @@ export class SessionStore extends JsonFileStore<SessionMeta> {
   }
 }
 
+/** Narrow untrusted JSON into the persisted `taskBudget` shape, or undefined.
+ *  The ONE validator for the contract — used by coerceMeta (disk load),
+ *  snapshotMeta (create intent), and both /sessions routes — so the rule
+ *  cannot drift between write and read paths. Whole-token contract (rounded,
+ *  matching the UI's parse): fractional token totals are not meaningful. */
+export function coerceTaskBudget(v: unknown): { total: number } | undefined {
+  if (typeof v !== 'object' || v === null) return undefined
+  const total = (v as { total?: unknown }).total
+  if (typeof total !== 'number' || !Number.isFinite(total) || total <= 0) return undefined
+  return { total: Math.round(total) }
+}
+
 /** Narrow and normalise untrusted JSON into a SessionMeta, or null if it's
  *  unusable. Forward-compatible: unknown extra fields are ignored. */
 function coerceMeta(raw: unknown): SessionMeta | null {
@@ -261,6 +278,7 @@ function coerceMeta(raw: unknown): SessionMeta | null {
         ? r.effortLevel
         : undefined,
     thinking: coerceThinkingSetting(r.thinking),
+    taskBudget: coerceTaskBudget(r.taskBudget),
     autoCompactWindow:
       typeof r.autoCompactWindow === 'number' && Number.isFinite(r.autoCompactWindow) && r.autoCompactWindow > 0
         ? Math.round(r.autoCompactWindow)

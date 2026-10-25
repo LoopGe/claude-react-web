@@ -9,6 +9,7 @@ import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { useToast, apiErrorToastOpts } from '../hooks/useToast'
+import { parseTaskBudgetInput } from '../../shared/session-info'
 import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { useSessionUsage } from '../hooks/useSessionUsage'
 import { useModelOptions } from '../hooks/useModelOptions'
@@ -609,6 +610,35 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     }
     await runAndRefresh(() =>
       api.post<{ session: SessionInfo }>(`/sessions/${session.id}/settings`, { settings: parsed }),
+    )
+  }
+
+  // ── Task budget (SDK Options.taskBudget — spawn-time only) ─────────
+  // Persisted per-session intent. The SDK has no live setter (no Settings
+  // key, no control method), so unlike the controls above this never
+  // touches the running subprocess — it rides the next spawn (auto-recovery
+  // resume / fork / clear). Empty draft = clear. Same draft pattern as the
+  // memory directory input below: seeded from the server value, re-synced
+  // while unfocused, commits on Enter / blur.
+  const [taskBudgetDraft, setTaskBudgetDraft] = useState(session.taskBudget ? String(session.taskBudget.total) : '')
+  const taskBudgetInputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (taskBudgetInputRef.current && document.activeElement === taskBudgetInputRef.current) return
+    setTaskBudgetDraft(session.taskBudget ? String(session.taskBudget.total) : '')
+  }, [session.taskBudget])
+
+  const commitTaskBudget = async () => {
+    // '' = deliberate clear; garbage = toast and keep the persisted value —
+    // never silently destroy a budget because of a typo (parseTaskBudgetInput's
+    // three-way contract).
+    const parsed = parseTaskBudgetInput(taskBudgetDraft)
+    if (parsed === null) {
+      toast.error('Task budget must be a positive whole number')
+      return
+    }
+    if ((parsed?.total ?? 0) === (session.taskBudget?.total ?? 0)) return
+    await runAndRefresh(() =>
+      api.post<{ session: SessionInfo }>(`/sessions/${session.id}/task-budget`, { taskBudget: parsed }),
     )
   }
 
@@ -1257,6 +1287,30 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
               </option>
             ))}
           </select>
+        </SettingsRow>
+
+        <SettingsRow
+          stack
+          title={<label htmlFor={panelUid + '-task-budget'}>Task budget (tokens)</label>}
+          hint="API-side budget the model paces itself against. Applies on the next spawn (auto-recovery resume / fork / clear) — the running session is not affected."
+        >
+          <input
+            id={panelUid + '-task-budget'}
+            ref={taskBudgetInputRef}
+            className="input"
+            type="text"
+            inputMode="numeric"
+            placeholder="(none)"
+            value={taskBudgetDraft}
+            onChange={(e) => setTaskBudgetDraft(e.target.value)}
+            onBlur={() => void commitTaskBudget()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                ;(e.currentTarget as HTMLInputElement).blur()
+              }
+            }}
+          />
         </SettingsRow>
 
         <div className="settings-group-body">

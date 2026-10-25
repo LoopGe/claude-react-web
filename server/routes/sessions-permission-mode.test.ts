@@ -8,6 +8,7 @@ function makeApp() {
     create: vi.fn((..._args: unknown[]) => ({ id: 's1' })),
     mergeMcpServersAsync: vi.fn(async () => undefined),
     setPermissionMode: vi.fn(async () => ({ id: 's1', permissionMode: 'default' })),
+    setTaskBudget: vi.fn(async () => ({ id: 's1' })),
   }
   return { app: buildSessionRouter(sm as unknown as SessionManager), sm }
 }
@@ -224,6 +225,7 @@ describe('session create body validation (narrowCreateBody)', () => {
       betas: ['context-1m-2025-08-07'],
       effort: 'high',
       thinking: { type: 'enabled', budgetTokens: 1000 },
+      taskBudget: { total: 64000 },
       additionalDirectories: ['/a'],
       fallbackModel: 'claude-haiku-4-5',
       maxTurns: 5,
@@ -276,6 +278,11 @@ describe('session create body validation (narrowCreateBody)', () => {
     [{ autoCompactWindow: 0 }, 'autoCompactWindow must be a finite number > 0'],
     [{ autoCompactWindow: -5 }, 'autoCompactWindow must be a finite number > 0'],
     [{ autoCompactWindow: '100000' }, 'autoCompactWindow must be a finite number > 0'],
+    [{ taskBudget: 'x' }, 'taskBudget.total must be a finite positive number'],
+    [{ taskBudget: {} }, 'taskBudget.total must be a finite positive number'],
+    [{ taskBudget: { total: 'x' } }, 'taskBudget.total must be a finite positive number'],
+    [{ taskBudget: { total: -1 } }, 'taskBudget.total must be a finite positive number'],
+    [{ taskBudget: { total: Number.POSITIVE_INFINITY } }, 'taskBudget.total must be a finite positive number'],
     [{ cliDebug: 'yes' }, 'cliDebug must be a boolean'],
   ])('400s on a bad create-body shape %j', async (body, error) => {
     const { app, sm } = makeApp()
@@ -343,5 +350,39 @@ describe('session create body validation (narrowCreateBody)', () => {
     expect(res.status).toBe(400)
     expect(await res.json()).toEqual({ error: 'autoExpandRunningGroups must be a boolean' })
     expect(sm.create).not.toHaveBeenCalled()
+  })
+
+  it('accepts a valid taskBudget at create and forwards it', async () => {
+    const { app, sm } = makeApp()
+    const res = await post(app, { taskBudget: { total: 64000 } })
+    expect(res.status).toBe(201)
+    expect(sm.create).toHaveBeenCalledWith(
+      expect.objectContaining({ taskBudget: { total: 64000 } }),
+      undefined,
+      undefined,
+      false,
+    )
+  })
+
+  it('POST /sessions/:id/task-budget forwards the value to the manager', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/task-budget', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ taskBudget: { total: 128000 } }),
+    })
+    expect(res.status).toBe(200)
+    expect(sm.setTaskBudget).toHaveBeenCalledWith('s1', { total: 128000 })
+  })
+
+  it('POST /sessions/:id/task-budget with an empty body clears the budget', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/task-budget', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    expect(res.status).toBe(200)
+    expect(sm.setTaskBudget).toHaveBeenCalledWith('s1', undefined)
   })
 })

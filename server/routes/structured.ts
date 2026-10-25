@@ -11,7 +11,7 @@ import { Hono } from 'hono'
 import { SessionManager } from '../session-manager.js'
 import { HttpError } from '../errors.js'
 import { createLogger } from '../log.js'
-import { permissionModeList } from '../permission-modes.js'
+import { permissionModeList, USER_SELECTABLE_PERMISSION_MODES } from '../permission-modes.js'
 import { safeJson } from './index.js'
 import { serverDefaultCwd } from '../default-cwd.js'
 import type { StructuredPermissionMode, StructuredRunRequest } from '../../shared/structured.js'
@@ -25,9 +25,12 @@ const MAX_CONCURRENT = 4
  *  expiry the subprocess is aborted and the client gets a 408. */
 const TIMEOUT_MS = 120_000
 
-const PERMISSION_MODES = new Set<StructuredPermissionMode>([
-  'default', 'acceptEdits', 'bypassPermissions', 'dontAsk',
-])
+// Derived from the shared vocabulary, not hand-copied — minus 'plan', which
+// a headless run cannot answer (see StructuredPermissionMode). A new SDK mode
+// landing in USER_SELECTABLE_PERMISSION_MODES propagates here automatically.
+const PERMISSION_MODES: ReadonlySet<StructuredPermissionMode> = new Set(
+  USER_SELECTABLE_PERMISSION_MODES.filter((m): m is StructuredPermissionMode => m !== 'plan'),
+)
 
 let active = 0
 
@@ -62,9 +65,9 @@ function validateBody(body: unknown): StructuredRunRequest {
   }
   if (b.permissionMode !== undefined) {
     if (typeof b.permissionMode !== 'string' || !PERMISSION_MODES.has(b.permissionMode as StructuredPermissionMode)) {
-      // Narrower than USER_SELECTABLE (no plan/auto — headless runs would
-      // block on ExitPlanMode / the auto classifier). Error wording reuses
-      // the shared formatter so all permissionMode 400s read the same.
+      // Narrower than USER_SELECTABLE (no plan — a headless run would block
+      // on ExitPlanMode). Error wording reuses the shared formatter so all
+      // permissionMode 400s read the same.
       throw new HttpError(400, `permissionMode must be one of: ${permissionModeList([...PERMISSION_MODES])}`)
     }
     out.permissionMode = b.permissionMode as StructuredPermissionMode

@@ -12,6 +12,7 @@ import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } fr
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
 import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
 import { coerceThinkingSetting } from '../../shared/session-info.js'
+import { coerceTaskBudget } from '../persistence.js'
 import { validateSandboxSetting } from '../../shared/sandbox.js'
 import { coerceToolProfile } from '../../shared/tool-profile.js'
 import { isBlockedEnvVar } from '../session-env.js'
@@ -93,7 +94,7 @@ const CREATE_BODY_FIELDS = new Set([
   'provider', 'cwd', 'model', 'modelGroupId', 'profileId', 'agent', 'title',
   'permissionMode', 'systemPrompt',
   'betas', 'additionalDirectories', 'effort', 'effortLevel', 'thinking',
-  'fallbackModel', 'maxTurns', 'maxBudgetUsd',
+  'fallbackModel', 'maxTurns', 'maxBudgetUsd', 'taskBudget',
   'tools', 'allowedTools', 'disallowedTools', 'toolAliases', 'toolConfig',
   'includePartialMessages', 'includeHookEvents', 'settings', 'memory', 'sandbox',
   'autoCompactWindow', 'cliDebug', 'firstPartyTools',
@@ -200,6 +201,14 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
   const maxBudgetUsd = rest.maxBudgetUsd
   if (maxBudgetUsd !== undefined && (typeof maxBudgetUsd !== 'number' || !Number.isFinite(maxBudgetUsd))) {
     return { ok: false, error: 'maxBudgetUsd must be a finite number' }
+  }
+  const taskBudget = rest.taskBudget
+  if (taskBudget === null) {
+    // JSON bodies cannot express undefined; treat an explicit null as "unset"
+    // rather than letting a null reach sdkOptions.
+    delete rest.taskBudget
+  } else if (taskBudget !== undefined && coerceTaskBudget(taskBudget) === undefined) {
+    return { ok: false, error: 'taskBudget.total must be a finite positive number' }
   }
   const acw = rest.autoCompactWindow
   if (acw !== undefined && acw !== null && (typeof acw !== 'number' || !Number.isFinite(acw) || acw <= 0)) {
@@ -885,6 +894,24 @@ export function buildSessionRouter(
       return c.json({ error: "thinking must be {type:'adaptive'} | {type:'disabled'} | {type:'enabled', budgetTokens?: number, display?: 'summarized'|'omitted'|'highlights'}" }, 400)
     }
     const info = await sm.setThinking(c.req.param('id'), setting, { clearDisplay: body.clearDisplay === true })
+    return c.json({ session: info })
+  })
+
+  // Set or clear the per-session API-side task budget (Options.taskBudget).
+  // Pure spawn-time intent: stored on SessionMeta and re-applied on the next
+  // spawn (resume / fork / respawn) — the SDK has no Settings key or control
+  // method for it, so a running session is never contacted. An absent/null
+  // body value clears the budget.
+  app.post('/sessions/:id/task-budget', async (c) => {
+    const body = await safeJson<{ taskBudget?: unknown }>(c.req)
+    let value: { total: number } | undefined
+    if (body.taskBudget !== undefined && body.taskBudget !== null) {
+      value = coerceTaskBudget(body.taskBudget)
+      if (!value) {
+        return c.json({ error: 'taskBudget.total must be a finite positive number' }, 400)
+      }
+    }
+    const info = await sm.setTaskBudget(c.req.param('id'), value)
     return c.json({ session: info })
   })
 

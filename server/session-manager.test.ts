@@ -4136,6 +4136,75 @@ describe('SessionManager', () => {
     expect(mockHandles[1].options.thinking).toEqual({ type: 'enabled', budgetTokens: 4096 })
   })
 
+  // --- task budget (Options.taskBudget at spawn; no live setter exists) ---
+
+  it('create({ taskBudget }) forwards Options.taskBudget to the SDK and records it', async () => {
+    const info = await sm.create({ taskBudget: { total: 64000 } } as unknown as Parameters<typeof sm.create>[0])
+    expect(mockHandles[0].options.taskBudget).toEqual({ total: 64000 })
+    expect(info.taskBudget).toEqual({ total: 64000 })
+  })
+
+  it('setTaskBudget() records the intent without contacting the SDK (no live setter exists)', async () => {
+    const info = await sm.create({})
+    expect(info.taskBudget).toBeUndefined()
+    const flagCalls = mockHandles[0].applyFlagSettings.mock.calls.length
+    const updated = await sm.setTaskBudget(info.id, { total: 128000 })
+    expect(mockHandles[0].applyFlagSettings.mock.calls.length).toBe(flagCalls)
+    expect(updated.taskBudget).toEqual({ total: 128000 })
+    expect(sm.get(info.id).taskBudget).toEqual({ total: 128000 })
+  })
+
+  it('setTaskBudget() persists the intent so it survives resume', async () => {
+    const info = await sm.create({})
+    await sm.setTaskBudget(info.id, { total: 96000 })
+    await store.flush()
+    expect(store.get(info.id)?.taskBudget).toEqual({ total: 96000 })
+  })
+
+  it('setTaskBudget(undefined) clears the budget locally and in the store', async () => {
+    const info = await sm.create({})
+    await sm.setTaskBudget(info.id, { total: 96000 })
+    const cleared = await sm.setTaskBudget(info.id, undefined)
+    expect(cleared.taskBudget).toBeUndefined()
+    await store.flush()
+    expect(store.get(info.id)?.taskBudget).toBeUndefined()
+  })
+
+  it('fork() carries the task budget onto the new session', async () => {
+    const source = await sm.create({})
+    await sm.setTaskBudget(source.id, { total: 64000 })
+    sm.send(source.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    const forked = await sm.fork(source.id)
+    expect(forked.taskBudget).toEqual({ total: 64000 })
+    // Task budget is a spawn-time Options key — the fork's fresh Query must
+    // have received it directly.
+    expect(mockHandles[1].options.taskBudget).toEqual({ total: 64000 })
+  })
+
+  it('clear() carries the task budget onto the fresh session spawn', async () => {
+    const info = await sm.create({})
+    await sm.setTaskBudget(info.id, { total: 64000 })
+    const cleared = await sm.clear(info.id)
+    expect(cleared).toBeDefined()
+    const newHandle = mockHandles[mockHandles.length - 1]
+    expect(newHandle.options.taskBudget).toEqual({ total: 64000 })
+  })
+
+  it('setTaskBudget() works on a dormant session (pure local intent, no SDK contact)', async () => {
+    const info = await sm.create({})
+    await sm.setTaskBudget(info.id, { total: 64000 })
+    // Unload the session so it goes dormant — the budget edit targets the
+    // NEXT spawn, so the dormant state must not 410 the write.
+    await sm.unload(info.id)
+    const updated = await sm.setTaskBudget(info.id, { total: 96000 })
+    expect(updated.taskBudget).toEqual({ total: 96000 })
+    // The respawn picks the intent up.
+    await sm.resume(info.id)
+    expect(mockHandles[mockHandles.length - 1].options.taskBudget).toEqual({ total: 96000 })
+  })
+
   it('start-as agent rides create into the SDK + meta; fork carries it while enabled, drops it when disabled', async () => {
     const defs: Record<string, { enabled: boolean }> = { reviewer: { enabled: true } }
     const agentStore = {

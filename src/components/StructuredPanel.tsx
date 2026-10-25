@@ -22,6 +22,7 @@ const PERMISSION_MODES: { value: StructuredPermissionMode; label: string }[] = [
   { value: 'default', label: 'Default (read: auto-allow, risky: denied)' },
   { value: 'acceptEdits', label: 'Accept edits' },
   { value: 'dontAsk', label: 'Don’t ask (deny unless pre-approved)' },
+  { value: 'auto', label: 'Auto (model classifier)' },
   { value: 'bypassPermissions', label: 'Bypass permissions (dangerous)' },
 ]
 

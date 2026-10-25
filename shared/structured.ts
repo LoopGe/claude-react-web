@@ -3,21 +3,24 @@
 // return the parsed JSON. Browser-safe, SDK-agnostic — the server narrows the
 // provider's SDK result through coerceStructuredOutput before it goes over the
 // wire, so the client renders a guaranteed-clean shape.
+import type { SdkAgentPermissionMode } from './permission-modes.js'
 
-/** Permission mode for a structured run. Deliberately NOT the full SDK
- *  PermissionMode set:
- *   - `'plan'` is excluded — plan mode terminates via ExitPlanMode, which the
- *     headless one-shot has no answerer for (it would block to the timeout,
- *     never producing a `result` frame).
- *   - `'auto'` is excluded for now (model-classifier decisions; a possible
- *     future enhancement).
- *  `'bypassPermissions'` is allowed but requires the SDK's
- *  `allowDangerouslySkipPermissions` guard, set by the provider. */
-export type StructuredPermissionMode =
-  | 'default'
-  | 'acceptEdits'
-  | 'bypassPermissions'
-  | 'dontAsk'
+/** Permission mode for a structured run: the shared user-selectable surface
+ *  minus `'plan'` — plan mode terminates via ExitPlanMode, which the headless
+ *  one-shot has no answerer for (it would block to the timeout, never
+ *  producing a `result` frame). Derived (not hand-copied) so a new SDK mode
+ *  landing in USER_SELECTABLE_PERMISSION_MODES propagates here automatically.
+ *  `'auto'` rides the CLI's own classifier under the provider's
+ *  `permissionPrompts: 'none'` denial surface (rules / hooks / auto-mode
+ *  still decide — anything that would otherwise prompt is denied, so the
+ *  run stays guaranteed to terminate; runtime-verified against the SDK's
+ *  bundled CLI). `'bypassPermissions'` requires the SDK's
+ *  `allowDangerouslySkipPermissions` guard, set by the provider.
+ *
+ *  Review checkpoint: the derivation auto-propagates future SDK modes. When a
+ *  new mode needs an interactive answerer (as 'plan' does), exclude it
+ *  explicitly here instead of trusting the derivation. */
+export type StructuredPermissionMode = Exclude<SdkAgentPermissionMode, 'plan'>
 
 export interface StructuredRunRequest {
   /** The instruction to run (the agent executes tools to reach it). */

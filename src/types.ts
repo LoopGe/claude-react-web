@@ -121,6 +121,10 @@ export interface NewSessionForm {
   fallbackModel?: string
   maxBudgetUsd?: number
   thinking?: 'adaptive' | 'enabled' | 'disabled' | { type: 'enabled'; budgetTokens: number }
+  /** API-side task budget in tokens (SDK Options.taskBudget). Spawn-time
+   *  only — the model is made aware of its remaining budget so it can pace
+   *  tool use and wrap up before the limit. */
+  taskBudget?: { total: number }
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   tools?: string[]
   /** Names of global MCP servers to enable for this session. */

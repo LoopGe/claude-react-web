@@ -376,6 +376,11 @@ export interface Session {
    *  Persisted, re-applied on respawn via Options.thinking. Undefined means
    *  no explicit choice (SDK/model default). */
   thinking?: ThinkingSetting
+  /** User intent: API-side task budget in tokens (SDK Options.taskBudget).
+   *  Persisted, re-applied on respawn via Options.taskBudget — pure
+   *  spawn-time key (no Settings entry, no control method), so a running
+   *  session is never contacted. */
+  taskBudget?: { total: number }
   /** Whether the CURRENT model supports extended thinking at all — keyword
    *  classified from the model id (effort-capability.ts), NOT from the SDK's
    *  supportedModels report (untrustworthy on gateways). Three-state:

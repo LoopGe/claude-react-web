@@ -416,6 +416,10 @@ export class ClaudeProvider implements AgentProvider {
         sdkOptions.thinking = opts.thinking as Options['thinking']
       }
     }
+    // Task budget is a first-class spawn-time option, like thinking — pure
+    // Options.taskBudget, no Settings key and no control method to re-apply
+    // it post-spawn (see providers/types.ts).
+    if (opts.taskBudget !== undefined) sdkOptions.taskBudget = opts.taskBudget
     // Enable prompt suggestions by default — nearly free (piggybacks on
     // prompt cache) and provides a useful UX affordance.
     sdkOptions.promptSuggestions = opts.promptSuggestions ?? true
@@ -654,7 +658,12 @@ export class ClaudeProvider implements AgentProvider {
     // same SDK PermissionMode. Absent must pin 'default', not omit — see
     // SDK_FORWARDED_PERMISSION_MODES in permission-modes.ts for the rationale
     // (an omitted mode would let the CLI's auto classifier allow tools past
-    // the permissionPrompts:'none' denial surface below).
+    // the permissionPrompts:'none' denial surface below). An EXPLICIT 'auto'
+    // is the supported way to opt into that classifier headless: the
+    // classifier, not a prompt, is the answerer, so the run still terminates
+    // (runtime-verified: a Write under auto + permissionPrompts:'none' is
+    // classifier-approved and executes; see StructuredPermissionMode in
+    // shared/structured.ts).
     sdkOptions.permissionMode = permissionMode ?? 'default'
     if (permissionMode === 'bypassPermissions') {
       // bypass requires the SDK's explicit guard — the enum alone is not

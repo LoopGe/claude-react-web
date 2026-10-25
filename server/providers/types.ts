@@ -27,6 +27,12 @@ export interface CreateSessionOptions {
   /** Per-session extended-thinking config (SDK Options.thinking at spawn;
    *  Query.setMaxThinkingTokens for runtime changes). */
   thinking?: ThinkingSetting
+  /** Per-session API-side task budget in tokens (SDK Options.taskBudget,
+   *  @alpha — the model is made aware of its remaining budget so it can pace
+   *  tool use and wrap up before the limit). Pure spawn-time key: not in
+   *  Settings (applyFlagSettings cannot carry it) and Query has no control
+   *  method, so it reaches a session only here at spawn. */
+  taskBudget?: { total: number }
   /** Per-session auto-compact window intent in absolute tokens (SDK
    *  Settings.autoCompactWindow). No spawn-time Options equivalent — the
    *  provider re-applies it post-spawn via applyFlagSettings, like

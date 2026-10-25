@@ -203,6 +203,28 @@ describe('SessionStore', () => {
     expect(store2.get('a')?.firstPartyTools).toEqual({ 'git-tools': false })
   })
 
+  it('round-trips taskBudget across upsert + reload', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { taskBudget: { total: 64000 } }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    expect(store2.get('a')?.taskBudget).toEqual({ total: 64000 })
+  })
+
+  it('collapses a malformed persisted taskBudget to undefined on load', async () => {
+    const store = new SessionStore({ stateDir: dir })
+    await store.load()
+    store.upsert(makeMeta('a', { taskBudget: { total: -5 } as unknown as { total: number } }))
+    await store.flush()
+
+    const store2 = new SessionStore({ stateDir: dir })
+    await store2.load()
+    expect(store2.get('a')?.taskBudget).toBeUndefined()
+  })
+
   it('migrates a pre-rename apptools firstPartyTools key to git-tools on load', async () => {
     // Write the old key straight to disk so coerceMeta's migration is what
     // heals it — the rename must not silently re-enable a pin the user set.

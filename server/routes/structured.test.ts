@@ -83,6 +83,16 @@ describe('structured route', () => {
     expect(res.status).toBe(400)
   })
 
+  it('accepts auto mode (the CLI classifier decides; see runStructured)', async () => {
+    const { app } = makeApp(() => ({ ok: true, structuredOutput: { result: 'x' } }))
+    const res = await app.request('/structured', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...VALID, permissionMode: 'auto' }),
+    })
+    expect(res.status).toBe(200)
+  })
+
   it('rejects malformed JSON body', async () => {
     const { app } = makeApp()
     const res = await app.request('/structured', {

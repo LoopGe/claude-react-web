@@ -131,6 +131,15 @@ describe('ClaudeProvider.runStructured', () => {
     expect(call.options.canUseTool).toBeUndefined()
   })
 
+  it("forwards 'auto' verbatim and keeps the permissionPrompts:'none' denial surface", async () => {
+    queryMock.mockImplementation(makeGenerator([resultSuccess()]))
+    await makeProvider().runStructured({ ...REQ, permissionMode: 'auto' })
+    const [call] = queryMock.mock.calls[0]
+    expect(call.options.permissionMode).toBe('auto')
+    expect(call.options.permissionPrompts).toBe('none')
+    expect(call.options.allowDangerouslySkipPermissions).toBeUndefined()
+  })
+
   it('uses permissionPrompts:none for non-bypass modes so permissioned calls never hang', async () => {
     queryMock.mockImplementation(makeGenerator([resultSuccess()]))
     await makeProvider().runStructured({ ...REQ, permissionMode: 'default' })

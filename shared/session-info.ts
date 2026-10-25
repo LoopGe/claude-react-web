@@ -120,6 +120,20 @@ export function coerceThinkingSetting(v: unknown): ThinkingSetting | undefined {
   return undefined
 }
 
+/** Parse a free-text task-budget input into the wire shape. Three outcomes,
+ *  deliberately distinct so an edit never silently destroys a persisted
+ *  value: `undefined` = the field was emptied (a deliberate clear), a
+ *  `{ total }` = a valid positive whole number (exponent notation like
+ *  "1e4" parses as 10000 — never parseInt), `null` = non-empty garbage the
+ *  caller must surface (toast) instead of treating as a clear. */
+export function parseTaskBudgetInput(s: string): { total: number } | undefined | null {
+  const trimmed = s.trim()
+  if (trimmed === '') return undefined
+  const n = Math.round(Number(trimmed))
+  if (!Number.isFinite(n) || n <= 0) return null
+  return { total: n }
+}
+
 /** One plugin that failed to load at CLI startup (SDK `system/init`
  *  `plugin_errors` entry, SDK 0.3.295). Shape mirrors the SDK fields; the
  *  client renders `plugin` / `type` / `message` defensively. */
@@ -234,7 +248,10 @@ export interface SessionInfoBase<PM = string> {
   /** User intent: extended-thinking configuration for this session.
    *  Undefined means no explicit choice (SDK/model default). Persisted. */
   thinking?: ThinkingSetting
-  /** Whether the current model supports thinking at all (keyword-classified
+  /** User intent: API-side task budget in tokens (SDK Options.taskBudget).
+   *  Pure spawn-time key — a change reaches the subprocess only on the next
+   *  spawn (resume / fork / respawn), never mid-run. Persisted. */
+  taskBudget?: { total: number }  /** Whether the current model supports thinking at all (keyword-classified
    *  from the model id, like effortLevels — the SDK's report is untrustworthy
    *  on gateway deployments). undefined = unknown → UI shows the chip;
    *  false = hide it. Not persisted. */
