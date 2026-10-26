@@ -1,11 +1,17 @@
 import { promises as fs } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join, relative, sep } from 'node:path'
-import { parseOwnerRepo, type DiscoveredSkill, type RemoteSearchHit } from '../shared/skills.js'
+import { basename, join, relative, resolve, sep } from 'node:path'
+import {
+  parseOwnerRepo,
+  type DiscoveredSkill,
+  type RemoteInstallRequest,
+  type RemoteInstallResponse,
+  type RemoteSearchHit,
+} from '../shared/skills.js'
 import { HttpError } from './errors.js'
 import { gitClone } from './git-clone.js'
 import { createLogger } from './log.js'
-import { MAX_SKILL_BYTES, parseSkillFrontmatter } from './skills.js'
+import { importSkillFromPath, MAX_SKILL_BYTES, parseSkillFrontmatter } from './skills.js'
 
 /** Directory names never entered while walking a skill tree. */
 export const SKIP_DIRS = [
@@ -175,4 +181,81 @@ export async function searchCatalog(q: string, limit: number): Promise<RemoteSea
   })
   hits.sort((a, b) => b.installs - a.installs)
   return hits
+}
+
+// ── Remote install: stage + import ─────────────────────────────────────────
+
+/**
+ * Copy one discovered skill directory out of a clone tree into `destDir`,
+ * dropping `SKIP_DIRS` subtrees (a root-level skill's `.git` / `node_modules`
+ * must not reach the import). `relativePath: ''` stages the clone root itself.
+ * The copy is a staging step — the real install goes through
+ * `importSkillFromPath`.
+ */
+export async function stageSkillInto(
+  cloneDir: string,
+  relativePath: string,
+  destDir: string,
+): Promise<void> {
+  const src = resolve(cloneDir, relativePath)
+  const rel = relative(cloneDir, src)
+  if (rel.startsWith('..')) {
+    throw new HttpError(400, 'path escapes the repository')
+  }
+  await fs.cp(src, destDir, {
+    recursive: true,
+    filter: (candidate) => {
+      // Filter against the copied root's own tree only, so a SKIP_DIRS name
+      // somewhere in the temp path can't exclude the root itself.
+      const relToSrc = relative(src, candidate)
+      if (relToSrc === '') return true
+      return relToSrc.split(sep).every((segment) => !SKIP_DIR_SET.has(segment))
+    },
+  })
+}
+
+/**
+ * Install skills out of a GitHub repo into the real skill root. Each selected
+ * `relativePath` is staged into a throwaway temp dir and imported via the
+ * existing `importSkillFromPath`, so remote installs land exactly where
+ * "Install from folder" puts them. Failures are per-skill: one bad entry is
+ * reported in `failed` and the rest of the batch continues.
+ */
+export async function installRemoteSkills(
+  req: RemoteInstallRequest,
+): Promise<RemoteInstallResponse> {
+  if (!req.paths?.length) throw new HttpError(400, 'paths is required')
+  const { dir } = await cloneAndDiscover(req.source)
+  const skills = await discoverSkills(dir)
+
+  const installed: RemoteInstallResponse['installed'] = []
+  const failed: RemoteInstallResponse['failed'] = []
+  for (const p of req.paths) {
+    const entry = skills.find((s) => s.relativePath === p)
+    if (!entry) {
+      failed.push({ name: p, relativePath: p, error: 'Not found in repository' })
+      continue
+    }
+    let staged: string | undefined
+    try {
+      staged = await fs.mkdtemp(join(tmpdir(), 'crw-skill-stage-'))
+      await stageSkillInto(dir, p, staged)
+      // name: entry.name is required — the staging dir is an mkdtemp random
+      // name, so without it a skill with no frontmatter.name would install as
+      // `crw-skill-stage-…` instead of the name discovery reported.
+      const result = await importSkillFromPath({
+        scope: req.scope,
+        cwd: req.cwd,
+        path: staged,
+        name: entry.name,
+        overwrite: req.overwrite,
+      })
+      installed.push({ name: result.skill.name, relativePath: p })
+    } catch (err) {
+      failed.push({ name: entry.name, relativePath: p, error: (err as Error).message })
+    } finally {
+      if (staged) await fs.rm(staged, { recursive: true, force: true })
+    }
+  }
+  return { installed, failed }
 }

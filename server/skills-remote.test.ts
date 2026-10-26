@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { gitClone } from './git-clone.js'
-import { cloneAndDiscover, discoverSkills, searchCatalog } from './skills-remote.js'
+import {
+  cloneAndDiscover,
+  discoverSkills,
+  installRemoteSkills,
+  searchCatalog,
+  stageSkillInto,
+} from './skills-remote.js'
 import { rmRf } from './__test-utils__/index.js'
 
 // git-clone is mocked so no test touches the network or a real git binary.
@@ -250,5 +256,256 @@ describe('searchCatalog', () => {
   it('throws when skills.sh responds non-2xx', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('down', { status: 503 })))
     await expect(searchCatalog('react', 20)).rejects.toThrow(/status 503/)
+  })
+})
+
+// ── Remote install: stage + import ─────────────────────────────────────────
+//
+// installRemoteSkills is tested against the REAL importSkillFromPath (project
+// scope writes to `join(cwd, '.claude', 'skills')` — a throwaway cwd, so the
+// user's real skill root is never touched) with a mocked gitClone that
+// materialises a fixture tree as the clone.
+
+/** Point the mocked gitClone at a fixture tree: it builds gitClone's
+ *  destination (the clone root) as a copy of `fixtureDir`, honouring
+ *  gitClone's contract that dest must not already exist. */
+function mockCloneFrom(fixtureDir: string): void {
+  vi.mocked(gitClone).mockImplementation(async (_url: string, dest: string) => {
+    if (existsSync(dest)) throw new Error(`gitClone dest already exists: ${dest}`)
+    await cp(fixtureDir, dest, { recursive: true })
+  })
+}
+
+/** Drop the throwaway clone tree this test's mocked gitClone created.
+ *  beforeEach's mockClear() keeps calls scoped to the test that just ran. */
+function cleanupClones(): void {
+  for (const call of vi.mocked(gitClone).mock.calls) {
+    rmRf(dirname(call[1]!))
+  }
+}
+
+describe('stageSkillInto', () => {
+  it('rejects a relativePath that escapes the clone dir', async () => {
+    const cloneDir = await mkdtemp(join(tmpdir(), 'stage-clone-'))
+    const destDir = await mkdtemp(join(tmpdir(), 'stage-dest-'))
+    try {
+      await writeSkill(cloneDir, 'skills/good', skillDoc({ name: 'good', description: 'ok' }))
+      await expect(stageSkillInto(cloneDir, '../outside', destDir)).rejects.toThrow(/escapes/)
+      await expect(stageSkillInto(cloneDir, 'skills/../../outside', destDir)).rejects.toThrow(/escapes/)
+    } finally {
+      rmRf(cloneDir)
+      rmRf(destDir)
+    }
+  })
+
+  it('allows the clone root itself (relativePath "")', async () => {
+    const cloneDir = await mkdtemp(join(tmpdir(), 'stage-clone-'))
+    const destDir = await mkdtemp(join(tmpdir(), 'stage-dest-'))
+    try {
+      await writeSkill(cloneDir, '', skillDoc({ name: 'root', description: 'ok' }))
+      await writeFile(join(cloneDir, 'notes.md'), 'hi')
+      await stageSkillInto(cloneDir, '', destDir)
+      expect(existsSync(join(destDir, 'SKILL.md'))).toBe(true)
+      expect(existsSync(join(destDir, 'notes.md'))).toBe(true)
+    } finally {
+      rmRf(cloneDir)
+      rmRf(destDir)
+    }
+  })
+})
+
+describe('installRemoteSkills', () => {
+  /** Fixture tree (what the mocked clone materialises) + project cwd (the
+   *  real importSkillFromPath target). One pair per test. */
+  async function installEnv(): Promise<{
+    fixture: string
+    cwd: string
+    cleanup: () => Promise<void>
+  }> {
+    const fixture = await mkdtemp(join(tmpdir(), 'install-fixture-'))
+    const cwd = await mkdtemp(join(tmpdir(), 'install-cwd-'))
+    return {
+      fixture,
+      cwd,
+      cleanup: async () => {
+        rmRf(fixture)
+        rmRf(cwd)
+        cleanupClones()
+      },
+    }
+  }
+
+  it('stages a root-level skill without .git or node_modules', async () => {
+    const env = await installEnv()
+    try {
+      await writeSkill(env.fixture, '', skillDoc({ name: 'root-skill', description: 'Root skill' }))
+      await mkdir(join(env.fixture, '.git'), { recursive: true })
+      await writeFile(join(env.fixture, '.git', 'config'), '[core]', 'utf8')
+      await mkdir(join(env.fixture, 'node_modules', 'x'), { recursive: true })
+      await writeFile(join(env.fixture, 'node_modules', 'x', 'index.js'), 'module.exports = 1', 'utf8')
+      await writeFile(join(env.fixture, 'notes.md'), '# notes', 'utf8')
+      mockCloneFrom(env.fixture)
+
+      const res = await installRemoteSkills({
+        source: 'root-owner/root-repo',
+        scope: 'project',
+        cwd: env.cwd,
+        paths: [''],
+      })
+      expect(res.failed).toEqual([])
+      expect(res.installed).toEqual([{ name: 'root-skill', relativePath: '' }])
+      const installedDir = join(env.cwd, '.claude', 'skills', 'root-skill')
+      expect(existsSync(join(installedDir, 'notes.md'))).toBe(true)
+      expect(existsSync(join(installedDir, '.git'))).toBe(false)
+      expect(existsSync(join(installedDir, 'node_modules'))).toBe(false)
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('continues past a failing skill and reports it in failed[]', async () => {
+    const env = await installEnv()
+    try {
+      // `skills/bad` exists but has no SKILL.md. It comes first in `paths` so
+      // the batch has to survive the failure to reach the good skill.
+      await mkdir(join(env.fixture, 'skills', 'bad'), { recursive: true })
+      await writeFile(join(env.fixture, 'skills', 'bad', 'notes.md'), 'no skill here', 'utf8')
+      await writeSkill(env.fixture, 'skills/good', skillDoc({ name: 'good', description: 'ok' }))
+      mockCloneFrom(env.fixture)
+
+      const res = await installRemoteSkills({
+        source: 'mixed-owner/mixed-repo',
+        scope: 'project',
+        cwd: env.cwd,
+        paths: ['skills/bad', 'skills/good'],
+      })
+      expect(res.installed).toEqual([{ name: 'good', relativePath: 'skills/good' }])
+      expect(res.failed).toHaveLength(1)
+      expect(res.failed[0]!.relativePath).toBe('skills/bad')
+      expect(res.failed[0]!.error).not.toBe('')
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('records an import failure without aborting the batch', async () => {
+    const env = await installEnv()
+    try {
+      // Discovered (SKILL.md present) but importSkillFromPath rejects it:
+      // frontmatter.description is required for a real import.
+      await writeSkill(env.fixture, 'skills/bad', skillDoc({ name: 'bad' }))
+      await writeSkill(env.fixture, 'skills/good', skillDoc({ name: 'good', description: 'ok' }))
+      mockCloneFrom(env.fixture)
+
+      const res = await installRemoteSkills({
+        source: 'badfm-owner/badfm-repo',
+        scope: 'project',
+        cwd: env.cwd,
+        paths: ['skills/bad', 'skills/good'],
+      })
+      expect(res.installed).toEqual([{ name: 'good', relativePath: 'skills/good' }])
+      expect(res.failed).toHaveLength(1)
+      expect(res.failed[0]).toEqual({
+        name: 'bad',
+        relativePath: 'skills/bad',
+        error: expect.stringContaining('description'),
+      })
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('reports Skill already exists per-skill when overwrite is false', async () => {
+    const env = await installEnv()
+    try {
+      await writeSkill(env.fixture, 'skills/dupe', skillDoc({ name: 'dupe', description: 'ok' }))
+      mockCloneFrom(env.fixture)
+
+      const first = await installRemoteSkills({
+        source: 'exists-owner/exists-repo',
+        scope: 'project',
+        cwd: env.cwd,
+        paths: ['skills/dupe'],
+      })
+      expect(first).toEqual({ installed: [{ name: 'dupe', relativePath: 'skills/dupe' }], failed: [] })
+
+      const second = await installRemoteSkills({
+        source: 'exists-owner/exists-repo',
+        scope: 'project',
+        cwd: env.cwd,
+        paths: ['skills/dupe'],
+        overwrite: false,
+      })
+      expect(second.installed).toEqual([])
+      expect(second.failed).toHaveLength(1)
+      expect(second.failed[0]!.error).toContain('already exists')
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('installs two skills that share a frontmatter name by relativePath', async () => {
+    const env = await installEnv()
+    try {
+      await writeSkill(env.fixture, 'skills/a', skillDoc({ name: 'dup', description: 'A' }))
+      await writeFile(join(env.fixture, 'skills', 'a', 'only-a.txt'), 'a', 'utf8')
+      await writeSkill(env.fixture, 'skills/b', skillDoc({ name: 'dup', description: 'B' }))
+      await writeFile(join(env.fixture, 'skills', 'b', 'only-b.txt'), 'b', 'utf8')
+      mockCloneFrom(env.fixture)
+
+      const res = await installRemoteSkills({
+        source: 'dup-owner/dup-repo',
+        scope: 'project',
+        cwd: env.cwd,
+        paths: ['skills/a', 'skills/b'],
+        overwrite: true,
+      })
+      expect(res.failed).toEqual([])
+      // Both resolve to the same install name ('dup' from frontmatter); the
+      // second only succeeds because overwrite:true replaced the first.
+      expect(res.installed).toEqual([
+        { name: 'dup', relativePath: 'skills/a' },
+        { name: 'dup', relativePath: 'skills/b' },
+      ])
+      const installedDir = join(env.cwd, '.claude', 'skills', 'dup')
+      expect(existsSync(join(installedDir, 'only-b.txt'))).toBe(true)
+      expect(existsSync(join(installedDir, 'only-a.txt'))).toBe(false)
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('rejects an empty paths array', async () => {
+    const env = await installEnv()
+    try {
+      await expect(
+        installRemoteSkills({ source: 'a/b', scope: 'project', cwd: env.cwd, paths: [] }),
+      ).rejects.toThrow(/paths/)
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('reports an unknown relativePath as not found', async () => {
+    const env = await installEnv()
+    try {
+      await writeSkill(env.fixture, 'skills/good', skillDoc({ name: 'good', description: 'ok' }))
+      mockCloneFrom(env.fixture)
+
+      const res = await installRemoteSkills({
+        source: 'unknown-owner/unknown-repo',
+        scope: 'project',
+        cwd: env.cwd,
+        paths: ['../outside'],
+      })
+      expect(res.installed).toEqual([])
+      // The discovery lookup runs first, so an escaping path never reaches
+      // stageSkillInto; stageSkillInto's containment check is defense-in-depth.
+      expect(res.failed).toEqual([
+        { name: '../outside', relativePath: '../outside', error: 'Not found in repository' },
+      ])
+    } finally {
+      await env.cleanup()
+    }
   })
 })
