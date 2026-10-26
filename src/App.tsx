@@ -553,7 +553,7 @@ export function App() {
 
   /** Desktop sidebar hide/show. Persisted so a reload restores the state;
    *  expanding keeps the drag-resized width (see --sidebar-width below). */
-  const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage<boolean>(SIDEBAR_COLLAPSED_KEY, false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage<boolean>(SIDEBAR_COLLAPSED_KEY, true)
 
   // Groups are optional — sessions without a group appear in the
   // "Ungrouped" sidebar section. No default group is auto-created.
