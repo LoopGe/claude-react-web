@@ -960,6 +960,26 @@ describe('GlobalSettingsModal Skills remote install', () => {
     await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith('/skills/remote/install', expect.anything())
   })
+
+  it('shows a target-project selector defaulting to the server default cwd', async () => {
+    const input = await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+    expect(input).toBeTruthy()
+    const select = screen.getByLabelText('Target project') as HTMLSelectElement
+    expect(select.value).toBe('/work/proj')
+    expect(select.disabled).toBe(false)
+    // Resolved target hint is visible in project scope.
+    expect(screen.getByText('/work/proj/.claude/skills')).toBeTruthy()
+  })
+
+  it('disables the target selector in user scope', async () => {
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+    const userBtn = screen.getByRole('button', { name: 'User' })
+    fireEvent.click(userBtn)
+    const select = screen.getByLabelText('Target project') as HTMLSelectElement
+    expect(select.disabled).toBe(true)
+    // Hint disappears — user scope has no per-project target.
+    expect(screen.queryByText('/work/proj/.claude/skills')).toBeNull()
+  })
 })
 
 describe('GlobalSettingsModal Skills preview modal', () => {

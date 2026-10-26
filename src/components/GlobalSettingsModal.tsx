@@ -3,7 +3,11 @@
 
 import { cloneElement, isValidElement, lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
+import { useLocalStorage } from '../hooks/useLocalStorage'
 import { getHostCapabilities } from '../host-capabilities'
+import { clamp } from '../utils/clamp'
+import { RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../constants/recentKeys'
+import { isStringArray } from '../../shared/type-guards'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { IconX, IconCheck, IconChevronDown, IconFolder, IconRefresh, IconFileText, IconSparkles, IconTerminal, IconSearch } from './icons/ToolIcons'
@@ -1464,7 +1468,7 @@ function BatchPickerModal({
 
 
 function SkillsTab({
-  cwd,
+  cwd: defaultCwd,
   skillLoadMode,
   enabledSkills,
   onSkillLoadModeChange,
@@ -1491,6 +1495,22 @@ function SkillsTab({
   // Source of the batch picker the remote section's Browse / Open repository
   // buttons request. Non-null mounts <BatchPickerModal> over this tab.
   const [pickerSource, setPickerSource] = useState<string | null>(null)
+  // Target project for project-scope installs. `defaultCwd` is the server
+  // default (config `defaults.cwd`); the override is what the user picked
+  // here. Null until an explicit pick, so a config reload still wins until
+  // then.
+  const [cwdOverride, setCwdOverride] = useState<string | null>(null)
+  const cwd = cwdOverride ?? defaultCwd
+  // Recent projects — the SAME MRU list the New Session dialog offers, so a
+  // project used there is pickable here and vice versa.
+  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
+  const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
+  const recentCwdsCap = clamp(Math.round(recentCwdsCapRaw), 3, 50)
+  const rememberCwd = (raw: string) => {
+    const v = raw.trim()
+    if (!v) return
+    setRecentCwds((prev) => [v, ...prev.filter((x) => x !== v)].slice(0, recentCwdsCap))
+  }
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const directoryInputProps = { webkitdirectory: '', directory: '' } as Record<string, string>
 
@@ -1740,6 +1760,23 @@ function SkillsTab({
                 User
               </button>
             </div>
+            <div className="settings-skill-target">
+              <select
+                className="input"
+                aria-label="Target project"
+                value={cwd}
+                disabled={importScope === 'user'}
+                onChange={(e) => setCwdOverride(e.target.value)}
+              >
+                {!recentCwds.includes(cwd) && <option value={cwd}>{cwd}</option>}
+                {recentCwds.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            {importScope === 'project' && (
+              <div className="settings-skill-target-hint">{`${cwd}/.claude/skills`}</div>
+            )}
             <input className="input" placeholder="Optional import name" aria-label="Import name" value={importName} onChange={(e) => setImportName(e.target.value)} />
             <label className="settings-skill-overwrite"><input type="checkbox" checked={overwriteImport} onChange={(e) => setOverwriteImport(e.target.checked)} /> Replace existing</label>
           </div>

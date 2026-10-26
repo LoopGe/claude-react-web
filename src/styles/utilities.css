@@ -3253,6 +3253,28 @@ input[type="checkbox"]:disabled {
 .settings-scope-btn.active::after {
   display: none;
 }
+/* Target-project selector for project-scope skill installs (Skills tab). */
+.settings-skill-target {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.settings-skill-target .input {
+  min-width: 0;
+  max-width: 340px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+.settings-skill-target-hint {
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 .settings-skill-overwrite {
   display: inline-flex;
   align-items: center;
