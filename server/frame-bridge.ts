@@ -498,9 +498,16 @@ export class SessionConnection {
       const known = this.sm.get(sessionId)
       // A deliberately-slept session must not be woken behind the
       // user's back by a reconnecting subscriber — only an explicit
-      // resume should wake it. It falls through to the error path
-      // below, same as any other not-loaded session.
-      //
+      // resume should wake it. But it must not be reported as "not
+      // found" either: get() found it in the store, the user has it in
+      // their sidebar, and the 404 from subscribe()→require() (live map
+      // only) reads as "the session vanished". Same trap door as the
+      // spawn_failed guard below: say what actually happened.
+      if (known.slept && !known.running) {
+        throw new Error(
+          `session ${sessionId} is asleep — resume it to continue`,
+        )
+      }
       // A spawn_failed session is the same story, with higher stakes:
       // unloadSpawnFailed returns it to dormant, so without this guard
       // every subscribe (reconnect, panel remount, StrictMode) re-arms

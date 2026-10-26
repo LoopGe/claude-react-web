@@ -128,7 +128,7 @@ import type { AnimationSpeedPreset } from '../shared/animation-speed'
 import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_SCALE, MOTION_DURATION_TOKENS } from '../shared/animation-speed'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
-import { inheritGroupId, inheritSidebarOrderId, joinGroupOfSource } from './utils/session-slot'
+import { evictFromGroups, inheritGroupId, inheritSidebarOrderId, joinGroupOfSource, placeInGroupId } from './utils/session-slot'
 import { resetCompletion } from './utils/reset-completion'
 import { buildNewLikeThisForm } from './utils/new-like-this'
 import { notificationTooltip } from './utils/notifications'
@@ -766,6 +766,10 @@ export function App() {
   // which are also length-preserving 1-for-1 openIds changes but genuine
   // closes that should play the ghost.
   const justSwappedInRef = useRef<Set<string>>(new Set())
+  // group id a session was evicted from, kept briefly so a late /clear
+  // replacement (session-created(Y) after session-removed(X) already tore X
+  // out of the group) can still land in the right group. Keyed by source id.
+  const evictedFromGroupRef = useRef<Map<string, string>>(new Map())
   // Forward-declared ref for `teardownRemovedSession` (declared later, after
   // its deps). The WS `session-removed` handler (in an effect above) calls it
   // via this ref to avoid a use-before-declaration; synced at render time
@@ -1244,9 +1248,28 @@ export function App() {
             // immediately; the maxGroupSize cap stands and handleAddToGroup can
             // toast on overflow.
             if (frame.evictingSource === true) {
-              // /clear + restart: swapSession/teardown places Y — nothing to do here.
+              // /clear + restart: swapSession/teardown places Y — nothing to do
+              // here WHEN X IS STILL GROUPED (the common path; the pending
+              // marker hides Y until the POST swap runs). But if session-removed
+              // already tore X out of the group (cross-tab, or the WS raced the
+              // POST), swapSession/teardown can no longer find X — place Y now
+              // via the group id recorded at eviction so it is not stranded.
+              // Resolve the marker BEFORE the updater (StrictMode double-invoke
+              // would otherwise consume it on the first pass).
+              const evictedGid = evictedFromGroupRef.current.get(joinGroupOf)
+              if (evictedGid) evictedFromGroupRef.current.delete(joinGroupOf)
+              setGroups((prev) => {
+                if (prev.some((g) => g.sessionIds.includes(joinGroupOf))) return prev
+                return evictedGid ? placeInGroupId(prev, evictedGid, sid) : prev
+              })
             } else if (frame.replacesSource === true) {
-              setGroups((prev) => inheritGroupId(prev, joinGroupOf, sid))
+              const evictedGid = evictedFromGroupRef.current.get(joinGroupOf)
+              if (evictedGid) evictedFromGroupRef.current.delete(joinGroupOf)
+              setGroups((prev) => {
+                const swapped = inheritGroupId(prev, joinGroupOf, sid)
+                if (swapped !== prev) return swapped
+                return evictedGid ? placeInGroupId(prev, evictedGid, sid) : prev
+              })
               setSidebarOrder((prev) => inheritSidebarOrderId(prev, joinGroupOf, sid))
             } else {
               setGroups((prev) =>
@@ -1527,7 +1550,21 @@ export function App() {
         // the openIds render-phase sync.
         setPanelCache((prev) => evictFromCache(prev, [oldId]))
         setFocusedId((prev) => (prev === oldId ? newId : prev))
-        setGroups((prev) => inheritGroupId(prev, oldId, newId))
+        // Atomic X→Y: drop X and put Y in its slot in ONE update. If X is
+        // already gone (session-removed teardown beat the POST response),
+        // fall back to the group id recorded when X was evicted so Y still
+        // lands in the right group instead of being stranded ungrouped.
+        // The fallback must be resolved BEFORE the updater: React 18
+        // StrictMode double-invokes updaters and keeps the second result, so
+        // a ref read/delete inside the updater would find the marker already
+        // consumed on the second pass and commit the stranded no-op.
+        const evictedGid = evictedFromGroupRef.current.get(oldId)
+        evictedFromGroupRef.current.delete(oldId)
+        setGroups((prev) => {
+          const swapped = evictFromGroups(prev, oldId, newId)
+          if (swapped !== prev) return swapped
+          return evictedGid ? placeInGroupId(prev, evictedGid, newId) : prev
+        })
         setSidebarOrder((prev) => inheritSidebarOrderId(prev, oldId, newId))
         setLastSeenTurn((prev) => {
           const next = { ...prev }
@@ -1569,22 +1606,36 @@ export function App() {
   const teardownRemovedSession = useCallback(
     (id: string) => {
       // A cross-tab clear can deliver session-removed(X) after the created(Y)
-      // frame but before this tab has applied Y's inherited group. Preserve the
-      // replacement in X's group before removing X; otherwise clearing the
-      // pending marker below would make Y flash under Ungrouped.
+      // frame but before this tab has applied Y's inherited group. Place the
+      // replacement into X's slot and drop X in ONE group update — the old
+      // two-step (append Y, later filter X out) left a window where a frame
+      // handler saw "X gone, Y not yet placed" and stranded Y ungrouped.
       const pendingReplacements = [...pendingGroupInheritance].filter(([, pending]) => pending.sourceId === id)
-      if (pendingReplacements.length > 0) {
-        setGroups((prev) => {
-          let next = prev
-          for (const [newId, pending] of pendingReplacements) {
-            next = joinGroupOfSource(next, id, newId, {
-              evicting: pending.evicting,
-              maxGroupSize: maxGroupSizeRef.current,
-            })
-          }
-          return next
-        })
+      const replacementIds = pendingReplacements.map(([newId]) => newId)
+      const primaryReplacement = replacementIds[0]
+      // Resolve X's host group BEFORE the updater (StrictMode double-invoke
+      // would otherwise record it twice / see a stale view). Only record when
+      // a replacement actually exists — an ordinary delete must not leave an
+      // entry that a later re-created session of the same id could read.
+      if (primaryReplacement) {
+        const host = groups.find((g) => g.sessionIds.includes(id))
+        if (host) {
+          evictedFromGroupRef.current.set(id, host.id)
+          // Expire the marker so an unconsumed entry can't linger (and can't
+          // be read by a future session that reuses the id).
+          window.setTimeout(() => evictedFromGroupRef.current.delete(id), 30_000)
+        }
       }
+      setGroups((prev) => {
+        let next = evictFromGroups(prev, id, primaryReplacement)
+        // Any extra replacements (two forks of X whose group hadn't hydrated)
+        // join the same group so they aren't stranded ungrouped.
+        for (const extra of replacementIds.slice(1)) {
+          const host = next.find((g) => g.sessionIds.includes(primaryReplacement ?? '') || g.sessionIds.includes(extra))
+          if (host) next = placeInGroupId(next, host.id, extra)
+        }
+        return next
+      })
       setPendingGroupInheritance((prev) => {
         let changed = false
         const next = new Map(prev)
@@ -1622,15 +1673,6 @@ export function App() {
       turnActiveFnsRef.current.delete(id)
       scrollNavRegistry.delete(id)
       setSidebarOrder((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev))
-      setGroups((prev) => {
-        let changed = false
-        const next = prev.map((g) => {
-          if (!g.sessionIds.includes(id)) return g
-          changed = true
-          return { ...g, sessionIds: g.sessionIds.filter((sid) => sid !== id) }
-        })
-        return changed ? next : prev
-      })
       // Side chat: parent removed (cleanupSideChat) OR the side-chat session
       // itself was removed (inline — cleanupSideChat only covers the parent).
       cleanupSideChat(id)
@@ -1641,7 +1683,7 @@ export function App() {
         sessionStoreRegistry.delete(sideId)
       }
     },
-    [cleanupSideChat, pendingGroupInheritance, pruneSession, setGroups, setLastSeenTurn, setSidebarOrder, scrollNavRegistry],
+    [cleanupSideChat, groups, pendingGroupInheritance, pruneSession, setGroups, setLastSeenTurn, setSidebarOrder, scrollNavRegistry],
   )
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as animatePanelsRef): the WS session-removed handler (in an effect above) calls teardownRemovedSession via this ref.
   teardownRemovedSessionRef.current = teardownRemovedSession
