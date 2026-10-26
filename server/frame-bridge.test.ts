@@ -536,8 +536,30 @@ describe('SessionConnection (in-memory sink)', () => {
     send(conn, { kind: 'subscribe', sessionId: 's1' })
     await tick()
     expect(sm.resumed).toEqual([])
-    expect(sink.kinds('error')[0]).toMatchObject({ message: expect.stringMatching(/not found/i) })
     expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: false, reason: 'refused' })
+  })
+
+  it('REPRO: a slept session is refused with an "asleep" message, NOT "not found"', async () => {
+    // Log evidence 2026-10-26: a slept session still listed in a sidebar
+    // group reported `session X not found` on every subscribe —
+    //   at SessionManager.require → subscribe → frame-bridge.startSession:530
+    // get() found it in the store; slept=true correctly skipped auto-resume;
+    // then subscribe()→require() (live-map only) threw the generic 404.
+    // The session EXISTS. Telling the user "not found" is the bug — it must
+    // say the session is asleep and needs an explicit resume.
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: false, slept: true })
+    const { sink, conn } = setup(sm)
+    conn.start()
+
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    expect(sm.resumed).toEqual([]) // still must not auto-wake
+    const err = sink.kinds('error')[0] as { message?: string } | undefined
+    expect(err?.message).toBeDefined()
+    // FAILS today: the message is the same generic "not found" as an unknown id.
+    expect(err?.message).not.toMatch(/not found/i)
+    expect(err?.message).toMatch(/asleep|sleep|resume/i)
   })
 
   it('does NOT auto-resume a spawn_failed session — subscribe must not storm-respawn it', async () => {

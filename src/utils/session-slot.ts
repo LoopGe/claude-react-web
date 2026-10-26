@@ -108,6 +108,63 @@ export function joinGroupOfSource(
   return joinGroupId(groups, sourceId, newId)
 }
 
+/** Atomically drop `oldId` from every group, optionally putting `newId` in
+ *  its exact slot (the `/clear`/restart X→Y swap). One call so a pending
+ *  replacement can never be lost between "append Y" and "remove X" — the two
+ *  separate `setGroups` updates teardown used to run left a window where a
+ *  re-render (or a second frame handler) saw X gone and Y not yet placed.
+ *
+ *  - `replacementId` present → delegates the swap half to `inheritGroupId`
+ *    (REPLACE semantics, same slot arithmetic) so the two stay in sync.
+ *  - `replacementId` present and `oldId` in no group → no-op (returns input by
+ *    reference); the caller falls back to `placeInGroupId` / group-id recovery.
+ *  - `replacementId` absent → plain removal (returns a new array only when
+ *    something changed).
+ *  - `oldId === replacementId` is a full no-op. */
+export function evictFromGroups(
+  groups: SessionGroup[],
+  oldId: string,
+  replacementId?: string,
+): SessionGroup[] {
+  if (replacementId) return inheritGroupId(groups, oldId, replacementId)
+  let changed = false
+  const next = groups.map((g) => {
+    const i = g.sessionIds.indexOf(oldId)
+    if (i === -1) return g
+    changed = true
+    const ids = g.sessionIds.slice()
+    ids.splice(i, 1)
+    return { ...g, sessionIds: ids }
+  })
+  return changed ? next : groups
+}
+
+/** Put `newId` into the group with id `groupId` (append, or at `position`
+ *  when given). Used by the `/clear` swap fallback when X has already left
+ *  the group and only the remembered group id remains. Idempotent: an
+ *  already-member `newId` returns the input by reference.
+ *
+ *  - Unknown `groupId` → input by reference.
+ *  - `position` clamps to [0, length]. */
+export function placeInGroupId(
+  groups: SessionGroup[],
+  groupId: string,
+  newId: string,
+  position?: number,
+): SessionGroup[] {
+  let changed = false
+  const next = groups.map((g) => {
+    if (g.id !== groupId) return g
+    if (g.sessionIds.includes(newId)) return g
+    changed = true
+    const ids = g.sessionIds.slice()
+    const at = position === undefined ? ids.length : Math.max(0, Math.min(position, ids.length))
+    ids.splice(at, 0, newId)
+    return { ...g, sessionIds: ids }
+  })
+  return changed ? next : groups
+}
+
 /** Append `newId` to the same group that contains `oldId` (fork semantics:
  *  `oldId` stays, `newId` joins its group). Used by the `session-created`
  *  (`joinGroupOf`) handler so a forked session lands in its source's group
