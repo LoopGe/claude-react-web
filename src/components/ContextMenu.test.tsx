@@ -64,6 +64,26 @@ describe('ContextMenu', () => {
     expect(onClose).toHaveBeenCalledOnce()
   })
 
+  it('does not steal focus unless autoFocus is set (right-click menus keep the editor focused)', () => {
+    const items: ContextMenuItem[] = [{ label: 'Run', onClick: () => {} }]
+    const editor = document.createElement('textarea')
+    document.body.append(editor)
+    editor.focus()
+    render(<ContextMenu x={0} y={0} items={items} onClose={() => {}} />)
+    expect(document.activeElement).toBe(editor)
+    editor.remove()
+  })
+
+  it('autoFocus lands on the first enabled item with preventScroll', () => {
+    const items: ContextMenuItem[] = [
+      { label: 'Skip', disabled: true, onClick: () => {} },
+      { label: 'Run', onClick: () => {} },
+    ]
+    render(<ContextMenu x={0} y={0} items={items} onClose={() => {}} autoFocus />)
+    const enabled = document.querySelectorAll<HTMLButtonElement>('.ctx-menu-item')[1]
+    expect(document.activeElement).toBe(enabled)
+  })
+
   it('keeps the menu mounted through the exit animation, then unmounts (AnimatePresence)', async () => {
     // Open/close motion is now driven by motion.div + AnimatePresence (the
     // old isExiting/data-state="closing" prop is gone). Smoke test that

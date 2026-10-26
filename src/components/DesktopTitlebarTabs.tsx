@@ -2,21 +2,27 @@
 //
 // Windows/macOS custom chrome has no OS tab strip, so the open Chat panels
 // surface as tabs in the drag row: click focuses that panel, × closes it,
-// + starts a new session. The sidebar still lists ALL sessions — these tabs
-// mirror only what is currently open as a panel (openSessions).
+// + opens the create menu (New session… / New group…) — same two-step flow
+// as SessionNavStrip's leading +. The sidebar still lists ALL sessions —
+// these tabs mirror only what is currently open as a panel (openSessions).
 //
 // The whole strip is a no-drag island inside the drag region so clicks land
 // on tabs, not on window-move.
 
 import { memo } from 'react'
 import type { SessionInfo } from '../types'
+import { CreateMenuButton } from './CreateMenuButton'
+import type { PromptRequest } from '../hooks/useDialogHosts'
 
 interface Props {
   sessions: SessionInfo[]
   focusedId: string | null
   onSelect: (id: string) => void
   onClose: (id: string) => void
-  onNew: () => void
+  /** Create-menu actions (the + opens the menu first). */
+  onNewSession: () => void
+  onCreateGroup: (name: string) => void
+  askPrompt: (config: PromptRequest) => void
   maxOpen: number
 }
 
@@ -28,27 +34,51 @@ function tabLabel(s: SessionInfo): string {
   return cwd || 'Session'
 }
 
+function NewButton(props: {
+  onNewSession: () => void
+  onCreateGroup: (name: string) => void
+  askPrompt: (config: PromptRequest) => void
+  newSessionDisabled: boolean
+}) {
+  return (
+    <CreateMenuButton
+      className="titlebar-tab-new btn btn-icon"
+      aria-label="Create"
+      title="New session or group"
+      onNewSession={props.onNewSession}
+      onCreateGroup={props.onCreateGroup}
+      askPrompt={props.askPrompt}
+      newSessionDisabled={props.newSessionDisabled}
+    >
+      +
+    </CreateMenuButton>
+  )
+}
+
 export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
   sessions,
   focusedId,
   onSelect,
   onClose,
-  onNew,
+  onNewSession,
+  onCreateGroup,
+  askPrompt,
   maxOpen,
 }: Props) {
+  // New session… is parked at panel capacity; the + itself stays so
+  // New group… (no panel slot) remains reachable from the titlebar.
+  const newSessionDisabled = sessions.length >= maxOpen
+
   if (sessions.length === 0) {
-    // Still render the + so the empty titlebar offers a start path.
+    // Still render the + so the empty titlebar offers a create path.
     return (
       <div className="titlebar-tabs" role="group" aria-label="Open sessions">
-        <button
-          type="button"
-          className="titlebar-tab-new btn btn-icon"
-          onClick={onNew}
-          aria-label="New session"
-          title="New session"
-        >
-          +
-        </button>
+        <NewButton
+          onNewSession={onNewSession}
+          onCreateGroup={onCreateGroup}
+          askPrompt={askPrompt}
+          newSessionDisabled={false}
+        />
       </div>
     )
   }
@@ -93,17 +123,12 @@ export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
           </div>
         )
       })}
-      {sessions.length < maxOpen && (
-        <button
-          type="button"
-          className="titlebar-tab-new btn btn-icon"
-          onClick={onNew}
-          aria-label="New session"
-          title="New session"
-        >
-          +
-        </button>
-      )}
+      <NewButton
+        onNewSession={onNewSession}
+        onCreateGroup={onCreateGroup}
+        askPrompt={askPrompt}
+        newSessionDisabled={newSessionDisabled}
+      />
     </div>
   )
 })

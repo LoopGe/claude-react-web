@@ -37,7 +37,9 @@ function renderStrip(sections: SidebarSection[], overrides: Partial<Parameters<t
   // them); only the unwired ones fall back to local mocks.
   const onSelect = overrides.onSelect ?? vi.fn()
   const onActivateGroup = overrides.onActivateGroup ?? vi.fn()
-  const onNew = overrides.onNew ?? vi.fn()
+  const onNewSession = overrides.onNewSession ?? vi.fn()
+  const onCreateGroup = overrides.onCreateGroup ?? vi.fn()
+  const askPrompt = overrides.askPrompt ?? vi.fn()
   const utils = render(
     <SessionNavStrip
       sections={sections}
@@ -46,12 +48,14 @@ function renderStrip(sections: SidebarSection[], overrides: Partial<Parameters<t
       unread={overrides.unread ?? {}}
       onSelect={onSelect}
       onActivateGroup={onActivateGroup}
-      onNew={onNew}
+      onNewSession={onNewSession}
+      onCreateGroup={onCreateGroup}
+      askPrompt={askPrompt}
       onSessionContextMenu={overrides.onSessionContextMenu}
       onGroupContextMenu={overrides.onGroupContextMenu}
     />,
   )
-  return { onSelect, onActivateGroup, onNew, ...utils }
+  return { onSelect, onActivateGroup, onNewSession, onCreateGroup, askPrompt, ...utils }
 }
 
 describe('edgeFadeState', () => {
@@ -155,7 +159,7 @@ describe('SessionNavStrip', () => {
           unread={{}}
           onSelect={vi.fn()}
           onActivateGroup={vi.fn()}
-          onNew={vi.fn()}
+          onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()}
         />,
       )
       expect(scrollIntoView).toHaveBeenCalledTimes(1)
@@ -168,14 +172,16 @@ describe('SessionNavStrip', () => {
   })
 
   it('still offers + when there are no sessions', () => {
-    // Collapsed sidebar + zero sessions must keep a visible new-session
+    // Collapsed sidebar + zero sessions must keep a visible create
     // entry point — the strip renders the + alone.
-    const { container, onNew } = renderStrip([])
-    const plus = screen.getByLabelText('New session')
+    const { container, onNewSession } = renderStrip([])
+    const plus = screen.getByLabelText('Create')
     expect(plus).toBeTruthy()
     expect(container.querySelectorAll('.session-nav-tab')).toHaveLength(0)
     fireEvent.click(plus)
-    expect(onNew).toHaveBeenCalled()
+    // + opens the menu; it must NOT create a session by itself.
+    expect(onNewSession).not.toHaveBeenCalled()
+    expect(screen.getByRole('menu')).toBeTruthy()
   })
 
   it('renders + before the tabs, outside the scroll region', () => {
@@ -189,10 +195,13 @@ describe('SessionNavStrip', () => {
     expect(scroller.querySelector('.session-nav-new')).toBeNull()
   })
 
-  it('fires onNew from the + button', () => {
-    const { container, onNew } = renderStrip(baseSections())
+  it('opens the create menu from the + button', () => {
+    const { container, onNewSession } = renderStrip(baseSections())
     fireEvent.click(container.querySelector<HTMLElement>('.session-nav-new')!)
-    expect(onNew).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('menu')).toBeTruthy()
+    const labels = Array.from(document.querySelectorAll('.ctx-menu-label')).map((e) => e.textContent)
+    expect(labels).toEqual(['New session…', 'New group…'])
+    expect(onNewSession).not.toHaveBeenCalled()
   })
 
   it('renders a divider between + and the scroll region when sessions exist', () => {
@@ -244,11 +253,11 @@ describe('SessionNavStrip', () => {
       { kind: 'ungrouped', sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' })] },
     ]
     const { container, rerender } = render(
-      <SessionNavStrip sections={[]} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNew={vi.fn()} />,
+      <SessionNavStrip sections={[]} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()} />,
     )
     expect(container.querySelector<HTMLElement>('.session-nav-new')).toBeTruthy()
     rerender(
-      <SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNew={vi.fn()} />,
+      <SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()} />,
     )
     const scroller = container.querySelector<HTMLElement>('.session-nav-scroll')!
     const strip = container.querySelector<HTMLElement>('.session-nav-strip')!
@@ -273,7 +282,7 @@ describe('SessionNavStrip drag', () => {
           unread={{}}
           onSelect={vi.fn()}
           onActivateGroup={vi.fn()}
-          onNew={vi.fn()}
+          onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()}
         />
       </DndContext>,
     )
@@ -339,7 +348,7 @@ describe('SessionNavStrip drag', () => {
           unread={{}}
           onSelect={onSelect}
           onActivateGroup={vi.fn()}
-          onNew={vi.fn()}
+          onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()}
         />
       </DndContext>,
     )
@@ -416,7 +425,7 @@ describe('SessionNavStrip context menus', () => {
 
   it('prevents the native menu only when the session callback is wired', () => {
     const sections = baseSections()
-    const wired = render(<SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNew={vi.fn()} onSessionContextMenu={vi.fn()} />)
+    const wired = render(<SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()} onSessionContextMenu={vi.fn()} />)
     const wiredTab = wired.container.querySelector<HTMLElement>('.session-nav-tab')!
     const wiredEv = createEvent.contextMenu(wiredTab)
     fireEvent(wiredTab, wiredEv)
@@ -458,7 +467,7 @@ describe('SessionNavStrip context menus', () => {
 
   it('prevents the native menu only when the group callback is wired', () => {
     const sections = baseSections()
-    const wired = render(<SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNew={vi.fn()} onGroupContextMenu={vi.fn()} />)
+    const wired = render(<SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()} onGroupContextMenu={vi.fn()} />)
     const wiredChip = wired.container.querySelector<HTMLElement>('.session-nav-chip')!
     const wiredEv = createEvent.contextMenu(wiredChip)
     fireEvent(wiredChip, wiredEv)

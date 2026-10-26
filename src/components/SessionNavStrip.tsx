@@ -12,11 +12,13 @@
 // component is purely presentational.
 //
 // The strip renders even with zero sessions: the leading + is the only
-// new-session entry point the header offers while the sidebar is hidden
-// (same reasoning as the titlebar tabs' empty state).
+// create entry point the header offers while the sidebar is hidden
+// (same reasoning as the titlebar tabs' empty state). The + opens a small
+// create menu (New session… / New group…) rather than immediately creating
+// a session — see CreateMenuButton.
 //
 // Structure: [+][scroller]. The + lives OUTSIDE the scroll region so the
-// edge-fade mask can never ghost the primary new-session affordance.
+// edge-fade mask can never ghost the primary create affordance.
 //
 // role="group" not "tablist": same call as .main-toolbar / titlebar tabs —
 // the ARIA tab pattern promises arrow-key roving we don't implement.
@@ -28,6 +30,8 @@ import type { SessionInfo, SidebarSection } from '../types'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { dndData } from '../dnd/payload'
 import { SortableNode } from '../dnd/SortableNode'
+import { CreateMenuButton } from './CreateMenuButton'
+import type { PromptRequest } from '../hooks/useDialogHosts'
 
 interface Props {
   sections: SidebarSection[]
@@ -36,7 +40,10 @@ interface Props {
   unread: Record<string, boolean>
   onSelect: (id: string) => void
   onActivateGroup: (groupId: string) => void
-  onNew: () => void
+  /** Create-menu actions (the leading + opens the menu first). */
+  onNewSession: () => void
+  onCreateGroup: (name: string) => void
+  askPrompt: (config: PromptRequest) => void
   /** Right-click management hooks, mirroring the sidebar cards / group
    *  pills. The strip stays presentational: it only forwards the event —
    *  the caller owns menu state and the management handlers. Unwired =
@@ -240,7 +247,9 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   unread,
   onSelect,
   onActivateGroup,
-  onNew,
+  onNewSession,
+  onCreateGroup,
+  askPrompt,
   onSessionContextMenu,
   onGroupContextMenu,
   resumingIds,
@@ -321,15 +330,16 @@ export const SessionNavStrip = memo(function SessionNavStrip({
       aria-label="All sessions"
       style={fadeStyle}
     >
-      <button
-        type="button"
+      <CreateMenuButton
         className="session-nav-new btn btn-icon"
-        aria-label="New session"
-        title="New session"
-        onClick={onNew}
+        aria-label="Create"
+        title="New session or group"
+        onNewSession={onNewSession}
+        onCreateGroup={onCreateGroup}
+        askPrompt={askPrompt}
       >
         +
-      </button>
+      </CreateMenuButton>
       {/* Hairline between the + and the tab region — same border language as
           the inter-group separators. Lives OUTSIDE the scroller so the fade
           mask can never ghost it; omitted in the empty state (a lone line

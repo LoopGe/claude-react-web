@@ -35,9 +35,30 @@ interface Props {
   y: number
   items: ContextMenuItem[]
   onClose: () => void
+  /** The control that opened the menu, when it ALSO toggles it closed.
+   *  Passed through to useOutsideMouseDown so a press on the trigger is the
+   *  toggle, not an outside press (see that hook's `triggerRef` docs). */
+  triggerRef?: React.RefObject<Element | null>
+  /** Move DOM focus to the first enabled item on open. Off by default:
+   *  right-click menus must leave focus where it is (the composer's IME
+   *  composition / selection would break otherwise). On for keyboard-owned
+   *  menu buttons (CreateMenuButton). */
+  autoFocus?: boolean
+  /** What a non-primary outside press does. Default 'ignore' is the
+   *  right-click-replacement policy (a `contextmenu` follows). Left-click-owned
+   *  surfaces pass 'close' so a right-click doesn't stack a second menu. */
+  nonPrimary?: 'close' | 'ignore'
 }
 
-export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: Props) {
+export const ContextMenu = memo(function ContextMenu({
+  x,
+  y,
+  items,
+  onClose,
+  triggerRef,
+  autoFocus = false,
+  nonPrimary = 'ignore',
+}: Props) {
   const ref = useRef<HTMLDivElement>(null)
   // Measured position after layout — nudged inward if the menu would
   // otherwise overflow the viewport.
@@ -58,17 +79,26 @@ export const ContextMenu = memo(function ContextMenu({ x, y, items, onClose }: P
     const nx = Math.min(x, vw - rect.width - 4)
     const ny = Math.min(y, vh - rect.height - 4)
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
-  }, [x, y])
+    // Keyboard-owned menus (autoFocus) land on the first enabled row — the
+    // menu is portaled to the end of <body>, so without an explicit move the
+    // items sit outside the trigger's tab path. preventScroll so a clamp that
+    // still overflows can't drag the document (the menu itself is nudged by
+    // setPos above). Right-click menus leave focus alone (IME / selection).
+    if (autoFocus) {
+      el.querySelector<HTMLButtonElement>('.ctx-menu-item:not(:disabled)')
+        ?.focus({ preventScroll: true })
+    }
+  }, [x, y, autoFocus])
 
-  // Only left-click dismisses: right-click (button 2) must NOT close the
+  // Default 'ignore': right-click (button 2) must NOT close a right-click
   // menu — the browser fires `contextmenu` next, which the owning component
   // uses to open a replacement menu, and closing on mousedown would be a
-  // visible close→reopen flash. That policy lives on the hook's
-  // `nonPrimary: 'ignore'`.
+  // visible close→reopen flash. Left-click-owned surfaces pass 'close' so a
+  // right-click outside doesn't stack a second menu on top.
   //
   // `mousedown` beats `click` — feels snappier and avoids swallowing a
   // subsequent click on another interactive element (the hook's default).
-  useOutsideMouseDown({ ref, onClose, nonPrimary: 'ignore' })
+  useOutsideMouseDown({ ref, onClose, triggerRef, nonPrimary })
 
   // Esc closes via the shared escape stack, so a context menu above a modal
   // or panel collapses only itself on the first keypress.
