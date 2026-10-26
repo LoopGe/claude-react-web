@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { useState } from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
 import type { GitCommitResponse, GitDiff, GitRangeFile } from '../../shared/git-types'
 
@@ -41,23 +42,36 @@ function mockCommitApis(files: GitRangeFile[], body = '') {
   })
 }
 
-function renderRow(overrides: Partial<Parameters<typeof CommitRow>[0]> = {}) {
-  return render(
+/** How many commit-detail (file-list) fetches have run. The `/git/commit?`
+ *  prefix does not match `/git/commit-file?` (the `?` disambiguates). */
+function commitListFetches(): number {
+  return mockGet.mock.calls.filter(([url]) => String(url).startsWith('/git/commit?')).length
+}
+
+/** Stateful harness: CommitRow is fully controlled — `expanded` IS the open
+ *  state and clicking only calls onToggle() — so a test parent has to own
+ *  the toggle the way GitPanel does. */
+function Harness({ cache, body }: { cache: Map<string, GitCommitResponse>; body?: string }) {
+  const [expanded, setExpanded] = useState(false)
+  return (
     <CommitRow
       cwd="/repo"
       hash={HASH}
       subject="second"
       author="T"
       date={1}
-      body=""
-      expanded={false}
-      onToggle={() => {}}
-      cache={new Map()}
+      body={body ?? ''}
+      expanded={expanded}
+      onToggle={() => setExpanded((v) => !v)}
+      cache={cache}
       selectedPath={null}
       onSelectFile={() => {}}
-      {...overrides}
-    />,
+    />
   )
+}
+
+function renderRow(opts: { cache?: Map<string, GitCommitResponse>; body?: string } = {}) {
+  return render(<Harness cache={opts.cache ?? new Map()} body={opts.body} />)
 }
 
 beforeEach(() => {
@@ -94,6 +108,35 @@ describe('CommitRow', () => {
     renderRow()
     fireEvent.click(screen.getByText('second'))
     expect(await screen.findByText('extra detail here')).toBeTruthy()
+  })
+
+  it('collapse → re-expand does not refetch the file list', async () => {
+    // The cache is owned at GitPanel level and keyed by hash; re-opening a
+    // commit we already fetched must be free (and so must a fresh mount
+    // handed the same cache). A regression that drops the `!cache.has(hash)`
+    // gate — or moves the cache into the row — turns this into 2+ fetches.
+    const cache = new Map<string, GitCommitResponse>()
+
+    const first = renderRow({ cache })
+    fireEvent.click(screen.getByText('second'))
+    expect(await screen.findByText('a.txt')).toBeTruthy()
+    expect(commitListFetches()).toBe(1)
+
+    // Collapse — the detail unmounts with it.
+    fireEvent.click(screen.getByText('second'))
+    expect(screen.queryByText('a.txt')).toBeNull()
+
+    // Re-expand — served from the cache, still one fetch.
+    fireEvent.click(screen.getByText('second'))
+    expect(await screen.findByText('a.txt')).toBeTruthy()
+    expect(commitListFetches()).toBe(1)
+
+    // A fresh mount over the same cache is free too.
+    first.unmount()
+    renderRow({ cache })
+    fireEvent.click(screen.getByText('second'))
+    expect(await screen.findByText('a.txt')).toBeTruthy()
+    expect(commitListFetches()).toBe(1)
   })
 })
 

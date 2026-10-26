@@ -11,7 +11,7 @@
 // what keeps the row shell identical to the worktree rows while dropping
 // every write affordance.
 
-import { useCallback, useState, useEffect } from 'react'
+import { useCallback, useState } from 'react'
 import { GitFileRow } from './GitFileRow'
 import {
   useCachedCommitFiles,
@@ -33,7 +33,9 @@ export interface CommitRowProps {
    *  caller has no body (the log endpoint omits it), the fetched commit
    *  detail fills in — see `bodyText` below. */
   body: string
-  /** Parent's "this commit is the expanded one" flag (one at a time). */
+  /** Parent's "this commit is the expanded one" flag. Fully controlled:
+   *  the row renders its detail exactly when this is true, so the parent's
+   *  one-at-a-time accordion holds against every click. */
   expanded: boolean
   onToggle: () => void
   /** Caller-owned hash → commit-detail cache (owned at GitPanel level so
@@ -57,25 +59,12 @@ export function CommitRow({
   selectedPath,
   onSelectFile,
 }: CommitRowProps) {
-  // Semi-controlled open state. The click flips local state so a row
-  // toggles even before the parent has re-rendered (and so an isolated
-  // mount whose onToggle is a no-op still opens); the parent's `expanded`
-  // prop is authoritative whenever it CHANGES, which is what collapses the
-  // previously-open commit when another one is opened.
-  const [open, setOpen] = useState(expanded)
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional controlled-component sync (same shape as MessageSearch's activeIndex mirror)
-    setOpen(expanded)
-  }, [expanded])
-
+  // Fully controlled: `expanded` IS the open state. Clicking the row only
+  // calls onToggle() — the parent flips its state and this row follows in
+  // the same commit, so switching commits never leaves two details mounted.
   // The cache is what makes collapse → re-expand free: the fetch is
   // skipped entirely on a hit and the file rows paint immediately.
-  const { data, loading, error } = useCachedCommitFiles(cwd, hash, open, cache)
-
-  const handleToggle = () => {
-    setOpen((v) => !v)
-    onToggle()
-  }
+  const { data, loading, error } = useCachedCommitFiles(cwd, hash, expanded, cache)
 
   // Prefer an explicit body (parent already has one); otherwise take it
   // from the fetched commit detail — /log omits the body, so the detail is
@@ -83,13 +72,13 @@ export function CommitRow({
   const bodyText = body || data?.commit.body || ''
 
   return (
-    <li className={`git-commit ${open ? 'open' : ''}`} onClick={handleToggle}>
+    <li className={`git-commit ${expanded ? 'open' : ''}`} onClick={onToggle}>
       <code className="git-commit-hash" title={hash}>{hash.slice(0, 7)}</code>
       <span className="git-commit-subject">{subject}</span>
       <span className="git-commit-meta">
         {author} · {formatRelativeFromMs(date)}
       </span>
-      {open && (
+      {expanded && (
         // Clicks inside the detail must not bubble to the row toggle (they
         // would collapse the commit the user is working in).
         <div className="git-commit-detail" onClick={(e) => e.stopPropagation()}>
