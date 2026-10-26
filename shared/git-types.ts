@@ -145,7 +145,7 @@ export interface GitCommit {
   shortHash: string
   /** Author name (no email, to keep payload lean). */
   author: string
-  /** Author date as unix milliseconds (UTC). */
+  /** Committer date as unix milliseconds (UTC) — `%ct`, not author date. */
   date: number
   /** First line of the commit message — never contains newlines. */
   subject: string
@@ -153,6 +153,27 @@ export interface GitCommit {
 
 export interface GitLogResponse {
   commits: GitCommit[]
+}
+
+/** One commit's metadata for the commit-detail view (per-commit file list
+ *  + diff). Extends the /log row with the rest of the message. */
+export interface GitCommitDetail {
+  /** Full 40-char SHA-1. */
+  hash: string
+  shortHash: string
+  author: string
+  /** Committer date, unix ms (same field `/log` shows). */
+  date: number
+  subject: string
+  /** Rest of the commit message (`%b`), trimmed. Empty string when subject-only. */
+  body: string
+}
+
+/** `GET /api/git/commit` — one commit plus the files it changed (against
+ *  its first parent, or the empty tree for a root commit). */
+export interface GitCommitResponse {
+  commit: GitCommitDetail
+  files: GitRangeFile[]
 }
 
 // ── Stashes + branches ────────────────────────────────────────────────

@@ -37,13 +37,15 @@ import {
   getStatusInRepo,
   getRangeDiffFiles,
   getRangeDiffFile,
+  getCommitFiles,
+  getCommitDiffFile,
   trimGitErrorOutput,
   parseNumstatZ,
   runGit,
   probeRepo,
 } from './git.js'
 import { Hono } from 'hono'
-import { createErrorHandler } from './errors.js'
+import { HttpError, createErrorHandler } from './errors.js'
 import { MAX_DIFF_BYTES, MAX_DIFF_LINE_CHARS } from './constants.js'
 import { tempDir, rmRf } from './__test-utils__/index.js'
 
@@ -619,6 +621,89 @@ describe('git-routes', () => {
     })
   })
 
+  describe('GET /api/git/commit', () => {
+    it.skipIf(!gitOk)('400 when hash is missing', async () => {
+      seedRepo(dir)
+      const app = buildApp()
+      const res = await app.request(`/api/git/commit?cwd=${encodeURIComponent(dir)}`)
+      expect(res.status).toBe(400)
+    })
+
+    it.skipIf(!gitOk)('400 when hash is non-hex', async () => {
+      seedRepo(dir)
+      const app = buildApp()
+      const res = await app.request(`/api/git/commit?cwd=${encodeURIComponent(dir)}&hash=HEAD`)
+      expect(res.status).toBe(400)
+    })
+
+    it.skipIf(!gitOk)('404 when the commit does not exist', async () => {
+      seedRepo(dir)
+      const app = buildApp()
+      const res = await app.request(`/api/git/commit?cwd=${encodeURIComponent(dir)}&hash=deadbeef`)
+      expect(res.status).toBe(404)
+    })
+
+    it.skipIf(!gitOk)('404 when cwd is not a git repo', async () => {
+      const app = buildApp()
+      const res = await app.request(
+        `/api/git/commit?cwd=${encodeURIComponent(dir)}&hash=${seedShas()[0]}`,
+      )
+      expect(res.status).toBe(404)
+    })
+
+    it.skipIf(!gitOk)('returns commit + files', async () => {
+      seedRepo(dir) // seedShas()[1] = 'second', which introduced log.txt
+      const app = buildApp()
+      const res = await app.request(
+        `/api/git/commit?cwd=${encodeURIComponent(dir)}&hash=${seedShas()[1]}`,
+      )
+      expect(res.status).toBe(200)
+      const body = await json<{ commit: { subject: string }; files: Array<{ path: string }> }>(res)
+      expect(body.commit.subject).toBe('second')
+      expect(body.files[0].path).toBe('log.txt')
+    })
+  })
+
+  describe('GET /api/git/commit-file', () => {
+    it.skipIf(!gitOk)('400 when path is missing', async () => {
+      seedRepo(dir)
+      const app = buildApp()
+      const res = await app.request(
+        `/api/git/commit-file?cwd=${encodeURIComponent(dir)}&hash=${seedShas()[0]}`,
+      )
+      expect(res.status).toBe(400)
+    })
+
+    it.skipIf(!gitOk)('400 when path is absolute', async () => {
+      seedRepo(dir)
+      const app = buildApp()
+      const res = await app.request(
+        `/api/git/commit-file?cwd=${encodeURIComponent(dir)}&hash=${seedShas()[0]}&path=${encodeURIComponent('/etc/passwd')}`,
+      )
+      expect(res.status).toBe(400)
+    })
+
+    it.skipIf(!gitOk)('400 when path escapes the repo', async () => {
+      seedRepo(dir)
+      const app = buildApp()
+      const res = await app.request(
+        `/api/git/commit-file?cwd=${encodeURIComponent(dir)}&hash=${seedShas()[0]}&path=${encodeURIComponent('../x')}`,
+      )
+      expect(res.status).toBe(400)
+    })
+
+    it.skipIf(!gitOk)('returns a unified diff', async () => {
+      seedRepo(dir) // root commit introduced a.txt as SEED.a ('alpha\n')
+      const app = buildApp()
+      const res = await app.request(
+        `/api/git/commit-file?cwd=${encodeURIComponent(dir)}&hash=${seedShas()[0]}&path=a.txt`,
+      )
+      expect(res.status).toBe(200)
+      const body = await json<{ text: string }>(res)
+      expect(body.text).toContain('+alpha')
+    })
+  })
+
   // ── Path validation unit tests (no git invocation) ───────────────
   describe('validateRepoRelativePath', () => {
     it('rejects empty', () => {
@@ -1179,6 +1264,106 @@ describe('getRangeDiff', () => {
     expect(d.text).toContain('+alpha2')
     expect(d.isBinary).toBe(false)
     expect(d.truncated).toBe(false)
+  })
+})
+
+describe('getCommitDiff', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = tempDir('git-commit')
+  })
+  afterEach(() => {
+    void rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {})
+  })
+
+  it.skipIf(!gitOk)('lists a normal commit\'s files with status + counts', async () => {
+    seedRepo(dir)
+    // seedShas()[1] = 'second' — the commit that introduced log.txt
+    const res = await getCommitFiles(dir, seedShas()[1])
+    expect(res.commit.subject).toBe('second')
+    expect(res.commit.body).toBe('')
+    const log = res.files.find((f) => f.path === 'log.txt')
+    expect(log?.status).toBe('A')
+    expect(log?.insertions).toBe(1)
+  })
+
+  it.skipIf(!gitOk)('root commit diffs against the empty tree (every file A)', async () => {
+    seedRepo(dir)
+    const res = await getCommitFiles(dir, seedShas()[0])
+    expect(res.commit.subject).toBe('first')
+    expect(res.files.every((f) => f.status === 'A')).toBe(true)
+    expect(res.files.map((f) => f.path)).toContain('a.txt')
+  })
+
+  it.skipIf(!gitOk)('merge commit diffs against its first parent', async () => {
+    seedRepo(dir)
+    // side branch off 'first' adds only g.txt; merge back into main.
+    execFileSync('git', ['checkout', '--quiet', '-b', 'side', seedShas()[0]], { cwd: dir })
+    writeFileSync(join(dir, 'g.txt'), 'g\n')
+    gitCommitAll(dir, 'side work')
+    execFileSync('git', ['checkout', '--quiet', 'main'], { cwd: dir })
+    execFileSync('git', ['merge', '--no-ff', '-m', 'merge side', 'side'], { cwd: dir })
+    const mergeSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim()
+    const res = await getCommitFiles(dir, mergeSha)
+    expect(res.files.map((f) => f.path)).toEqual(['g.txt'])
+  })
+
+  it.skipIf(!gitOk)('body is the message minus the subject', async () => {
+    seedRepo(dir)
+    // gitCommitAll writes a one-line message; make one with a body.
+    writeFileSync(join(dir, 'a.txt'), 'x\n')
+    execFileSync('git', ['add', 'a.txt'], { cwd: dir })
+    execFileSync('git', ['-c', 'user.name=Tester', '-c', 'user.email=t@t', 'commit', '-m', 'subject line', '-m', 'para one\n\npara two'], { cwd: dir })
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim()
+    const res = await getCommitFiles(dir, sha)
+    expect(res.commit.subject).toBe('subject line')
+    expect(res.commit.body).toBe('para one\n\npara two')
+  })
+
+  it.skipIf(!gitOk)('unknown-but-hex hash yields 404', async () => {
+    seedRepo(dir)
+    await expect(getCommitFiles(dir, 'deadbeef')).rejects.toThrow(HttpError)
+    // and the route:
+    const app = buildApp()
+    const res = await app.request(`/api/git/commit?cwd=${encodeURIComponent(dir)}&hash=deadbeef`)
+    expect(res.status).toBe(404)
+  })
+
+  it.skipIf(!gitOk)('non-hex hash is rejected with 400', async () => {
+    seedRepo(dir)
+    const app = buildApp()
+    for (const bad of ['HEAD', 'HEAD~1', 'abc^', '--foo', '']) {
+      const res = await app.request(`/api/git/commit?cwd=${encodeURIComponent(dir)}&hash=${encodeURIComponent(bad)}`)
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it.skipIf(!gitOk)('returns a deletion hunk for a deleted file', async () => {
+    seedRepo(dir)
+    // 'third' only touches log.txt; delete a.txt in a new commit instead.
+    execFileSync('git', ['rm', '--quiet', 'a.txt'], { cwd: dir })
+    const sha = gitCommitAll(dir, 'drop a')
+    const diff = await getCommitDiffFile(dir, sha, 'a.txt')
+    expect(diff.isBinary).toBe(false)
+    expect(diff.text).toContain('-alpha')
+  })
+
+  it.skipIf(!gitOk)('reports binary files without a body', async () => {
+    seedRepo(dir)
+    // root commit introduced blob.bin
+    const diff = await getCommitDiffFile(dir, seedShas()[0], 'blob.bin')
+    expect(diff.isBinary).toBe(true)
+    expect(diff.text).toBe('')
+  })
+
+  it.skipIf(!gitOk)('full: true bypasses the preview budget', async () => {
+    seedRepo(dir)
+    // big.txt (700 lines) was introduced in the root commit.
+    const preview = await getCommitDiffFile(dir, seedShas()[0], 'big.txt')
+    expect(preview.truncated).toBe(true)
+    const full = await getCommitDiffFile(dir, seedShas()[0], 'big.txt', { full: true })
+    expect(full.truncated).toBe(false)
+    expect(full.totalLines).toBeGreaterThan(500)
   })
 })
 

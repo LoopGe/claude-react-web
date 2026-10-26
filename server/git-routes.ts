@@ -14,7 +14,7 @@
 import { Hono } from 'hono'
 import { isAbsolute } from 'node:path'
 import { HttpError, createErrorHandler } from './errors.js'
-import { getDiff, getLog, getStatus, getRangeDiffFiles, getRangeDiffFile, validateRef, listBranches, listStashes } from './git.js'
+import { getDiff, getLog, getStatus, getRangeDiffFiles, getRangeDiffFile, getCommitFiles, getCommitDiffFile, validateCommitHash, validateRef, listBranches, listStashes } from './git.js'
 import type { GitLogResponse, GitRangeDiffResponse } from '../shared/git-types.js'
 
 export function buildGitRouter(): Hono {
@@ -108,6 +108,35 @@ export function buildGitRouter(): Hono {
     const commits = await getLog(cwd, limit)
     const body: GitLogResponse = { commits }
     return c.json(body)
+  })
+
+  // --- GET /commit ------------------------------------------------------
+  // One commit's metadata + the files it changed. The diff base is the
+  // commit's first parent (the empty tree for a root commit), so a merge
+  // commit reports what it brought into its first parent.
+  app.get('/commit', async (c) => {
+    const cwd = requireCwd(c.req.query('cwd'))
+    const hash = c.req.query('hash')
+    if (!hash) throw new HttpError(400, 'hash query param is required')
+    // Hex-only 7–40 — HEAD / refs / option-lookalikes never reach git.
+    validateCommitHash(hash)
+    return c.json(await getCommitFiles(cwd, hash))
+  })
+
+  // --- GET /commit-file -------------------------------------------------
+  // Unified body for one file of one commit, lazily fetched on expand.
+  // Path validation lives in git.ts (validateRepoRelativePath).
+  app.get('/commit-file', async (c) => {
+    const cwd = requireCwd(c.req.query('cwd'))
+    const hash = c.req.query('hash')
+    const path = c.req.query('path')
+    if (!hash) throw new HttpError(400, 'hash query param is required')
+    if (!path) throw new HttpError(400, 'path query param is required')
+    validateCommitHash(hash)
+    // full=1 skips the preview budget (line/byte/width caps) and returns the
+    // complete body — the escape hatch behind the "View full diff" button.
+    const full = c.req.query('full') === '1'
+    return c.json(await getCommitDiffFile(cwd, hash, path, { full }))
   })
 
   // --- GET /branches ----------------------------------------------------

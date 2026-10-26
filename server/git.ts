@@ -26,6 +26,7 @@ import { createLogger } from './log.js'
 import type {
   GitBranch,
   GitCommit,
+  GitCommitResponse,
   GitDiff,
   GitFileEntry,
   GitFileStatus,
@@ -972,6 +973,94 @@ export async function getLog(cwd: string, limitRaw: number): Promise<GitCommit[]
     })
   }
   return out
+}
+
+// ── Commit detail ─────────────────────────────────────────────────────
+// One commit's metadata + the files it changed / one file's unified body.
+// The diff base is the commit's first parent, or EMPTY_TREE_SHA for a root
+// commit; the range layer (getRangeDiffFiles / getRangeDiffFile) does the
+// actual diffing, truncation and binary handling.
+
+/** Git's well-known empty tree object, SHA-1. */
+export const EMPTY_TREE_SHA = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+
+/** Guard a commit hash from a request. Hex only, 7–40 chars — keeps
+ *  revisions like `HEAD`, `main~1` and option-lookalikes (`--foo`) away
+ *  from git entirely. */
+export function validateCommitHash(hash: string): void {
+  if (!/^[0-9a-f]{7,40}$/i.test(hash)) {
+    throw new HttpError(400, 'invalid commit hash')
+  }
+}
+
+/** Same \x1f field convention as LOG_FORMAT, extended with %P
+ *  (space-separated parent SHAs) and %b (message body). */
+const COMMIT_META_FORMAT = '%H%x1f%h%x1f%an%x1f%ct%x1f%s%x1f%P%x1f%b'
+
+/** One commit's metadata + parents, via a single `git log -1`.
+ *  `date` is committer time (%ct), matching getLog. */
+async function getCommitMeta(cwd: string, hash: string): Promise<{
+  hash: string; shortHash: string; author: string; date: number;
+  subject: string; body: string; parents: string[]
+}> {
+  // Probe existence first so an unknown commit is a 404 — one extra spawn
+  // keeps git's exit 128 from ever surfacing as a 500.
+  const probe = await runGit(cwd, ['rev-parse', '--verify', '--quiet', `${hash}^{commit}`], {
+    allowAnyExitCode: true,
+  })
+  if (probe.exitCode !== 0) throw new HttpError(404, 'unknown commit')
+
+  const { stdout } = await runGit(cwd, [
+    '-c', 'core.quotepath=false',
+    'log', '-1', `--pretty=format:${COMMIT_META_FORMAT}`, '--no-color', hash,
+  ], { noOptionalLocks: true })
+
+  const [fullHash, shortHash, author, ctSec, subject, parentsRaw = '', bodyRaw = ''] = stdout.split('\x1f')
+  const seconds = Number(ctSec)
+  const parents = parentsRaw.trim()
+  return {
+    hash: fullHash,
+    shortHash,
+    author,
+    date: Number.isFinite(seconds) ? seconds * 1000 : 0,
+    subject,
+    body: bodyRaw.trim(),
+    parents: parents ? parents.split(/\s+/) : [],
+  }
+}
+
+/** Changed-file list for one commit. Diff base = first parent, or
+ *  EMPTY_TREE_SHA for a root commit. */
+export async function getCommitFiles(cwd: string, hash: string): Promise<GitCommitResponse> {
+  validateCommitHash(hash)
+  await ensureGitRepo(cwd)
+  const meta = await getCommitMeta(cwd, hash)
+  const base = meta.parents[0] ?? EMPTY_TREE_SHA
+  return {
+    commit: {
+      hash: meta.hash,
+      shortHash: meta.shortHash,
+      author: meta.author,
+      date: meta.date,
+      subject: meta.subject,
+      body: meta.body,
+    },
+    files: await getRangeDiffFiles(cwd, base, hash),
+  }
+}
+
+/** One file's unified body for one commit. Same contract as getRangeDiffFile. */
+export async function getCommitDiffFile(
+  cwd: string,
+  hash: string,
+  path: string,
+  opts?: { full?: boolean },
+): Promise<GitDiff> {
+  validateCommitHash(hash)
+  await ensureGitRepo(cwd)
+  const meta = await getCommitMeta(cwd, hash)
+  const base = meta.parents[0] ?? EMPTY_TREE_SHA
+  return getRangeDiffFile(cwd, base, hash, path, false, opts)
 }
 
 // ── Write operations ──────────────────────────────────────────────────
