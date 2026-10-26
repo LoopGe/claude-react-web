@@ -728,6 +728,10 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
   const [fetchStarted, setFetchStarted] = useState(false)
   const { data: diff, loading, error } = useGitDiff(cwd, file.path, staged, fetchStarted)
   const handleFetchStart = useCallback(() => setFetchStarted(true), [])
+  // Collapse exit completes → drop the latch so a later reopen re-fetches
+  // instead of showing a stale worktree diff (the pre-refactor
+  // onExitComplete={() => setRenderDiff(false)}).
+  const handleFetchReset = useCallback(() => setFetchStarted(false), [])
 
   const stageBusy = writeOps.busyOps.has(`stage:${file.path}`)
   const unstageBusy = writeOps.busyOps.has(`unstage:${file.path}`)
@@ -756,6 +760,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
       onSelect={() => onSelect(selectIndex)}
       fetchStarted={fetchStarted}
       onFetchStart={handleFetchStart}
+      onFetchReset={handleFetchReset}
       diff={{ data: diff, loading, error }}
       fetchFullText={fetchFullText}
       actions={(

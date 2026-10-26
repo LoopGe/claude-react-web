@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { GitPanel } from './GitPanel'
 import type { GitDiff, GitStatus } from '../../shared/git-types'
 
@@ -15,8 +15,16 @@ const diffState: { data: GitDiff | null; loading: boolean; error: string | null 
   error: null,
 }
 
+// Every useGitDiff call's `enabled` flag — the fetch latch (FileRow's
+// `fetchStarted`) that arms the diff request on the first open attempt and
+// must drop again when the row's collapse exit completes.
+const enabledLog: boolean[] = []
+
 vi.mock('../hooks/useGitStatus', () => ({
-  useGitDiff: () => ({ ...diffState, refresh: () => {} }),
+  useGitDiff: (_cwd: string | undefined, _path: string | undefined, _staged: boolean, enabled: boolean) => {
+    enabledLog.push(enabled)
+    return { ...diffState, refresh: () => {} }
+  },
   useGitLog: () => ({ data: [], loading: false, error: null, refresh: () => {} }),
   useGitBranches: () => ({ data: [], loading: false, error: null, refresh: () => {} }),
   useGitStashes: () => ({ data: [], loading: false, error: null, refresh: () => {} }),
@@ -24,6 +32,12 @@ vi.mock('../hooks/useGitStatus', () => ({
   gitDiffQuery: (cwd: string, path: string, staged: boolean) =>
     `/git/diff?cwd=${cwd}&path=${path}&staged=${staged ? '1' : '0'}&full=1`,
 }))
+
+/** Distinct `enabled` values in order — the fetch latch's state machine,
+ *  immune to extra renders that re-pass the same flag. */
+function enabledTransitions(): boolean[] {
+  return enabledLog.filter((v, i) => i === 0 || v !== enabledLog[i - 1])
+}
 
 vi.mock('../hooks/useGitWrite', () => ({
   useGitWrite: () => ({
@@ -56,6 +70,7 @@ beforeEach(() => {
   diffState.data = null
   diffState.loading = true
   diffState.error = null
+  enabledLog.length = 0
 })
 
 afterEach(() => {
@@ -155,5 +170,21 @@ describe('GitPanel file-row expand', () => {
       />,
     )
     expect(toggle().getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('close drops the fetch latch so a later reopen re-fetches', async () => {
+    // The latch (FileRow's fetchStarted / useGitDiff `enabled`) must reset
+    // when the collapse exit completes — otherwise a reopen serves the
+    // previously fetched diff and never re-reads the worktree.
+    renderPanel()
+    fireEvent.click(toggle()) // arm the fetch (deferred open starts)
+    expect(enabledTransitions()).toEqual([false, true])
+    fireEvent.click(toggle()) // impatient second click — force open
+    fireEvent.click(toggle()) // close
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    // Collapse exit → onFetchReset → the latch drops back to false.
+    await waitFor(() => expect(enabledTransitions()).toEqual([false, true, false]))
+    fireEvent.click(toggle()) // reopen re-arms the fetch
+    expect(enabledTransitions()).toEqual([false, true, false, true])
   })
 })

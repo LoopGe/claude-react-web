@@ -32,6 +32,10 @@ export interface GitFileRowProps {
   /** Parent has started the diff fetch (set true on the first open attempt). */
   fetchStarted: boolean
   onFetchStart: () => void
+  /** Called when the collapse exit animation completes — the parent resets
+   *  its fetch latch so a later reopen re-fetches. Mirrors the pre-refactor
+   *  `onExitComplete={() => setRenderDiff(false)}`. */
+  onFetchReset: () => void
   diff: { data: GitDiff | null; loading: boolean; error: string | null }
   fetchFullText: (signal?: AbortSignal) => Promise<string>
   /** Stage/unstage/discard buttons. Omit for read-only rows. */
@@ -48,6 +52,7 @@ export const GitFileRow: React.MemoExoticComponent<(props: GitFileRowProps) => R
   onSelect,
   fetchStarted,
   onFetchStart,
+  onFetchReset,
   diff,
   fetchFullText,
   actions,
@@ -164,6 +169,7 @@ export const GitFileRow: React.MemoExoticComponent<(props: GitFileRowProps) => R
       <AnimatedCollapse
         open={open}
         className="git-file-diff-collapse"
+        onExitComplete={onFetchReset}
       >
         {fetchStarted && (
           <div className="git-file-diff-wrap">
