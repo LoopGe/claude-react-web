@@ -144,3 +144,67 @@ export function policyToDynamicSkillOverrides(
   for (const name of availableSkills) out[name] = allow.has(name) ? 'on' : 'off'
   return out
 }
+
+// ── Remote catalog (skills.sh) search + install ───────────────────────────
+
+export interface RemoteSearchHit {
+  id: string
+  source: string      // "owner/repo"
+  skillId: string
+  name: string
+  installs: number
+}
+
+export interface DiscoveredSkill {
+  name: string          // frontmatter.name ?? directory basename
+  description: string   // frontmatter.description ?? ''
+  relativePath: string  // '' means the clone root itself
+}
+
+export interface RemotePreviewResponse {
+  source: string
+  skills: DiscoveredSkill[]
+}
+
+export interface RemoteInstallRequest {
+  source: string
+  scope: SkillScope
+  cwd?: string
+  paths: string[]       // relativePath values from preview
+  overwrite?: boolean
+}
+
+export interface RemoteInstallResponse {
+  installed: Array<{ name: string; relativePath: string }>
+  failed: Array<{ name: string; relativePath: string; error: string }>
+}
+
+/** Portable path basename — `shared/` compiles under the browser tsconfig too,
+ *  so `node:path`'s basename is off-limits here. `basename('')` is `''`, which
+ *  is why root-level skills (relativePath === '') never match a non-empty
+ *  skillId. */
+const basename = (p: string) => p.split('/').filter(Boolean).pop() ?? ''
+
+const OWNER_REPO_RE =
+  /^(?:https?:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/
+
+/** Accept `owner/repo`, `owner/repo.git`, `https://github.com/owner/repo(.git)`.
+ *  Anything else (other hosts, bare words, extra path segments) is null. */
+export function parseOwnerRepo(input: string): { owner: string; repo: string } | null {
+  const m = OWNER_REPO_RE.exec(input)
+  if (!m) return null
+  return { owner: m[1]!, repo: m[2]! }
+}
+
+/** Match a skills.sh search hit against a previewed skill list. Step 1 of the
+ *  matching rule: prefer `basename(relativePath) === skillId`, falling back to
+ *  the discovered `name`. `matchCount` > 1 means several directories share the
+ *  winning key (ambiguous — caller should surface it). */
+export function matchSearchHit(
+  skills: readonly DiscoveredSkill[],
+  hit: Pick<RemoteSearchHit, 'skillId' | 'name'>,
+): { skill: DiscoveredSkill | null; matchCount: number } {
+  let matches = skills.filter((s) => basename(s.relativePath) === hit.skillId)
+  if (matches.length === 0) matches = skills.filter((s) => s.name === hit.name)
+  return { skill: matches[0] ?? null, matchCount: matches.length }
+}

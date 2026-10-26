@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  matchSearchHit,
+  parseOwnerRepo,
   policyToDynamicSkillOverrides,
   policyToInitialSkillsOption,
   resolveEffectiveSkillPolicy,
@@ -132,5 +134,47 @@ describe('policyToDynamicSkillOverrides', () => {
         available,
       ),
     ).toEqual({ scout: 'off', gardener: 'off', librarian: 'off' })
+  })
+})
+
+describe('parseOwnerRepo', () => {
+  it('accepts owner/repo shorthand', () => {
+    expect(parseOwnerRepo('vercel-labs/agent-skills')).toEqual({ owner: 'vercel-labs', repo: 'agent-skills' })
+  })
+  it('accepts a github.com URL and strips .git', () => {
+    expect(parseOwnerRepo('https://github.com/vercel-labs/agent-skills.git')).toEqual({ owner: 'vercel-labs', repo: 'agent-skills' })
+  })
+  it('rejects non-github hosts and bare words', () => {
+    expect(parseOwnerRepo('https://gitlab.com/a/b')).toBeNull()
+    expect(parseOwnerRepo('react')).toBeNull()
+    expect(parseOwnerRepo('a/b/c')).toBeNull()
+  })
+})
+
+describe('matchSearchHit', () => {
+  const skills = [
+    { name: 'pdf', description: '', relativePath: 'skills/pdf' },
+    { name: 'docx', description: '', relativePath: 'skills/docx' },
+    { name: 'pdf', description: '', relativePath: 'other/pdf' },
+  ]
+  it('prefers basename(relativePath) === skillId', () => {
+    const r = matchSearchHit(skills, { skillId: 'docx', name: 'pdf' })
+    expect(r.skill?.relativePath).toBe('skills/docx')
+    expect(r.matchCount).toBe(1)
+  })
+  it('falls back to discovered name when skillId misses', () => {
+    const r = matchSearchHit([{ name: 'pdf', description: '', relativePath: 'skills/pdf' }], { skillId: 'nope', name: 'pdf' })
+    expect(r.skill?.relativePath).toBe('skills/pdf')
+    expect(r.matchCount).toBe(1)
+  })
+  it('returns zero matches when neither skillId nor name matches', () => {
+    const r = matchSearchHit(skills, { skillId: 'zzz', name: 'yyy' })
+    expect(r.skill).toBeNull()
+    expect(r.matchCount).toBe(0)
+  })
+  it('reports matchCount above 1 when several dirs share a basename', () => {
+    const r = matchSearchHit(skills, { skillId: 'pdf', name: 'pdf' })
+    expect(r.matchCount).toBe(2)
+    expect(r.skill?.relativePath).toBe('skills/pdf')  // first in order
   })
 })
