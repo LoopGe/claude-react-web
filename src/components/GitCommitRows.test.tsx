@@ -11,7 +11,7 @@ vi.mock('../hooks/useApi', () => ({
 }))
 
 import { CommitRow } from './GitCommitRows'
-import { isWriteKeyInert } from './GitPanel'
+import { isWriteKeyInert } from './git-keyboard'
 
 const HASH = 'a'.repeat(40)
 
@@ -108,6 +108,27 @@ describe('CommitRow', () => {
     renderRow()
     fireEvent.click(screen.getByText('second'))
     expect(await screen.findByText('extra detail here')).toBeTruthy()
+  })
+
+  it('commit header is focusable and toggles the accordion with Enter and Space', async () => {
+    renderRow()
+    const header = screen.getByRole('button', { name: /second/ })
+    expect(header.getAttribute('tabindex')).toBe('0')
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+
+    // Focusable: focusing it moves activeElement there.
+    header.focus()
+    expect(document.activeElement).toBe(header)
+
+    // Enter expands.
+    fireEvent.keyDown(header, { key: 'Enter' })
+    expect(await screen.findByText('a.txt')).toBeTruthy()
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+
+    // Space collapses (its default — panel scroll — is prevented by the row).
+    fireEvent.keyDown(header, { key: ' ' })
+    expect(screen.queryByText('a.txt')).toBeNull()
+    expect(header.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('collapse → re-expand does not refetch the file list', async () => {

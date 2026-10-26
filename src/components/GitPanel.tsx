@@ -27,6 +27,7 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { FileViewer } from './FileViewer'
 import { GitFileRow } from './GitFileRow'
 import { CommitRow } from './GitCommitRows'
+import { isWriteKeyInert } from './git-keyboard'
 import { AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
 import { IconX, IconSparkles, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconSearch } from './icons/ToolIcons'
@@ -78,17 +79,6 @@ function sumChanges(files: GitFileEntry[]): ChangeTotals {
     deletions += f.deletions ?? 0
   }
   return { insertions, deletions }
-}
-
-/** Whether the s/u/x write keys are inert for a keyboard-selection kind.
- *  A commit's file rows are read-only history — stage/unstage/discard must
- *  never fire against them — so those keys bail before preventDefault or
- *  any write op. Exported as a pure helper so the guard is the test
- *  surface (mounting GitPanel to test a one-line guard is not worth it). */
-export function isWriteKeyInert(
-  kind: 'unstaged' | 'staged' | 'untracked' | 'commit-file',
-): boolean {
-  return kind === 'commit-file'
 }
 
 /** Confirmation dialog state — driven by file-row and section actions

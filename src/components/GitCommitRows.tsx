@@ -72,7 +72,26 @@ export function CommitRow({
   const bodyText = body || data?.commit.body || ''
 
   return (
-    <li className={`git-commit ${expanded ? 'open' : ''}`} onClick={onToggle}>
+    // The row header is an activatable control: focusable, Enter/Space
+    // toggle it, and aria-expanded tracks the accordion — so a keyboard- or
+    // AT-only user can open a commit at all. (The file rows inside an
+    // already-expanded commit ride the existing Selectable path.)
+    <li
+      className={`git-commit ${expanded ? 'open' : ''}`}
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          onToggle()
+        } else if (e.key === ' ') {
+          // Space would scroll the panel otherwise.
+          e.preventDefault()
+          onToggle()
+        }
+      }}
+    >
       <code className="git-commit-hash" title={hash}>{hash.slice(0, 7)}</code>
       <span className="git-commit-subject">{subject}</span>
       <span className="git-commit-meta">
