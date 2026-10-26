@@ -5,8 +5,7 @@ import { cloneElement, isValidElement, lazy, Suspense, useCallback, useEffect, u
 import { api } from '../hooks/useApi'
 import { useLocalStorage } from '../hooks/useLocalStorage'
 import { getHostCapabilities } from '../host-capabilities'
-import { clamp } from '../utils/clamp'
-import { RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../constants/recentKeys'
+import { RECENT_CWDS_KEY } from '../constants/recentKeys'
 import { isStringArray } from '../../shared/type-guards'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
@@ -1502,15 +1501,10 @@ function SkillsTab({
   const [cwdOverride, setCwdOverride] = useState<string | null>(null)
   const cwd = cwdOverride ?? defaultCwd
   // Recent projects — the SAME MRU list the New Session dialog offers, so a
-  // project used there is pickable here and vice versa.
-  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
-  const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
-  const recentCwdsCap = clamp(Math.round(recentCwdsCapRaw), 3, 50)
-  const rememberCwd = (raw: string) => {
-    const v = raw.trim()
-    if (!v) return
-    setRecentCwds((prev) => [v, ...prev.filter((x) => x !== v)].slice(0, recentCwdsCap))
-  }
+  // project used there is pickable here and vice versa. The write half
+  // (setRecentCwds / rememberCwd / the recentCwdsCap clamp) lands with the
+  // browse-project picker that first calls it.
+  const [recentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const directoryInputProps = { webkitdirectory: '', directory: '' } as Record<string, string>
 
