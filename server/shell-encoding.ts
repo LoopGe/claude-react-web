@@ -96,3 +96,111 @@ export function resolveShellEncoding(): string {
   log.debug(`shell output encoding: ${cached}`)
   return cached
 }
+
+/** Decode one captured output stream (stdout or stderr) to a string.
+ *
+ *  Strategy: strict UTF-8 first, shell codepage second. Modern tools (Node,
+ *  npm, npx, git, most CLIs) write UTF-8 to a pipe regardless of console
+ *  codepage, so they decode cleanly at step 1. Legacy emitters — cmd.exe's
+ *  own localised messages, Python under a non-UTF-8 locale — write OEM
+ *  bytes (e.g. CP936/GBK) which are NOT valid UTF-8 and fall through to the
+ *  codepage decoder.
+ *
+ *  Unconditional codepage decoding (the previous behaviour) mojibakes the
+ *  UTF-8 majority; unconditional UTF-8 mojibakes the legacy case. The
+ *  strict-try splits them without a detector library. Mixed-encoding
+ *  streams within one capture fall back to the codepage — same as the old
+ *  behaviour, never worse.
+ *
+ *  Known limitation: a run of GBK bytes can, by chance, form valid UTF-8
+ *  (e.g. 系统 → CF B5 CD B3, also UTF-8 for "ϵͳ"). Those decode as UTF-8
+ *  instead of falling back. Probed on this host: full cmd.exe error strings
+ *  are safe (long enough that some pair breaks UTF-8 validity), but several
+ *  short 2-char words are not (系统/模式/目录/状态/杀 — 5 of 35 common
+ *  words). Closing this needs a chardetng-style detector (plan B) or
+ *  forcing UTF-8 at the shell boundary — out of scope here.
+ *
+ *  `fallbackLabel` is a WHATWG TextDecoder label and defaults to the
+ *  detected shell encoding; tests pass it explicitly to stay
+ *  platform-independent. */
+/** True when the last `strip` bytes of `bytes` are a real incomplete UTF-8
+ *  sequence: a lead byte whose total sequence length exceeds `strip`, with
+ *  only continuation bytes after it. */
+function isTruncatedUtf8Tail(bytes: Uint8Array, strip: number): boolean {
+  const start = bytes.length - strip
+  const lead = bytes[start]
+  // UTF-8 lead-byte ranges: 110xxxxx (2-byte) … 11110xxx (4-byte).
+  // 0xC0/0xC1 are the UTF-8 overlong leads — never appear in real output.
+  let seqLen: number
+  if (lead >= 0xc2 && lead <= 0xdf) seqLen = 2
+  else if (lead >= 0xe0 && lead <= 0xef) seqLen = 3
+  else if (lead >= 0xf0 && lead <= 0xf4) seqLen = 4
+  else return false
+  if (seqLen <= strip) return false // the sequence would have been complete
+  for (let i = start + 1; i < bytes.length; i++) {
+    if ((bytes[i] & 0xc0) !== 0x80) return false // not a continuation byte
+  }
+  return true
+}
+
+/** Decode one captured output stream (stdout or stderr) to a string.
+ *
+ *  Strategy: strict UTF-8 first, shell codepage second. Modern tools (Node,
+ *  npm, npx, git, most CLIs) write UTF-8 to a pipe regardless of console
+ *  codepage, so they decode cleanly at step 1. Legacy emitters — cmd.exe's
+ *  own localised messages, Python under a non-UTF-8 locale — write OEM
+ *  bytes (e.g. CP936/GBK) which are NOT valid UTF-8 and fall through to the
+ *  codepage decoder.
+ *
+ *  Unconditional codepage decoding (the previous behaviour) mojibakes the
+ *  UTF-8 majority; unconditional UTF-8 mojibakes the legacy case. The
+ *  strict-try splits them without a detector library. Mixed-encoding
+ *  streams within one capture fall back to the codepage — same as the old
+ *  behaviour, never worse.
+ *
+ *  Truncated tail (SIGKILL mid-sequence): the incomplete 1–3 byte tail is
+ *  dropped and replaced with U+FFFD so it cannot drag the rest of an
+ *  otherwise-valid UTF-8 stream into the codepage fallback. The rescue only
+ *  fires on positive UTF-8 evidence — the prefix must decode as UTF-8 and
+ *  contain a multi-byte character — because 1024 GBK hanzi (lead E0–EF ×
+ *  trail 80–BF) are byte-identical to a truncated 3-byte UTF-8 sequence,
+ *  and an ASCII prefix cannot tell the two apart. Empty prefix (the whole
+ *  capture IS the incomplete sequence) is rescued unconditionally.
+ *
+ *  Known limitation: a run of GBK bytes can, by chance, form valid UTF-8
+ *  (e.g. 系统 → CF B5 CD B3, also UTF-8 for "ϵͳ"). Those decode as UTF-8
+ *  instead of falling back. Probed on this host: full cmd.exe error strings
+ *  are safe (long enough that some pair breaks UTF-8 validity), but several
+ *  short 2-char words are not (系统/模式/目录/状态/杀 — 5 of 35 common
+ *  words). Closing this needs a chardetng-style detector (plan B) or
+ *  forcing UTF-8 at the shell boundary — out of scope here.
+ *
+ *  `fallbackLabel` is a WHATWG TextDecoder label and defaults to the
+ *  detected shell encoding; tests pass it explicitly to stay
+ *  platform-independent. */
+export function decodeShellBytes(bytes: Uint8Array, fallbackLabel?: string): string {
+  if (bytes.length === 0) return ''
+  const utf8 = () => new TextDecoder('utf-8', { fatal: true })
+  try {
+    return utf8().decode(bytes)
+  } catch {
+    // strip === bytes.length is allowed: the whole capture can be just the
+    // incomplete sequence, and its correct rendering is U+FFFD.
+    for (let strip = 1; strip <= 3 && strip <= bytes.length; strip++) {
+      if (!isTruncatedUtf8Tail(bytes, strip)) continue
+      const prefix = bytes.subarray(0, bytes.length - strip)
+      // Positive UTF-8 evidence before rescuing: a multi-byte character in
+      // the prefix, or no prefix at all. An ASCII-only prefix is ambiguous
+      // — the tail may be a complete GBK hanzi that merely mimics a
+      // truncated sequence — so we leave it to the codepage decoder.
+      const hasUtf8Evidence = prefix.length === 0 || prefix.some((b) => b >= 0x80)
+      if (!hasUtf8Evidence) continue
+      try {
+        return utf8().decode(prefix) + '�'
+      } catch {
+        /* prefix still invalid — try a longer strip / fall through */
+      }
+    }
+    return new TextDecoder(fallbackLabel ?? resolveShellEncoding()).decode(bytes)
+  }
+}

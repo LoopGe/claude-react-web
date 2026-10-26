@@ -16,7 +16,7 @@
 import { spawn } from 'node:child_process'
 import { TextDecoder } from 'node:util'
 import { createLogger } from './log.js'
-import { resolveShellEncoding } from './shell-encoding.js'
+import { decodeShellBytes } from './shell-encoding.js'
 import { COMMAND_PREVIEW_CAP } from './constants.js'
 
 const log = createLogger('exec')
@@ -80,35 +80,34 @@ function capOutput(raw: string): { text: string; truncated: boolean } {
 export function execCommand(cwd: string, command: string, opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve) => {
     const { binary, flag } = resolveShell()
-    let stdout = ''
-    let stderr = ''
+    // Raw bytes are accumulated per stream and decoded once at the end by
+    // decodeShellBytes (strict UTF-8 first, shell codepage fallback). The
+    // encoding choice needs the whole buffer — a UTF-8 sequence split across
+    // chunks must not be judged mid-character — so we cannot decode
+    // incrementally for the authoritative result. onProgress still gets live
+    // lines via a best-effort UTF-8 streaming decoder below (progress is
+    // ephemeral UI; the bash card's body is the decoded result).
+    const raw: Record<'stdout' | 'stderr', Buffer[]> = { stdout: [], stderr: [] }
     let lineBuf = ''
     let settled = false
 
-    // Decode captured bytes with the shell's actual output encoding rather
-    // than assuming UTF-8: cmd.exe on non-English Windows emits localised
-    // messages in the OEM codepage (e.g. CP936/GBK), which mojibake under
-    // UTF-8. TextDecoder with { stream: true } keeps state across chunks so
-    // multibyte sequences split on a chunk boundary are reassembled, not
-    // broken mid-character. One decoder per bucket (they are stateful).
-    const encoding = resolveShellEncoding()
-    const decoders: Readonly<Record<'stdout' | 'stderr', TextDecoder>> = {
-      stdout: new TextDecoder(encoding, { fatal: false }),
-      stderr: new TextDecoder(encoding, { fatal: false }),
+    // Best-effort UTF-8 for live progress lines only. stream:true keeps
+    // multibyte sequences split across chunks intact. UTF-8 because that is
+    // what modern tools emit; a GBK line may show mojibake here transiently
+    // but is correct in the final result. One decoder per stream so an
+    // interleaved stdout/stderr chunk pair can't splice their partial
+    // multibyte sequences together. (lineBuf below is still shared across
+    // both streams — pre-existing, and progress lines are best-effort.)
+    const progressDecoders: Readonly<Record<'stdout' | 'stderr', TextDecoder>> = {
+      stdout: new TextDecoder('utf-8', { fatal: false }),
+      stderr: new TextDecoder('utf-8', { fatal: false }),
     }
 
     const finish = (partial: Partial<ExecResult>) => {
       if (settled) return
       settled = true
-      // Flush any trailing multibyte bytes still buffered in the decoders.
-      try {
-        const tailOut = decoders.stdout.decode()
-        const tailErr = decoders.stderr.decode()
-        if (tailOut) stdout += tailOut
-        if (tailErr) stderr += tailErr
-      } catch {
-        /* ignore trailing-byte decode failures */
-      }
+      const stdout = decodeShellBytes(Buffer.concat(raw.stdout))
+      const stderr = decodeShellBytes(Buffer.concat(raw.stderr))
       const cappedOut = capOutput(stdout)
       const cappedErr = capOutput(stderr)
       resolve({
@@ -136,11 +135,9 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
 
     const onChunk = (stream: NodeJS.ReadableStream, bucket: 'stdout' | 'stderr') => {
       stream.on('data', (chunk: Buffer) => {
-        const text = decoders[bucket].decode(chunk, { stream: true })
-        if (bucket === 'stdout') stdout += text
-        else stderr += text
+        raw[bucket].push(chunk)
         // Line-buffer for progress: emit complete lines as they arrive.
-        lineBuf += text
+        lineBuf += progressDecoders[bucket].decode(chunk, { stream: true })
         let nl: number
         while ((nl = lineBuf.indexOf('\n')) >= 0) {
           const line = lineBuf.slice(0, nl)
