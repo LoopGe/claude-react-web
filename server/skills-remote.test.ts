@@ -57,10 +57,10 @@ describe('discoverSkills', () => {
     const { base, cleanup } = await makeTree()
     try {
       await writeSkill(base, 'node_modules/x', skillDoc({ name: 'x', description: 'nope' }))
-      await writeSkill(base, 'a/b/c/d/e', skillDoc({ name: 'too-deep', description: 'nope' }))
-      await writeSkill(base, 'a/b/c/d', skillDoc({ name: 'd', description: 'ok' }))
+      await writeSkill(base, 'a/b/c/d/e/f', skillDoc({ name: 'too-deep', description: 'nope' }))
+      await writeSkill(base, 'a/b/c/d/e', skillDoc({ name: 'e', description: 'ok' }))
       const found = await discoverSkills(base)
-      expect(found.map((s) => s.relativePath)).toEqual(['a/b/c/d'])
+      expect(found.map((s) => s.relativePath)).toEqual(['a/b/c/d/e'])
     } finally {
       await cleanup()
     }
@@ -68,13 +68,16 @@ describe('discoverSkills', () => {
 
   it('ignores a skill deeper than the depth limit even when no ancestor is a skill dir', async () => {
     // Isolates the depth rule from "don't descend into a SKILL.md dir":
-    // base/a/b/c/d/e is 5 levels below the base, so it is never visited.
+    // base/a/b/c/d/e/f is 6 levels below the base (depth 6), so it is never
+    // visited, while base/a/b/c/d/e (depth 5) is the boundary and is found.
     const { base, cleanup } = await makeTree()
     try {
-      await mkdir(join(base, 'a', 'b', 'c', 'd'), { recursive: true })
-      await writeSkill(base, 'a/b/c/d/e', skillDoc({ name: 'too-deep', description: 'nope' }))
+      await mkdir(join(base, 'a', 'b', 'c', 'd', 'e'), { recursive: true })
+      await writeSkill(base, 'a/b/c/d/e/f', skillDoc({ name: 'too-deep', description: 'nope' }))
+      expect(await discoverSkills(base)).toEqual([])
+      await writeSkill(base, 'a/b/c/d/e', skillDoc({ name: 'boundary', description: 'ok' }))
       const found = await discoverSkills(base)
-      expect(found).toEqual([])
+      expect(found.map((s) => s.relativePath)).toEqual(['a/b/c/d/e'])
     } finally {
       await cleanup()
     }

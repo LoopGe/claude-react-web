@@ -18,9 +18,9 @@ export const SKIP_DIRS = [
 /**
  * Deepest level of the walk that may hold a SKILL.md. `depth` counts
  * directory levels below `baseDir` (the base itself is 0), and a directory is
- * only entered while `depth < MAX_SKILL_DEPTH` — so `base/a/b/c/d` (depth 4)
- * is the deepest discoverable skill and `base/a/b/c/d/e` (depth 5) is never
- * visited. (Depth 5 counting the base as one of the five levels.)
+ * entered while `depth <= MAX_SKILL_DEPTH` — so `base/a/b/c/d/e` (depth 5) is
+ * the deepest discoverable skill and `base/a/b/c/d/e/f` (depth 6) is never
+ * visited.
  */
 export const MAX_SKILL_DEPTH = 5
 
@@ -42,7 +42,7 @@ async function walk(
   depth: number,
   found: DiscoveredSkill[],
 ): Promise<void> {
-  if (depth >= MAX_SKILL_DEPTH) return
+  if (depth > MAX_SKILL_DEPTH) return
 
   const entries = await fs.readdir(dir, { withFileTypes: true })
   const skillEntry = entries.find((e) => e.isFile() && e.name === 'SKILL.md')
