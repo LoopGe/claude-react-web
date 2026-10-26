@@ -26,6 +26,7 @@ import { api } from '../hooks/useApi'
 import { ConfirmDialog } from './ConfirmDialog'
 import { FileViewer } from './FileViewer'
 import { GitFileRow } from './GitFileRow'
+import { CommitRow } from './GitCommitRows'
 import { AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
 import { IconX, IconSparkles, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconSearch } from './icons/ToolIcons'
@@ -34,13 +35,14 @@ import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatePresence } from 'motion/react'
 import type {
+  GitCommitResponse,
   GitDiff,
   GitFileEntry,
+  GitRangeFile,
   GitStatusResponse,
 } from '../../shared/git-types'
 import { gitStatusTitle } from '../utils/git-status'
 import { formatError } from '../utils/format-error'
-import { formatRelativeFromMs } from '../utils/format'
 
 interface Props {
   /** Session id powering the per-session POST routes (writes) and WS
@@ -78,6 +80,17 @@ function sumChanges(files: GitFileEntry[]): ChangeTotals {
   return { insertions, deletions }
 }
 
+/** Whether the s/u/x write keys are inert for a keyboard-selection kind.
+ *  A commit's file rows are read-only history — stage/unstage/discard must
+ *  never fire against them — so those keys bail before preventDefault or
+ *  any write op. Exported as a pure helper so the guard is the test
+ *  surface (mounting GitPanel to test a one-line guard is not worth it). */
+export function isWriteKeyInert(
+  kind: 'unstaged' | 'staged' | 'untracked' | 'commit-file',
+): boolean {
+  return kind === 'commit-file'
+}
+
 /** Confirmation dialog state — driven by file-row and section actions
  *  that need user sign-off before mutating. The whole structure gets
  *  cleared on confirm or cancel. */
@@ -104,6 +117,14 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   // File-filter query and keyboard-selection index across the visible rows.
   const [filter, setFilter] = useState('')
   const [selectedIdx, setSelectedIdx] = useState(0)
+  // Expanded commit accordion (one at a time) + its file-list cache. The
+  // cache lives HERE, not per row, so collapsing a commit (or the whole
+  // Recent-commits section) and re-expanding never refetches. Held in state
+  // rather than a ref because it is READ during render (the keyboard list
+  // folds the open commit's files in); the instance is created once and only
+  // ever mutated by useCachedCommitFiles' write-through, never replaced.
+  const [expandedCommit, setExpandedCommit] = useState<string | null>(null)
+  const [commitFileCache] = useState(() => new Map<string, GitCommitResponse>())
   const panelRef = useRef<HTMLElement | null>(null)
 
   // Focus the panel on open so ↑↓/s/u/x/Enter keyboard selection works
@@ -118,6 +139,11 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   // Stable so memoized rows keep a fixed prop reference. Clicking a row moves
   // the keyboard-selection highlight to that row's flattened index.
   const selectRow = useCallback((index: number) => setSelectedIdx(index), [])
+
+  // Commit accordion: one commit open at a time; clicking an open one collapses it.
+  const toggleCommit = useCallback((hash: string) => {
+    setExpandedCommit((prev) => (prev === hash ? null : hash))
+  }, [])
 
   // Stable so memoized FileRow/UntrackedRow don't re-render when it's passed
   // down. Git status paths are relative to the WORK TREE ROOT (repoRoot),
@@ -239,12 +265,31 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const stagedVisible = status.staged.filter((f) => matchesFilter(f.path))
   const untrackedVisible = status.untracked.filter((f) => matchesFilter(f.path))
 
-  type Selectable = { kind: 'unstaged' | 'staged' | 'untracked'; file: GitFileEntry }
-  const selectable: Selectable[] = [
-    ...unstagedVisible.map((file) => ({ kind: 'unstaged' as const, file })),
-    ...stagedVisible.map((file) => ({ kind: 'staged' as const, file })),
-    ...untrackedVisible.map((file) => ({ kind: 'untracked' as const, file })),
-  ]
+  type Selectable =
+    | { kind: 'unstaged' | 'staged' | 'untracked'; file: GitFileEntry }
+    | { kind: 'commit-file'; file: GitRangeFile; commitHash: string }
+
+  // The keyboard list must see the expanded commit's file rows as soon as
+  // they land: the cache is written from CommitRow's effect (a child state
+  // update) which does NOT re-render GitPanel, so a render-captured array
+  // would keep them unreachable until an unrelated state change. Rebuild
+  // from the live Map — the three worktree lists only change on a
+  // re-render anyway, so closing over them is safe.
+  function buildSelectable(): Selectable[] {
+    const rows: Selectable[] = [
+      ...unstagedVisible.map((file) => ({ kind: 'unstaged' as const, file })),
+      ...stagedVisible.map((file) => ({ kind: 'staged' as const, file })),
+      ...untrackedVisible.map((file) => ({ kind: 'untracked' as const, file })),
+    ]
+    if (expandedCommit) {
+      const commitFiles = commitFileCache.get(expandedCommit)?.files ?? []
+      for (const file of commitFiles) {
+        rows.push({ kind: 'commit-file', file, commitHash: expandedCommit })
+      }
+    }
+    return rows
+  }
+  const selectable = buildSelectable()
   const selIdx = Math.min(selectedIdx, Math.max(selectable.length - 1, 0))
   const selected = selectable[selIdx]
 
@@ -257,10 +302,17 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
     // Don't run git shortcuts while the read-only file viewer modal is open.
     if (viewing) return
-    if (selectable.length === 0) return
-    if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIdx((i) => Math.min(i + 1, selectable.length - 1)); return }
+    // Live rebuild (see buildSelectable) — the commit's files may have
+    // landed in the cache since this render.
+    const rows = buildSelectable()
+    if (rows.length === 0) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSelectedIdx((i) => Math.min(i + 1, rows.length - 1)); return }
     if (e.key === 'ArrowUp') { e.preventDefault(); setSelectedIdx((i) => Math.max(i - 1, 0)); return }
+    const curIdx = Math.min(selectedIdx, Math.max(rows.length - 1, 0))
+    const selected = rows[curIdx]
     if (!selected) return
+    // s/u/x mutate the working tree — inert on read-only commit file rows.
+    if ((e.key === 's' || e.key === 'u' || e.key === 'x') && isWriteKeyInert(selected.kind)) return
     if (e.key === 's') {
       e.preventDefault()
       if (selected.kind !== 'staged') void runOp('Stage', () => writeOps.stage([selected.file.path]))
@@ -599,7 +651,18 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       />
 
       <Section title="Recent commits" count={null} defaultOpen={false}>
-        <CommitList cwd={cwd} />
+        <CommitList
+          cwd={cwd}
+          expandedCommit={expandedCommit}
+          onToggleCommit={toggleCommit}
+          commitFileCache={commitFileCache}
+          selectedPath={selected?.kind === 'commit-file' ? selected.file.path : null}
+          onSelectFile={(path) => {
+            const rows = buildSelectable()
+            const i = rows.findIndex((s) => s.kind === 'commit-file' && s.file.path === path)
+            if (i >= 0) setSelectedIdx(i)
+          }}
+        />
       </Section>
       </div>
 
@@ -612,6 +675,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         generateBusy={writeOps.busyOps.has('commit-message')}
         message={commitMessage}
         setMessage={setCommitMessage}
+        readOnlySelection={selected?.kind === 'commit-file'}
         onError={(err) => toast.error(`Commit: ${err}`)}
         askConfirm={askThenRun}
       />
@@ -932,6 +996,9 @@ interface CommitBarProps {
   generateBusy: boolean
   message: string
   setMessage: (m: string) => void
+  /** True when the keyboard selection is a read-only commit file row — the
+   *  footer hint then drops the s/u/x verbs. */
+  readOnlySelection: boolean
   onError: (err: string) => void
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
 }
@@ -945,6 +1012,7 @@ function CommitBar({
   generateBusy,
   message,
   setMessage,
+  readOnlySelection,
   onError,
   askConfirm,
 }: CommitBarProps) {
@@ -1032,7 +1100,9 @@ function CommitBar({
             }
           >Amend last</button>
         )}
-        <span className="git-commit-hint" aria-hidden>↑↓ select · s stage · u unstage · x discard · Enter expand</span>
+        <span className="git-commit-hint" aria-hidden>
+          {readOnlySelection ? '↑↓ select · Enter expand' : '↑↓ select · s stage · u unstage · x discard · Enter expand'}
+        </span>
         <button
           type="button"
           className="btn btn-primary"
@@ -1306,21 +1376,48 @@ function StashesSection({ cwd, sessionId, writeOps, onError, askConfirm }: Stash
 
 // ── Recent commits ────────────────────────────────────────────────────
 
-function CommitList({ cwd }: { cwd: string | undefined }) {
+interface CommitListProps {
+  cwd: string | undefined
+  /** Hash of the one commit whose accordion is open, or null. */
+  expandedCommit: string | null
+  onToggleCommit: (hash: string) => void
+  /** GitPanel-owned hash → commit-detail cache (survives collapse). */
+  commitFileCache: Map<string, GitCommitResponse>
+  /** Path of the keyboard-selected commit file row, or null. */
+  selectedPath: string | null
+  onSelectFile: (path: string) => void
+}
+
+function CommitList({
+  cwd,
+  expandedCommit,
+  onToggleCommit,
+  commitFileCache,
+  selectedPath,
+  onSelectFile,
+}: CommitListProps) {
   const { data: commits, loading, error } = useGitLog(cwd, 30, true)
   if (loading) return <div className="git-commits-empty">Loading commits…</div>
   if (error) return <div className="git-commits-empty git-commits-error">{error}</div>
-  if (!commits || commits.length === 0) return <div className="git-commits-empty">No commits yet</div>
+  // Without a cwd nothing can have loaded, so the same empty state covers it.
+  if (!cwd || !commits || commits.length === 0) return <div className="git-commits-empty">No commits yet</div>
   return (
     <ul className="git-commits-list">
       {commits.map((c) => (
-        <li key={c.hash} className="git-commit">
-          <code className="git-commit-hash" title={c.hash}>{c.shortHash}</code>
-          <span className="git-commit-subject">{c.subject}</span>
-          <span className="git-commit-meta">
-            {c.author} · {formatRelativeFromMs(c.date)}
-          </span>
-        </li>
+        <CommitRow
+          key={c.hash}
+          cwd={cwd}
+          hash={c.hash}
+          subject={c.subject}
+          author={c.author}
+          date={c.date}
+          body={commitFileCache.get(c.hash)?.commit.body ?? ''}
+          expanded={expandedCommit === c.hash}
+          onToggle={() => onToggleCommit(c.hash)}
+          cache={commitFileCache}
+          selectedPath={expandedCommit === c.hash ? selectedPath : null}
+          onSelectFile={onSelectFile}
+        />
       ))}
     </ul>
   )

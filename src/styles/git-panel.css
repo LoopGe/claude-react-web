@@ -434,7 +434,10 @@
   color: var(--fg);
 }
 
-/* Recent commits list — compact, hash-prefix, subject mid, meta tail. */
+/* Recent commits list — compact, hash-prefix, subject mid, meta tail.
+   Each row is a clickable accordion: collapsed it is exactly the three-cell
+   grid below; expanded it adds a full-width `.git-commit-detail` (body +
+   file rows) as a second grid row. */
 .git-commits-list {
   list-style: none;
   margin: 0;
@@ -443,14 +446,36 @@
 .git-commit {
   display: grid;
   grid-template-columns: auto 1fr auto;
-  gap: var(--space-2);
+  column-gap: var(--space-2);
   align-items: baseline;
   padding: 5px 12px 5px 24px;
   font-size: var(--fs-sm);
   border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  cursor: pointer;
 }
 .git-commit:first-child { border-top: 0; }
 .git-commit:hover { background: var(--btn-hover-bg); }
+/* Expanded half of the commit row: the message body and the file rows.
+   Spans the header grid, and paints an opaque panel background so the
+   row's own hover tint can't wash out the nested rows' hover bars (they
+   use the same --btn-hover-bg). The left rail + the rows' own padding
+   indent the files under the commit so the hierarchy reads. */
+.git-commit-detail {
+  grid-column: 1 / -1;
+  cursor: default;
+  margin-top: var(--space-1);
+  border-left: 2px solid var(--border);
+  background: var(--bg-elev);
+}
+.git-commit-body {
+  padding: var(--space-1-5) var(--space-3) 0 var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  /* Long messages stay clamped instead of owning the panel. */
+  max-height: 8em;
+  overflow: auto;
+}
 .git-commit-hash {
   font-family: var(--mono);
   color: var(--accent-text);
