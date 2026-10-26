@@ -672,6 +672,39 @@ describe('GlobalSettingsModal Skills remote install', () => {
     })
   })
 
+  it('shows the Installed badge only in the scope it was installed to', async () => {
+    // Install into Project (the default scope), then flip the Project/User
+    // toggle: the badge must not claim the skill is installed in User scope.
+    vi.mocked(api.post).mockImplementation((path: string) => {
+      if (path === '/skills/remote/preview') {
+        return Promise.resolve({
+          source: 'org/repo',
+          skills: [{ name: 'react-helper', description: 'Does react things', relativePath: 'skills/react-helper' }],
+        })
+      }
+      return Promise.resolve({
+        installed: [{ name: 'react-helper', relativePath: 'skills/react-helper' }],
+        failed: [],
+      })
+    })
+    const input = await openSkillsTab({ defaults: { cwd: '/work/proj' } }, [catalogHit()])
+    fireEvent.change(input, { target: { value: 'react' } })
+    await waitFor(() => expect(remote().getByRole('button', { name: 'Install' })).toBeTruthy())
+    fireEvent.click(remote().getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(remote().getByText('✓ Installed')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'User' }))
+    await waitFor(() => expect(remote().queryByText('✓ Installed')).toBeNull())
+    expect(remote().getByRole('button', { name: 'Install' })).toBeTruthy()
+  })
+
+  it('heads the catalog section "Browse skills"', async () => {
+    await openSkillsTab({})
+    // The spec (§1) names the section heading; the search input keeps its
+    // own "Browse skills" aria-label.
+    expect(screen.getByRole('heading', { name: 'Browse skills' })).toBeTruthy()
+  })
+
   it('shows an inline error when the skill is not found in the repo', async () => {
     // The preview discovers the clone's skills — none of them is this hit.
     vi.mocked(api.post).mockImplementation((path: string) => {

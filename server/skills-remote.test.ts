@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { gitClone } from './git-clone.js'
+import { HttpError } from './errors.js'
 import {
   cloneAndDiscover,
   discoverSkills,
@@ -18,8 +19,8 @@ import { rmRf } from './__test-utils__/index.js'
 // throws if it does) and drops a root-level SKILL.md so cloneAndDiscover has
 // something real to discover. A root-level skill's relativePath is '', which
 // pins the cache contract: the returned dir must be the clone root
-// (`join(tmp, 'repo')`), never the mkdtemp tree (that would surface as
-// relativePath 'repo/' — and break Task 4's install).
+// (`join(tmp, repo)`), never the mkdtemp tree (that would surface as
+// relativePath '<repo>/' — and break Task 4's install).
 vi.mock('./git-clone.js', () => ({
   gitClone: vi.fn(async (_url: string, dest: string) => {
     if (existsSync(dest)) throw new Error(`gitClone dest already exists: ${dest}`)
@@ -164,9 +165,11 @@ describe('cloneAndDiscover', () => {
         'https://github.com/vercel-labs/agent-skills.git',
         dir,
       )
-      // Cache contract: `dir` is the clone root (mkdtemp + 'repo'), so the
-      // root-level fixture skill reports relativePath '' — not 'repo'.
-      expect(basename(dir)).toBe('repo')
+      // Cache contract: `dir` is the clone root (mkdtemp + the repo segment),
+      // so the root-level fixture skill reports relativePath '' — not
+      // 'agent-skills'. The basename is the repo name, which is the name
+      // fallback for a root-level skill with no frontmatter.name.
+      expect(basename(dir)).toBe('agent-skills')
       expect(basename(dirname(dir)).startsWith('crw-skill-')).toBe(true)
       expect(skills).toEqual([{ name: 'demo', description: 'demo skill', relativePath: '' }])
     } finally {
@@ -179,9 +182,41 @@ describe('cloneAndDiscover', () => {
     expect(vi.mocked(gitClone)).not.toHaveBeenCalled()
   })
 
+  it('names a root-level skill with no frontmatter.name after the repo, not "repo"', async () => {
+    // Root SKILL.md with only a description: discoverSkills falls back to
+    // basename(cloneRoot), which must be the repo segment — the artificial
+    // tmp clone folder name would surface as the literal skill name "repo".
+    vi.mocked(gitClone).mockImplementationOnce(async (_url: string, dest: string) => {
+      if (existsSync(dest)) throw new Error(`gitClone dest already exists: ${dest}`)
+      mkdirSync(dest, { recursive: true })
+      writeFileSync(join(dest, 'SKILL.md'), skillDoc({ description: 'Root skill, unnamed' }), 'utf8')
+    })
+    const { dir, skills } = await cloneAndDiscover('acme/my-skills-repo')
+    try {
+      expect(skills).toEqual([
+        { name: 'my-skills-repo', description: 'Root skill, unnamed', relativePath: '' },
+      ])
+    } finally {
+      rmRf(dirname(dir))
+    }
+  })
+
   it('reuses the cached clone dir for a second call with the same source', async () => {
     const first = await cloneAndDiscover('cache-owner/cache-repo')
     const second = await cloneAndDiscover('cache-owner/cache-repo')
+    try {
+      expect(second.dir).toBe(first.dir)
+      expect(vi.mocked(gitClone)).toHaveBeenCalledTimes(1)
+    } finally {
+      rmRf(dirname(first.dir))
+    }
+  })
+
+  it('shares one cache entry across owner/repo and the github.com URL spelling', async () => {
+    // The cache key is the normalized owner/repo, so the same parsed repo
+    // never clones twice just because the source was spelled differently.
+    const first = await cloneAndDiscover('twins-owner/twins-repo')
+    const second = await cloneAndDiscover('https://github.com/twins-owner/twins-repo.git')
     try {
       expect(second.dir).toBe(first.dir)
       expect(vi.mocked(gitClone)).toHaveBeenCalledTimes(1)
@@ -256,6 +291,19 @@ describe('searchCatalog', () => {
   it('throws when skills.sh responds non-2xx', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('down', { status: 503 })))
     await expect(searchCatalog('react', 20)).rejects.toThrow(/status 503/)
+  })
+
+  it('throws 502 when the payload has no skills array', async () => {
+    // External wire input: a non-conforming body must read as an upstream
+    // failure, not an opaque TypeError 500.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ nope: true }), { status: 200 })))
+    const err = await searchCatalog('react', 20).then(
+      () => null,
+      (e: unknown) => e as HttpError,
+    )
+    expect(err).toBeInstanceOf(HttpError)
+    expect(err!.status).toBe(502)
+    expect(err!.message).toMatch(/malformed/i)
   })
 })
 

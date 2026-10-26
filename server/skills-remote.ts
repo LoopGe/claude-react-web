@@ -89,9 +89,11 @@ const CLONE_TTL_MS = 10 * 60 * 1000
 const SWEEP_INTERVAL_MS = 60_000
 
 interface CloneCacheEntry {
-  /** The clone root — `join(tmpRoot, 'repo')`. This is what `discoverSkills`
+  /** The clone root — `join(tmpRoot, repo)`. This is what `discoverSkills`
    *  walks and what `cloneAndDiscover` returns, so every `relativePath` is
-   *  relative to the clone root with no `repo/` prefix. */
+   *  relative to the clone root with no `repo/` prefix. Naming the child after
+   *  the repo keeps `basename(dir)` meaningful: a root-level skill with no
+   *  `frontmatter.name` falls back to it. */
   dir: string
   /** The mkdtemp tree root (parent of `dir`) — purely so the sweeper can `rm`
    *  the whole throwaway tree, not just the clone dir inside it. */
@@ -117,7 +119,8 @@ setInterval(sweep, SWEEP_INTERVAL_MS).unref()
 /**
  * Shallow-clone a GitHub repo into a throwaway temp tree and discover the
  * Agent Skills inside it. The clone is cached for `CLONE_TTL_MS` keyed on the
- * raw `source` string, so a repeated preview of the same repo reuses the same
+ * normalized `owner/repo` (so `owner/repo` and `https://github.com/owner/repo`
+ * share one entry), so a repeated preview of the same repo reuses the same
  * tree; after the TTL (or on a clone failure) the next call clones fresh.
  */
 export async function cloneAndDiscover(
@@ -128,29 +131,32 @@ export async function cloneAndDiscover(
     throw new HttpError(400, 'source must be owner/repo or a github.com URL')
   }
   const { owner, repo } = parsed
+  const cacheKey = `${owner}/${repo}`
 
-  const hit = cloneCache.get(source)
+  const hit = cloneCache.get(cacheKey)
   if (hit) {
     if (hit.expiresAt > Date.now()) {
       return { dir: hit.dir, skills: await discoverSkills(hit.dir) }
     }
     // Expired: drop it now and tear down its tree. Overwriting the key below
     // would hide it from the sweeper forever.
-    cloneCache.delete(source)
+    cloneCache.delete(cacheKey)
     await fs.rm(hit.tmpRoot, { recursive: true, force: true })
   }
 
   const tmpRoot = await fs.mkdtemp(join(tmpdir(), 'crw-skill-'))
   // gitClone requires the destination NOT to exist, so clone into a fresh
-  // child of the mkdtemp tree rather than the tree itself.
-  const dir = join(tmpRoot, 'repo')
+  // child of the mkdtemp tree rather than the tree itself. The child is named
+  // after the repo, so a root-level skill with no frontmatter.name falls back
+  // to the repo name instead of an artificial folder name.
+  const dir = join(tmpRoot, repo)
   try {
     await gitClone(`https://github.com/${owner}/${repo}.git`, dir)
   } catch (err) {
     await fs.rm(tmpRoot, { recursive: true, force: true })
     throw err
   }
-  cloneCache.set(source, { dir, tmpRoot, expiresAt: Date.now() + CLONE_TTL_MS })
+  cloneCache.set(cacheKey, { dir, tmpRoot, expiresAt: Date.now() + CLONE_TTL_MS })
   return { dir, skills: await discoverSkills(dir) }
 }
 
@@ -168,8 +174,14 @@ export async function searchCatalog(q: string, limit: number): Promise<RemoteSea
   if (!res.ok) {
     throw new HttpError(502, 'skills.sh search failed (status ' + res.status + ')')
   }
-  const body = (await res.json()) as { skills: unknown[] }
-  const hits: RemoteSearchHit[] = body.skills.map((raw) => {
+  // External wire input: a body without a `skills` array is an upstream
+  // failure, not a TypeError 500 out of `.map`.
+  const payload = (await res.json()) as { skills?: unknown } | null
+  const rawSkills = payload?.skills
+  if (!Array.isArray(rawSkills)) {
+    throw new HttpError(502, 'skills.sh search returned a malformed payload')
+  }
+  const hits: RemoteSearchHit[] = rawSkills.map((raw) => {
     const s = raw as Record<string, unknown>
     return {
       id: String(s.id ?? ''),

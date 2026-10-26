@@ -1062,6 +1062,8 @@ function RemoteInstallSection({
   const [searchError, setSearchError] = useState<string | null>(null)
   const [searching, setSearching] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
+  /** Installs recorded this session, keyed `${importScope}:${hit.id}` — a row
+   *  is only "installed" in the scope it was actually installed to. */
   const [installedIds, setInstalledIds] = useState<ReadonlySet<string>>(() => new Set())
   const [rowError, setRowError] = useState<Record<string, string>>({})
   const [replaceExisting, setReplaceExisting] = useState(false)
@@ -1135,7 +1137,7 @@ function RemoteInstallSection({
         setRowError((prev) => ({ ...prev, [hit.id]: result.failed[0].error }))
         return
       }
-      setInstalledIds((prev) => new Set(prev).add(hit.id))
+      setInstalledIds((prev) => new Set(prev).add(`${importScope}:${hit.id}`))
       onInstalled()
     } catch (e) {
       setRowError((prev) => ({ ...prev, [hit.id]: (e as Error).message }))
@@ -1148,7 +1150,7 @@ function RemoteInstallSection({
     <section className="settings-group settings-skill-remote-group">
       <div className="settings-group-head">
         <div className="settings-group-head-row">
-          <h4>Install from catalog</h4>
+          <h4>Browse skills</h4>
           <label className="settings-skill-overwrite">
             <input type="checkbox" checked={replaceExisting} onChange={(e) => setReplaceExisting(e.target.checked)} /> Replace existing
           </label>
@@ -1179,7 +1181,9 @@ function RemoteInstallSection({
           </button>
         )}
         {searchResults.map((hit) => {
-          const installed = installedIds.has(hit.id) || skills.some((s) => s.scope === importScope && s.name === hit.name)
+          const installed =
+            installedIds.has(`${importScope}:${hit.id}`) ||
+            skills.some((s) => s.scope === importScope && s.name === hit.name)
           return (
             <div key={hit.id} className="settings-skill-result-row">
               <span className="settings-skill-result-name">{hit.name}</span>
