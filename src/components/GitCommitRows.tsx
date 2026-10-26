@@ -83,11 +83,21 @@ export function CommitRow({
       aria-expanded={expanded}
       onClick={onToggle}
       onKeyDown={(e) => {
+        // Keys from a nested control (a file-row toggle, the full-diff
+        // modal's buttons) are that control's — handling them here would
+        // collapse the whole commit the user is working in, and Space
+        // would be cancelled outright.
+        if (e.target !== e.currentTarget) return
         if (e.key === 'Enter') {
+          // Don't let this reach the panel's key handler: its Enter branch
+          // clicks `.git-file-row.selected .git-file-row-toggle`, which
+          // would toggle a file diff open as a side effect of the commit.
+          e.stopPropagation()
           onToggle()
         } else if (e.key === ' ') {
           // Space would scroll the panel otherwise.
           e.preventDefault()
+          e.stopPropagation()
           onToggle()
         }
       }}

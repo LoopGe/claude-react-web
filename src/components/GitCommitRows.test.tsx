@@ -131,6 +131,41 @@ describe('CommitRow', () => {
     expect(header.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('nested controls keep their keys and the header Enter does not leak to the panel', async () => {
+    // A parent keydown listener stands in for GitPanel's handleKeyDown —
+    // if the row's keys escape to it, the panel clicks
+    // `.git-file-row.selected .git-file-row-toggle` as a side effect.
+    const panelKeys: string[] = []
+    render(
+      <div onKeyDown={(e) => panelKeys.push(e.key)}>
+        <Harness cache={new Map()} />
+      </div>,
+    )
+
+    // The header's Enter toggles the commit and is the row's alone: the
+    // panel must never see it (it would open a file diff as a side effect).
+    const header = screen.getByRole('button', { name: /second/ })
+    header.focus()
+    fireEvent.keyDown(header, { key: 'Enter' })
+    expect(await screen.findByText('a.txt')).toBeTruthy() // toggled → expanded
+    expect(panelKeys).not.toContain('Enter')
+    expect(screen.queryByText('beta')).toBeNull() // no diff opened as a side effect
+
+    // A nested control keeps its own keys: Enter/Space must not collapse the
+    // commit and must not be cancelled (Space is the one that used to be).
+    const nested = screen.getByText('a.txt').closest('button')!
+    nested.focus()
+    expect(fireEvent.keyDown(nested, { key: ' ' })).toBe(true) // not defaultPrevented
+    expect(screen.queryByText('a.txt')).toBeTruthy() // still expanded
+    fireEvent.keyDown(nested, { key: 'Enter' })
+    expect(screen.queryByText('a.txt')).toBeTruthy()
+    // …and the nested control's own activation is intact. fireEvent doesn't
+    // implement native button key-activation, so the click stands in for the
+    // Enter/Space → click the browser would fire on this button.
+    fireEvent.click(nested)
+    expect(await screen.findByText('beta')).toBeTruthy()
+  })
+
   it('collapse → re-expand does not refetch the file list', async () => {
     // The cache is owned at GitPanel level and keyed by hash; re-opening a
     // commit we already fetched must be free (and so must a fresh mount
