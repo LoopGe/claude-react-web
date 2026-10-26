@@ -21,7 +21,8 @@ import { DEFAULT_FONT_SIZE, FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../sh
 import type { AnimationSpeedPreset } from '../../shared/animation-speed'
 import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
-import type { SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
+import type { DiscoveredSkill, RemoteInstallResponse, RemotePreviewResponse, RemoteSearchHit, SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillScope, SkillsListResponse } from '../../shared/skills'
+import { matchSearchHit, parseOwnerRepo } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
@@ -1036,6 +1037,349 @@ function Segmented<T extends number | string>({
 }
 
 
+/** Skills tab — public skills.sh catalog search + one-click install.
+ *
+ *  `matchSearchHit` is deliberately fed the PREVIEW response's
+ *  `DiscoveredSkill[]` (clone-relative directories) and never the installed
+ *  `SkillRecord[]` prop: the two share `name`/`description`/`relativePath`
+ *  but `SkillRecord.relativePath` points at SKILL.md relative to cwd, so
+ *  passing the prop typechecks and silently installs the wrong path. */
+function RemoteInstallSection({
+  cwd,
+  importScope,
+  skills,
+  onInstalled,
+  onOpenPicker,
+}: {
+  cwd: string
+  importScope: SkillScope
+  skills: SkillRecord[]
+  onInstalled: () => void
+  onOpenPicker: (source: string) => void
+}) {
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<RemoteSearchHit[]>([])
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [installingId, setInstallingId] = useState<string | null>(null)
+  /** Installs recorded this session, keyed `${importScope}:${hit.id}` — a row
+   *  is only "installed" in the scope it was actually installed to. */
+  const [installedIds, setInstalledIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [rowError, setRowError] = useState<Record<string, string>>({})
+  const [replaceExisting, setReplaceExisting] = useState(false)
+  const searchAbortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (!q) {
+      searchAbortRef.current?.abort()
+      searchAbortRef.current = null
+      setSearchResults([])
+      setSearchError(null)
+      setSearching(false)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      searchAbortRef.current?.abort()
+      const controller = new AbortController()
+      searchAbortRef.current = controller
+      setSearching(true)
+      setSearchError(null)
+      void api
+        .get<{ skills: RemoteSearchHit[] }>(`/skills/search?q=${encodeURIComponent(q)}`, { signal: controller.signal })
+        .then((res) => {
+          if (controller.signal.aborted) return
+          setSearchResults(res.skills ?? [])
+        })
+        .catch((e) => {
+          if (controller.signal.aborted) return
+          setSearchError((e as Error).message)
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setSearching(false)
+        })
+    }, 300)
+    return () => {
+      window.clearTimeout(timer)
+      searchAbortRef.current?.abort()
+      searchAbortRef.current = null
+    }
+  }, [searchQuery])
+
+  const parsedRepo = parseOwnerRepo(searchQuery.trim())
+
+  const installHit = async (hit: RemoteSearchHit) => {
+    setInstallingId(hit.id)
+    setRowError((prev) => {
+      if (!(hit.id in prev)) return prev
+      const next = { ...prev }
+      delete next[hit.id]
+      return next
+    })
+    try {
+      const preview = await api.post<RemotePreviewResponse>('/skills/remote/preview', { source: hit.source })
+      const { skill, matchCount } = matchSearchHit(preview.skills, hit)
+      if (!skill) {
+        setRowError((prev) => ({ ...prev, [hit.id]: 'Not found in ' + hit.source }))
+        return
+      }
+      if (matchCount > 1) {
+        setRowError((prev) => ({ ...prev, [hit.id]: matchCount + ' matches — installed the first' }))
+      }
+      const result = await api.post<RemoteInstallResponse>('/skills/remote/install', {
+        source: hit.source,
+        scope: importScope,
+        cwd: importScope === 'project' ? cwd : undefined,
+        paths: [skill.relativePath],
+        overwrite: replaceExisting,
+      })
+      if (result.failed.length > 0) {
+        setRowError((prev) => ({ ...prev, [hit.id]: result.failed[0].error }))
+        return
+      }
+      setInstalledIds((prev) => new Set(prev).add(`${importScope}:${hit.id}`))
+      onInstalled()
+    } catch (e) {
+      setRowError((prev) => ({ ...prev, [hit.id]: (e as Error).message }))
+    } finally {
+      setInstallingId(null)
+    }
+  }
+
+  return (
+    <section className="settings-group settings-skill-remote-group">
+      <div className="settings-group-head">
+        <div className="settings-group-head-row">
+          <h4>Browse skills</h4>
+          <label className="settings-skill-overwrite">
+            <input type="checkbox" checked={replaceExisting} onChange={(e) => setReplaceExisting(e.target.checked)} /> Replace existing
+          </label>
+        </div>
+        <span className="settings-group-desc">Search the public skills.sh catalog, or paste a GitHub owner/repo.</span>
+      </div>
+      <div className="settings-group-body">
+        <div className="settings-skill-remote-head">
+          <input
+            className="input"
+            aria-label="Browse skills"
+            placeholder="Search skills.sh or paste owner/repo"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            spellCheck={false}
+          />
+          {searching && <span className="settings-note">Searching…</span>}
+        </div>
+        {searchError && <div className="settings-error">{searchError}</div>}
+        {parsedRepo && (
+          <button
+            type="button"
+            className="btn"
+            data-open-repo
+            onClick={() => onOpenPicker(parsedRepo.owner + '/' + parsedRepo.repo)}
+          >
+            Open repository
+          </button>
+        )}
+        {searchResults.map((hit) => {
+          const installed =
+            installedIds.has(`${importScope}:${hit.id}`) ||
+            skills.some((s) => s.scope === importScope && s.name === hit.name)
+          return (
+            <div key={hit.id} className="settings-skill-result-row">
+              <span className="settings-skill-result-name">{hit.name}</span>
+              <span className="settings-skill-result-source">{hit.source}</span>
+              <span className="settings-skill-result-installs">{hit.installs.toLocaleString()}</span>
+              {installed ? (
+                <span className="settings-skill-installed-badge">✓ Installed</span>
+              ) : (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={installingId === hit.id}
+                  onClick={() => void installHit(hit)}
+                >
+                  {installingId === hit.id ? 'Installing…' : 'Install'}
+                </button>
+              )}
+              <button type="button" className="btn" onClick={() => onOpenPicker(hit.source)}>
+                Browse
+              </button>
+              {rowError[hit.id] && <div className="settings-skill-row-error">{rowError[hit.id]}</div>}
+            </div>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+/** Multi-select install picker for one remote source (a `owner/repo` opened
+ *  via Browse / Open repository). Previews the source's skills, lets the user
+ *  tick a subset, then reports per-row ✓ / error WITHOUT closing — Done is the
+ *  only exit that refreshes the installed list. */
+function BatchPickerModal({
+  source,
+  cwd,
+  importScope,
+  onClose,
+  onInstalled,
+}: {
+  source: string
+  cwd: string
+  importScope: 'project' | 'user'
+  onClose: () => void
+  onInstalled: () => void
+}) {
+  const [skills, setSkills] = useState<DiscoveredSkill[]>([])
+  // Starts true: the modal mounts per source (SkillsTab unmounts it whenever
+  // pickerSource goes null), so the preview fetch is always in flight on the
+  // first render and never needs a synchronous setLoading in the effect body.
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [replaceExisting, setReplaceExisting] = useState(false)
+  const [phase, setPhase] = useState<'select' | 'installing' | 'done'>('select')
+  const [results, setResults] = useState<RemoteInstallResponse | null>(null)
+
+  useEffect(() => {
+    let live = true
+    api.post<RemotePreviewResponse>('/skills/remote/preview', { source })
+      .then((res) => {
+        if (live) setSkills(res.skills ?? [])
+      })
+      .catch((e) => {
+        if (live) setError((e as Error).message)
+      })
+      .finally(() => {
+        if (live) setLoading(false)
+      })
+    return () => { live = false }
+  }, [source])
+
+  const visible = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return skills
+    return skills.filter(
+      (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+    )
+  }, [skills, filter])
+
+  const allVisibleSelected = visible.length > 0 && visible.every((s) => selected.has(s.relativePath))
+  const toggleAllVisible = () => {
+    const next = new Set(selected)
+    for (const s of visible) {
+      if (allVisibleSelected) next.delete(s.relativePath)
+      else next.add(s.relativePath)
+    }
+    setSelected(next)
+  }
+  const toggleOne = (path: string) => {
+    const next = new Set(selected)
+    if (next.has(path)) next.delete(path)
+    else next.add(path)
+    setSelected(next)
+  }
+
+  // Install outcome per row, keyed by relativePath — only consulted in 'done'.
+  const statusByPath = useMemo(() => {
+    const map = new Map<string, { ok: boolean; text: string }>()
+    if (!results) return map
+    for (const item of results.installed) map.set(item.relativePath, { ok: true, text: '✓' })
+    for (const item of results.failed) map.set(item.relativePath, { ok: false, text: item.error })
+    return map
+  }, [results])
+
+  const install = async () => {
+    setPhase('installing')
+    setError(null)
+    try {
+      const result = await api.post<RemoteInstallResponse>('/skills/remote/install', {
+        source,
+        scope: importScope,
+        cwd: importScope === 'project' ? cwd : undefined,
+        paths: [...selected],
+        overwrite: replaceExisting,
+      })
+      setResults(result)
+      setPhase('done')
+    } catch (e) {
+      setError((e as Error).message)
+      setPhase('select')
+    }
+  }
+
+  return (
+    <Overlay
+      variant="modal"
+      cardClassName="settings-skill-picker"
+      ariaLabel="Select skills to install"
+      onClose={onClose}
+    >
+      <h4>Select skills to install</h4>
+      <div className="settings-group-desc">{`${source} · ${skills.length} skills found`}</div>
+      <label>
+        Search:
+        <input
+          className="input"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          spellCheck={false}
+        />
+      </label>
+      {error && <div className="settings-error">{error}</div>}
+      {loading && <div className="settings-note">Loading…</div>}
+      <div className="settings-skill-picker-list">
+        <label className="settings-skill-picker-select-all">
+          <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />
+          <span>{`Select All (${selected.size}/${skills.length})`}</span>
+        </label>
+        {visible.map((skill) => {
+          const status = phase === 'done' ? statusByPath.get(skill.relativePath) : undefined
+          return (
+            <label key={skill.relativePath} className="settings-skill-picker-row">
+              <input
+                type="checkbox"
+                checked={selected.has(skill.relativePath)}
+                onChange={() => toggleOne(skill.relativePath)}
+              />
+              <span>
+                <strong>{skill.name}</strong>
+                <small>{skill.description}</small>
+              </span>
+              {status && (
+                <span className={`settings-skill-picker-status${status.ok ? '' : ' error'}`}>
+                  {status.text}
+                </span>
+              )}
+            </label>
+          )
+        })}
+      </div>
+      <div className="settings-skill-picker-footer">
+        <span className="settings-note">{`Scope: ${importScope}`}</span>
+        <label className="settings-skill-overwrite">
+          <input type="checkbox" checked={replaceExisting} onChange={(e) => setReplaceExisting(e.target.checked)} /> Replace existing
+        </label>
+        <button type="button" className="btn" onClick={onClose}>Cancel</button>
+        {phase === 'done' ? (
+          <button type="button" className="btn btn-primary" onClick={() => { onInstalled(); onClose() }}>Done</button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={phase === 'installing' || selected.size === 0}
+            onClick={() => void install()}
+          >
+            {phase === 'installing' ? 'Installing…' : `Install ${selected.size} skills`}
+          </button>
+        )}
+      </div>
+    </Overlay>
+  )
+}
+
+
 function SkillsTab({
   cwd,
   skillLoadMode,
@@ -1061,6 +1405,9 @@ function SkillsTab({
   const [showImportPicker, setShowImportPicker] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [importingSkill, setImportingSkill] = useState(false)
+  // Source of the batch picker the remote section's Browse / Open repository
+  // buttons request. Non-null mounts <BatchPickerModal> over this tab.
+  const [pickerSource, setPickerSource] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const directoryInputProps = { webkitdirectory: '', directory: '' } as Record<string, string>
 
@@ -1273,6 +1620,14 @@ function SkillsTab({
         </div>
       </section>
 
+      <RemoteInstallSection
+        cwd={cwd}
+        importScope={importScope}
+        skills={skills}
+        onInstalled={refresh}
+        onOpenPicker={setPickerSource}
+      />
+
       <section
         className={`settings-group settings-skill-import-group${dragActive ? ' dragging' : ''}`}
         onDragEnter={(event) => { event.preventDefault(); setDragActive(true) }}
@@ -1416,6 +1771,16 @@ function SkillsTab({
             void importFromServerPath(path)
           }}
           onClose={() => setShowImportPicker(false)}
+        />
+      )}
+
+      {pickerSource && (
+        <BatchPickerModal
+          source={pickerSource}
+          cwd={cwd}
+          importScope={importScope}
+          onClose={() => setPickerSource(null)}
+          onInstalled={refresh}
         />
       )}
     </div>

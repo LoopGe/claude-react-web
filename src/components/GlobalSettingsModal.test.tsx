@@ -4,8 +4,9 @@ import { ToastProvider } from './ToastProvider'
 import { GlobalSettingsModal } from './GlobalSettingsModal'
 import { api } from '../hooks/useApi'
 import type { UpdateInfo } from '../../shared/update-info'
+import type { RemoteSearchHit } from '../../shared/skills'
 
-vi.mock('../hooks/useApi', () => ({ api: { get: vi.fn(), put: vi.fn() } }))
+vi.mock('../hooks/useApi', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn() } }))
 
 // jsdom doesn't implement matchMedia; the modal's height-transition and
 // exit-presence hooks probe it. Same stub as SettingsPanel/NewSessionDialog.
@@ -18,7 +19,7 @@ vi.stubGlobal('matchMedia', () => ({
 afterEach(() => { cleanup() })
 
 // api.get is called for /config/full, /mcp-config and /first-party-tools — route by URL.
-function mockGet(config: Record<string, unknown>, fpServers: unknown[] = [gitToolsInfo]) {
+function mockGet(config: Record<string, unknown>, fpServers: unknown[] = [gitToolsInfo], searchSkills: RemoteSearchHit[] = []) {
   vi.mocked(api.get).mockImplementation((url: string) => {
     if (url === '/mcp-config') return Promise.resolve({ servers: [] })
     if (url === '/first-party-tools') return Promise.resolve({ servers: fpServers })
@@ -26,6 +27,9 @@ function mockGet(config: Record<string, unknown>, fpServers: unknown[] = [gitToo
     // the /log shape it reads at mount must always be present.
     if (url === '/log') return Promise.resolve({ level: 'info', availableLevels: ['error', 'warn', 'info', 'debug', 'trace'] })
     if (url === '/log/file') return Promise.resolve({ enabled: false, path: null })
+    // Catalog search — distinct from the installed-list fetch (/skills?…)
+    // only by the `/search` segment, so match it before any /skills fallthrough.
+    if (url.startsWith('/skills/search')) return Promise.resolve({ skills: searchSkills })
     return Promise.resolve(config)
   })
 }
@@ -551,5 +555,290 @@ describe('GlobalSettingsModal grouped tab nav', () => {
     // The group click must land on the group's FIRST leaf (Skills), not
     // merely render the row.
     expect(document.querySelector('.settings-tab-leaves .active')?.textContent).toBe('Skills')
+  })
+})
+
+describe('GlobalSettingsModal Skills remote install', () => {
+  beforeEach(() => {
+    vi.mocked(api.put).mockResolvedValue({})
+    vi.mocked(api.put).mockClear()
+    vi.mocked(api.post).mockReset()
+    vi.mocked(api.get).mockClear()
+  })
+
+  /** One skills.sh catalog hit. `skillId` is the clone-relative directory
+   *  basename that `matchSearchHit` keys on. */
+  const catalogHit = (over: Partial<RemoteSearchHit> = {}): RemoteSearchHit => ({
+    id: 'hit-1',
+    source: 'org/repo',
+    skillId: 'react-helper',
+    name: 'react-helper',
+    installs: 1234,
+    ...over,
+  })
+
+  /** Land on the Skills tab (the Extensions group's first leaf) with the
+   *  catalog search input on screen, and return that input. */
+  const openSkillsTab = async (
+    config: Record<string, unknown>,
+    searchSkills: RemoteSearchHit[] = [],
+  ) => {
+    mockGet(config, [gitToolsInfo], searchSkills)
+    render(
+      <ToastProvider>
+        <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
+      </ToastProvider>,
+    )
+    await waitFor(() => expect(screen.getByText('Extensions')).toBeTruthy())
+    fireEvent.click(screen.getByText('Extensions'))
+    await waitFor(() => expect(screen.getByLabelText('Browse skills')).toBeTruthy())
+    return screen.getByLabelText('Browse skills') as HTMLInputElement
+  }
+
+  /** The remote section only — the "Install from folder" card below it carries
+   *  its own Install / Browse / Replace existing controls, so unscoped queries
+   *  would happily hit those and pass for the wrong reason. */
+  const remote = () => {
+    const el = document.querySelector('.settings-skill-remote-group')
+    expect(el, 'remote install section').toBeTruthy()
+    return within(el as HTMLElement)
+  }
+
+  /** GETs of the catalog search (`/skills/search?…`), as opposed to the
+   *  installed-list fetch (`/skills` or `/skills?cwd=…`). */
+  const searchGets = () =>
+    vi.mocked(api.get).mock.calls.filter(([u]) => String(u).startsWith('/skills/search'))
+  const listGets = () =>
+    vi.mocked(api.get).mock.calls.filter(([u]) => {
+      const s = String(u)
+      return s === '/skills' || s.startsWith('/skills?')
+    })
+
+  it('shows Open repository when the query parses as owner/repo', async () => {
+    const input = await openSkillsTab({})
+    fireEvent.change(input, { target: { value: 'vercel-labs/agent-skills' } })
+    // Parsed from the raw query — not gated on the debounced search.
+    const openRepo = remote().getByRole('button', { name: 'Open repository' }) as HTMLButtonElement
+    expect(openRepo.disabled).toBe(false)
+  })
+
+  it('renders search results with Install buttons', async () => {
+    const input = await openSkillsTab({}, [catalogHit()])
+    fireEvent.change(input, { target: { value: 'react' } })
+    // 300 ms debounce: the wire is still quiet at this instant.
+    expect(searchGets()).toHaveLength(0)
+    await waitFor(() => expect(remote().getByText('react-helper')).toBeTruthy())
+    expect(searchGets()).toHaveLength(1)
+    expect(searchGets()[0]![0]).toBe('/skills/search?q=react')
+    expect(remote().getByText('org/repo')).toBeTruthy()
+    expect(remote().getByText((1234).toLocaleString())).toBeTruthy()
+    expect(remote().getByRole('button', { name: 'Install' })).toBeTruthy()
+    expect(remote().getByRole('button', { name: 'Browse' })).toBeTruthy()
+  })
+
+  it('flips a row to Installed after a successful install', async () => {
+    // Preview returns DiscoveredSkill[] — the component must match the hit
+    // against THESE, not the SkillRecord[] prop (whose relativePath is
+    // cwd-relative to SKILL.md, not a clone-relative directory).
+    vi.mocked(api.post).mockImplementation((path: string) => {
+      if (path === '/skills/remote/preview') {
+        return Promise.resolve({
+          source: 'org/repo',
+          skills: [{ name: 'react-helper', description: 'Does react things', relativePath: 'skills/react-helper' }],
+        })
+      }
+      return Promise.resolve({
+        installed: [{ name: 'react-helper', relativePath: 'skills/react-helper' }],
+        failed: [],
+      })
+    })
+    const input = await openSkillsTab({ defaults: { cwd: '/work/proj' } }, [catalogHit()])
+    fireEvent.change(input, { target: { value: 'react' } })
+    await waitFor(() => expect(remote().getByRole('button', { name: 'Install' })).toBeTruthy())
+    const listsBefore = listGets().length
+
+    fireEvent.click(remote().getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(remote().getByText('✓ Installed')).toBeTruthy())
+    expect(remote().queryByRole('button', { name: 'Install' })).toBeNull()
+
+    // onInstalled → SkillsTab.refresh(), observable as a second list fetch.
+    await waitFor(() => expect(listGets().length).toBeGreaterThan(listsBefore))
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/install', {
+      source: 'org/repo',
+      scope: 'project',
+      cwd: '/work/proj',
+      paths: ['skills/react-helper'],
+      overwrite: false,
+    })
+  })
+
+  it('shows the Installed badge only in the scope it was installed to', async () => {
+    // Install into Project (the default scope), then flip the Project/User
+    // toggle: the badge must not claim the skill is installed in User scope.
+    vi.mocked(api.post).mockImplementation((path: string) => {
+      if (path === '/skills/remote/preview') {
+        return Promise.resolve({
+          source: 'org/repo',
+          skills: [{ name: 'react-helper', description: 'Does react things', relativePath: 'skills/react-helper' }],
+        })
+      }
+      return Promise.resolve({
+        installed: [{ name: 'react-helper', relativePath: 'skills/react-helper' }],
+        failed: [],
+      })
+    })
+    const input = await openSkillsTab({ defaults: { cwd: '/work/proj' } }, [catalogHit()])
+    fireEvent.change(input, { target: { value: 'react' } })
+    await waitFor(() => expect(remote().getByRole('button', { name: 'Install' })).toBeTruthy())
+    fireEvent.click(remote().getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(remote().getByText('✓ Installed')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: 'User' }))
+    await waitFor(() => expect(remote().queryByText('✓ Installed')).toBeNull())
+    expect(remote().getByRole('button', { name: 'Install' })).toBeTruthy()
+  })
+
+  it('heads the catalog section "Browse skills"', async () => {
+    await openSkillsTab({})
+    // The spec (§1) names the section heading; the search input keeps its
+    // own "Browse skills" aria-label.
+    expect(screen.getByRole('heading', { name: 'Browse skills' })).toBeTruthy()
+  })
+
+  it('shows an inline error when the skill is not found in the repo', async () => {
+    // The preview discovers the clone's skills — none of them is this hit.
+    vi.mocked(api.post).mockImplementation((path: string) => {
+      if (path === '/skills/remote/preview') {
+        return Promise.resolve({
+          source: 'org/repo',
+          skills: [{ name: 'other-skill', description: 'Not the hit', relativePath: 'skills/other-skill' }],
+        })
+      }
+      return Promise.resolve({ installed: [], failed: [] })
+    })
+    const input = await openSkillsTab({}, [catalogHit()])
+    fireEvent.change(input, { target: { value: 'react' } })
+    await waitFor(() => expect(remote().getByRole('button', { name: 'Install' })).toBeTruthy())
+
+    fireEvent.click(remote().getByRole('button', { name: 'Install' }))
+    await waitFor(() => expect(remote().getByText(/Not found in/)).toBeTruthy())
+    expect(remote().getByText('Not found in org/repo')).toBeTruthy()
+    // Browse stays the way into the repo — never disabled by a failed match.
+    expect((remote().getByRole('button', { name: 'Browse' }) as HTMLButtonElement).disabled).toBe(false)
+    // Only the preview went out; a miss never reaches /install.
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/preview', { source: 'org/repo' })
+    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith('/skills/remote/install', expect.anything())
+  })
+
+  /** Two previewed skills for the batch picker — distinct name, description
+   *  and relativePath so selection (keyed by relativePath) is observable. */
+  const stubTwoSkillPreview = (install?: (path: string) => unknown) => {
+    vi.mocked(api.post).mockImplementation((path: string) => {
+      if (path === '/skills/remote/preview') {
+        return Promise.resolve({
+          source: 'org/repo',
+          skills: [
+            { name: 'alpha-skill', description: 'Does alpha things', relativePath: 'skills/alpha-skill' },
+            { name: 'beta-skill', description: 'Does beta things', relativePath: 'skills/beta-skill' },
+          ],
+        })
+      }
+      return Promise.resolve(install ? install(path) : { installed: [], failed: [] })
+    })
+  }
+
+  /** The batch picker modal (portaled to body by Overlay). Scoped queries
+   *  keep the settings dialog's own checkboxes/labels out of the matches. */
+  const picker = () => {
+    const el = document.querySelector('.settings-skill-picker')
+    expect(el, 'batch picker modal').toBeTruthy()
+    return within(el as HTMLElement)
+  }
+
+  /** Land on the skills tab, surface one catalog hit, and click its Browse
+   *  button so BatchPickerModal mounts. */
+  const openPicker = async (config: Record<string, unknown> = {}) => {
+    const input = await openSkillsTab(config, [catalogHit()])
+    fireEvent.change(input, { target: { value: 'react' } })
+    await waitFor(() => expect(remote().getByRole('button', { name: 'Browse' })).toBeTruthy())
+    fireEvent.click(remote().getByRole('button', { name: 'Browse' }))
+    await waitFor(() => expect(screen.getByText('Select skills to install')).toBeTruthy())
+  }
+
+  it('opens the picker with descriptions and Select All', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    expect(screen.getByText('Select skills to install')).toBeTruthy()
+    // Subtitle: `${source} · ${skills.length} skills found`
+    expect(picker().getByText('org/repo · 2 skills found')).toBeTruthy()
+    expect(picker().getByRole('checkbox', { name: /Select All/ })).toBeTruthy()
+    expect(picker().getByText('Does alpha things')).toBeTruthy()
+    expect(picker().getByText('Does beta things')).toBeTruthy()
+    // The picker previews the Browse source, not the search hit's.
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/preview', { source: 'org/repo' })
+  })
+
+  it('installs only the checked skills and keeps the modal open with per-row status', async () => {
+    stubTwoSkillPreview(() => ({
+      installed: [{ name: 'alpha-skill', relativePath: 'skills/alpha-skill' }],
+      failed: [{ name: 'beta-skill', relativePath: 'skills/beta-skill', error: 'Missing SKILL.md' }],
+    }))
+    await openPicker({ defaults: { cwd: '/work/proj' } })
+
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
+
+    // Modal stays open: per-row status, button relabelled Done.
+    await waitFor(() => expect(picker().getByText('✓')).toBeTruthy())
+    expect(screen.getByText('Select skills to install')).toBeTruthy()
+    expect(picker().getByText('Missing SKILL.md')).toBeTruthy()
+    expect(picker().getByRole('button', { name: 'Done' })).toBeTruthy()
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/install', {
+      source: 'org/repo',
+      scope: 'project',
+      cwd: '/work/proj',
+      paths: ['skills/alpha-skill'],
+      overwrite: false,
+    })
+
+    // Done (and only it) refreshes the list and closes.
+    const listsBefore = listGets().length
+    fireEvent.click(picker().getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    await waitFor(() => expect(listGets().length).toBeGreaterThan(listsBefore))
+  })
+
+  it('filters the list with the picker search box', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: 'beta' } })
+    expect(picker().queryByText('alpha-skill')).toBeNull()
+    expect(picker().getByText('beta-skill')).toBeTruthy()
+    // Subtitle still reports the full found count, not the filtered one.
+    expect(picker().getByText('org/repo · 2 skills found')).toBeTruthy()
+  })
+
+  it('Select All toggles only the visible rows', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: 'alpha' } })
+    fireEvent.click(picker().getByRole('checkbox', { name: /Select All/ }))
+    // The filtered-out row must stay unselected.
+    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: '' } })
+    expect((picker().getByRole('checkbox', { name: /alpha-skill/ }) as HTMLInputElement).checked).toBe(true)
+    expect((picker().getByRole('checkbox', { name: /beta-skill/ }) as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('Cancel closes without installing', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith('/skills/remote/install', expect.anything())
   })
 })

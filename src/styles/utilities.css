@@ -3272,6 +3272,59 @@ input[type="checkbox"]:disabled {
   align-items: center;
   flex-wrap: wrap;
 }
+.settings-skill-remote-group .settings-group-body {
+  display: grid;
+  gap: var(--space-2);
+}
+.settings-skill-remote-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+.settings-skill-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto auto auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+}
+.settings-skill-result-name {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-skill-result-source {
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-skill-result-installs {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.settings-skill-row-error {
+  grid-column: 1 / -1;
+  color: var(--danger-text);
+  font-size: var(--fs-sm);
+}
+.settings-skill-installed-badge {
+  color: var(--ok-text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
 .settings-skill-file-input {
   display: none;
 }
@@ -3400,6 +3453,92 @@ input[type="checkbox"]:disabled {
   word-break: break-word;
   flex: 1;
   min-height: 0;
+}
+/* Batch install picker (BatchPickerModal) — multi-select over one remote
+   source's previewed skills. */
+.settings-skill-picker {
+  width: min(640px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow: hidden;
+}
+.settings-skill-picker > label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-skill-picker > label .input {
+  flex: 1;
+  min-width: 0;
+}
+.settings-skill-picker-list {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  overflow-y: auto;
+  min-height: 0;
+}
+.settings-skill-picker-select-all,
+.settings-skill-picker-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+}
+.settings-skill-picker-select-all {
+  background: var(--bg-elev-1);
+  font-weight: 600;
+}
+.settings-skill-picker-row:hover {
+  border-color: var(--accent);
+  background: var(--btn-hover-bg);
+}
+.settings-skill-picker-select-all input[type="checkbox"],
+.settings-skill-picker-row input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+.settings-skill-picker-row > span {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.settings-skill-picker-row strong {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-skill-picker-row small {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.settings-skill-picker-status {
+  color: var(--ok-text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.settings-skill-picker-status.error {
+  color: var(--danger-text);
+  font-weight: 400;
+}
+.settings-skill-picker-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.settings-skill-picker-footer .settings-note {
+  margin-right: auto;
 }
 .settings-actions-row {
   display: flex;

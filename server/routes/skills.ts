@@ -1,5 +1,10 @@
 import { Hono } from 'hono'
-import type { SessionSkillOverride, SkillLoadMode, SkillScope } from '../../shared/skills.js'
+import {
+  parseOwnerRepo,
+  type SessionSkillOverride,
+  type SkillLoadMode,
+  type SkillScope,
+} from '../../shared/skills.js'
 import { HttpError } from '../errors.js'
 import { SessionManager } from '../session-manager.js'
 import { config as serverConfig } from '../config.js'
@@ -17,6 +22,11 @@ import {
   updateSkill,
   validateSkillContent,
 } from '../skills.js'
+import {
+  cloneAndDiscover,
+  installRemoteSkills,
+  searchCatalog,
+} from '../skills-remote.js'
 
 function parseScope(value: string): SkillScope {
   if (value === 'user' || value === 'project') return value
@@ -87,6 +97,50 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
     if (typeof body.content !== 'string') throw new HttpError(400, 'content is required')
     const expectedName = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : undefined
     return c.json(validateSkillContent(body.content, expectedName))
+  })
+
+  // Remote (skills.sh catalog) install surface. Kept together here; POST
+  // /skills/remote/{preview,install} cannot be shadowed by the two-segment
+  // /skills/:scope/:name route because that one only registers GET/PUT/DELETE.
+  app.get('/skills/search', async (c) => {
+    const q = c.req.query('q') ?? ''
+    const skills = await searchCatalog(q, Number(c.req.query('limit') ?? 20))
+    return c.json({ skills })
+  })
+
+  app.post('/skills/remote/preview', async (c) => {
+    const body = await safeJson<{ source: unknown }>(c.req)
+    const source = typeof body.source === 'string' ? body.source : ''
+    if (!parseOwnerRepo(source)) throw new HttpError(400, 'source must be a GitHub owner/repo')
+    const { skills } = await cloneAndDiscover(source)
+    return c.json({ source, skills })
+  })
+
+  app.post('/skills/remote/install', async (c) => {
+    const body = await safeJson<{
+      source: unknown
+      scope: unknown
+      cwd: unknown
+      paths: unknown
+      overwrite: unknown
+    }>(c.req)
+    const source = typeof body.source === 'string' ? body.source : ''
+    if (!parseOwnerRepo(source)) throw new HttpError(400, 'source must be a GitHub owner/repo')
+    const scope = parseScope(String(body.scope))
+    const paths = body.paths
+    if (!Array.isArray(paths) || paths.length === 0 || paths.some((p) => typeof p !== 'string')) {
+      throw new HttpError(400, 'paths must be a non-empty string array')
+    }
+    const cwd = typeof body.cwd === 'string' ? body.cwd : undefined
+    const result = await installRemoteSkills({
+      source,
+      scope,
+      cwd,
+      paths: paths as string[],
+      overwrite: body.overwrite === true,
+    })
+    await reloadAffectedSessions(sm, scope, cwd)
+    return c.json(result)
   })
 
   app.get('/skills/:scope/:name', async (c) => {

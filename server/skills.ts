@@ -9,7 +9,7 @@ const log = createLogger('skills-core')
 import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
 
 const SKILL_FILE = 'SKILL.md'
-const MAX_SKILL_BYTES = 1024 * 1024
+export const MAX_SKILL_BYTES = 1024 * 1024
 const MAX_SKILL_IMPORT_FILES = 200
 const VALID_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 
