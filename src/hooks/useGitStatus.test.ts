@@ -194,6 +194,36 @@ describe('useCachedCommitFiles', () => {
     expect(result.current.error).toBeNull()
     expect(mockGet).not.toHaveBeenCalled()
   })
+
+  it('a response fetched for one hash is never cached under another', async () => {
+    // Regression: fetch A's response can be delivered after the request
+    // hash has already moved to B (promise resolution beats the inner
+    // hook's abort effect). The write-through must attribute by the
+    // response's own commit.hash, so cache[B] must end up with B's
+    // payload — never A's.
+    const hashA = 'a'.repeat(40)
+    const hashB = 'b'.repeat(40)
+    const payloadA = { commit: { hash: hashA, shortHash: 'aaaaaaa', author: 'T', date: 1, subject: 'A', body: '' }, files: [] }
+    const payloadB = { commit: { hash: hashB, shortHash: 'bbbbbbb', author: 'T', date: 2, subject: 'B', body: '' }, files: [] }
+    let resolveA!: (v: typeof payloadA) => void
+    mockGet.mockImplementation((url: string) => {
+      if (url.includes(hashA)) return new Promise((r) => { resolveA = r })
+      return Promise.resolve(payloadB)
+    })
+    const cache = new Map()
+    const { result, rerender } = renderHook(
+      ({ h }) => useCachedCommitFiles('/repo', h, true, cache),
+      { initialProps: { h: hashA } },
+    )
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      resolveA(payloadA)       // A's response is delivered...
+      await Promise.resolve()  // ...before the abort effect can run
+      rerender({ h: hashB })   // the request hash has already moved to B
+    })
+    await waitFor(() => expect(result.current.data).toEqual(payloadB))
+    expect(cache.get(hashB)).toEqual(payloadB) // B's payload under B — never A's
+  })
 })
 
 describe('gitCommitDiffFileQuery', () => {

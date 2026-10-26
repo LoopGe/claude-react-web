@@ -576,8 +576,9 @@ export function useGitCommitDiffFile(
  *  response so collapsing an accordion row (or unmounting) and
  *  re-expanding never refetches a commit we already have. The fetch is
  *  skipped entirely on a cache hit; the write-through happens once the
- *  inner hook yields data (skipped if a concurrent writer won the race).
- *  While `hash` is undefined nothing is fetched and all fields are null. */
+ *  inner hook yields data that belongs to `hash` (skipped if a
+ *  concurrent writer won the race). While `hash` is undefined nothing is
+ *  fetched and all fields are null. */
 export function useCachedCommitFiles(
   cwd: string | undefined,
   hash: string | undefined,
@@ -586,17 +587,21 @@ export function useCachedCommitFiles(
 ): BaseFetchState<GitCommitResponse> {
   const enabled = expanded && hash !== undefined && !cache.has(hash)
   const inner = useGitCommitFiles(cwd, hash, enabled)
-  // Write-through when the inner hook yields a new response. Keyed on
-  // `inner.data` only — NOT `hash` — so a hash switch that leaves the
-  // previous response on screen for one render can't write it under the
-  // new key (the effect doesn't re-run until data actually changes, and
-  // an in-flight fetch for the old hash is aborted by the inner hook).
+  // Write-through, attributed by content: cache `hash` only when the
+  // response's own commit.hash is that hash or an abbreviation of it (git
+  // abbreviations are prefixes of the full SHA). Attribution must not
+  // rely on timing — a fetch started for a previous hash can deliver its
+  // response into a render where `hash` has already moved on (its .then
+  // landing in the same batch as the switch, or before the abort cleanup
+  // flushes), and that response must not be written under the new key.
+  // Symbolic refs ('HEAD', branch names) never prefix-match a SHA, so
+  // they are never cached — the safe direction, since a ref can move.
   useEffect(() => {
-    if (hash !== undefined && inner.data && !cache.has(hash)) {
-      cache.set(hash, inner.data)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `hash` deliberately omitted: it must be the key `inner.data` was fetched for
-  }, [inner.data, cache])
+    if (hash === undefined || !inner.data) return
+    const fetchedHash = inner.data.commit.hash
+    if (fetchedHash !== hash && !fetchedHash.startsWith(hash)) return
+    if (!cache.has(hash)) cache.set(hash, inner.data)
+  }, [inner.data, hash, cache])
   if (hash === undefined) {
     return { data: null, loading: false, error: null }
   }
