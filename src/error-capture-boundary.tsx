@@ -52,7 +52,7 @@ const btnStyle: CSSProperties = {
   background: 'var(--bg-elev-3)',
   color: 'var(--fg)',
   fontSize: 'var(--fs-sm)',
-  fontFamily: 'var(--font-head)',
+  fontFamily: 'var(--font-head, var(--sans))',
   cursor: 'pointer',
 }
 
@@ -122,7 +122,7 @@ function CrashScreen({ crash, onReload }: { crash: CrashRecord; onReload: () => 
               margin: 0,
               color: 'var(--fg)',
               fontSize: 'var(--fs-lg)',
-              fontFamily: 'var(--font-head)',
+              fontFamily: 'var(--font-head, var(--sans))',
             }}
           >
             Something went wrong

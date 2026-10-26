@@ -139,6 +139,7 @@ function findCompanion(files: string[], controlClass: string): Companion {
 // Every stylesheet in the real load order (index.css chains them). Source order
 // breaks same-specificity ties, so do NOT use stylesheets() (alpha-sorted).
 const LOAD_ORDER = [
+  'brand-fonts.css',
   'tokens.css',
   'controls.css',
   'layout.css',

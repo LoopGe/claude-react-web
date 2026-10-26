@@ -1,8 +1,14 @@
 /* Anthropic skin's official typeface pairing — Poppins (headings) + Lora
-   (body). Loaded once; only the [data-skin="anthropic"] blocks below switch
-   the font tokens to reference them, so default/glow are unaffected. The
-   @import must precede all other rules to be valid CSS. */
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+   (body). Only the [data-skin="anthropic"] blocks below switch the font
+   tokens to reference them, so default/glow/hc/soft-hc are unaffected and
+   fetch none of the faces.
+
+   The faces are declared in brand-fonts.css (self-hosted woff2 from
+   @fontsource, imported first from index.css). This used to be a
+   render-blocking `@import url('https://fonts.googleapis.com/...')` here,
+   which put a Google round-trip on the critical path for every skin and
+   stalled the whole stylesheet on networks that cannot reach it. See
+   brand-fonts.css for the full rationale and the subset boundary. */
 
 /* Register --mode-color as a transitionable <color> so mode switches
    animate smoothly instead of snapping. The initial-value is transparent

@@ -1,3 +1,8 @@
+/* Brand faces (Poppins/Lora) for the Anthropic skin. Must be loaded so
+   the @font-face rules exist before tokens.css declares --font-head/--sans
+   that name them. Order among these two is not cascade-significant --
+   @font-face never competes with a style rule -- but this reads better. */
+@import './brand-fonts.css';
 @import './tokens.css';
 @import './controls.css';
 @import './layout.css';
