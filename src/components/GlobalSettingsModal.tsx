@@ -1222,12 +1222,16 @@ function BatchPickerModal({
   source,
   cwd,
   importScope,
+  onScopeChange,
   onClose,
   onInstalled,
 }: {
   source: string
   cwd: string
   importScope: 'project' | 'user'
+  /** Scope is tab-level state — the footer toggle writes through so the
+   *  catalog rows' installed badges stay in sync with what the picker did. */
+  onScopeChange: (scope: 'project' | 'user') => void
   onClose: () => void
   onInstalled: () => void
 }) {
@@ -1414,7 +1418,24 @@ function BatchPickerModal({
       )}
       <div className="settings-skill-picker-footer">
         <div className="settings-skill-picker-footer-left">
-          <span className="settings-skill-picker-scope">{`Scope: ${importScope}`}</span>
+          <div className="settings-scope-toggle">
+            <button
+              type="button"
+              className={`settings-scope-btn${importScope === 'project' ? ' active' : ''}`}
+              disabled={phase === 'installing'}
+              onClick={() => onScopeChange('project')}
+            >
+              Project
+            </button>
+            <button
+              type="button"
+              className={`settings-scope-btn${importScope === 'user' ? ' active' : ''}`}
+              disabled={phase === 'installing'}
+              onClick={() => onScopeChange('user')}
+            >
+              User
+            </button>
+          </div>
           <label className="settings-skill-overwrite">
             {/* Retired with the checkboxes in 'done' — it can no longer
                 affect anything once the install button is gone. */}
@@ -1847,6 +1868,7 @@ function SkillsTab({
           source={pickerSource}
           cwd={cwd}
           importScope={importScope}
+          onScopeChange={setImportScope}
           onClose={() => setPickerSource(null)}
           onInstalled={refresh}
         />

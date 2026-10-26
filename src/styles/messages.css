@@ -1339,7 +1339,8 @@
   color: var(--fg-muted);
 }
 .project-picker-search input,
-.field-picker-search input {
+.field-picker-search input,
+.settings-skill-picker-search input {
   flex: 1;
   min-width: 0;
   background: transparent;
@@ -1355,7 +1356,8 @@
   font-size: var(--fs-base);
 }
 .project-picker-search input::placeholder,
-.field-picker-search input::placeholder { color: var(--fg-muted); }
+.field-picker-search input::placeholder,
+.settings-skill-picker-search input::placeholder { color: var(--fg-muted); }
 .project-picker-clear,
 .field-picker-clear {
   display: inline-flex;

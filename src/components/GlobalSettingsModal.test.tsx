@@ -924,6 +924,33 @@ describe('GlobalSettingsModal Skills remote install', () => {
     await waitFor(() => expect(listGets().length).toBeGreaterThan(listsBefore))
   })
 
+  it('footer scope toggle switches the install target between project and user', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    // Default is project (inherited from the tab).
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
+    await waitFor(() => expect(picker().getByRole('button', { name: 'Done' })).toBeTruthy())
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/install', expect.objectContaining({ scope: 'project' }))
+
+    // Reopen (Done first) and switch the footer toggle to User before installing.
+    fireEvent.click(picker().getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    vi.mocked(api.post).mockClear()
+    fireEvent.click(remote().getByRole('button', { name: 'Browse' }))
+    await waitFor(() => expect(screen.getByText('Select skills to install')).toBeTruthy())
+    expect(picker().getByRole('button', { name: 'User' })).toBeTruthy()
+    fireEvent.click(picker().getByRole('button', { name: 'User' }))
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
+    await waitFor(() => expect(picker().getByRole('button', { name: 'Done' })).toBeTruthy())
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/install', expect.objectContaining({
+      scope: 'user',
+      cwd: undefined,
+    }))
+  })
+
   it('Cancel closes without installing', async () => {
     stubTwoSkillPreview()
     await openPicker()

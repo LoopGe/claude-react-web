@@ -3427,6 +3427,9 @@ input[type="checkbox"]:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
+  /* Same surface as the body pane below — the container was transparent, so
+     the table rows showed the glass card through and read as "empty". */
+  background: var(--bg-elev);
 }
 .settings-skill-frontmatter-title {
   padding: var(--space-2) var(--space-3);
@@ -3637,9 +3640,6 @@ input[type="checkbox"]:disabled {
 .settings-skill-picker-footer-left {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
-}
-.settings-skill-picker-scope {
-  white-space: nowrap;
 }
 .settings-actions-row {
   display: flex;
