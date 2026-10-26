@@ -21,7 +21,15 @@ vi.mock('./useWsHub', () => ({
   }),
 }))
 
-import { useGitStatus, useGitBranches, useGitStashes } from './useGitStatus'
+import {
+  useGitStatus,
+  useGitBranches,
+  useGitStashes,
+  useGitCommitFiles,
+  useGitCommitDiffFile,
+  useCachedCommitFiles,
+  gitCommitDiffFileQuery,
+} from './useGitStatus'
 
 function makeStatus(repoRoot = '/repo'): GitStatusResponse {
   return {
@@ -116,5 +124,82 @@ describe('useGitBranches / useGitStashes', () => {
     renderHook(() => useGitBranches('/repo', 's1', false))
     await new Promise((r) => setTimeout(r, 10))
     expect(mockGet).not.toHaveBeenCalled()
+  })
+})
+
+describe('useGitCommitFiles', () => {
+  it('fetches when enabled, resets when disabled', async () => {
+    const payload = { commit: { hash: 'a'.repeat(40), shortHash: 'aaaaaaa', author: 'T', date: 1, subject: 's', body: '' }, files: [] }
+    mockGet.mockResolvedValue(payload)
+    const { result, rerender } = renderHook(({ e }) => useGitCommitFiles('/repo', 'a'.repeat(40), e), { initialProps: { e: true } })
+    await waitFor(() => expect(result.current.data).toEqual(payload))
+    rerender({ e: false })
+    expect(result.current.data).toBeNull()
+    rerender({ e: true })
+    await waitFor(() => expect(result.current.data).toEqual(payload))
+    expect(mockGet).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not fetch when disabled', () => {
+    const { result } = renderHook(() => useGitCommitFiles('/repo', 'a'.repeat(40), false))
+    expect(result.current.data).toBeNull()
+    expect(mockGet).not.toHaveBeenCalled()
+  })
+})
+
+describe('useGitCommitDiffFile', () => {
+  it('fetches the file diff when enabled, resets when disabled', async () => {
+    const payload = { path: 'src/x.ts', staged: true, truncated: false, totalLines: 1, text: 'diff', isBinary: false }
+    mockGet.mockResolvedValue(payload)
+    const { result, rerender } = renderHook(
+      ({ e }) => useGitCommitDiffFile('/repo', 'a'.repeat(40), 'src/x.ts', e),
+      { initialProps: { e: true } },
+    )
+    await waitFor(() => expect(result.current.data).toEqual(payload))
+    expect(mockGet).toHaveBeenCalledWith(
+      `/git/commit-file?cwd=%2Frepo&hash=${'a'.repeat(40)}&path=src%2Fx.ts`,
+      expect.anything(),
+    )
+    rerender({ e: false })
+    expect(result.current.data).toBeNull()
+  })
+
+  it('does not fetch when disabled', () => {
+    const { result } = renderHook(() => useGitCommitDiffFile('/repo', 'a'.repeat(40), 'src/x.ts', false))
+    expect(result.current.data).toBeNull()
+    expect(mockGet).not.toHaveBeenCalled()
+  })
+})
+
+describe('useCachedCommitFiles', () => {
+  it('cache survives a disable/enable cycle', async () => {
+    const cache = new Map()
+    const payload = { commit: { hash: 'a'.repeat(40), shortHash: 'aaaaaaa', author: 'T', date: 1, subject: 's', body: '' }, files: [] }
+    mockGet.mockResolvedValue(payload)
+    const { result, rerender } = renderHook(({ e }) => useCachedCommitFiles('/repo', 'a'.repeat(40), e, cache), { initialProps: { e: true } })
+    await waitFor(() => expect(result.current.data).toEqual(payload))
+    expect(cache.size).toBe(1)
+    rerender({ e: false })   // collapse
+    expect(result.current.data).toEqual(payload)  // served from cache
+    rerender({ e: true })    // re-expand
+    expect(result.current.data).toEqual(payload)
+    expect(mockGet).toHaveBeenCalledTimes(1)        // no refetch
+  })
+
+  it('hash undefined -> all-null, no fetch', () => {
+    const cache = new Map()
+    const { result } = renderHook(() => useCachedCommitFiles('/repo', undefined, true, cache))
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).toBeNull()
+    expect(mockGet).not.toHaveBeenCalled()
+  })
+})
+
+describe('gitCommitDiffFileQuery', () => {
+  it('builds the query string, including full=1', () => {
+    expect(gitCommitDiffFileQuery('/repo', 'a'.repeat(40), 'src/x.ts'))
+      .toBe(`/git/commit-file?cwd=%2Frepo&hash=${'a'.repeat(40)}&path=src%2Fx.ts`)
+    expect(gitCommitDiffFileQuery('/repo', 'a'.repeat(40), 'src/x.ts', { full: true })).toContain('full=1')
   })
 })
