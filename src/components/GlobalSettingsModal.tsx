@@ -21,7 +21,7 @@ import { DEFAULT_FONT_SIZE, FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../sh
 import type { AnimationSpeedPreset } from '../../shared/animation-speed'
 import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
-import type { RemoteInstallResponse, RemotePreviewResponse, RemoteSearchHit, SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillScope, SkillsListResponse } from '../../shared/skills'
+import type { DiscoveredSkill, RemoteInstallResponse, RemotePreviewResponse, RemoteSearchHit, SkillImportFile, SkillImportResponse, SkillLoadMode, SkillRecord, SkillScope, SkillsListResponse } from '../../shared/skills'
 import { matchSearchHit, parseOwnerRepo } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -1209,6 +1209,172 @@ function RemoteInstallSection({
   )
 }
 
+/** Multi-select install picker for one remote source (a `owner/repo` opened
+ *  via Browse / Open repository). Previews the source's skills, lets the user
+ *  tick a subset, then reports per-row ✓ / error WITHOUT closing — Done is the
+ *  only exit that refreshes the installed list. */
+function BatchPickerModal({
+  source,
+  cwd,
+  importScope,
+  onClose,
+  onInstalled,
+}: {
+  source: string
+  cwd: string
+  importScope: 'project' | 'user'
+  onClose: () => void
+  onInstalled: () => void
+}) {
+  const [skills, setSkills] = useState<DiscoveredSkill[]>([])
+  // Starts true: the modal mounts per source (SkillsTab unmounts it whenever
+  // pickerSource goes null), so the preview fetch is always in flight on the
+  // first render and never needs a synchronous setLoading in the effect body.
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [filter, setFilter] = useState('')
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const [replaceExisting, setReplaceExisting] = useState(false)
+  const [phase, setPhase] = useState<'select' | 'installing' | 'done'>('select')
+  const [results, setResults] = useState<RemoteInstallResponse | null>(null)
+
+  useEffect(() => {
+    let live = true
+    api.post<RemotePreviewResponse>('/skills/remote/preview', { source })
+      .then((res) => {
+        if (live) setSkills(res.skills ?? [])
+      })
+      .catch((e) => {
+        if (live) setError((e as Error).message)
+      })
+      .finally(() => {
+        if (live) setLoading(false)
+      })
+    return () => { live = false }
+  }, [source])
+
+  const visible = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return skills
+    return skills.filter(
+      (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
+    )
+  }, [skills, filter])
+
+  const allVisibleSelected = visible.length > 0 && visible.every((s) => selected.has(s.relativePath))
+  const toggleAllVisible = () => {
+    const next = new Set(selected)
+    for (const s of visible) {
+      if (allVisibleSelected) next.delete(s.relativePath)
+      else next.add(s.relativePath)
+    }
+    setSelected(next)
+  }
+  const toggleOne = (path: string) => {
+    const next = new Set(selected)
+    if (next.has(path)) next.delete(path)
+    else next.add(path)
+    setSelected(next)
+  }
+
+  // Install outcome per row, keyed by relativePath — only consulted in 'done'.
+  const statusByPath = useMemo(() => {
+    const map = new Map<string, { ok: boolean; text: string }>()
+    if (!results) return map
+    for (const item of results.installed) map.set(item.relativePath, { ok: true, text: '✓' })
+    for (const item of results.failed) map.set(item.relativePath, { ok: false, text: item.error })
+    return map
+  }, [results])
+
+  const install = async () => {
+    setPhase('installing')
+    setError(null)
+    try {
+      const result = await api.post<RemoteInstallResponse>('/skills/remote/install', {
+        source,
+        scope: importScope,
+        cwd: importScope === 'project' ? cwd : undefined,
+        paths: [...selected],
+        overwrite: replaceExisting,
+      })
+      setResults(result)
+      setPhase('done')
+    } catch (e) {
+      setError((e as Error).message)
+      setPhase('select')
+    }
+  }
+
+  return (
+    <Overlay
+      variant="modal"
+      cardClassName="settings-skill-picker"
+      ariaLabel="Select skills to install"
+      onClose={onClose}
+    >
+      <h4>Select skills to install</h4>
+      <div className="settings-group-desc">{`${source} · ${skills.length} skills found`}</div>
+      <label>
+        Search:
+        <input
+          className="input"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          spellCheck={false}
+        />
+      </label>
+      {error && <div className="settings-error">{error}</div>}
+      {loading && <div className="settings-note">Loading…</div>}
+      <div className="settings-skill-picker-list">
+        <label className="settings-skill-picker-select-all">
+          <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />
+          <span>{`Select All (${selected.size}/${skills.length})`}</span>
+        </label>
+        {visible.map((skill) => {
+          const status = phase === 'done' ? statusByPath.get(skill.relativePath) : undefined
+          return (
+            <label key={skill.relativePath} className="settings-skill-picker-row">
+              <input
+                type="checkbox"
+                checked={selected.has(skill.relativePath)}
+                onChange={() => toggleOne(skill.relativePath)}
+              />
+              <span>
+                <strong>{skill.name}</strong>
+                <small>{skill.description}</small>
+              </span>
+              {status && (
+                <span className={`settings-skill-picker-status${status.ok ? '' : ' error'}`}>
+                  {status.text}
+                </span>
+              )}
+            </label>
+          )
+        })}
+      </div>
+      <div className="settings-skill-picker-footer">
+        <span className="settings-note">{`Scope: ${importScope}`}</span>
+        <label className="settings-skill-overwrite">
+          <input type="checkbox" checked={replaceExisting} onChange={(e) => setReplaceExisting(e.target.checked)} /> Replace existing
+        </label>
+        <button type="button" className="btn" onClick={onClose}>Cancel</button>
+        {phase === 'done' ? (
+          <button type="button" className="btn btn-primary" onClick={() => { onInstalled(); onClose() }}>Done</button>
+        ) : (
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={phase === 'installing' || selected.size === 0}
+            onClick={() => void install()}
+          >
+            {phase === 'installing' ? 'Installing…' : `Install ${selected.size} skills`}
+          </button>
+        )}
+      </div>
+    </Overlay>
+  )
+}
+
 
 function SkillsTab({
   cwd,
@@ -1236,10 +1402,8 @@ function SkillsTab({
   const [dragActive, setDragActive] = useState(false)
   const [importingSkill, setImportingSkill] = useState(false)
   // Source of the batch picker the remote section's Browse / Open repository
-  // buttons request. Task 7 mounts <BatchPickerModal source={_pickerSource} …/>
-  // on this seam (and drops the underscore) — until then the buttons are live
-  // and only record the request.
-  const [_pickerSource, setPickerSource] = useState<string | null>(null)
+  // buttons request. Non-null mounts <BatchPickerModal> over this tab.
+  const [pickerSource, setPickerSource] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const directoryInputProps = { webkitdirectory: '', directory: '' } as Record<string, string>
 
@@ -1603,6 +1767,16 @@ function SkillsTab({
             void importFromServerPath(path)
           }}
           onClose={() => setShowImportPicker(false)}
+        />
+      )}
+
+      {pickerSource && (
+        <BatchPickerModal
+          source={pickerSource}
+          cwd={cwd}
+          importScope={importScope}
+          onClose={() => setPickerSource(null)}
+          onInstalled={refresh}
         />
       )}
     </div>

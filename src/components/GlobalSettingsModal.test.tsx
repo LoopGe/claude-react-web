@@ -696,4 +696,116 @@ describe('GlobalSettingsModal Skills remote install', () => {
     expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/preview', { source: 'org/repo' })
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith('/skills/remote/install', expect.anything())
   })
+
+  /** Two previewed skills for the batch picker — distinct name, description
+   *  and relativePath so selection (keyed by relativePath) is observable. */
+  const stubTwoSkillPreview = (install?: (path: string) => unknown) => {
+    vi.mocked(api.post).mockImplementation((path: string) => {
+      if (path === '/skills/remote/preview') {
+        return Promise.resolve({
+          source: 'org/repo',
+          skills: [
+            { name: 'alpha-skill', description: 'Does alpha things', relativePath: 'skills/alpha-skill' },
+            { name: 'beta-skill', description: 'Does beta things', relativePath: 'skills/beta-skill' },
+          ],
+        })
+      }
+      return Promise.resolve(install ? install(path) : { installed: [], failed: [] })
+    })
+  }
+
+  /** The batch picker modal (portaled to body by Overlay). Scoped queries
+   *  keep the settings dialog's own checkboxes/labels out of the matches. */
+  const picker = () => {
+    const el = document.querySelector('.settings-skill-picker')
+    expect(el, 'batch picker modal').toBeTruthy()
+    return within(el as HTMLElement)
+  }
+
+  /** Land on the skills tab, surface one catalog hit, and click its Browse
+   *  button so BatchPickerModal mounts. */
+  const openPicker = async (config: Record<string, unknown> = {}) => {
+    const input = await openSkillsTab(config, [catalogHit()])
+    fireEvent.change(input, { target: { value: 'react' } })
+    await waitFor(() => expect(remote().getByRole('button', { name: 'Browse' })).toBeTruthy())
+    fireEvent.click(remote().getByRole('button', { name: 'Browse' }))
+    await waitFor(() => expect(screen.getByText('Select skills to install')).toBeTruthy())
+  }
+
+  it('opens the picker with descriptions and Select All', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    expect(screen.getByText('Select skills to install')).toBeTruthy()
+    // Subtitle: `${source} · ${skills.length} skills found`
+    expect(picker().getByText('org/repo · 2 skills found')).toBeTruthy()
+    expect(picker().getByRole('checkbox', { name: /Select All/ })).toBeTruthy()
+    expect(picker().getByText('Does alpha things')).toBeTruthy()
+    expect(picker().getByText('Does beta things')).toBeTruthy()
+    // The picker previews the Browse source, not the search hit's.
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/preview', { source: 'org/repo' })
+  })
+
+  it('installs only the checked skills and keeps the modal open with per-row status', async () => {
+    stubTwoSkillPreview(() => ({
+      installed: [{ name: 'alpha-skill', relativePath: 'skills/alpha-skill' }],
+      failed: [{ name: 'beta-skill', relativePath: 'skills/beta-skill', error: 'Missing SKILL.md' }],
+    }))
+    await openPicker({ defaults: { cwd: '/work/proj' } })
+
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
+
+    // Modal stays open: per-row status, button relabelled Done.
+    await waitFor(() => expect(picker().getByText('✓')).toBeTruthy())
+    expect(screen.getByText('Select skills to install')).toBeTruthy()
+    expect(picker().getByText('Missing SKILL.md')).toBeTruthy()
+    expect(picker().getByRole('button', { name: 'Done' })).toBeTruthy()
+    expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/install', {
+      source: 'org/repo',
+      scope: 'project',
+      cwd: '/work/proj',
+      paths: ['skills/alpha-skill'],
+      overwrite: false,
+    })
+
+    // Done (and only it) refreshes the list and closes.
+    const listsBefore = listGets().length
+    fireEvent.click(picker().getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    await waitFor(() => expect(listGets().length).toBeGreaterThan(listsBefore))
+  })
+
+  it('filters the list with the picker search box', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: 'beta' } })
+    expect(picker().queryByText('alpha-skill')).toBeNull()
+    expect(picker().getByText('beta-skill')).toBeTruthy()
+    // Subtitle still reports the full found count, not the filtered one.
+    expect(picker().getByText('org/repo · 2 skills found')).toBeTruthy()
+  })
+
+  it('Select All toggles only the visible rows', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: 'alpha' } })
+    fireEvent.click(picker().getByRole('checkbox', { name: /Select All/ }))
+    // The filtered-out row must stay unselected.
+    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: '' } })
+    expect((picker().getByRole('checkbox', { name: /alpha-skill/ }) as HTMLInputElement).checked).toBe(true)
+    expect((picker().getByRole('checkbox', { name: /beta-skill/ }) as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('Cancel closes without installing', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith('/skills/remote/install', expect.anything())
+  })
 })
