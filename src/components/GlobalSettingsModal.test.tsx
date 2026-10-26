@@ -980,6 +980,53 @@ describe('GlobalSettingsModal Skills remote install', () => {
     // Hint disappears — user scope has no per-project target.
     expect(screen.queryByText('/work/proj/.claude/skills')).toBeNull()
   })
+
+  it('selector onChange updates the target value and hint', async () => {
+    // Seed the MRU list so the select offers a second path besides the
+    // server default cwd.
+    window.localStorage.setItem('claude-react-web:recent-cwds', JSON.stringify(['/other/repo']))
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+    const select = screen.getByLabelText('Target project') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '/other/repo' } })
+    expect(select.value).toBe('/other/repo')
+    expect(screen.getByText('/other/repo/.claude/skills')).toBeTruthy()
+    window.localStorage.removeItem('claude-react-web:recent-cwds')
+  })
+
+  it('browse opens the directory picker and a pick becomes the target', async () => {
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+
+    // DirectoryPicker browses the server filesystem; layer /fs shapes over
+    // the shared config mock so the picker's bootstrap listing resolves.
+    const baseGet = vi.mocked(api.get).getMockImplementation()!
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/fs/home') return Promise.resolve({ home: '/home/u', cwd: '/work/proj', sep: '/' })
+      if (url.startsWith('/fs/list')) {
+        const p = new URLSearchParams(url.split('?')[1]).get('path') ?? ''
+        return Promise.resolve({ path: p, parent: null, entries: [] })
+      }
+      return baseGet(url)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Browse projects' }))
+    await waitFor(() => expect(screen.getByText('Pick a project')).toBeTruthy())
+
+    // Wait out the picker's initial directory listing so no in-flight
+    // loadList can clobber the draft we are about to type.
+    const dialog = screen.getByText('Pick a project').closest('.modal') as HTMLElement
+    await waitFor(() => expect(within(dialog).queryByText('Loading...')).toBeNull())
+
+    // Pick a different directory via the picker's manual-path affordance.
+    const draftInput = within(dialog).getByRole('textbox') as HTMLInputElement
+    fireEvent.change(draftInput, { target: { value: '/other/repo' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Install skills here' }))
+
+    await waitFor(() => expect(screen.queryByText('Pick a project')).toBeNull())
+    const select = screen.getByLabelText('Target project') as HTMLSelectElement
+    expect(select.value).toBe('/other/repo')
+    expect(screen.getByText('/other/repo/.claude/skills')).toBeTruthy()
+    window.localStorage.removeItem('claude-react-web:recent-cwds')
+  })
 })
 
 describe('GlobalSettingsModal Skills preview modal', () => {
