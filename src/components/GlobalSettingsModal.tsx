@@ -1506,11 +1506,11 @@ function SkillsTab({
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
   const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
   const recentCwdsCap = clamp(Math.round(recentCwdsCapRaw), 3, 50)
-  const rememberCwd = (raw: string) => {
+  const rememberCwd = useCallback((raw: string) => {
     const v = raw.trim()
     if (!v) return
     setRecentCwds((prev) => [v, ...prev.filter((x) => x !== v)].slice(0, recentCwdsCap))
-  }
+  }, [recentCwdsCap, setRecentCwds])
   // Browse dialog for choosing an arbitrary project directory as target.
   const [showTargetPicker, setShowTargetPicker] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -1534,6 +1534,14 @@ function SkillsTab({
     const timer = window.setTimeout(() => void refresh(), 0)
     return () => window.clearTimeout(timer)
   }, [refresh])
+
+  // Every install path funnels success here: refresh the installed list AND
+  // remember the project it landed in (project scope only — user scope has
+  // no cwd to remember).
+  const handleInstalled = useCallback(() => {
+    if (importScope === 'project' && cwd) rememberCwd(cwd)
+    void refresh()
+  }, [importScope, cwd, rememberCwd, refresh])
 
   // Keep the SkillRecord alive during the exit animation so the modal
   // can render its content while the CSS outro plays.
@@ -1571,6 +1579,7 @@ function SkillsTab({
   const finishImport = async (result: SkillImportResponse) => {
     setNotice(`Imported ${result.skill.scope} skill "${result.skill.name}" from ${result.importedFiles} file${result.importedFiles !== 1 ? 's' : ''}.`)
     setImportName('')
+    if (importScope === 'project' && cwd) rememberCwd(cwd)
     await refresh()
     await openSkill(result.skill)
   }
@@ -1729,7 +1738,7 @@ function SkillsTab({
         cwd={cwd}
         importScope={importScope}
         skills={skills}
-        onInstalled={refresh}
+        onInstalled={handleInstalled}
         onOpenPicker={setPickerSource}
       />
 
@@ -1932,7 +1941,7 @@ function SkillsTab({
           importScope={importScope}
           onScopeChange={setImportScope}
           onClose={() => setPickerSource(null)}
-          onInstalled={refresh}
+          onInstalled={handleInstalled}
         />
       )}
     </div>

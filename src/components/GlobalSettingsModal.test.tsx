@@ -1027,6 +1027,46 @@ describe('GlobalSettingsModal Skills remote install', () => {
     expect(screen.getByText('/other/repo/.claude/skills')).toBeTruthy()
     window.localStorage.removeItem('claude-react-web:recent-cwds')
   })
+
+  it('a project-scope install POSTs the selected target cwd and remembers it', async () => {
+    // Seed the MRU so the select offers a second project besides the server
+    // default cwd, then point the target at it. '/other/repo' is seeded at
+    // the TAIL deliberately: rememberCwd moves the used cwd to the head, so
+    // the post-install order — not mere containment (already true from the
+    // seed) — is what proves the success path remembered it.
+    window.localStorage.setItem('claude-react-web:recent-cwds', JSON.stringify(['/seed/repo', '/other/repo']))
+    stubTwoSkillPreview(() => ({
+      installed: [{ name: 'alpha-skill', relativePath: 'skills/alpha-skill' }],
+      failed: [],
+    }))
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+    const select = screen.getByLabelText('Target project') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '/other/repo' } })
+
+    // Install from the catalog via Open repository — BatchPickerModal mounts
+    // over the tab and must use the tab's effective cwd, not the server
+    // default.
+    fireEvent.change(screen.getByLabelText('Browse skills'), { target: { value: 'org/repo' } })
+    await waitFor(() => expect(remote().getByRole('button', { name: 'Open repository' })).toBeTruthy())
+    fireEvent.click(remote().getByRole('button', { name: 'Open repository' }))
+    await waitFor(() => expect(screen.getByText('Select skills to install')).toBeTruthy())
+    await waitFor(() => expect(picker().getByText('alpha-skill')).toBeTruthy())
+
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
+    await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/install', expect.objectContaining({ cwd: '/other/repo', scope: 'project' })))
+
+    // Done delivers onInstalled — SkillsTab must remember the project the
+    // install landed in so the shared MRU offers it next time. The used cwd
+    // moves to the MRU head.
+    fireEvent.click(picker().getByRole('button', { name: 'Done' }))
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem('claude-react-web:recent-cwds') ?? '[]')
+      expect(stored).toContain('/other/repo')
+      expect(stored[0]).toBe('/other/repo')
+    })
+    window.localStorage.removeItem('claude-react-web:recent-cwds')
+  })
 })
 
 describe('GlobalSettingsModal Skills preview modal', () => {
