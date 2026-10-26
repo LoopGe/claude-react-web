@@ -25,12 +25,11 @@ import { useGitWrite } from '../hooks/useGitWrite'
 import { api } from '../hooks/useApi'
 import { ConfirmDialog } from './ConfirmDialog'
 import { FileViewer } from './FileViewer'
-import { FullDiffViewer } from './FullDiffViewer'
-import { AnimatedCollapse, AnimatedDetails } from './AnimatedCollapse'
+import { GitFileRow } from './GitFileRow'
+import { AnimatedDetails } from './AnimatedCollapse'
 import { Tooltip } from './Tooltip'
-import { IconX, IconSparkles, IconChevronDown, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconSearch } from './icons/ToolIcons'
+import { IconX, IconSparkles, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
-import { DiffView } from './DiffView'
 import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { AnimatePresence } from 'motion/react'
@@ -722,50 +721,13 @@ interface FileRowProps {
 }
 
 const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex, onSelect, writeOps, onError, askConfirm, onOpenFile }: FileRowProps) {
-  const [open, setOpen] = useState(false)
-  const [renderDiff, setRenderDiff] = useState(false)
-  // Pending-open: the user clicked to open but the diff fetch is still in
-  // flight. We defer flipping `open` until the fetch resolves so the
-  // AnimatedCollapse runs ONE animation from 0 → final-diff-height instead
-  // of two (0 → loading-placeholder, then snap → diff). The chevron flips
-  // immediately and the toggle gets `aria-busy` so the click still feels
-  // responsive while we wait.
-  const [pendingOpen, setPendingOpen] = useState(false)
-  const { data: diff, loading, error } = useGitDiff(cwd, file.path, staged, renderDiff)
-
-  // Resolve pending → open as soon as the fetch produces a verdict.
-  // Triggers on either: (a) success, (b) error, (c) renderDiff was already
-  // true and a refresh re-fetched. We require either `diff` or `error` to
-  // have landed so we don't open during the brief window where renderDiff
-  // is true but the fetching effect hasn't yet flipped `loading` to true.
-  useEffect(() => {
-    if (!pendingOpen) return
-    if (loading) return
-    if (diff == null && error == null) return
-    // Synchronizing UI to an external async source (the diff fetch) — this
-    // is the legitimate setState-in-effect case the rule's docs call out
-    // ("subscribe for updates from some external system"). The alternative
-    // (kick off the fetch and flip `open` immediately) is exactly the
-    // two-stage animation we're trying to avoid.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setOpen(true)
-    setPendingOpen(false)
-  }, [pendingOpen, loading, diff, error])
-
-  // Safety net: if the fetch is unusually slow (large diff, slow disk, slow
-  // network in dev), don't leave the user staring at an unresponsive row.
-  // After 600 ms, open with the loading placeholder visible — the snap to
-  // final height once the diff lands is still less jarring than the old
-  // two-stage animation, because AnimatedCollapse no longer re-animates on
-  // content growth.
-  useEffect(() => {
-    if (!pendingOpen) return
-    const t = window.setTimeout(() => {
-      setOpen(true)
-      setPendingOpen(false)
-    }, 600)
-    return () => window.clearTimeout(t)
-  }, [pendingOpen])
+  // The diff fetch is armed on the first open attempt — GitFileRow calls
+  // onFetchStart from its deferred-open toggle. The diff endpoint is one
+  // git invocation per file, so we don't spend the request until the user
+  // has actually asked for the row.
+  const [fetchStarted, setFetchStarted] = useState(false)
+  const { data: diff, loading, error } = useGitDiff(cwd, file.path, staged, fetchStarted)
+  const handleFetchStart = useCallback(() => setFetchStarted(true), [])
 
   const stageBusy = writeOps.busyOps.has(`stage:${file.path}`)
   const unstageBusy = writeOps.busyOps.has(`unstage:${file.path}`)
@@ -773,9 +735,8 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
   const anyBusy = stageBusy || unstageBusy || discardBusy
 
   // Full-diff escape hatch for a truncated preview (see DiffView's marker).
-  // fetchText is stable for a given row so FullDiffViewer's open-effect
+  // fetchFullText is stable for a given row so FullDiffViewer's open-effect
   // can't refetch on unrelated GitPanel re-renders.
-  const [showFull, setShowFull] = useState(false)
   const fetchFullText = useCallback((signal?: AbortSignal): Promise<string> => {
     // Loud, not a silent fallback: the button only renders once a preview
     // diff loaded, and useGitDiff never loads one without a cwd — so a
@@ -783,64 +744,22 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
     if (!cwd) throw new Error('viewing a full diff requires a cwd')
     return api.get<GitDiff>(gitDiffQuery(cwd, file.path, staged, { full: true }), { signal }).then((d) => d.text)
   }, [cwd, file.path, staged])
-  // Stable so DiffView's memo survives GitPanel re-renders (commit-textarea
-  // typing, status snapshots).
-  const openFull = useCallback(() => setShowFull(true), [])
-
-  const handleToggle = () => {
-    if (open) {
-      // Closing — immediate.
-      setOpen(false)
-      setPendingOpen(false)
-      return
-    }
-    if (pendingOpen) {
-      // Second click while the deferred open is still waiting on the fetch:
-      // the user is saying "open it NOW", not "cancel". The row looks dead
-      // during the pending window (chevron flipped, body not yet grown), so
-      // treating the retry as a cancel left the row permanently shut — the
-      // "展不开" symptom. Open immediately and show the loading placeholder.
-      setOpen(true)
-      setPendingOpen(false)
-      return
-    }
-    // Opening — kick off the fetch and wait for it (or the safety timer)
-    // before flipping `open`. Chevron + aria-busy give immediate feedback.
-    setRenderDiff(true)
-    setPendingOpen(true)
-  }
 
   return (
-    <div className={`git-file-row ${open ? 'open' : ''} ${selected ? 'selected' : ''}`}>
-      <div className="git-file-row-line" onClick={() => onSelect(selectIndex)}>
-        <button
-          type="button"
-          className="git-file-row-toggle"
-          aria-busy={pendingOpen || undefined}
-          aria-expanded={open}
-          onClick={handleToggle}
-          title={file.renamedFrom ? `${file.renamedFrom} → ${file.path}` : file.path}
-        >
-          <span className={`git-file-status status-${file.status}`} title={gitStatusTitle(file.status)}>{file.status}</span>
-          <span className="git-file-path">
-            {file.renamedFrom && (
-              <span className="git-file-renamed-from">{file.renamedFrom} → </span>
-            )}
-            {file.path}
-          </span>
-          {(file.insertions != null || file.deletions != null) && (
-            <span className="git-file-changes">
-              {file.insertions != null && file.insertions > 0 && (
-                <span className="git-file-additions">+{file.insertions}</span>
-              )}
-              {file.deletions != null && file.deletions > 0 && (
-                <span className="git-file-deletions">-{file.deletions}</span>
-              )}
-            </span>
-          )}
-          <span className="git-file-arrow">{(open || pendingOpen) ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}</span>
-        </button>
-        <div className="git-file-actions">
+    <GitFileRow
+      status={file.status}
+      path={file.path}
+      renamedFrom={file.renamedFrom}
+      insertions={file.insertions}
+      deletions={file.deletions}
+      selected={selected}
+      onSelect={() => onSelect(selectIndex)}
+      fetchStarted={fetchStarted}
+      onFetchStart={handleFetchStart}
+      diff={{ data: diff, loading, error }}
+      fetchFullText={fetchFullText}
+      actions={(
+        <>
           <Tooltip label="View file content" placement="left">
             <button
               type="button"
@@ -900,38 +819,9 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
               </Tooltip>
             </>
           )}
-        </div>
-      </div>
-      <AnimatedCollapse
-        open={open}
-        className="git-file-diff-collapse"
-        onExitComplete={() => setRenderDiff(false)}
-      >
-        {renderDiff && (
-          <div className="git-file-diff-wrap">
-            {loading && <div className="git-file-diff-loading">Loading diff...</div>}
-            {error && <div className="git-file-diff-error">{error}</div>}
-            {diff && diff.isBinary && (
-              <div className="git-file-diff-binary">Binary file - no preview</div>
-            )}
-            {diff && !diff.isBinary && (
-              <DiffView
-                text={diff.text}
-                truncated={diff.truncated}
-                totalLines={diff.totalLines}
-                onShowFull={openFull}
-              />
-            )}
-          </div>
-        )}
-      </AnimatedCollapse>
-      <FullDiffViewer
-        open={showFull}
-        onClose={() => setShowFull(false)}
-        name={file.path}
-        fetchText={fetchFullText}
-      />
-    </div>
+        </>
+      )}
+    />
   )
 }, (prev, next) => {
   // Custom comparator: skip re-render when only writeOps reference changed
