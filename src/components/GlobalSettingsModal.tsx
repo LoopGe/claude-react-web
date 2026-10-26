@@ -6,7 +6,8 @@ import { api } from '../hooks/useApi'
 import { getHostCapabilities } from '../host-capabilities'
 import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
-import { IconX, IconCheck, IconChevronDown, IconFolder, IconRefresh, IconFileText, IconSparkles, IconTerminal } from './icons/ToolIcons'
+import { IconX, IconCheck, IconChevronDown, IconFolder, IconRefresh, IconFileText, IconSparkles, IconTerminal, IconSearch } from './icons/ToolIcons'
+import { Markdown } from './Markdown'
 import { EmptyState } from './EmptyState'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Skeleton } from './Skeleton'
@@ -1215,8 +1216,8 @@ function RemoteInstallSection({
 
 /** Multi-select install picker for one remote source (a `owner/repo` opened
  *  via Browse / Open repository). Previews the source's skills, lets the user
- *  tick a subset, then reports per-row ✓ / error WITHOUT closing — Done is the
- *  only exit that refreshes the installed list. */
+ *  tick a subset, then reports per-row ✓ / error WITHOUT closing — every
+ *  close path after a successful install refreshes the installed list. */
 function BatchPickerModal({
   source,
   cwd,
@@ -1241,6 +1242,17 @@ function BatchPickerModal({
   const [replaceExisting, setReplaceExisting] = useState(false)
   const [phase, setPhase] = useState<'select' | 'installing' | 'done'>('select')
   const [results, setResults] = useState<RemoteInstallResponse | null>(null)
+  // False once unmounted. Closing during an in-flight install means `close`
+  // runs with results === null and the modal is then gone — install()'s
+  // continuation delivers onInstalled directly instead (by the time the POST
+  // resolves it has landed on disk, so the installed list must refresh).
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    // Reset in the body, not just the initializer: StrictMode's simulated
+    // unmount/remount reuses the ref object while re-running the effect.
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
 
   useEffect(() => {
     let live = true
@@ -1301,12 +1313,31 @@ function BatchPickerModal({
         paths: [...selected],
         overwrite: replaceExisting,
       })
-      setResults(result)
-      setPhase('done')
+      if (mountedRef.current) {
+        setResults(result)
+        setPhase('done')
+      } else {
+        onInstalled()
+      }
     } catch (e) {
+      if (!mountedRef.current) {
+        // The modal is gone — an error banner has no audience. Refresh the
+        // installed list so it reflects whatever landed before the failure;
+        // the GET is the source of truth, so over-refreshing is harmless.
+        onInstalled()
+        return
+      }
       setError((e as Error).message)
       setPhase('select')
     }
+  }
+
+  // Fires onInstalled on every close path once an install has succeeded
+  // (✕ / Cancel / Escape / backdrop / Done). Closing mid-'installing' sees
+  // results === null — that case is handled by the unmount continuation.
+  const close = () => {
+    if (results) onInstalled()
+    onClose()
   }
 
   return (
@@ -1314,26 +1345,42 @@ function BatchPickerModal({
       variant="modal"
       cardClassName="settings-skill-picker"
       ariaLabel="Select skills to install"
-      onClose={onClose}
+      onClose={close}
     >
-      <h4>Select skills to install</h4>
-      <div className="settings-group-desc">{`${source} · ${skills.length} skills found`}</div>
-      <label>
-        Search:
-        <input
-          className="input"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          spellCheck={false}
-        />
-      </label>
+      <div className="settings-skill-picker-head">
+        <div className="settings-skill-picker-titles">
+          <h4>Select skills to install</h4>
+          <div className="settings-skill-picker-sub">{`${source} · ${skills.length} skills found`}</div>
+        </div>
+        <button type="button" className="btn btn-icon-sm" onClick={close} aria-label="Close">
+          <IconX size={14} />
+        </button>
+      </div>
+      <div className="settings-skill-picker-toolbar">
+        <label className="settings-skill-picker-search">
+          <IconSearch size={13} aria-hidden />
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Search skills…"
+            aria-label="Search skills"
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </label>
+        <label className="settings-skill-picker-select-all">
+          <input
+            type="checkbox"
+            checked={allVisibleSelected}
+            onChange={toggleAllVisible}
+            disabled={phase !== 'select'}
+          />
+          <span>{`Select All (${selected.size}/${skills.length})`}</span>
+        </label>
+      </div>
       {error && <div className="settings-error">{error}</div>}
       {loading && <div className="settings-note">Loading…</div>}
       <div className="settings-skill-picker-list">
-        <label className="settings-skill-picker-select-all">
-          <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />
-          <span>{`Select All (${selected.size}/${skills.length})`}</span>
-        </label>
         {visible.map((skill) => {
           const status = phase === 'done' ? statusByPath.get(skill.relativePath) : undefined
           return (
@@ -1342,13 +1389,17 @@ function BatchPickerModal({
                 type="checkbox"
                 checked={selected.has(skill.relativePath)}
                 onChange={() => toggleOne(skill.relativePath)}
+                disabled={phase !== 'select'}
               />
               <span>
                 <strong>{skill.name}</strong>
-                <small>{skill.description}</small>
+                <small title={skill.description}>{skill.description}</small>
               </span>
               {status && (
-                <span className={`settings-skill-picker-status${status.ok ? '' : ' error'}`}>
+                <span
+                  className={`settings-skill-picker-status${status.ok ? '' : ' error'}`}
+                  title={status.text}
+                >
                   {status.text}
                 </span>
               )}
@@ -1356,24 +1407,35 @@ function BatchPickerModal({
           )
         })}
       </div>
+      {phase === 'done' && results && (
+        <div className="settings-skill-picker-summary">
+          {`${results.installed.length} installed${results.failed.length ? ` · ${results.failed.length} failed` : ''}`}
+        </div>
+      )}
       <div className="settings-skill-picker-footer">
-        <span className="settings-note">{`Scope: ${importScope}`}</span>
-        <label className="settings-skill-overwrite">
-          <input type="checkbox" checked={replaceExisting} onChange={(e) => setReplaceExisting(e.target.checked)} /> Replace existing
-        </label>
-        <button type="button" className="btn" onClick={onClose}>Cancel</button>
-        {phase === 'done' ? (
-          <button type="button" className="btn btn-primary" onClick={() => { onInstalled(); onClose() }}>Done</button>
-        ) : (
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={phase === 'installing' || selected.size === 0}
-            onClick={() => void install()}
-          >
-            {phase === 'installing' ? 'Installing…' : `Install ${selected.size} skills`}
-          </button>
-        )}
+        <div className="settings-skill-picker-footer-left">
+          <span className="settings-skill-picker-scope">{`Scope: ${importScope}`}</span>
+          <label className="settings-skill-overwrite">
+            {/* Retired with the checkboxes in 'done' — it can no longer
+                affect anything once the install button is gone. */}
+            <input type="checkbox" checked={replaceExisting} disabled={phase === 'done'} onChange={(e) => setReplaceExisting(e.target.checked)} /> Replace existing
+          </label>
+        </div>
+        <div className="settings-skill-picker-footer-actions">
+          <button type="button" className="btn" onClick={close}>Cancel</button>
+          {phase === 'done' ? (
+            <button type="button" className="btn btn-primary" onClick={close}>Done</button>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={phase === 'installing' || selected.size === 0}
+              onClick={() => void install()}
+            >
+              {phase === 'installing' ? 'Installing…' : `Install ${selected.size} skills`}
+            </button>
+          )}
+        </div>
       </div>
     </Overlay>
   )
@@ -1754,7 +1816,13 @@ function SkillsTab({
                   </table>
                 </div>
               )}
-              <pre className="settings-skill-preview-content">{parsed ? parsed.body : (ps.content || '')}</pre>
+              {parsed ? (
+                <div className="settings-skill-preview-content">
+                  <Markdown text={parsed.body} />
+                </div>
+              ) : (
+                <pre className="settings-skill-preview-content settings-skill-preview-raw">{ps.content || ''}</pre>
+              )}
           </Overlay>
         )
       })()}

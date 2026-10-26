@@ -789,10 +789,14 @@ describe('GlobalSettingsModal Skills remote install', () => {
     fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
     fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
 
-    // Modal stays open: per-row status, button relabelled Done.
+    // Modal stays open: per-row status (full text on hover), install summary,
+    // checkboxes retired, button relabelled Done.
     await waitFor(() => expect(picker().getByText('✓')).toBeTruthy())
     expect(screen.getByText('Select skills to install')).toBeTruthy()
-    expect(picker().getByText('Missing SKILL.md')).toBeTruthy()
+    expect(picker().getByText('Missing SKILL.md').getAttribute('title')).toBe('Missing SKILL.md')
+    expect(picker().getByText('1 installed · 1 failed')).toBeTruthy()
+    expect((picker().getByRole('checkbox', { name: /alpha-skill/ }) as HTMLInputElement).disabled).toBe(true)
+    expect((picker().getByRole('checkbox', { name: /Select All/ }) as HTMLInputElement).disabled).toBe(true)
     expect(picker().getByRole('button', { name: 'Done' })).toBeTruthy()
     expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/install', {
       source: 'org/repo',
@@ -802,7 +806,8 @@ describe('GlobalSettingsModal Skills remote install', () => {
       overwrite: false,
     })
 
-    // Done (and only it) refreshes the list and closes.
+    // Done refreshes the list (every close path does after an install) and
+    // closes — see the two close-path tests below.
     const listsBefore = listGets().length
     fireEvent.click(picker().getByRole('button', { name: 'Done' }))
     await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
@@ -813,7 +818,7 @@ describe('GlobalSettingsModal Skills remote install', () => {
     stubTwoSkillPreview()
     await openPicker()
 
-    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: 'beta' } })
+    fireEvent.change(picker().getByRole('textbox', { name: 'Search skills' }), { target: { value: 'beta' } })
     expect(picker().queryByText('alpha-skill')).toBeNull()
     expect(picker().getByText('beta-skill')).toBeTruthy()
     // Subtitle still reports the full found count, not the filtered one.
@@ -824,12 +829,99 @@ describe('GlobalSettingsModal Skills remote install', () => {
     stubTwoSkillPreview()
     await openPicker()
 
-    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: 'alpha' } })
+    fireEvent.change(picker().getByRole('textbox', { name: 'Search skills' }), { target: { value: 'alpha' } })
     fireEvent.click(picker().getByRole('checkbox', { name: /Select All/ }))
     // The filtered-out row must stay unselected.
-    fireEvent.change(picker().getByLabelText('Search:'), { target: { value: '' } })
+    fireEvent.change(picker().getByRole('textbox', { name: 'Search skills' }), { target: { value: '' } })
     expect((picker().getByRole('checkbox', { name: /alpha-skill/ }) as HTMLInputElement).checked).toBe(true)
     expect((picker().getByRole('checkbox', { name: /beta-skill/ }) as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('header close button closes without installing', async () => {
+    stubTwoSkillPreview()
+    await openPicker()
+
+    fireEvent.click(picker().getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    expect(vi.mocked(api.post)).not.toHaveBeenCalledWith('/skills/remote/install', expect.anything())
+  })
+
+  it('any close path after an install refreshes the installed list', async () => {
+    // The install POST has already landed on disk when the user leaves via
+    // the header ✕ instead of Done — the list must still refresh.
+    stubTwoSkillPreview(() => ({
+      installed: [{ name: 'alpha-skill', relativePath: 'skills/alpha-skill' }],
+      failed: [],
+    }))
+    await openPicker({ defaults: { cwd: '/work/proj' } })
+
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
+    await waitFor(() => expect(picker().getByRole('button', { name: 'Done' })).toBeTruthy())
+
+    const listsBefore = listGets().length
+    fireEvent.click(picker().getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    await waitFor(() => expect(listGets().length).toBeGreaterThan(listsBefore))
+  })
+
+  it('closing mid-install refreshes the installed list when the POST lands', async () => {
+    // Cancel / ✕ are NOT disabled while an install is in flight. The POST
+    // lands on disk anyway, so when it resolves after the modal is gone the
+    // picker must deliver the refresh itself (close() can no longer do it).
+    let resolveInstall!: () => void
+    vi.mocked(api.post).mockImplementation((path: string) => {
+      if (path === '/skills/remote/preview') {
+        return Promise.resolve({
+          source: 'org/repo',
+          skills: [{ name: 'alpha-skill', description: 'Does alpha things', relativePath: 'skills/alpha-skill' }],
+        })
+      }
+      return new Promise((resolve) => {
+        resolveInstall = () => resolve({
+          installed: [{ name: 'alpha-skill', relativePath: 'skills/alpha-skill' }],
+          failed: [],
+        })
+      })
+    })
+    await openPicker({ defaults: { cwd: '/work/proj' } })
+
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
+    // Close while the POST is still pending…
+    fireEvent.click(picker().getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    // …then let it land: the list must refresh even though the picker is gone.
+    const listsBefore = listGets().length
+    resolveInstall()
+    await waitFor(() => expect(listGets().length).toBeGreaterThan(listsBefore))
+  })
+
+  it('closing mid-install still refreshes the list when the POST fails', async () => {
+    // A rejected POST after the modal is gone must not be swallowed silently:
+    // the list refreshes because files may have landed before the failure —
+    // the GET is the source of truth, so over-refreshing is harmless.
+    let rejectInstall!: () => void
+    vi.mocked(api.post).mockImplementation((path: string) => {
+      if (path === '/skills/remote/preview') {
+        return Promise.resolve({
+          source: 'org/repo',
+          skills: [{ name: 'alpha-skill', description: 'Does alpha things', relativePath: 'skills/alpha-skill' }],
+        })
+      }
+      return new Promise((_resolve, reject) => {
+        rejectInstall = () => reject(new Error('boom'))
+      })
+    })
+    await openPicker({ defaults: { cwd: '/work/proj' } })
+
+    fireEvent.click(picker().getByRole('checkbox', { name: /alpha-skill/ }))
+    fireEvent.click(picker().getByRole('button', { name: 'Install 1 skills' }))
+    fireEvent.click(picker().getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
+    const listsBefore = listGets().length
+    rejectInstall()
+    await waitFor(() => expect(listGets().length).toBeGreaterThan(listsBefore))
   })
 
   it('Cancel closes without installing', async () => {
@@ -840,5 +932,82 @@ describe('GlobalSettingsModal Skills remote install', () => {
     fireEvent.click(picker().getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByText('Select skills to install')).toBeNull())
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith('/skills/remote/install', expect.anything())
+  })
+})
+
+describe('GlobalSettingsModal Skills preview modal', () => {
+  beforeEach(() => {
+    vi.mocked(api.put).mockResolvedValue({})
+    vi.mocked(api.post).mockReset()
+    vi.mocked(api.get).mockClear()
+  })
+
+  /** A project skill whose body exercises the markdown pipeline: a heading,
+   *  bold text, and a list. */
+  const previewSkill = {
+    scope: 'project',
+    name: 'find-skills',
+    description: 'Helps users discover and install agent skills',
+    path: '/work/proj/.claude/skills/find-skills/SKILL.md',
+    relativePath: '.claude/skills/find-skills/SKILL.md',
+    readOnly: false,
+    valid: true,
+    errors: [],
+    content: [
+      '---',
+      'name: find-skills',
+      'description: Helps users discover and install agent skills',
+      '---',
+      '',
+      '# Find Skills',
+      '',
+      'This skill helps you discover **agent skills** quickly.',
+      '',
+      '- one',
+      '- two',
+    ].join('\n'),
+  }
+
+  const openPreview = async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      if (url === '/first-party-tools') return Promise.resolve({ servers: [] })
+      if (url === '/log') return Promise.resolve({ level: 'info', availableLevels: ['error', 'warn', 'info', 'debug', 'trace'] })
+      if (url === '/log/file') return Promise.resolve({ enabled: false, path: null })
+      if (url.startsWith('/skills/search')) return Promise.resolve({ skills: [] })
+      if (url.includes('/skills/project/find-skills')) return Promise.resolve({ skill: previewSkill })
+      if (url.startsWith('/skills')) return Promise.resolve({ skills: [previewSkill] })
+      return Promise.resolve({ defaults: { cwd: '/work/proj' } })
+    })
+    render(
+      <ToastProvider>
+        <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
+      </ToastProvider>,
+    )
+    await waitFor(() => expect(screen.getByText('Extensions')).toBeTruthy())
+    fireEvent.click(screen.getByText('Extensions'))
+    await waitFor(() => expect(screen.getAllByText('find-skills').length).toBeGreaterThan(0))
+    fireEvent.click(screen.getAllByText('find-skills')[0]!)
+    await waitFor(() => expect(screen.getByText('Frontmatter')).toBeTruthy())
+  }
+
+  it('renders the body through the shared markdown pipeline, not raw text', async () => {
+    await openPreview()
+
+    // `**agent skills**` must arrive as a <strong>, not literal asterisks.
+    const strong = document.querySelector('.settings-skill-preview-content strong')
+    expect(strong, 'bold run rendered as <strong>').toBeTruthy()
+    expect(strong!.textContent).toBe('agent skills')
+    // Headings render as headings — the shared pipeline remaps `#` to <h3>
+    // (h1/h2 are reserved for the app shell).
+    expect(document.querySelector('.settings-skill-preview-content h3')?.textContent).toBe('Find Skills')
+  })
+
+  it('still shows the frontmatter key-value table', async () => {
+    await openPreview()
+
+    const rows = document.querySelectorAll('.settings-skill-frontmatter-table tbody tr')
+    expect(rows.length).toBe(2)
+    expect(rows[0]!.textContent).toContain('find-skills')
   })
 })

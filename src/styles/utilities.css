@@ -3389,10 +3389,32 @@ input[type="checkbox"]:disabled {
   flex-direction: column;
   overflow: hidden;
 }
+/* The card is a height-capped flex column: every non-scrolling child must opt
+   out of flex shrink, or a tall body squeezes them proportionally and their
+   own overflow/border clips them — the frontmatter table vanished (container
+   pressed to ~27px) and the title band looked vertically off-center because
+   its bottom was clipped. The content pane (flex:1; min-height:0; overflow
+   auto) is the only element that absorbs the overflow. */
+.settings-skill-preview-modal > .modal-header,
+.settings-skill-preview-modal > .settings-card-path,
+.settings-skill-preview-modal > .settings-skill-frontmatter {
+  flex-shrink: 0;
+}
 .settings-skill-preview-modal .modal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+/* Inset the path strip so nothing in the preview card sits flush against the
+   card edge; scoped here — .settings-card-path is shared with MCP/plugin
+   cards, which keep their full-bleed band. */
+.settings-skill-preview-modal .settings-card-path {
+  margin: var(--space-2) var(--space-3) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .settings-skill-preview-title {
   display: flex;
@@ -3439,39 +3461,91 @@ input[type="checkbox"]:disabled {
 .settings-skill-frontmatter-table tr:last-child td {
   border-bottom: none;
 }
+/* Body container: markdown-document styling — typography comes from the
+   shared `.md` styles the Markdown component renders inside; only the box
+   (bg/border/scroll) lives here. */
 .settings-skill-preview-content {
   margin: var(--space-2) var(--space-3) var(--space-3);
   padding: var(--space-3);
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
-  line-height: 1.6;
   overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
   flex: 1;
   min-height: 0;
 }
+/* Unparsed-content fallback keeps the source-code look. */
+.settings-skill-preview-raw {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 /* Batch install picker (BatchPickerModal) — multi-select over one remote
-   source's previewed skills. */
+   source's previewed skills. The card carries its own padding so no section
+   sits flush against the card edge (head / toolbar / list / footer each keep
+   their own gutter under it). */
 .settings-skill-picker {
   width: min(640px, 92vw);
   max-height: 84vh;
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
+  padding: var(--space-4);
   overflow: hidden;
 }
-.settings-skill-picker > label {
+.settings-skill-picker-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.settings-skill-picker-titles {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.settings-skill-picker-titles h4 {
+  margin: 0;
+}
+.settings-skill-picker-sub {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.settings-skill-picker-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.settings-skill-picker-search {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-}
-.settings-skill-picker > label .input {
   flex: 1;
   min-width: 0;
+  padding: var(--space-1-5) var(--space-2-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev-1);
+  color: var(--fg-muted);
+}
+.settings-skill-picker-search:focus-within {
+  border-color: var(--accent);
+}
+/* Input reset (flex/transparent/none-border/color/font) comes from the shared
+   .project-picker-search/.field-picker-search input group in messages.css —
+   keep it there, it documents the :focus-visible specificity trap. */
+.settings-skill-picker-select-all {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
 }
 .settings-skill-picker-list {
   display: grid;
@@ -3480,20 +3554,16 @@ input[type="checkbox"]:disabled {
   overflow-y: auto;
   min-height: 0;
 }
-.settings-skill-picker-select-all,
 .settings-skill-picker-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: var(--space-2);
-  align-items: center;
+  gap: var(--space-2-5);
+  align-items: start;
   padding: var(--space-2-5);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-elev);
-}
-.settings-skill-picker-select-all {
-  background: var(--bg-elev-1);
-  font-weight: 600;
+  cursor: pointer;
 }
 .settings-skill-picker-row:hover {
   border-color: var(--accent);
@@ -3502,6 +3572,14 @@ input[type="checkbox"]:disabled {
 .settings-skill-picker-select-all input[type="checkbox"],
 .settings-skill-picker-row input[type="checkbox"] {
   accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  margin: 0;
+}
+/* Row checkbox aligns with the name's first line, not the row's vertical
+   center, now that descriptions can wrap to two lines. */
+.settings-skill-picker-row input[type="checkbox"] {
+  margin-top: 2px;
 }
 .settings-skill-picker-row > span {
   display: grid;
@@ -3518,6 +3596,11 @@ input[type="checkbox"]:disabled {
 .settings-skill-picker-row small {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 .settings-skill-picker-status {
   color: var(--ok-text);
@@ -3527,18 +3610,36 @@ input[type="checkbox"]:disabled {
 .settings-skill-picker-status.error {
   color: var(--danger-text);
   font-weight: 400;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-skill-picker-summary {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
 }
 .settings-skill-picker-footer {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-2);
-  padding-top: var(--space-2);
+  padding-top: var(--space-3);
   border-top: 1px solid var(--border);
 }
-.settings-skill-picker-footer .settings-note {
-  margin-right: auto;
+.settings-skill-picker-footer-left,
+.settings-skill-picker-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.settings-skill-picker-footer-left {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.settings-skill-picker-scope {
+  white-space: nowrap;
 }
 .settings-actions-row {
   display: flex;
