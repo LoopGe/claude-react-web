@@ -1,8 +1,37 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { discoverSkills } from './skills-remote.js'
+import { basename, dirname, join } from 'node:path'
+import { gitClone } from './git-clone.js'
+import { cloneAndDiscover, discoverSkills, searchCatalog } from './skills-remote.js'
+import { rmRf } from './__test-utils__/index.js'
+
+// git-clone is mocked so no test touches the network or a real git binary.
+// The fake enforces gitClone's contract (dest must NOT already exist — it
+// throws if it does) and drops a root-level SKILL.md so cloneAndDiscover has
+// something real to discover. A root-level skill's relativePath is '', which
+// pins the cache contract: the returned dir must be the clone root
+// (`join(tmp, 'repo')`), never the mkdtemp tree (that would surface as
+// relativePath 'repo/' — and break Task 4's install).
+vi.mock('./git-clone.js', () => ({
+  gitClone: vi.fn(async (_url: string, dest: string) => {
+    if (existsSync(dest)) throw new Error(`gitClone dest already exists: ${dest}`)
+    mkdirSync(dest, { recursive: true })
+    writeFileSync(join(dest, 'SKILL.md'), '---\nname: demo\ndescription: demo skill\n---\n\n# body\n', 'utf8')
+  }),
+}))
+
+const CACHE_TTL_MS = 10 * 60 * 1000
+
+beforeEach(() => {
+  vi.mocked(gitClone).mockClear()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 async function makeTree(): Promise<{ base: string; cleanup: () => Promise<void> }> {
   const base = await mkdtemp(join(tmpdir(), 'skills-remote-'))
@@ -115,5 +144,111 @@ describe('discoverSkills', () => {
     } finally {
       await cleanup()
     }
+  })
+})
+
+// Every cloneAndDiscover test uses its own source: the clone cache is
+// module-private and lives for the whole file, so a shared source would let
+// one test's entry satisfy the next.
+describe('cloneAndDiscover', () => {
+  it('constructs a github.com URL from owner/repo and clones into a fresh dir', async () => {
+    const { dir, skills } = await cloneAndDiscover('vercel-labs/agent-skills')
+    try {
+      expect(vi.mocked(gitClone)).toHaveBeenCalledWith(
+        'https://github.com/vercel-labs/agent-skills.git',
+        dir,
+      )
+      // Cache contract: `dir` is the clone root (mkdtemp + 'repo'), so the
+      // root-level fixture skill reports relativePath '' — not 'repo'.
+      expect(basename(dir)).toBe('repo')
+      expect(basename(dirname(dir)).startsWith('crw-skill-')).toBe(true)
+      expect(skills).toEqual([{ name: 'demo', description: 'demo skill', relativePath: '' }])
+    } finally {
+      rmRf(dirname(dir))
+    }
+  })
+
+  it('rejects a source that is not owner/repo', async () => {
+    await expect(cloneAndDiscover('https://evil.example/x/y')).rejects.toThrow(/source must be/)
+    expect(vi.mocked(gitClone)).not.toHaveBeenCalled()
+  })
+
+  it('reuses the cached clone dir for a second call with the same source', async () => {
+    const first = await cloneAndDiscover('cache-owner/cache-repo')
+    const second = await cloneAndDiscover('cache-owner/cache-repo')
+    try {
+      expect(second.dir).toBe(first.dir)
+      expect(vi.mocked(gitClone)).toHaveBeenCalledTimes(1)
+    } finally {
+      rmRf(dirname(first.dir))
+    }
+  })
+
+  it('re-clones after the cache TTL expires', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-26T00:00:00Z'))
+    const first = await cloneAndDiscover('ttl-owner/ttl-repo')
+    vi.setSystemTime(Date.now() + CACHE_TTL_MS + 1)
+    const second = await cloneAndDiscover('ttl-owner/ttl-repo')
+    try {
+      expect(vi.mocked(gitClone)).toHaveBeenCalledTimes(2)
+      expect(second.dir).not.toBe(first.dir)
+      // the expired mkdtemp tree is torn down when the fresh clone replaces it
+      expect(existsSync(dirname(first.dir))).toBe(false)
+    } finally {
+      vi.useRealTimers()
+      rmRf(dirname(second.dir))
+    }
+  })
+
+  it('does not cache when the clone fails', async () => {
+    vi.mocked(gitClone).mockRejectedValueOnce(new Error('clone boom'))
+    await expect(cloneAndDiscover('fail-owner/fail-repo')).rejects.toThrow('clone boom')
+    const failedDest = vi.mocked(gitClone).mock.calls[0]![1]!
+    expect(existsSync(dirname(failedDest))).toBe(false)
+
+    const { dir, skills } = await cloneAndDiscover('fail-owner/fail-repo')
+    try {
+      expect(vi.mocked(gitClone)).toHaveBeenCalledTimes(2)
+      expect(skills).toEqual([{ name: 'demo', description: 'demo skill', relativePath: '' }])
+    } finally {
+      rmRf(dirname(dir))
+    }
+  })
+})
+
+describe('searchCatalog', () => {
+  it('rejects a query shorter than 2 characters', async () => {
+    await expect(searchCatalog('a', 20)).rejects.toThrow(/at least 2/)
+    await expect(searchCatalog(' ', 20)).rejects.toThrow(/at least 2/)
+  })
+
+  it('caps limit at 50 and forwards the skills.sh payload', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify({
+          skills: [
+            { id: 'a', source: 'o/r', skillId: 's-a', name: 'A', installs: 3 },
+            { id: 'b', source: 'o/r', skillId: 's-b', name: 'B', installs: 10 },
+            { id: 'c', source: 'o/r', skillId: 's-c', name: 'C' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const hits = await searchCatalog('react', 999)
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://skills.sh/api/search?q=react&limit=50')
+    expect(hits).toEqual([
+      { id: 'b', source: 'o/r', skillId: 's-b', name: 'B', installs: 10 },
+      { id: 'a', source: 'o/r', skillId: 's-a', name: 'A', installs: 3 },
+      { id: 'c', source: 'o/r', skillId: 's-c', name: 'C', installs: 0 },
+    ])
+  })
+
+  it('throws when skills.sh responds non-2xx', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('down', { status: 503 })))
+    await expect(searchCatalog('react', 20)).rejects.toThrow(/status 503/)
   })
 })
