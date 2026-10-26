@@ -3272,6 +3272,59 @@ input[type="checkbox"]:disabled {
   align-items: center;
   flex-wrap: wrap;
 }
+.settings-skill-remote-group .settings-group-body {
+  display: grid;
+  gap: var(--space-2);
+}
+.settings-skill-remote-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+.settings-skill-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto auto auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-2-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+}
+.settings-skill-result-name {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-skill-result-source {
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-skill-result-installs {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.settings-skill-row-error {
+  grid-column: 1 / -1;
+  color: var(--danger-text);
+  font-size: var(--fs-sm);
+}
+.settings-skill-installed-badge {
+  color: var(--ok-text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
 .settings-skill-file-input {
   display: none;
 }
