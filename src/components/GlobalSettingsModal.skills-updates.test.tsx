@@ -41,7 +41,7 @@ const localSkill = (scope: SkillScope, name: string): SkillRecord => ({
  *  api.post router for check-updates / update. */
 async function openSkillsWithInstalled(
   installed: SkillRecord[],
-  postImpl?: (path: string, body?: unknown) => unknown,
+  postImpl?: (path: string, body?: unknown) => Promise<unknown>,
 ) {
   mockGet({ defaults: { cwd: '/work/proj' } }, [gitToolsInfo])
   const baseGet = vi.mocked(api.get).getMockImplementation()!
@@ -104,7 +104,7 @@ describe('GlobalSettingsModal Skills update checks', () => {
   it('Update posts the update, clears the badge and refreshes', async () => {
     await openSkillsWithInstalled(
       [remoteSkill('project', 'pdf')],
-      (path, body) => {
+      (path) => {
         if (path === '/skills/check-updates') {
           return Promise.resolve(checkUpdatesBody('project', [{ scope: 'project', name: 'pdf', hasUpdate: true, remoteSha: 'sha-2' }]))
         }
@@ -118,7 +118,7 @@ describe('GlobalSettingsModal Skills update checks', () => {
     await waitFor(() => expect(screen.getByText('Update available')).toBeTruthy())
     const listsBefore = vi.mocked(api.get).mock.calls.filter(([u]) => String(u).startsWith('/skills?') || u === '/skills').length
 
-    fireEvent.click(screen.getByRole('button', { name: 'Update', exact: true }))
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }))
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/update', { scope: 'project', cwd: '/work/proj', name: 'pdf' }))
     await waitFor(() => expect(screen.queryByText('Update available')).toBeNull())
 
@@ -158,6 +158,6 @@ describe('GlobalSettingsModal Skills update checks', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
     await waitFor(() => expect(screen.getByText('boom')).toBeTruthy())
-    expect(screen.queryByRole('button', { name: 'Update', exact: true })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Update' })).toBeNull()
   })
 })
