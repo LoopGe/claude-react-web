@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { fileToBase64 } from '../utils/file-to-base64'
 import { formatBytes } from '../utils/format'
 import { randomId } from '../utils/uuid'
 import { getMaxPastedImageBytes } from './config-store'
@@ -192,21 +193,5 @@ function getImageDimensions(url: string): Promise<{ width: number; height: numbe
     img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
     img.onerror = () => resolve({ width: 0, height: 0 })
     img.src = url
-  })
-}
-
-/** Convert a File to a base64 string using FileReader, which avoids
- *  the O(n) string concatenation that blocked the main thread. */
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => {
-      const result = reader.result as string
-      // Strip the data-URL prefix (e.g. "data:image/png;base64,")
-      const commaIdx = result.indexOf(',')
-      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result)
-    }
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
   })
 }
