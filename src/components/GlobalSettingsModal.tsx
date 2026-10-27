@@ -1059,6 +1059,10 @@ function SkillsTab({
     if (!v) return
     setRecentCwds((prev) => [v, ...prev.filter((x) => x !== v)].slice(0, recentCwdsCap))
   }, [recentCwdsCap, setRecentCwds])
+  // The picker's per-row ✕ drops one entry from the shared MRU.
+  const forgetCwd = useCallback((path: string) => {
+    setRecentCwds((prev) => prev.filter((c) => c !== path))
+  }, [setRecentCwds])
   // Browse dialog for choosing an arbitrary project directory as target.
   const [showTargetPicker, setShowTargetPicker] = useState(false)
 
@@ -1178,6 +1182,7 @@ function SkillsTab({
         importScope={importScope}
         onScopeChange={setImportScope}
         onPickTarget={setCwdOverride}
+        onForgetTarget={forgetCwd}
         onInstalled={handleInstalled}
         onRefresh={() => void refresh()}
         onImported={(skill) => void openSkill(skill)}

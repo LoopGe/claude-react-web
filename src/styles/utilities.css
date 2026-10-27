@@ -3327,11 +3327,9 @@ input[type="checkbox"]:disabled {
   gap: var(--space-2);
   min-width: 0;
 }
-.settings-skill-target .input {
+.settings-skill-target .project-picker-trigger {
   min-width: 0;
   max-width: 340px;
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
 }
 .settings-skill-target-hint {
   font-family: var(--mono);

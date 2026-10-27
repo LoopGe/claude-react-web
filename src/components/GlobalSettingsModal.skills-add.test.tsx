@@ -58,8 +58,13 @@ describe('GlobalSettingsModal Skills unified add card', () => {
   const openSkillsTab = async (
     config: Record<string, unknown>,
     searchSkills: RemoteSearchHit[] = [],
+    getOverride?: (base: (url: string) => Promise<unknown>) => (url: string) => Promise<unknown>,
   ) => {
     mockGet(config, [gitToolsInfo], searchSkills)
+    if (getOverride) {
+      const base = vi.mocked(api.get).getMockImplementation()!
+      vi.mocked(api.get).mockImplementation(getOverride(base))
+    }
     const view = render(
       <ToastProvider>
         <GlobalSettingsModal open onClose={() => {}} onSaved={() => {}} />
@@ -89,6 +94,15 @@ describe('GlobalSettingsModal Skills unified add card', () => {
       const s = String(u)
       return s === '/skills' || s.startsWith('/skills?')
     })
+
+  /** Drive the New-session ProjectPicker: open the trigger menu and click the
+   *  row whose parent path matches (parent path disambiguates equal basenames). */
+  const chooseTargetProject = async (parent: string) => {
+    fireEvent.click(screen.getByLabelText(/^Target project/))
+    await waitFor(() => expect(screen.getByRole('listbox', { name: 'Projects' })).toBeTruthy())
+    const escaped = parent.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    fireEvent.click(screen.getByRole('option', { name: new RegExp(escaped) }))
+  }
 
   it('heads the section "Add skill" and offers three source chips', async () => {
     await openSkillsTab({})
@@ -518,7 +532,7 @@ describe('GlobalSettingsModal Skills unified add card', () => {
 
     // Footer controls claim to affect the in-flight install — disable them.
     expect((addCard().getByRole('button', { name: 'User' }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByLabelText('Target project') as HTMLSelectElement).disabled).toBe(true)
+    expect((screen.getByLabelText(/^Target project/) as HTMLButtonElement).disabled).toBe(true)
     expect((addCard().getByLabelText('Replace existing') as HTMLInputElement).disabled).toBe(true)
     // And no repo switch may land mid-install (results would cross lists).
     expect((addCard().getAllByRole('button', { name: 'Open repo' })[1] as HTMLButtonElement).disabled).toBe(true)
@@ -629,7 +643,7 @@ describe('GlobalSettingsModal Skills unified add card', () => {
     fireEvent.click(addCard().getByRole('button', { name: 'Install' }))
     await waitFor(() => expect(addCard().getByText('✓ Installed')).toBeTruthy())
 
-    fireEvent.change(screen.getByLabelText('Target project'), { target: { value: '/other/repo' } })
+    await chooseTargetProject('/other')
     await waitFor(() => expect(addCard().getByRole('button', { name: 'Install' })).toBeTruthy())
     expect(addCard().queryByText('✓ Installed')).toBeNull()
     window.localStorage.removeItem('claude-react-web:recent-cwds')
@@ -662,9 +676,56 @@ describe('GlobalSettingsModal Skills unified add card', () => {
       dataTransfer: { items: [], files: [new File(['x'], 'SKILL.md', { type: 'text/markdown' })] },
     })
     fireEvent(folderBody, folderDrop)
-    // The handler must not even claim the drop (no preventDefault, no import).
-    expect(folderDrop.defaultPrevented).toBe(false)
+    // The drop is claimed (preventDefault, so the browser never navigates)
+    // but the import itself is gated while busy.
+    expect(folderDrop.defaultPrevented).toBe(true)
     expect(vi.mocked(api.post)).not.toHaveBeenCalledWith('/skills/import/files', expect.anything(), expect.anything())
+  })
+
+  it('an in-flight drop traversal marks the card busy', async () => {
+    // Walking a large dropped folder is itself an in-flight import: other
+    // installs must not start before the files are even read.
+    vi.mocked(api.post).mockResolvedValue({
+      skill: { scope: 'project', name: 'dropped', path: '/work/proj/.claude/skills/dropped', relativePath: 'dropped', description: '', valid: true, errors: [], content: '' },
+      importedFiles: 1,
+    })
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+    fireEvent.click(addCard().getByRole('button', { name: 'Folder' }))
+    const folderBody = document.querySelector('.settings-skill-folder-body')!
+    const entry = {
+      isFile: true,
+      isDirectory: false,
+      name: 'SKILL.md',
+      // The read never settles during the test window.
+      file: () => {},
+    }
+    const dataTransfer = { items: [{ webkitGetAsEntry: () => entry }], files: [] }
+    fireEvent.drop(folderBody, { dataTransfer })
+    await waitFor(() => expect((addCard().getByRole('button', { name: 'User' }) as HTMLButtonElement).disabled).toBe(true))
+  })
+
+  it('a drop whose files cannot be read shows an error', async () => {
+    vi.mocked(api.post).mockResolvedValue({
+      skill: { scope: 'project', name: 'dropped', path: '/work/proj/.claude/skills/dropped', relativePath: 'dropped', description: '', valid: true, errors: [], content: '' },
+      importedFiles: 1,
+    })
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+    fireEvent.click(addCard().getByRole('button', { name: 'Folder' }))
+    const folderBody = document.querySelector('.settings-skill-folder-body')!
+    // First a successful import, so a success notice is on screen…
+    fireEvent.drop(folderBody, { dataTransfer: { items: [], files: [new File(['x'], 'SKILL.md', { type: 'text/markdown' })] } })
+    await waitFor(() => expect(addCard().getByText(/Imported project skill/)).toBeTruthy())
+
+    // …then a drop whose read fails: the error replaces the notice.
+    const entry = {
+      isFile: true,
+      isDirectory: false,
+      name: 'SKILL.md',
+      file: (_cb: unknown, err: (e: Error) => void) => err(new Error('denied')),
+    }
+    fireEvent.drop(folderBody, { dataTransfer: { items: [{ webkitGetAsEntry: () => entry }], files: [] } })
+    await waitFor(() => expect(addCard().getByText('denied')).toBeTruthy())
+    expect(addCard().queryByText(/Imported project skill/)).toBeNull()
   })
 
   it('a project-scope install POSTs the selected target cwd and remembers it', async () => {
@@ -679,8 +740,7 @@ describe('GlobalSettingsModal Skills unified add card', () => {
       failed: [],
     }))
     await openSkillsTab({ defaults: { cwd: '/work/proj' } })
-    const select = screen.getByLabelText('Target project') as HTMLSelectElement
-    fireEvent.change(select, { target: { value: '/other/repo' } })
+    await chooseTargetProject('/other')
 
     // Install from the catalog via Open repository — the inline list must use
     // the card's effective cwd, not the server default.
@@ -731,32 +791,41 @@ describe('GlobalSettingsModal Skills unified add card', () => {
     await waitFor(() => expect(vi.mocked(api.post)).toHaveBeenCalledWith('/skills/remote/install', expect.objectContaining({ overwrite: true }), { timeoutMs: 60_000 }))
   })
 
-  it('shows a target-project selector defaulting to the server default cwd', async () => {
+  it('shows the New session ProjectPicker defaulting to the server default cwd', async () => {
     await openSkillsTab({ defaults: { cwd: '/work/proj' } })
-    const select = screen.getByLabelText('Target project') as HTMLSelectElement
-    expect(select.value).toBe('/work/proj')
-    expect(select.disabled).toBe(false)
+    const trigger = screen.getByLabelText(/^Target project/) as HTMLButtonElement
+    expect(trigger.classList.contains('project-picker-trigger')).toBe(true)
+    expect(trigger.title).toBe('/work/proj')
+    // Accessible name carries BOTH the field label and the current target.
+    expect(trigger.getAttribute('aria-label')).toContain('Target project')
+    expect(trigger.getAttribute('aria-label')).toContain('/work/proj')
+    expect(trigger.disabled).toBe(false)
     // Resolved target hint is visible in project scope.
     expect(screen.getByText('/work/proj/.claude/skills')).toBeTruthy()
+
+    // The menu offers the recents search box and the directory browser entry.
+    fireEvent.click(trigger)
+    await waitFor(() => expect(screen.getByRole('listbox', { name: 'Projects' })).toBeTruthy())
+    expect(screen.getByRole('textbox', { name: 'Search projects' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Open project/ })).toBeTruthy()
   })
 
   it('disables the target selector in user scope', async () => {
     await openSkillsTab({ defaults: { cwd: '/work/proj' } })
     fireEvent.click(addCard().getByRole('button', { name: 'User' }))
-    const select = screen.getByLabelText('Target project') as HTMLSelectElement
-    expect(select.disabled).toBe(true)
+    const trigger = screen.getByLabelText(/^Target project/) as HTMLButtonElement
+    expect(trigger.disabled).toBe(true)
     // Hint disappears — user scope has no per-project target.
     expect(screen.queryByText('/work/proj/.claude/skills')).toBeNull()
   })
 
-  it('selector onChange updates the target value and hint', async () => {
-    // Seed the MRU list so the select offers a second path besides the
+  it('picking a project updates the target value and hint', async () => {
+    // Seed the MRU list so the menu offers a second path besides the
     // server default cwd.
     window.localStorage.setItem('claude-react-web:recent-cwds', JSON.stringify(['/other/repo']))
     await openSkillsTab({ defaults: { cwd: '/work/proj' } })
-    const select = screen.getByLabelText('Target project') as HTMLSelectElement
-    fireEvent.change(select, { target: { value: '/other/repo' } })
-    expect(select.value).toBe('/other/repo')
+    await chooseTargetProject('/other')
+    expect((screen.getByLabelText(/^Target project/) as HTMLButtonElement).title).toBe('/other/repo')
     expect(screen.getByText('/other/repo/.claude/skills')).toBeTruthy()
     window.localStorage.removeItem('claude-react-web:recent-cwds')
   })
@@ -776,7 +845,9 @@ describe('GlobalSettingsModal Skills unified add card', () => {
       return baseGet(url)
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Browse projects' }))
+    fireEvent.click(screen.getByLabelText(/^Target project/))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Open project/ })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /Open project/ }))
     await waitFor(() => expect(screen.getByText('Pick a project')).toBeTruthy())
 
     // Wait out the picker's initial directory listing so no in-flight
@@ -790,10 +861,111 @@ describe('GlobalSettingsModal Skills unified add card', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Install skills here' }))
 
     await waitFor(() => expect(screen.queryByText('Pick a project')).toBeNull())
-    const select = screen.getByLabelText('Target project') as HTMLSelectElement
-    expect(select.value).toBe('/other/repo')
+    expect((screen.getByLabelText(/^Target project/) as HTMLButtonElement).title).toBe('/other/repo')
     expect(screen.getByText('/other/repo/.claude/skills')).toBeTruthy()
     window.localStorage.removeItem('claude-react-web:recent-cwds')
+  })
+
+  it('forget removes an entry from the shared recent-projects MRU', async () => {
+    window.localStorage.setItem('claude-react-web:recent-cwds', JSON.stringify(['/seed/repo', '/other/repo']))
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+    fireEvent.click(screen.getByLabelText(/^Target project/))
+    await waitFor(() => expect(screen.getByLabelText('Forget /other/repo')).toBeTruthy())
+    fireEvent.click(screen.getByLabelText('Forget /other/repo'))
+
+    expect(JSON.parse(window.localStorage.getItem('claude-react-web:recent-cwds') ?? '[]')).toEqual(['/seed/repo'])
+    window.localStorage.removeItem('claude-react-web:recent-cwds')
+  })
+
+  it('disables installs when the target project directory no longer exists', async () => {
+    // A confirmed-missing target would be silently recreated by an install —
+    // block the install buttons and say why instead.
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } }, [catalogHit()], (base) => (url: string) => {
+      if (String(url).startsWith('/fs/resolve-cwd') && String(url).includes(encodeURIComponent('/work/proj'))) {
+        return Promise.reject(Object.assign(new Error('no such path'), { status: 404 }))
+      }
+      return base(url)
+    })
+    await waitFor(() => expect(addCard().getByText('Target project directory does not exist')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: 'react' } })
+    await waitFor(() => expect(addCard().getByText('react-helper')).toBeTruthy())
+    expect((addCard().getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(true)
+
+    fireEvent.click(addCard().getByRole('button', { name: 'Folder' }))
+    expect((addCard().getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('installs stay blocked until the target existence check resolves', async () => {
+    // A freshly selected target is UNKNOWN, not known-good — clicking Install
+    // during the check must not recreate a possibly-deleted directory.
+    let resolveCheck!: (v: unknown) => void
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } }, [catalogHit()], (base) => (url: string) => {
+      if (String(url).startsWith('/fs/resolve-cwd') && String(url).includes(encodeURIComponent('/work/proj'))) {
+        return new Promise((resolve) => { resolveCheck = resolve })
+      }
+      return base(url)
+    })
+    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: 'react' } })
+    await waitFor(() => expect(addCard().getByText('react-helper')).toBeTruthy())
+    expect((addCard().getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(true)
+
+    resolveCheck({ cwd: '/work/proj', resolvedFromFile: false })
+    await waitFor(() => expect((addCard().getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('recreating the target directory unblocks installs on window focus', async () => {
+    let missing = true
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } }, [], (base) => (url: string) => {
+      if (String(url).startsWith('/fs/resolve-cwd') && String(url).includes(encodeURIComponent('/work/proj'))) {
+        return missing
+          ? Promise.reject(Object.assign(new Error('no such path'), { status: 404 }))
+          : Promise.resolve({ cwd: '/work/proj', resolvedFromFile: false })
+      }
+      return base(url)
+    })
+    await waitFor(() => expect(addCard().getByText('Target project directory does not exist')).toBeTruthy())
+
+    // The user recreates the directory externally and comes back — the next
+    // focus revalidation must lift the block.
+    missing = false
+    fireEvent(window, new Event('focus'))
+    await waitFor(() => expect(addCard().queryByText('Target project directory does not exist')).toBeNull())
+  })
+
+  it('blocks installs while a focus revalidation is pending', async () => {
+    // A focus-triggered recheck must not keep the previous valid verdict
+    // alive while it is still in flight — pending means unknown.
+    let first = true
+    let deferred: ((v: unknown) => void) | null = null
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } }, [catalogHit()], (base) => (url: string) => {
+      if (String(url).startsWith('/fs/resolve-cwd') && String(url).includes(encodeURIComponent('/work/proj'))) {
+        if (first) {
+          first = false
+          return Promise.resolve({ cwd: '/work/proj', resolvedFromFile: false })
+        }
+        return new Promise((resolve) => { deferred = resolve })
+      }
+      return base(url)
+    })
+    fireEvent.change(screen.getByLabelText('Search skills'), { target: { value: 'react' } })
+    await waitFor(() => expect((addCard().getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(false))
+
+    fireEvent(window, new Event('focus'))
+    expect((addCard().getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(true)
+    deferred!({ cwd: '/work/proj', resolvedFromFile: false })
+    await waitFor(() => expect((addCard().getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('user scope skips target-directory validation', async () => {
+    // The project cwd is irrelevant to user installs — no resolve-cwd calls
+    // (and no focus revalidation) while user scope is active.
+    await openSkillsTab({ defaults: { cwd: '/work/proj' } })
+    fireEvent.click(addCard().getByRole('button', { name: 'User' }))
+    vi.mocked(api.get).mockClear()
+    fireEvent(window, new Event('focus'))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(vi.mocked(api.get).mock.calls.filter(([u]) => String(u).startsWith('/fs/resolve-cwd'))).toHaveLength(0)
   })
 
   it('hides the footer install button in the search tab and shows it per tab', async () => {

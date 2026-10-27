@@ -21,6 +21,9 @@ import type { FocusEvent as ReactFocusEvent, KeyboardEvent as ReactKeyboardEvent
 import { IconCheck, IconChevronDown, IconChevronUp, IconFolder, IconSearch, IconX } from '../icons/ToolIcons'
 import { useEscapeStack } from '../../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../../hooks/useOutsideMouseDown'
+import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
+import { useMergedRef } from '../../utils/mergedRef'
+import { directoryMissing } from '../../utils/fs-validation'
 import { markPortaledSurface } from '../../theme'
 import { isAbsolutePath, shortenPath, basenameOf, parentOf, initialOf } from '../../utils/paths'
 import { clamp } from '../../utils/clamp'
@@ -29,6 +32,10 @@ export interface ProjectPickerProps {
   /** Trigger element id, so the field's <label htmlFor> can point at it
    *  (a <button> is a labelable element). */
   id?: string
+  /** Accessible name for the trigger (e.g. the field's aria-label). */
+  ariaLabel?: string
+  /** Disable the trigger (e.g. user-scope installs, or an install in flight). */
+  disabled?: boolean
   /** Currently selected directory. Empty string = none chosen yet. */
   value: string
   /** Recently used directories, MRU order (most recent first). */
@@ -55,14 +62,25 @@ interface Row {
   path: string
 }
 
-export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse }: ProjectPickerProps) {
+export function ProjectPicker({ id, ariaLabel, disabled, value, recents, onSelect, onForget, onBrowse }: ProjectPickerProps) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
+  // Directories confirmed gone by /fs/resolve-cwd (404). Recents can point at
+  // folders that were moved or deleted since they were remembered.
+  const [missingPaths, setMissingPaths] = useState<ReadonlySet<string>>(() => new Set())
+  // Verdicts already proven GOOD this session (skips the choose preflight),
+  // and a per-path generation so a stale concurrent response can never
+  // overwrite a newer verdict.
+  const knownGoodRef = useRef<Set<string>>(new Set())
+  const validationGenRef = useRef(new Map<string, number>())
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
+  // The project's unified overlay scrollbar (same attach as ModelPicker).
+  const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
+  const listRefMerged = useMergedRef(listRef, setListOs)
 
   const close = useCallback((restoreFocus = false) => {
     // Keyboard-driven closes (Escape / select) unmount the focused menu, which
@@ -73,13 +91,96 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
     setOpen(false)
     setSearch('')
     setActiveIndex(0)
+    // Verdicts are per-open-session: closing drops them so a directory
+    // recreated between opens never shows a stale "not found" on reopen.
+    setMissingPaths(new Set())
+    knownGoodRef.current.clear()
     if (restoreFocus && hadFocus) triggerRef.current?.focus()
   }, [])
+
+  // Disabling the picker must also retire an already-open menu — otherwise a
+  // mid-install flip (busy) would leave the menu able to change the target
+  // while the install is writing to the old one. Render-time prev-state
+  // adjustment (not an effect, and not close() — that reads refs) so the
+  // menu never paints once more while disabled.
+  const [wasDisabled, setWasDisabled] = useState(disabled)
+  if (wasDisabled !== disabled) {
+    setWasDisabled(disabled)
+    if (disabled) {
+      setOpen(false)
+      setSearch('')
+      setActiveIndex(0)
+      setMissingPaths(new Set())
+    }
+  }
 
   const typed = search.trim()
   // A pasted absolute path gets its own first row, preserving the old
   // free-text input's paste-a-path workflow without a text field.
   const showUsePath = isAbsolutePath(typed) && typed !== value
+
+  /** Check one directory against /fs/resolve-cwd. Only a definite "gone"
+   *  (404, or a FILE at that path) disables the row — any other failure
+   *  clears the flag again (fail-open: a flaky check must not lock the user
+   *  out of a directory that may be perfectly fine). */
+  const checkPath = (path: string, signal: AbortSignal) => {
+    const gen = (validationGenRef.current.get(path) ?? 0) + 1
+    validationGenRef.current.set(path, gen)
+    void directoryMissing(path, signal).then((gone) => {
+      // A stale response (an older concurrent check, or one fired before the
+      // session was aborted) must never overwrite the newer verdict.
+      if (signal.aborted || validationGenRef.current.get(path) !== gen) return
+      if (gone) knownGoodRef.current.delete(path)
+      else knownGoodRef.current.add(path)
+      setMissingPaths((prev) => {
+        if (gone === prev.has(path)) return prev
+        const next = new Set(prev)
+        if (gone) next.add(path)
+        else next.delete(path)
+        return next
+      })
+    })
+  }
+
+  // While the menu is open, check that the listed directories still exist.
+  // One AbortController per OPEN SESSION: changing recents mid-flight must
+  // not abort the other entries' pending checks (and `validatedRef` dedupes
+  // so a Forget never restarts the batch). Closing aborts everything and
+  // clears the cache so the next open revalidates fresh.
+  const validatedRef = useRef<Set<string>>(new Set())
+  const validationSessionRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    if (!open) {
+      validationSessionRef.current?.abort()
+      validationSessionRef.current = null
+      validatedRef.current.clear()
+      knownGoodRef.current.clear()
+      return
+    }
+    if (!validationSessionRef.current) validationSessionRef.current = new AbortController()
+    const paths = Array.from(new Set([value, ...recents].filter(Boolean)))
+    const signal = validationSessionRef.current.signal
+    for (const path of paths) {
+      if (validatedRef.current.has(path)) continue
+      validatedRef.current.add(path)
+      checkPath(path, signal)
+    }
+  }, [open, value, recents])
+  // Unmount aborts whatever is still pending.
+  useEffect(() => () => validationSessionRef.current?.abort(), [])
+
+  // The typed "Use this path" row is validated too (debounced per keystroke
+  // pause) — a typo'd absolute path must not install into an unintended new
+  // directory.
+  useEffect(() => {
+    if (!open || !showUsePath) return
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => checkPath(typed, controller.signal), 400)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [open, showUsePath, typed])
 
   const rows = useMemo<Row[]>(() => {
     // Current value first (drag-and-drop can prefill a path that isn't in the
@@ -194,12 +295,25 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
     close()
   }
 
-  const choose = (path: string) => {
+  const choose = async (path: string) => {
+    if (missingPaths.has(path)) return
+    // A path whose verdict isn't known yet gets preflighted before it can be
+    // selected — clicking fast must not slip a deleted project through.
+    if (!knownGoodRef.current.has(path)) {
+      const gone = await directoryMissing(path, new AbortController().signal)
+      if (gone) {
+        setMissingPaths((prev) => new Set(prev).add(path))
+        return
+      }
+      knownGoodRef.current.add(path)
+    }
     onSelect(path)
     close(true)
   }
 
   const handleMenuKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    // IME candidate navigation must win over the project list.
+    if (e.nativeEvent.isComposing) return
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       if (rows.length) setActiveIndex((i) => (Math.min(i, rows.length - 1) + 1) % rows.length)
@@ -210,7 +324,10 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
       if (rows.length) setActiveIndex((i) => (Math.min(i, rows.length - 1) - 1 + rows.length) % rows.length)
       return
     }
-    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+    if (e.key === 'Enter') {
+      // Buttons (Clear / Forget / Open project…) keep their native Enter
+      // activation; only the search input's Enter chooses the active row.
+      if ((e.target as HTMLElement).closest('button')) return
       e.preventDefault()
       const row = rows[active]
       if (row) choose(row.path)
@@ -227,6 +344,8 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
         id={id}
         type="button"
         className="project-picker-trigger"
+        aria-label={ariaLabel ? (value ? `${ariaLabel}: ${value}` : ariaLabel) : undefined}
+        disabled={disabled}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
@@ -289,7 +408,7 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
               )}
             </div>
 
-            <div ref={listRef} id={listId} className="project-picker-list" role="listbox" aria-label="Projects">
+            <div ref={listRefMerged} id={listId} className="project-picker-list" role="listbox" aria-label="Projects">
               {rows.length === 0 && <div className="project-picker-empty">No matching projects</div>}
               {rows.map((row, i) => (
                 <div
@@ -304,6 +423,7 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
                     className="project-picker-item"
                     role="option"
                     aria-selected={row.kind === 'project' && row.path === value}
+                    disabled={missingPaths.has(row.path)}
                     tabIndex={-1}
                     onClick={() => choose(row.path)}
                   >
@@ -326,8 +446,9 @@ export function ProjectPicker({ id, value, recents, onSelect, onForget, onBrowse
                         {row.path === value && <IconCheck size={13} className="project-picker-check" aria-hidden />}
                       </>
                     )}
+                    {missingPaths.has(row.path) && <span className="project-picker-missing">Directory not found</span>}
                   </button>
-                  {row.kind === 'project' && (
+                  {row.kind === 'project' && recents.includes(row.path) && (
                     <button
                       type="button"
                       className="project-picker-forget"

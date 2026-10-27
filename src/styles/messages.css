@@ -1261,6 +1261,11 @@
 }
 .project-picker-trigger:hover,
 .field-picker-trigger:hover { border-color: var(--fg-muted); }
+.project-picker-trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.project-picker-trigger:disabled:hover { border-color: var(--border); }
 .project-picker-trigger[aria-expanded="true"],
 .field-picker-trigger[aria-expanded="true"] { border-color: var(--accent); }
 .project-picker-avatar {
@@ -1423,6 +1428,18 @@
   cursor: pointer;
 }
 .project-picker-item .project-picker-avatar { width: var(--size-20px); height: var(--size-20px); }
+/* A recent whose directory no longer exists (moved/deleted): greyed out and
+   unselectable; the ✕ Forget button stays live so the entry can be dropped. */
+.project-picker-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.project-picker-missing {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
 .field-picker-item-icon {
   flex: 0 0 auto;
   display: inline-flex;
@@ -1485,7 +1502,7 @@
 .field-picker-row:hover .field-picker-forget,
 .field-picker-forget:focus-visible { opacity: 1; }
 .project-picker-forget:hover,
-.field-picker-forget:hover { color: var(--danger-text); background: var(--bg); }
+.field-picker-forget:hover { color: var(--fg); background: var(--btn-hover-bg); }
 /* No hover on pure-touch devices: reveal the forget affordance instead of
    leaving it invisible-but-tappable. */
 @media (hover: none) {

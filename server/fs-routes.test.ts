@@ -204,6 +204,15 @@ describe('fs-routes', () => {
       const res = await app.request(`/resolve-cwd?path=${join(dir, 'nope')}`)
       expect(res.status).toBe(404)
     })
+
+    it('returns 404 (not 500) when an ancestor is a regular file', async () => {
+      // stat('/file.txt/child') fails ENOTDIR — the path is unusable as a
+      // directory just like ENOENT, so the picker treats it as missing too.
+      writeFileSync(join(dir, 'file.txt'), 'content')
+      const app = buildFsRouter()
+      const res = await app.request(`/resolve-cwd?path=${join(dir, 'file.txt', 'child')}`)
+      expect(res.status).toBe(404)
+    })
   })
 
   describe('POST /mkdir', () => {

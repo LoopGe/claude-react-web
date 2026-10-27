@@ -16,8 +16,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../hooks/useApi'
 import { fileToBase64 } from '../../utils/file-to-base64'
+import { directoryMissing } from '../../utils/fs-validation'
 import { IconFileText, IconFolder, IconSearch } from '../icons/ToolIcons'
 import { DirectoryPicker } from '../DirectoryPicker'
+import { ProjectPicker } from '../session-list/ProjectPicker'
 import { matchSearchHit, parseOwnerRepo } from '../../../shared/skills'
 import type {
   DiscoveredSkill,
@@ -87,6 +89,7 @@ export function AddSkillCard({
   importScope,
   onScopeChange,
   onPickTarget,
+  onForgetTarget,
   onInstalled,
   onRefresh,
   onImported,
@@ -103,6 +106,8 @@ export function AddSkillCard({
   onScopeChange: (scope: SkillScope) => void
   /** Select a target project from the footer dropdown. */
   onPickTarget: (path: string) => void
+  /** Forget one recent-project entry (the picker's per-row ✕). */
+  onForgetTarget: (path: string) => void
   /** Install SUCCESS funnels here: refresh the installed list AND remember
    *  the project it landed in. */
   onInstalled: () => void
@@ -345,6 +350,44 @@ export function AddSkillCard({
   // POSTs into the same target and let results cross lists on a repo switch.
   const busy = batchInstalling || installingId !== null || importingSkill
 
+  // Validate the current install target on mount / target change / window
+  // focus (so recreating a deleted directory lifts the block again). Only a
+  // confirmed-gone directory (404, or a FILE at that path) blocks installs;
+  // any other failure fails OPEN. Results are keyed by path so a target
+  // switch never applies the previous target's verdict.
+  const [targetCheck, setTargetCheck] = useState<{ path: string; missing: boolean } | null>(null)
+  useEffect(() => {
+    // User-scope installs never touch the project cwd — skip the check (and
+    // the focus revalidation) entirely while user scope is active.
+    if (!cwd || importScope === 'user') return
+    let controller: AbortController | null = null
+    const check = () => {
+      controller?.abort()
+      controller = new AbortController()
+      const signal = controller.signal
+      // A fresh check means UNKNOWN until it resolves — never keep the
+      // previous verdict alive through the revalidation window.
+      setTargetCheck(null)
+      void directoryMissing(cwd, signal).then((missing) => {
+        if (signal.aborted) return
+        setTargetCheck({ path: cwd, missing })
+      })
+    }
+    check()
+    window.addEventListener('focus', check)
+    return () => {
+      controller?.abort()
+      window.removeEventListener('focus', check)
+    }
+  }, [cwd, importScope])
+
+  // Installing into a moved/deleted directory would silently recreate it —
+  // block every install affordance and say why instead. A target whose check
+  // is still pending is UNKNOWN, not known-good, so it blocks too.
+  const targetMissing = importScope === 'project' && targetCheck?.path === cwd && targetCheck.missing
+  const targetUnknown = importScope === 'project' && !!cwd && targetCheck?.path !== cwd
+  const installBlocked = busy || targetMissing || targetUnknown
+
   const finishImport = (result: SkillImportResponse) => {
     setNotice(`Imported ${result.skill.scope} skill "${result.skill.name}" from ${result.importedFiles} file${result.importedFiles !== 1 ? 's' : ''}.`)
     setImportName('')
@@ -353,7 +396,7 @@ export function AddSkillCard({
   }
 
   const importFromServerPath = async (path: string = importPath) => {
-    if (busy) return
+    if (installBlocked) return
     const trimmedPath = path.trim()
     if (!trimmedPath) return
     setImportingSkill(true)
@@ -380,7 +423,7 @@ export function AddSkillCard({
   }
 
   const importBrowserFiles = async (files: Array<File | DroppedSkillFile>) => {
-    if (busy || files.length === 0) return
+    if (installBlocked || files.length === 0) return
     setImportingSkill(true)
     setError(null)
     setNotice(null)
@@ -414,10 +457,21 @@ export function AddSkillCard({
   }
 
   const handleDrop = (event: React.DragEvent<HTMLElement>) => {
-    if (busy) return
+    // Always claim the drop (no browser file navigation) and clear the drag
+    // highlight — the busy/missing gate only stops the import itself.
     event.preventDefault()
     setDragActive(false)
-    void filesFromDrop(event.dataTransfer).then((files) => importBrowserFiles(files))
+    if (installBlocked) return
+    // Walking the dropped folder is itself an in-flight import: hold busy
+    // from the drop until the read AND the import settle.
+    setImportingSkill(true)
+    void filesFromDrop(event.dataTransfer)
+      .then((files) => importBrowserFiles(files))
+      .catch((e) => {
+        setNotice(null)
+        setError((e as Error).message)
+      })
+      .finally(() => setImportingSkill(false))
   }
 
   return (
@@ -490,7 +544,7 @@ export function AddSkillCard({
                     <button
                       type="button"
                       className="btn"
-                      disabled={busy}
+                      disabled={installBlocked}
                       onClick={() => void installHit(hit)}
                     >
                       {installingId === hit.id ? 'Installing…' : 'Install'}
@@ -605,7 +659,7 @@ export function AddSkillCard({
               <button
                 type="button"
                 className="btn"
-                disabled={busy}
+                disabled={installBlocked}
                 onClick={() => fileInputRef.current?.click()}
               >
                 <IconFileText size={14} /> Choose local folder
@@ -625,7 +679,7 @@ export function AddSkillCard({
                 type="button"
                 className="btn"
                 onClick={() => setShowImportPicker(true)}
-                disabled={busy}
+                disabled={installBlocked}
               >
                 <IconFolder size={14} /> Choose folder
               </button>
@@ -671,30 +725,21 @@ export function AddSkillCard({
             </button>
           </div>
           <div className="settings-skill-target">
-            <select
-              className="input"
-              aria-label="Target project"
+            <ProjectPicker
+              id="skills-target-project"
+              ariaLabel="Target project"
+              disabled={importScope === 'user' || busy}
               value={cwd}
-              disabled={importScope === 'user' || busy}
-              onChange={(e) => onPickTarget(e.target.value)}
-            >
-              {!recentCwds.includes(cwd) && <option value={cwd}>{cwd}</option>}
-              {recentCwds.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="btn"
-              disabled={importScope === 'user' || busy}
-              onClick={onBrowseTarget}
-            >
-              Browse projects
-            </button>
+              recents={recentCwds}
+              onSelect={onPickTarget}
+              onForget={onForgetTarget}
+              onBrowse={onBrowseTarget}
+            />
           </div>
           {importScope === 'project' && (
             <div className="settings-skill-target-hint">{`${cwd}/.claude/skills`}</div>
           )}
+          {targetMissing && <span className="settings-note warn">Target project directory does not exist</span>}
           <label className="settings-skill-overwrite">
             <input
               type="checkbox"
@@ -708,7 +753,7 @@ export function AddSkillCard({
             <button
               type="button"
               className="btn btn-primary"
-              disabled={busy || repoSelected.size === 0}
+              disabled={installBlocked || repoSelected.size === 0}
               onClick={() => void installBatch()}
             >
               {batchInstalling ? 'Installing…' : `Install selected (${repoSelected.size})`}
@@ -718,7 +763,7 @@ export function AddSkillCard({
             <button
               type="button"
               className="btn btn-primary"
-              disabled={busy || !importPath.trim()}
+              disabled={installBlocked || !importPath.trim()}
               onClick={() => void importFromServerPath()}
             >
               {importingSkill ? 'Installing…' : 'Install'}

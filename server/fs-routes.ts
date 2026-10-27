@@ -39,7 +39,9 @@ function requireAbsPath(raw: string | undefined, c: Context): { path: string } |
 /** Map a filesystem errno to the appropriate JSON error response. */
 function fsError(c: Context, err: unknown, notFoundMsg: string) {
   const code = (err as NodeJS.ErrnoException).code
-  if (code === 'ENOENT') return c.json({ error: notFoundMsg }, 404)
+  // ENOTDIR (an ancestor is a regular file) is as unusable as ENOENT for
+  // directory purposes — both mean "no such path", not a server fault.
+  if (code === 'ENOENT' || code === 'ENOTDIR') return c.json({ error: notFoundMsg }, 404)
   if (code === 'EACCES' || code === 'EPERM') return c.json({ error: 'permission denied' }, 403)
   return c.json({ error: (err as Error).message }, 500)
 }
