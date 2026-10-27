@@ -3929,6 +3929,19 @@ describe('SessionManager', () => {
     expect(store.get(info.id)!.cwd ?? sm.get(info.id).cwd).toBe(dir)
   })
 
+  it('setCwd() relocates during the clean-exit auto-resume window (no live CLI)', async () => {
+    const info = await sm.create({ cwd: dir, model: 'm1' })
+    const internals = sm as unknown as { sessions: Map<string, { exiting: boolean }> }
+    // The clean-exit handler marks `exiting` before cleanupPump's autoResume
+    // gets to respawn — `running` is stale-true across that window, but the
+    // CLI is already gone and the pending respawn reads session.cwd fresh.
+    internals.sessions.get(info.id)!.exiting = true
+    const next = join(dir, 'moved')
+    mkdirSync(next, { recursive: true })
+    const updated = await sm.setCwd(info.id, next)
+    expect(updated.cwd).toBe(next)
+  })
+
   it('setCwd() 400s when the directory does not exist', async () => {
     const info = await sm.create({ cwd: dir, model: 'm1' })
     mockHandles[0].emit({ type: 'result' })
@@ -7755,6 +7768,113 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       expect(sm.get(info.id).error).toBeUndefined()
     })
 
+    it('setCwd() during the crash-recovery window relocates the workspace and re-targets the in-place respawn', async () => {
+      sm = new SessionManager({ store, crashRecovery: true })
+      const info = await sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+
+      const internals = sm as unknown as {
+        sessions: Map<string, { cwd: string }>
+        buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
+      }
+      // Gate buildResumeOpts so the crash-recovery ladder hangs inside the
+      // window (after the crash, before the in-place respawn) deterministically.
+      let releaseResumeOpts!: (opts: Record<string, unknown>) => void
+      const gatedBuild = vi.fn(
+        (): Promise<Record<string, unknown>> => new Promise((resolve) => { releaseResumeOpts = resolve }),
+      )
+      internals.buildResumeOpts = gatedBuild
+      fireCrash(sm, info.id, { code: null, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).recovering === true)
+
+      // A recovering session has NO live CLI (the process crashed; the ladder
+      // is between attempts) — relocating must not hit the "sleep it first" 409.
+      const next = join(dir, 'moved', 'web')
+      mkdirSync(next, { recursive: true })
+      const captureSpy = vi.spyOn(sm as unknown as { captureGitHead: (s: unknown) => void }, 'captureGitHead')
+      const updated = await sm.setCwd(info.id, next)
+      expect(updated.cwd).toBe(next)
+      expect(internals.sessions.get(info.id)!.cwd).toBe(next)
+      // The crash error survives the mid-window change — the ladder's success
+      // tail / giveUp own that lifecycle.
+      expect(sm.get(info.id).error).toBeTruthy()
+      // The relocate dropped the git anchors — they are re-captured against
+      // the NEW workspace right away (captureGitHead no-ops when set).
+      expect(captureSpy).toHaveBeenCalled()
+
+      // Release STALE resume opts (as if captured before the relocation):
+      // the respawn must still land the fresh CLI on the NEW workspace —
+      // respawnInPlace passes session.cwd to createSession top-level, which
+      // is the authoritative cwd carrier (this assertion pins that carrier;
+      // a stale resumeOpts.cwd must not leak through).
+      const snapReviveSpy = vi.spyOn(
+        (sm as unknown as { snapshotStore: { revive: (id: string) => void } }).snapshotStore,
+        'revive',
+      )
+      await waitFor(() => gatedBuild.mock.calls.length > 0)
+      releaseResumeOpts({ resume: info.id, cwd: dir })
+      await waitFor(() => sm.get(info.id).running === true)
+      expect((mockHandles.at(-1)!.options as { cwd?: string }).cwd).toBe(next)
+      // The respawn success tail clears the crash error.
+      expect(sm.get(info.id).error).toBeUndefined()
+      // …and lifts the snapshot sidecar's relocate tombstone (mirrors spawn's
+      // revive) so the next turn's capture can re-establish snapshots.
+      expect(snapReviveSpy).toHaveBeenCalled()
+    })
+
+    it('setCwd() relocates a terminated zombie left in the live map (the 409 is for live CLIs only)', async () => {
+      sm = new SessionManager({ store, crashRecovery: false })
+      const info = await sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).terminated === true)
+      // terminateCrashedSession leaves the dead session in the live map
+      // (running=false) — relocation must not hit the "sleep it first" 409,
+      // which exists only because a live CLI keeps its spawn cwd.
+      const next = join(dir, 'moved')
+      mkdirSync(next, { recursive: true })
+      const updated = await sm.setCwd(info.id, next)
+      expect(updated.cwd).toBe(next)
+      // process_exited-class reasons don't un-kill: it stays terminated, but
+      // a later Resume/Fork lands in the right workspace.
+      expect(updated.terminated).toBe(true)
+      expect(updated.error).toBeTruthy()
+    })
+
+    it('setCwd() un-kills a terminated zombie whose reason is transcript_missing (relocating is the recovery)', async () => {
+      sm = new SessionManager({ store, crashRecovery: false })
+      const info = await sm.create({ cwd: dir })
+      const h0 = mockHandles.at(-1)!
+      sm.send(info.id, 'hi')
+      h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
+      await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+      fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
+      await waitFor(() => sm.get(info.id).terminated === true)
+      const internals = sm as unknown as { sessions: Map<string, { terminatedReason?: string }> }
+      internals.sessions.get(info.id)!.terminatedReason = 'transcript_missing'
+      const next = join(dir, 'moved')
+      mkdirSync(next, { recursive: true })
+      const updated = await sm.setCwd(info.id, next)
+      expect(updated.cwd).toBe(next)
+      // Same un-kill semantics as the dormant path: a PATCH cwd is the user
+      // saying "here is where the project lives now" — re-arm resume.
+      expect(updated.terminated).toBe(false)
+      expect(updated.terminatedReason).toBeUndefined()
+      expect(updated.error).toBeUndefined()
+      // The un-kill must be actionable: resume() re-spawns the session — an
+      // un-killed zombie left in the live map would be returned as-is by
+      // doResume's live branch and could never come back.
+      await sm.resume(info.id)
+      expect(sm.get(info.id).running).toBe(true)
+      expect(mockHandles.length).toBeGreaterThanOrEqual(2)
+    })
+
     it('spawn ENOENT with a missing cwd blames the working directory, not the binary', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const missingCwd = join(dir, 'moved-away')
@@ -10072,7 +10192,8 @@ describe('delete() / setCwd() worktree cleanup', () => {
   })
 
   it('setCwd clears the worktree field and invalidates the snapshot-store meta', async () => {    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
-    // setCwd is dormant-only — sleep the session first.
+    // setCwd targets the dormant (unloaded) session — a live one is blocked
+    // with "sleep it first".
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)

@@ -2951,21 +2951,24 @@ export class SessionManager {
    *  field existed heal on their next spawn. */
   private captureGitHead(session: Session): void {
     if (!session.cwd) return
+    const capturedFor = session.cwd
     if (!session.gitStartSha) {
-      void tryCaptureGitHead(session.cwd).then((sha) => {
+      void tryCaptureGitHead(capturedFor).then((sha) => {
         // Identity check (not .has): a replaced Session object under the same
-        // id must not write. Patch only this field — these callbacks land at
-        // an arbitrary point relative to any locked op on the session, so a
-        // wholesale writeStore here could revert a concurrent meta write.
-        if (!sha || session.terminated || this.sessions.get(session.id) !== session) return
+        // id must not write. cwd check: a relocation mid-capture must not let
+        // a stale rev-parse re-anchor the session to the old tree. Patch only
+        // this field — these callbacks land at an arbitrary point relative to
+        // any locked op on the session, so a wholesale writeStore here could
+        // revert a concurrent meta write.
+        if (!sha || session.terminated || session.cwd !== capturedFor || this.sessions.get(session.id) !== session) return
         session.gitStartSha = sha
         this.store?.patch(session.id, { gitStartSha: sha })
         this.broadcastGlobal({ kind: 'update', session: this.info(session) })
       }).catch(() => {})
     }
     if (!session.repoRoot) {
-      void tryCaptureRepoRoot(session.cwd).then((root) => {
-        if (!root || session.terminated || this.sessions.get(session.id) !== session) return
+      void tryCaptureRepoRoot(capturedFor).then((root) => {
+        if (!root || session.terminated || session.cwd !== capturedFor || this.sessions.get(session.id) !== session) return
         session.repoRoot = root
         this.store?.patch(session.id, { repoRoot: root })
       }).catch(() => {})
@@ -4784,9 +4787,13 @@ export class SessionManager {
   }
 
   /** Relocate a session's workspace (e.g. the project directory was moved).
-   *  Dormant-only: a live Query's subprocess keeps its original cwd, so a
-   *  running session must be slept first — otherwise metadata and the
-   *  process silently disagree. Clears stale spawn_failed / transcript_missing
+   *  Dormant and between-process states only: a live Query's subprocess keeps
+   *  its original cwd, so a genuinely running session must be slept first —
+   *  otherwise metadata and the process silently disagree. Recovering /
+   *  exiting windows (no CLI alive) relocate in place — the pending in-place
+   *  respawn reads session.cwd fresh — and a terminated zombie lingering in
+   *  the live map is unloaded first so the dormant path owns the un-kill /
+   *  re-arm-resume semantics. Clears stale spawn_failed / transcript_missing
    *  state (updating the cwd is how a user recovers from a gone workspace)
    *  and the git anchors (repoRoot / gitStartSha belong to the OLD tree; the
    *  next spawn recaptures them against the new cwd). Worktree isolation is
@@ -4803,12 +4810,43 @@ export class SessionManager {
         throw new HttpError(400, workingDirMissingMsg(cwd))
       }
       const live = this.sessions.get(id)
-      if (live) {
+      // The "sleep it first" 409 exists only because a live CLI keeps the cwd
+      // it was spawned with. A RECOVERING session (process crashed; the ladder
+      // is between attempts) and an EXITING one (clean idle exit, auto-resume
+      // pending) have no CLI either — relocate both in place.
+      if (live && live.running && !live.recovering && !live.exiting) {
         throw new HttpError(
           409,
           `session ${id} is running — sleep it first, then change the workspace ` +
           `(a live CLI keeps the cwd it was spawned with)`,
         )
+      }
+      if (live && (live.recovering || live.exiting)) {
+        // Between processes: the pending in-place respawn reads session.cwd
+        // fresh (createSession's top-level cwd), so a change here re-targets
+        // it. Only workspace fields — the error / terminatedReason lifecycle
+        // belongs to the recovery ladder (its respawn tail clears the error,
+        // giveUp re-stamps it).
+        live.cwd = cwd
+        live.lastActivityAt = Date.now()
+        live.repoRoot = undefined
+        live.gitStartSha = undefined
+        live.worktree = undefined
+        this.persist(live)
+        void this.snapshotStore.remove(id)
+        // The relocate dropped the git anchors — capture them against the NEW
+        // workspace now (captureGitHead no-ops when set; its callbacks bail if
+        // the cwd changes again mid-capture). The next spawn() does this for
+        // the dormant path below; an in-place respawn never calls it.
+        this.captureGitHead(live)
+        return this.info(live)
+      }
+      if (live) {
+        // Terminated zombie lingering in the live map: drop it and relocate
+        // through the dormant path below — one code path owns the un-kill /
+        // re-arm-resume semantics (doResume re-spawns map-absent sessions;
+        // an un-killed zombie left in the map would be returned as-is).
+        void this.unload(id)
       }
       if (!this.store) throw new HttpError(404, `session ${id} not found`)
       const meta = this.store.get(id)
@@ -8588,6 +8626,11 @@ export class SessionManager {
     session.error = undefined
     session.terminatedReason = undefined
     session.autoInterruptedAt = undefined
+    // Mirror spawn()'s revive: a relocation during the recovery window
+    // tombstoned the snapshot sidecar (snapshotStore.remove), and an
+    // in-place respawn is this session's "next spawn" — un-tombstone so the
+    // next turn's capture can re-establish snapshots against the new tree.
+    this.snapshotStore.revive(session.id)
     this.broadcastGlobal({ kind: 'update', session: this.info(session) })
     session.pumpTask = this.pump(session)
   }
