@@ -6,6 +6,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
+import { SessionBody, errorCardState } from './SessionErrorCard'
 import type { ScrollNavigator } from './MessageList'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
@@ -21,8 +22,8 @@ import { useGitStatus } from '../hooks/useGitStatus'
 import { useChatStream } from '../hooks/useChatStream'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
-import { useDelayedFlag } from '../hooks/useDelayedFlag'
 import { useDiagnostics } from '../hooks/useDiagnostics'
+import { useDelayedFlag } from '../hooks/useDelayedFlag'
 import { shortenModel } from '../utils/session-status'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { cx } from '../utils/cx'
@@ -33,7 +34,7 @@ import { EffortSlider } from './EffortSlider'
 import { basenameOf, initialOf } from '../utils/paths'
 import { ProjectPopover } from './ProjectPopover'
 import { gitChipText } from '../utils/git-chip'
-import { IconCheck, IconAlertTriangle, IconSparkles, IconLoader, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
+import { IconCheck, IconSparkles, IconLoader, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { PermissionModeIcon, permissionModeLabel, permissionModeShortLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingDisplay, ThinkingSetting } from '../types'
@@ -43,10 +44,6 @@ import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
 import type { GitStatus } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
-
-/** Lines shown in the collapsed stderr summary below the header error bar.
- *  Keeps the header compact — the full context lives in the Diagnostics tab. */
-const STDERR_HEADER_LINES = 30
 
 /** Chip tooltip — verbose form for users who hover before clicking.
  *  Returns a ReactNode (one <div> per line) rather than a `\n`-joined
@@ -387,7 +384,7 @@ export const ChatPanel = memo(function ChatPanel({
   // single-panel and touch can't drag, so disable the drag handle there
   // (the panel stays a drop target — harmless on touch).
   const isMobile = useIsMobile()
-  const diagnostics = useDiagnostics(session.id, !!session.error)
+  const diagnostics = useDiagnostics(session.id, errorCardState(session) !== null)
   // dnd-kit wiring: the header is the drag handle for panel swaps; the whole
   // panel section is the drop target (accepts another panel → swap, or a
   // sidebar card → replace this slot). Resolution lives in App's DndContext.
@@ -1264,22 +1261,8 @@ export const ChatPanel = memo(function ChatPanel({
           )}
         </AnimatePresence>
         </div>
-        {session.error && (
-          <>
-          <Tooltip label={session.error}>
-            <div className="chat-panel-error">
-              <IconAlertTriangle size={12} style={{ marginRight: 4, flexShrink: 0 }} />
-              {session.error}
-            </div>
-          </Tooltip>
-          {diagnostics.data?.stderrTail && diagnostics.data.stderrTail.length > 0 && (
-            <details className="chat-panel-stderr-details">
-              <summary>stderr</summary>
-              <pre className="diag-stderr">{diagnostics.data.stderrTail.slice(-STDERR_HEADER_LINES).join('\n')}</pre>
-            </details>
-          )}
-          </>
-        )}
+        {/* session.error renders as the body-area error card (SessionBody
+            in .chat-panel-body) — the old header red band is gone. */}
         {/* Second header row — secondary metadata. Muted colour, smaller
             font, skipped when there's literally nothing to show. */}
         {(session.cwd || gitStatus.data?.isRepo === true) && (
@@ -1366,6 +1349,13 @@ export const ChatPanel = memo(function ChatPanel({
         <PluginContributionSlot location="chat.header" session={session} />
       </div>
       <div className="chat-panel-body">
+        <SessionBody
+          session={session}
+          onResume={onResume ? () => onResume(session.id) : undefined}
+          onFork={onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined}
+          resuming={isResuming}
+          stderrTail={diagnostics.data?.stderrTail}
+        >
         {session.running || session.terminated ? (
           <Chat
             key={session.id}
@@ -1432,35 +1422,23 @@ export const ChatPanel = memo(function ChatPanel({
           />
         ) : (
           <div className="empty-state">
-            {isResuming ? (
-              <div className="empty-state-loading">
-                <div className="app-loading-spinner" />
-                <p>Resuming session...</p>
-              </div>
-            ) : (
-              <>
-                <h2>Session is dormant</h2>
-                {session.error ? (
-                  <p>Last resume attempt failed: {session.error}. Use “Resume session” below to try again.</p>
-                ) : (
-                  <p>This session is dormant. Resume it to pick up where you left off.</p>
-                )}
-                {onResume && !session.terminated && (
-                  <button
-                    type="button"
-                    className="chat-panel-resume-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onResume(session.id)
-                    }}
-                  >
-                    Resume session
-                  </button>
-                )}
-              </>
+            <h2>Session is dormant</h2>
+            <p>This session is dormant. Resume it to pick up where you left off.</p>
+            {onResume && (
+              <button
+                type="button"
+                className="chat-panel-resume-btn"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onResume(session.id)
+                }}
+              >
+                Resume session
+              </button>
             )}
           </div>
         )}
+        </SessionBody>
       </div>
       {sideChatSession && !sideChatCollapsed && onCloseSideChat && onToggleCollapseSideChat && (
         <SideChatDrawer

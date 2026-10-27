@@ -1645,20 +1645,9 @@ body.resizing-col .app {
   animation: session-working-pulse 1s ease-in-out infinite;
 }
 
-/* Session error band — shown between row1 and row2 when session.error
-   is set. Red background, one-line ellipsis, tooltip carries the full
-   message if it overflows. */
-.chat-panel-error {
-  background: color-mix(in srgb, var(--danger) 15%, var(--bg-elev));
-  color: var(--danger-text);
-  padding: 3px 10px;
-  font-size: var(--fs-sm);
-  font-family: var(--mono);
-  border-top: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* Session errors display as a body-area card (SessionErrorCard.tsx,
+   reusing .empty-state below) — the old header error band is gone. */
+/* Collapsed stderr disclosure on the error card. */
 .chat-panel-stderr-details {
   background: var(--btn-hover-bg);
   padding: var(--space-1) var(--space-2-5);
@@ -1810,6 +1799,22 @@ body.resizing-col .app {
 .chat-panel-resume-btn:hover {
   background: var(--btn-hover-bg);
   border-color: var(--accent, var(--border));
+}
+/* Fired one-shot state on the error card's action buttons — the explicit
+   colours above would otherwise mask the default disabled look. */
+.chat-panel-resume-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  background: var(--btn-bg);
+  border-color: var(--btn-border, var(--border));
+}
+/* Action row on the session error card (Resume / Fork from last completed
+   turn — up to two buttons side by side). The buttons' own margin-top
+   provides the spacing above the row. */
+.empty-state-actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: center;
 }
 /* Centered column for the resuming spinner + caption. `.empty-state` only
    sets text-align:center, which doesn't center a block-level spinner div —
