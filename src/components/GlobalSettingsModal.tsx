@@ -27,7 +27,7 @@ import type { AnimationSpeedPreset } from '../../shared/animation-speed'
 import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import { AddSkillCard } from './settings/AddSkillCard'
-import type { SkillLoadMode, SkillRecord, SkillsListResponse } from '../../shared/skills'
+import type { SkillLoadMode, SkillRecord, SkillUpdateStatus, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
@@ -1126,6 +1126,72 @@ function SkillsTab({
     }
   }
 
+  // Update-check results for GitHub-installed skills, keyed `${scope}:${name}`
+  // so a same-named skill in project and user scope never crosses state.
+  const [updateStatus, setUpdateStatus] = useState<Record<string, SkillUpdateStatus>>({})
+  const [checkingUpdates, setCheckingUpdates] = useState(false)
+  const [updatingSkills, setUpdatingSkills] = useState<ReadonlySet<string>>(() => new Set())
+
+  const checkUpdates = async () => {
+    setCheckingUpdates(true)
+    // The Installed Skills list shows BOTH scopes, so one click covers both;
+    // a scope whose request fails only marks its own rows, never the other's.
+    for (const scope of ['project', 'user'] as const) {
+      try {
+        const res = await api.post<{ updates: SkillUpdateStatus[] }>('/skills/check-updates', {
+          scope,
+          cwd: scope === 'project' ? cwd : undefined,
+        })
+        setUpdateStatus((prev) => {
+          const next = { ...prev }
+          for (const u of res.updates) next[`${u.scope}:${u.name}`] = u
+          return next
+        })
+      } catch (e) {
+        const message = (e as Error).message
+        setUpdateStatus((prev) => {
+          const next = { ...prev }
+          for (const s of skills) {
+            if (s.scope === scope && s.source) {
+              next[`${s.scope}:${s.name}`] = { scope, name: s.name, hasUpdate: false, error: message }
+            }
+          }
+          return next
+        })
+      }
+    }
+    setCheckingUpdates(false)
+  }
+
+  const updateSkill = async (skill: SkillRecord) => {
+    const key = `${skill.scope}:${skill.name}`
+    setUpdatingSkills((prev) => new Set(prev).add(key))
+    try {
+      await api.post('/skills/remote/update', {
+        scope: skill.scope,
+        cwd: skill.scope === 'project' ? cwd : undefined,
+        name: skill.name,
+      })
+      setUpdateStatus((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+      handleInstalled()
+    } catch (e) {
+      setUpdateStatus((prev) => ({
+        ...prev,
+        [key]: { scope: skill.scope, name: skill.name, hasUpdate: false, error: (e as Error).message },
+      }))
+    } finally {
+      setUpdatingSkills((prev) => {
+        const next = new Set(prev)
+        next.delete(key)
+        return next
+      })
+    }
+  }
+
   const loadModeOptions: Array<{ mode: SkillLoadMode; title: string; desc: string }> = [
     { mode: 'default', title: 'SDK default', desc: 'Leave skill discovery to the SDK.' },
     { mode: 'all', title: 'Enable all discovered skills', desc: 'Load every filesystem skill the SDK can discover.' },
@@ -1193,7 +1259,12 @@ function SkillsTab({
         <div className="settings-group-head">
           <div className="settings-group-head-row">
             <h4>Installed Skills</h4>
-            <button className="btn" onClick={() => void refresh()} disabled={loading}><IconRefresh size={14} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
+            <div className="settings-skill-head-actions">
+              <button className="btn" onClick={() => void checkUpdates()} disabled={checkingUpdates}>
+                {checkingUpdates ? 'Checking…' : 'Check for updates'}
+              </button>
+              <button className="btn" onClick={() => void refresh()} disabled={loading}><IconRefresh size={14} /> {loading ? 'Refreshing…' : 'Refresh'}</button>
+            </div>
           </div>
           <span className="settings-group-desc">
             {skills.length} filesystem skill{skills.length !== 1 ? 's' : ''}. User skills live in your
@@ -1205,19 +1276,43 @@ function SkillsTab({
           <div className="settings-skill-grid">
             <div className="settings-skill-list">
               {skills.length === 0 && <EmptyState icon={<IconSparkles size={16} />} title="Create or import a project/user skill to get started" />}
-              {skills.map((skill) => (
-                <button
-                  key={`${skill.scope}:${skill.name}`}
-                  className={`settings-skill-row${previewPresence.value?.scope === skill.scope && previewPresence.value?.name === skill.name ? ' active' : ''}${!skill.valid ? ' invalid' : ''}`}
-                  onClick={() => void openSkill(skill)}
-                >
-                  <span className="settings-skill-name">{skill.name}</span>
-                  <span className="settings-card-badge">{skill.scope}</span>
-                  {!skill.valid && <span className="settings-card-badge warn">invalid</span>}
-                  <span className="settings-skill-desc">{skill.description || skill.errors[0] || 'No description'}</span>
-                  <span className="settings-skill-path-mini">{skill.relativePath || skill.path}</span>
-                </button>
-              ))}
+              {skills.map((skill) => {
+                const key = `${skill.scope}:${skill.name}`
+                const status = updateStatus[key]
+                return (
+                  <div key={key} className="settings-skill-item">
+                    <button
+                      className={`settings-skill-row${previewPresence.value?.scope === skill.scope && previewPresence.value?.name === skill.name ? ' active' : ''}${!skill.valid ? ' invalid' : ''}`}
+                      onClick={() => void openSkill(skill)}
+                    >
+                      <span className="settings-skill-name">{skill.name}</span>
+                      <span className="settings-card-badge">{skill.scope}</span>
+                      {!skill.valid && <span className="settings-card-badge warn">invalid</span>}
+                      <span className="settings-skill-desc">{skill.description || skill.errors[0] || 'No description'}</span>
+                      <span className="settings-skill-path-mini">{skill.relativePath || skill.path}</span>
+                    </button>
+                    {skill.source && (
+                      <div className="settings-skill-update-row">
+                        <span className="settings-skill-source" title={skill.source.source}>{skill.source.source}</span>
+                        {status?.hasUpdate && (
+                          <>
+                            <span className="settings-card-badge warn">Update available</span>
+                            <button
+                              type="button"
+                              className="btn"
+                              disabled={updatingSkills.has(key)}
+                              onClick={() => void updateSkill(skill)}
+                            >
+                              {updatingSkills.has(key) ? 'Updating…' : 'Update'}
+                            </button>
+                          </>
+                        )}
+                        {status?.error && <span className="settings-skill-row-error">{status.error}</span>}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>
