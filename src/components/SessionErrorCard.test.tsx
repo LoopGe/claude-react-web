@@ -2,6 +2,27 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { SessionBody, errorCardState } from './SessionErrorCard'
 
+// ProjectPicker 的内部行为归它自己的测试；这里只钉卡片的装配契约。
+vi.mock('./session-list/ProjectPicker', () => ({
+  ProjectPicker: (props: {
+    value: string
+    recents: string[]
+    onSelect: (p: string) => void
+    onForget: (p: string) => void
+    onBrowse: () => void
+  }) => (
+    <div
+      data-testid="project-picker"
+      data-value={props.value}
+      data-recents={props.recents.join('|')}
+    >
+      <button data-testid="picker-select" onClick={() => props.onSelect('/picked/path')}>select</button>
+      <button data-testid="picker-forget" onClick={() => props.onForget(props.recents[0])}>forget</button>
+      <button data-testid="picker-browse" onClick={props.onBrowse}>browse</button>
+    </div>
+  ),
+}))
+
 describe('errorCardState', () => {
   it('returns null when the session has no error', () => {
     expect(errorCardState({ running: false, terminated: true, error: undefined })).toBeNull()
@@ -262,5 +283,51 @@ describe('SessionBody', () => {
     expect(screen.getByText('stderr')).toBeTruthy()
     expect(screen.getByText(/stderr line one/)).toBeTruthy()
     expect(screen.getByText(/stderr line two/)).toBeTruthy()
+  })
+
+  it('mounts the new-session project picker on the dormant error card, wired to the relocation handlers', () => {
+    const onSelect = vi.fn()
+    const onForget = vi.fn()
+    const onBrowse = vi.fn()
+    render(
+      <SessionBody
+        session={{ running: false, terminated: false, error: 'cwd gone', cwd: 'D:\\codes\\ai-rootcause' }}
+        onResume={vi.fn()}
+        workspace={{ recents: ['/a', '/b'], onSelect, onForget, onBrowse }}
+      >
+        <div data-testid="msgs">messages</div>
+      </SessionBody>,
+    )
+    const picker = screen.getByTestId('project-picker')
+    expect(picker.dataset.value).toBe('D:\\codes\\ai-rootcause')
+    expect(picker.dataset.recents).toBe('/a|/b')
+    fireEvent.click(screen.getByTestId('picker-select'))
+    expect(onSelect).toHaveBeenCalledWith('/picked/path')
+    fireEvent.click(screen.getByTestId('picker-forget'))
+    expect(onForget).toHaveBeenCalledWith('/a')
+    fireEvent.click(screen.getByTestId('picker-browse'))
+    expect(onBrowse).toHaveBeenCalled()
+  })
+
+  it('mounts the project picker on the terminated error card too', () => {
+    render(
+      <SessionBody
+        session={{ running: false, terminated: true, canRetryResume: true, error: 'boom', cwd: '/old' }}
+        onFork={vi.fn()}
+        workspace={{ recents: [], onSelect: vi.fn(), onForget: vi.fn(), onBrowse: vi.fn() }}
+      >
+        <div data-testid="msgs">messages</div>
+      </SessionBody>,
+    )
+    expect(screen.getByTestId('project-picker')).toBeTruthy()
+  })
+
+  it('omits the project picker when no relocation wiring is provided', () => {
+    render(
+      <SessionBody session={{ running: false, terminated: false, error: 'boom', cwd: '/old' }} onResume={vi.fn()}>
+        <div data-testid="msgs">messages</div>
+      </SessionBody>,
+    )
+    expect(screen.queryByTestId('project-picker')).toBeNull()
   })
 })

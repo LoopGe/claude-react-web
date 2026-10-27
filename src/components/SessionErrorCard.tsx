@@ -14,6 +14,7 @@
 
 import { useState } from 'react'
 import type { MouseEvent, ReactNode } from 'react'
+import { ProjectPicker } from './session-list/ProjectPicker'
 
 type CardAction = () => void | Promise<void>
 
@@ -25,6 +26,18 @@ export interface ErrorCardSession {
   recovering?: boolean
   canRetryResume?: boolean
   error?: string
+  /** Current workspace — the picker's value. */
+  cwd?: string
+}
+
+/** The card's workspace-relocation affordance (the new-session project
+ *  picker). One group, all-or-nothing — a partial handler set would render
+ *  dead controls. */
+export interface WorkspacePickerProps {
+  recents: string[]
+  onSelect: (path: string) => void
+  onForget: (path: string) => void
+  onBrowse: () => void
 }
 
 /** Lines shown in the collapsed stderr disclosure on the card — keeps the
@@ -60,10 +73,13 @@ interface SessionBodyProps {
   resuming?: boolean
   /** Recent stderr lines for the collapsed disclosure on the card. */
   stderrTail?: string[]
+  /** New-session project picker (relocation affordance) — rendered on the
+   *  card when wired. */
+  workspace?: WorkspacePickerProps
   children?: ReactNode
 }
 
-export function SessionBody({ session, onResume, onFork, resuming, stderrTail, children }: SessionBodyProps) {
+export function SessionBody({ session, onResume, onFork, resuming, stderrTail, workspace, children }: SessionBodyProps) {
   const state = errorCardState(session)
   // Spinner while a resume is in flight — shown wherever the old UI showed
   // it (the empty-state branch) plus over the error card, so the card's
@@ -82,26 +98,32 @@ export function SessionBody({ session, onResume, onFork, resuming, stderrTail, c
   return (
     <ErrorCard
       state={state}
+      cwd={session.cwd}
       canRetryResume={!!session.canRetryResume}
       onResume={onResume}
       onFork={onFork}
       stderrTail={stderrTail}
+      workspace={workspace}
     />
   )
 }
 
 function ErrorCard({
   state,
+  cwd,
   canRetryResume,
   onResume,
   onFork,
   stderrTail,
+  workspace,
 }: {
   state: { kind: ErrorCardKind; error: string }
+  cwd?: string
   canRetryResume: boolean
   onResume?: CardAction
   onFork?: CardAction
   stderrTail?: string[]
+  workspace?: WorkspacePickerProps
 }) {
   // Dormant sessions are resumable by definition; terminated sessions only
   // offer the crash-recovery choice when the server marked them retryable
@@ -148,6 +170,18 @@ function ErrorCard({
             {!showResume && !showFork && ' Create a new session to continue.'}
           </p>
         </>
+      )}
+      {workspace && (
+        <div className="empty-state-project">
+          <ProjectPicker
+            ariaLabel="Project"
+            value={cwd ?? ''}
+            recents={workspace.recents}
+            onSelect={workspace.onSelect}
+            onForget={workspace.onForget}
+            onBrowse={workspace.onBrowse}
+          />
+        </div>
       )}
       {stderrTail && stderrTail.length > 0 && (
         <details className="chat-panel-stderr-details">

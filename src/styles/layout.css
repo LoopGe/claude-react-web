@@ -1816,6 +1816,15 @@ body.resizing-col .app {
   gap: var(--space-2);
   justify-content: center;
 }
+/* New-session project picker on the error card (the relocation affordance).
+   Constrain the field trigger to a readable width inside the centered card;
+   text-align:left restores left-aligned text on the in-card trigger (its
+   dropdown is portaled to body and unaffected by this rule). */
+.empty-state-project {
+  margin: var(--space-3) auto 0;
+  max-width: 360px;
+  text-align: left;
+}
 /* Centered column for the resuming spinner + caption. `.empty-state` only
    sets text-align:center, which doesn't center a block-level spinner div —
    the spinner sat at the left edge while the <p> centered, misaligning the

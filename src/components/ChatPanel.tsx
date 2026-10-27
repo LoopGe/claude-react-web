@@ -7,6 +7,11 @@ import type { ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
 import { SessionBody, errorCardState } from './SessionErrorCard'
+import { DirectoryPicker } from './DirectoryPicker'
+import { useLocalStorage } from '../hooks/useLocalStorage'
+import { RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../constants/recentKeys'
+import { isStringArray } from '../../shared/type-guards'
+import { clamp } from '../utils/clamp'
 import type { ScrollNavigator } from './MessageList'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
@@ -385,6 +390,28 @@ export const ChatPanel = memo(function ChatPanel({
   // (the panel stays a drop target — harmless on touch).
   const isMobile = useIsMobile()
   const diagnostics = useDiagnostics(session.id, errorCardState(session) !== null)
+  // New-session project picker (the error card's relocation affordance):
+  // recents are the same localStorage MRU the new-session dialog maintains.
+  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
+  const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
+  const recentCwdsCap = clamp(Math.round(recentCwdsCapRaw), 3, 50)
+  const rememberCwd = (raw: string) => {
+    const v = raw.trim()
+    if (!v) return
+    setRecentCwds((prev) => [v, ...prev.filter((x) => x !== v)].slice(0, recentCwdsCap))
+  }
+  const forgetCwd = (path: string) => setRecentCwds((prev) => prev.filter((c) => c !== path))
+  const [cwdPickerOpen, setCwdPickerOpen] = useState(false)
+  const handleSelectCwd = (path: string) => {
+    // Record only after the relocation lands — a failed PATCH must not
+    // pollute the shared recents list with a dead path.
+    void api
+      .patch(`/sessions/${session.id}`, { cwd: path })
+      .then(() => rememberCwd(path))
+      .catch((e) => {
+        toast.error(`Couldn't change the workspace: ${(e as Error).message}`)
+      })
+  }
   // dnd-kit wiring: the header is the drag handle for panel swaps; the whole
   // panel section is the drop target (accepts another panel → swap, or a
   // sidebar card → replace this slot). Resolution lives in App's DndContext.
@@ -1260,6 +1287,17 @@ export const ChatPanel = memo(function ChatPanel({
             />
           )}
         </AnimatePresence>
+        {cwdPickerOpen && (
+          <DirectoryPicker
+            open
+            initialPath={session.cwd}
+            onPick={(p) => {
+              setCwdPickerOpen(false)
+              handleSelectCwd(p)
+            }}
+            onClose={() => setCwdPickerOpen(false)}
+          />
+        )}
         </div>
         {/* session.error renders as the body-area error card (SessionBody
             in .chat-panel-body) — the old header red band is gone. */}
@@ -1355,6 +1393,12 @@ export const ChatPanel = memo(function ChatPanel({
           onFork={onForkFromLastCompleted ? () => onForkFromLastCompleted(session.id) : undefined}
           resuming={isResuming}
           stderrTail={diagnostics.data?.stderrTail}
+          workspace={{
+            recents: recentCwds,
+            onSelect: handleSelectCwd,
+            onForget: forgetCwd,
+            onBrowse: () => setCwdPickerOpen(true),
+          }}
         >
         {session.running || session.terminated ? (
           <Chat
