@@ -21,6 +21,17 @@ export interface SkillSourceInfo {
   lastSha: string
 }
 
+/** One skill's outcome of a non-mutating check-updates pass. A repo whose
+ *  ls-remote fails contributes `error` (never a hasUpdate verdict) and does
+ *  not affect the other repos' rows. */
+export interface SkillUpdateStatus {
+  scope: SkillScope
+  name: string
+  hasUpdate: boolean
+  remoteSha?: string
+  error?: string
+}
+
 export interface SkillRecord {
   scope: SkillScope
   name: string

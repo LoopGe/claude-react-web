@@ -25,6 +25,7 @@ import {
 import {
   cloneAndDiscover,
   installRemoteSkills,
+  checkSkillUpdates,
   searchCatalog,
 } from '../skills-remote.js'
 
@@ -141,6 +142,16 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
     })
     await reloadAffectedSessions(sm, scope, cwd)
     return c.json(result)
+  })
+
+  // Non-mutating update check for GitHub-installed skills. Registered before
+  // /skills/:scope/:name so the two-segment route can't shadow it.
+  app.post('/skills/check-updates', async (c) => {
+    const body = await safeJson<{ scope: unknown; cwd: unknown }>(c.req)
+    const scope = parseScope(String(body.scope))
+    const cwd = typeof body.cwd === 'string' ? body.cwd : undefined
+    const updates = await checkSkillUpdates({ scope, cwd })
+    return c.json({ updates })
   })
 
   app.get('/skills/:scope/:name', async (c) => {

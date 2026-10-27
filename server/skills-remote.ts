@@ -8,11 +8,13 @@ import {
   type RemoteInstallRequest,
   type RemoteInstallResponse,
   type RemoteSearchHit,
+  type SkillScope,
+  type SkillUpdateStatus,
 } from '../shared/skills.js'
 import { HttpError } from './errors.js'
-import { gitClone, gitHeadSha } from './git-clone.js'
+import { gitClone, gitHeadSha, gitLsRemoteHead } from './git-clone.js'
 import { createLogger } from './log.js'
-import { importSkillFromPath, MAX_SKILL_BYTES, parseSkillFrontmatter } from './skills.js'
+import { importSkillFromPath, listSkills, MAX_SKILL_BYTES, parseSkillFrontmatter } from './skills.js'
 
 /** Directory names never entered while walking a skill tree. */
 export const SKIP_DIRS = [
@@ -282,4 +284,44 @@ export async function installRemoteSkills(
     }
   }
   return { installed, failed }
+}
+
+/**
+ * Non-mutating update check for GitHub-installed skills: compare each skill's
+ * sidecar `lastSha` against the repo's CURRENT upstream HEAD (`git ls-remote`,
+ * same channel as the marketplace check). Skills without a sidecar (folder
+ * imports, hand-written) are skipped, exactly like the marketplace's `local`
+ * records. One ls-remote per repo, failures isolated to that repo's rows.
+ */
+export async function checkSkillUpdates(input: { scope: SkillScope; cwd?: string }): Promise<SkillUpdateStatus[]> {
+  const { skills } = await listSkills(input.cwd)
+  const remote = skills.filter((s) => s.scope === input.scope && s.source)
+  const byRepo = new Map<string, typeof remote>()
+  for (const s of remote) {
+    const list = byRepo.get(s.source!.source) ?? []
+    list.push(s)
+    byRepo.set(s.source!.source, list)
+  }
+  const settled = await Promise.allSettled(
+    [...byRepo.keys()].map((repo) => gitLsRemoteHead(`https://github.com/${repo}.git`)),
+  )
+  const updates: SkillUpdateStatus[] = []
+  let index = 0
+  for (const [, group] of byRepo) {
+    const result = settled[index++]
+    for (const s of group) {
+      if (result.status === 'fulfilled') {
+        updates.push({ scope: s.scope, name: s.name, hasUpdate: result.value !== s.source!.lastSha, remoteSha: result.value })
+      } else {
+        const reason = result.reason
+        const message = reason instanceof HttpError
+          ? reason.message
+          : reason instanceof Error
+            ? reason.message
+            : String(reason)
+        updates.push({ scope: s.scope, name: s.name, hasUpdate: false, error: message })
+      }
+    }
+  }
+  return updates
 }
