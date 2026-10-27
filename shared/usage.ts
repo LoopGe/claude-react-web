@@ -41,6 +41,14 @@ export interface UsageModelEntry {
   thinkingTokens?: number
   cacheReadInputTokens?: number
   cacheCreationInputTokens?: number
+  /** Cache writes with a 5-minute lifetime (SDK 0.3.311) — already counted
+   *  inside cacheCreationInputTokens; the two sub-fields can sum to less
+   *  than the total because a write with unreported lifetime adds to
+   *  neither. Absent on CLIs that predate the field. */
+  cacheCreationEphemeral5mInputTokens?: number
+  /** Cache writes with a 1-hour lifetime — same counting rules as the
+   *  5-minute field. */
+  cacheCreationEphemeral1hInputTokens?: number
   webSearchRequests?: number
   costUSD?: number
   contextWindow?: number

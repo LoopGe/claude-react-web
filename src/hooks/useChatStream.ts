@@ -48,8 +48,21 @@ export interface ContextUsage {
     tokenCount: number
     agents?: Array<{ agentType: string; source: string; tokens: number }>
   }
-  memoryFiles?: { tokenCount: number }
-  mcpTools?: { tokenCount: number }
+  /** Two generations, like mcpTools: the old aggregate `{ tokenCount }`
+   *  (feeds the no-categories fallback row) and — SDK 0.3.311+ — the
+   *  per-file array `{ path, type?, tokens }` (aggregated into the same
+   *  fallback row). Classify on `Array.isArray` before use. */
+  memoryFiles?: { tokenCount: number } | Array<{ path: string; type?: string; tokens: number }>
+  /** Per-MCP-server context breakdown (detailed payload only). Shape has
+   *  TWO generations: the old aggregate `{ tokenCount }` (fed the
+   *  no-categories fallback row) and — SDK 0.3.304+ — the per-tool array
+   *  `{ name, serverName, tokens, isLoaded? }` the per-server section
+   *  aggregates. Classify on `Array.isArray` before use. */
+  mcpTools?: { tokenCount: number } | Array<{ name: string; serverName: string; tokens: number; isLoaded?: boolean }>
+  /** Each server's share of the 'mcp_instructions' category row (SDK
+   *  0.3.304+), estimated by the CLI from the length of its text. Present
+   *  only where the CLI answers on its own stdio. */
+  mcpInstructions?: Array<{ serverName: string; tokens: number }>
   /** Canonical context rows from the SDK control response (0.3.268). Classify
    *  on `kind` — 'used' occupies the window, 'free' is the remainder,
    *  'buffer' is the compaction reserve, 'deferred' is an out-of-window tool

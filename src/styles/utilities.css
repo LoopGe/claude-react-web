@@ -1874,6 +1874,23 @@ button.tool-group-failed-jump:focus-visible {
   color: var(--fg-muted);
 }
 .ctx-kind-legend-item { display: inline-flex; align-items: center; gap: var(--space-1); }
+/* Per-server MCP breakdown (SDK 0.3.304+ detailed payload) — visually a
+   sub-list under the composition rows: hairline top border, muted title,
+   and the detail text in the same muted ink as the share column. No new
+   colours: everything reuses the composition block's tokens. */
+.ctx-mcp-servers {
+  display: flex;
+  flex-direction: column;
+  padding-top: var(--space-1-5);
+  border-top: 1px solid var(--border);
+}
+.ctx-mcp-servers-title {
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+  margin-bottom: var(--space-0-5);
+}
+.ctx-mcp-server-detail { color: var(--fg-muted); font-size: var(--fs-xs); min-width: 0; }
+.ctx-mcp-server-deferred { color: var(--fg-muted); }
 
 .settings-card {
   border: 1px solid var(--border);
@@ -3393,12 +3410,6 @@ input[type="checkbox"]:disabled {
   padding-inline: var(--space-2);
   color: var(--fg-muted);
 }
-.settings-skill-desc {
-  grid-column: 1 / -1;
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-  white-space: pre-line;
-}
 .settings-skill-desc-error {
   grid-column: 1 / -1;
   color: var(--warn-text);
@@ -3447,6 +3458,11 @@ input[type="checkbox"]:disabled {
   font-weight: 600;
   white-space: nowrap;
 }
+.settings-skill-project-badge {
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .settings-skill-file-input {
   display: none;
 }
@@ -3463,7 +3479,10 @@ input[type="checkbox"]:disabled {
 }
 .settings-skill-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  /* 4 inline slots: name, scope, project badge, invalid badge. The 4th track
+   * is 0-wide on rows that lack a badge — without it a project+invalid row
+   * wraps the invalid badge onto its own grid row. */
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: var(--space-1-5);
   width: 100%;
   text-align: left;
@@ -3498,6 +3517,11 @@ input[type="checkbox"]:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The expanded search-row description must wrap — later in the file so it
+ * wins the cascade over the shared single-line ellipsis rule above. */
+.settings-skill-desc {
+  white-space: pre-line;
 }
 .settings-skill-path-mini {
   opacity: 0.78;

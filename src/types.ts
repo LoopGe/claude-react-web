@@ -215,6 +215,7 @@ export type { TaskRecordUi } from '../shared/tasks.js'
 // Structured /usage data (session cost/token totals + claude.ai plan
 // rate-limit windows) — loose shapes shared with the server. EXPERIMENTAL
 // SDK API; every field optional, render defensively.
+import type { UsageModelEntry } from '../shared/usage'
 export type {
   SessionUsageData,
   UsageSessionTotals,
@@ -405,17 +406,10 @@ export interface StructuredUsageReport {
     total_duration_ms?: number
     total_lines_added?: number
     total_lines_removed?: number
-    model_usage?: Record<
-      string,
-      {
-        inputTokens?: number
-        outputTokens?: number
-        thinkingTokens?: number
-        cacheReadInputTokens?: number
-        cacheCreationInputTokens?: number
-        costUSD?: number
-      }
-    >
+    // Single source: shared/usage.ts's defensive mirror of the SDK's
+    // ModelUsage — re-declaring the entry inline here drifted the moment a
+    // field landed in one copy and not the other.
+    model_usage?: Record<string, UsageModelEntry>
   }
   rate_limits?: {
     limits?:

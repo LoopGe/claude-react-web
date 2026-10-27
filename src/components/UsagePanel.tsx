@@ -57,6 +57,38 @@ function levelFor(pct: number): 'ok' | 'warn' | 'danger' {
   return pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : 'ok'
 }
 
+/** Tooltip for the per-model cache cell: the combined number stays in the
+ *  table; the hover title breaks it into read vs write, and — when the SDK
+ *  (0.3.311+) reports them — the 5m/1h cache-write TTL split. An ABSENT
+ *  TTL sub-field is omitted, never shown as a hard zero: per the SDK docs
+ *  absence means no turn recorded the field (or an older CLI ran part of
+ *  the session), which is unknown rather than measured-zero. Null when the
+ *  entry carries no cache fields at all (older CLIs): the cell renders '—'
+ *  and gains no title. */
+function cacheTooltip(
+  read: number | null,
+  write: number | null,
+  m5: number | null,
+  h1: number | null,
+): string | null {
+  // Absent fields are omitted, never rendered as a hard zero — same rule
+  // for read/write as for the TTL sub-fields below (the SDK docs define
+  // absence as "no turn recorded the field", i.e. unknown). A present
+  // zero is a real measurement and shows as '0'.
+  const parts: string[] = []
+  if (read != null) parts.push(`read ${formatTokens(read)}`)
+  if (write != null) parts.push(`write ${formatTokens(write)}`)
+  if (parts.length === 0) return null
+  const ttl = [
+    m5 != null ? `5m ${formatTokens(m5)}` : null,
+    h1 != null ? `1h ${formatTokens(h1)}` : null,
+  ]
+    .filter((p): p is string => p != null)
+    .join(' + ')
+  if (ttl) parts.push(ttl)
+  return parts.join(' · ')
+}
+
 function WindowMeter({ label, window }: { label: string; window: UsageRateLimitWindow | null | undefined }) {
   // A window can be present-but-null (unknown on the backend) — render a
   // muted "unknown" row rather than hiding it, so users know the window exists.
@@ -227,8 +259,12 @@ export const UsagePanel = memo(function UsagePanel({
                         const inTok = get('inputTokens')
                         const outTok = get('outputTokens')
                         const thinkTok = get('thinkingTokens')
-                        const cacheTok =
-                          (get('cacheReadInputTokens') ?? 0) + (get('cacheCreationInputTokens') ?? 0)
+                        const cacheRead = get('cacheReadInputTokens')
+                        const cacheWrite = get('cacheCreationInputTokens')
+                        const cache5m = get('cacheCreationEphemeral5mInputTokens')
+                        const cache1h = get('cacheCreationEphemeral1hInputTokens')
+                        const cacheTok = (cacheRead ?? 0) + (cacheWrite ?? 0)
+                        const cacheTitle = cacheTooltip(cacheRead, cacheWrite, cache5m, cache1h)
                         const mCost = fmtCost(m.costUSD)
                         return (
                           <tr key={model}>
@@ -238,7 +274,9 @@ export const UsagePanel = memo(function UsagePanel({
                             <td>{inTok != null ? formatTokens(inTok) : '—'}</td>
                             <td>{outTok != null ? formatTokens(outTok) : '—'}</td>
                             <td>{thinkTok != null ? formatTokens(thinkTok) : '—'}</td>
-                            <td>{cacheTok > 0 ? formatTokens(cacheTok) : '—'}</td>
+                            <td title={cacheTok > 0 && cacheTitle ? cacheTitle : undefined}>
+                              {cacheTok > 0 ? formatTokens(cacheTok) : '—'}
+                            </td>
                             <td>{mCost ?? '—'}</td>
                           </tr>
                         )
