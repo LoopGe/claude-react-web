@@ -26,6 +26,7 @@ import {
   cloneAndDiscover,
   installRemoteSkills,
   checkSkillUpdates,
+  updateRemoteSkill,
   searchCatalog,
 } from '../skills-remote.js'
 
@@ -152,6 +153,18 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
     const cwd = typeof body.cwd === 'string' ? body.cwd : undefined
     const updates = await checkSkillUpdates({ scope, cwd })
     return c.json({ updates })
+  })
+
+  // Apply an update to one GitHub-installed skill (fresh clone + overwrite).
+  app.post('/skills/remote/update', async (c) => {
+    const body = await safeJson<{ scope: unknown; cwd: unknown; name: unknown }>(c.req)
+    const scope = parseScope(String(body.scope))
+    const cwd = typeof body.cwd === 'string' ? body.cwd : undefined
+    const name = typeof body.name === 'string' ? body.name : ''
+    if (!name) throw new HttpError(400, 'name is required')
+    const result = await updateRemoteSkill({ scope, cwd, name })
+    await reloadAffectedSessions(sm, scope, cwd)
+    return c.json(result)
   })
 
   app.get('/skills/:scope/:name', async (c) => {

@@ -8,13 +8,14 @@ import {
   type RemoteInstallRequest,
   type RemoteInstallResponse,
   type RemoteSearchHit,
+  type SkillRecord,
   type SkillScope,
   type SkillUpdateStatus,
 } from '../shared/skills.js'
 import { HttpError } from './errors.js'
 import { gitClone, gitHeadSha, gitLsRemoteHead } from './git-clone.js'
 import { createLogger } from './log.js'
-import { importSkillFromPath, listSkills, MAX_SKILL_BYTES, parseSkillFrontmatter } from './skills.js'
+import { importSkillFromPath, getSkill, listSkills, MAX_SKILL_BYTES, parseSkillFrontmatter } from './skills.js'
 
 /** Directory names never entered while walking a skill tree. */
 export const SKIP_DIRS = [
@@ -128,6 +129,7 @@ setInterval(sweep, SWEEP_INTERVAL_MS).unref()
  */
 export async function cloneAndDiscover(
   source: string,
+  opts?: { forceRefresh?: boolean },
 ): Promise<{ dir: string; skills: DiscoveredSkill[] }> {
   const parsed = parseOwnerRepo(source)
   if (!parsed) {
@@ -138,11 +140,12 @@ export async function cloneAndDiscover(
 
   const hit = cloneCache.get(cacheKey)
   if (hit) {
-    if (hit.expiresAt > Date.now()) {
+    if (hit.expiresAt > Date.now() && !opts?.forceRefresh) {
       return { dir: hit.dir, skills: await discoverSkills(hit.dir) }
     }
-    // Expired: drop it now and tear down its tree. Overwriting the key below
-    // would hide it from the sweeper forever.
+    // Expired, or an update explicitly asked for a fresh tree: drop the entry
+    // now and tear down its tree. Overwriting the key below would hide it
+    // from the sweeper forever.
     cloneCache.delete(cacheKey)
     await fs.rm(hit.tmpRoot, { recursive: true, force: true })
   }
@@ -324,4 +327,45 @@ export async function checkSkillUpdates(input: { scope: SkillScope; cwd?: string
     }
   }
   return updates
+}
+
+/**
+ * Apply an update to one GitHub-installed skill: force a FRESH clone (never
+ * the TTL-cached tree), then overwrite-install it with the new HEAD sha.
+ * An upstream rename is REJECTED — it must not create a second skill or
+ * delete the old installation; the user installs the new name themselves.
+ */
+export async function updateRemoteSkill(input: { scope: SkillScope; cwd?: string; name: string }): Promise<{ skill: SkillRecord; lastSha: string }> {
+  const existing = await getSkill(input.scope, input.name, input.cwd)
+  const source = existing.source
+  if (!source) throw new HttpError(400, 'Not a GitHub-installed skill')
+
+  const { dir } = await cloneAndDiscover(source.source, { forceRefresh: true })
+  const skills = await discoverSkills(dir)
+  const entry = skills.find((s) => s.relativePath === source.relativePath)
+  if (!entry) throw new HttpError(400, 'Not found in repository')
+  if (entry.name !== input.name) {
+    throw new HttpError(400, `Upstream renamed this skill to "${entry.name}"; install the new name and remove the old one instead`)
+  }
+
+  const lastSha = await gitHeadSha(dir)
+  const staged = await fs.mkdtemp(join(tmpdir(), 'crw-skill-stage-'))
+  try {
+    await stageSkillInto(dir, source.relativePath, staged)
+    await fs.writeFile(
+      join(staged, SKILL_SOURCE_FILE),
+      JSON.stringify({ source: source.source, relativePath: source.relativePath, lastSha }, null, 2),
+      'utf8',
+    )
+    const result = await importSkillFromPath({
+      scope: input.scope,
+      cwd: input.cwd,
+      path: staged,
+      name: input.name,
+      overwrite: true,
+    })
+    return { skill: result.skill, lastSha }
+  } finally {
+    await fs.rm(staged, { recursive: true, force: true })
+  }
 }
