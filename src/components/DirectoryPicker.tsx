@@ -86,7 +86,9 @@ export function DirectoryPicker({
     const listStyle = window.getComputedStyle(listBox)
     const verticalPadding = parseFloat(listStyle.paddingTop) + parseFloat(listStyle.paddingBottom)
     const contentHeight = content.scrollHeight + verticalPadding
-    return Math.min(contentHeight, availableListHeight || contentHeight)
+    // A squeezed geometry is a real 0 ceiling — no falsy-zero fail-open to
+    // the full content height (same rule as settings-panel-measure).
+    return Math.min(contentHeight, availableListHeight)
   }, [])
 
   const { captureHeight: captureListHeight } = useAutoHeightTransition(listBoxRef, listAnimationKey, {

@@ -49,23 +49,27 @@ function renderPanel(opts: {
 }) {
   return render(
     <ToastProvider>
-      <SettingsPanel
-        session={opts.session ?? mkSession()}
-        commands={opts.commands}
-        globalPrefs={
-          {
-            showPinnedUserMessage: true,
-            autoRecap: true,
-            toolGroupCards: true,
-            autoExpandRunningGroups: true,
-            showMessageHeaders: true,
-            ...opts.globalPrefs,
-          } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
-        }
-        onClose={() => {}}
-        onSessionUpdate={() => {}}
-        tabRequest={{ tab: opts.tab ?? 'mcp', nonce: 1 }}
-      />
+      {/* The app renders the panel inside the settings overlay (Chat →
+          Overlay variant="settings"); the measure contract depends on it. */}
+      <div className="settings-overlay">
+        <SettingsPanel
+          session={opts.session ?? mkSession()}
+          commands={opts.commands}
+          globalPrefs={
+            {
+              showPinnedUserMessage: true,
+              autoRecap: true,
+              toolGroupCards: true,
+              autoExpandRunningGroups: true,
+              showMessageHeaders: true,
+              ...opts.globalPrefs,
+            } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
+          }
+          onClose={() => {}}
+          onSessionUpdate={() => {}}
+          tabRequest={{ tab: opts.tab ?? 'mcp', nonce: 1 }}
+        />
+      </div>
     </ToastProvider>,
   )
 }
@@ -153,21 +157,23 @@ describe('SettingsPanel first-party card display chain', () => {
       const [session, setSession] = useState(mkSession())
       return (
         <ToastProvider>
-          <SettingsPanel
-            session={session}
-            globalPrefs={
-              {
-                showPinnedUserMessage: true,
-                autoRecap: true,
-                toolGroupCards: true,
-                autoExpandRunningGroups: true,
-                firstPartyTools: {},
-              } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
-            }
-            onClose={() => {}}
-            onSessionUpdate={setSession}
-            tabRequest={{ tab: 'mcp', nonce: 1 }}
-          />
+          <div className="settings-overlay">
+            <SettingsPanel
+              session={session}
+              globalPrefs={
+                {
+                  showPinnedUserMessage: true,
+                  autoRecap: true,
+                  toolGroupCards: true,
+                  autoExpandRunningGroups: true,
+                  firstPartyTools: {},
+                } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
+              }
+              onClose={() => {}}
+              onSessionUpdate={setSession}
+              tabRequest={{ tab: 'mcp', nonce: 1 }}
+            />
+          </div>
         </ToastProvider>
       )
     }
@@ -211,13 +217,15 @@ describe('SettingsPanel MCP reconnect feedback', () => {
   function renderMcpPanel() {
     return render(
       <ToastProvider>
-        <SettingsPanel
-          session={mkSession()}
-          globalPrefs={globalPrefs}
-          onClose={() => {}}
-          onSessionUpdate={() => {}}
-          tabRequest={{ tab: 'mcp', nonce: 1 }}
-        />
+        <div className="settings-overlay">
+          <SettingsPanel
+            session={mkSession()}
+            globalPrefs={globalPrefs}
+            onClose={() => {}}
+            onSessionUpdate={() => {}}
+            tabRequest={{ tab: 'mcp', nonce: 1 }}
+          />
+        </div>
         <ToastHost />
       </ToastProvider>,
     )
@@ -523,13 +531,15 @@ describe('SettingsPanel MCP source grouping', () => {
     })
     return render(
       <ToastProvider>
-        <SettingsPanel
-          session={session}
-          globalPrefs={globalPrefs}
-          onClose={() => {}}
-          onSessionUpdate={() => {}}
-          tabRequest={{ tab: 'mcp', nonce: 1 }}
-        />
+        <div className="settings-overlay">
+          <SettingsPanel
+            session={session}
+            globalPrefs={globalPrefs}
+            onClose={() => {}}
+            onSessionUpdate={() => {}}
+            tabRequest={{ tab: 'mcp', nonce: 1 }}
+          />
+        </div>
       </ToastProvider>,
     )
   }

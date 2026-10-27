@@ -1,5 +1,7 @@
 import { prefersReducedMotion } from '../utils/reduced-motion'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { anyCollapseMotionInside, claimCollapseMotionInside } from '../components/collapse-animation'
+import { isRendered } from '../utils/rendered'
 
 interface AutoHeightTransitionOptions {
   durationMs?: number
@@ -37,7 +39,17 @@ export function useAutoHeightTransition<T extends HTMLElement>(
   const readTargetHeight = useCallback(() => {
     const el = ref.current
     if (!el) return null
-    return measureTargetHeight?.() ?? el.scrollHeight
+    // NO metric off an unrendered box (display:none — the settings panel stays
+    // mounted under `.hidden`) is a measurement: the zeros, and equally a
+    // measure that adds CSS padding to those zeros (~32px for the global
+    // settings modal's body). Adopting one tweens the body down while hidden
+    // and grows it back from a stub on the next reveal — and the key-driven
+    // path reads this on WS-driven key changes WHILE hidden, with no
+    // ResizeObserver involved. Same rule AnimatedCollapse pins via isRendered.
+    // A measure returning null likewise propagates as "no measurement" (it
+    // must not silently fall back to scrollHeight).
+    if (!isRendered(el)) return null
+    return measureTargetHeight ? measureTargetHeight() : el.scrollHeight
   }, [measureTargetHeight, ref])
 
   const clearInlineHeight = useCallback((el: HTMLElement) => {
@@ -92,6 +104,18 @@ export function useAutoHeightTransition<T extends HTMLElement>(
       if (pendingTarget != null && Math.abs(pendingTarget - nextHeight) >= 2) {
         animatingRef.current = false
         cleanupRef.current = null
+        // A fold that started while this tween was in flight owns the height
+        // motion now — never chain a catch-up into it (that re-pins the box
+        // below its natural height mid-fold and re-targets every durationMs
+        // until the fold settles). Same for a fold that settled just before
+        // this finish: the chain would pin below the folded height and
+        // re-grow the tail. Release the pin and track instead; the body
+        // follows the fold natively from here.
+        if (anyCollapseMotionInside(observe?.current ?? null)) {
+          lastTargetHeightRef.current = pendingTarget
+          clearInlineHeight(el)
+          return
+        }
         runHeightAnimation(nextHeight, pendingTarget)
         return
       }
@@ -109,7 +133,7 @@ export function useAutoHeightTransition<T extends HTMLElement>(
     const timer = window.setTimeout(() => finish(true), durationMs + 120)
     el.addEventListener('transitionend', onEnd)
     cleanupRef.current = () => finish(false)
-  }, [clearInlineHeight, durationMs, easing, readTargetHeight, ref])
+  }, [clearInlineHeight, durationMs, easing, observe, readTargetHeight, ref])
 
   const captureHeight = useCallback(() => {
     const el = ref.current
@@ -137,19 +161,33 @@ export function useAutoHeightTransition<T extends HTMLElement>(
 
     const observer = new ResizeObserver(() => {
       const nextTarget = readTargetHeight()
-      if (nextTarget == null) return
+      if (nextTarget == null) {
+        // A refused read (unrendered box) leaves the baseline untrustworthy —
+        // drop it so the reveal's first measurement rebases instead of
+        // gliding from the pre-hide target.
+        lastTargetHeightRef.current = null
+        return
+      }
 
       const previousTarget = lastTargetHeightRef.current
-      if (previousTarget == null) {
-        lastTargetHeightRef.current = nextTarget
-        return
-      }
-      if (Math.abs(nextTarget - previousTarget) < 2) {
-        lastTargetHeightRef.current = nextTarget
-        return
-      }
-
       lastTargetHeightRef.current = nextTarget
+      if (previousTarget == null) return
+
+      // Collapse motion owns this box — track the target above but never
+      // answer it with a tween of our own. The settings panel body is the
+      // measured case: expanding an AnimatedDetails grows the observed
+      // content every frame, and a hook-owned height tween on top pins the
+      // body mid-fold, clips the fold behind the pin, then snaps the
+      // scrollbar short when the tween chain ends (the pin never equals the
+      // natural flex height exactly). Standing down lets the body follow the
+      // fold natively, and the tracking keeps the next DISCRETE change
+      // animating from the reached height — same rule AnimatedCollapse's own
+      // observer applies to nested folds. This is the measurement site, so it
+      // CLAIMS the settle-tail latch: this delivery is the tail itself when
+      // one is pending (deliberately before the Δ check — the tail may well
+      // be sub-2px).
+      if (claimCollapseMotionInside(observed)) return
+      if (Math.abs(nextTarget - previousTarget) < 2) return
       if (animatingRef.current) {
         pendingTargetHeightRef.current = nextTarget
         return
@@ -173,7 +211,13 @@ export function useAutoHeightTransition<T extends HTMLElement>(
 
   useLayoutEffect(() => {
     const nextHeight = readTargetHeight()
-    if (nextHeight == null) return
+    if (nextHeight == null) {
+      // Refused (unrendered) read: drop the baseline so the reveal's first
+      // measurement rebases instead of gliding from the pre-hide target (see
+      // the observer's null branch).
+      lastTargetHeightRef.current = null
+      return
+    }
 
     const startHeight = startHeightRef.current
     startHeightRef.current = null
@@ -183,23 +227,26 @@ export function useAutoHeightTransition<T extends HTMLElement>(
     }
 
     const previousHeight = lastTargetHeightRef.current
-    if (previousHeight == null) {
-      lastTargetHeightRef.current = nextHeight
-      return
-    }
-    if (Math.abs(nextHeight - previousHeight) < 2) {
-      lastTargetHeightRef.current = nextHeight
-      return
-    }
-
     lastTargetHeightRef.current = nextHeight
+    if (previousHeight == null) return
+
+    // Collapse motion owns the height — the same rule as the observer's
+    // guard, applied in the same order (track → guard → Δ → animate): this is
+    // the other tween start. The query does NOT consume the settle-tail latch
+    // — that belongs to the observation that IS the tail. Only the
+    // non-capture branch: the captureHeight branch above has already pinned
+    // the box and must animate to release it — and a fold there is
+    // unreachable anyway, since capture runs in the same commit as a content
+    // swap that unmounts any fold.
+    if (anyCollapseMotionInside(observe?.current ?? null)) return
+    if (Math.abs(nextHeight - previousHeight) < 2) return
     if (animatingRef.current) {
       pendingTargetHeightRef.current = nextHeight
       return
     }
 
     animateFromTo(previousHeight, nextHeight)
-  }, [animateFromTo, readTargetHeight, key])
+  }, [animateFromTo, observe, readTargetHeight, key])
 
   return { captureHeight }
 }

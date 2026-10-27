@@ -8,6 +8,7 @@ import type { ApiError } from '../transport/types'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
+import { measureSettingsPanelBodyHeight } from '../utils/settings-panel-measure'
 import { useToast, apiErrorToastOpts } from '../hooks/useToast'
 import { parseTaskBudgetInput } from '../../shared/session-info'
 import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
@@ -1146,10 +1147,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     const body = panelBodyRef.current
     const content = panelContentRef.current
     if (!body || !content) return null
-    const overlay = body.closest('.settings-overlay') as HTMLElement | null
-    const availablePanelHeight = overlay?.clientHeight ?? Number.POSITIVE_INFINITY
-    const availableBodyHeight = Math.max(0, availablePanelHeight - body.offsetTop)
-    return Math.min(content.scrollHeight, availableBodyHeight || content.scrollHeight)
+    return measureSettingsPanelBodyHeight(body, content)
   }, [])
   const { captureHeight: captureSettingsHeight } = useAutoHeightTransition(panelBodyRef, heightAnimationKey, {
     measureTargetHeight: measureSettingsBodyHeight,

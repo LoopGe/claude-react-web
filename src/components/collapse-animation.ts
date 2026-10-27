@@ -19,12 +19,48 @@
  */
 
 const animatingBodies = new Set<HTMLElement>()
+const unsettledTails = new Set<WeakRef<HTMLElement>>()
 
 /** Record a body's animation state. Called by AnimatedCollapse immediately
- *  before/after the matching `classList.add/remove('animating')`. */
+ *  before/after the matching `classList.add/remove('animating')`. A settle
+ *  also latches the body's TAIL (see anyCollapseMotionInside): its final
+ *  size's ResizeObserver delivery lands in a later rendering step, and
+ *  consumers must stand down when that delivery arrives — however late. */
 export function setCollapseAnimating(el: HTMLElement, animating: boolean): void {
-  if (animating) animatingBodies.add(el)
-  else animatingBodies.delete(el)
+  if (animating) {
+    animatingBodies.add(el)
+  } else {
+    animatingBodies.delete(el)
+    pruneSettledTails()
+    unsettledTails.add(new WeakRef(el))
+  }
+}
+
+/** Drop latch entries whose body has been collected. Settled bodies are held
+ *  WEAKLY on purpose: a chat-only session folds transcript cards for hours,
+ *  and a strong map here would retain every settled subtree after
+ *  virtualization/trim unmounts it. Swept on every settle and every query, so
+ *  the set stays bounded by settles whose body is still alive and whose latch
+ *  is still unconsumed. */
+function pruneSettledTails() {
+  for (const ref of unsettledTails) {
+    if (!ref.deref()) unsettledTails.delete(ref)
+  }
+}
+
+function findSettledTail(root: ParentNode, consume: boolean): boolean {
+  for (const ref of unsettledTails) {
+    const el = ref.deref()
+    if (!el) {
+      unsettledTails.delete(ref)
+      continue
+    }
+    if (root.contains(el)) {
+      if (consume) unsettledTails.delete(ref)
+      return true
+    }
+  }
+  return false
 }
 
 /** True when any AnimatedCollapse inside `root` is mid-animation (an
@@ -35,6 +71,35 @@ export function anyCollapseAnimatingInside(root: ParentNode | null): boolean {
     if (root.contains(el)) return true
   }
   return false
+}
+
+/** True while collapse HEIGHT MOTION is still in effect inside `root`: a
+ *  collapse is mid-animation there, or one settled and its tail delivery has
+ *  not been claimed yet (see claimCollapseMotionInside). The stand-down rule
+ *  for consumers that must not answer collapse-driven height changes with a
+ *  height animation of their own but are not the tail's own measurement —
+ *  useAutoHeightTransition's key-driven tween start and its tween-chaining
+ *  `finish`. Does NOT consume the latch. */
+export function anyCollapseMotionInside(root: ParentNode | null): boolean {
+  if (anyCollapseAnimatingInside(root)) return true
+  if (!root) return false
+  return findSettledTail(root, false)
+}
+
+/** The measurement-site twin of anyCollapseMotionInside: same query, but the
+ *  settle-tail latch is CONSUMED on match — one stand-down per settle, taken
+ *  by the first box observation inside the root, which is exactly the tail's
+ *  ResizeObserver delivery (a collapse settles in the same task as its final
+ *  height write; that size's observation is one rendering step behind, and
+ *  under a long task arbitrarily behind — a one-shot latch covers that with
+ *  no wall-clock window). A later genuine change is free to animate. The
+ *  latch is root-scoped like the animating check: a fold settling in one
+ *  surface (a transcript) must not suppress a height tween in another (a
+ *  settings panel). */
+export function claimCollapseMotionInside(root: ParentNode | null): boolean {
+  if (anyCollapseAnimatingInside(root)) return true
+  if (!root) return false
+  return findSettledTail(root, true)
 }
 
 /** Drop the pinned height of the collapse bodies above `el`, stopping at the
