@@ -263,3 +263,13 @@ export async function gitLsRemoteHead(url: string, ref?: string): Promise<string
   }
   return sha
 }
+
+/** The HEAD commit SHA of a LOCAL clone, used to stamp install provenance
+ *  (the `.crw-source.json` sidecar written at install/update time). Same
+ *  execFile-no-shell channel as gitLsRemoteHead; throws HttpError when the
+ *  directory is not a repo or git fails. */
+export async function gitHeadSha(dir: string): Promise<string> {
+  const sha = (await runGitOutside(['-C', dir, 'rev-parse', 'HEAD'])).trim()
+  if (!/^[0-9a-f]{40}$/i.test(sha)) throw new HttpError(500, 'rev-parse returned no parseable SHA')
+  return sha
+}

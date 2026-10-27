@@ -3,13 +3,14 @@ import { tmpdir } from 'node:os'
 import { basename, join, relative, resolve, sep } from 'node:path'
 import {
   parseOwnerRepo,
+  SKILL_SOURCE_FILE,
   type DiscoveredSkill,
   type RemoteInstallRequest,
   type RemoteInstallResponse,
   type RemoteSearchHit,
 } from '../shared/skills.js'
 import { HttpError } from './errors.js'
-import { gitClone } from './git-clone.js'
+import { gitClone, gitHeadSha } from './git-clone.js'
 import { createLogger } from './log.js'
 import { importSkillFromPath, MAX_SKILL_BYTES, parseSkillFrontmatter } from './skills.js'
 
@@ -239,6 +240,10 @@ export async function installRemoteSkills(
   if (!req.paths?.length) throw new HttpError(400, 'paths is required')
   const { dir } = await cloneAndDiscover(req.source)
   const skills = await discoverSkills(dir)
+  // One HEAD sha per install batch: it becomes every installed skill's
+  // `.crw-source.json` provenance (the update check compares it against the
+  // upstream HEAD later).
+  const lastSha = await gitHeadSha(dir)
 
   const installed: RemoteInstallResponse['installed'] = []
   const failed: RemoteInstallResponse['failed'] = []
@@ -252,6 +257,13 @@ export async function installRemoteSkills(
     try {
       staged = await fs.mkdtemp(join(tmpdir(), 'crw-skill-stage-'))
       await stageSkillInto(dir, p, staged)
+      // Provenance travels with the staged tree, so it lands atomically with
+      // the skill (never "installed but metadata missing").
+      await fs.writeFile(
+        join(staged, SKILL_SOURCE_FILE),
+        JSON.stringify({ source: req.source, relativePath: p, lastSha }, null, 2),
+        'utf8',
+      )
       // name: entry.name is required — the staging dir is an mkdtemp random
       // name, so without it a skill with no frontmatter.name would install as
       // `crw-skill-stage-…` instead of the name discovery reported.

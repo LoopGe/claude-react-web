@@ -7,6 +7,7 @@ import { MAX_SKILL_IMPORT_TOTAL_BYTES } from './constants.js'
 
 const log = createLogger('skills-core')
 import type { SkillImportFile, SkillRecord, SkillRootInfo, SkillScope, SkillValidationResponse } from '../shared/skills.js'
+import { SKILL_SOURCE_FILE } from '../shared/skills.js'
 
 const SKILL_FILE = 'SKILL.md'
 export const MAX_SKILL_BYTES = 1024 * 1024
@@ -136,6 +137,22 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+/** Read the `.crw-source.json` provenance sidecar from an installed skill
+ *  directory. Missing or malformed files mean "no provenance" (folder
+ *  imports, hand-written skills) — never an error. */
+async function readSkillSource(dir: string): Promise<SkillRecord['source']> {
+  try {
+    const raw = await fs.readFile(resolve(dir, SKILL_SOURCE_FILE), 'utf8')
+    const parsed = JSON.parse(raw) as { source?: unknown; relativePath?: unknown; lastSha?: unknown }
+    if (typeof parsed.source !== 'string' || typeof parsed.relativePath !== 'string' || typeof parsed.lastSha !== 'string') {
+      return undefined
+    }
+    return { source: parsed.source, relativePath: parsed.relativePath, lastSha: parsed.lastSha }
+  } catch {
+    return undefined
+  }
+}
+
 async function readSkill(scope: SkillScope, name: string, cwd?: string, includeContent = false): Promise<SkillRecord> {
   const root = skillRoot(scope, cwd)
   const safeName = assertValidSkillName(name)
@@ -156,6 +173,7 @@ async function readSkill(scope: SkillScope, name: string, cwd?: string, includeC
   const frontmatterName = parsed.name?.trim() || safeName
   const errors = [...parsed.errors]
   if (parsed.name && parsed.name !== safeName) errors.push(`frontmatter.name must match directory name (${safeName})`)
+  const source = await readSkillSource(dir)
   return {
     scope,
     name: frontmatterName,
@@ -168,6 +186,7 @@ async function readSkill(scope: SkillScope, name: string, cwd?: string, includeC
     updatedAt: stat.mtimeMs,
     size: stat.size,
     ...(includeContent ? { content } : {}),
+    ...(source ? { source } : {}),
   }
 }
 

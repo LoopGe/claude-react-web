@@ -7,6 +7,20 @@ export interface SkillRootInfo {
   writable: boolean
 }
 
+/** Provenance of a GitHub-installed skill, persisted as `.crw-source.json`
+ *  inside the installed skill directory (written into the staged tree before
+ *  the atomic install, so it always lands with the skill). */
+export const SKILL_SOURCE_FILE = '.crw-source.json'
+
+export interface SkillSourceInfo {
+  /** owner/repo the skill was cloned from. */
+  source: string
+  /** The skill's directory inside that repository. */
+  relativePath: string
+  /** The repository HEAD commit at install/update time. */
+  lastSha: string
+}
+
 export interface SkillRecord {
   scope: SkillScope
   name: string
@@ -19,6 +33,8 @@ export interface SkillRecord {
   updatedAt?: number
   size?: number
   content?: string
+  /** Present only for GitHub-installed skills (folder imports have none). */
+  source?: SkillSourceInfo
 }
 
 export interface SkillsListResponse {

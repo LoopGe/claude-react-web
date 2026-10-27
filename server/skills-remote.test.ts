@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { gitClone } from './git-clone.js'
 import { HttpError } from './errors.js'
+import { getSkill, importSkillFromPath } from './skills.js'
 import {
   cloneAndDiscover,
   discoverSkills,
@@ -27,6 +28,8 @@ vi.mock('./git-clone.js', () => ({
     mkdirSync(dest, { recursive: true })
     writeFileSync(join(dest, 'SKILL.md'), '---\nname: demo\ndescription: demo skill\n---\n\n# body\n', 'utf8')
   }),
+  gitHeadSha: vi.fn(async () => 'sha-1'),
+  gitLsRemoteHead: vi.fn(),
 }))
 
 const CACHE_TTL_MS = 10 * 60 * 1000
@@ -406,6 +409,37 @@ describe('installRemoteSkills', () => {
       expect(existsSync(join(installedDir, 'notes.md'))).toBe(true)
       expect(existsSync(join(installedDir, '.git'))).toBe(false)
       expect(existsSync(join(installedDir, 'node_modules'))).toBe(false)
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('writes .crw-source.json with repo, relativePath and install HEAD sha', async () => {
+    const env = await installEnv()
+    try {
+      await writeSkill(env.fixture, 'skills/pdf', skillDoc({ name: 'pdf', description: 'Read PDFs' }))
+      mockCloneFrom(env.fixture)
+      await installRemoteSkills({ source: 'sidecar-owner/sidecar-repo', scope: 'project', cwd: env.cwd, paths: ['skills/pdf'], overwrite: false })
+
+      const raw = await readFile(join(env.cwd, '.claude', 'skills', 'pdf', '.crw-source.json'), 'utf8')
+      expect(JSON.parse(raw)).toEqual({ source: 'sidecar-owner/sidecar-repo', relativePath: 'skills/pdf', lastSha: 'sha-1' })
+      // …and readSkill hands the provenance back to callers (update checks).
+      const skill = await getSkill('project', 'pdf', env.cwd)
+      expect(skill.source).toEqual({ source: 'sidecar-owner/sidecar-repo', relativePath: 'skills/pdf', lastSha: 'sha-1' })
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('folder-imported skills carry no source metadata', async () => {
+    const env = await installEnv()
+    try {
+      await writeSkill(env.fixture, 'local-one', skillDoc({ name: 'local-one', description: 'local skill' }))
+      await importSkillFromPath({ scope: 'project', cwd: env.cwd, path: join(env.fixture, 'local-one') })
+
+      expect(existsSync(join(env.cwd, '.claude', 'skills', 'local-one', '.crw-source.json'))).toBe(false)
+      const skill = await getSkill('project', 'local-one', env.cwd)
+      expect(skill.source).toBeUndefined()
     } finally {
       await env.cleanup()
     }
