@@ -3221,6 +3221,10 @@ input[type="checkbox"]:disabled {
   font-size: var(--fs-base);
   font-weight: 500;
   cursor: pointer;
+  /* The chips are shrink-to-fit (inline-flex + justify-self: start); when a
+   * narrower tab body lets the modal shrink, "Search catalog" must wrap as a
+   * whole row, never as two lines of text. */
+  white-space: nowrap;
   transition: all var(--motion-duration-fast) var(--motion-ease-standard);
   position: relative;
 }
@@ -3381,13 +3385,28 @@ input[type="checkbox"]:disabled {
 }
 .settings-skill-remote-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: var(--space-2);
   align-items: center;
 }
+.settings-skill-desc-toggle {
+  padding-inline: var(--space-2);
+  color: var(--fg-muted);
+}
+.settings-skill-desc {
+  grid-column: 1 / -1;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  white-space: pre-line;
+}
+.settings-skill-desc-error {
+  grid-column: 1 / -1;
+  color: var(--warn-text);
+  font-size: var(--fs-sm);
+}
 .settings-skill-result-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) auto auto auto auto;
   gap: var(--space-2);
   align-items: center;
   padding: var(--space-2-5);

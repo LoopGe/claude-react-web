@@ -24,6 +24,7 @@ import {
 } from '../skills.js'
 import {
   cloneAndDiscover,
+  fetchSkillDescription,
   installRemoteSkills,
   checkSkillUpdates,
   updateRemoteSkill,
@@ -108,6 +109,15 @@ export function buildSkillsRouter(sm: SessionManager): Hono {
     const q = c.req.query('q') ?? ''
     const skills = await searchCatalog(q, Number(c.req.query('limit') ?? 20))
     return c.json({ skills })
+  })
+
+  // Lazy og:description for one catalog hit. Registered before /skills/:scope/:name
+  // (same two-segment shadowing hazard as the routes above).
+  app.get('/skills/remote/description', async (c) => {
+    const source = c.req.query('source') ?? ''
+    const skillId = c.req.query('skillId') ?? ''
+    const description = await fetchSkillDescription(source, skillId)
+    return c.json({ description })
   })
 
   app.post('/skills/remote/preview', async (c) => {

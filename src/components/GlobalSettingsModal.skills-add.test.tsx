@@ -1075,4 +1075,73 @@ describe('GlobalSettingsModal Skills unified add card', () => {
     rejectInstall()
     await waitFor(() => expect(listGets().length).toBeGreaterThan(listsBefore))
   })
+
+  it('offers a Search button beside the input that searches immediately', async () => {
+    const { input } = await openSkillsTab({}, [catalogHit()])
+    fireEvent.change(input, { target: { value: 'react' } })
+    // 300 ms debounce still pending — the explicit button fires the wire now,
+    // and the debounce must NOT fire a second search afterwards.
+    fireEvent.click(addCard().getByRole('button', { name: 'Search' }))
+    await waitFor(() => expect(addCard().getByText('react-helper')).toBeTruthy())
+    expect(searchGets()).toHaveLength(1)
+  })
+
+  it('keeps the Search button re-firable while a search is in flight', async () => {
+    // A stalled search must leave the same re-fire affordance the input's
+    // Enter key has — the button stays enabled until the query is emptied.
+    const { input } = await openSkillsTab({}, [catalogHit()], (base) => (url: string) => {
+      if (String(url).startsWith('/skills/search')) return new Promise(() => {})
+      return base(url)
+    })
+    fireEvent.change(input, { target: { value: 'react' } })
+    const searchBtn = await waitFor(() => addCard().getByRole('button', { name: 'Search' }) as HTMLButtonElement)
+    fireEvent.click(searchBtn)
+    await waitFor(() => expect(addCard().getByText('Searching…')).toBeTruthy())
+    expect(searchBtn.disabled).toBe(false)
+  })
+
+  it('lazily fetches a row description on expand and caches it', async () => {
+    const descGets = () =>
+      vi.mocked(api.get).mock.calls.filter(([u]) => String(u).startsWith('/skills/remote/description'))
+    const { input } = await openSkillsTab({}, [catalogHit()], (base) => (url: string) => {
+      if (String(url).startsWith('/skills/remote/description')) {
+        return Promise.resolve({ description: 'Does react things' })
+      }
+      return base(url)
+    })
+    fireEvent.change(input, { target: { value: 'react' } })
+    const toggle = await waitFor(() =>
+      addCard().getByRole('button', { name: 'Toggle description for react-helper' }),
+    )
+    fireEvent.click(toggle)
+    await waitFor(() => expect(addCard().getByText('Does react things')).toBeTruthy())
+    expect(descGets()[0]![0]).toBe('/skills/remote/description?source=org%2Frepo&skillId=react-helper')
+
+    // Collapse and re-expand: served from the component cache — one request.
+    fireEvent.click(toggle)
+    fireEvent.click(toggle)
+    await waitFor(() => expect(addCard().getByText('Does react things')).toBeTruthy())
+    expect(descGets()).toHaveLength(1)
+  })
+
+  it('retries a failed description on re-expand and reports upstream misses', async () => {
+    let fail = true
+    const { input } = await openSkillsTab({}, [catalogHit()], (base) => (url: string) => {
+      if (String(url).startsWith('/skills/remote/description')) {
+        return fail ? Promise.reject(new Error('skills.sh down')) : Promise.resolve({ description: null })
+      }
+      return base(url)
+    })
+    fireEvent.change(input, { target: { value: 'react' } })
+    const toggle = await waitFor(() =>
+      addCard().getByRole('button', { name: 'Toggle description for react-helper' }),
+    )
+    fireEvent.click(toggle)
+    await waitFor(() => expect(addCard().getByText('skills.sh down')).toBeTruthy())
+
+    fireEvent.click(toggle) // collapse
+    fail = false
+    fireEvent.click(toggle) // re-expand → retry; upstream page has no description
+    await waitFor(() => expect(addCard().getByText('No description available')).toBeTruthy())
+  })
 })

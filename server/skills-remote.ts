@@ -189,16 +189,145 @@ export async function searchCatalog(q: string, limit: number): Promise<RemoteSea
   }
   const hits: RemoteSearchHit[] = rawSkills.map((raw) => {
     const s = raw as Record<string, unknown>
+    const source = String(s.source ?? '')
+    const skillId = String(s.skillId ?? '')
     return {
-      id: String(s.id ?? ''),
-      source: String(s.source ?? ''),
-      skillId: String(s.skillId ?? ''),
+      // id keys client-side caches and React keys — never emit '', or two
+      // id-less hits would collide into one row state.
+      id: String(s.id ?? '') || `${source}/${skillId}`,
+      source,
+      skillId,
       name: String(s.name ?? ''),
       installs: typeof s.installs === 'number' && Number.isFinite(s.installs) ? s.installs : 0,
     }
   })
   hits.sort((a, b) => b.installs - a.installs)
   return hits
+}
+
+// ── Remote description: lazy og:description scrape per search hit ───────────
+//
+// The /api/search payload carries no description field, so the client pulls it
+// on demand (expand a search row) and this module scrapes the public skill
+// detail page's og:description. Results are cached in memory only — failures
+// throw and are retried on the next request.
+
+const DESCRIPTION_TTL_MS = 60 * 60 * 1000
+const DESCRIPTION_CACHE_MAX = 500
+/** skillId interpolates into the detail URL path — allow only safe chars so a
+ *  crafted value can't add path segments or a query string. */
+const SKILL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+const descriptionCache = new Map<string, { description: string | null; expiresAt: number }>()
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+  mdash: '—',
+  ndash: '–',
+  hellip: '…',
+  copy: '©',
+  reg: '®',
+  trade: '™',
+  rsquo: '’',
+  lsquo: '‘',
+  rdquo: '”',
+  ldquo: '“',
+  laquo: '«',
+  raquo: '»',
+  deg: '°',
+  middot: '·',
+  bull: '•',
+  eacute: 'é',
+  Eacute: 'É',
+  egrave: 'è',
+  Egrave: 'È',
+  agrave: 'à',
+  Agrave: 'À',
+  ccedil: 'ç',
+  Ccedil: 'Ç',
+  uuml: 'ü',
+  Uuml: 'Ü',
+  ouml: 'ö',
+  Ouml: 'Ö',
+  auml: 'ä',
+  Auml: 'Ä',
+  ntilde: 'ñ',
+  Ntilde: 'Ñ',
+}
+
+export function decodeHtmlEntities(input: string): string {
+  // HTML named entities are case-sensitive (&Ccedil; ≠ &ccedil;) — exact-case
+  // lookup only; an unknown name stays raw.
+  return input.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));/g, (raw, hex: string, dec: string, name: string) => {
+    if (hex !== undefined) return codePointOrRaw(Number.parseInt(hex, 16), raw)
+    if (dec !== undefined) return codePointOrRaw(Number.parseInt(dec, 10), raw)
+    return NAMED_ENTITIES[name] ?? raw
+  })
+}
+
+/** Remote content decides the number — an out-of-range reference
+ *  (`&#x110000;`) must stay raw text, never a RangeError out of fromCodePoint. */
+function codePointOrRaw(code: number, raw: string): string {
+  return Number.isInteger(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : raw
+}
+
+/** Whole-tag scan instead of a property-then-content regex: quoted `>` inside
+ *  an attribute value (e.g. data-x="a>b") must not end the tag early. */
+const META_TAG_RE = /<meta\b(?:(?!\/?>)[^"'>]|"[^"]*"|'[^']*')*\/?>/gi
+const OG_DESCRIPTION_PROP_RE = /property\s*=\s*(?:"og:description"|'og:description'|og:description(?=[\s/>]))/i
+const CONTENT_ATTR_RE = /content\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i
+
+export async function fetchSkillDescription(source: string, skillId: string): Promise<string | null> {
+  const parsed = parseOwnerRepo(source)
+  if (!parsed) throw new HttpError(400, 'source must be a GitHub owner/repo')
+  if (!SKILL_ID_RE.test(skillId)) throw new HttpError(400, 'skillId is required')
+  const key = `${parsed.owner}/${parsed.repo}/${skillId}`
+
+  const cached = descriptionCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) {
+    // LRU refresh: re-insert so the oldest entry is always the eviction target.
+    descriptionCache.delete(key)
+    descriptionCache.set(key, cached)
+    return cached.description
+  }
+
+  let res: Response
+  try {
+    res = await fetch(`https://www.skills.sh/${key}`, { signal: AbortSignal.timeout(15_000) })
+  } catch {
+    // DNS down, connection refused, or the 15s timeout — same contract as a
+    // non-2xx: an upstream failure the client can retry, not a raw 500.
+    throw new HttpError(502, 'skills.sh skill page unreachable')
+  }
+  if (!res.ok) {
+    throw new HttpError(502, 'skills.sh skill page failed (status ' + res.status + ')')
+  }
+  let html: string
+  try {
+    html = await res.text()
+  } catch {
+    throw new HttpError(502, 'skills.sh skill page unreachable')
+  }
+  let description: string | null = null
+  for (const tag of html.matchAll(META_TAG_RE)) {
+    if (!OG_DESCRIPTION_PROP_RE.test(tag[0])) continue
+    const m = CONTENT_ATTR_RE.exec(tag[0])
+    if (m) {
+      description = decodeHtmlEntities(m[1] ?? m[2] ?? '').trim()
+      break
+    }
+  }
+  if (descriptionCache.size >= DESCRIPTION_CACHE_MAX) {
+    const oldest = descriptionCache.keys().next().value
+    if (oldest !== undefined) descriptionCache.delete(oldest)
+  }
+  descriptionCache.set(key, { description, expiresAt: Date.now() + DESCRIPTION_TTL_MS })
+  return description
 }
 
 // ── Remote install: stage + import ─────────────────────────────────────────

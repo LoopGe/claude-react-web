@@ -9,6 +9,7 @@ import { getSkill, importSkillFromPath } from './skills.js'
 import {
   cloneAndDiscover,
   discoverSkills,
+  fetchSkillDescription,
   installRemoteSkills,
   searchCatalog,
   stageSkillInto,
@@ -307,6 +308,143 @@ describe('searchCatalog', () => {
     expect(err).toBeInstanceOf(HttpError)
     expect(err!.status).toBe(502)
     expect(err!.message).toMatch(/malformed/i)
+  })
+
+  it('synthesizes a hit id from source/skillId when the upstream id is missing', async () => {
+    // The id keys client caches and React keys — an id-less hit must never
+    // coerce to '' or two such hits would share one row's state.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            skills: [{ source: 'o/r', skillId: 'no-id', name: 'No Id', installs: 1 }],
+          }),
+          { status: 200 },
+        ),
+      ),
+    )
+    const hits = await searchCatalog('react', 20)
+    expect(hits[0]!.id).toBe('o/r/no-id')
+  })
+})
+
+// ── fetchSkillDescription: lazy og:description scrape per search hit ─────────
+//
+// The skills.sh /api/search payload carries no description field, so the UI
+// fetches it on demand from the public skill detail page (og:description).
+// fetch is stubbed — no test touches the network.
+
+describe('fetchSkillDescription', () => {
+  const pageWithDescription = (content: string) =>
+    new Response(
+      `<!DOCTYPE html><html><head><title>skill</title>${content}</head><body></body></html>`,
+      { status: 200 },
+    )
+
+  it('fetches the www detail page and decodes entities in og:description', async () => {
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      pageWithDescription(
+        '<meta property="og:description" content="Review the repo&#x27;s changes &amp; more &quot;stuff&quot; &lt;here&gt;"/>',
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const description = await fetchSkillDescription('mattpocock/skills', 'code-review')
+    expect(description).toBe(`Review the repo's changes & more "stuff" <here>`)
+    expect(fetchMock.mock.calls[0]![0]).toBe('https://www.skills.sh/mattpocock/skills/code-review')
+  })
+
+  it('parses content-before-property attribute order', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => pageWithDescription('<meta content="Second order" property="og:description"/>')),
+    )
+    await expect(fetchSkillDescription('o/r', 'desc-after')).resolves.toBe('Second order')
+  })
+
+  it('matches when an attribute between property and content contains a quoted ">"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        pageWithDescription('<meta property="og:description" data-x="a>b" content="Real description"/>'),
+      ),
+    )
+    await expect(fetchSkillDescription('o/r', 'quoted-gt')).resolves.toBe('Real description')
+  })
+
+  it('decodes common named entities and leaves out-of-range references raw', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        pageWithDescription(
+          '<meta property="og:description" content="Review code &mdash; fast &#x110000; ok"/>',
+        ),
+      ),
+    )
+    await expect(fetchSkillDescription('o/r', 'entities')).resolves.toBe('Review code — fast &#x110000; ok')
+  })
+
+  it('keeps named entities case-sensitive and matches unquoted attributes', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        pageWithDescription('<meta property=og:description content="Déjà vu &Ccedil; &eacute;">'),
+      ),
+    )
+    await expect(fetchSkillDescription('o/r', 'unquoted')).resolves.toBe('Déjà vu Ç é')
+  })
+
+  it('maps a network-level fetch failure to 502', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new TypeError('fetch failed')
+    }))
+    const err = await fetchSkillDescription('o/r', 'down').then(
+      () => null,
+      (e: unknown) => e as HttpError,
+    )
+    expect(err).toBeInstanceOf(HttpError)
+    expect(err!.status).toBe(502)
+    expect(err!.message).toMatch(/unreachable/)
+  })
+
+  it('returns null when the page has no og:description meta', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => pageWithDescription('<meta name="viewport" content="x"/>')))
+    await expect(fetchSkillDescription('o/r', 'no-desc')).resolves.toBeNull()
+  })
+
+  it('throws 502 when the detail page responds non-2xx', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('gone', { status: 404 })))
+    const err = await fetchSkillDescription('o/r', 'missing').then(
+      () => null,
+      (e: unknown) => e as HttpError,
+    )
+    expect(err).toBeInstanceOf(HttpError)
+    expect(err!.status).toBe(502)
+    expect(err!.message).toMatch(/status 404/)
+  })
+
+  it('rejects a non-owner/repo source and an empty / path-injecting skillId', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(fetchSkillDescription('not-a-repo', 'demo')).rejects.toThrow(/owner\/repo/)
+    await expect(fetchSkillDescription('o/r', '')).rejects.toThrow(/skillId/)
+    await expect(fetchSkillDescription('o/r', '../etc')).rejects.toThrow(/skillId/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('caches within the TTL and refetches after it expires', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn(async () => pageWithDescription('<meta property="og:description" content="Cached"/>'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchSkillDescription('o/cache', 'demo')).resolves.toBe('Cached')
+    await expect(fetchSkillDescription('o/cache', 'demo')).resolves.toBe('Cached')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    vi.advanceTimersByTime(61 * 60 * 1000)
+    await expect(fetchSkillDescription('o/cache', 'demo')).resolves.toBe('Cached')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })
 

@@ -17,7 +17,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../hooks/useApi'
 import { fileToBase64 } from '../../utils/file-to-base64'
 import { directoryMissing } from '../../utils/fs-validation'
-import { IconFileText, IconFolder, IconSearch } from '../icons/ToolIcons'
+import { IconChevronDown, IconChevronRight, IconFileText, IconFolder, IconSearch } from '../icons/ToolIcons'
 import { DirectoryPicker } from '../DirectoryPicker'
 import { ProjectPicker } from '../session-list/ProjectPicker'
 import { matchSearchHit, parseOwnerRepo } from '../../../shared/skills'
@@ -136,6 +136,37 @@ export function AddSkillCard({
   const [installedIds, setInstalledIds] = useState<ReadonlySet<string>>(() => new Set())
   const [rowError, setRowError] = useState<Record<string, string>>({})
   const searchAbortRef = useRef<AbortController | null>(null)
+  const searchTimerRef = useRef<number | null>(null)
+
+  const runSearch = (q: string) => {
+    searchAbortRef.current?.abort()
+    const controller = new AbortController()
+    searchAbortRef.current = controller
+    setSearching(true)
+    setSearchError(null)
+    void api
+      .get<{ skills: RemoteSearchHit[] }>(`/skills/search?q=${encodeURIComponent(q)}`, { signal: controller.signal })
+      .then((res) => {
+        if (controller.signal.aborted) return
+        setSearchResults(res.skills ?? [])
+      })
+      .catch((e) => {
+        if (controller.signal.aborted) return
+        setSearchError((e as Error).message)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setSearching(false)
+      })
+  }
+
+  /** Cancel a pending debounce. Shared by the effect cleanup and searchNow so
+   *  the timer-ref invariant lives in one place. */
+  const cancelPendingSearch = () => {
+    if (searchTimerRef.current !== null) {
+      window.clearTimeout(searchTimerRef.current)
+      searchTimerRef.current = null
+    }
+  }
 
   useEffect(() => {
     const q = searchQuery.trim()
@@ -147,32 +178,59 @@ export function AddSkillCard({
       setSearching(false)
       return
     }
-    const timer = window.setTimeout(() => {
-      searchAbortRef.current?.abort()
-      const controller = new AbortController()
-      searchAbortRef.current = controller
-      setSearching(true)
-      setSearchError(null)
-      void api
-        .get<{ skills: RemoteSearchHit[] }>(`/skills/search?q=${encodeURIComponent(q)}`, { signal: controller.signal })
-        .then((res) => {
-          if (controller.signal.aborted) return
-          setSearchResults(res.skills ?? [])
-        })
-        .catch((e) => {
-          if (controller.signal.aborted) return
-          setSearchError((e as Error).message)
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setSearching(false)
-        })
+    searchTimerRef.current = window.setTimeout(() => {
+      searchTimerRef.current = null
+      runSearch(q)
     }, 300)
     return () => {
-      window.clearTimeout(timer)
+      cancelPendingSearch()
+      // Old behavior preserved: typing over a query (or unmounting) aborts the
+      // in-flight search so its results can't land for the stale query.
       searchAbortRef.current?.abort()
       searchAbortRef.current = null
     }
   }, [searchQuery])
+
+  /** The explicit Search button: fire the wire immediately and cancel any
+   *  pending debounce so one query never searches twice. */
+  const searchNow = () => {
+    const q = searchQuery.trim()
+    if (!q) return
+    cancelPendingSearch()
+    runSearch(q)
+  }
+
+  // ── Row descriptions (lazy og:description scrape via the server proxy) ──
+
+  const [openDescriptions, setOpenDescriptions] = useState<ReadonlySet<string>>(() => new Set())
+  /** Per-hit fetch state, cached for the component's life — an expanded row
+   *  never refetches unless its previous attempt failed. */
+  const [descriptions, setDescriptions] = useState<Record<string, { status: 'loading' | 'ok' | 'error'; text?: string }>>({})
+
+  const loadDescription = async (hit: RemoteSearchHit) => {
+    setDescriptions((prev) => ({ ...prev, [hit.id]: { status: 'loading' } }))
+    try {
+      const res = await api.get<{ description: string | null }>(
+        `/skills/remote/description?source=${encodeURIComponent(hit.source)}&skillId=${encodeURIComponent(hit.skillId)}`,
+      )
+      setDescriptions((prev) => ({ ...prev, [hit.id]: { status: 'ok', text: res.description ?? '' } }))
+    } catch (e) {
+      setDescriptions((prev) => ({ ...prev, [hit.id]: { status: 'error', text: (e as Error).message } }))
+    }
+  }
+
+  const toggleDescription = (hit: RemoteSearchHit) => {
+    const next = new Set(openDescriptions)
+    if (next.has(hit.id)) {
+      next.delete(hit.id)
+      setOpenDescriptions(next)
+      return
+    }
+    next.add(hit.id)
+    setOpenDescriptions(next)
+    const current = descriptions[hit.id]
+    if (!current || current.status === 'error') void loadDescription(hit)
+  }
 
   const parsedRepo = parseOwnerRepo(searchQuery.trim())
 
@@ -514,8 +572,22 @@ export function AddSkillCard({
                 placeholder="Search skills.sh or paste owner/repo"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  // An IME commit's Enter (isComposing) must not search.
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) searchNow()
+                }}
                 spellCheck={false}
               />
+              <button
+                type="button"
+                className="btn"
+                // Re-firing mid-search is allowed (searchNow aborts the
+                // previous attempt) — same affordance as pressing Enter.
+                disabled={!searchQuery.trim()}
+                onClick={searchNow}
+              >
+                Search
+              </button>
               {searching && <span className="settings-note">Searching…</span>}
             </div>
             {searchError && <div className="settings-error">{searchError}</div>}
@@ -533,6 +605,8 @@ export function AddSkillCard({
               const installed =
                 installedIds.has(`${importScope}:${cwd}:${hit.id}`) ||
                 skills.some((s) => s.scope === importScope && s.name === hit.name)
+              const expanded = openDescriptions.has(hit.id)
+              const description = descriptions[hit.id]
               return (
                 <div key={hit.id} className="settings-skill-result-row">
                   <span className="settings-skill-result-name">{hit.name}</span>
@@ -553,6 +627,26 @@ export function AddSkillCard({
                   <button type="button" className="btn" disabled={busy} onClick={() => openRepo(hit.source)}>
                     Open repo
                   </button>
+                  <button
+                    type="button"
+                    className="btn settings-skill-desc-toggle"
+                    aria-label={`Toggle description for ${hit.name}`}
+                    aria-expanded={expanded}
+                    onClick={() => toggleDescription(hit)}
+                  >
+                    {expanded ? <IconChevronDown size={13} aria-hidden /> : <IconChevronRight size={13} aria-hidden />}
+                  </button>
+                  {expanded && description?.status === 'loading' && (
+                    <div className="settings-skill-desc">Loading…</div>
+                  )}
+                  {expanded && description?.status === 'ok' && (
+                    <div className="settings-skill-desc">
+                      {description.text ? description.text : 'No description available'}
+                    </div>
+                  )}
+                  {expanded && description?.status === 'error' && (
+                    <div className="settings-skill-desc-error">{description.text}</div>
+                  )}
                   {rowError[hit.id] && <div className="settings-skill-row-error">{rowError[hit.id]}</div>}
                 </div>
               )

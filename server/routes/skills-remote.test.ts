@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import { buildSkillsRouter } from './skills.js'
 import type { SessionManager } from '../session-manager.js'
 import { HttpError, createErrorHandler } from '../errors.js'
-import { cloneAndDiscover, installRemoteSkills, searchCatalog } from '../skills-remote.js'
+import { cloneAndDiscover, fetchSkillDescription, installRemoteSkills, searchCatalog } from '../skills-remote.js'
 import type { DiscoveredSkill, RemoteSearchHit } from '../../shared/skills.js'
 
 // Mocked so no route test hits the network or clones a repo. The real
@@ -13,6 +13,7 @@ vi.mock('../skills-remote.js', () => ({
   searchCatalog: vi.fn(),
   cloneAndDiscover: vi.fn(),
   installRemoteSkills: vi.fn(),
+  fetchSkillDescription: vi.fn(),
 }))
 
 function makeApp() {
@@ -84,6 +85,28 @@ describe('skills remote routes', () => {
     })
     expect(res.status).toBe(400)
     expect(cloneAndDiscover).not.toHaveBeenCalled()
+  })
+
+  it('GET /skills/remote/description proxies the scraped description', async () => {
+    vi.mocked(fetchSkillDescription).mockResolvedValue('Does review things')
+    const { app } = makeApp()
+
+    const res = await app.request('/skills/remote/description?source=owner%2Frepo&skillId=demo')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ description: 'Does review things' })
+    expect(fetchSkillDescription).toHaveBeenCalledWith('owner/repo', 'demo')
+  })
+
+  it('GET /skills/remote/description surfaces validation and upstream errors', async () => {
+    vi.mocked(fetchSkillDescription).mockRejectedValueOnce(new HttpError(400, 'source must be a GitHub owner/repo'))
+    vi.mocked(fetchSkillDescription).mockRejectedValueOnce(new HttpError(502, 'skills.sh skill page failed (status 404)'))
+    const { app } = makeApp()
+
+    const bad = await app.request('/skills/remote/description?source=nope&skillId=demo')
+    expect(bad.status).toBe(400)
+
+    const upstream = await app.request('/skills/remote/description?source=owner%2Frepo&skillId=demo')
+    expect(upstream.status).toBe(502)
   })
 
   it('POST /skills/remote/install returns installed and failed', async () => {
