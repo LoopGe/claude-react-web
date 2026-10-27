@@ -187,14 +187,14 @@ export async function searchCatalog(q: string, limit: number): Promise<RemoteSea
   if (!Array.isArray(rawSkills)) {
     throw new HttpError(502, 'skills.sh search returned a malformed payload')
   }
-  const hits: RemoteSearchHit[] = rawSkills.map((raw) => {
+  const hits: RemoteSearchHit[] = rawSkills.map((raw, i) => {
     const s = raw as Record<string, unknown>
     const source = String(s.source ?? '')
     const skillId = String(s.skillId ?? '')
     return {
-      // id keys client-side caches and React keys — never emit '', or two
-      // id-less hits would collide into one row state.
-      id: String(s.id ?? '') || `${source}/${skillId}`,
+      // id keys client-side caches and React keys — never emit anything two
+      // hits could share, including a fully-anonymous upstream entry.
+      id: String(s.id ?? '') || (source && skillId ? `${source}/${skillId}` : `anon-${i}`),
       source,
       skillId,
       name: String(s.name ?? ''),
@@ -318,7 +318,7 @@ export async function fetchSkillDescription(source: string, skillId: string): Pr
     if (!OG_DESCRIPTION_PROP_RE.test(tag[0])) continue
     const m = CONTENT_ATTR_RE.exec(tag[0])
     if (m) {
-      description = decodeHtmlEntities(m[1] ?? m[2] ?? '').trim()
+      description = decodeHtmlEntities(m[1] ?? m[2] ?? m[3] ?? '').trim()
       break
     }
   }

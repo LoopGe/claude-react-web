@@ -27,6 +27,8 @@ import type { AnimationSpeedPreset } from '../../shared/animation-speed'
 import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import { AddSkillCard } from './settings/AddSkillCard'
+import { projectRootOfSkill } from '../../shared/skills'
+import { basenameOf } from '../utils/paths'
 import type { SkillLoadMode, SkillRecord, SkillUpdateStatus, SkillsListResponse } from '../../shared/skills'
 import type { McpConnectionTestResult, McpServerConfigMeta, McpServerTool } from '../types'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
@@ -1279,6 +1281,8 @@ function SkillsTab({
               {skills.map((skill) => {
                 const key = `${skill.scope}:${skill.name}`
                 const status = updateStatus[key]
+                const projectRoot = projectRootOfSkill(skill)
+                const projectName = projectRoot ? basenameOf(projectRoot) : null
                 return (
                   <div key={key} className="settings-skill-item">
                     <button
@@ -1287,6 +1291,11 @@ function SkillsTab({
                     >
                       <span className="settings-skill-name">{skill.name}</span>
                       <span className="settings-card-badge">{skill.scope}</span>
+                      {projectName && (
+                        <span className="settings-card-badge settings-skill-project-badge" title={projectRoot ?? undefined}>
+                          {projectName}
+                        </span>
+                      )}
                       {!skill.valid && <span className="settings-card-badge warn">invalid</span>}
                       <span className="settings-skill-desc">{skill.description || skill.errors[0] || 'No description'}</span>
                       <span className="settings-skill-path-mini">{skill.relativePath || skill.path}</span>

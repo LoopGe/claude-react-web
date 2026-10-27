@@ -318,14 +318,22 @@ describe('searchCatalog', () => {
       vi.fn(async () =>
         new Response(
           JSON.stringify({
-            skills: [{ source: 'o/r', skillId: 'no-id', name: 'No Id', installs: 1 }],
+            skills: [
+              { source: 'o/r', skillId: 'no-id', name: 'No Id', installs: 1 },
+              { name: 'Anonymous', installs: 2 },
+            ],
           }),
           { status: 200 },
         ),
       ),
     )
     const hits = await searchCatalog('react', 20)
-    expect(hits[0]!.id).toBe('o/r/no-id')
+    // Sorted by installs desc: the anonymous hit (2) outranks the named one (1).
+    expect(hits.find((h) => h.name === 'No Id')!.id).toBe('o/r/no-id')
+    // A fully-anonymous entry still gets a unique, non-colliding id.
+    const anon = hits.find((h) => h.name === 'Anonymous')!
+    expect(anon.id).not.toBe('o/r/no-id')
+    expect(anon.id).toContain('anon-')
   })
 })
 
@@ -393,6 +401,14 @@ describe('fetchSkillDescription', () => {
       ),
     )
     await expect(fetchSkillDescription('o/r', 'unquoted')).resolves.toBe('Déjà vu Ç é')
+  })
+
+  it('reads the captured value when BOTH attributes are unquoted', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => pageWithDescription('<meta property=og:description content=Fully-unquoted>')),
+    )
+    await expect(fetchSkillDescription('o/r', 'unquoted-value')).resolves.toBe('Fully-unquoted')
   })
 
   it('maps a network-level fetch failure to 502', async () => {

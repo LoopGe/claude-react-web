@@ -37,6 +37,12 @@ const localSkill = (scope: SkillScope, name: string): SkillRecord => ({
   errors: [],
 })
 
+const projectSkillAt = (name: string, projectRoot: string): SkillRecord => ({
+  ...localSkill('project', name),
+  path: `${projectRoot}/.claude/skills/${name}/SKILL.md`,
+  relativePath: `.claude/skills/${name}/SKILL.md`,
+})
+
 /** Render the Skills tab with the given installed skills, and optionally the
  *  api.post router for check-updates / update. */
 async function openSkillsWithInstalled(
@@ -76,6 +82,22 @@ describe('GlobalSettingsModal Skills update checks', () => {
     vi.mocked(api.put).mockResolvedValue({})
     vi.mocked(api.post).mockReset()
     vi.mocked(api.get).mockClear()
+  })
+
+  it('badges project rows with the owning project directory', async () => {
+    // The row's relativePath is project-relative, so the owning project is
+    // otherwise invisible — the badge derives it from the absolute path.
+    await openSkillsWithInstalled([
+      projectSkillAt('find-skills', '/Users/loop/Codes/claude-react-web'),
+      localSkill('user', 'home-skill'),
+    ])
+    await waitFor(() => expect(screen.getByText('find-skills')).toBeTruthy())
+
+    const badge = screen.getByText('claude-react-web')
+    expect(badge.getAttribute('title')).toBe('/Users/loop/Codes/claude-react-web')
+    // User-scope rows carry no project badge.
+    const userRow = rowOf('home-skill', 'user')
+    expect(userRow.textContent).not.toContain('claude-react-web')
   })
 
   it('Check for updates queries both scopes and badges only hasUpdate rows', async () => {

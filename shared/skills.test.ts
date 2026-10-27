@@ -4,6 +4,7 @@ import {
   parseOwnerRepo,
   policyToDynamicSkillOverrides,
   policyToInitialSkillsOption,
+  projectRootOfSkill,
   resolveEffectiveSkillPolicy,
   type SessionSkillOverride,
 } from './skills.js'
@@ -176,5 +177,20 @@ describe('matchSearchHit', () => {
     const r = matchSearchHit(skills, { skillId: 'pdf', name: 'pdf' })
     expect(r.matchCount).toBe(2)
     expect(r.skill?.relativePath).toBe('skills/pdf')  // first in order
+  })
+})
+
+describe('projectRootOfSkill', () => {
+  it('strips the .claude/skills tail from a project skill path', () => {
+    expect(projectRootOfSkill({ scope: 'project', path: '/work/proj/.claude/skills/find-skills/SKILL.md' })).toBe('/work/proj')
+  })
+
+  it('handles Windows backslash paths', () => {
+    expect(projectRootOfSkill({ scope: 'project', path: 'C:\\proj\\.claude\\skills\\demo\\SKILL.md' })).toBe('C:\\proj')
+  })
+
+  it('returns null for user scope and for paths outside a skills root', () => {
+    expect(projectRootOfSkill({ scope: 'user', path: '/home/u/.claude/skills/demo/SKILL.md' })).toBeNull()
+    expect(projectRootOfSkill({ scope: 'project', path: '/elsewhere/SKILL.md' })).toBeNull()
   })
 })

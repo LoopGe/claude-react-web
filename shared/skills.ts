@@ -235,3 +235,14 @@ export function matchSearchHit(
   if (matches.length === 0) matches = skills.filter((s) => s.name === hit.name)
   return { skill: matches[0] ?? null, matchCount: matches.length }
 }
+
+/** The project directory a project-scope skill is installed under, derived
+ *  from the record's absolute path (the row's relativePath is project-relative
+ *  and hides the owner). Null for user scope or a path that isn't under a
+ *  `<project>/.claude/skills/` root. Separator-tolerant — server paths come
+ *  from node:path (backslashes on Windows). */
+export function projectRootOfSkill(skill: Pick<SkillRecord, 'scope' | 'path'>): string | null {
+  if (skill.scope !== 'project') return null
+  const m = /^(.+)[/\\]\.claude[/\\]skills(?:[/\\]|$)/.exec(skill.path)
+  return m ? m[1]! : null
+}
