@@ -245,6 +245,12 @@ export async function installRemoteSkills(
   if (!req.paths?.length) throw new HttpError(400, 'paths is required')
   const { dir } = await cloneAndDiscover(req.source)
   const skills = await discoverSkills(dir)
+  // Store the canonical owner/repo in every sidecar — never the URL form the
+  // user may have pasted. checkSkillUpdates builds its ls-remote URL from
+  // this value, so a URL-form source would otherwise double the prefix.
+  const parsed = parseOwnerRepo(req.source)
+  if (!parsed) throw new HttpError(400, 'source must be owner/repo or a github.com URL')
+  const canonicalSource = `${parsed.owner}/${parsed.repo}`
   // One HEAD sha per install batch: it becomes every installed skill's
   // `.crw-source.json` provenance (the update check compares it against the
   // upstream HEAD later).
@@ -266,7 +272,7 @@ export async function installRemoteSkills(
       // the skill (never "installed but metadata missing").
       await fs.writeFile(
         join(staged, SKILL_SOURCE_FILE),
-        JSON.stringify({ source: req.source, relativePath: p, lastSha }, null, 2),
+        JSON.stringify({ source: canonicalSource, relativePath: p, lastSha }, null, 2),
         'utf8',
       )
       // name: entry.name is required — the staging dir is an mkdtemp random

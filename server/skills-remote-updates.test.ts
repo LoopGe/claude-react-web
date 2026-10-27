@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { gitClone, gitHeadSha, gitLsRemoteHead } from './git-clone.js'
@@ -118,6 +118,28 @@ describe('checkSkillUpdates', () => {
       // …while repo-b still gets a normal verdict.
       const repoB = updates.filter((u) => !u.error && u.name === 'xlsx' && u.hasUpdate)
       expect(repoB).toHaveLength(1)
+    } finally {
+      await env.cleanup()
+    }
+  })
+
+  it('normalizes URL-form sources so update checks hit the canonical repo URL', async () => {
+    const env = await installEnv()
+    try {
+      await writeSkill(env.fixture, 'skills/pdf', skillDoc('pdf', 'Read PDFs'))
+      mockCloneFrom(env.fixture)
+      await installRepoSkill('https://github.com/url-owner/url-repo.git', env.cwd, 'skills/pdf', 'sha-1')
+
+      // The sidecar must store canonical owner/repo, not the URL form…
+      const sidecar = JSON.parse(await readFile(join(env.cwd, '.claude', 'skills', 'pdf', '.crw-source.json'), 'utf8'))
+      expect(sidecar.source).toBe('url-owner/url-repo')
+
+      // …and checkSkillUpdates must ls-remote that repo exactly once, not a
+      // doubled https://github.com/https://github.com/… URL.
+      vi.mocked(gitLsRemoteHead).mockResolvedValue('sha-2')
+      const updates = await checkSkillUpdates({ scope: 'project', cwd: env.cwd })
+      expect(vi.mocked(gitLsRemoteHead).mock.calls[0]).toEqual(['https://github.com/url-owner/url-repo.git'])
+      expect(updates).toEqual([{ scope: 'project', name: 'pdf', hasUpdate: true, remoteSha: 'sha-2' }])
     } finally {
       await env.cleanup()
     }
