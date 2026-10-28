@@ -327,12 +327,22 @@ vi.mock('./session-worktree.js', async (importOriginal) => {
 // process whatever the mock just emitted. The pump iterates asynchronously,
 // so a `setImmediate`-tick is enough to drain one message.
 const tick = () => new Promise((r) => setImmediate(r))
-// Wall-clock wait for conditions that depend on real fs I/O (the subagent
-// watcher's async transcript tail), which a fixed number of setImmediate
-// ticks does not reliably span.
-const waitForIo = async (cond: () => boolean, timeoutMs = 2_000): Promise<void> => {
+// Wall-clock wait for conditions that depend on real time — fs I/O (sidecar
+// writes, the subagent watcher's async transcript tail) or long pump chains,
+// which a fixed number of setImmediate ticks does not reliably span (ticks
+// spend almost no wall time while the awaited work does; under CI load the
+// gap widens). Polls every 5ms until the deadline, then reports the final
+// state; callers assert the boolean (or ignore it when the condition is
+// advisory). File-scope on purpose: the per-describe copies this replaces
+// drifted (sync vs async cond, differing tick budgets) and had to be edited
+// in lockstep.
+const waitFor = async (cond: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<boolean> => {
   const deadline = Date.now() + timeoutMs
-  while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+  for (;;) {
+    if (await cond()) return true
+    if (Date.now() >= deadline) return false
+    await new Promise((r) => setTimeout(r, 5))
+  }
 }
 
 // Import AFTER vi.mock so the SessionManager picks up the mocked SDK.
@@ -864,7 +874,7 @@ describe('SessionManager', () => {
         },
       })
       await tick()
-      await waitForIo(() => sm.get(info.id).backgroundSubagentCount === 0)
+      await waitFor(() => sm.get(info.id).backgroundSubagentCount === 0)
 
       const settled = sm.get(info.id)
       expect(settled.backgroundSubagentCount).toBe(0)
@@ -1297,7 +1307,7 @@ describe('SessionManager', () => {
       const liveTasks = (sm as unknown as {
         sessions: Map<string, { tasks: Map<string, { status: string }> }>
       }).sessions.get(info.id)!.tasks
-      await waitForIo(() => liveTasks.get('agent-seed')?.status === 'completed')
+      await waitFor(() => liveTasks.get('agent-seed')?.status === 'completed')
 
       const snapshot = sm.subscribeTasks(info.id)!.snapshot
       expect(snapshot.find((t) => t.taskId === 'agent-seed')).toMatchObject({
@@ -5742,13 +5752,6 @@ describe('SessionManager', () => {
       }
       return smAny.sessions.get(sid)!
     }
-    const waitFor = async (cond: () => boolean, ticks = 60): Promise<boolean> => {
-      for (let i = 0; i < ticks; i++) {
-        if (cond()) return true
-        await new Promise((r) => setImmediate(r))
-      }
-      return cond()
-    }
 
     it('resets to idle when no turn was pending (the local path triggers no SDK turn, so no result will ever arrive)', async () => {
       const info = await sm.create({ cwd: dir, model: 'm1' })
@@ -5950,14 +5953,6 @@ describe('SessionManager', () => {
   })
 
   describe('transcript seq store (Task 3 wiring)', () => {
-    const waitFor = async (cond: () => boolean, ticks = 60): Promise<boolean> => {
-      for (let i = 0; i < ticks; i++) {
-        if (cond()) return true
-        await tick()
-      }
-      return cond()
-    }
-
     const emitAssistant = (uuid: string, text: string) => {
       mockHandles[0].emit({
         type: 'assistant',
@@ -6299,14 +6294,6 @@ describe('SessionManager', () => {
     })
   })
   describe('transcript eviction + messages-evicted broadcast (Task 5 wiring)', () => {
-    const waitFor = async (cond: () => boolean, ticks = 60): Promise<boolean> => {
-      for (let i = 0; i < ticks; i++) {
-        if (cond()) return true
-        await tick()
-      }
-      return cond()
-    }
-
     const emitAssistant = (uuid: string, text: string) => {
       mockHandles[0].emit({
         type: 'assistant',
@@ -7742,16 +7729,6 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         ...info,
       })
     }
-    // Poll macrotasks until `cond` is true or we run out of ticks. The pump
-    // + cleanupPump + recovery respawn is a chain of async steps, each
-    // needing a setImmediate tick to advance.
-    const waitFor = async (cond: () => boolean, ticks = 30) => {
-      for (let i = 0; i < ticks; i++) {
-        if (cond()) return true
-        await tick()
-      }
-      return cond()
-    }
 
     it('Step 1: re-resumes in-place after a crash (keeps same id, no terminate)', async () => {
       sm = new SessionManager({ store, crashRecovery: true })
@@ -8340,10 +8317,9 @@ describe('setMcpServers (dynamic, on a live session)', () => {
           sessions: Map<string, { history: Array<{ subtype?: string; status?: string; summary?: string }>; tasks: Map<string, { status: string }> }>
         }).sessions.get(info.id)!
         const notifs = () => live.history.filter((m) => m.subtype === 'task_notification')
-        // Wall-clock wait: the read is real fs I/O, which waitFor's
-        // setImmediate budget does not reliably span.
-        const deadline = Date.now() + 2_000
-        while (notifs().length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10))
+        // Wall-clock wait: the read is real fs I/O, which a setImmediate
+        // tick budget does not reliably span (waitFor polls the clock).
+        await waitFor(() => notifs().length > 0)
         expect(notifs()).toHaveLength(1)
         expect(notifs()[0].status).toBe('completed')
         expect(notifs()[0].summary).toBe('finished just in time')
@@ -8414,23 +8390,15 @@ describe('setMcpServers (dynamic, on a live session)', () => {
         // The re-armed watcher completes for real → count returns to 0 with no
         // stranded poller. The re-arm went through the production start() with
         // default intervals (2 s fast phase), so poll on wall-clock rather
-        // than macrotask ticks — waitFor's setImmediate loop can't span 2 s.
+        // than macrotask ticks — a setImmediate-tick budget can't span 2 s
+        // (waitFor polls the clock).
         const txnPath = subagentTranscriptPath('/tmp/workspace', info.id, 'agent-rearm')
         mkdirSync(dirname(txnPath), { recursive: true })
         writeFileSync(
           txnPath,
           JSON.stringify({ type: 'assistant', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'rearm done' }] } }) + '\n',
         )
-        const settledToZero = await new Promise<boolean>((resolve) => {
-          const deadline = Date.now() + 5_000
-          const poll = () => {
-            if (count() === 0) return resolve(true)
-            if (Date.now() > deadline) return resolve(false)
-            setTimeout(poll, 50)
-          }
-          poll()
-        })
-        expect(settledToZero).toBe(true)
+        expect(await waitFor(() => count() === 0, 5_000)).toBe(true)
       } finally {
         if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
         else process.env.CLAUDE_CONFIG_DIR = realConfigDir
@@ -8509,13 +8477,6 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   describe('interrupt with cancelQueued', () => {
-    const waitFor = async (cond: () => boolean | Promise<boolean>, ticks = 60) => {
-      for (let i = 0; i < ticks; i++) {
-        if (await cond()) return true
-        await new Promise((r) => setImmediate(r))
-      }
-      return false
-    }
 
     /** Read the live replay ring directly — getHistoryPage serves the DISK
      *  transcript, which these mock sessions never write, so the ring (what
@@ -8874,14 +8835,6 @@ describe('setMcpServers (dynamic, on a live session)', () => {
   })
 
   describe('discard (fork-from-anchor)', () => {
-    const waitFor = async (cond: () => boolean | Promise<boolean>, ticks = 60) => {
-      for (let i = 0; i < ticks; i++) {
-        if (await cond()) return true
-        await new Promise((r) => setImmediate(r))
-      }
-      return false
-    }
-
     /** Complete a turn with a known assistant uuid so the pump records it
      *  as a turn anchor (success result → turnAnchorStore.append). */
     const completeTurn = (handle: MockQueryHandle, sessionId: string, asstUuid: string) => {
@@ -9845,7 +9798,7 @@ describe('clear() worktree inheritance (legacy path-less meta)', () => {
     await nodeFs.mkdir(canary, { recursive: true })
     await nodeFs.utimes(canary, back, back)
     internals.sweepOrphansTick()
-    await waitForIo(() => !existsSync(canary))
+    await waitFor(() => !existsSync(canary))
     await expect(nodeFs.access(wtPath)).resolves.toBeUndefined()
   })
 })
@@ -10149,7 +10102,7 @@ describe('orphan worktree sweep (health-tick wiring)', () => {
 
     await sweepTick()
 
-    await waitForIo(() => !existsSync(orphan))
+    await waitFor(() => !existsSync(orphan))
     expect(existsSync(orphan)).toBe(false)
   })
 

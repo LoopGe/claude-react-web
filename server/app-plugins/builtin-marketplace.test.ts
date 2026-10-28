@@ -109,8 +109,11 @@ describe('built-in app plugin marketplace', () => {
     expect(refreshed?.manifest.plugins.map((p) => p.name)).toEqual(['translator', 'newcomer'])
     // The record itself is reused — a re-parse must not re-add or duplicate it.
     expect(later.list()).toHaveLength(1)
-    // Nor does it resurrect one the user removed.
-    later.removeEntry(BUILTIN_MARKETPLACE_ID)
+    // Nor does it resurrect one the user removed. Awaited: removeEntry
+    // flushes internally, and an unawaited flush lands after the test ends —
+    // racing afterEach's rmSync (the flush can recreate marketplaces.json
+    // between the child unlink and the rmdir → ENOTEMPTY).
+    await later.removeEntry(BUILTIN_MARKETPLACE_ID)
     await seedBuiltinMarketplace(later, pluginsDir)
     expect(later.get(BUILTIN_MARKETPLACE_ID)).toBeUndefined()
   })
