@@ -1,0 +1,219 @@
+/* ════════════════════════════════════════════════════════════════════
+   BRUTALIST STICKER LAYER  ([data-skin="brutalist"])
+   ────────────────────────────────────────────────────────────────────
+   The visible skin on top of the token blocks in tokens.css: sticker
+   rotation on the decorative badges, display type on chrome labels,
+   hard offset sticker shadows, 2–3px borders on key surfaces, the
+   orange primary-button sticker, and the flat-surface cleanup of
+   decorative gradient washes. Token palette is the locked triad:
+   --bt-yellow / --bt-orange / --bt-blue (+ --bt-on-yellow /
+   --bt-shadow-color / --bt-display). Colors only via variables.
+
+   Spec §7 accent fallback mapping (fills / primary / text-thin-line)
+   is applied where a selector clearly consumes var(--accent) as a
+   solid fill — see the "accent bucket" block in group 5.
+
+   Message-body prose (.msg content, .md) is deliberately untouched:
+   display type belongs on buttons / labels / badges / section bars /
+   the working bar only (spec §2 readability rule).
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Sticker rotation (decorative badges only) ───────────────────
+   The standalone `rotate` property, never `transform: rotate()`:
+   transform carries the existing press/slide motion on these chips. */
+[data-skin="brutalist"] .chat-panel-mode-badge {
+  rotate: -2deg;
+}
+[data-skin="brutalist"] .chat-panel-model-badge {
+  rotate: 1.5deg;
+}
+[data-skin="brutalist"] .chat-panel-fast-badge {
+  rotate: -1.5deg;
+}
+
+/* ── 2. Display type (chrome labels; prose untouched) ────────────── */
+[data-skin="brutalist"] .btn,
+[data-skin="brutalist"] .chat-panel-mode-badge,
+[data-skin="brutalist"] .chat-panel-model-badge,
+[data-skin="brutalist"] .chat-panel-fast-badge,
+[data-skin="brutalist"] .session-group-header,
+[data-skin="brutalist"] .appearance-heading,
+[data-skin="brutalist"] .working-bar {
+  font-family: var(--bt-display);
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+/* Mono readouts inside the working bar stay as they are (spec §2:
+   timers / mono unchanged) — only the bar's label goes display. */
+[data-skin="brutalist"] .working-timer,
+[data-skin="brutalist"] .working-retry-pill,
+[data-skin="brutalist"] .working-rate {
+  text-transform: none;
+}
+
+/* ── 3. Sticker surfaces (borders + hard offset shadows) ─────────────
+   The badges carry `border: none` in their base rules, so the sticker
+   border needs the full shorthand (a bare border-width would not
+   paint). Everything else already has a solid border and only needs
+   the width bump. */
+[data-skin="brutalist"] .chat-panel-mode-badge,
+[data-skin="brutalist"] .chat-panel-model-badge,
+[data-skin="brutalist"] .chat-panel-fast-badge {
+  border: 2px solid var(--border);
+  box-shadow: 2px 2px 0 var(--bt-shadow-color);
+}
+[data-skin="brutalist"] .working-bar {
+  border-width: 2px;
+  box-shadow: 2px 2px 0 var(--bt-shadow-color);
+  /* The pulse keyframe repaints box-shadow from var(--drawer-shadow) on
+     every frame (and the idle rule reads it too) — re-scope the token on
+     the bar so the sticker shadow survives the animation. */
+  --drawer-shadow: 2px 2px 0 var(--bt-shadow-color);
+}
+[data-skin="brutalist"] .msg {
+  border-width: 2px;
+  box-shadow: 3px 3px 0 var(--bt-shadow-color);
+}
+/* Turn dividers (.msg.recap / .msg.result) are hairline rows, not
+   bubbles — no card shadow on them. */
+[data-skin="brutalist"] .msg.recap,
+[data-skin="brutalist"] .msg.result {
+  box-shadow: none;
+}
+[data-skin="brutalist"] .composer-card {
+  border-width: 3px;
+  box-shadow: 4px 4px 0 var(--bt-shadow-color);
+}
+/* Same specificity as the base rule and later in the chain — restate the
+   sticker shadow here so the :focus-within ring composes with it instead
+   of the base rule silently winning and eating the ring. */
+[data-skin="brutalist"] .composer-card:focus-within {
+  box-shadow: 4px 4px 0 var(--bt-shadow-color), 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+/* Selected session = the yellow sticker. border-color is carried for
+   completeness (the row paints its seams via --row-hairline; a real
+   border would change the row height on selection). */
+[data-skin="brutalist"] .session-item.open {
+  background: var(--bt-yellow);
+  color: var(--bt-on-yellow);
+  border-color: var(--border);
+  box-shadow: 2px 2px 0 var(--bt-shadow-color);
+}
+/* The meta row self-colors to --fg-muted (unreadable on the yellow
+   sticker in dark) — inherit the sticker ink like the title does. */
+[data-skin="brutalist"] .session-item.open .session-item-meta {
+  color: var(--bt-on-yellow);
+}
+
+/* ── 4. Section bars (blue plate, white ink) ──────────────────────── */
+[data-skin="brutalist"] .session-group-header,
+[data-skin="brutalist"] .session-section.group-active .session-group-header {
+  background: var(--bt-blue);
+  color: var(--on-accent);
+}
+
+/* ── 5. Primary button sticker + on-state fills + accent bucket ───── */
+[data-skin="brutalist"] .btn-primary {
+  background: var(--bt-orange);
+  color: var(--on-accent);
+  border-color: var(--border);
+  box-shadow: 2px 2px 0 var(--bt-shadow-color);
+}
+/* Hover must not fall back to the base accent fill — keep the sticker. */
+[data-skin="brutalist"] .btn-primary:hover:not(:disabled),
+[data-skin="brutalist"] .btn-icon.btn-primary:hover:not(:disabled) {
+  background: var(--bt-orange);
+}
+/* Sticker press: slide down-right into the shadow, shadow absorbed.
+   `translate` (not transform) so the base scale press survives. */
+[data-skin="brutalist"] .btn-primary:active:not(:disabled) {
+  translate: 2px 2px;
+  box-shadow: none;
+}
+/* On-state fills = orange (spec §7: 开关开启态 / 按钮填充). */
+[data-skin="brutalist"] .settings-switch.on {
+  background: var(--bt-orange);
+}
+[data-skin="brutalist"] input[type="checkbox"]:checked {
+  background: var(--bt-orange);
+  border-color: var(--bt-orange);
+}
+[data-skin="brutalist"] .question-inline-reopen {
+  background: var(--bt-orange);
+}
+[data-skin="brutalist"] .question-inline-reopen:hover {
+  background: var(--bt-orange);
+}
+
+/* Accent bucket (spec §7 兜底映射) — solid var(--accent) fill consumers
+   only; washes, thin lines and text-level uses keep --accent (blue):
+   • fills / highlight surfaces → --bt-yellow + --bt-on-yellow ink
+   • primary actions / status dots → --bt-orange
+     (spec role table: 状态点 = orange; yellow is never a small fill)
+   • text / thin lines (links, focus rings, ::selection, underlines,
+     drag lines) → --accent, untouched here. */
+[data-skin="brutalist"] .ctx-bar-fill {
+  background: var(--bt-yellow);
+}
+[data-skin="brutalist"] .composer-bash-badge {
+  background: var(--bt-yellow);
+  color: var(--bt-on-yellow);
+}
+[data-skin="brutalist"] .chat-panel-slot.focused,
+[data-skin="brutalist"] .session-item-slot.focused {
+  background: var(--bt-yellow);
+  color: var(--bt-on-yellow);
+}
+[data-skin="brutalist"] .msg-queued-dot,
+[data-skin="brutalist"] .msg-processing-dot,
+[data-skin="brutalist"] .working-dots > span,
+[data-skin="brutalist"] .subagent-swarm-dots > span,
+[data-skin="brutalist"] .subagent-swarm-row-dot,
+[data-skin="brutalist"] .subagent-child-dot-running,
+[data-skin="brutalist"] .workflow-child-status-running,
+[data-skin="brutalist"] .session-nav-dot,
+[data-skin="brutalist"] .chat-panel-unread {
+  background: var(--bt-orange);
+}
+/* The waiting state mutes those dots — re-assert it above the remap. */
+[data-skin="brutalist"] .working-bar-waiting .working-dots > span {
+  background: var(--fg-muted);
+}
+
+/* ── 6. Floating surfaces (hard borders + modal shadow, no glass) ─── */
+[data-skin="brutalist"] .modal,
+[data-skin="brutalist"] .palette,
+[data-skin="brutalist"] .settings-overlay > .settings-panel,
+[data-skin="brutalist"] .git-overlay > .git-panel,
+[data-skin="brutalist"] .panel-overlay > .panel-overlay-card,
+[data-skin="brutalist"] .perm-overlay > .perm-card,
+[data-skin="brutalist"] .ctx-menu,
+[data-skin="brutalist"] .model-picker,
+[data-skin="brutalist"] .cmd-picker,
+[data-skin="brutalist"] .appearance-panel {
+  border-width: 3px;
+  box-shadow: var(--modal-shadow);
+  background-image: none;
+}
+
+/* ── 7. Decorator audit — flat token values for gradient washes ─────
+   Decorative surface washes only: the brand dot's glossy sphere and
+   the toast's top-light sheen + countdown wash go flat. Motion is
+   preserved (the countdown still drains via scaleX). The text
+   shimmers (todo / monitor / inline-todo) keep their gradient — the
+   sweep IS their loading animation — and mask-image fold fades and
+   keyframe blurs stay as they are (spec: 动效照旧). */
+[data-skin="brutalist"] .brand-dot {
+  background: var(--accent);
+  box-shadow: none;
+}
+[data-skin="brutalist"] .toast {
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 9%, var(--bg-elev-2));
+}
+[data-skin="brutalist"] .toast-progress {
+  background: color-mix(in srgb, var(--kind-tint, var(--accent)) 18%, transparent);
+}
+[data-skin="brutalist"] .recap-msg-loading-bar::after {
+  background: var(--accent);
+}

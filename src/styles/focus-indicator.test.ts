@@ -161,6 +161,7 @@ const LOAD_ORDER = [
   'utilities.css',
   'titlebar.css',
   'glass.css',
+  'brutalist.css',
   'overlay-scrollbar.css',
 ]
 

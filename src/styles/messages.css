@@ -1,4 +1,4 @@
-.msg.tool { background: var(--msg-tool-bg); border-style: dashed; border-color: var(--msg-tool-border); }
+.msg.tool { background: var(--msg-tool-bg); color: var(--msg-tool-fg); border-style: dashed; border-color: var(--msg-tool-border); }
 .msg.tool-result { background: var(--msg-tool-result-bg); border-color: var(--msg-tool-result-border); }
 /* Subagent assistant turns — same silhouette as a regular assistant card
    but dimmed and with a dotted left rail, so it reads as "nested" rather
