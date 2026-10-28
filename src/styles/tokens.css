@@ -221,6 +221,7 @@
   --titlebar-caption-width: 138px;
   --titlebar-traffic-width: 84px;
   --msg-tool-bg: #101820;
+  --msg-tool-fg: var(--fg);
   --msg-tool-border: #1c2a36;
   --msg-tool-result-bg: #14202a;
   --msg-tool-result-border: #1f3240;
@@ -388,6 +389,7 @@
   --warn-text: #7b5b0c;
   --fast: #8b3fd6;
   --msg-tool-bg: #f0f4f8;
+  --msg-tool-fg: var(--fg);
   --msg-tool-border: #c8d4e0;
   --msg-tool-result-bg: #eef3f8;
   --msg-tool-result-border: #c0d0e0;
@@ -778,6 +780,170 @@
   --glass-edge-highlight: none;
   --surface-gradient: none;
   --backdrop-color: rgba(0, 0, 0, 0.4);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   BRUTALIST SKIN  ([data-skin="brutalist"])
+   ────────────────────────────────────────────────────────────────────
+   Sticker-brutalist skin, orthogonal to the dark/light mode like hc /
+   soft-hc. Hard offset shadows, zero radius everywhere, fully opaque
+   surfaces — no glass, no gradients, no glow. Two variants:
+     • [data-skin="brutalist"]                     (on dark :root) —
+       "inverted paper" (A): warm near-black bg, cream ink and borders.
+     • [data-skin="brutalist"][data-theme="light"]  (on light)      —
+       "paper" (C): warm cream bg, ink borders, inverted tool cards.
+
+   The sticker palette is LOCKED (like hc / soft-hc accents):
+   --bt-yellow #ffe600 / --bt-orange #ff4d00 / --bt-blue #3b5bff,
+   mirrored by AppearancePanel's BRUTALIST_ACCENTS swatches.
+   ════════════════════════════════════════════════════════════════════ */
+
+/* ── Brutalist · dark (inverted paper) ── */
+[data-skin="brutalist"] {
+  --bg: #141312;
+  --bg-elev: #1e1c19;
+  --bg-elev-1: #1e1c19;
+  --bg-elev-2: #26231f;
+  --bg-elev-3: #26231f;
+  --fg: #f2ede0;
+  --fg-muted: #a39d8f;
+  --border: #f2ede0;
+  --btn-hover-bg: #2a2620;
+  --code-bg: #100f0d;
+  --accent: #3b5bff;
+  --accent-strong: #8ea6ff;
+  --accent-text: var(--accent-strong);
+  --on-accent: #ffffff;
+  --danger: #ff5c5c;
+  --on-danger: #141312;
+  --danger-text: #ff9d9d;
+  --warn: #e6b450;
+  --warn-text: #f0cd7e;
+  --ok: #4ade80;
+  --ok-text: #9fe8bb;
+  --fast: #ff4d00;
+  /* Locked sticker palette — mirrored by AppearancePanel's BRUTALIST_ACCENTS. */
+  --bt-yellow: #ffe600;
+  --bt-orange: #ff4d00;
+  --bt-blue: #3b5bff;
+  --bt-on-yellow: #111111;
+  --bt-shadow-color: #5f5a52;
+  --msg-user-bg: #3b5bff;
+  --msg-user-border: #f2ede0;
+  --msg-user-fg: #ffffff;
+  /* Tool-card inversion (spec §7): cream card, ink text on dark. */
+  --msg-tool-bg: #f2ede0;
+  --msg-tool-border: #f2ede0;
+  --msg-tool-fg: #141312;
+  /* Brutalist zeroes every corner — including the pill/circle exceptions
+     hc keeps; square spinners and square dots are the point here. */
+  --radius-3xs: 0;
+  --radius-2xs: 0;
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-pill: 0;
+  --radius-circle: 0;
+  /* Hard offset shadows — no blur, no rgba; hex written literally. */
+  --card-shadow: 7px 7px 0 #5f5a52;
+  --modal-shadow: 8px 8px 0 #5f5a52;
+  --schedule-picker-shadow: 5px 5px 0 #5f5a52;
+  --overlay-shadow: 7px 7px 0 #5f5a52;
+  --drawer-shadow: -7px 0 0 #5f5a52;
+  --toast-shadow: 5px 5px 0 #5f5a52;
+  --tooltip-shadow: 3px 3px 0 #5f5a52;
+  --handle-shadow: none;
+  /* No glass / translucency / gradients / glow — flat opaque surfaces. */
+  --glass-blur: none;
+  --glass-surface-bg: var(--bg-elev);
+  --glass-surface-border: var(--border);
+  --glass-blur-strong: none;
+  --glass-edge-highlight: none;
+  --surface-gradient: none;
+  --accent-glow: none;
+  --dot-glow: none;
+  --focus-glow: none;
+  /* Display stack: Arial Black with CJK fallbacks; headings use it too. */
+  --bt-display: 'Arial Black', 'Arial', 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-head: var(--bt-display);
+}
+
+/* ── Brutalist · light (paper) ── */
+[data-skin="brutalist"][data-theme="light"] {
+  --bg: #f5f1e6;
+  --bg-elev: #ffffff;
+  --bg-elev-1: #ffffff;
+  --bg-elev-2: #f0ece0;
+  --bg-elev-3: #e5e0d0;
+  --fg: #111111;
+  --fg-muted: #5c574c;
+  --border: #111111;
+  --btn-hover-bg: #ebe6d8;
+  --code-bg: #f0ece0;
+  --accent: #3b5bff;
+  --accent-strong: #2c46e0;
+  --accent-text: var(--accent-strong);
+  --on-accent: #ffffff;
+  --danger: #d92b2b;
+  --on-danger: #ffffff;
+  --danger-text: #a31212;
+  --warn: #c79518;
+  --warn-text: #7b5b0c;
+  --ok: #2e9e56;
+  --ok-text: #1f6e3b;
+  --fast: #ff4d00;
+  /* Locked sticker palette — mirrored by AppearancePanel's BRUTALIST_ACCENTS. */
+  --bt-yellow: #ffe600;
+  --bt-orange: #ff4d00;
+  --bt-blue: #3b5bff;
+  --bt-on-yellow: #111111;
+  --bt-shadow-color: #111111;
+  --msg-user-bg: #3b5bff;
+  --msg-user-border: #111111;
+  --msg-user-fg: #ffffff;
+  /* Tool-card inversion (spec §7): ink card, yellow text on paper. */
+  --msg-tool-bg: #111111;
+  --msg-tool-border: #111111;
+  --msg-tool-fg: #ffe600;
+  /* Brutalist zeroes every corner — including the pill/circle exceptions
+     hc keeps; square spinners and square dots are the point here. */
+  --radius-3xs: 0;
+  --radius-2xs: 0;
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-pill: 0;
+  --radius-circle: 0;
+  /* Hard offset shadows — no blur, no rgba; hex written literally. */
+  --card-shadow: 7px 7px 0 #111111;
+  --modal-shadow: 8px 8px 0 #111111;
+  --schedule-picker-shadow: 5px 5px 0 #111111;
+  --overlay-shadow: 7px 7px 0 #111111;
+  --drawer-shadow: -7px 0 0 #111111;
+  --toast-shadow: 5px 5px 0 #111111;
+  --tooltip-shadow: 3px 3px 0 #111111;
+  --handle-shadow: none;
+  /* No glass / translucency / gradients / glow — flat opaque surfaces. */
+  --glass-blur: none;
+  --glass-surface-bg: var(--bg-elev);
+  --glass-surface-border: var(--border);
+  --glass-blur-strong: none;
+  --glass-edge-highlight: none;
+  --surface-gradient: none;
+  --accent-glow: none;
+  --dot-glow: none;
+  --focus-glow: none;
+  /* Display stack: Arial Black with CJK fallbacks; headings use it too. */
+  --bt-display: 'Arial Black', 'Arial', 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-head: var(--bt-display);
 }
 
 /* ════════════════════════════════════════════════════════════════════

@@ -79,6 +79,8 @@ const NAMED_CONTEXTS = [
   '[data-skin="hc"][data-theme="light"]',
   '[data-skin="soft-hc"]',
   '[data-skin="soft-hc"][data-theme="light"]',
+  '[data-skin="brutalist"]',
+  '[data-skin="brutalist"][data-theme="light"]',
   '[data-skin="glow"]',
   '[data-skin="glow"][data-theme="light"]',
   '[data-skin="anthropic"]',
