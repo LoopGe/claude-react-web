@@ -1743,7 +1743,7 @@ export class SessionManager {
    *  - Refuses to resume terminated sessions; the SDK can't continue past
    *    a `result` message anyway.
    */
-  resume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
+  resume(id: string, opts?: { permissionMode?: PermissionMode; allowAdopt?: boolean }): Promise<SessionInfo> {
     // Coalesce: resume() awaits hasSdkTranscript / history / MCP refresh before
     // spawning, so two racing calls (parallel /resume POSTs) both pass the live
     // guard above and both reach spawn() — the second sessions.set() orphans the
@@ -1751,7 +1751,14 @@ export class SessionManager {
     // promise so a concurrent second call awaits the SAME spawn. (Deliberately
     // not `async`: an async wrapper would hand each caller a distinct promise.)
     const inflight = this.resumeInFlight.get(id)
-    if (inflight) return inflight
+    // Coalesce only when the in-flight attempt covers this caller's adoption
+    // intent: an explicit (allowAdopt) caller must NOT join a concurrent
+    // no-adopt automatic attempt on the same unknown id — it would inherit
+    // that attempt's 404 even though the transcript exists and explicit
+    // adoption should succeed. It gets its own op-locked attempt instead
+    // (serialized behind the first, which changes no state on refusal).
+    if (inflight && (inflight.allowAdopt || !opts?.allowAdopt)) return inflight.p
+    const allowAdopt = opts?.allowAdopt === true
     // The op lock is held across the WHOLE doResume (probe → spawn →
     // writeStore), so setCwd / rename / clear / sleep etc. queue behind it
     // instead of interleaving: writeStore is a wholesale replace from a
@@ -1760,13 +1767,13 @@ export class SessionManager {
     const p = this.opLock.run(id, () => this.doResume(id, opts)).finally(() => {
       // Only clear if we're still tracked — a later resume may have replaced
       // us while we were settling (don't remove the replacement).
-      if (this.resumeInFlight.get(id) === p) this.resumeInFlight.delete(id)
+      if (this.resumeInFlight.get(id)?.p === p) this.resumeInFlight.delete(id)
     })
-    this.resumeInFlight.set(id, p)
+    this.resumeInFlight.set(id, { p, allowAdopt })
     return p
   }
 
-  private async doResume(id: string, opts?: { permissionMode?: PermissionMode }): Promise<SessionInfo> {
+  private async doResume(id: string, opts?: { permissionMode?: PermissionMode; allowAdopt?: boolean }): Promise<SessionInfo> {
     const live = this.sessions.get(id)
     if (live) {
       // The pump's cleanup tail sets `terminated=true` but does NOT unload,
@@ -1790,12 +1797,22 @@ export class SessionManager {
     if (!this.store) {
       throw new HttpError(404, `session ${id} not found (no persistence configured)`)
     }
-    // Fall back to adopting an unknown session: the /resume picker can
-    // surface sessions the `claude` CLI created directly (never tracked
-    // in our store). Probe the SDK's on-disk metadata and, if it exists,
-    // register a SessionMeta so the normal resume path below can run.
-    // After this first resume the session is "known" like any other.
-    let meta = this.store.get(id) ?? (await this.adoptDiskSession(id, this.defaultProvider))
+    // Fall back to adopting an unknown session ONLY on explicit user intent
+    // (POST /resume — e.g. the /resume picker surfacing sessions the `claude`
+    // CLI created directly). Automatic paths (WS subscribe auto-resume) must
+    // not adopt: after a delete (e.g. /resume-replace) the store entry is gone
+    // but the transcript survives on disk, and adopting here would resurrect
+    // the deleted session in the sidebar (observed: DELETE 200, then a late
+    // subscribe re-adopted and re-spawned it). This check runs under opLock,
+    // so a delete racing this resume is serialized before the lookup.
+    let meta = this.store.get(id)
+    if (!meta) {
+      if (!opts?.allowAdopt) throw new HttpError(404, `session ${id} not found`)
+      // Probe the SDK's on-disk metadata and, if it exists, register a
+      // SessionMeta so the normal resume path below can run. After this
+      // first resume the session is "known" like any other.
+      meta = await this.adoptDiskSession(id, this.defaultProvider)
+    }
     if (!meta) throw new HttpError(404, `session ${id} not found`)
     // Terminal gate FIRST: a hard-ended session is 410 regardless of the
     // workspace. Checking cwd before this sent users to "restore the
@@ -8215,7 +8232,7 @@ export class SessionManager {
    *  and both reach spawn() — the second sessions.set() orphans the first
    *  Query, leaving a duplicate claude.exe. Coalescing here makes the second
    *  caller await the SAME spawn. */
-  private readonly resumeInFlight = new Map<string, Promise<SessionInfo>>()
+  private readonly resumeInFlight = new Map<string, { p: Promise<SessionInfo>; allowAdopt: boolean }>()
 
   /** Per-session operation lock (keyed by session id). Lifecycle operations
    *  and meta-persisting setters are serialized per session so they can't

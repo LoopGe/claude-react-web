@@ -2403,12 +2403,15 @@ export function App() {
    *  the API call, and error display. `afterSuccess` runs after the
    *  sessions state is updated with the fresh session. */
   const resumeSession = useCallback(
-    async (id: string, afterSuccess: (res: { session: SessionInfo }) => void) => {
+    async (id: string, afterSuccess: (res: { session: SessionInfo }) => void, opts?: { allowAdopt?: boolean }) => {
       setResuming((prev) => new Set(prev).add(id))
       try {
         const pm = sessionsRef.current.find((s) => s.id === resumeTargetPanelIdRef.current)?.permissionMode
         const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/resume`, {
           permissionMode: pm,
+          // Only picker-originated calls pass allowAdopt — automatic callers
+          // (group activation, select/drop of known sessions) must not adopt.
+          allowAdopt: opts?.allowAdopt === true,
         })
         setSessions((prev) => prev.map((p) => (p.id === id ? res.session : p)))
         afterSuccess(res)
@@ -2487,7 +2490,7 @@ export function App() {
    *  panel) a group larger than maxOpen degrades to opening just the
    *  clicked session. */
   const handleSelect = useCallback(
-    async (id: string, opts?: { auto?: boolean }) => {
+    async (id: string, opts?: { auto?: boolean; allowAdopt?: boolean }) => {
       // `auto` marks an automatic open (URL-hash restore on page refresh /
       // deep link) as opposed to an explicit user click. Automatic restores
       // must not wake a session the user deliberately slept (slept:true) —
@@ -2519,7 +2522,7 @@ export function App() {
           await resumeSession(id, () => {
             setOpenIds([id])
             setFocusedId(id)
-          })
+          }, { allowAdopt: opts?.allowAdopt === true })
         } else {
           setOpenIds([id])
           setFocusedId(id)
@@ -2592,7 +2595,7 @@ export function App() {
       // button does (see shouldAutoResumeOnSelect).
       if (!shouldAutoResumeOnSelect(s, { auto })) return
       if (resumingRef.current.has(id)) return
-      await resumeSession(id, () => {})
+      await resumeSession(id, () => {}, { allowAdopt: opts?.allowAdopt === true })
     },
     [resumeSession, groups, setLastSeenTurn],
   )
@@ -4614,7 +4617,7 @@ export function App() {
       if (known?.running) {
         finish(known.lastTurnAt)
       } else {
-        void resumeSession(pickedId, (res) => finish(res.session.lastTurnAt))
+        void resumeSession(pickedId, (res) => finish(res.session.lastTurnAt), { allowAdopt: true })
       }
     },
     [resumeSession, openAtSlot],
@@ -5494,7 +5497,7 @@ export function App() {
                 // the sidebar flow. Terminated ones now open to the composer's
                 // Resume / Fork-from-last-completed choice banner (handleSelect
                 // never auto-resumes a terminated session).
-                void handleSelect(id)
+                void handleSelect(id, { allowAdopt: true })
               } else if (known?.running) {
                 openSessionInGrid(id, { lastTurnAt: known.lastTurnAt })
               } else {
@@ -5515,7 +5518,7 @@ export function App() {
                     lastTurnAt: res.session.lastTurnAt,
                     extraLive: [res.session.id],
                   })
-                })
+                }, { allowAdopt: true })
               }
             }}
             onCancel={closeResume}

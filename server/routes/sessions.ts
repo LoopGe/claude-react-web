@@ -465,11 +465,15 @@ export function buildSessionRouter(
   // the caller pass "the mode I'm currently in" so resume doesn't drop the
   // user back to default.
   app.post('/sessions/:id/resume', async (c) => {
-    const body = await safeJsonOptional<{ permissionMode?: string }>(c.req, { permissionMode: undefined })
+    const body = await safeJsonOptional<{ permissionMode?: string; allowAdopt?: boolean }>(c.req, { permissionMode: undefined })
     const mode = typeof body.permissionMode === 'string' && isUserSelectablePermissionMode(body.permissionMode)
       ? body.permissionMode as PermissionMode
       : undefined
-    const info = await sm.resume(c.req.param('id'), { permissionMode: mode })
+    // allowAdopt is opt-in per call: only explicit user actions (the resume
+    // picker's choices) may adopt a disk-only session. Client-initiated
+    // background resumes (group activation, reconnects) send no flag, so a
+    // just-deleted session 404s instead of being adopted back to life.
+    const info = await sm.resume(c.req.param('id'), { permissionMode: mode, allowAdopt: body.allowAdopt === true })
     return c.json({ session: info })
   })
 

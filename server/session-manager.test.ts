@@ -1754,8 +1754,9 @@ describe('SessionManager', () => {
     // Y is a fresh empty session (no history seeded).
     expect(sm.getHistory(next.id)!).toHaveLength(0)
     // P1 is still recoverable: resume(X) re-adopts the on-disk transcript
-    // (store.get is undefined, so resume falls through to adoptDiskSession).
-    const resumed = await sm.resume(info.id)
+    // (store.get is undefined, so resume falls through to adoptDiskSession —
+    // explicit intent, as the resume picker would issue it).
+    const resumed = await sm.resume(info.id, { allowAdopt: true })
     expect(resumed.id).toBe(info.id)
     expect(store.get(info.id)).toBeDefined()
   })
@@ -1793,7 +1794,7 @@ describe('SessionManager', () => {
       hasMore: false,
     })
 
-    const resumed = await sm.resume(info.id)
+    const resumed = await sm.resume(info.id, { allowAdopt: true })
     readPage.mockRestore()
 
     expect(resumed.id).toBe(info.id)
@@ -5553,7 +5554,7 @@ describe('SessionManager', () => {
         createdAt: 1000,
       })
 
-      const info = await sm.resume('orphan')
+      const info = await sm.resume('orphan', { allowAdopt: true })
       expect(info.id).toBe('orphan')
       expect(info.running).toBe(true)
       // Spawned with resume pointing at the adopted id.
@@ -5580,7 +5581,7 @@ describe('SessionManager', () => {
         createdAt: 1000,
       })
 
-      const info = await sm.resume('orphan-titled')
+      const info = await sm.resume('orphan-titled', { allowAdopt: true })
       // A CLI-side /rename is a REAL title — carried into the store and the
       // spawn options, unlike the derived summary/firstPrompt fallbacks.
       expect(info.title).toBe('Disk rename')
@@ -5601,7 +5602,7 @@ describe('SessionManager', () => {
         createdAt: 1000,
       })
 
-      await sm.resume('orphan-cli')
+      await sm.resume('orphan-cli', { allowAdopt: true })
       const handle = mockHandles[mockHandles.length - 1]
       expect(handle.options.betas).toEqual([ONE_M_CONTEXT_BETA])
       // Defaulted value must be persisted so later resume/fork/clear inherit it.
@@ -5610,7 +5611,7 @@ describe('SessionManager', () => {
 
     it('404s when the session exists neither in store nor on disk', async () => {
       mockGetSessionInfo.mockResolvedValueOnce(undefined)
-      await expect(sm.resume('ghost')).rejects.toMatchObject({ status: 404 })
+      await expect(sm.resume('ghost', { allowAdopt: true })).rejects.toMatchObject({ status: 404 })
     })
 
     it('coalesces concurrent resume() calls into a single spawn (no duplicate process)', async () => {
@@ -5622,14 +5623,64 @@ describe('SessionManager', () => {
         createdAt: 1000,
       })
 
-      const p1 = sm.resume('orphan')
-      const p2 = sm.resume('orphan')
+      const p1 = sm.resume('orphan', { allowAdopt: true })
+      const p2 = sm.resume('orphan', { allowAdopt: true })
       const [info1, info2] = await Promise.all([p1, p2])
       expect(info1.id).toBe('orphan')
       expect(info2.id).toBe('orphan')
       const spawnedHandles = mockHandles.filter((h) => h.options.resume === 'orphan')
       expect(spawnedHandles).toHaveLength(1)
       expect(sm.get('orphan').running).toBe(true)
+    })
+
+    it('resume() without allowAdopt refuses disk-only sessions instead of adopting them', async () => {
+      // Post-delete / never-tracked shape: transcript on disk, no store entry.
+      mockGetSessionInfo.mockResolvedValueOnce({
+        sessionId: 'orphan',
+        cwd: dir,
+        summary: 'Orphaned session',
+        lastModified: 1234,
+        createdAt: 1000,
+      })
+
+      await expect(sm.resume('orphan')).rejects.toMatchObject({ status: 404 })
+      expect(sm.list().some((s) => s.id === 'orphan')).toBe(false)
+    })
+
+    it('an explicit adoption does not join a concurrent no-adopt attempt (no inherited 404)', async () => {
+      mockGetSessionInfo.mockResolvedValueOnce({
+        sessionId: 'orphan',
+        cwd: dir,
+        summary: 'Orphaned session',
+        lastModified: 1234,
+        createdAt: 1000,
+      })
+
+      const [auto, explicit] = await Promise.allSettled([
+        sm.resume('orphan'), // automatic path: adoption forbidden, 404s
+        sm.resume('orphan', { allowAdopt: true }), // explicit picker recovery
+      ])
+      expect(auto.status).toBe('rejected')
+      expect(explicit.status).toBe('fulfilled')
+      expect(sm.get('orphan').running).toBe(true)
+    })
+
+    it('resume() after delete() does not resurrect the deleted session from its surviving transcript', async () => {
+      const info = await sm.create({ cwd: dir })
+      await sm.delete(info.id)
+      // Soft delete: the CLI transcript survives, so the SDK still knows the
+      // session — without the explicit-intent gate this is exactly what a
+      // late WS subscribe auto-resume would re-adopt (the /resume-replace bug).
+      mockGetSessionInfo.mockResolvedValueOnce({
+        sessionId: info.id,
+        cwd: dir,
+        summary: 'surviving transcript',
+        lastModified: 1234,
+        createdAt: 1000,
+      })
+
+      await expect(sm.resume(info.id)).rejects.toMatchObject({ status: 404 })
+      expect(sm.list().some((s) => s.id === info.id)).toBe(false)
     })
   })
 
