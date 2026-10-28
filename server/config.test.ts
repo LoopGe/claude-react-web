@@ -20,6 +20,9 @@ describe('config', () => {
   it('exports sensible hardcoded defaults', () => {
     expect(config.maxUploadBytes).toBe(500 * 1024 * 1024)
     expect(config.historyCap).toBe(500)
+    // 128K output cap — the CLI's own default (64K) truncates long single
+    // responses ("response exceeded the 64000 output token maximum").
+    expect(config.maxOutputTokens).toBe(128000)
     expect(config.modelList.length).toBeGreaterThan(0)
     expect(config.defaultModel).toBeTruthy()
     // The per-task models default to UNSET, which means "use the session's

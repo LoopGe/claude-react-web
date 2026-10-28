@@ -207,7 +207,8 @@ interface ConfigFile {
    *  bypassed) or the dontAsk lockdown mode. */
   allowSensitivePathEdits: boolean
   /** Max output tokens per model response, passed to the CLI subprocess as
-   *  CLAUDE_CODE_MAX_OUTPUT_TOKENS. 0 = use the CLI's own default. */
+   *  CLAUDE_CODE_MAX_OUTPUT_TOKENS. 0 = use the CLI's own default.
+   *  Default: 128000. */
   maxOutputTokens: number
   /** Enable shadow-repo file snapshots. When true the snapshot service
    *  captures tool-mutated files into a lightweight git sidecar so sessions
@@ -321,7 +322,7 @@ export interface ServerConfig {
    *  safety checks. See ConfigFile.allowSensitivePathEdits. */
   readonly allowSensitivePathEdits: boolean
   /** Max output tokens per model response (CLAUDE_CODE_MAX_OUTPUT_TOKENS).
-   *  0 = CLI default. */
+   *  Default: 128000. 0 = CLI default. */
   readonly maxOutputTokens: number
   /** Enable shadow-repo file snapshots. Default: true. */
   readonly fileSnapshots: boolean
@@ -388,7 +389,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   appToolsGit: true,
   firstPartyTools: Object.freeze({ [GIT_TOOLS_SERVER_NAME]: Object.freeze({ enabled: true }) }),
   allowSensitivePathEdits: false,
-  maxOutputTokens: 0,
+  maxOutputTokens: 128000,
   fileSnapshots: true,
   steering: true,
   autoStart: false,

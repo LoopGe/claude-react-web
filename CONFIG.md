@@ -363,6 +363,27 @@ Set to `false` to stop injecting git tools by default:
 
 ---
 
+### `maxOutputTokens`
+
+| | |
+|---|---|
+| Type | `number` (tokens) |
+| Default | `128000` |
+
+Maximum output tokens for a single model response, passed to the `claude` CLI subprocess as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. `0` means "use the CLI's own default" (64000), which truncates long single responses with `API Error: Claude's response exceeded the 64000 output token maximum`.
+
+Raise it when the model's own output ceiling allows (current-generation models support up to 128K output); a value above what the model supports gains nothing. The value also feeds the auto-compact threshold formula (`window − min(maxOutputTokens, 20000) − 13000`).
+
+**Spawn-time only.** The env var is built per spawn — existing sessions pick up a change on their next spawn (resume / restart / new session).
+
+```json
+{
+  "maxOutputTokens": 128000
+}
+```
+
+---
+
 ### `fileSnapshots`
 
 | | |

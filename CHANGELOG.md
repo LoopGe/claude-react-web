@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   re-arms the slot. The dead `shouldHideByDefault` entry (the slot never
   produces an item to hide) and the synthetic tail row (`API_RETRY_ROW_ID`)
   were removed with it.
+- **Config** — `maxOutputTokens` now defaults to `128000` (was `0` = CLI
+  default). The CLI's own default (64000) capped a single model response and
+  surfaced `API Error: Claude's response exceeded the 64000 output token
+  maximum` on long outputs; current-generation models support 128K output so
+  the default now grants the full window. Setting the field back to `0` in
+  `config.json` restores the old behaviour. Documented in CONFIG.md (the field
+  previously had no entry there).
 
 ### Removed
 
