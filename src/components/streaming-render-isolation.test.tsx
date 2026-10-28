@@ -230,10 +230,13 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(counts.OverlayStreamingRegion).toBeGreaterThanOrEqual(flushes)
     expect(counts.LiveWorkingBubble).toBeGreaterThan(0)
     expect(commits.n).toBeGreaterThanOrEqual(flushes)
-    // And the bubble shows the whole streamed text.
+    // And the bubble shows the whole streamed text. (No trailing-space
+    // assertion on the last word: the streaming card renders markdown now,
+    // and markdown whitespace normalization drops end-of-paragraph trailing
+    // spaces — exactly like the settled card will.)
     const bubble = container.querySelector('.chat-streaming-region .streaming-plain')
     expect(bubble?.textContent).toContain(`word0 `)
-    expect(bubble?.textContent).toContain(`word${DELTAS - 1} `)
+    expect(bubble?.textContent).toContain(`word${DELTAS - 1}`)
     // The working bar shows the leaf-subscribed phase label.
     expect(container.querySelector('.working-bar-label')?.textContent).toBe('Writing...')
   }, 30_000)

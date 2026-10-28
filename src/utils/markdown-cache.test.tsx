@@ -173,3 +173,20 @@ describe('compileMarkdown cache', () => {
     })
   })
 })
+
+describe('compileMarkdown transient', () => {
+  it('bypasses the LRU — the streaming tail must not pollute the transcript cache', () => {
+    // The streaming card's open tail block re-compiles every 80ms flush with
+    // a unique growing string. Admitting those one-shot entries would evict
+    // settled-message entries that Virtuoso scroll-back re-renders rely on,
+    // so transient compiles are read-through but never admitted.
+    const a = compileMarkdown('tail text v1', { transient: true })
+    const b = compileMarkdown('tail text v1', { transient: true })
+    expect(b).not.toBe(a) // fresh tree per call
+    expect(markdownCacheSize()).toBe(0) // nothing admitted
+    const c = compileMarkdown('tail text v1', {})
+    const d = compileMarkdown('tail text v1', {})
+    expect(d).toBe(c) // the normal path admits and hits
+    expect(c).not.toBe(a) // the transient runs never seeded the cache
+  })
+})

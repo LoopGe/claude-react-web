@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { splitStreamSegments, type StreamSegment } from './stream-segments'
+import { splitStreamBlocks, splitStreamSegments, type StreamSegment } from './stream-segments'
 
 function rebuild(segments: StreamSegment[]): string {
   return segments
@@ -56,15 +56,24 @@ describe('splitStreamSegments', () => {
     ])
   })
 
-  it('holds a partial opener (no trailing newline) so it never flashes as text', () => {
+  it('renders a partial tail opener as an open code block immediately (typed chars never vanish)', () => {
+    // The opener line is already an opener in settled markdown; hiding it
+    // until its newline lands made typing feel stuck. The stateless rescan
+    // reconciles if the line grows into a non-opener.
     expect(splitStreamSegments('hello\n```')).toEqual([
       { type: 'text', content: 'hello\n' },
+      { type: 'code', lang: null, content: '', closed: false },
     ])
   })
 
-  it('holds a partial closer inside a fence, keeping the segment open', () => {
+  it('shows a partial tail closer as content (a completed closer line drops it on rescan)', () => {
     expect(splitStreamSegments('```js\nx=1\n```')).toEqual([
-      { type: 'code', lang: 'js', content: 'x=1', closed: false },
+      { type: 'code', lang: 'js', content: 'x=1\n```', closed: false },
+    ])
+    // The same input plus the newline closes the block and the backticks are
+    // gone from content — the rescan is stateless, so no bookkeeping leaks.
+    expect(splitStreamSegments('```js\nx=1\n```\n')).toEqual([
+      { type: 'code', lang: 'js', content: 'x=1', closed: true },
     ])
   })
 
@@ -136,6 +145,123 @@ describe('splitStreamSegments', () => {
     ]
     for (const f of fixtures) {
       expect(rebuild(splitStreamSegments(f))).toBe(f)
+    }
+  })
+})
+
+describe('splitStreamBlocks', () => {
+  it('returns [] for empty input', () => {
+    expect(splitStreamBlocks('')).toEqual([])
+  })
+
+  it('splits prose on blank-line runs, keeping the run with the preceding block', () => {
+    expect(splitStreamBlocks('para one\n\npara two')).toEqual([
+      { type: 'text', content: 'para one\n\n' },
+      { type: 'text', content: 'para two' },
+    ])
+  })
+
+  it('keeps soft line breaks inside one block', () => {
+    expect(splitStreamBlocks('a\nb\nc')).toEqual([{ type: 'text', content: 'a\nb\nc' }])
+  })
+
+  it('merges a loose list across blank lines into one block (no numbering restart)', () => {
+    expect(splitStreamBlocks('- a\n\n- b')).toEqual([{ type: 'text', content: '- a\n\n- b' }])
+    expect(splitStreamBlocks('1. a\n\n2. b')).toEqual([{ type: 'text', content: '1. a\n\n2. b' }])
+  })
+
+  it('merges a multi-paragraph blockquote into one block', () => {
+    expect(splitStreamBlocks('> a\n\n> b')).toEqual([{ type: 'text', content: '> a\n\n> b' }])
+  })
+
+  it('merges on the block CONSTRUCT, not the last line (wrapping items do not fork the list)', () => {
+    // The item's indented wrap continuation is a plain line — keying the
+    // merge on the last line would fork the list here and restart numbering
+    // live. Keyed on the opening line (a bullet), the merge holds.
+    expect(splitStreamBlocks('- item one wrapped\n  over two lines\n\n- item two')).toEqual([
+      { type: 'text', content: '- item one wrapped\n  over two lines\n\n- item two' },
+    ])
+    expect(splitStreamBlocks('> quote lazy\nwrapped\n\n> second')).toEqual([
+      { type: 'text', content: '> quote lazy\nwrapped\n\n> second' },
+    ])
+  })
+
+  it('keeps a multi-paragraph list item whole (indented continuation never restarts numbering)', () => {
+    // The common model pattern: every item written as "N." with indented
+    // detail paragraphs in between. The detail line is indented content of
+    // the item, not a new block — splitting there renders the second "N." as
+    // a fresh <ol start=1> live.
+    expect(splitStreamBlocks('1. First\n\n   more detail\n\n1. Second')).toEqual([
+      { type: 'text', content: '1. First\n\n   more detail\n\n1. Second' },
+    ])
+  })
+
+  it('keeps display math that spans blank lines whole', () => {
+    expect(splitStreamBlocks('para\n\n$$\nx\n\ny\n$$\n\npara2')).toEqual([
+      { type: 'text', content: 'para\n\n' },
+      { type: 'text', content: '$$\nx\n\ny\n$$\n\n' },
+      { type: 'text', content: 'para2' },
+    ])
+    expect(splitStreamBlocks('$$\\begin{align}\nx\n\ny\n\\end{align}$$')).toEqual([
+      { type: 'text', content: '$$\\begin{align}\nx\n\ny\n\\end{align}$$' },
+    ])
+  })
+
+  it('does not merge across constructs (paragraph → list, list → paragraph)', () => {
+    expect(splitStreamBlocks('text\n\n- a')).toEqual([
+      { type: 'text', content: 'text\n\n' },
+      { type: 'text', content: '- a' },
+    ])
+    expect(splitStreamBlocks('- a\n\ntext')).toEqual([
+      { type: 'text', content: '- a\n\n' },
+      { type: 'text', content: 'text' },
+    ])
+  })
+
+  it('keeps a fenced code block whole — blank lines inside the fence never split', () => {
+    expect(splitStreamBlocks('intro\n\n```js\nx\n\ny\n```\noutro')).toEqual([
+      { type: 'text', content: 'intro\n\n' },
+      { type: 'code', lang: 'js', content: 'x\n\ny', closed: true },
+      { type: 'text', content: 'outro' },
+    ])
+  })
+
+  it('leaves an open tail fence open', () => {
+    expect(splitStreamBlocks('pre\n\n```py\nno end')).toEqual([
+      { type: 'text', content: 'pre\n\n' },
+      { type: 'code', lang: 'py', content: 'no end', closed: false },
+    ])
+  })
+
+  it('honors the recovery invariant: blocks rebuild to the exact input', () => {
+    const fixtures = [
+      '',
+      'a\n```js\nx=1\n```\nb',
+      'para\n\n- list\n\n- items\n\nend',
+      '```\nx\n```\n',
+    ]
+    for (const f of fixtures) {
+      expect(rebuild(splitStreamBlocks(f))).toBe(f)
+    }
+  })
+
+  it('freezes every non-tail block across appends (the perf foundation)', () => {
+    // The streaming renderer memoizes closed blocks by their text; that only
+    // works because append-only streaming never revisits them. If a non-tail
+    // block ever changed, closed markdown blocks would silently re-parse.
+    const cases: Array<[string, string]> = [
+      ['p1\n\np2', '\n\np3'],
+      ['- a\n\n- b\n\np', '\n\n- c'],
+      ['> q1\n\nplain', '\n\n> q2'],
+      ['pre\n\n```js\nx', '\n```\n\nafter'],
+    ]
+    for (const [s, t] of cases) {
+      const before = splitStreamBlocks(s)
+      const after = splitStreamBlocks(s + t)
+      expect(before.length).toBeGreaterThan(1) // the prefix must have a frozen block
+      for (let i = 0; i < before.length - 1; i++) {
+        expect(after[i]).toEqual(before[i])
+      }
     }
   })
 })

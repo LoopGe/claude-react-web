@@ -6,11 +6,8 @@ import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
 import { useStreamingRegionMotion } from '../../utils/transitions'
 import type { StreamingRenderMode } from '../../../shared/streaming-render-mode'
-// Temporarily disabled: live fenced-code-block rendering in the streaming
-// bubble (StreamCodeSegment below + the segment split in StreamingFooter).
-// Restore these imports together with the commented-out logic to re-enable.
-// import { CodeBlock } from '../Markdown'
-// import { splitStreamSegments } from '../../utils/stream-segments'
+import { Markdown, CodeBlock } from '../Markdown'
+import { splitStreamBlocks } from '../../utils/stream-segments'
 
 /** Floating top-center pill for reverse infinite scroll. Replaces the old
  *  in-flow Virtuoso Header strip (which ate layout space and carried a
@@ -55,19 +52,14 @@ export const OlderHistoryFloat = memo(function OlderHistoryFloat({
   )
 })
 
-/* Temporarily disabled — the streaming bubble now renders the whole turn as
- * plain text (no fenced-code-block special-casing). Uncomment along with the
- * restored imports and the segment-split in StreamingFooter to re-enable.
-
- * One fenced-code segment of the live turn, with primitive-only props so
+/* One fenced-code segment of the live turn, with primitive-only props so
  * memo actually bails out. Passing the <code> children JSX directly to the
  * memoized CodeBlock defeated its shallow compare (a fresh element per
  * render), re-rendering every closed code block on each ~80ms streaming
  * flush — reconciliation cost that grows linearly with the number of code
  * blocks in the turn. With this wrapper only the still-growing open tail
  * segment re-renders; closed segments bail on identical (string | boolean)
- * props. Text segments stay inline: a bare <span> render costs about as
- * much as the memo compare itself.
+ * props. */
 const StreamCodeSegment = memo(function StreamCodeSegment({
   lang,
   content,
@@ -80,15 +72,20 @@ const StreamCodeSegment = memo(function StreamCodeSegment({
   showCursor: boolean
 }) {
   return (
-    <CodeBlock lang={lang ?? undefined} showCopy={closed}>
-      <code>
-        {content}
-        {showCursor && <span className="streaming-cursor" />}
-      </code>
-    </CodeBlock>
+    // The .md root is load-bearing: `.md pre` carries the code-block chrome
+    // (background/border/padding/size) that a bare <pre> misses, so the live
+    // block must be scoped like the settled card's or it jumps styling at
+    // settle (messages.css documents the non-.md contract explicitly).
+    <div className="md">
+      <CodeBlock lang={lang ?? undefined} showCopy={closed}>
+        <code>
+          {content}
+          {showCursor && <span className="streaming-cursor" />}
+        </code>
+      </CodeBlock>
+    </div>
   )
 })
-*/
 
 /** Where the live-turn bubble renders. 'overlay': the capped bubble pinned
  *  below the Virtuoso scroller (`.chat-bottom-stack`). 'inline': an in-flow
@@ -146,9 +143,8 @@ export const StreamingFooter = memo(function StreamingFooter({
   variant?: StreamingFooterVariant
 }) {
   const inline = variant === 'inline'
-  // Render the in-progress turn as PLAIN TEXT, not Markdown. The live turn
-  // flushes a growing string many times per second; running Markdown and
-  // syntax highlighting over the accumulated text on every flush is costly.
+  // The in-progress turn renders as a growing markdown card — see the
+  // blocks comment below for the incremental (per-block memo) contract.
   const bodyRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   // Overlay-only: the capped bubble is a scroll container and gets the
@@ -209,24 +205,22 @@ export const StreamingFooter = memo(function StreamingFooter({
   // the blur and the displacement url() are applied as one backdrop-filter.
   const glassFilter = `blur(2px) url(#${filterId})`
 
-  // Temporarily disabled: the whole turn renders as plain text while
-  // streaming. Previously a live markdown-ish split rendered fenced code
-  // blocks as real blocks (via StreamCodeSegment) and kept prose as plain
-  // text until the turn completed. Re-enable by restoring the imports above
-  // and uncommenting the block below.
-  // const segments = useMemo(() => splitStreamSegments(content), [content])
-  // const last = segments[segments.length - 1]
-
-  // The live turn is plain text under white-space:pre-wrap (`.streaming-plain`),
-  // so every newline the model emits renders as a line break literally. That
-  // dumps markdown's STRUCTURAL whitespace — the \n\n between paragraphs, list
-  // items, and code-fence delimiters — onto the screen as empty rows. The
-  // settled message (markdown-rendered) collapses these into paragraph spacing;
-  // mirror that here by folding newline runs to a single break so the streaming
-  // preview doesn't flash blank lines it would never show once the turn lands.
-  // This complements the 6a0ccfa plain-text rendering change (it keeps the
-  // cheap plain-text path, just cleans up its display).
-  const displayContent = useMemo(() => content.replace(/\n{2,}/g, '\n'), [content])
+  // The live turn renders as a growing markdown card: splitStreamBlocks
+  // chunks the accumulated text into blocks (fences stay whole; prose splits
+  // on blank-line runs with list/quote/indent/math continuation merging), and
+  // every block renders through the same cached <Markdown> the settled cards
+  // use. The splitter's freeze invariant is what keeps this affordable on the
+  // 80ms flush path — a block that is no longer the tail never changes, so
+  // memo (string props) plus compileMarkdown's LRU hold closed blocks at zero
+  // parse cost and only the open tail re-compiles per flush.
+  //
+  // Accepted cost (the tradeoff vs the old plain-text path): the tail block
+  // re-compiles WHOLE per flush — O(block), not O(delta) — and a merged
+  // long construct (a 30-item list, one huge paragraph) is one block. Still
+  // strictly better than the 0.2.5 card era this restores, which re-parsed
+  // the ENTIRE turn every flush. If long-turn jank ever shows up, the next
+  // lever is throttling the tail compile (plain-text tail between compiles).
+  const blocks = useMemo(() => splitStreamBlocks(content), [content])
 
   return (
     <div
@@ -272,26 +266,36 @@ export const StreamingFooter = memo(function StreamingFooter({
           />
         )}
         <div ref={setBodyRef} className="msg-body assistant-body streaming-plain" aria-live="polite" aria-atomic="false">
-          {displayContent}
-          <span className="streaming-cursor" />
-          {/* StreamCodeSegment / splitStreamSegments disabled — see above. */}
-          {/* {segments.map((seg, i) => (
-            <Fragment key={i}>
-              {seg.type === 'text' ? (
-                <span>{seg.content}</span>
-              ) : (
-                <StreamCodeSegment
-                  lang={seg.lang}
-                  content={seg.content}
-                  closed={seg.closed}
-                  showCursor={i === segments.length - 1 && !seg.closed}
-                />
-              )}
-            </Fragment>
-          ))}
-          {(segments.length === 0 || last.type === 'text' || (last.type === 'code' && last.closed)) && (
-            <span className="streaming-cursor" />
-          )} */}
+          {blocks.map((seg, i) => {
+            const tail = i === blocks.length - 1
+            return (
+              // The streaming-block wrapper is the margin/cursor seam: the
+              // tail one carries .streaming-tail (its last leaf's ::after is
+              // the blinking bar — a sibling span would drop onto its own
+              // line below the block), and every block keeps its own memoized
+              // .md compile underneath.
+              <div key={i} className={`streaming-block${tail ? ' streaming-tail' : ''}`}>
+                {seg.type === 'code' ? (
+                  <StreamCodeSegment
+                    lang={seg.lang}
+                    content={seg.content}
+                    closed={seg.closed}
+                    showCursor={tail}
+                  />
+                ) : (
+                  // The open tail is transient: its text is unique per flush,
+                  // so its compile must never enter the LRU (frozen blocks
+                  // admit once and memo-bail thereafter).
+                  <Markdown text={seg.content} transient={tail} />
+                )}
+                {/* Fallback bar for a tail block whose compile has no leaf
+                    for the ::after cursor to hug (empty / whitespace-only
+                    blocks). CSS hides it whenever the ::after is engaged. */}
+                {tail && <span className="streaming-cursor streaming-cursor-fallback" />}
+              </div>
+            )
+          })}
+          {blocks.length === 0 && <span className="streaming-cursor" />}
         </div>
       </div>
     </div>

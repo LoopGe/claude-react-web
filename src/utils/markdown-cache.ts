@@ -57,6 +57,11 @@ export interface CompileMarkdownOptions {
   breaks?: boolean
   searchQuery?: string
   activeMatchIdx?: number
+  /** Read-through but never admitted to the LRU. For the streaming card's
+   *  open tail block: it re-compiles every flush with a unique growing
+   *  string, and admitting those one-shot entries would evict settled
+   *  message entries that scroll-back re-renders rely on. */
+  transient?: boolean
 }
 
 type SourceBucket = Map<string, ReactNode>
@@ -234,6 +239,8 @@ export function compileMarkdown(source: string, opts: CompileMarkdownOptions): R
     stylePropertyNameCase: 'css',
   })
 
-  admit(bucket, q ? SEARCH_CAP : PLAIN_CAP, source, tree)
+  // Transient compiles (the streaming tail) are read-through but never
+  // admitted — see CompileMarkdownOptions.transient.
+  if (!opts.transient) admit(bucket, q ? SEARCH_CAP : PLAIN_CAP, source, tree)
   return tree
 }

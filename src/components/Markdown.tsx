@@ -23,21 +23,21 @@ import { compileMarkdown } from '../utils/markdown-cache'
 // sites (e.g. FileViewer.tsx) keep working after the extraction.
 export { CodeBlock } from './markdown-components'
 
-export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchIdx, breaks }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean }) {
+export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchIdx, breaks, transient }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean; transient?: boolean }) {
   // Fall back to a <pre>-rendered raw text if anything inside the unified
   // pipeline (or our rehype plugins) throws — prevents one bad message from
   // blanking the whole transcript.
   return (
     <ErrorBoundary fallback={<pre className="md md-fallback">{text}</pre>}>
-      <MarkdownInner text={text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} breaks={breaks} />
+      <MarkdownInner text={text} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} breaks={breaks} transient={transient} />
     </ErrorBoundary>
   )
 })
 
-const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMatchIdx, breaks }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean }) {
+const MarkdownInner = memo(function MarkdownInner({ text, searchQuery, activeMatchIdx, breaks, transient }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean; transient?: boolean }) {
   return (
     <div className="md">
-      {compileMarkdown(text, { breaks, searchQuery, activeMatchIdx })}
+      {compileMarkdown(text, { breaks, searchQuery, activeMatchIdx, transient })}
     </div>
   )
 })

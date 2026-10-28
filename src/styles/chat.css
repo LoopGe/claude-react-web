@@ -2494,11 +2494,12 @@ button.chat-empty-env-chip:hover {
      the internal scrollbar still clear the border. */
   padding-right: 0;
 }
-/* In-progress streaming text is rendered as plain text (not Markdown) for
-   performance; preserve newlines/wrapping and long-word breaks so it reads
-   like prose until it settles into the formatted message. */
+/* The in-progress turn renders as a growing markdown card (the same cached
+   <Markdown> pipeline as settled messages), so whitespace semantics are
+   markdown's — NOT pre-wrap, which would turn every source newline into a
+   hard break and diverge from the settled render. Long-word breaking stays. */
 .streaming-plain {
-  white-space: pre-wrap;
+  white-space: normal;
   overflow-wrap: anywhere;
   /* Vertical padding lives on the scroll container (not the .msg bubble) so
      scrolled-away content fades against internal padding instead of being
@@ -2543,6 +2544,48 @@ button.chat-empty-env-chip:hover {
   margin-left: var(--space-0-5);
   vertical-align: text-bottom;
   animation: cursor-blink 0.8s step-end infinite;
+}
+/* Per-block .md wrappers (one cached compile per streaming block) trigger
+   messages.css's `.md > *:first-child/:last-child` margin resets on EVERY
+   block, zeroing each block's end margins and butting blocks together at
+   0px where the settled single-document render has 6-8px collapsed margins.
+   Restore the end margin on non-final streaming blocks: a universal 6px
+   (p/head/list all default to 6px there today) with an 8px override for the
+   block-class elements. Universal `*` on purpose — a block type added to
+   messages.css later still gets a seam gap instead of silently butting.
+   (Interior heading TOP margins still cannot collapse through wrappers — a
+   heading's gap grows slightly at settle.) */
+.streaming-plain > .streaming-block:not(:last-child) > .md > *:last-child {
+  margin-bottom: var(--md-p-mb, 6px);
+}
+.streaming-plain > .streaming-block:not(:last-child) > .md > :is(pre, .code-block, blockquote, table, hr, .katex-display):last-child {
+  margin-bottom: var(--md-block-mb, 8px);
+}
+/* The tail blinking bar rides the tail block's last leaf as ::after so it
+   hugs the end of the text (a sibling span after a block-level wrapper
+   would drop onto its own line). Universal on `> *:last-child` so no leaf
+   type (hr, katex-display, tables, …) can strand the liveness signal —
+   lists route through the last <li> instead. The code path keeps its real
+   <span> inside <code> (also hugging), so .code-block is excluded here. */
+.streaming-plain .streaming-tail > .md > *:last-child:not(ul, ol, .code-block)::after,
+.streaming-plain .streaming-tail > .md > :is(ul, ol):last-child > li:last-child::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  background: var(--fg);
+  margin-left: var(--space-0-5);
+  vertical-align: text-bottom;
+  animation: cursor-blink 0.8s step-end infinite;
+}
+/* Fallback bar for tail blocks whose compile has no leaf to hug (empty /
+   whitespace-only .md). Hidden whenever the ::after is engaged — :has() on
+   "the .md has any children" is the switch. */
+.streaming-plain .streaming-cursor-fallback {
+  display: none;
+}
+.streaming-plain .streaming-tail > .md:not(:has(> *)) + .streaming-cursor-fallback {
+  display: inline-block;
 }
 @keyframes cursor-blink {
   50% {
@@ -2597,7 +2640,7 @@ button.chat-empty-env-chip:hover {
    The live turn renders as an in-flow tail row at the end of the Virtuoso
    list: uncapped (the transcript scrolls — the row is part of it), no
    internal scrollbar, no glass. Shares the bubble chrome (.streaming-msg)
-   and plain-text body (.streaming-plain) with the overlay variant; only the
+   and markdown body (.streaming-plain) with the overlay variant; only the
    cap/scroll/mask chrome differs. */
 .streaming-footer-wrapper--inline {
   /* The overlay wrapper sets pointer-events:none so it never blocks
