@@ -158,12 +158,31 @@ export function releaseAncestorCollapsePins(el: HTMLElement): void {
  *  `bodyHeightDelta`. */
 export type BodyHeightSnapshot = Map<HTMLElement, number>
 
-/** Capture the current heights of all animating bodies inside `root`. */
+/** A body's current height, exactly. The PIN (`style.height` — what the tween
+ *  wrote, fractional since the device-px grid of pixel-grid.ts) while the used
+ *  box agrees with it (`offsetHeight` rounds to whole CSS px, so agreement is
+ *  within a px); the USED BOX when the two disagree — a clamped body's pin is
+ *  a fiction (see measureAdoptableHeight's clamp rule: the ancestor's box
+ *  governs, and the cards below move with the box, not the pin), and a stale
+ *  pin would make the next fold start from a height the user cannot see.
+ *  Un-pinned bodies read as the used box. */
+export function currentBodyHeight(el: HTMLElement): number {
+  const pinned = Number.parseFloat(el.style.height)
+  const used = el.offsetHeight
+  return Number.isFinite(pinned) && Math.abs(pinned - used) <= 1 ? pinned : used
+}
+
+/** Capture the current heights of all animating bodies inside `root`.
+ *
+ *  Heights feed the fold-lockstep's delta signal (useTranscriptScroll), which
+ *  needs the FRACTIONAL step each frame — `offsetHeight` alone rounds the
+ *  device-px steps to whole CSS px and the compensation quantizes to ±0.5px
+ *  per frame, the very wobble the lockstep exists to remove. */
 export function snapshotBodyHeights(root: ParentNode | null): BodyHeightSnapshot {
   const snap: BodyHeightSnapshot = new Map()
   if (!root) return snap
   for (const el of animatingBodies) {
-    if (root.contains(el)) snap.set(el, el.offsetHeight)
+    if (root.contains(el)) snap.set(el, currentBodyHeight(el))
   }
   return snap
 }

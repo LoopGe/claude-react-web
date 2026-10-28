@@ -38,6 +38,27 @@ describe('tweenGridTrack', () => {
     for (const v of seen) expect(v).toMatch(/^\d+px$/) // never a fraction — this is the whole point
   })
 
+  it('writes DEVICE-pixel-aligned track values at fractional dpr', () => {
+    // At dpr=1.5 a whole CSS px is 1.5 device px — NOT a whole device px, so
+    // a CSS-px-rounded track re-phases the glyph raster of everything below
+    // (the expand shimmer reported at 150% Windows scaling). The track must
+    // land on the device grid: value × dpr is integral.
+    vi.stubGlobal('devicePixelRatio', 1.5)
+    const { el, inner } = mount(400)
+    tweenGridTrack(el, inner)
+
+    const seen: string[] = []
+    for (let frame = 0; frame < 6; frame++) {
+      vi.advanceTimersByTime(16)
+      if (el.style.gridTemplateRows) seen.push(el.style.gridTemplateRows)
+    }
+    expect(seen.length).toBeGreaterThan(2)
+    for (const v of seen) {
+      const px = Number.parseFloat(v)
+      expect(Math.abs(px * 1.5 - Math.round(px * 1.5))).toBeLessThan(1e-9)
+    }
+  })
+
   it('clears the inline track when it finishes (so later growth is unconstrained)', () => {
     const { el, inner } = mount(400)
     tweenGridTrack(el, inner)

@@ -46,6 +46,7 @@ import { anyCollapseAnimatingInside, bodyHeightDelta, snapshotBodyHeights, type 
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { scrollDebug as dbg } from './scroll-debug'
 import { clamp } from '../../utils/clamp'
+import { snapToDevicePx } from '../../utils/pixel-grid'
 
 /** Pixel tolerance for direct bottom checks. Keep this tiny to cover
  *  fractional scroll values without treating a visibly offset viewport as
@@ -968,25 +969,24 @@ export function useTranscriptScroll({
      *  observation of a fold. */
     let lastBodySnap: BodyHeightSnapshot | null = null
     // The fold-lockstep LEDGER: the compensation's own fractional scrollTop.
-    // Measured on this very page (dpr=2): `scrollTop = x.5` reads back `x` —
-    // Chrome floors scrollTop to whole CSS px on write AND read. An
-    // incremental `scrollTop += Δ` therefore loses Δ's fraction EVERY frame
-    // (the read returns the floored stored value), the loss accumulates
-    // ~0.5px/frame, and the follow invariant's 2px threshold periodically
-    // snaps it back — the measured ±2.8px sawtooth mid-expand. The ledger
-    // keeps the exact fractional target (accumulating无损 in a JS number) and
-    // writes it; the DOM floors it, so the DOM rides ≤1px from the true
-    // bottom, but that offset varies SMOOTHLY with the eased height instead
-    // of sawtoothing, and never accumulates.
+    // `scrollTop` is quantized by the DOM to whole DEVICE px — at dpr=2 that
+    // reads back floored to whole CSS px ("write x.5 → read x"), at dpr=1.5 a
+    // write of 13659 held 20489/1.5 (measured live 2026-10-27). An
+    // incremental `scrollTop += Δ` therefore loses Δ's fraction EVERY frame,
+    // the loss accumulates, and the follow invariant's 2px threshold
+    // periodically snaps it back — the measured ±2.8px sawtooth mid-expand.
+    // The ledger keeps the exact fractional target (accumulating losslessly in
+    // a JS number) and writes it; the DOM's snap is absorbed by the transform
+    // half (see below), so the content below the fold never sees either the
+    // accumulation or the quantization.
     let ledger: number | null = null
-    // The sub-pixel half of the compensation. scrollTop is integer-grained
-    // (measured: write x.5 → read x, even at dpr=2), so scroll alone can
-    // never hold the content below the fold pixel-still — its position
-    // wanders within a ±1px band as the eased height's fraction changes.
-    // During a fold, the remainder rides on a translateY applied to the
-    // item-list: the transform is compositor-precise, so
-    //   visual = docPos − round(ledger) + (round(ledger) − ledger) ≡ docPos − ledger
-    // is EXACTLY constant per frame. The ≤0.5px error is thereby moved onto
+    // The sub-pixel half of the compensation. scrollTop is device-px-grained,
+    // so scroll alone can never hold the content below the fold pixel-still —
+    // its position wanders within a ±0.5-device-px band as the eased height's
+    // fraction changes. During a fold, the remainder rides on a translateY
+    // applied to the item-list: the transform is compositor-precise, so
+    //   visual = docPos − snapToDevicePx(ledger) + (snapToDevicePx(ledger) − ledger) ≡ docPos − ledger
+    // is EXACTLY constant per frame. The ≤0.5-device-px error is thereby moved onto
     // the expanding card itself (whose whole body is visibly animating) and
     // the clipped bottom edge — both imperceptible.
     let transformEl: HTMLElement | null = null
@@ -1007,7 +1007,10 @@ export function useTranscriptScroll({
     // reconciles it — an extra write here would re-arm a verify pass for an
     // invisible step.
     const settleFoldTransform = () => {
-      if (settleRaf != null) cancelAnimationFrame(settleRaf)
+      // Idempotent: a pending loop already polls every frame and stops when
+      // the fold quiets, so re-arming from the observer path is a no-op — the
+      // old per-frame cancel/re-request pair was pure churn.
+      if (settleRaf != null) return
       const step = () => {
         settleRaf = null
         const scroller = scrollerRef.current
@@ -1089,7 +1092,6 @@ export function useTranscriptScroll({
       // ANY growth this transcript sees wants the same lockstep (an unrelated
       // zero-delta fire degenerates to a no-op — scrollTop is unchanged).
       if (anyCollapseAnimatingInside(scroller)) {
-        dbg('itemlist-RO fold-lockstep', () => ({}))
         // The fold's height delta is read from the ANIMATING BODIES' per-body
         // heights, not the item-list border box. The item-list height is
         // polluted by Virtuoso's virtualization spacer (`paddingTop:
@@ -1135,23 +1137,42 @@ export function useTranscriptScroll({
           const max = scroller.scrollHeight - scroller.clientHeight
           if (ledger > max) ledger = max
           if (ledger < 0) ledger = 0
-          // Integer half → scroll; fractional half → transform. Together
+          // Device-px half → scroll; residual half → transform. Together
           // they hold the content below the fold EXACTLY still (see the
-          // ledger/transform comments above).
-          const rounded = Math.round(ledger)
+          // ledger/transform comments above). The scroll half must land on the
+          // DEVICE grid (snapToDevicePx), not the CSS-px grid: the DOM stores
+          // scrollTop in device px (measured at dpr=1.5: writing 13659 held
+          // 20489/1.5), so a CSS-px-rounded write is re-quantized by the DOM
+          // and the residual lands on the cards below — the ±1/3px expand
+          // wobble of 2026-10-27. The transform half must then absorb what the
+          // DOM ACTUALLY held — its read-back value, not the value written:
+          // the browser clamps the write to its own fractional max
+          // (measured: write 18656 held 18655.33 at a fractional max), and a
+          // `written − ledger` transform leaves that clamp on the cards below.
+          const rounded = snapToDevicePx(ledger)
           scroller.scrollTop = rounded
           const target = entry.target as HTMLElement
-          const frac = rounded - ledger
+          const frac = scroller.scrollTop - ledger
           target.style.transform = frac === 0 ? '' : `translateY(${frac}px)`
-          transformEl = target
+          if (frac !== 0) transformEl = target
         }
-        // Arm the settle watcher only when a transform is actually riding on
-        // the item list (transformEl set by a previous frame and not yet
-        // cleared). The common all-integer fold — every frac 0, no transform
-        // ever applied — has nothing for the watcher to clear, and re-arming
-        // a cancel/re-request rAF pair on every RO frame for the whole fold
-        // is pure waste.
-        if (transformEl) settleFoldTransform()
+        // TEMPORARY fold-jitter probe (investigation: tool-group expand shake
+        // re-reported 2026-10-27). Per-frame compensation values, so a
+        // reproduction in __scrollLogV2 shows which signal drove the frame
+        // (foldDelta vs the first-frame itemDelta fallback), how big the step
+        // was, and where the ledger/rounding left the DOM.
+        dbg('itemlist-RO fold-lockstep', () => ({
+          foldDelta, itemDelta, delta, domTop,
+          ledger, scrollTopAfter: scroller.scrollTop,
+        }))
+        // Arm the settle watcher on every fold frame: at settle it must clear
+        // BOTH the transform and the LEDGER (a ledger surviving the fold makes
+        // the next fold's first frame accumulate onto it instead of seeding
+        // from the DOM — a scroll jump), and only the watcher sees the fold
+        // end (RO deliveries stop). Arming is idempotent — a pending tick
+        // already polls until the fold quiets — so this is one rAF chain per
+        // fold, not the per-frame cancel/re-request churn it used to be.
+        settleFoldTransform()
         return
       }
       lastItemListH = itemListH

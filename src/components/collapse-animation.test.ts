@@ -1,5 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { releaseAncestorCollapsePins, setCollapseAnimating } from './collapse-animation'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  currentBodyHeight,
+  releaseAncestorCollapsePins,
+  setCollapseAnimating,
+  snapshotBodyHeights,
+} from './collapse-animation'
 
 /** Build `depth` nested collapse bodies, the shape AnimatedCollapse renders:
  *  body(.animated-collapse) > .animated-collapse-content > body(…) …
@@ -30,6 +35,7 @@ const created: HTMLElement[] = []
 afterEach(() => {
   for (const body of created) setCollapseAnimating(body, false)
   created.length = 0
+  vi.restoreAllMocks()
 })
 
 describe('releaseAncestorCollapsePins', () => {
@@ -76,5 +82,51 @@ describe('releaseAncestorCollapsePins', () => {
 
     expect(middle.style.height).toBe('0px')
     expect(outer.style.height).toBe('500px')
+  })
+})
+
+describe('currentBodyHeight', () => {
+  it('keeps the pin when the used box agrees with it (fractional pin survives)', () => {
+    // The pin is what the device-px tween wrote (fractional CSS px at
+    // fractional dpr); offsetHeight rounds it away. The pin must win or the
+    // fold-lockstep's delta signal quantizes to ±0.5px per frame.
+    const body = document.createElement('div')
+    body.style.height = '246.667px'
+    vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(247)
+
+    expect(currentBodyHeight(body)).toBeCloseTo(246.667, 3)
+  })
+
+  it('falls back to the used box when the pin is a clamping fiction', () => {
+    // A flex-clamped body (the chat-bottom-stack shape): the pin tweens but
+    // the ancestor's box governs, and the cards below move with the BOX.
+    const body = document.createElement('div')
+    body.style.height = '400px'
+    vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(250)
+
+    expect(currentBodyHeight(body)).toBe(250)
+  })
+
+  it('reads the used box for an un-pinned body', () => {
+    const body = document.createElement('div')
+    vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(80)
+
+    expect(currentBodyHeight(body)).toBe(80)
+  })
+})
+
+describe('snapshotBodyHeights', () => {
+  it('reports the fractional pin of animating bodies', () => {
+    const [body] = nest(1)
+    document.body.appendChild(body)
+    body.style.height = '55.333px'
+    vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(55)
+    setCollapseAnimating(body, true)
+
+    const snap = snapshotBodyHeights(document.body)
+
+    expect(snap.get(body)).toBeCloseTo(55.333, 3)
+    setCollapseAnimating(body, false)
+    body.remove()
   })
 })

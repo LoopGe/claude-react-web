@@ -1,7 +1,8 @@
 import { prefersReducedMotion } from '../utils/reduced-motion'
 import { isRendered } from '../utils/rendered'
+import { snapToDevicePx } from '../utils/pixel-grid'
 import { easeStandard } from '../utils/cubic-bezier'
-import { anyCollapseAnimatingInside, releaseAncestorCollapsePins, setCollapseAnimating } from './collapse-animation'
+import { anyCollapseAnimatingInside, currentBodyHeight, releaseAncestorCollapsePins, setCollapseAnimating } from './collapse-animation'
 import {
   type DetailsHTMLAttributes,
   type MouseEvent,
@@ -14,6 +15,18 @@ import {
 } from 'react'
 
 const DEFAULT_DURATION_MS = 240
+
+/** Pin the body's height on the DEVICE grid (see pixel-grid.ts). EVERY px
+ *  height this component writes goes through here — tween frames, the tween's
+ *  start/end pins, the settle re-measure, and the observer's snap-follow —
+ *  because a single off-grid write in an otherwise on-grid sequence is a
+ *  one-frame layout step for every card below the body (the fold's settle
+ *  frame used to write the raw `to` over the last tween frame's snapped
+ *  value — a ≤0.5-device-px kick the fold-lockstep never saw, the body
+ *  already being out of animatingBodies). */
+function pinBodyPx(body: HTMLElement, cssPx: number): void {
+  body.style.height = `${snapToDevicePx(Math.max(0, cssPx))}px`
+}
 /** Opacity fade length. The height tween runs `durationMs`, but the fade keeps
  *  the old CSS transition's split timing — `opacity` used to animate over
  *  `--motion-duration-fast` (120ms) while height ran 240ms, so content became
@@ -201,7 +214,7 @@ export function AnimatedCollapse({
     clearBodyAriaHidden()
     lastHeightRef.current = height
     if (unmountOnExit) setMounted(true)
-    body.style.height = `${height}px`
+    pinBodyPx(body, height)
     body.style.opacity = ''
     body.style.transition = ''
     body.classList.remove('animating')
@@ -218,7 +231,7 @@ export function AnimatedCollapse({
       const measured = measureAdoptableHeight(body, content, remeasureWhileClamped)
       if (measured && measured.height > 0 && Math.abs(measured.height - height) > 1) {
         lastHeightRef.current = measured.height
-        body.style.height = `${measured.height}px`
+        pinBodyPx(body, measured.height)
       }
     }
   }, [clearBodyAriaHidden, remeasureWhileClamped, unmountOnExit])
@@ -241,9 +254,22 @@ export function AnimatedCollapse({
     onExitComplete?.()
   }, [hideClosedBody, onExitComplete, unmountOnExit])
 
-  const animateHeight = useCallback((from: number, to: number, nextOpen: boolean, fade: boolean, kind: 'fold' | 'resize' = 'fold') => {
+  const animateHeight = useCallback((rawFrom: number, rawTo: number, nextOpen: boolean, fade: boolean, kind: 'fold' | 'resize' = 'fold') => {
     const body = bodyRef.current
     if (!body) return
+
+    // Both endpoints land on the DEVICE grid (see pinBodyPx / pixel-grid.ts):
+    // every height written below — the start pin, each tween frame, and
+    // finishOpen's settle — then steps the same grid, so no single write is a
+    // layout kick for the cards below (the settle used to write the raw `to`
+    // over the last tween frame's snapped value — a ≤0.5-device-px step the
+    // fold-lockstep never compensated, the body already being out of
+    // animatingBodies). The start value comes from currentBodyHeight — the
+    // body's own (possibly fractional) height, not the caller's offsetHeight
+    // reading, which rounds to whole CSS px and would make the first tween
+    // frame kick a device px off the pin the body is already showing.
+    const from = snapToDevicePx(Math.max(0, currentBodyHeight(body) || rawFrom))
+    const to = snapToDevicePx(Math.max(0, rawTo))
 
     // Release every pinned ancestor BEFORE the first height this body writes.
     // One place covers every path — an animated or instant fold, an open or a
@@ -267,7 +293,7 @@ export function AnimatedCollapse({
     body.classList.add('animating')
     setCollapseAnimating(body, true)
     body.style.transition = 'none'
-    body.style.height = `${Math.max(0, from)}px`
+    pinBodyPx(body, from)
     if (fade) body.style.opacity = nextOpen ? '0' : '1'
 
     void body.offsetHeight
@@ -275,19 +301,22 @@ export function AnimatedCollapse({
     animKindRef.current = kind
     animatingRef.current = true
 
-    // Per-frame INTEGER height tween (rAF), not a CSS height transition. The
-    // transition interpolates at fractional px per frame, which re-phases
+    // Per-frame DEVICE-pixel height tween (rAF), not a CSS height transition.
+    // The transition interpolates at fractional px per frame, which re-phases
     // every glyph raster downstream of the animated box: Chrome snaps glyphs
     // to the device-pixel grid at LAYOUT positions, so a fractional layout
     // step re-rasterizes the text at a new sub-pixel phase every frame — the
     // cards below the fold visibly shimmer for the whole fold even when the
     // scroll machinery holds their visual offset constant (measured on a live
     // session: DOM rects steady, user still sees "抖动"). Rounding each frame
-    // to whole CSS px keeps every downstream layout step integer, so the
-    // transcript's fold-lockstep compensation matches it 1:1 in scroll and
-    // nothing below the fold ever re-phases. The curve is tokens.css'
-    // --motion-ease-standard — the one the CSS transition declared; only the
-    // per-frame granularity differs.
+    // to whole DEVICE px keeps every downstream layout step on the raster
+    // grid, so the transcript's fold-lockstep compensation matches it 1:1 in
+    // scroll and nothing below the fold ever re-phases. Whole CSS px was the
+    // first fix and only suffices where CSS px == device px; at dpr=1.5 (150%
+    // scaling) the expand shimmer came straight back — measured 2026-10-27,
+    // plus a ±1/3px scrollTop quantization wobble (see pixel-grid.ts). The
+    // curve is tokens.css' --motion-ease-standard — the one the CSS transition
+    // declared; only the per-frame granularity differs.
     const ease = easeStandard
     const startedAt = performance.now()
     let raf = 0
@@ -296,7 +325,7 @@ export function AnimatedCollapse({
       const now = performance.now()
       const t = Math.min(1, (now - startedAt) / durationMs)
       const p = ease(t)
-      body.style.height = `${Math.max(0, Math.round(from + (to - from) * p))}px`
+      pinBodyPx(body, from + (to - from) * p)
       if (fade) {
         // The fade keeps the OLD transition's split timing: same standard
         // ease, but over --motion-duration-fast (120ms), not the height's
@@ -394,7 +423,9 @@ export function AnimatedCollapse({
       const nextHeight = content.scrollHeight
       lastHeightRef.current = open ? nextHeight : 0
       const shouldAnimateInitialOpen = open && (appear || (!initiallyOpenRef.current && unmountOnExit))
-      body.style.height = shouldAnimateInitialOpen ? '0px' : (open ? `${nextHeight}px` : '0px')
+      if (shouldAnimateInitialOpen) body.style.height = '0px'
+      else if (open) pinBodyPx(body, nextHeight)
+      else body.style.height = '0px'
       body.style.opacity = open && !shouldAnimateInitialOpen ? '' : '0'
       if (shouldAnimateInitialOpen) animateHeight(0, nextHeight, true, true)
       return
@@ -494,7 +525,7 @@ export function AnimatedCollapse({
         if (animatingRef.current) return
         if (Math.abs(measured.height - measured.pinned) < 1) return
         lastHeightRef.current = measured.height
-        body.style.height = `${measured.height}px`
+        pinBodyPx(body, measured.height)
         return
       }
       // A collapse animating inside this body IS this box's height motion:
@@ -523,7 +554,7 @@ export function AnimatedCollapse({
         // to tween FROM (the ToolGroupCard's member-append glide). So a body
         // left unpinned by a release — or by standDown, in the rendered case
         // that let this measurement through — gets its pin back here.
-        if (body.style.height === '' && measured.height > 0) body.style.height = `${measured.height}px`
+        if (body.style.height === '' && measured.height > 0) pinBodyPx(body, measured.height)
         return
       }
       lastHeightRef.current = measured.height
@@ -551,7 +582,7 @@ export function AnimatedCollapse({
         // Snap-follow. Clear any transition the torn-down tween left on the
         // element so the jump is truly instant.
         body.style.transition = 'none'
-        body.style.height = `${measured.height}px`
+        pinBodyPx(body, measured.height)
       }
     })
 

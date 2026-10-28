@@ -13,6 +13,7 @@ beforeEach(() => {
 afterEach(() => {
   clearResizeObserverStub()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 
@@ -114,6 +115,68 @@ describe('AnimatedCollapse — exit keeps the last visible content', () => {
     // Settled shut: focus is released first, then the body is hidden.
     expect(body.getAttribute('aria-hidden')).toBe('true')
     expect(document.activeElement).not.toBe(button)
+  })
+})
+
+describe('AnimatedCollapse — per-frame height grid', () => {
+  it('writes DEVICE-pixel-aligned heights on every tween frame at fractional dpr', () => {
+    // At dpr=1.5 a whole CSS px is 1.5 device px — NOT a whole device px. The
+    // old whole-CSS-px rounding therefore re-phased the glyph raster of every
+    // card below the fold each frame (the expand shimmer reported at 150%
+    // Windows scaling); each written height must land on the device grid.
+    vi.stubGlobal('devicePixelRatio', 1.5)
+    vi.useFakeTimers()
+    const child = (
+      <ul>
+        <li>A</li>
+      </ul>
+    )
+    const { container, rerender } = renderInPanel(
+      <AnimatedCollapse open={false} unmountOnExit={false}>
+        {child}
+      </AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    mockLayoutHeight(body, 0)
+    // 401 is OFF the device grid at dpr=1.5 (601.5 device px): the settle kick
+    // this test guards only manifests for off-grid targets.
+    mockLayoutHeight(content, 401)
+
+    // Open it — the open fold tweens 0 → 401 over 240ms.
+    rerender(
+      <AnimatedCollapse open unmountOnExit={false}>
+        {child}
+      </AnimatedCollapse>,
+      false,
+    )
+    expect(body.classList.contains('animating')).toBe(true)
+
+    const seen: string[] = []
+    for (let frame = 0; frame < 12; frame++) {
+      act(() => {
+        vi.advanceTimersByTime(16)
+      })
+      if (body.style.height) seen.push(body.style.height)
+    }
+    expect(seen.length).toBeGreaterThan(2)
+    for (const v of seen) {
+      const px = Number.parseFloat(v)
+      // Tolerance 1e-4: happy-dom serializes style numbers at reduced
+      // precision (133.33333333333334px → "133.333333px"), which is pure
+      // string round-trip noise — a genuine misalignment is ≥1/3 device px.
+      expect(Math.abs(px * 1.5 - Math.round(px * 1.5))).toBeLessThan(1e-4)
+    }
+
+    // The SETTLE write must sit on the same grid: finishOpen used to write the
+    // raw `to` over the last tween frame's snapped value — a one-frame
+    // ≤0.5-device-px kick for every card below the fold (the body is already
+    // out of animatingBodies there, so the fold-lockstep never compensated it).
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    const settled = Number.parseFloat(body.style.height)
+    expect(Math.abs(settled * 1.5 - Math.round(settled * 1.5))).toBeLessThan(1e-4)
   })
 })
 

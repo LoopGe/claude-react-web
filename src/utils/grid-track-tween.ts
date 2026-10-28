@@ -1,4 +1,5 @@
 import { easeStandard } from './cubic-bezier'
+import { snapToDevicePx } from './pixel-grid'
 import { prefersReducedMotion } from './reduced-motion'
 import { revealDurationMs } from './reveal-duration'
 
@@ -74,7 +75,10 @@ export function tweenGridTrack(el: HTMLElement, inner: HTMLElement): () => void 
     // wrapping); follow it rather than holding the height captured at the start.
     target = Math.max(target, inner.scrollHeight + borderDelta)
     const t = Math.min(1, (performance.now() - startedAt) / durationMs)
-    el.style.gridTemplateRows = `${Math.max(0, Math.round(target * easeStandard(t)))}px`
+    // Whole-DEVICE-px, not whole CSS px: at fractional dpr a CSS-px step is a
+    // fractional device-px step and re-phases every glyph below (see
+    // pixel-grid.ts).
+    el.style.gridTemplateRows = `${Math.max(0, snapToDevicePx(target * easeStandard(t)))}px`
     if (t < 1) raf = window.requestAnimationFrame(step)
     else finish()
   }
