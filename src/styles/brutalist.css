@@ -258,3 +258,14 @@
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
+
+/* ── 8. Liquid-glass inline blur kill ────────────────────────────────
+   transcript-chrome.tsx sets `backdrop-filter: blur(2px) url(#…)` (and
+   the -webkit- twin) INLINE on .streaming-refraction, the overlay
+   streaming bubble's refraction layer. An inline style beats any plain
+   stylesheet rule, so the zero-blur contract (spec §5 背景模糊) needs
+   author !important here — the only CSS-side way to flatten it. */
+[data-skin="brutalist"] .streaming-refraction {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}

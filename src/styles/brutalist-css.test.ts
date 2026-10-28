@@ -21,4 +21,17 @@ describe('brutalist component layer', () => {
     expect(css).toContain('rotate:')
     expect(css).not.toMatch(/transform\s*:[^;}]*rotate\(/)
   })
+
+  it('liquid-glass inline blur on .streaming-refraction is flattened with author !important', () => {
+    // transcript-chrome.tsx sets `backdrop-filter: blur(2px) url(#…)` inline
+    // on the refraction layer; only author !important beats an inline style.
+    const blocks = parseBlocks(readCss('brutalist.css')).filter((b) =>
+      b.sel.includes('.streaming-refraction'),
+    )
+    expect(blocks.length).toBeGreaterThan(0)
+    for (const b of blocks) {
+      expect(b.decls['backdrop-filter'] ?? '').toMatch(/^none\s*!important$/)
+      expect(b.decls['-webkit-backdrop-filter'] ?? '').toMatch(/^none\s*!important$/)
+    }
+  })
 })
