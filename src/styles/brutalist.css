@@ -246,3 +246,15 @@
 [data-skin="brutalist"] .recap-msg-loading-bar::after {
   background: var(--accent);
 }
+/* Wallpaper chrome (body.has-bg): useBackground's lock already clears
+   has-bg under this skin, but the zero-blur contract must not depend on
+   that JS path — flatten the 12px frost so a stray wallpaper can never
+   frost the chrome. (layout.css's blur reads --app-chrome-blur, which
+   the token block deliberately does not override; this is the skin-side
+   stop.) */
+[data-skin="brutalist"] body.has-bg .sidebar,
+[data-skin="brutalist"] body.has-bg .main-header,
+[data-skin="brutalist"] body.has-bg .chat-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
