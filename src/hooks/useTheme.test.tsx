@@ -6,7 +6,7 @@
 // guessing the localStorage key, so these tests pin the hook's own contract.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { renderHook, act, cleanup } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { useTheme } from './useTheme'
 
 describe('useTheme — accent lock on skins', () => {
@@ -14,10 +14,11 @@ describe('useTheme — accent lock on skins', () => {
     window.localStorage.clear()
   })
   afterEach(() => {
-    // A hook left mounted by an earlier case keeps its effects live across
-    // cases (useLocalStorage syncs same-tab writes), so clear explicitly —
-    // the same pattern as useBackground.test.ts.
-    cleanup()
+    // Global cleanup (src/test-setup.ts) already unmounts every hook between
+    // cases. What it cannot undo is the state this hook writes OUTSIDE React:
+    // same-tab localStorage keys, the inline --accent* custom properties on
+    // <html>, and the data-skin attribute — all of which survive unmount.
+    // Clear those so each case starts from a clean document.
     window.localStorage.clear()
     document.documentElement.style.removeProperty('--accent')
     document.documentElement.style.removeProperty('--accent-strong')

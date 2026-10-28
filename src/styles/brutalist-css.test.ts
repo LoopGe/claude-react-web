@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseBlocks, readCss } from './contrast-test-utils'
+import { parseBlocks, readCss, stylesheets } from './contrast-test-utils'
 
 describe('brutalist component layer', () => {
   it('glass wash gradient blocks exclude the brutalist skin', () => {
@@ -33,5 +33,20 @@ describe('brutalist component layer', () => {
       expect(b.decls['backdrop-filter'] ?? '').toMatch(/^none\s*!important$/)
       expect(b.decls['-webkit-backdrop-filter'] ?? '').toMatch(/^none\s*!important$/)
     }
+  })
+
+  it('the tool-card inversion targets a live consumer, not dead CSS', () => {
+    // The --msg-tool-* pins used to feed messages.css's `.msg.tool` rule,
+    // which no component ever emits (ToolUseBlock renders `.tool-card`) —
+    // so the pins passed while the inversion was dead-wired. This asserts
+    // the retarget in brutalist.css AND that the live card chrome exists,
+    // so the token pins can never again pass against dead CSS.
+    const brutalist = readCss('brutalist.css')
+    expect(brutalist).toMatch(/\[data-skin="brutalist"\]\s+\.tool-card\s*\{[^}]*background:\s*var\(--msg-tool-bg\)/)
+    expect(brutalist).toMatch(/\[data-skin="brutalist"\]\s+\.tool-card\s*\{[^}]*color:\s*var\(--msg-tool-fg\)/)
+    const live = stylesheets().some((f) =>
+      parseBlocks(readCss(f)).some((b) => b.sel.split(',').some((s) => s.trim() === '.tool-card')),
+    )
+    expect(live, 'no stylesheet styles .tool-card — the inversion pins would be dead again').toBe(true)
   })
 })

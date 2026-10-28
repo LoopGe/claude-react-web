@@ -116,6 +116,12 @@
    where the base hover (higher specificity) would repaint the sticker
    fill; the model chip's value text self-colors to --fg and must be
    re-inked to read on yellow. */
+/* The badge's base ground is a 10%-accent wash over `transparent` — a
+   translucency leak under a zero-transparency skin. Flatten to a solid
+   surface; the per-state recolors below override their states. */
+[data-skin="brutalist"] .chat-panel-mode-badge {
+  background: var(--bg-elev-2);
+}
 [data-skin="brutalist"] .chat-panel-mode-badge.mode-plan {
   background: var(--bt-orange);
   color: var(--on-accent);
@@ -133,6 +139,36 @@
 [data-skin="brutalist"] .chat-panel-fast-badge.fast-on {
   background: var(--bt-orange);
   color: var(--on-accent);
+}
+
+/* ── 3c. Working bar = the yellow sticker (spec §7: 黄贴纸 + 橙状态点) ─
+   The bar's plate (::before) goes solid yellow — the translucent
+   --bg-elev wash is wrong colour AND wrong opacity for this skin.
+   Contents re-ink to the sticker ink where the accent/muted blues would
+   be unreadable on yellow; the timer and retry chips keep their own
+   opaque chip grounds and inks, and the orange status dots + pulse stay
+   as they are. */
+[data-skin="brutalist"] .working-bar::before {
+  background: var(--bt-yellow);
+}
+[data-skin="brutalist"] .working-bar {
+  color: var(--bt-on-yellow);
+}
+[data-skin="brutalist"] .working-bar-label {
+  color: var(--bt-on-yellow);
+}
+/* The rate chip's ground is an 8%-fg-muted wash (near-transparent over the
+   sticker), so its --fg-muted ink reads ~2:1 on yellow in dark — the one
+   chip the "chips carry their own grounds" rule does not cover. Re-ink the
+   text, leave the wash. */
+[data-skin="brutalist"] .working-rate {
+  color: var(--bt-on-yellow);
+}
+/* The waiting state dims its label — keep the distinction as an ink mix
+   (the --fg-muted it uses is tuned for dark chrome and drops below 3:1 on
+   the sticker). */
+[data-skin="brutalist"] .working-bar-waiting .working-bar-label {
+  color: color-mix(in srgb, var(--bt-on-yellow) 65%, var(--bt-yellow));
 }
 
 /* ── 4. Section bars (blue plate, white ink) ──────────────────────── */
@@ -181,7 +217,21 @@
    • primary actions / status dots → --bt-orange
      (spec role table: 状态点 = orange; yellow is never a small fill)
    • text / thin lines (links, focus rings, ::selection, underlines,
-     drag lines) → --accent, untouched here. */
+     drag lines) → --accent, untouched here.
+   Remap audit (bucket | selectors | source):
+   • yellow — meter/progress fills: .ctx-bar-fill (chat), .uploads-progress-
+     fill (uploads-manager), .usage-meter-fill (usage-panel; its ok/warn/
+     danger tiers keep their semantic fills), .perf-bar (utilities; the
+     overflow hatch keeps its warn stripes), .stat-bar-fill (app-plugins;
+     [data-tone] tiers keep theirs)
+   • yellow — highlight surfaces: .composer-bash-badge, focused panel slots
+   • orange — on-state controls: .settings-switch.on + checkbox :checked +
+     .question-inline-reopen (group 5 above), radio :checked fills
+     (git-panel + utilities), slider thumbs (layout)
+   • orange — status dots: queued/processing dots, working/subagent dots,
+     session nav dot, chat unread + session status dots (working/unread),
+     chat working dot, titlebar working tab dot, side-chat working dot
+   • untouched — text/thin lines: links, focus rings, ::selection, … */
 [data-skin="brutalist"] .ctx-bar-fill {
   background: var(--bt-yellow);
 }
@@ -194,6 +244,43 @@
   background: var(--bt-yellow);
   color: var(--bt-on-yellow);
 }
+/* Meter / progress fills = yellow (no text sits on them; the ink track
+   around each fill is its pairing). Semantic tiers are re-asserted below
+   where a same-element modifier would otherwise lose to this remap. */
+[data-skin="brutalist"] .uploads-progress-fill,
+[data-skin="brutalist"] .perf-bar,
+[data-skin="brutalist"] .stat-bar-fill {
+  background: var(--bt-yellow);
+}
+[data-skin="brutalist"] .usage-meter-fill:not(.usage-meter-fill-ok):not(.usage-meter-fill-warn):not(.usage-meter-fill-danger) {
+  background: var(--bt-yellow);
+}
+/* The perf overflow bar is an overflow MARKER (warn hatch), not a plain
+   fill — its base rule shares this specificity and would otherwise be
+   clobbered by the yellow above (brutalist.css sorts last). Re-assert it. */
+[data-skin="brutalist"] .perf-bar-overflow .perf-bar {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--warn),
+    var(--warn) 2px,
+    transparent 2px,
+    transparent 4px
+  );
+}
+/* On-state controls = orange (spec §7: 开关开启态 / 按钮填充). The checked
+   radio's ring travels with the fill, as the checkbox above already does. */
+[data-skin="brutalist"] .profile-create-option input[type="radio"]:checked::after,
+[data-skin="brutalist"] .settings-skill-mode-card input[type="radio"]:checked {
+  background: var(--bt-orange);
+}
+[data-skin="brutalist"] .profile-create-option input[type="radio"]:checked,
+[data-skin="brutalist"] .settings-skill-mode-card input[type="radio"]:checked {
+  border-color: var(--bt-orange);
+}
+[data-skin="brutalist"] .effort-slider-range::-webkit-slider-thumb,
+[data-skin="brutalist"] .effort-slider-range::-moz-range-thumb {
+  background: var(--bt-orange);
+}
 [data-skin="brutalist"] .msg-queued-dot,
 [data-skin="brutalist"] .msg-processing-dot,
 [data-skin="brutalist"] .working-dots > span,
@@ -202,12 +289,60 @@
 [data-skin="brutalist"] .subagent-child-dot-running,
 [data-skin="brutalist"] .workflow-child-status-running,
 [data-skin="brutalist"] .session-nav-dot,
-[data-skin="brutalist"] .chat-panel-unread {
+[data-skin="brutalist"] .chat-panel-unread,
+/* Canonical status dots (spec role table: 状态点 = orange). Working/active
+   and unread all read orange — the states stay distinguishable via their
+   animation, size and labels; live/err/waiting/dormant keep their semantic
+   inks (ok / danger / warn / muted) untouched. */
+[data-skin="brutalist"] .session-status-dot.status-working,
+[data-skin="brutalist"] .session-status-dot.status-unread,
+[data-skin="brutalist"] .chat-panel-status.working,
+[data-skin="brutalist"] .chat-panel-working-dot,
+[data-skin="brutalist"] .titlebar-tab.working .titlebar-tab-dot,
+[data-skin="brutalist"] .side-chat-expand-tab-dot {
   background: var(--bt-orange);
 }
 /* The waiting state mutes those dots — re-assert it above the remap. */
 [data-skin="brutalist"] .working-bar-waiting .working-dots > span {
   background: var(--fg-muted);
+}
+
+/* ── 5b. Tool-card inversion (spec §7: 工具卡 黑底黄字 / 反转) ──────────
+   Retargeted to the LIVE consumers: ToolUseBlock renders every generic
+   tool call as a .tool-card (utilities.css), and the card is a multi-part
+   block — header strip / body / merged tool-result section each self-color
+   their ground (--bg-elev-2 / --bg), and the internals self-color with
+   --fg / --fg-muted / --*-text. The surface + ink tokens are therefore
+   re-scoped on the card subtree, so every nested chip, readout and diff
+   row follows the inversion instead of painting dark-on-dark; the
+   semantic text tokens get the card-surface variants (the opposite
+   ground's inks, pinned in tokens.css) so status chips and diff add/del
+   rows clear AA on the inverted ground. Borders keep their existing
+   tokens (spec: yellow is never a hairline). */
+[data-skin="brutalist"] .tool-card {
+  background: var(--msg-tool-bg);
+  color: var(--msg-tool-fg);
+  --fg: var(--msg-tool-fg);
+  --fg-muted: color-mix(in srgb, var(--msg-tool-fg) 70%, var(--msg-tool-bg));
+  --bg: var(--msg-tool-bg);
+  --bg-elev: var(--msg-tool-bg);
+  --bg-elev-1: var(--msg-tool-bg);
+  --bg-elev-2: var(--msg-tool-bg);
+  --bg-elev-3: var(--msg-tool-bg);
+  --code-bg: color-mix(in srgb, var(--msg-tool-fg) 6%, var(--msg-tool-bg));
+  --btn-hover-bg: color-mix(in srgb, var(--msg-tool-fg) 8%, var(--msg-tool-bg));
+  --accent-text: var(--msg-tool-accent-text);
+  --warn-text: var(--msg-tool-warn-text);
+  --ok-text: var(--msg-tool-ok-text);
+  --danger-text: var(--msg-tool-danger-text);
+}
+/* Ground-as-ink plates (`color: var(--bg)` = "the app surface as ink" on a
+   warn plate) read the re-scoped ground above — cream on amber in dark,
+   1.7:1. Pin the sticker ink on those two plates inside the card; both
+   clear AA on the light and dark --warn fills. */
+[data-skin="brutalist"] .tool-card .tool-card-perm-reopen,
+[data-skin="brutalist"] .tool-card mark.search-hl.search-hl-active {
+  color: var(--bt-on-yellow);
 }
 
 /* ── 6. Floating surfaces (hard borders + modal shadow, no glass) ─── */

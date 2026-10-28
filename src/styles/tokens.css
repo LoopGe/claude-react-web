@@ -831,10 +831,21 @@
   --msg-user-bg: #3b5bff;
   --msg-user-border: #f2ede0;
   --msg-user-fg: #ffffff;
-  /* Tool-card inversion (spec §7): cream card, ink text on dark. */
+  /* Tool-card inversion (spec §7): cream card, ink text on dark. The
+     card-surface semantic inks carry the OPPOSITE ground's values — the
+     cream card needs the light-surface inks so status chips and diff
+     add/del rows clear AA on it (re-scoped on .tool-card in brutalist.css). */
   --msg-tool-bg: #f2ede0;
   --msg-tool-border: #f2ede0;
   --msg-tool-fg: #141312;
+  --msg-tool-accent-text: #2c46e0;
+  --msg-tool-warn-text: #7b5b0c;
+  --msg-tool-ok-text: #1f6e3b;
+  --msg-tool-danger-text: #a31212;
+  /* Orphan tool-result bubbles (MessageView) — lighter than the card, same
+     family, readable with the inherited --fg. */
+  --msg-tool-result-bg: #26231f;
+  --msg-tool-result-border: #f2ede0;
   /* Brutalist zeroes every corner — including the pill/circle exceptions
      hc keeps; square spinners and square dots are the point here. */
   --radius-3xs: 0;
@@ -857,7 +868,13 @@
   --toast-shadow: 5px 5px 0 #5f5a52;
   --tooltip-shadow: 3px 3px 0 #5f5a52;
   --handle-shadow: 0 0 0 0 transparent;
-  /* No glass / translucency / gradients / glow — flat opaque surfaces. */
+  /* No glass / translucency / gradients / glow — flat opaque surfaces.
+     The wallpaper path (layout.css's body.has-bg remap) mixes surfaces with
+     --app-surface-alpha / --app-chrome-alpha; pin them opaque here so a
+     stray wallpaper cannot translucify the chrome under this skin
+     (useBackground's lock keeps has-bg off, this is the CSS-side stop). */
+  --app-chrome-alpha: 100%;
+  --app-surface-alpha: 100%;
   --glass-blur: none;
   --glass-surface-bg: var(--bg-elev);
   --glass-surface-border: var(--border);
@@ -905,10 +922,21 @@
   --msg-user-bg: #3b5bff;
   --msg-user-border: #111111;
   --msg-user-fg: #ffffff;
-  /* Tool-card inversion (spec §7): ink card, yellow text on paper. */
+  /* Tool-card inversion (spec §7): ink card, yellow text on paper. The
+     card-surface semantic inks carry the OPPOSITE ground's values — the ink
+     card needs the dark-surface inks so status chips and diff add/del rows
+     clear AA on it (re-scoped on .tool-card in brutalist.css). */
   --msg-tool-bg: #111111;
   --msg-tool-border: #111111;
   --msg-tool-fg: #ffe600;
+  --msg-tool-accent-text: #8ea6ff;
+  --msg-tool-warn-text: #f0cd7e;
+  --msg-tool-ok-text: #9fe8bb;
+  --msg-tool-danger-text: #ff9d9d;
+  /* Orphan tool-result bubbles (MessageView) — lighter than the card, same
+     family, readable with the inherited --fg. */
+  --msg-tool-result-bg: #e5e0d0;
+  --msg-tool-result-border: #111111;
   /* Brutalist zeroes every corner — including the pill/circle exceptions
      hc keeps; square spinners and square dots are the point here. */
   --radius-3xs: 0;
@@ -931,7 +959,13 @@
   --toast-shadow: 5px 5px 0 #111111;
   --tooltip-shadow: 3px 3px 0 #111111;
   --handle-shadow: 0 0 0 0 transparent;
-  /* No glass / translucency / gradients / glow — flat opaque surfaces. */
+  /* No glass / translucency / gradients / glow — flat opaque surfaces.
+     The wallpaper path (layout.css's body.has-bg remap) mixes surfaces with
+     --app-surface-alpha / --app-chrome-alpha; pin them opaque here so a
+     stray wallpaper cannot translucify the chrome under this skin
+     (useBackground's lock keeps has-bg off, this is the CSS-side stop). */
+  --app-chrome-alpha: 100%;
+  --app-surface-alpha: 100%;
   --glass-blur: none;
   --glass-surface-bg: var(--bg-elev);
   --glass-surface-border: var(--border);

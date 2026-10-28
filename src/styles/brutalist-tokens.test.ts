@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contextsOf, effectiveToken, parseBlocks, readCss } from './contrast-test-utils'
+import { contextsOf, contrast, effectiveToken, parseBlocks, readCss } from './contrast-test-utils'
 
 const DARK = '[data-skin="brutalist"]'
 const LIGHT = '[data-skin="brutalist"][data-theme="light"]'
@@ -57,6 +57,38 @@ describe('brutalist token blocks', () => {
     expect(effectiveToken(blocks, LIGHT, '--msg-tool-fg')).toBe('#ffe600')
     expect(effectiveToken(blocks, DARK, '--msg-tool-bg')).toBe('#f2ede0')
     expect(effectiveToken(blocks, DARK, '--msg-tool-fg')).toBe('#141312')
+    // orphan tool-result bubbles (MessageView) — inversion family, lighter ground
+    expect(effectiveToken(blocks, LIGHT, '--msg-tool-result-bg')).toBe('#e5e0d0')
+    expect(effectiveToken(blocks, LIGHT, '--msg-tool-result-border')).toBe('#111111')
+    expect(effectiveToken(blocks, DARK, '--msg-tool-result-bg')).toBe('#26231f')
+    expect(effectiveToken(blocks, DARK, '--msg-tool-result-border')).toBe('#f2ede0')
+  })
+
+  it('keeps every tool-card ink above AA on the inverted card ground', () => {
+    for (const sel of [DARK, LIGHT]) {
+      const ground = effectiveToken(blocks, sel, '--msg-tool-bg')!
+      for (const t of [
+        '--msg-tool-fg',
+        '--msg-tool-accent-text',
+        '--msg-tool-warn-text',
+        '--msg-tool-ok-text',
+        '--msg-tool-danger-text',
+      ]) {
+        const ink = effectiveToken(blocks, sel, t)!
+        const ratio = contrast(ink, ground)
+        expect(
+          ratio,
+          `${sel} ${t} (${ink}) on --msg-tool-bg ${ground} = ${ratio.toFixed(2)}:1 (need >= 4.5:1)`,
+        ).toBeGreaterThanOrEqual(4.5)
+      }
+    }
+  })
+
+  it('flattens the wallpaper surface/chrome alpha (zero-transparency skin)', () => {
+    for (const sel of [DARK, LIGHT]) {
+      expect(effectiveToken(blocks, sel, '--app-chrome-alpha')).toBe('100%')
+      expect(effectiveToken(blocks, sel, '--app-surface-alpha')).toBe('100%')
+    }
   })
 
   it('uses only hard offset shadows (no blur, no rgba)', () => {
