@@ -856,13 +856,13 @@
   --drawer-shadow: -7px 0 0 #5f5a52;
   --toast-shadow: 5px 5px 0 #5f5a52;
   --tooltip-shadow: 3px 3px 0 #5f5a52;
-  --handle-shadow: none;
+  --handle-shadow: 0 0 0 0 transparent;
   /* No glass / translucency / gradients / glow — flat opaque surfaces. */
   --glass-blur: none;
   --glass-surface-bg: var(--bg-elev);
   --glass-surface-border: var(--border);
   --glass-blur-strong: none;
-  --glass-edge-highlight: none;
+  --glass-edge-highlight: 0 0 0 0 transparent;
   --surface-gradient: none;
   --accent-glow: none;
   --dot-glow: none;
@@ -930,13 +930,13 @@
   --drawer-shadow: -7px 0 0 #111111;
   --toast-shadow: 5px 5px 0 #111111;
   --tooltip-shadow: 3px 3px 0 #111111;
-  --handle-shadow: none;
+  --handle-shadow: 0 0 0 0 transparent;
   /* No glass / translucency / gradients / glow — flat opaque surfaces. */
   --glass-blur: none;
   --glass-surface-bg: var(--bg-elev);
   --glass-surface-border: var(--border);
   --glass-blur-strong: none;
-  --glass-edge-highlight: none;
+  --glass-edge-highlight: 0 0 0 0 transparent;
   --surface-gradient: none;
   --accent-glow: none;
   --dot-glow: none;

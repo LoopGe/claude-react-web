@@ -25,7 +25,10 @@ describe('brutalist token blocks', () => {
     for (const sel of [DARK, LIGHT]) {
       expect(effectiveToken(blocks, sel, '--glass-blur')).toBe('none')
       expect(effectiveToken(blocks, sel, '--glass-blur-strong')).toBe('none')
-      expect(effectiveToken(blocks, sel, '--glass-edge-highlight')).toBe('none')
+      // A `none` layer inside a comma-separated box-shadow list (glass.css)
+      // invalidates the whole declaration — including the hard offset shadow
+      // beside it. The no-op shadow form keeps the chains valid (hc precedent).
+      expect(effectiveToken(blocks, sel, '--glass-edge-highlight')).toBe('0 0 0 0 transparent')
       expect(effectiveToken(blocks, sel, '--surface-gradient')).toBe('none')
       expect(effectiveToken(blocks, sel, '--accent-glow')).toBe('none')
       expect(effectiveToken(blocks, sel, '--focus-glow')).toBe('none')
@@ -61,6 +64,10 @@ describe('brutalist token blocks', () => {
       for (const t of ['--card-shadow','--modal-shadow','--overlay-shadow','--toast-shadow','--tooltip-shadow']) {
         expect(effectiveToken(blocks, sel, t), `${sel} ${t}`).toMatch(/^\d+px \d+px 0 #([0-9a-f]{6})$/i)
       }
+      // Same comma-chain caveat as --glass-edge-highlight: handles share their
+      // box-shadow list with an accent rim, so the "no shadow" value must be a
+      // valid no-op layer, not `none`.
+      expect(effectiveToken(blocks, sel, '--handle-shadow'), `${sel} --handle-shadow`).toBe('0 0 0 0 transparent')
     }
   })
 
