@@ -13,6 +13,7 @@ import { ElapsedTimer } from './ElapsedTimer'
 import { IconX, IconArrowLeft } from './icons/ToolIcons'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
+import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { cx } from '../utils/cx'
 
 interface Props {
@@ -66,6 +67,9 @@ interface Props {
   /** Message-card header visibility pref (effective value from the owning
    *  Chat panel) — forwarded for consistency with the main transcript. */
   showMessageHeaders?: boolean
+  /** Global streaming-preview mode (from the owning Chat panel) — forwarded
+   *  so the seam here follows the same setting as the main transcript. */
+  streamingMode?: StreamingRenderMode
 }
 
 
@@ -88,6 +92,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   toolGroupCards,
   autoExpandRunningGroups,
   showMessageHeaders,
+  streamingMode,
   sessionId,
 }: Props) {
   const currentId = stack[stack.length - 1]
@@ -280,6 +285,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             toolGroupCards={toolGroupCards}
             autoExpandRunningGroups={autoExpandRunningGroups}
             showMessageHeaders={showMessageHeaders}
+            streamingMode={streamingMode}
             replayReady
             // Subagents are not interactive — you can't type into them.
             // The default ChatEmptyState ("Type a message below, or paste

@@ -19,6 +19,8 @@ import { buildUpgradeCommand } from '../utils/upgrade-command'
 import type { FullServerConfig } from '../types/config'
 import type { RowGapPreset } from '../../shared/row-gap'
 import { DEFAULT_ROW_GAP, ROW_GAP_LABELS, ROW_GAP_PRESETS } from '../../shared/row-gap'
+import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
+import { DEFAULT_STREAMING_RENDER_MODE } from '../../shared/streaming-render-mode'
 import type { TextSpacingPreset } from '../../shared/text-spacing'
 import { DEFAULT_TEXT_SPACING, TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spacing'
 import type { FontSizePreset } from '../../shared/font-size'
@@ -172,6 +174,7 @@ export function GlobalSettingsModal({
   const [textSpacing, setTextSpacing] = useState<TextSpacingPreset>(DEFAULT_TEXT_SPACING)
   const [fontSize, setFontSize] = useState<FontSizePreset>(DEFAULT_FONT_SIZE)
   const [animationSpeed, setAnimationSpeed] = useState<AnimationSpeedPreset>(DEFAULT_ANIMATION_SPEED)
+  const [streamingRenderMode, setStreamingRenderMode] = useState<StreamingRenderMode>(DEFAULT_STREAMING_RENDER_MODE)
 
   // Skills tab state
   const [skillLoadMode, setSkillLoadMode] = useState<SkillLoadMode>('default')
@@ -224,6 +227,7 @@ export function GlobalSettingsModal({
         setTextSpacing(cfg.textSpacing ?? DEFAULT_TEXT_SPACING)
         setFontSize(cfg.fontSize ?? DEFAULT_FONT_SIZE)
         setAnimationSpeed(cfg.animationSpeed ?? DEFAULT_ANIMATION_SPEED)
+        setStreamingRenderMode(cfg.streamingRenderMode ?? DEFAULT_STREAMING_RENDER_MODE)
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
         setSteering(cfg.steering ?? true)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
@@ -310,6 +314,7 @@ export function GlobalSettingsModal({
         textSpacing,
         fontSize,
         animationSpeed,
+        streamingRenderMode,
         allowSensitivePathEdits,
         steering,
       }
@@ -480,6 +485,7 @@ export function GlobalSettingsModal({
                   textSpacing={textSpacing}
                   fontSize={fontSize}
                   animationSpeed={animationSpeed}
+                  streamingRenderMode={streamingRenderMode}
                   onShowPinnedUserMessageChange={setShowPinnedUserMessage}
                   onAutoRecapChange={setAutoRecap}
                   onToolGroupCardsChange={setToolGroupCards}
@@ -489,6 +495,7 @@ export function GlobalSettingsModal({
                   onTextSpacingChange={setTextSpacing}
                   onFontSizeChange={setFontSize}
                   onAnimationSpeedChange={setAnimationSpeed}
+                  onStreamingRenderModeChange={setStreamingRenderMode}
                 />
               )}
               {tab === 'skills' && (
@@ -767,10 +774,11 @@ function ServerTab({
 function AppearanceTab({
   showPinnedUserMessage, autoRecap, toolGroupCards, autoExpandRunningGroups,
   showMessageHeaders, rowGap, textSpacing, fontSize, animationSpeed,
+  streamingRenderMode,
   onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
   onAutoExpandRunningGroupsChange,
   onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onFontSizeChange,
-  onAnimationSpeedChange,
+  onAnimationSpeedChange, onStreamingRenderModeChange,
 }: {
   showPinnedUserMessage: boolean
   autoRecap: boolean
@@ -781,6 +789,7 @@ function AppearanceTab({
   textSpacing: TextSpacingPreset
   fontSize: FontSizePreset
   animationSpeed: AnimationSpeedPreset
+  streamingRenderMode: StreamingRenderMode
   onShowPinnedUserMessageChange: (v: boolean) => void
   onAutoRecapChange: (v: boolean) => void
   onToolGroupCardsChange: (v: boolean) => void
@@ -790,6 +799,7 @@ function AppearanceTab({
   onTextSpacingChange: (v: TextSpacingPreset) => void
   onFontSizeChange: (v: FontSizePreset) => void
   onAnimationSpeedChange: (v: AnimationSpeedPreset) => void
+  onStreamingRenderModeChange: (v: StreamingRenderMode) => void
 }) {
   return (
     <div className="settings-stack">
@@ -797,8 +807,10 @@ function AppearanceTab({
         <div className="settings-group-head">
           <h4>Display defaults</h4>
           <span className="settings-group-desc">
-            Defaults for every session. Individual sessions can override these in
-            their own Settings panel.
+            Defaults for every session. The pinned header / recap / tool-group /
+            message-header rows are overridable per session (session Settings →
+            Appearance); streaming preview and the spacing, size and speed
+            presets are global-only personal preferences.
           </span>
         </div>
         <SettingsRow
@@ -854,6 +866,16 @@ function AppearanceTab({
             label="Show message card headers"
             checked={showMessageHeaders}
             onChange={onShowMessageHeadersChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Render live text inline in the transcript"
+          hint="Where the reply's text streams while it renders. On: a growing row inside the transcript that scrolls with the conversation (the card-era feel). Off (default): the capped floating bubble above the composer. Applies globally to every session; flipping mid-turn is safe."
+        >
+          <Switch
+            label="Render live text inline in the transcript"
+            checked={streamingRenderMode === 'inline'}
+            onChange={(on) => onStreamingRenderModeChange(on ? 'inline' : 'overlay')}
           />
         </SettingsRow>
         <SettingsRow

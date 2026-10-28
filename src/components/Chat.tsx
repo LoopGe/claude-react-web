@@ -101,6 +101,7 @@ import { BottomCardMotion } from './BottomCardMotion'
 import type { AgentInfo, PastedImage, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
+import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import type { ScheduledSendBody } from '../../shared/scheduled-send'
 import { buildOutgoingBody } from '../utils/message-body'
 import type { MessageJumpTarget } from '../../shared/message-jump'
@@ -310,13 +311,16 @@ interface Props {
   /** Global UI-pref defaults (server-backed). Effective values are
    *  `session.<field> ?? globalPrefs.<field>` — a per-session override
    *  wins, otherwise the global default applies. Forwarded to
-   *  <SettingsPanel> for the override UI. */
+   *  <SettingsPanel> for the override UI. `streamingRenderMode` is
+   *  global-only (no per-session override) and feeds MessageList's
+   *  `streamingMode` seam verbatim. */
   globalPrefs: {
     showPinnedUserMessage: boolean
     autoRecap: boolean
     toolGroupCards: boolean
     autoExpandRunningGroups: boolean
     showMessageHeaders: boolean
+    streamingRenderMode: StreamingRenderMode
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
   /** True while App is playing the /clear fade-in on this panel. Combined
@@ -2323,6 +2327,7 @@ export const Chat = memo(function Chat({
           toolGroupCards={effectiveToolGroupCards}
           autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
           showMessageHeaders={effectiveShowMessageHeaders}
+          streamingMode={globalPrefs.streamingRenderMode}
           // The task checklist + monitor bar are bottom OVERLAYS of the
           // transcript, not siblings of it: rendering them here puts them in
           // `.chat-bottom-stack`, so settled messages scroll behind their
@@ -2736,6 +2741,7 @@ export const Chat = memo(function Chat({
           <TasksPanel
             key={session.id}
             sessionId={session.id}
+            streamingMode={globalPrefs.streamingRenderMode}
             onClose={() => onCloseTasksPanel?.()}
           />
           </ErrorBoundary>
@@ -2864,6 +2870,7 @@ export const Chat = memo(function Chat({
             toolGroupCards={effectiveToolGroupCards}
             autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
             showMessageHeaders={effectiveShowMessageHeaders}
+            streamingMode={globalPrefs.streamingRenderMode}
           />
         </SkillProvider>
         </SubagentProvider>
@@ -2891,6 +2898,7 @@ export const Chat = memo(function Chat({
               toolGroupCards={effectiveToolGroupCards}
               autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
               showMessageHeaders={effectiveShowMessageHeaders}
+              streamingMode={globalPrefs.streamingRenderMode}
             />
           </SkillProvider>
           </WorkflowProvider>

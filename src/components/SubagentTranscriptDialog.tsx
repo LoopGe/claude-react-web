@@ -8,6 +8,7 @@
 import { McpAppsProvider } from '../hooks/useMcpApps'
 import { useSubagentTranscriptStore, subagentStoreId } from '../hooks/useSubagentTranscriptStore'
 import { useSessionField } from '../session-store/selectors'
+import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { MessageList } from './MessageList'
 import { Overlay } from './Overlay'
 import { IconX } from './icons/ToolIcons'
@@ -16,11 +17,15 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   sessionId,
   agentId,
   label,
+  streamingMode,
   onClose,
 }: {
   sessionId: string
   agentId: string
   label: string
+  /** Global streaming-preview mode, threaded from the panel prefs so the
+   *  dialog follows the same setting as the main transcript. */
+  streamingMode?: StreamingRenderMode
   onClose: () => void
 }) {
   const { replayReady, error } = useSubagentTranscriptStore(sessionId, agentId)
@@ -79,6 +84,7 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
                 toolGroupCards
                 autoExpandRunningGroups
                 showMessageHeaders
+                streamingMode={streamingMode}
                 emptyStateContent={(
                   <div className="chat-messages-empty-side">
                     <div className="chat-messages-empty-title">No transcript on disk for this subagent.</div>

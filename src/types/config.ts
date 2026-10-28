@@ -3,6 +3,7 @@ import type { RowGapPreset } from '../../shared/row-gap'
 import type { TextSpacingPreset } from '../../shared/text-spacing'
 import type { FontSizePreset } from '../../shared/font-size'
 import type { AnimationSpeedPreset } from '../../shared/animation-speed'
+import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 
 /** Client-side mirror of a provider profile. */
 export interface ProviderProfile {
@@ -73,6 +74,9 @@ export interface ConfigResponse {
   /** Global animation speed (scales every `--motion-duration-*` token).
    *  Undefined = inherit the server default (standard, scale 1). */
   animationSpeed?: AnimationSpeedPreset
+  /** Where the live turn's text renders while a reply streams ('overlay' |
+   *  'inline'). Global only — never per-session. */
+  streamingRenderMode?: StreamingRenderMode
   /** Global default for the first-party `git-tools` git MCP server. Sessions
    *  without an explicit override inherit this. */
   appToolsGit?: boolean
@@ -125,6 +129,9 @@ export interface FullServerConfig {
   fontSize: FontSizePreset
   /** Global animation speed (scales every `--motion-duration-*` token). */
   animationSpeed: AnimationSpeedPreset
+  /** Where the live turn's text renders while a reply streams ('overlay' |
+   *  'inline'). Global only — never per-session. */
+  streamingRenderMode: StreamingRenderMode
   /** Global default for the first-party `git-tools` git MCP server. */
   appToolsGit: boolean
   /** Per-first-party-server global defaults. */

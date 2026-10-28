@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { subagentStoreId } from '../hooks/useSubagentTranscriptStore'
@@ -83,5 +83,33 @@ describe('SubagentTranscriptDialog', () => {
     render(<SubagentTranscriptDialog sessionId="s1" agentId="err" label="recovered" onClose={() => {}} />)
     expect(screen.getByText('review this diff')).toBeTruthy()
     expect(screen.queryByText(/Failed to load transcript/)).toBeNull()
+  })
+
+  it('follows the streaming mode: inline renders the live tail row, not the floating bubble', async () => {
+    // The global streamingRenderMode setting must reach this mount too — the
+    // hub feeds a running subagent's transcript live, so the seam is
+    // observable here. Dropping the prop silently pins the dialog to the
+    // floating bubble whatever the user chose.
+    //
+    // The live text goes into the store MessageList reads — its `sessionId`
+    // prop is the PARENT session id (the dialog renders scratch-store
+    // `items` but passes the parent id through), which is where sidechain
+    // live text accumulates during a run (docs/streaming-footer-research.md
+    // §4.3).
+    seedStore('s1', 'live')
+    const liveStore = sessionStoreRegistry.getOrCreate('s1')
+    render(
+      <SubagentTranscriptDialog sessionId="s1" agentId="live" label="live" onClose={() => {}} streamingMode="inline" />,
+    )
+    await act(async () => {
+      liveStore.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 'i0', parent_tool_use_id: null, event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } } as never })
+      liveStore.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 'i1', parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'live subagent text' } } } as never })
+      await new Promise((r) => setTimeout(r, 150))
+    })
+    // Overlay portals to document.body — query there, not in `container`.
+    const row = document.body.querySelector('.streaming-msg--inline')
+    expect(row?.textContent).toContain('live subagent text')
+    // The floating bubble is not mounted in inline mode.
+    expect(document.body.querySelector('.chat-streaming-region')).toBeNull()
   })
 })

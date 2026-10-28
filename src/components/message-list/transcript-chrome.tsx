@@ -5,6 +5,7 @@ import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
 import { useStreamingRegionMotion } from '../../utils/transitions'
+import type { StreamingRenderMode } from '../../../shared/streaming-render-mode'
 // Temporarily disabled: live fenced-code-block rendering in the streaming
 // bubble (StreamCodeSegment below + the segment split in StreamingFooter).
 // Restore these imports together with the commented-out logic to re-enable.
@@ -93,8 +94,13 @@ const StreamCodeSegment = memo(function StreamCodeSegment({
  *  below the Virtuoso scroller (`.chat-bottom-stack`). 'inline': an in-flow
  *  tail row at the end of the Virtuoso list — uncapped, scrolls with the
  *  transcript, no glass (nothing behind it to refract), no internal
- *  scrollbar (the body never scrolls). */
-export type StreamingFooterVariant = 'overlay' | 'inline'
+ *  scrollbar (the body never scrolls).
+ *
+ *  An alias of the canonical union in shared/streaming-render-mode.ts (the
+ *  same type the global `streamingRenderMode` setting stores) — one union,
+ *  so a third value (e.g. an 'off' mode) flows to the renderer, MessageList's
+ *  mode seam and the config field in one edit. */
+export type StreamingFooterVariant = StreamingRenderMode
 
 /** Presence wrapper for the overlay-mode live bubble: the AnimatePresence
  *  child MessageList mounts under `.chat-bottom-stack`. Owns the mount

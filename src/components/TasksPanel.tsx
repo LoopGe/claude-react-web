@@ -26,6 +26,7 @@ import { ElapsedTimer } from './ElapsedTimer'
 import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
 import { isTerminalTaskStatus } from '../../shared/tasks.js'
+import type { StreamingRenderMode } from '../../shared/streaming-render-mode.js'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
 import { IconX, IconCheck, IconCircle, IconAlertCircle, IconClock, IconLoader, IconTerminal, IconBot, IconListTodo, IconWorkflow, IconFileText } from './icons/ToolIcons'
 import { formatError } from '../utils/format-error'
@@ -93,9 +94,13 @@ function TaskResultBlock({ result }: { result: string }) {
 
 export const TasksPanel = memo(function TasksPanel({
   sessionId,
+  streamingMode,
   onClose,
 }: {
   sessionId: string
+  /** Global streaming-preview mode, forwarded to the disk-transcript dialog
+   *  so it follows the same setting as the main transcript. */
+  streamingMode?: StreamingRenderMode
   onClose: () => void
 }) {
   const tasks = useSessionField(sessionId, 'tasks')
@@ -192,6 +197,7 @@ export const TasksPanel = memo(function TasksPanel({
           sessionId={sessionId}
           agentId={transcript.agentId}
           label={transcript.label}
+          streamingMode={streamingMode}
           onClose={() => setTranscript(null)}
         />
       )}

@@ -276,6 +276,7 @@ export function buildApp(opts: AppOptions = {}): { app: Hono; sessionManager: Se
       textSpacing: serverConfig.textSpacing,
       fontSize: serverConfig.fontSize,
       animationSpeed: serverConfig.animationSpeed,
+      streamingRenderMode: serverConfig.streamingRenderMode,
       activeProfileId: serverConfig.activeProfileId,
       activeProfileName: serverConfig.profiles.find((p) => p.id === serverConfig.activeProfileId)?.name ?? 'Default',
     }),

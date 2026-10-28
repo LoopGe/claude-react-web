@@ -27,7 +27,8 @@ import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/nor
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { StreamingFooter, type StreamingFooterVariant } from './message-list/transcript-chrome'
+import { StreamingFooter } from './message-list/transcript-chrome'
+import { DEFAULT_STREAMING_RENDER_MODE, type StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { OverlayStreamingRegion } from './message-list/OverlayStreamingRegion'
 import { ChatEmptyState } from './ChatEmptyState'
 import { ErrorBoundary } from './ErrorBoundary'
@@ -86,19 +87,6 @@ export { WorkingBubble, LiveWorkingBubble } from './message-list/WorkingBubble'
  *  change identity and re-fire the seek effect (which then early-returns) many
  *  times per second for nothing. */
 const EMPTY_VIRT_IDX = new Map<number, number>()
-
-/** Where the live turn's text renders. 'overlay' (default): the capped
- *  bottom-overlay bubble in `.chat-bottom-stack` (current behavior).
- *  'inline': an in-flow tail row at the end of the Virtuoso list — grows
- *  with the turn, scrolls with the transcript, scrollable back through
- *  (the card-era feel). Selected by the module constant; a future UI
- *  setting threads through the `streamingMode` prop. See
- *  docs/superpowers/specs/2026-09-29-dual-mode-streaming-render-design.md.
- *  Derived from StreamingFooterVariant (transcript-chrome.tsx — the
- *  renderer's own contract) so the mode seam and the footer placement stay
- *  one union: a third value added there flows here automatically. */
-export type StreamingRenderMode = StreamingFooterVariant
-export const DEFAULT_STREAMING_RENDER_MODE: StreamingRenderMode = 'overlay'
 
 /** Virtualization key of the inline streaming tail row. A module constant
  *  distinct from every message uuid, so the finalized row that replaces it
@@ -218,10 +206,15 @@ interface Props {
    *  NOT provided (prop-fed mode). When non-null, a live "typing" bubble is
    *  rendered at the bottom of the transcript. */
   streamingContent?: string | null
-  /** Which streaming render mode this transcript uses. Defaults to the
-   *  module constant (currently 'overlay'). Exists as a prop so tests can
-   *  force either mode and a future UI setting can thread through without
-   *  touching internals. */
+  /** Which streaming render mode this transcript uses: 'overlay' (default —
+   *  the capped floating bubble in `.chat-bottom-stack`) or 'inline' (an
+   *  in-flow tail row at the end of the list, the card-era feel). The global
+   *  `streamingRenderMode` setting threads through here (Chat /
+   *  SideChatDrawer); omitted → DEFAULT_STREAMING_RENDER_MODE. One union with
+   *  the renderer's StreamingFooterVariant and the config field — all three
+   *  alias shared/streaming-render-mode.ts, so a third value (e.g. an 'off'
+   *  mode) flows everywhere in one edit.
+   *  See docs/superpowers/specs/2026-09-29-dual-mode-streaming-render-design.md. */
   streamingMode?: StreamingRenderMode
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
@@ -491,9 +484,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     setPrevRevealKey(transcriptRevealKey)
     if (expandedBodies.size > 0) setExpandedBodies(new Set())
   }
-  // Which streaming render mode this transcript uses. Defaults to the module
-  // constant (currently 'overlay') so production behavior is unchanged; the
-  // prop exists for tests and a future UI setting.
+  // Which streaming render mode this transcript uses. The global
+  // `streamingRenderMode` setting threads through the `streamingMode` prop
+  // (Chat / SideChatDrawer / the drill-in overlays); tests force either mode
+  // through the same prop. Absent → the floating-bubble default.
   const resolvedMode = streamingMode ?? DEFAULT_STREAMING_RENDER_MODE
   // Live-turn text. In OVERLAY mode (the default) this component does not
   // read it at all: the capped bubble, its 12.5 Hz `streamingContent`

@@ -120,6 +120,8 @@ import { onProfilesChanged } from './utils/profiles-events'
 import { fetchConfig, markConfigStale, peekConfig, subscribeModelOptions } from './state/modelOptionsStore'
 import type { RowGapPreset } from '../shared/row-gap'
 import { DEFAULT_ROW_GAP, ROW_GAP_PX } from '../shared/row-gap'
+import type { StreamingRenderMode } from '../shared/streaming-render-mode'
+import { DEFAULT_STREAMING_RENDER_MODE } from '../shared/streaming-render-mode'
 import type { TextSpacingPreset } from '../shared/text-spacing'
 import { DEFAULT_TEXT_SPACING, TEXT_SPACING_CSS } from '../shared/text-spacing'
 import type { FontSizePreset } from '../shared/font-size'
@@ -353,8 +355,9 @@ export function App() {
     textSpacing: TextSpacingPreset
     fontSize: FontSizePreset
     animationSpeed: AnimationSpeedPreset
+    streamingRenderMode: StreamingRenderMode
     firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE, animationSpeed: DEFAULT_ANIMATION_SPEED })
+  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE, animationSpeed: DEFAULT_ANIMATION_SPEED, streamingRenderMode: DEFAULT_STREAMING_RENDER_MODE })
 
   // Apply the global transcript spacing to a CSS variable. Set on
   // documentElement, it overrides the `.chat`-scoped default, so message rows,
@@ -664,6 +667,7 @@ export function App() {
       textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
       fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
       animationSpeed: r.animationSpeed ?? DEFAULT_ANIMATION_SPEED,
+      streamingRenderMode: r.streamingRenderMode ?? DEFAULT_STREAMING_RENDER_MODE,
       firstPartyTools: r.firstPartyTools,
     }
     // Keep object identity when nothing changed — every store notify runs
@@ -679,6 +683,7 @@ export function App() {
       prev.textSpacing === nextPrefs.textSpacing &&
       prev.fontSize === nextPrefs.fontSize &&
       prev.animationSpeed === nextPrefs.animationSpeed &&
+      prev.streamingRenderMode === nextPrefs.streamingRenderMode &&
       prev.firstPartyTools === nextPrefs.firstPartyTools
         ? prev
         : nextPrefs,

@@ -8,6 +8,7 @@
 
 import { memo, useEffect, useRef, useState, useCallback } from 'react'
 import type { SessionInfo } from '../types'
+import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import type { ChatStream } from '../hooks/useChatStream'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { MessageList, LiveWorkingBubble } from './MessageList'
@@ -54,6 +55,10 @@ interface Props {
   /** Message-card header visibility pref (effective value — session
    *  override ?? global default, resolved by ChatPanel). */
   showMessageHeaders?: boolean
+  /** Where the live turn's text renders ('overlay' | 'inline'). Global-only
+   *  pref (no per-session override), resolved by ChatPanel and fed verbatim
+   *  to MessageList's `streamingMode` seam. */
+  streamingMode: StreamingRenderMode
   /** True close — deletes the ephemeral session. */
   onClose: () => void
   /** Collapse — hides the drawer but keeps the session alive. */
@@ -86,6 +91,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   toolGroupCards,
   autoExpandRunningGroups,
   showMessageHeaders,
+  streamingMode,
   onClose,
   onCollapse,
 }: Props) {
@@ -283,6 +289,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           toolGroupCards={toolGroupCards}
           autoExpandRunningGroups={autoExpandRunningGroups}
           showMessageHeaders={showMessageHeaders}
+          streamingMode={streamingMode}
           emptyStateContent={(
             // Side Chat-specific empty state. The drawer is ephemeral —
             // closing it deletes the conversation — and most users only

@@ -139,7 +139,7 @@ const streamEvent = (uuid: string, event: Record<string, unknown>) => ({
 })
 
 const noop = () => {}
-const globalPrefs = { showPinnedUserMessage: true, autoRecap: false, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true }
+const globalPrefs = { showPinnedUserMessage: true, autoRecap: false, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true, streamingRenderMode: 'overlay' as const }
 const snippets = { snippets: [], add: noop, update: noop, remove: noop, reorder: noop } as never
 
 afterEach(async () => {
@@ -258,4 +258,54 @@ describe('live-turn streaming re-renders only the leaves', () => {
     // The overlay leaf is not mounted in inline mode.
     expect(container.querySelector('.chat-streaming-region')).toBeNull()
   })
+
+  it('threads globalPrefs.streamingRenderMode into the MessageList seam', async () => {
+    // The global setting's whole journey ends here: Chat must pass the mode
+    // down to MessageList's streamingMode prop — a dropped hop silently pins
+    // every panel to the floating bubble while the settings switch lies.
+    const SID = 'stream-thread'
+    const emit = (frame: Record<string, unknown>) => {
+      for (const fn of sessionListeners.get(SID) ?? []) fn({ sessionId: SID, ...frame })
+    }
+    const session = {
+      id: SID, title: 'thread', cwd: '/tmp/thread', running: true, working: true, workingSince: Date.now(),
+      terminated: false, messageCount: 4, permissionMode: 'default', model: 'test-model',
+      createdAt: Date.now(), lastActivityAt: Date.now(),
+    } as unknown as SessionInfo
+    const { container } = render(
+      <ToastProvider>
+        <Chat
+          session={session}
+          globalPrefs={{ ...globalPrefs, streamingRenderMode: 'inline' }}
+          snippets={snippets}
+          onOpenSnippetsManager={noop}
+          onSaveCurrentAsSnippet={noop}
+          onSessionUpdate={noop}
+          onRequestResumeForPanel={noop}
+          onOpenSettingsTab={noop}
+          onShowHelp={noop}
+          onClearSession={noop}
+          onHandoffSession={noop}
+          focused
+        />
+      </ToastProvider>,
+    )
+    for (let i = 0; i < 100 && !sessionListeners.get(SID)?.size; i++) await act(() => sleep(20))
+    expect(sessionListeners.get(SID)?.size).toBeGreaterThan(0)
+
+    await act(async () => {
+      emit({ kind: 'replay', messages: history(4) })
+      emit({ kind: 'replay-done' })
+      emit(streamEvent('t-0', { type: 'message_start', message: { id: 'm1' } }))
+      emit(streamEvent('t-1', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }))
+      emit(streamEvent('t-2', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'threaded live text' } }))
+      await sleep(150)
+    })
+
+    // The live text lands as the in-list tail row…
+    const row = container.querySelector('.streaming-msg--inline')
+    expect(row?.textContent).toContain('threaded live text')
+    // …and the floating bubble is not mounted.
+    expect(container.querySelector('.chat-streaming-region')).toBeNull()
+  }, 30_000)
 })

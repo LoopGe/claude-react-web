@@ -48,6 +48,7 @@ import type { SettingsTabName } from '../local-commands'
 import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
 import type { GitStatus } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
+import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
 /** Chip tooltip — verbose form for users who hover before clicking.
@@ -143,6 +144,7 @@ export interface ChatPanelProps {
     toolGroupCards: boolean
     autoExpandRunningGroups: boolean
     showMessageHeaders: boolean
+    streamingRenderMode: StreamingRenderMode
     firstPartyTools?: Record<string, { enabled: boolean }>
   }
   /** True when a turn has completed on this session since the user last
@@ -1495,6 +1497,7 @@ export const ChatPanel = memo(function ChatPanel({
             sideChatSession.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups
           }
           showMessageHeaders={sideChatSession.showMessageHeaders ?? globalPrefs.showMessageHeaders}
+          streamingMode={globalPrefs.streamingRenderMode}
           onClose={onCloseSideChat}
           onCollapse={onToggleCollapseSideChat}
         />
