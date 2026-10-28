@@ -1,4 +1,4 @@
-.msg.tool { background: var(--msg-tool-bg); border-style: dashed; border-color: var(--msg-tool-border); }
+.msg.tool { background: var(--msg-tool-bg); color: var(--msg-tool-fg); border-style: dashed; border-color: var(--msg-tool-border); }
 .msg.tool-result { background: var(--msg-tool-result-bg); border-color: var(--msg-tool-result-border); }
 /* Subagent assistant turns — same silhouette as a regular assistant card
    but dimmed and with a dotted left rail, so it reads as "nested" rather
@@ -995,7 +995,7 @@
   height: 50%;
   border-left: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  border-bottom-left-radius: 7px;
+  border-bottom-left-radius: var(--radius-sm);
   pointer-events: none;
 }
 .settings-row-sub .settings-row-title { font-size: var(--fs-sm); }
@@ -1189,7 +1189,7 @@
   margin-top: var(--space-2);
   padding: var(--space-2) var(--space-2-5) var(--space-1);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-elev);
 }
 .settings-advanced summary {

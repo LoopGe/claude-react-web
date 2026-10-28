@@ -14,7 +14,7 @@ export type Theme = 'dark' | 'light' | 'system'
  *  *feel* (depth, glow, gradients, or — for 'hc' — a VSCode-style high
  *  contrast accessibility treatment) while inheriting the colour tokens of
  *  whichever mode is active. 'default' is the original flat look. */
-export type Skin = 'default' | 'glow' | 'anthropic' | 'hc' | 'soft-hc'
+export type Skin = 'default' | 'glow' | 'anthropic' | 'hc' | 'soft-hc' | 'brutalist'
 
 export function getStoredTheme(): Theme {
   try {
@@ -28,35 +28,37 @@ export function getStoredTheme(): Theme {
 export function getStoredSkin(): Skin {
   try {
     const v = window.localStorage.getItem(SKIN_KEY)
-    if (v === 'default' || v === 'glow' || v === 'anthropic' || v === 'hc' || v === 'soft-hc') return v
+    if (v === 'default' || v === 'glow' || v === 'anthropic' || v === 'hc' || v === 'soft-hc' || v === 'brutalist') return v
   } catch { /* ignored */ }
   // Default skin keeps the original look for existing users.
   return 'default'
 }
 
 /** True for skins that lock the accent colour to a brand value (Anthropic
- *  terracotta / High-Contrast blue / Soft High-Contrast indigo) defined in
- *  tokens.css's `[data-skin="…"]` blocks. When locked, the global accent
- *  picker is suppressed and the user's stored accent is not applied, so the
- *  skin's CSS-defined accent wins. Centralised here so every gating site
- *  (AppearancePanel, useTheme) agrees on which skins lock the accent. */
+ *  terracotta / High-Contrast blue / Soft High-Contrast indigo / Brutalist
+ *  sticker palette) defined in tokens.css's `[data-skin="…"]` blocks. When
+ *  locked, the global accent picker is suppressed and the user's stored
+ *  accent is not applied, so the skin's CSS-defined accent wins. Centralised
+ *  here so every gating site (AppearancePanel, useTheme) agrees on which
+ *  skins lock the accent. */
 export function isAccentLocked(skin: Skin | undefined | null): boolean {
-  return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc'
+  return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc' || skin === 'brutalist'
 }
 
 /** Backgrounds are available only on the expressive skins. The branded /
- *  a11y skins (Anthropic, HC, Soft-HC) stay pristine — kept in lockstep with
- *  the accent lock (same skins) so gating sites agree. */
+ *  a11y skins (Anthropic, HC, Soft-HC, Brutalist) stay pristine — kept in
+ *  lockstep with the accent lock (same skins) so gating sites agree. */
 export function isBackgroundLocked(skin: Skin | undefined | null): boolean {
-  return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc'
+  return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc' || skin === 'brutalist'
 }
 
 /** True for skins whose glass tokens are already fully opaque (solid
- *  --bg-elev, no blur) — `hc` and `soft-hc` — so the global transparency
- *  toggle would be a dead control there. `anthropic` keeps its warm tinted
- *  glass, so it is NOT locked (unlike the background/accent locks above). */
+ *  --bg-elev, no blur) — `hc`, `soft-hc` and `brutalist` — so the global
+ *  transparency toggle would be a dead control there. `anthropic` keeps its
+ *  warm tinted glass, so it is NOT locked (unlike the background/accent
+ *  locks above). */
 export function isTransparencyLocked(skin: Skin | undefined | null): boolean {
-  return skin === 'hc' || skin === 'soft-hc'
+  return skin === 'hc' || skin === 'soft-hc' || skin === 'brutalist'
 }
 
 /** Apply a skin by toggling the `data-skin` attribute on <html>. The

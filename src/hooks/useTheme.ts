@@ -14,7 +14,7 @@ import {
   accentStrongFor,
   onAccentFor,
 } from '../theme'
-import { applySkin, applyTheme, applyTransparency, getStoredSkin, getStoredTheme, onSystemThemeChange, toggleTheme, TRANSPARENCY_KEY, type Skin, type Theme } from '../utils/theme'
+import { applySkin, applyTheme, applyTransparency, getStoredSkin, getStoredTheme, isAccentLocked, onSystemThemeChange, toggleTheme, TRANSPARENCY_KEY, type Skin, type Theme } from '../utils/theme'
 
 export interface UseThemeResult {
   theme: Theme
@@ -99,13 +99,12 @@ export function useTheme(): UseThemeResult {
   // entire stylesheet picks up the change without any further wiring.
   useEffect(() => {
     const root = document.documentElement.style
-    // The Anthropic, High-Contrast, and Soft High-Contrast skins lock the
-    // accent (brand terracotta / bright blue / indigo respectively). Remove
-    // any inline accent overrides so the values defined in the
-    // [data-skin="…"] blocks take effect — inline styles on <html> would
-    // otherwise win. Switching back re-runs this effect and writes the
-    // user's accent again.
-    if (skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc') {
+    // Skins that lock the accent (Anthropic / HC / Soft-HC / Brutalist — see
+    // isAccentLocked, the central gate) define their own brand values in the
+    // [data-skin="…"] blocks. Remove any inline accent overrides so those
+    // values take effect — inline styles on <html> would otherwise win.
+    // Switching back re-runs this effect and writes the user's accent again.
+    if (isAccentLocked(skin)) {
       root.removeProperty('--accent')
       root.removeProperty('--accent-strong')
       root.removeProperty('--on-accent')

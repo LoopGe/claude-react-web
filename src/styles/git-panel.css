@@ -1065,7 +1065,7 @@
   margin: 0;
   flex: none;
   border: 2px solid var(--border);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--bg-elev-1);
   cursor: pointer;
   position: relative;
@@ -1089,7 +1089,7 @@
   transform: translate(-50%, -50%);
   width: var(--size-6px);
   height: var(--size-6px);
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--accent);
 }
 .profile-create-option input[type="radio"]:focus-visible {

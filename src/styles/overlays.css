@@ -684,7 +684,9 @@
   margin-top: var(--space-1-5);
   border-left: 3px solid var(--out-accent);
   background: color-mix(in srgb, var(--out-accent) 8%, transparent);
-  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  border-radius: var(--radius-xs);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
   overflow: hidden;
 }
 .bash-msg-out:first-child { margin-top: 0; }
@@ -887,7 +889,7 @@ mark.search-hl.search-hl-active {
   gap: var(--space-2-5);
   width: 100%;
   padding: 11px 12px 12px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   font-size: var(--fs-base);
   line-height: 1.4;
   border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 22%, var(--border));
@@ -951,7 +953,7 @@ mark.search-hl.search-hl-active {
   width: 22px;
   height: 22px;
   flex-shrink: 0;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1035,7 +1037,7 @@ mark.search-hl.search-hl-active {
   flex-shrink: 0;
   align-self: center;
   padding: 3px 10px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   border: 1px solid color-mix(in srgb, var(--kind-tint, var(--accent)) 45%, transparent);
   background: color-mix(in srgb, var(--kind-tint, var(--accent)) 22%, transparent);
   color: color-mix(in srgb, var(--kind-tint, var(--accent-text)) 70%, var(--fg));

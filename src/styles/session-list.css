@@ -218,7 +218,9 @@
     inset 0 1px 0 0 var(--border);
 }
 .session-group-header.list-last {
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  border-radius: var(--radius-md);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
   --row-hairline:
     inset 1px 0 0 0 var(--border),
     inset -1px 0 0 0 var(--border),
@@ -466,7 +468,11 @@
     inset 0 1px 0 0 var(--border),
     inset 0 -1px 0 0 var(--border);
 }
-.session-item-shell.list-last > .session-item { border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.session-item-shell.list-last > .session-item {
+  border-radius: var(--radius-md);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
 .session-item-shell.list-first.list-last > .session-item { border-radius: var(--radius-md); }
 .session-item-shell.deleting {
   grid-template-rows: 0fr;

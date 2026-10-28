@@ -45,6 +45,7 @@ const SKIN_OPTIONS: { value: Skin; label: string; desc: string }[] = [
   { value: 'anthropic', label: 'Anthropic', desc: 'Warm paper & terracotta' },
   { value: 'hc', label: 'High Contrast', desc: 'Pure B/W · square corners · a11y' },
   { value: 'soft-hc', label: 'Soft High Contrast', desc: 'Near-B/W · rounded · contrast' },
+  { value: 'brutalist', label: 'Brutalist', desc: 'Neo-brutalist stickers · hard edges' },
 ]
 
 const BACKGROUND_DEFAULT: BackgroundSetting = { pref: { kind: 'none' }, opacity: 0.85 }
@@ -64,6 +65,11 @@ const HC_ACCENT = '#0080FF'
  *  [data-skin="soft-hc"] block. The light variant uses #3b5bdb; the swatch
  *  shows the dark-variant colour and the lock message clarifies it is fixed. */
 const SOFT_HC_ACCENT = '#7b8cde'
+
+/** brutalist locked accents (yellow / orange / blue sticker palette). Mirrors
+ *  the values in tokens.css's [data-skin="brutalist"] block — shown as
+ *  non-interactive swatches so users see the palette is fixed, not pickable. */
+const BRUTALIST_ACCENTS = ['#ffe600', '#ff4d00', '#3b5bff']
 
 const MODE_OPTIONS: { value: Theme; label: string; icon: ReactNode }[] = [
   { value: 'light', label: 'Light', icon: <IconSun size={15} /> },
@@ -218,7 +224,21 @@ function AppearancePopover({
       {/* Accent */}
       <div className="appearance-section">
         <div className="appearance-heading">Accent</div>
-        {skin === 'anthropic' ? (
+        {skin === 'brutalist' ? (
+          <div className="appearance-accent-locked">
+            {BRUTALIST_ACCENTS.map((c) => (
+              <span
+                key={c}
+                className="appearance-accent-locked-swatch"
+                style={{ background: c }}
+                aria-hidden
+              />
+            ))}
+            <span className="appearance-accent-locked-label">
+              Locked to brutalist sticker palette
+            </span>
+          </div>
+        ) : skin === 'anthropic' ? (
           <div className="appearance-accent-locked">
             <span
               className="appearance-accent-locked-swatch"
