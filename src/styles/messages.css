@@ -1189,7 +1189,7 @@
   margin-top: var(--space-2);
   padding: var(--space-2) var(--space-2-5) var(--space-1);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--bg-elev);
 }
 .settings-advanced summary {

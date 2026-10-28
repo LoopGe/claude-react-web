@@ -98,7 +98,7 @@
   margin: var(--space-2) 0 0;
   padding: var(--space-2-5) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background-color: var(--bg);
   color: var(--fg);
 }

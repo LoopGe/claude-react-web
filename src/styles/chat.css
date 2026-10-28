@@ -290,7 +290,7 @@
 .handoff-veil-spinner {
   width: 12px;
   height: 12px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-top-color: var(--accent);
   animation: handoff-spin 0.9s linear infinite;
@@ -655,7 +655,7 @@ button.chat-empty-env-chip:hover {
   flex: none;
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: var(--radius-circle);
   background: var(--fg-muted);
 }
 .chat-empty-env-dot[data-status='connected'] {
