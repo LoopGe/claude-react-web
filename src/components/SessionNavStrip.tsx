@@ -28,6 +28,8 @@ import type { CSSProperties } from 'react'
 import { SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable'
 import type { SessionInfo, SidebarSection } from '../types'
 import { sessionTitleOrFallback } from '../utils/session-title'
+import { tabDotStatus, tabTitle } from '../utils/session-status'
+import type { TabDotStatus } from '../utils/session-status'
 import { dndData } from '../dnd/payload'
 import { SortableNode } from '../dnd/SortableNode'
 import { CreateMenuButton } from './CreateMenuButton'
@@ -60,11 +62,10 @@ interface Props {
  *  scroll/resize wiring in the component stays trivial and the geometry rules
  *  are unit-testable. 1px epsilon mirrors overlay-scrollbar's sub-pixel guard:
  *  fractional overflow below a pixel is invisible and must not fade the edge. */
-export function edgeFadeState(m: {
-  scrollLeft: number
-  scrollWidth: number
-  clientWidth: number
-}): { start: boolean; end: boolean } {
+export function edgeFadeState(m: { scrollLeft: number; scrollWidth: number; clientWidth: number }): {
+  start: boolean
+  end: boolean
+} {
   const hiddenTotal = m.scrollWidth - m.clientWidth
   return {
     start: m.scrollLeft >= 1,
@@ -143,10 +144,7 @@ export function stripDndPlan(sections: SidebarSection[]): StripDndPlan {
         nodeId: `strip-chip-${sec.group.id}`,
         id: sec.group.id,
         kind: 'group-card' as const,
-        data: dndData(
-          { kind: 'group-card', id: sec.group.id },
-          { axis: 'x', origin: STRIP_DND_ORIGIN },
-        ),
+        data: dndData({ kind: 'group-card', id: sec.group.id }, { axis: 'x', origin: STRIP_DND_ORIGIN }),
       }
       chipItems.push(chip.nodeId)
     }
@@ -155,13 +153,19 @@ export function stripDndPlan(sections: SidebarSection[]): StripDndPlan {
   return { chipItems, sections: out }
 }
 
-/** Shared tab status dots (working pulse / unread bright) — the live tab and
- *  its drag ghost render the identical block so the two can't drift apart. */
-function NavTabDots({ working, unread }: { working: boolean; unread?: boolean }) {
+/** Shared tab status dots — the live tab and its drag ghost render the
+ *  identical block so the two can't drift apart. Precedence: working pulse >
+ *  unread badge > exceptional status dot (dormant/ended/waiting/err, the
+ *  sidebar's `.session-status-dot.status-*` palette); a plain live session
+ *  carries no dot at all. The single source of truth across surfaces is the
+ *  pure tabDotStatus() fold — each surface computes it locally (the strip
+ *  folds once per tab and feeds both this block and the tab's className). */
+function NavTabDots({ status, unread }: { status: TabDotStatus | null; unread?: boolean }) {
   // Working wins over unread: a running turn is the stronger, live
   // signal, and two adjacent 6px dots would read as one blob.
-  if (working) return <span className="session-nav-dot" aria-hidden />
+  if (status === 'working') return <span className="session-nav-dot" aria-hidden />
   if (unread) return <span className="session-nav-unread" aria-hidden />
+  if (status) return <span className={`session-status-dot status-${status}`} aria-hidden />
   return null
 }
 
@@ -169,6 +173,7 @@ function SessionNavTab({
   session,
   focused,
   unread,
+  resuming,
   onSelect,
   onContextMenu,
   dnd,
@@ -177,6 +182,10 @@ function SessionNavTab({
   session: SessionInfo
   focused: boolean
   unread: boolean
+  /** Resume in flight (App's transient `resuming` set) — folds the tab to
+   *  'working' so a session the user just woke up pulses instead of sitting
+   *  dormant-dimmed for the spawn's duration. */
+  resuming: boolean
   onSelect: (id: string) => void
   onContextMenu?: (e: React.MouseEvent, sessionId: string) => void
   /** Drag registration from stripDndPlan — one entry per rendered tab (the
@@ -185,10 +194,16 @@ function SessionNavTab({
   dndDisabled?: boolean
 }) {
   const label = sessionTitleOrFallback(session)
+  // ONE fold per tab render: the working class, the dormant dim, the dot and
+  // the tooltip all read this status. A resume-in-flight folds to 'working' —
+  // the session is waking up, so it must pulse and shed the dormant dim
+  // instead of reading as dead for the seconds the spawn takes. Crash
+  // recovery folds to 'working' through statusClass's documented rule.
+  const status = resuming ? 'working' : tabDotStatus(session)
   const content = (
     <>
       <span className="session-nav-label">{label}</span>
-      <NavTabDots working={session.working} unread={unread} />
+      <NavTabDots status={status} unread={unread} />
     </>
   )
   return (
@@ -198,15 +213,20 @@ function SessionNavTab({
           type="button"
           ref={setActivatorNodeRef}
           {...listeners}
-          className={`session-nav-tab${focused ? ' active' : ''}${isDragging ? ' dragging' : ''}${session.working ? ' working' : ''}`}
+          className={`session-nav-tab${focused ? ' active' : ''}${isDragging ? ' dragging' : ''}${status === 'working' ? ' working' : ''}${status === 'dormant' ? ' dormant' : ''}`}
           aria-pressed={focused}
-          title={label}
+          title={tabTitle(label, session)}
           onClick={() => onSelect(session.id)}
           // preventDefault lives here (not in the caller) so the native menu
           // is suppressed synchronously, before any state update can render.
-          onContextMenu={onContextMenu
-            ? (e: React.MouseEvent) => { e.preventDefault(); onContextMenu(e, session.id) }
-            : undefined}
+          onContextMenu={
+            onContextMenu
+              ? (e: React.MouseEvent) => {
+                  e.preventDefault()
+                  onContextMenu(e, session.id)
+                }
+              : undefined
+          }
         >
           {content}
         </button>
@@ -219,15 +239,15 @@ function SessionNavTab({
  *  tab / chip (the sidebar is hidden while the strip is up, so its wide card
  *  ghost's geometry would be meaningless). Rendered by App's renderDndGhost
  *  inside DragGhost; spans (not buttons) because the ghost is inert. */
-export function SessionNavTabGhost({ session, unread }: {
-  session: SessionInfo
-  unread?: boolean
-}) {
+export function SessionNavTabGhost({ session, unread }: { session: SessionInfo; unread?: boolean }) {
   const label = sessionTitleOrFallback(session)
+  const status = tabDotStatus(session)
   return (
-    <span className="session-nav-tab session-nav-tab-ghost">
+    // The dormant dim rides the ghost too — the lifted item IS the tab, and
+    // a full-opacity ghost over a dimmed source would read as a different tab.
+    <span className={`session-nav-tab session-nav-tab-ghost${status === 'dormant' ? ' dormant' : ''}`}>
       <span className="session-nav-label">{label}</span>
-      <NavTabDots working={session.working} unread={unread} />
+      <NavTabDots status={status} unread={unread} />
     </span>
   )
 }
@@ -324,12 +344,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   )
 
   return (
-    <div
-      className="session-nav-strip"
-      role="group"
-      aria-label="All sessions"
-      style={fadeStyle}
-    >
+    <div className="session-nav-strip" role="group" aria-label="All sessions" style={fadeStyle}>
       <CreateMenuButton
         className="session-nav-new btn btn-icon"
         aria-label="Create"
@@ -381,7 +396,14 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                       aria-pressed={activeGroupId === sec.group.id}
                       title={sec.group.name}
                       onClick={() => onActivateGroup(sec.group.id)}
-                      onContextMenu={onGroupContextMenu ? (e) => { e.preventDefault(); onGroupContextMenu(e, sec.group.id) } : undefined}
+                      onContextMenu={
+                        onGroupContextMenu
+                          ? (e) => {
+                              e.preventDefault()
+                              onGroupContextMenu(e, sec.group.id)
+                            }
+                          : undefined
+                      }
                     >
                       {/* Ellipsis must live on a block-ish child, not the flex
                           container — text-overflow is inert on the button itself. */}
@@ -396,6 +418,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                       session={s}
                       focused={s.id === focusedId}
                       unread={!!unread[s.id]}
+                      resuming={!!resumingIds?.has(s.id)}
                       onSelect={onSelect}
                       onContextMenu={onSessionContextMenu}
                       dnd={sp.tabs[j]}
@@ -412,6 +435,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                     session={s}
                     focused={s.id === focusedId}
                     unread={!!unread[s.id]}
+                    resuming={!!resumingIds?.has(s.id)}
                     onSelect={onSelect}
                     onContextMenu={onSessionContextMenu}
                     dnd={sp.tabs[j]}

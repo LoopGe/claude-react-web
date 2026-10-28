@@ -5215,6 +5215,7 @@ export function App() {
               onCreateGroup={handleCreateGroup}
               askPrompt={stripDialogs.askPrompt}
               maxOpen={maxOpen}
+              resumingIds={resuming}
             />
           )}
           {/* Drag island between the left chrome cluster and the right-hand

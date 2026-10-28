@@ -345,6 +345,25 @@ body.resizing-col .app {
   background: var(--accent-bright);
   flex-shrink: 0;
 }
+/* Exceptional status dots (working/dormant/ended/waiting/err) reuse the
+   sidebar's .session-status-dot palette, resized to the header tabs' 6px dot
+   rhythm (the sidebar renders them at 7px). One shared rule for BOTH compact
+   tab surfaces — the nav strip (this file's home) and the desktop titlebar
+   (styles/titlebar.css); keep them in lockstep by editing only here. The
+   dormant ring is the visible "slept" state while the sidebar is collapsed. */
+.session-nav-tab .session-status-dot,
+.titlebar-tab .session-status-dot {
+  width: 6px;
+  height: 6px;
+}
+/* Dormant (slept) tab: the label dims so slept sessions recede next to live
+   ones. The focused tab is exempt — its content is on screen and the active
+   plate already marks it; dimming the text you are reading would only cost
+   contrast. Same shared-rule treatment as the dot size above. */
+.session-nav-tab.dormant:not(.active) .session-nav-label,
+.titlebar-tab.dormant:not(.active) .titlebar-tab-label {
+  opacity: 0.55;
+}
 /* SortableNode wrapper around a drag-enabled tab / chip. A plain div works as
    a flex item (width = content, align-items:center centers it), but the
    explicit box keeps the slot from growing if the button's intrinsic sizing

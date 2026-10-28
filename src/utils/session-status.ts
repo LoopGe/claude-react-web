@@ -61,6 +61,44 @@ export function statusLabel(s: SessionInfo): string {
   return 'Dormant'
 }
 
+/** The status states a compact header tab (nav strip / titlebar tabs) can
+ *  carry as a trailing dot. 'working' is included so the fold is TOTAL — a
+ *  crash-recovering session (statusClass folds it into 'working') must pulse
+ *  on a tab instead of falling through every branch and rendering unmarked.
+ *  A plain live/idle session still yields null: dot-free reads as "normal",
+ *  keeping the pulse and the unread badge as the only attention signals in
+ *  the healthy case. */
+export type TabDotStatus = 'working' | 'dormant' | 'ended' | 'waiting' | 'err'
+
+/** Which status a header tab should surface, or null for none. Distilled
+ *  through statusClass() — the shared pure fold behind the sidebar's status
+ *  vocabulary — so a tab follows the same precedence as the sidebar chip.
+ *  (SessionCard layers richer app-transient states on top: its 'resuming'
+ *  comes from App's in-flight set, not SessionInfo, and its recovering
+ *  session renders 'err' where statusClass says 'working' — a pre-existing
+ *  divergence between card and fold, not one this function introduces.)
+ *  Class names are the sidebar's `.session-status-dot.status-*` palette;
+ *  statusClass's 'terminated' maps to that CSS vocabulary's 'ended' (same
+ *  signal, the sidebar's class name). Resume-in-flight is folded by the
+ *  components (they hold App's resuming set; SessionInfo does not carry it). */
+export function tabDotStatus(s: SessionInfo): TabDotStatus | null {
+  const cls = statusClass(s)
+  if (cls === 'terminated') return 'ended'
+  if (cls === 'working' || cls === 'dormant' || cls === 'waiting' || cls === 'err') return cls
+  return null
+}
+
+/** Tooltip for a compact header tab: the label, plus the status text only
+ *  when it explains something ("Dormant", "Session ended: process killed").
+ *  A plain live session's tooltip stays the bare label — "Live" adds nothing
+ *  over the dot-free normal look. Gated on the statusClass fold (the stable
+ *  vocabulary), not on statusLabel's wording, so rewording the label can't
+ *  silently push '— <new text>' onto every healthy tab. */
+export function tabTitle(label: string, s: SessionInfo): string {
+  if (statusClass(s) === 'live') return label
+  return `${label} — ${statusLabel(s)}`
+}
+
 /** Trim namespace prefixes and long version tails so a model name fits
  *  in a tight header chip. "claude-sonnet-4-5-20251101" → "sonnet-4-5";
  *  "xiaomi/mimo-v2.5-pro" → "mimo-v2.5-pro". Undefined → "default". */

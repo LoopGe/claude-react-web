@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, createEvent } from '@testing-library/react'
 import { DndContext } from '@dnd-kit/core'
-import { SessionNavStrip, edgeFadeState, stripDndPlan } from './SessionNavStrip'
+import { SessionNavStrip, SessionNavTabGhost, edgeFadeState, stripDndPlan } from './SessionNavStrip'
 import type { SessionInfo, SidebarSection } from '../types'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -27,12 +27,19 @@ const groupA = { id: 'g1', name: '前端', sessionIds: ['s1', 's2'] }
 
 function baseSections(): SidebarSection[] {
   return [
-    { kind: 'group', group: groupA, sessions: [makeSession({ id: 's1', title: 'Alpha' }), makeSession({ id: 's2', title: 'Beta' })] },
+    {
+      kind: 'group',
+      group: groupA,
+      sessions: [makeSession({ id: 's1', title: 'Alpha' }), makeSession({ id: 's2', title: 'Beta' })],
+    },
     { kind: 'ungrouped', sessions: [makeSession({ id: 's3', title: 'Gamma' })] },
   ]
 }
 
-function renderStrip(sections: SidebarSection[], overrides: Partial<Parameters<typeof SessionNavStrip>[0]> = {}) {
+function renderStrip(
+  sections: SidebarSection[],
+  overrides: Partial<Parameters<typeof SessionNavStrip>[0]> = {},
+) {
   // Handler overrides are honored (the Partial<Props> type invites passing
   // them); only the unwired ones fall back to local mocks.
   const onSelect = overrides.onSelect ?? vi.fn()
@@ -53,6 +60,8 @@ function renderStrip(sections: SidebarSection[], overrides: Partial<Parameters<t
       askPrompt={askPrompt}
       onSessionContextMenu={overrides.onSessionContextMenu}
       onGroupContextMenu={overrides.onGroupContextMenu}
+      resumingIds={overrides.resumingIds}
+      deletingIds={overrides.deletingIds}
     />,
   )
   return { onSelect, onActivateGroup, onNewSession, onCreateGroup, askPrompt, ...utils }
@@ -60,29 +69,49 @@ function renderStrip(sections: SidebarSection[], overrides: Partial<Parameters<t
 
 describe('edgeFadeState', () => {
   it('fades neither edge when the content fits', () => {
-    expect(edgeFadeState({ scrollLeft: 0, scrollWidth: 100, clientWidth: 200 })).toEqual({ start: false, end: false })
+    expect(edgeFadeState({ scrollLeft: 0, scrollWidth: 100, clientWidth: 200 })).toEqual({
+      start: false,
+      end: false,
+    })
   })
 
   it('fades only the end while at the scroll origin', () => {
-    expect(edgeFadeState({ scrollLeft: 0, scrollWidth: 300, clientWidth: 200 })).toEqual({ start: false, end: true })
+    expect(edgeFadeState({ scrollLeft: 0, scrollWidth: 300, clientWidth: 200 })).toEqual({
+      start: false,
+      end: true,
+    })
   })
 
   it('fades both edges mid-scroll', () => {
-    expect(edgeFadeState({ scrollLeft: 60, scrollWidth: 300, clientWidth: 200 })).toEqual({ start: true, end: true })
+    expect(edgeFadeState({ scrollLeft: 60, scrollWidth: 300, clientWidth: 200 })).toEqual({
+      start: true,
+      end: true,
+    })
   })
 
   it('fades only the start when scrolled to the far end', () => {
-    expect(edgeFadeState({ scrollLeft: 100, scrollWidth: 300, clientWidth: 200 })).toEqual({ start: true, end: false })
+    expect(edgeFadeState({ scrollLeft: 100, scrollWidth: 300, clientWidth: 200 })).toEqual({
+      start: true,
+      end: false,
+    })
   })
 
   it('treats sub-pixel overflow as fitting (1px epsilon)', () => {
-    expect(edgeFadeState({ scrollLeft: 0, scrollWidth: 200.5, clientWidth: 200 })).toEqual({ start: false, end: false })
+    expect(edgeFadeState({ scrollLeft: 0, scrollWidth: 200.5, clientWidth: 200 })).toEqual({
+      start: false,
+      end: false,
+    })
   })
 })
 
 /** jsdom exposes scroll* as 0; shadow the instance properties so the fade
  *  wiring's geometry reads can be driven from tests. */
-function mockStripGeometry(strip: HTMLElement, scrollLeft: number, scrollWidth: number, clientWidth: number): void {
+function mockStripGeometry(
+  strip: HTMLElement,
+  scrollLeft: number,
+  scrollWidth: number,
+  clientWidth: number,
+): void {
   Object.defineProperty(strip, 'scrollLeft', { value: scrollLeft, writable: true, configurable: true })
   Object.defineProperty(strip, 'scrollWidth', { value: scrollWidth, writable: true, configurable: true })
   Object.defineProperty(strip, 'clientWidth', { value: clientWidth, writable: true, configurable: true })
@@ -118,9 +147,24 @@ describe('SessionNavStrip', () => {
 
   it('renders the working dot only for working sessions', () => {
     const sections: SidebarSection[] = [
-      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', working: true }), makeSession({ id: 's2', working: false })] },
+      {
+        kind: 'ungrouped',
+        sessions: [makeSession({ id: 's1', working: true }), makeSession({ id: 's2', working: false })],
+      },
     ]
     const { container } = renderStrip(sections)
+    expect(container.querySelectorAll('.session-nav-dot')).toHaveLength(1)
+  })
+
+  it('pulses a crash-recovering session like a working one', () => {
+    // recovering has working=false — the whole-tab pulse and the dot must
+    // still fire, matching the sidebar card (statusClass folds recovering
+    // into 'working'); otherwise the tab renders unmarked mid-recovery.
+    const sections: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', recovering: true })] },
+    ]
+    const { container } = renderStrip(sections)
+    expect(container.querySelector<HTMLElement>('.session-nav-tab')!.classList.contains('working')).toBe(true)
     expect(container.querySelectorAll('.session-nav-dot')).toHaveLength(1)
   })
 
@@ -141,9 +185,104 @@ describe('SessionNavStrip', () => {
     expect(container.querySelectorAll('.session-nav-unread')).toHaveLength(0)
   })
 
+  it('renders the dormant hollow-ring dot and marks the tab dormant', () => {
+    const sections: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', running: false })] },
+    ]
+    const { container } = renderStrip(sections)
+    expect(container.querySelectorAll('.session-status-dot.status-dormant')).toHaveLength(1)
+    expect(container.querySelector<HTMLElement>('.session-nav-tab')!.classList.contains('dormant')).toBe(true)
+  })
+
+  it('pulses a resuming dormant tab and sheds the dormant dim', () => {
+    // A session the user just woke up must read as waking (working pulse),
+    // not stay dormant-dimmed for the spawn's duration.
+    const sections: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', running: false })] },
+    ]
+    const { container } = renderStrip(sections, { resumingIds: new Set(['s1']) })
+    const tab = container.querySelector<HTMLElement>('.session-nav-tab')!
+    expect(tab.classList.contains('working')).toBe(true)
+    expect(tab.classList.contains('dormant')).toBe(false)
+    expect(container.querySelectorAll('.session-nav-dot')).toHaveLength(1)
+    expect(container.querySelectorAll('.session-status-dot')).toHaveLength(0)
+  })
+
+  it('leaves a live idle tab dot-free', () => {
+    const sections: SidebarSection[] = [{ kind: 'ungrouped', sessions: [makeSession({ id: 's1' })] }]
+    const { container } = renderStrip(sections)
+    expect(container.querySelectorAll('.session-status-dot')).toHaveLength(0)
+    expect(container.querySelector<HTMLElement>('.session-nav-tab')!.classList.contains('dormant')).toBe(
+      false,
+    )
+  })
+
+  it('renders the ended dot for a terminated session', () => {
+    const sections: SidebarSection[] = [
+      {
+        kind: 'ungrouped',
+        sessions: [makeSession({ id: 's1', terminated: true, terminatedReason: 'process_killed' })],
+      },
+    ]
+    const { container } = renderStrip(sections)
+    expect(container.querySelectorAll('.session-status-dot.status-ended')).toHaveLength(1)
+  })
+
+  it('renders the waiting dot while background subagents are in flight', () => {
+    const sections: SidebarSection[] = [
+      {
+        kind: 'ungrouped',
+        sessions: [makeSession({ id: 's1', running: true, working: false, backgroundSubagentCount: 2 })],
+      },
+    ]
+    const { container } = renderStrip(sections)
+    expect(container.querySelectorAll('.session-status-dot.status-waiting')).toHaveLength(1)
+  })
+
+  it('renders the err dot for a running errored session', () => {
+    const sections: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', running: true, error: 'boom' })] },
+    ]
+    const { container } = renderStrip(sections)
+    expect(container.querySelectorAll('.session-status-dot.status-err')).toHaveLength(1)
+  })
+
+  it('defers the status dot to the unread dot (but keeps the dormant mark)', () => {
+    const sections: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', running: false })] },
+    ]
+    const { container } = renderStrip(sections, { unread: { s1: true } })
+    expect(container.querySelectorAll('.session-nav-unread')).toHaveLength(1)
+    expect(container.querySelectorAll('.session-status-dot')).toHaveLength(0)
+    expect(container.querySelector<HTMLElement>('.session-nav-tab')!.classList.contains('dormant')).toBe(true)
+  })
+
+  it('carries the status text in the tab tooltip', () => {
+    const sections: SidebarSection[] = [
+      {
+        kind: 'ungrouped',
+        sessions: [
+          makeSession({ id: 's1', title: 'Alpha', running: false }),
+          makeSession({ id: 's2', title: 'Beta' }),
+        ],
+      },
+    ]
+    renderStrip(sections)
+    expect(screen.getByTitle('Alpha — Dormant')).toBeTruthy()
+    // A plain live session keeps the bare label — "Live" explains nothing.
+    expect(screen.getByTitle('Beta')).toBeTruthy()
+  })
+
   it('keeps the focused tab scrolled into view when focus changes', () => {
     const sections: SidebarSection[] = [
-      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', title: 'One' }), makeSession({ id: 's2', title: 'Two' }), makeSession({ id: 's3', title: 'Three' })] },
+      {
+        kind: 'ungrouped',
+        sessions: [
+          makeSession({ id: 's1', title: 'One' }),
+          makeSession({ id: 's2', title: 'Two' }),
+          makeSession({ id: 's3', title: 'Three' }),
+        ],
+      },
     ]
     const scrollIntoView = vi.fn()
     const spy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(scrollIntoView)
@@ -159,7 +298,9 @@ describe('SessionNavStrip', () => {
           unread={{}}
           onSelect={vi.fn()}
           onActivateGroup={vi.fn()}
-          onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()}
+          onNewSession={vi.fn()}
+          onCreateGroup={vi.fn()}
+          askPrompt={vi.fn()}
         />,
       )
       expect(scrollIntoView).toHaveBeenCalledTimes(1)
@@ -206,9 +347,7 @@ describe('SessionNavStrip', () => {
 
   it('renders a divider between + and the scroll region when sessions exist', () => {
     const { container } = renderStrip(baseSections())
-    const children = Array.from(
-      container.querySelector<HTMLElement>('.session-nav-strip')!.children,
-    )
+    const children = Array.from(container.querySelector<HTMLElement>('.session-nav-strip')!.children)
     expect(children[0].classList.contains('session-nav-new')).toBe(true)
     expect(children[1].classList.contains('session-nav-divider')).toBe(true)
     expect(children[2].classList.contains('session-nav-scroll')).toBe(true)
@@ -229,7 +368,10 @@ describe('SessionNavStrip', () => {
 
   it('updates the fade vars when the strip scrolls', () => {
     const sections: SidebarSection[] = [
-      { kind: 'ungrouped', sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' }), makeSession({ id: 's3' })] },
+      {
+        kind: 'ungrouped',
+        sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' }), makeSession({ id: 's3' })],
+      },
     ]
     const { container } = renderStrip(sections)
     const scroller = container.querySelector<HTMLElement>('.session-nav-scroll')!
@@ -253,17 +395,49 @@ describe('SessionNavStrip', () => {
       { kind: 'ungrouped', sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' })] },
     ]
     const { container, rerender } = render(
-      <SessionNavStrip sections={[]} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()} />,
+      <SessionNavStrip
+        sections={[]}
+        focusedId={null}
+        activeGroupId={null}
+        unread={{}}
+        onSelect={vi.fn()}
+        onActivateGroup={vi.fn()}
+        onNewSession={vi.fn()}
+        onCreateGroup={vi.fn()}
+        askPrompt={vi.fn()}
+      />,
     )
     expect(container.querySelector<HTMLElement>('.session-nav-new')).toBeTruthy()
     rerender(
-      <SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()} />,
+      <SessionNavStrip
+        sections={sections}
+        focusedId={null}
+        activeGroupId={null}
+        unread={{}}
+        onSelect={vi.fn()}
+        onActivateGroup={vi.fn()}
+        onNewSession={vi.fn()}
+        onCreateGroup={vi.fn()}
+        askPrompt={vi.fn()}
+      />,
     )
     const scroller = container.querySelector<HTMLElement>('.session-nav-scroll')!
     const strip = container.querySelector<HTMLElement>('.session-nav-strip')!
     mockStripGeometry(scroller, 0, 300, 200)
     fireEvent.scroll(scroller)
     expect(strip.style.getPropertyValue('--fade-end-w')).toBe('var(--fade-width)')
+  })
+})
+
+describe('SessionNavTabGhost', () => {
+  it('carries the same status dot as the live tab', () => {
+    const { container } = render(<SessionNavTabGhost session={makeSession({ id: 's1', running: false })} />)
+    expect(container.querySelectorAll('.session-status-dot.status-dormant')).toHaveLength(1)
+  })
+
+  it('leaves a live session ghost dot-free', () => {
+    const { container } = render(<SessionNavTabGhost session={makeSession({ id: 's1' })} />)
+    expect(container.querySelectorAll('.session-status-dot')).toHaveLength(0)
   })
 })
 
@@ -282,7 +456,9 @@ describe('SessionNavStrip drag', () => {
           unread={{}}
           onSelect={vi.fn()}
           onActivateGroup={vi.fn()}
-          onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()}
+          onNewSession={vi.fn()}
+          onCreateGroup={vi.fn()}
+          askPrompt={vi.fn()}
         />
       </DndContext>,
     )
@@ -292,11 +468,20 @@ describe('SessionNavStrip drag', () => {
     const onDragStart = vi.fn()
     renderDndStrip(baseSections(), onDragStart)
     const tab = screen.getByTitle('Alpha')
-    fireEvent.pointerDown(tab, { button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, clientX: 10, clientY: 10 })
+    fireEvent.pointerDown(tab, {
+      button: 0,
+      pointerId: 1,
+      pointerType: 'mouse',
+      isPrimary: true,
+      clientX: 10,
+      clientY: 10,
+    })
     try {
       fireEvent.pointerMove(document.body, { pointerId: 1, clientX: 60, clientY: 10 })
       expect(onDragStart).toHaveBeenCalledTimes(1)
-      const active = (onDragStart.mock.calls[0][0] as { active: { data: { current: Record<string, unknown> } } }).active
+      const active = (
+        onDragStart.mock.calls[0][0] as { active: { data: { current: Record<string, unknown> } } }
+      ).active
       expect(active.data.current.crw).toEqual({ kind: 'sidebar-card', id: 's1' })
       expect(active.data.current.containerGroupId).toBe('g1')
       expect(active.data.current.origin).toBe('strip')
@@ -324,11 +509,20 @@ describe('SessionNavStrip drag', () => {
     ]
     renderDndStrip(twoGroups, onDragStart)
     const chip = screen.getByTitle('前端')
-    fireEvent.pointerDown(chip, { button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, clientX: 10, clientY: 10 })
+    fireEvent.pointerDown(chip, {
+      button: 0,
+      pointerId: 1,
+      pointerType: 'mouse',
+      isPrimary: true,
+      clientX: 10,
+      clientY: 10,
+    })
     try {
       fireEvent.pointerMove(document.body, { pointerId: 1, clientX: 90, clientY: 10 })
       expect(onDragStart).toHaveBeenCalledTimes(1)
-      const active = (onDragStart.mock.calls[0][0] as { active: { data: { current: Record<string, unknown> } } }).active
+      const active = (
+        onDragStart.mock.calls[0][0] as { active: { data: { current: Record<string, unknown> } } }
+      ).active
       expect(active.data.current.crw).toEqual({ kind: 'group-card', id: 'g1' })
       expect(active.data.current.axis).toBe('x')
     } finally {
@@ -348,7 +542,9 @@ describe('SessionNavStrip drag', () => {
           unread={{}}
           onSelect={onSelect}
           onActivateGroup={vi.fn()}
-          onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()}
+          onNewSession={vi.fn()}
+          onCreateGroup={vi.fn()}
+          askPrompt={vi.fn()}
         />
       </DndContext>,
     )
@@ -425,7 +621,20 @@ describe('SessionNavStrip context menus', () => {
 
   it('prevents the native menu only when the session callback is wired', () => {
     const sections = baseSections()
-    const wired = render(<SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()} onSessionContextMenu={vi.fn()} />)
+    const wired = render(
+      <SessionNavStrip
+        sections={sections}
+        focusedId={null}
+        activeGroupId={null}
+        unread={{}}
+        onSelect={vi.fn()}
+        onActivateGroup={vi.fn()}
+        onNewSession={vi.fn()}
+        onCreateGroup={vi.fn()}
+        askPrompt={vi.fn()}
+        onSessionContextMenu={vi.fn()}
+      />,
+    )
     const wiredTab = wired.container.querySelector<HTMLElement>('.session-nav-tab')!
     const wiredEv = createEvent.contextMenu(wiredTab)
     fireEvent(wiredTab, wiredEv)
@@ -467,7 +676,20 @@ describe('SessionNavStrip context menus', () => {
 
   it('prevents the native menu only when the group callback is wired', () => {
     const sections = baseSections()
-    const wired = render(<SessionNavStrip sections={sections} focusedId={null} activeGroupId={null} unread={{}} onSelect={vi.fn()} onActivateGroup={vi.fn()} onNewSession={vi.fn()} onCreateGroup={vi.fn()} askPrompt={vi.fn()} onGroupContextMenu={vi.fn()} />)
+    const wired = render(
+      <SessionNavStrip
+        sections={sections}
+        focusedId={null}
+        activeGroupId={null}
+        unread={{}}
+        onSelect={vi.fn()}
+        onActivateGroup={vi.fn()}
+        onNewSession={vi.fn()}
+        onCreateGroup={vi.fn()}
+        askPrompt={vi.fn()}
+        onGroupContextMenu={vi.fn()}
+      />,
+    )
     const wiredChip = wired.container.querySelector<HTMLElement>('.session-nav-chip')!
     const wiredEv = createEvent.contextMenu(wiredChip)
     fireEvent(wiredChip, wiredEv)

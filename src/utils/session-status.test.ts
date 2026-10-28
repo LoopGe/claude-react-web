@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isWaiting, statusClass, statusLabel } from './session-status'
+import { isWaiting, statusClass, statusLabel, tabDotStatus, tabTitle } from './session-status'
 import type { SessionInfo } from '../types'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -35,23 +35,31 @@ describe('isWaiting', () => {
 
 describe('statusClass', () => {
   it('returns "waiting" when the parent turn is done but a background subagent is in flight', () => {
-    expect(statusClass(makeSession({ running: true, working: false, backgroundSubagentCount: 1 }))).toBe('waiting')
+    expect(statusClass(makeSession({ running: true, working: false, backgroundSubagentCount: 1 }))).toBe(
+      'waiting',
+    )
   })
 
   it('returns "live" when running, not working, and no background subagents', () => {
-    expect(statusClass(makeSession({ running: true, working: false, backgroundSubagentCount: 0 }))).toBe('live')
+    expect(statusClass(makeSession({ running: true, working: false, backgroundSubagentCount: 0 }))).toBe(
+      'live',
+    )
     expect(statusClass(makeSession({ running: true, working: false }))).toBe('live')
   })
 
   it('still prefers "working" over "waiting" while the parent turn is active', () => {
-    expect(statusClass(makeSession({ running: true, working: true, backgroundSubagentCount: 1 }))).toBe('working')
+    expect(statusClass(makeSession({ running: true, working: true, backgroundSubagentCount: 1 }))).toBe(
+      'working',
+    )
   })
 
   it('prefers "waiting" over "err" while a background subagent is in flight', () => {
     // Precedence must match the sidebar chip (SessionCard): working > waiting
     // > err. A running session with background work is "waiting" even if it
     // also carries an error — the error text still surfaces in the card body.
-    expect(statusClass(makeSession({ running: true, working: false, error: 'boom', backgroundSubagentCount: 1 }))).toBe('waiting')
+    expect(
+      statusClass(makeSession({ running: true, working: false, error: 'boom', backgroundSubagentCount: 1 })),
+    ).toBe('waiting')
   })
 
   it('returns "dormant" for a session that is not running', () => {
@@ -85,8 +93,52 @@ describe('statusLabel', () => {
   it('labels the waiting state over the error text while a background subagent is in flight', () => {
     // Mirrors statusClass precedence: waiting beats err. The error detail is
     // still visible via the card body / the badge title.
-    expect(statusLabel(makeSession({ running: true, working: false, error: 'boom', backgroundSubagentCount: 1 }))).toBe(
-      'Waiting for a background subagent',
+    expect(
+      statusLabel(makeSession({ running: true, working: false, error: 'boom', backgroundSubagentCount: 1 })),
+    ).toBe('Waiting for a background subagent')
+  })
+})
+
+describe('tabDotStatus', () => {
+  it('returns the exceptional states under their CSS dot class names', () => {
+    expect(tabDotStatus(makeSession({ running: false }))).toBe('dormant')
+    expect(tabDotStatus(makeSession({ running: true, working: false, backgroundSubagentCount: 1 }))).toBe(
+      'waiting',
     )
+    expect(tabDotStatus(makeSession({ running: true, error: 'boom' }))).toBe('err')
+  })
+
+  it("maps statusClass's 'terminated' to the CSS vocabulary's 'ended'", () => {
+    // The sidebar's dot CSS is .status-ended, not .status-terminated — the
+    // tabs reuse that palette, so the name must cross over here.
+    expect(tabDotStatus(makeSession({ terminated: true, terminatedReason: 'process_killed' }))).toBe('ended')
+  })
+
+  it("returns 'working' for an active turn AND a crash recovery", () => {
+    // The fold must be total: a recovering session has working=false, so a
+    // fold that dropped 'working' would render the tab unmarked while the
+    // sidebar card pulses (statusClass folds recovering into 'working').
+    expect(tabDotStatus(makeSession({ working: true }))).toBe('working')
+    expect(tabDotStatus(makeSession({ recovering: true }))).toBe('working')
+  })
+
+  it('returns null only for a plain live session', () => {
+    expect(tabDotStatus(makeSession({}))).toBeNull()
+  })
+})
+
+describe('tabTitle', () => {
+  it('appends the status text after an em dash when it says something', () => {
+    expect(tabTitle('Alpha', makeSession({ running: false }))).toBe('Alpha — Dormant')
+    expect(tabTitle('Alpha', makeSession({ terminated: true, terminatedReason: 'process_killed' }))).toBe(
+      'Alpha — Session ended: process killed',
+    )
+    expect(tabTitle('Alpha', makeSession({ running: true, working: true }))).toBe('Alpha — Working on a turn')
+  })
+
+  it('keeps the bare label for a plain live session', () => {
+    // "Live" adds nothing over the pulse-free normal look — the tooltip
+    // stays the title exactly when there is nothing to explain.
+    expect(tabTitle('Alpha', makeSession({}))).toBe('Alpha')
   })
 })

@@ -91,3 +91,60 @@ describe('DesktopTitlebarTabs', () => {
     expect(onNewSession).not.toHaveBeenCalled()
   })
 })
+
+describe('DesktopTitlebarTabs status dots', () => {
+  it('renders the dormant hollow-ring dot, marks the tab dormant, and says so in the tooltip', () => {
+    setup([makeSession({ id: 's1', title: 'Alpha', running: false })])
+    expect(document.querySelectorAll('.titlebar-tab .session-status-dot.status-dormant')).toHaveLength(1)
+    expect(document.querySelector<HTMLElement>('.titlebar-tab')!.classList.contains('dormant')).toBe(true)
+    expect(screen.getByTitle('Alpha — Dormant')).toBeTruthy()
+  })
+
+  it('leaves a live idle tab dot-free', () => {
+    setup([makeSession({ id: 's1' })])
+    expect(document.querySelectorAll('.titlebar-tab .session-status-dot')).toHaveLength(0)
+    expect(document.querySelector<HTMLElement>('.titlebar-tab')!.classList.contains('dormant')).toBe(false)
+  })
+
+  it('renders the ended dot for a terminated session', () => {
+    setup([makeSession({ id: 's1', terminated: true, terminatedReason: 'process_killed' })])
+    expect(document.querySelectorAll('.titlebar-tab .session-status-dot.status-ended')).toHaveLength(1)
+  })
+
+  it('renders the err dot for a running errored session', () => {
+    setup([makeSession({ id: 's1', error: 'boom' })])
+    expect(document.querySelectorAll('.titlebar-tab .session-status-dot.status-err')).toHaveLength(1)
+  })
+
+  it('keeps the working pulse dot and renders no status dot alongside it', () => {
+    setup([makeSession({ id: 's1', working: true })])
+    expect(document.querySelectorAll('.titlebar-tab-dot')).toHaveLength(1)
+    expect(document.querySelectorAll('.titlebar-tab .session-status-dot')).toHaveLength(0)
+  })
+
+  it('pulses a resuming dormant tab and sheds the dormant dim', () => {
+    // A session the user just woke up must read as waking (working pulse),
+    // not stay dormant-dimmed for the spawn's duration.
+    const onNewSession = vi.fn()
+    const onCreateGroup = vi.fn()
+    const askPrompt = vi.fn()
+    render(
+      <DesktopTitlebarTabs
+        sessions={[makeSession({ id: 's1', running: false })]}
+        focusedId={null}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNewSession={onNewSession}
+        onCreateGroup={onCreateGroup}
+        askPrompt={askPrompt}
+        maxOpen={3}
+        resumingIds={new Set(['s1'])}
+      />,
+    )
+    const tab = document.querySelector<HTMLElement>('.titlebar-tab')!
+    expect(tab.classList.contains('working')).toBe(true)
+    expect(tab.classList.contains('dormant')).toBe(false)
+    expect(document.querySelectorAll('.titlebar-tab-dot')).toHaveLength(1)
+    expect(document.querySelectorAll('.titlebar-tab .session-status-dot')).toHaveLength(0)
+  })
+})
