@@ -995,7 +995,7 @@
   height: 50%;
   border-left: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  border-bottom-left-radius: 7px;
+  border-bottom-left-radius: var(--radius-sm);
   pointer-events: none;
 }
 .settings-row-sub .settings-row-title { font-size: var(--fs-sm); }
