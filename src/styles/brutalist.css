@@ -56,10 +56,13 @@
    The badges carry `border: none` in their base rules, so the sticker
    border needs the full shorthand (a bare border-width would not
    paint). Everything else already has a solid border and only needs
-   the width bump. */
+   the width bump. The git badge joins the chip treatment (spec 元件
+   language: every chip gets 2px edge + small hard shadow) but stays
+   un-rotated — it is informative status, not a decorative sticker. */
 [data-skin="brutalist"] .chat-panel-mode-badge,
 [data-skin="brutalist"] .chat-panel-model-badge,
-[data-skin="brutalist"] .chat-panel-fast-badge {
+[data-skin="brutalist"] .chat-panel-fast-badge,
+[data-skin="brutalist"] .chat-panel-git-badge {
   border: 2px solid var(--border);
   box-shadow: 2px 2px 0 var(--bt-shadow-color);
 }
@@ -104,6 +107,32 @@
    sticker in dark) — inherit the sticker ink like the title does. */
 [data-skin="brutalist"] .session-item.open .session-item-meta {
   color: var(--bt-on-yellow);
+}
+
+/* ── 3b. Badge sticker states (spec §7 role table) ──────────────────
+   PLAN chip = orange sticker (white ink), model chip = yellow sticker
+   (ink), fast-on = orange sticker (white ink). Other mode-* states keep
+   their semantic inks on the sticker surface. Hover rules are restated
+   where the base hover (higher specificity) would repaint the sticker
+   fill; the model chip's value text self-colors to --fg and must be
+   re-inked to read on yellow. */
+[data-skin="brutalist"] .chat-panel-mode-badge.mode-plan {
+  background: var(--bt-orange);
+  color: var(--on-accent);
+}
+[data-skin="brutalist"] .chat-panel-model-badge {
+  background: var(--bt-yellow);
+  color: var(--bt-on-yellow);
+}
+[data-skin="brutalist"] .chat-panel-model-badge .chat-panel-model-badge-value {
+  color: var(--bt-on-yellow);
+}
+[data-skin="brutalist"] .chat-panel-model-badge:hover:not(:disabled) {
+  background: var(--bt-yellow);
+}
+[data-skin="brutalist"] .chat-panel-fast-badge.fast-on {
+  background: var(--bt-orange);
+  color: var(--on-accent);
 }
 
 /* ── 4. Section bars (blue plate, white ink) ──────────────────────── */
