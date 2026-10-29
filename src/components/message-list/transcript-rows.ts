@@ -49,6 +49,7 @@
  */
 import type { SdkMessage } from '../../types'
 import type { ActiveSubagent, TranscriptItem } from '../../session-store/types'
+import type { DraftState } from '../../session-store/draft-state'
 import { getBlocks, userMessageHasToolResult } from '../../session-store/normalize'
 import { QUESTION_TOOL_NAME } from '../../utils/question-answers'
 import { MARKER_TOOL_NAMES, PLAN_TOOL_NAMES } from '../../constants/toolNames'
@@ -102,6 +103,36 @@ export interface TranscriptRow {
     memberItemIndices: number[]
     memberIds: string[]
   }
+}
+
+/** Rows for the in-place draft card (inline streaming) and its frozen
+ *  interrupted half-cards: synthetic assistant messages marked `isDraft`,
+ *  keyed by their draft key (the settled message later adopts that key via
+ *  mirror.draftRowKeys, so the hand-off never remounts — see
+ *  docs/superpowers/specs/2026-10-28-inplace-streaming-card-design.md §5.1).
+ *  Frozen rows first, live draft last. `renderableIndex` is relative to the
+ *  returned group — the caller offsets it when appending after settled rows.
+ *  `msg.message.content` is a placeholder: the draft body renders from the
+ *  store (`draft.text`), not from the message. */
+export function buildDraftRows(
+  draft: DraftState | null,
+  frozenDrafts: readonly DraftState[],
+): TranscriptRow[] {
+  const states = [...frozenDrafts, ...(draft ? [draft] : [])]
+  return states.map((d, i) => ({
+    id: d.key,
+    msg: {
+      type: 'assistant',
+      uuid: d.key,
+      isDraft: true,
+      parent_tool_use_id: null,
+      message: { role: 'assistant', content: [{ type: 'text', text: '' }] },
+    } as unknown as SdkMessage,
+    isCompactSummary: false,
+    plainText: '',
+    renderableIndex: i,
+    itemIndex: -1,
+  }))
 }
 
 export interface BuildTranscriptRowsInput {

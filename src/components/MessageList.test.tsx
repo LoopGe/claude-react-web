@@ -185,6 +185,8 @@ import { extractMessagePlainText } from '../search'
 import { shouldArmEnterAnimation } from '../utils/enter-animation'
 import { SubagentProvider } from '../hooks/useSubagentContext'
 import type { ActiveSubagent } from '../session-store/types'
+import { getSessionStore } from '../session-store/selectors'
+import { sessionStoreRegistry } from '../session-store/registry'
 
 function makeMsg(type: string, overrides: Record<string, unknown> = {}): SdkMessage {
   return { type, message: { content: [] }, ...overrides } as SdkMessage
@@ -5312,5 +5314,138 @@ describe('collapsed scroller (keep-alive hidden panel)', () => {
     act(() => { fireResize(itemList) })
     expect(virtuosoMockState.scrollTop).toBe(3000)
     expect(followingOf(container)).toBe('true')
+  })
+})
+
+describe('in-place draft rows (store-backed)', () => {
+  // The draft rows are built from the session store (draft / frozenDrafts /
+  // draftRowKeys), not from the `items` prop — these tests drive the store.
+  const SID = 'draft-rows'
+
+  afterEach(async () => {
+    await sessionStoreRegistry.clear()
+  })
+
+  const dispatch = (action: Parameters<ReturnType<typeof getSessionStore>['dispatch']>[0]) =>
+    getSessionStore(SID).dispatch(action)
+  const streamDelta = (text: string, uuid = `se-${Math.random()}`) =>
+    dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'stream_event',
+        uuid,
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text } },
+      } as unknown as SdkMessage,
+    })
+  const flush = () => dispatch({ type: 'LIVE_TURN_FLUSH' })
+  const arriveAssistant = (uuid: string, text = 'settled text') =>
+    dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'assistant',
+        uuid,
+        parent_tool_use_id: null,
+        // The entrance gate distinguishes live arrivals (receivedAt recent)
+        // from disk-restored history (receivedAt undefined) by this stamp.
+        receivedAt: Date.now(),
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      } as unknown as SdkMessage,
+    })
+  const list = (mode?: 'inline', replayReady?: boolean) => (
+    <MessageList
+      items={getSessionStore(SID).getSnapshot().items}
+      sessionId={SID}
+      streamingMode={mode}
+      replayReady={replayReady}
+    />
+  )
+  const renderList = (mode?: 'inline') => render(list(mode))
+
+  it('inline renders the draft row as an assistant card shell; overlay renders none', () => {
+    streamDelta('hello ')
+    flush()
+    const inline = renderList('inline')
+    expect(inline.container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
+    inline.unmount()
+    // Same store, overlay mode (the default): the transcript shows settled
+    // rows only — the bubble preview owns live text there.
+    const overlay = renderList()
+    expect(overlay.container.querySelector('[data-message-id^="draft:"]')).toBeNull()
+  })
+
+  it('keeps the draft row identity across supersede (settled row adopts the draft key)', () => {
+    streamDelta('partial')
+    flush()
+    const { container, rerender } = renderList('inline')
+    const before = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
+    expect(before).toBeTruthy()
+    // The finalized message takes over the row. With the key alias
+    // (draftRowKeys), React updates the SAME DOM node; without it the key
+    // changes to the uuid and the node is replaced — the swap this whole
+    // feature exists to remove. (items is a prop: re-render with the fresh
+    // snapshot like Chat's stream subscription does.)
+    // Dispatch + prop refresh in ONE batch: an intermediate render with the
+    // stale items prop would see zero rows and unmount the row first, which
+    // is a remount by the harness's own doing, not the alias's.
+    act(() => {
+      arriveAssistant('a-final', 'partial')
+      rerender(list('inline'))
+    })
+    const after = container.querySelector('[data-message-id="a-final"]') as HTMLElement
+    expect(after).toBeTruthy()
+    expect(after).toBe(before)
+  })
+
+  it('a tool-only response produces no draft row', () => {
+    dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'stream_event',
+        uuid: 'se-tool',
+        parent_tool_use_id: null,
+        event: {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'tool_use', id: 'tu1', name: 'Bash', input: {} },
+        },
+      } as unknown as SdkMessage,
+    })
+    dispatch({
+      type: 'MESSAGE',
+      message: {
+        type: 'stream_event',
+        uuid: 'se-tool-2',
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"ls"}' } },
+      } as unknown as SdkMessage,
+    })
+    flush()
+    expect(getSessionStore(SID).getSnapshot().draft).toBeNull()
+    const { container } = renderList('inline')
+    expect(container.querySelector('[data-message-id^="draft:"]')).toBeNull()
+  })
+
+  it('draft rows never play the entrance pop, while live settled arrivals do', () => {
+    // Contrast: a genuinely-new settled row (receivedAt-recent) arms the
+    // entrance; the draft row (no receivedAt — it is not an "arrival") must
+    // not, or the growing card would fade in and out of existence.
+    // Seed one settled row first: the gate only arms small tail appends onto
+    // a NON-EMPTY list (growth from empty is the bulk-load case and rides
+    // the reveal cascade instead).
+    arriveAssistant('a-seed', 'seed')
+    const { container, rerender } = render(list('inline', true))
+    act(() => {
+      arriveAssistant('a-live', 'fresh')
+      rerender(list('inline', true))
+    })
+    expect(container.querySelector('.msg-enter[data-message-id="a-live"]')).toBeTruthy()
+    act(() => {
+      streamDelta('growing')
+      flush()
+      rerender(list('inline', true))
+    })
+    expect(container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
+    expect(container.querySelector('.msg-enter[data-message-id="draft:1"]')).toBeNull()
   })
 })

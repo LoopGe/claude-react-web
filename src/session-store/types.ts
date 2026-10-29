@@ -818,6 +818,10 @@ export interface SessionSnapshot {
    *  `draft` changes identity once per flush — the draft body leaf
    *  subscribes to it; `draftRowKeys` is consulted by computeItemKey. */
   draft: DraftState | null
+  /** Stable-string projection of `draft.key` for row-layer subscribers: the
+   *  draft object's identity changes every flush (its text grows), so the row
+   *  layer must key its presence off this string, not off `draft`. */
+  draftKey: string | null
   frozenDrafts: readonly DraftState[]
   draftRowKeys: Readonly<Record<string, string>>
   activePhase: ActivePhase

@@ -178,6 +178,7 @@ export class SessionStore {
       messages,
       streamingContent: mirror.liveTurn ? joinLiveTurnSegments(mirror.liveTurn.flushedText) : null,
       draft: mirror.draft,
+      draftKey: mirror.draft?.key ?? null,
       frozenDrafts: mirror.frozenDrafts,
       draftRowKeys: mirror.draftRowKeys,
       activePhase: mirror.liveTurn?.phase ?? null,

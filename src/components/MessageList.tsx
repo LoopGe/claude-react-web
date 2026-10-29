@@ -41,6 +41,7 @@ import { ToolGroupCard } from './message-list/ToolGroupCard'
 import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
   advanceRowAnchor,
+  buildDraftRows,
   buildTranscriptRows,
   initialRowAnchor,
   shouldLoadOlder,
@@ -624,7 +625,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // module, so "which rows exist, in what order, under what identity" is
   // answered the same way for the main transcript and for every overlay that
   // reuses this component, and is unit-testable without a DOM.
-  const { rows: renderableItems, firstItemId, lastItemId, nextItemTypeMap } = useMemo(
+  const builtRows = useMemo(
     () => buildTranscriptRows({
       items,
       parentToolUseIdFilter,
@@ -635,6 +636,35 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     }),
     [items, parentToolUseIdFilter, isResultConsumed, leadingItems, trailingItems, toolGroupCards],
   )
+
+  // In-place draft rows (the growing inline card + frozen interrupted
+  // half-cards) — inline mode only; the overlay transcript shows settled
+  // rows and lets the bubble preview own live text. `draftKey` is the
+  // STABLE string projection of the draft: the draft object's identity
+  // changes every flush as its text grows, so subscribing the object here
+  // would re-render the whole list at flush rate (the body leaf owns those
+  // flushes). frozenDrafts / draftRowKeys change only on freeze/supersede.
+  const draftKey = useOptionalSessionField(sessionId, 'draftKey')
+  const frozenDrafts = useOptionalSessionField(sessionId, 'frozenDrafts')
+  const draftRowKeys = useOptionalSessionField(sessionId, 'draftRowKeys')
+  const { rows: renderableItems, firstItemId, lastItemId, nextItemTypeMap } = useMemo(() => {
+    const base = builtRows
+    const drafts = resolvedMode === 'inline'
+      ? buildDraftRows(draftKey != null ? { key: draftKey, text: '' } : null, frozenDrafts ?? [])
+      : []
+    if (drafts.length === 0) return base
+    const offset = base.rows.length
+    const rows = [
+      ...base.rows,
+      ...drafts.map((r, i) => ({ ...r, renderableIndex: offset + i })),
+    ]
+    // Tail bookkeeping for the appended rows: the base tail is no longer
+    // last, and every draft row but the real last has a next row.
+    const nextItemTypeMap = new Map(base.nextItemTypeMap)
+    if (base.rows.length > 0) nextItemTypeMap.set(base.rows[base.rows.length - 1]!.id, 'assistant')
+    for (let i = 0; i < drafts.length - 1; i++) nextItemTypeMap.set(drafts[i]!.id, 'assistant')
+    return { rows, firstItemId: base.firstItemId, lastItemId: rows[rows.length - 1]!.id, nextItemTypeMap }
+  }, [builtRows, resolvedMode, draftKey, frozenDrafts])
 
   // The easter-egg game can only open from the default empty state, so fetch
   // its lazy chunk once that state is on screen: the triple-click then swaps
@@ -1508,8 +1538,15 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // is unique within a list — the same id the entrance-animation gate and
   // `nextItemTypeMap` already rely on.
   const computeItemKey = useCallback(
-    (_index: number, item: VirtuosoItem) => ('kind' in item ? STREAMING_ROW_KEY : item.id),
-    [],
+    (_index: number, item: VirtuosoItem) => {
+      if ('kind' in item) return STREAMING_ROW_KEY
+      // Alias-first: a settled message born from an in-place draft keeps the
+      // draft key (draftRowKeys), so the hand-off updates the same row in
+      // place instead of remounting a fresh one.
+      const alias = item.msg.uuid != null ? draftRowKeys?.[item.msg.uuid] : undefined
+      return alias ?? item.id
+    },
+    [draftRowKeys],
   )
 
   const messagesClassName = [

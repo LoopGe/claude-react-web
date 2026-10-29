@@ -7,6 +7,7 @@ import type { TranscriptItem } from '../../session-store/types'
 import {
   INITIAL_FIRST_ITEM_INDEX,
   advanceRowAnchor,
+  buildDraftRows,
   buildTranscriptRows,
   initialRowAnchor,
   shouldLoadOlder,
@@ -1046,5 +1047,28 @@ describe('buildTranscriptRows: task-notification rows', () => {
       isResultConsumed: never,
     })
     expect(rows.every((r) => (r as { taskNotifGroup?: unknown }).taskNotifGroup === undefined)).toBe(true)
+  })
+})
+
+describe('buildDraftRows', () => {
+  it('emits frozen rows first and the live draft last, each keyed by its draft key and marked isDraft', () => {
+    const rows = buildDraftRows(
+      { key: 'draft:5', text: 'live' },
+      [{ key: 'draft:3', text: 'frozen-1' }, { key: 'draft:4', text: 'frozen-2' }],
+    )
+    expect(rows.map((r) => r.id)).toEqual(['draft:3', 'draft:4', 'draft:5'])
+    for (const r of rows) {
+      expect(r.msg.type).toBe('assistant')
+      expect((r.msg as unknown as { isDraft?: boolean }).isDraft).toBe(true)
+      expect(r.msg.uuid).toBe(r.id)
+      expect(r.itemIndex).toBe(-1)
+      expect(r.plainText).toBe('')
+    }
+    // No timestamp field — MessageView hides the slot for settled parity.
+    expect((rows[0]!.msg as unknown as { timestamp?: unknown }).timestamp).toBeUndefined()
+  })
+
+  it('returns [] when there is no draft and no frozen rows', () => {
+    expect(buildDraftRows(null, [])).toEqual([])
   })
 })
