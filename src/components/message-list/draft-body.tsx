@@ -43,12 +43,14 @@ export function DraftBlocks({ text }: { text: string }): ReactElement {
 /** Draft-card body: `frozenText` renders statically (a frozen interrupted
  *  half-card — its text lives on the row, the store is done with it); without
  *  it the body is a live leaf reading `draft.text` from the session store, so
- *  the 80ms flushes re-render this component only — never the row layer. */
+ *  the 80ms flushes re-render this component only — never the row layer.
+ *  The subscription is INERT when frozenText is given: a frozen card must
+ *  not churn on a later live draft's flushes. */
 export const DraftTextBody = memo(function DraftTextBody({ sessionId, frozenText }: {
   sessionId?: string
   frozenText?: string
 }) {
-  const draft = useOptionalSessionField(sessionId, 'draft')
+  const draft = useOptionalSessionField(frozenText != null ? undefined : sessionId, 'draft')
   const text = frozenText ?? draft?.text ?? ''
   return <DraftBlocks text={text} />
 })

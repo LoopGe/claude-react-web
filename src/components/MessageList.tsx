@@ -191,13 +191,13 @@ interface Props {
    *  rendered at the bottom of the transcript. */
   streamingContent?: string | null
   /** Which streaming render mode this transcript uses: 'overlay' (default —
-   *  the capped floating bubble in `.chat-bottom-stack`) or 'inline' (an
-   *  in-flow tail row at the end of the list, the card-era feel). The global
-   *  `streamingRenderMode` setting threads through here (Chat /
-   *  SideChatDrawer); omitted → DEFAULT_STREAMING_RENDER_MODE. One union with
-   *  the renderer's StreamingFooterVariant and the config field — all three
-   *  alias shared/streaming-render-mode.ts, so a third value (e.g. an 'off'
-   *  mode) flows everywhere in one edit.
+   *  the capped floating bubble in `.chat-bottom-stack`) or 'inline' (the
+   *  in-place growing message card). The global `streamingRenderMode`
+   *  setting threads through here (Chat / SideChatDrawer / the drill-ins);
+   *  omitted → DEFAULT_STREAMING_RENDER_MODE. One union with the config
+   *  field, both aliasing shared/streaming-render-mode.ts — the renderer's
+   *  StreamingFooterVariant alias retired with the inline footer — so a
+   *  third value (e.g. an 'off' mode) flows everywhere in one edit.
    *  See docs/superpowers/specs/2026-09-29-dual-mode-streaming-render-design.md. */
   streamingMode?: StreamingRenderMode
   /** Precomputed plan status keyed by toolUseId. */

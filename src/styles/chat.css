@@ -2592,7 +2592,7 @@ button.chat-empty-env-chip:hover {
    settled render (the pixel-parity contract). The code-tail variant hugs the
    code text end; the fallback span (childless body) is styled by the shared
    .streaming-cursor bar and only ever renders when the body is empty. */
-.draft-body > .md > *:last-child:not(ul, ol, .code-block)::after,
+.draft-body > .md > *:last-child:not(ul, ol, .code-block, .streaming-cursor-fallback)::after,
 .draft-body > .md > :is(ul, ol):last-child > li:last-child::after,
 .draft-body > .md > .code-block:last-child code::after {
   content: '';

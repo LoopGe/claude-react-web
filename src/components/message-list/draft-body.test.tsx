@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from 'vitest'
-import { render } from '@testing-library/react'
+import { afterEach, describe, it, expect } from 'vitest'
+import { Profiler } from 'react'
+import { act, render } from '@testing-library/react'
 import { DraftBlocks, DraftTextBody } from './draft-body'
 import { MessageView } from './MessageView'
 import type { SdkMessage } from '../../types'
 import { compileMarkdown } from '../../utils/markdown-cache'
+import { getSessionStore } from '../../session-store/selectors'
+import { sessionStoreRegistry } from '../../session-store/registry'
 
 describe('DraftBlocks', () => {
   it('renders growing markdown bare-block (headings/lists/code live)', () => {
@@ -38,6 +41,49 @@ describe('DraftBlocks', () => {
 })
 
 describe('DraftTextBody', () => {
+  afterEach(async () => {
+    await sessionStoreRegistry.clear()
+  })
+
+  it('a frozen body stays inert while a live draft churns (no store subscription)', async () => {
+    // Regression pin for the final-review minor: the frozen half-card read
+    // `draft` unconditionally, so a live draft's 80ms flushes re-rendered it
+    // (cache-hit work, but per-flush per frozen card). With frozenText given
+    // the store subscription must be inert — zero commits during the churn.
+    const SID = 'frozen-body'
+    const store = getSessionStore(SID)
+    const delta = (text: string) => {
+      store.dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'stream_event',
+          uuid: `fb-${text}-${Math.random()}`,
+          parent_tool_use_id: null,
+          event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+        } as never,
+      })
+      store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    }
+    delta('live ')
+    let commits = 0
+    render(
+      <Profiler id="frozen" onRender={() => { commits++ }}>
+        <DraftTextBody sessionId={SID} frozenText="frozen text" />
+      </Profiler>,
+    )
+    const base = commits
+    await act(async () => {
+      delta('more1 ')
+      delta('more2 ')
+      delta('more3 ')
+      await new Promise((r) => setTimeout(r, 150))
+    })
+    expect(commits).toBe(base)
+    // And the frozen text never bleeds into the live draft's growth.
+    expect(document.body.textContent).toContain('frozen text')
+    expect(document.body.textContent).not.toContain('more3')
+  })
+
   it('frozenText renders statically without a cursor', () => {
     const { container } = render(<DraftTextBody frozenText="frozen **text**" />)
     expect(container.textContent).toContain('frozen text')
