@@ -46,6 +46,7 @@ import {
   parseQuestionAnswersMessage,
 } from '../utils/question-answers'
 import { toolDebug, toolDebugEnabled } from './debug'
+import { appendDraftText, supersedeDraft } from './draft-state'
 import { parseWorkflowOutput } from './workflow-meta'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 import { isEmptyResultFrame } from '../../shared/results.js'
@@ -345,10 +346,24 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
           flushed.push(chunk)
         }
       }
-      return withMirror(state, {
+      // Fold the flushed MAIN-THREAD text into the in-place draft (the
+      // growing inline card) at the same 80ms cadence — per-delta folding
+      // would recompile the card's tail at delta rate. Sidechain text never
+      // enters the draft (the settled card never contains it either).
+      const mainText = liveTurn.textChunks
+        .filter((c) => !c.sidechain)
+        .map((c) => c.text)
+        .join('')
+      const mirror: ServerMirror = {
         ...state.mirror,
         liveTurn: { ...liveTurn, flushedText: flushed, textChunks: [], dirty: false },
-      })
+      }
+      if (mainText) {
+        const draftSeq = mirror.draft ? mirror.draftSeq : mirror.draftSeq + 1
+        mirror.draft = appendDraftText(mirror.draft, draftSeq, mainText)
+        mirror.draftSeq = draftSeq
+      }
+      return withMirror(state, mirror)
     }
     case 'DISMISS_SUBAGENT': {
       // Flip an in-flight subagent (running/background/pending) to `dismissed`
@@ -2357,6 +2372,23 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // pruneFinalizedLiveTurnText for the serial-response invariant this leans on).
   working = withMirror(working, pruneFinalizedLiveTurnText(working.mirror, incomingMessage))
 
+  // A finalized main-thread assistant takes over the in-place draft row: the
+  // row keeps its draft key (alias) so the hand-off updates in place instead
+  // of remounting a fresh row.
+  if (
+    incomingMessage.type === 'assistant'
+    && incomingMessage.parent_tool_use_id == null
+    && working.mirror.draft
+    && messageUuid
+  ) {
+    const { cleared, aliasEntry } = supersedeDraft(working.mirror.draft, messageUuid)
+    working = withMirror(working, {
+      ...working.mirror,
+      draft: cleared,
+      draftRowKeys: { ...working.mirror.draftRowKeys, [aliasEntry[0]]: aliasEntry[1] },
+    })
+  }
+
   if (messageUuid && working.mirror.pendingConsumedMessages.has(messageUuid)) {
     const pendingConsumedMessages = new Map(working.mirror.pendingConsumedMessages)
     pendingConsumedMessages.delete(messageUuid)
@@ -2364,11 +2396,19 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   }
 
   if (incomingMessage.type === 'result') {
+    // A draft still live at the turn's end is an interrupted half-card ("no
+    // roll back"): freeze it as a session-memory partial row. A salvaged
+    // partial response would have superseded the draft already (the MESSAGE
+    // above), so this fires exactly when nothing salvaged it.
+    const m = working.mirror
+    const frozen = m.draft
+      ? { ...m, frozenDrafts: [...m.frozenDrafts, m.draft], draft: null }
+      : m
     // Turn-end sweep via the shared helper. The live-only concerns
     // (liveTurn=null, clearSendingPlaceholders) are applied on top.
     working = {
       sessionId: working.sessionId,
-      mirror: { ...sweepAtTurnEnd(working.mirror), liveTurn: null },
+      mirror: { ...sweepAtTurnEnd(frozen), liveTurn: null },
       // Clear any lingering optimistic placeholders — the result frame means
       // the SDK has finished processing, so no server echo is expected anymore.
       intent: clearSendingPlaceholders(working.intent),

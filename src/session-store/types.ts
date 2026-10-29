@@ -2,6 +2,7 @@ import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
 import type { ContextUsage } from '../hooks/useChatStream'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { emptyWindow, type WindowState } from './seq-window'
+import type { DraftState } from './draft-state'
 import type { ActiveWorktree } from './normalize'
 
 export interface TranscriptItem {
@@ -492,6 +493,24 @@ export interface ServerMirror {
    *  consumed signal before the user-message broadcast. Cache it here and
    *  apply it when the row appears instead of leaving the bubble queued. */
   pendingConsumedMessages: ReadonlyMap<string, number>
+  /** In-place draft (the growing inline streaming card): the in-flight
+   *  response's main-thread text since its first delta, keyed `draft:<n>`
+   *  (see draftSeq) for row-identity continuity. Folds at LIVE_TURN_FLUSH
+   *  (same cadence as liveTurn.flushedText); cleared on finalize (the
+   *  message supersedes the row) or at turn end (the draft freezes).
+   *  Survives benign REPLAY_REPLACE like liveTurn — reload builds a fresh
+   *  store, which is what "drafts are never persisted" means. */
+  draft: DraftState | null
+  /** Frozen interrupted half-cards (the "no roll back" ruling): drafts still
+   *  live at the turn's result because no finalized message salvaged them.
+   *  Session-memory only — a fresh store starts empty. */
+  frozenDrafts: readonly DraftState[]
+  /** message uuid → the draft key its row was born with. The settled row
+   *  keeps the draft key so the hand-off updates in place (no remount).
+   *  Append-only per session; a fresh store re-keys rows by uuid. */
+  draftRowKeys: Readonly<Record<string, string>>
+  /** Last draft key sequence used (drives `draft:<n>` keys). */
+  draftSeq: number
   permissionPending: Map<string, PermissionRequest>
   permissionDecisions: Map<string, 'allow' | 'deny'>
   pidToToolUseId: Map<string, string>
@@ -795,6 +814,12 @@ export interface SessionSnapshot {
   items: TranscriptItem[]
   messages: SdkMessage[]
   streamingContent: string | null
+  /** The in-place draft (growing inline card) and its row-identity state.
+   *  `draft` changes identity once per flush — the draft body leaf
+   *  subscribes to it; `draftRowKeys` is consulted by computeItemKey. */
+  draft: DraftState | null
+  frozenDrafts: readonly DraftState[]
+  draftRowKeys: Readonly<Record<string, string>>
   activePhase: ActivePhase
   tokenRate: number | null
   contextUsage: ContextUsage | null
@@ -895,6 +920,10 @@ export function createInitialServerMirror(): ServerMirror {
     thinkingTokens: null,
     sessionState: null,
     pendingConsumedMessages: new Map<string, number>(),
+    draft: null,
+    frozenDrafts: [],
+    draftRowKeys: {},
+    draftSeq: 0,
     permissionPending: new Map(),
     permissionDecisions: new Map(),
     pidToToolUseId: new Map(),

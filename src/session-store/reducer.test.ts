@@ -5312,3 +5312,70 @@ describe('reducer: no-anchor fallback with a degraded (marker) cached prompt', (
     expect(ids(second)).toEqual(['u-pic-ring', 'u-pic-disk'])
   })
 })
+
+describe('in-place draft lifecycle (draft / supersede / interrupt-freeze)', () => {
+  it('folds main-thread text deltas into the in-place draft (thinking and sidechain excluded)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'hello ') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se2', 'world') })
+    // thinking deltas carry delta.thinking — never text, never draft.
+    state = reduceSessionState(state, {
+      type: 'MESSAGE',
+      message: {
+        type: 'stream_event',
+        uuid: 'se3',
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'hmm' } },
+      } as unknown as SdkMessage,
+    })
+    // Sidechain text belongs to subagents, never to the main-thread card.
+    state = reduceSessionState(state, { type: 'MESSAGE', message: sidechainStreamEventMsg('se4', 'sub text') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    expect(state.mirror.draft).toEqual({ key: 'draft:1', text: 'hello world' })
+  })
+
+  it('MESSAGE finalize supersedes the draft: alias uuid to draft key, draft cleared', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'partial') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a-final', 'partial') })
+    expect(state.mirror.draft).toBeNull()
+    expect(state.mirror.draftRowKeys).toEqual({ 'a-final': 'draft:1' })
+  })
+
+  it('result with a live draft freezes it as an interrupted partial and clears the draft', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'half') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg('r1') })
+    expect(state.mirror.draft).toBeNull()
+    expect(state.mirror.frozenDrafts).toEqual([{ key: 'draft:1', text: 'half' }])
+  })
+
+  it('result after a supersede freezes nothing', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'full') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a-final', 'full') })
+    state = reduceSessionState(state, { type: 'MESSAGE', message: resultMsg('r1') })
+    expect(state.mirror.frozenDrafts).toEqual([])
+  })
+
+  it('REPLAY_REPLACE preserves draft state across a benign reconnect (like liveTurn)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'half') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    state = replay(state, [])
+    expect(state.mirror.draft).toEqual({ key: 'draft:1', text: 'half' })
+    expect(state.mirror.draftSeq).toBe(1)
+  })
+
+  it('a replayed result freezes a preserved draft (reconnect that missed the interrupt)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'half') })
+    state = reduceSessionState(state, { type: 'LIVE_TURN_FLUSH' })
+    state = replay(state, [resultMsg('r-replay')])
+    expect(state.mirror.draft).toBeNull()
+    expect(state.mirror.frozenDrafts).toEqual([{ key: 'draft:1', text: 'half' }])
+  })
+})
