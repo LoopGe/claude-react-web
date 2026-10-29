@@ -19,6 +19,7 @@ import { act, render } from '@testing-library/react'
 const counts = vi.hoisted(() => ({
   Chat: 0,
   MessageList: 0,
+  SessionMessageList: 0,
   OverlayStreamingRegion: 0,
   StreamingFooter: 0,
   LiveWorkingBubble: 0,
@@ -45,6 +46,10 @@ vi.mock('./Chat', async (orig) => {
 vi.mock('./MessageList', async (orig) => {
   const mod = await orig<typeof import('./MessageList')>()
   return { ...mod, MessageList: counted('MessageList', mod.MessageList) }
+})
+vi.mock('./SessionMessageList', async (orig) => {
+  const mod = await orig<typeof import('./SessionMessageList')>()
+  return { ...mod, SessionMessageList: counted('SessionMessageList', mod.SessionMessageList) }
 })
 vi.mock('./message-list/OverlayStreamingRegion', async (orig) => {
   const mod = await orig<typeof import('./message-list/OverlayStreamingRegion')>()
@@ -118,10 +123,12 @@ vi.mock('../hooks/useApi', () => {
 
 import { Chat } from './Chat'
 import { MessageList } from './MessageList'
+import { SessionMessageList } from './SessionMessageList'
 import { ToastProvider } from './ToastProvider'
 import { getSessionStore } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
 import type { SessionInfo } from '../types'
+import type { TranscriptPaging } from '../session-sync/useSessionSynchronizer'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -278,5 +285,70 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
     // The overlay leaf is not mounted in inline mode.
     expect(container.querySelector('.chat-streaming-region')).toBeNull()
+  }, 30_000)
+
+  it('overlay mode: SessionMessageList wrapper stays at 0 renders per flush (the overlay leaf owns the subscription)', async () => {
+    const SID = 'session-msglist-iso'
+    // Seed a settled transcript (items / replayReady are stable across
+    // LIVE_TURN_FLUSH), then mount SessionMessageList with a stable paging
+    // object. The wrapper subscribes only to items / replayReady /
+    // planStatus / planContent / questionAnswers / toolStatus / toolResults
+    // / oldestSeq / hasOlder — none of those change identity during a
+    // streaming flush, so the wrapper (and the controlled MessageList
+    // inside it) must not re-render while the OverlayStreamingRegion leaf
+    // re-renders once per published flush.
+    const store = getSessionStore(SID)
+    await act(async () => {
+      store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
+    })
+    const stablePaging: TranscriptPaging = {
+      loadingOlder: false,
+      olderError: null,
+      loadOlder: async () => 0,
+    }
+    const { container } = render(
+      <SessionMessageList sessionId={SID} paging={stablePaging} />,
+    )
+    // Start the assistant message + a text block so the live turn exists
+    // and `streamingContent` becomes non-empty after the first flush.
+    await act(async () => {
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 's-0', parent_tool_use_id: null, event: { type: 'message_start', message: { id: 'm1' } } } as never })
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 's-1', parent_tool_use_id: null, event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } } as never })
+      await sleep(150)
+    })
+    // The store's activePhase is 'writing' (the content_block_start landed),
+    // but SessionMessageList does NOT subscribe to activePhase — it must
+    // not have rendered for that transition either.
+    expect(store.getSnapshot().activePhase).toBe('writing')
+
+    // Track every distinct streamingContent the store publishes = one flush.
+    const seen = new Set<string>()
+    const unsub = store.subscribe(() => {
+      const c = store.getSnapshot().streamingContent
+      if (c) seen.add(c)
+    })
+    for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
+
+    const DELTAS = 24
+    for (let i = 0; i < DELTAS; i++) {
+      await act(async () => {
+        store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: `d-${i}`, parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `word${i} ` } } } as never })
+        await sleep(25)
+      })
+    }
+    await act(() => sleep(150)) // trailing flush
+    unsub()
+
+    const flushes = seen.size
+    expect(flushes).toBeGreaterThanOrEqual(5)
+    // The wrapper never rendered across the whole streaming window…
+    expect(counts.SessionMessageList).toBe(0)
+    expect(counts.MessageList).toBe(0)
+    // …while the overlay leaf re-rendered at least once per published flush.
+    expect(counts.OverlayStreamingRegion).toBeGreaterThanOrEqual(flushes)
+    expect(counts.StreamingFooter).toBeGreaterThanOrEqual(flushes)
+    // And the streamed text reached the overlay bubble.
+    expect(container.querySelector('.chat-streaming-region .streaming-plain')?.textContent).toContain(`word0 `)
+    expect(container.querySelector('.chat-streaming-region .streaming-plain')?.textContent).toContain(`word${DELTAS - 1}`)
   }, 30_000)
 })
