@@ -298,7 +298,8 @@ body.resizing-col .app {
     background var(--motion-duration-fast) var(--motion-ease-standard),
     border-color var(--motion-duration-fast) var(--motion-ease-standard),
     color var(--motion-duration-fast) var(--motion-ease-standard),
-    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    /* Covers the .dormant container dim — sleep/wake fades, not snaps. */
+    opacity var(--motion-duration-moderate) var(--motion-ease-standard),
     transform var(--motion-duration-base) var(--motion-ease-standard);
 }
 .session-nav-tab:hover {
@@ -442,19 +443,18 @@ body.resizing-col .app {
 .session-nav-tab .session-status-dot.exiting {
   animation: session-nav-dot-out var(--motion-duration-fast) var(--motion-ease-exit) forwards;
 }
-/* Dormant (slept) tab: the label dims so slept sessions recede next to live
-   ones. The focused tab is exempt — its content is on screen and the active
-   plate already marks it; dimming the text you are reading would only cost
-   contrast. Same shared-rule treatment as the dot size above. */
-.session-nav-tab.dormant:not(.active) .session-nav-label,
-.titlebar-tab.dormant:not(.active) .titlebar-tab-label {
+/* Dormant (slept) tab: the whole tab recedes — label, hollow-ring dot and
+   (on the titlebar) the close button dim together at the container, the same
+   mechanism as the sidebar's .session-item.dormant row dim, so dot and text
+   always read as one colour. The focused tab is exempt — its content is on
+   screen and the active plate already marks it; dimming the text you are
+   reading would only cost contrast. :not(.dragging) keeps the drag source's
+   stronger 0.4 "dimmed hole" winning on a dormant tab being dragged (the
+   ghost carries the dormant dim instead). The tab's own transition list
+   covers opacity, so sleep/wake fades instead of snapping. */
+.session-nav-tab.dormant:not(.active):not(.dragging),
+.titlebar-tab.dormant:not(.active) {
   opacity: 0.55;
-}
-/* So the dormant dim eases in/out instead of snapping — shared across both
-   compact tab surfaces (see the lockstep note above). */
-.session-nav-label,
-.titlebar-tab-label {
-  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }
 /* SortableNode wrapper around a drag-enabled tab / chip — the element
    dnd-kit transforms (and the reorder FLIP matches via data-nav-item-id).

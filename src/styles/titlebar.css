@@ -136,6 +136,12 @@
   cursor: pointer;
   user-select: none;
   flex-shrink: 0;
+  transition:
+    background var(--motion-duration-fast) var(--motion-ease-standard),
+    border-color var(--motion-duration-fast) var(--motion-ease-standard),
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    /* Covers the .dormant container dim (layout.css) — sleep/wake fades. */
+    opacity var(--motion-duration-moderate) var(--motion-ease-standard);
 }
 .titlebar-tab:hover {
   background: var(--btn-hover-bg);
