@@ -121,7 +121,9 @@ body.resizing-col .app {
    left chrome cluster and the toolbar.
    Entrance: fades/slides in when the sidebar collapses (mount = each
    collapse, since the strip is conditionally rendered), timed to the
-   sidebar's own 240ms grid transition. */
+   sidebar's own 240ms grid transition. Exit: the parent holds the unmount
+   one exit window (useExitRetention) and drops `.exiting` when it closes,
+   mirroring the entrance. */
 .session-nav-strip {
   display: flex;
   align-items: center;
@@ -130,6 +132,13 @@ body.resizing-col .app {
   min-width: 0;
   --fade-width: 24px;
   animation: session-nav-strip-in var(--motion-duration-moderate) var(--motion-ease-enter);
+  /* Edge-fade widths are registered <length>s (tokens.css) — transitioned
+     HERE, where the component's inline style sets them; the scroller
+     inherits the interpolated values, so the mask eases an edge in/out
+     instead of hard-cutting when content crosses it. */
+  transition:
+    --fade-start-w var(--motion-duration-fast) var(--motion-ease-standard),
+    --fade-end-w var(--motion-duration-fast) var(--motion-ease-standard);
 }
 /* Plain .btn-icon box (34x30, same family as the sidebar toggle / bell /
    settings buttons); only the glyph size (16px, like the other 16px icons)
@@ -192,9 +201,26 @@ body.resizing-col .app {
     transform: translateY(0);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .session-nav-strip {
-    animation: none;
+/* Exit mirror of session-nav-strip-in — same moderate cadence, so the
+   slide-out spans the whole sidebar-grid expansion instead of finishing at
+   its half-time (the parent holds the unmount STRIP_EXIT_WINDOW_MS to
+   match). `both` holds the end state until that window closes. A quick
+   toggle that revives the strip mid-exit replays session-nav-strip-in with
+   no JS: dropping `.exiting` takes this name out of the computed
+   animation-name list and puts the entrance back in, and a newly-named CSS
+   animation restarts (the class-toggle replay idiom). */
+.session-nav-strip.exiting {
+  animation: session-nav-strip-out var(--motion-duration-moderate) var(--motion-ease-exit) both;
+  pointer-events: none;
+}
+@keyframes session-nav-strip-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--motion-distance-sm)));
   }
 }
 /* One group's chip + member tabs, separated from the next section by a
@@ -240,7 +266,8 @@ body.resizing-col .app {
   flex-shrink: 0;
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
-    color var(--motion-duration-fast) var(--motion-ease-standard);
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .session-nav-chip:hover {
   background: var(--btn-hover-bg);
@@ -270,7 +297,9 @@ body.resizing-col .app {
   transition:
     background var(--motion-duration-fast) var(--motion-ease-standard),
     border-color var(--motion-duration-fast) var(--motion-ease-standard),
-    color var(--motion-duration-fast) var(--motion-ease-standard);
+    color var(--motion-duration-fast) var(--motion-ease-standard),
+    opacity var(--motion-duration-fast) var(--motion-ease-standard),
+    transform var(--motion-duration-base) var(--motion-ease-standard);
 }
 .session-nav-tab:hover {
   background: var(--btn-hover-bg);
@@ -303,8 +332,13 @@ body.resizing-col .app {
      phase-locked to it: both animations start on the same frame (both begin
      when .working lands), and the keyframes are inverted so the dot is
      BRIGHTEST when the wash peaks and dims as it recedes — one shared breath
-     instead of two competing pulses. */
-  animation: session-nav-pulse 1.8s ease-in-out infinite;
+     instead of two competing pulses. The mount pop rides alongside as the
+     FIRST animation: it owns transform (scale) only in practice — the pulse,
+     listed later, wins the contested opacity — so the dot can pop in without
+     fighting the breath. */
+  animation:
+    session-nav-dot-in var(--motion-duration-fast) var(--motion-ease-enter) backwards,
+    session-nav-pulse 1.8s ease-in-out infinite;
 }
 @keyframes session-nav-pulse {
   0%, 100% { opacity: 0.35; }
@@ -332,11 +366,19 @@ body.resizing-col .app {
   0%, 100% { box-shadow: inset 0 0 0 999px transparent; }
   50% { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--accent) 18%, transparent); }
 }
-@media (prefers-reduced-motion: reduce) {
-  .session-nav-dot,
-  .session-nav-tab.working {
-    animation: none;
-  }
+/* Working wash fade-out (turn ended): the wash hook keeps `.working` one
+   exit window and adds `.exiting`, which swaps the breathing pulse for a
+   one-shot fade from the wash colour instead of cutting it mid-breath. */
+.session-nav-tab.working.exiting {
+  animation: session-nav-working-out var(--motion-duration-fast) var(--motion-ease-exit) forwards;
+}
+/* Fades from the wash PEAK: CSS can't start a keyframe from the pulse's
+   in-flight value, so a turn that ends near the breath's trough reads as a
+   brief brighten before the fade. Accepted over the alternative of fading a
+   whole overlay layer for a 120ms window. */
+@keyframes session-nav-working-out {
+  from { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--accent) 18%, transparent); }
+  to { box-shadow: inset 0 0 0 999px transparent; }
 }
 .session-nav-unread {
   width: 6px;
@@ -344,6 +386,42 @@ body.resizing-col .app {
   border-radius: var(--radius-circle);
   background: var(--accent-bright);
   flex-shrink: 0;
+  animation: session-nav-dot-in var(--motion-duration-fast) var(--motion-ease-enter) backwards;
+}
+.session-nav-unread.exiting {
+  animation: session-nav-dot-out var(--motion-duration-fast) var(--motion-ease-exit) forwards;
+}
+/* Dot pop / fade — shared by the unread badge and the status dots (the
+   working dot layers it under its breath instead). `backwards` on the pop,
+   `forwards` on the fade: the end states ARE the natural/unmounted states,
+   so nothing is held past the window. */
+@keyframes session-nav-dot-in {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+/* The fade starts from full — a working dot cut near the breath's trough
+   brightens briefly before it goes (CSS can't key off the in-flight pulse
+   value), same accepted tradeoff as the wash fade. */
+@keyframes session-nav-dot-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+}
+.session-nav-dot.exiting {
+  /* The breath cedes to the fade — this rule's two-class specificity beats
+     the single-class .session-nav-dot animation list wholesale. */
+  animation: session-nav-dot-out var(--motion-duration-fast) var(--motion-ease-exit) forwards;
 }
 /* Exceptional status dots (working/dormant/ended/waiting/err) reuse the
    sidebar's .session-status-dot palette, resized to the header tabs' 6px dot
@@ -356,6 +434,14 @@ body.resizing-col .app {
   width: 6px;
   height: 6px;
 }
+/* Status dots pop in / fade out like the unread badge (strip surface only —
+   the titlebar tabs keep their own motion scope). */
+.session-nav-tab .session-status-dot {
+  animation: session-nav-dot-in var(--motion-duration-fast) var(--motion-ease-enter) backwards;
+}
+.session-nav-tab .session-status-dot.exiting {
+  animation: session-nav-dot-out var(--motion-duration-fast) var(--motion-ease-exit) forwards;
+}
 /* Dormant (slept) tab: the label dims so slept sessions recede next to live
    ones. The focused tab is exempt — its content is on screen and the active
    plate already marks it; dimming the text you are reading would only cost
@@ -364,14 +450,41 @@ body.resizing-col .app {
 .titlebar-tab.dormant:not(.active) .titlebar-tab-label {
   opacity: 0.55;
 }
-/* SortableNode wrapper around a drag-enabled tab / chip. A plain div works as
-   a flex item (width = content, align-items:center centers it), but the
-   explicit box keeps the slot from growing if the button's intrinsic sizing
-   changes. */
+/* So the dormant dim eases in/out instead of snapping — shared across both
+   compact tab surfaces (see the lockstep note above). */
+.session-nav-label,
+.titlebar-tab-label {
+  transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
+}
+/* SortableNode wrapper around a drag-enabled tab / chip — the element
+   dnd-kit transforms (and the reorder FLIP matches via data-nav-item-id).
+   ALL transform motion stays off it (the delete-collapse slide/scale rides
+   the inner button) so the two transform owners never collide. The 1fr/0fr
+   grid mirrors the sidebar's .session-item-shell delete-collapse
+   (grid-template-rows there, columns here): `.deleting` shrinks the slot
+   horizontally while fading it, so a deleted tab's neighbours glide the gap
+   closed — as long as the DELETE round-trip outlasts the 240ms collapse. A
+   faster round-trip (the local-server case) unmounts the tab mid-glide and
+   the neighbours snap the tail, the same contract as the sidebar cards'
+   delete-exit. */
 .session-nav-slot {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 1fr;
   align-items: center;
   flex-shrink: 0;
+  transition:
+    grid-template-columns var(--motion-duration-moderate) var(--motion-ease-standard),
+    opacity var(--motion-duration-base) var(--motion-ease-standard);
+}
+.session-nav-slot.deleting {
+  grid-template-columns: 0fr;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.session-nav-slot.deleting > .session-nav-tab {
+  overflow: hidden;
+  transform: translateY(calc(-1 * var(--motion-distance-xs))) scale(var(--motion-scale-enter));
 }
 /* Dragging tab/chip: dim the in-row source while the compact ghost carries
    the item (same "dimmed hole" language as .session-item.dragging, without
@@ -390,6 +503,38 @@ body.resizing-col .app {
 .session-nav-tab-ghost,
 .session-nav-chip-ghost {
   box-shadow: 0 4px 12px color-mix(in srgb, var(--fg) 12%, transparent);
+}
+/* Every motion on this surface dies in one place — LAST in the section on
+   purpose: equal-specificity kills only win over the rules ABOVE them, so
+   this block must follow every animated/transitioned session-nav rule. The
+   WAAPI mount pop is gated in the component (prefersReducedMotion) instead.
+   Dot pops and fades, the working breath and its fade-out, the strip exit,
+   the edge-fade ease, and the state transitions (dragging dim, dormant dim,
+   delete collapse) all stop here. */
+@media (prefers-reduced-motion: reduce) {
+  .session-nav-strip,
+  .session-nav-strip.exiting,
+  .session-nav-tab.working,
+  .session-nav-tab.working.exiting,
+  .session-nav-dot,
+  .session-nav-dot.exiting,
+  .session-nav-unread,
+  .session-nav-unread.exiting,
+  .session-nav-tab .session-status-dot,
+  .session-nav-tab .session-status-dot.exiting {
+    animation: none;
+  }
+  .session-nav-strip,
+  .session-nav-tab,
+  .session-nav-chip,
+  .session-nav-slot,
+  .session-nav-label,
+  .titlebar-tab-label {
+    transition: none;
+  }
+  .session-nav-slot.deleting > .session-nav-tab {
+    transform: none;
+  }
 }
 
 /* Profile quick-switcher in the top bar. */

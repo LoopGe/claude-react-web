@@ -23,7 +23,7 @@
 // role="group" not "tablist": same call as .main-toolbar / titlebar tabs —
 // the ARIA tab pattern promises arrow-key roving we don't implement.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable'
 import type { SessionInfo, SidebarSection } from '../types'
@@ -34,6 +34,9 @@ import { dndData } from '../dnd/payload'
 import { SortableNode } from '../dnd/SortableNode'
 import { CreateMenuButton } from './CreateMenuButton'
 import type { PromptRequest } from '../hooks/useDialogHosts'
+import { useExitRetention } from '../hooks/useExitRetention'
+import { NAV_ITEM_ID_ATTR } from '../utils/flip'
+import { prefersReducedMotion } from '../utils/reduced-motion'
 
 interface Props {
   sections: SidebarSection[]
@@ -56,6 +59,14 @@ interface Props {
    *  same guards the sidebar cards apply before enabling their sortables. */
   resumingIds?: ReadonlySet<string>
   deletingIds?: ReadonlySet<string>
+  /** The strip shell is playing its exit (sidebar expanding) — the parent
+   *  holds the unmount for one exit window via useExitRetention and drops
+   *  this class when the window closes. */
+  exiting?: boolean
+  /** First-sight ids for the mount pop. The default is per-instance (fresh
+   *  set each strip mount); App passes one session-lifetime set so a sidebar
+   *  re-collapse doesn't re-pop every already-open tab. */
+  poppedIdsRef?: { current: Set<string> }
 }
 
 /** Which horizontal edges of a scroller currently hide content. Pure so the
@@ -159,14 +170,23 @@ export function stripDndPlan(sections: SidebarSection[]): StripDndPlan {
  *  sidebar's `.session-status-dot.status-*` palette); a plain live session
  *  carries no dot at all. The single source of truth across surfaces is the
  *  pure tabDotStatus() fold — each surface computes it locally (the strip
- *  folds once per tab and feeds both this block and the tab's className). */
+ *  folds once per tab and feeds both this block and the tab's className).
+ *  A dot that loses its signal is held one exit window (useExitRetention,
+ *  `.exiting`) so it can fade out instead of being cut — a status change to
+ *  a DIFFERENT dot is a swap: the spans are keyed by kind so the old one
+ *  unmounts and the new one's mount pop plays (a reused node would neither
+ *  restart session-nav-dot-in nor fade the dropped breath). */
 function NavTabDots({ status, unread }: { status: TabDotStatus | null; unread?: boolean }) {
   // Working wins over unread: a running turn is the stronger, live
   // signal, and two adjacent 6px dots would read as one blob.
-  if (status === 'working') return <span className="session-nav-dot" aria-hidden />
-  if (unread) return <span className="session-nav-unread" aria-hidden />
-  if (status) return <span className={`session-status-dot status-${status}`} aria-hidden />
-  return null
+  const dot =
+    status === 'working' ? 'working' : unread ? 'unread' : status ? `status:${status}` : null
+  const { shown, exiting } = useExitRetention(dot)
+  if (shown === null) return null
+  const cls = exiting ? ' exiting' : ''
+  if (shown === 'working') return <span key="working" className={`session-nav-dot${cls}`} aria-hidden />
+  if (shown === 'unread') return <span key="unread" className={`session-nav-unread${cls}`} aria-hidden />
+  return <span key={shown} className={`session-status-dot status-${shown.slice('status:'.length)}${cls}`} aria-hidden />
 }
 
 function SessionNavTab({
@@ -174,6 +194,7 @@ function SessionNavTab({
   focused,
   unread,
   resuming,
+  deleting,
   onSelect,
   onContextMenu,
   dnd,
@@ -186,6 +207,10 @@ function SessionNavTab({
    *  'working' so a session the user just woke up pulses instead of sitting
    *  dormant-dimmed for the spawn's duration. */
   resuming: boolean
+  /** Local delete-exit (App's `deletingIds`) — collapses the slot while the
+   *  server DELETE is in flight, same contract as the sidebar card's
+   *  `.deleting` shell. */
+  deleting: boolean
   onSelect: (id: string) => void
   onContextMenu?: (e: React.MouseEvent, sessionId: string) => void
   /** Drag registration from stripDndPlan — one entry per rendered tab (the
@@ -200,6 +225,10 @@ function SessionNavTab({
   // instead of reading as dead for the seconds the spawn takes. Crash
   // recovery folds to 'working' through statusClass's documented rule.
   const status = resuming ? 'working' : tabDotStatus(session)
+  // The working wash outlives its status by one exit window so it can fade
+  // out (`.working.exiting`) instead of being cut mid-breath when the turn
+  // ends.
+  const wash = useExitRetention(status === 'working' ? 'working' : null)
   const content = (
     <>
       <span className="session-nav-label">{label}</span>
@@ -207,13 +236,23 @@ function SessionNavTab({
     </>
   )
   return (
-    <SortableNode id={dnd.nodeId} data={dnd.data} disabled={!!dndDisabled} className="session-nav-slot">
+    <SortableNode
+      id={dnd.nodeId}
+      data={dnd.data}
+      disabled={!!dndDisabled}
+      className={`session-nav-slot${deleting ? ' deleting' : ''}`}
+      nodeAttrs={{ [NAV_ITEM_ID_ATTR]: session.id }}
+    >
       {({ isDragging, setActivatorNodeRef, listeners }) => (
         <button
           type="button"
           ref={setActivatorNodeRef}
           {...listeners}
-          className={`session-nav-tab${focused ? ' active' : ''}${isDragging ? ' dragging' : ''}${status === 'working' ? ' working' : ''}${status === 'dormant' ? ' dormant' : ''}`}
+          className={`session-nav-tab${focused ? ' active' : ''}${isDragging ? ' dragging' : ''}${wash.shown === 'working' ? ' working' : ''}${wash.exiting ? ' exiting' : ''}${status === 'dormant' ? ' dormant' : ''}`}
+          // Pointer-events alone leaves the collapsing tab keyboard-
+          // activatable — inert (same as the exiting shell) drops it from the
+          // tab order while the DELETE is in flight.
+          inert={deleting}
           aria-pressed={focused}
           title={tabTitle(label, session)}
           onClick={() => onSelect(session.id)}
@@ -274,8 +313,11 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   onGroupContextMenu,
   resumingIds,
   deletingIds,
+  exiting,
+  poppedIdsRef,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
   const [fade, setFade] = useState({ start: false, end: false })
 
   const syncFade = useCallback(() => {
@@ -296,21 +338,37 @@ export const SessionNavStrip = memo(function SessionNavStrip({
     syncFade()
   }, [syncFade, sections, unread])
 
+  // Rebuild-driven effects key on the SLOT SET, not sections identity:
+  // metadata ticks (working flips, lastTurnAt bumps) give sections a new
+  // identity with an identical slot set, and re-observing every slot per
+  // tick is pure churn.
+  const slotIdsKey = useMemo(
+    () =>
+      sections
+        .map((sec) => (sec.kind === 'group' ? `g:${sec.group.id}:` : 'u:') + sec.sessions.map((s) => s.id).join(','))
+        .join('|'),
+    [sections],
+  )
+
   // Scroll + viewport-driven re-measure. The scroller is always mounted (the
-  // strip renders even with zero sessions), so one attach covers the
-  // component's lifetime. ResizeObserver is absent in jsdom; there the scroll
-  // listener + content effect cover what tests need.
+  // strip renders even with zero sessions). ResizeObserver is absent in
+  // jsdom; there the scroll listener + content effect cover what tests need.
+  // Slots are observed too: their widths change without a scroller resize —
+  // the delete-collapse ramps a slot to 0 over 240ms, and a retained dot
+  // unmounting at the end of its exit window shrinks its tab — both would
+  // leave the edge-fade mask stale otherwise.
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
     el.addEventListener('scroll', syncFade, { passive: true })
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncFade) : null
     ro?.observe(el)
+    for (const slot of el.querySelectorAll<HTMLElement>(`[${NAV_ITEM_ID_ATTR}]`)) ro?.observe(slot)
     return () => {
       el.removeEventListener('scroll', syncFade)
       ro?.disconnect()
     }
-  }, [syncFade])
+  }, [syncFade, slotIdsKey, deletingIds])
 
   // The scroller hides its scrollbar, so a programmatically-focused session
   // (deep link, notification click, Alt+9 group activation) whose tab sits
@@ -320,8 +378,60 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   useEffect(() => {
     scrollRef.current
       ?.querySelector<HTMLElement>('.session-nav-tab.active')
-      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      ?.scrollIntoView({
+        block: 'nearest',
+        inline: 'nearest',
+        // Smooth only on this programmatic pull — NOT via CSS
+        // scroll-behavior, which would make dnd-kit's per-frame edge
+        // auto-scroll (scrollBy) restart a glide every frame and lag.
+        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+      })
   }, [focusedId])
+
+  // First-sight mount pop (WAAPI, same idiom as flip.ts): a genuinely-new
+  // tab/chip fades+rises in, but a tab that REMOUNTS because it moved across
+  // containers (group <-> ungrouped) must NOT pop — the reorder FLIP is
+  // already sliding its slot to the new position and a concurrent fade would
+  // swallow the slide. The first-sight gate is a ref-held id set (App passes
+  // a session-lifetime one so re-collapses don't re-pop the row; tests get
+  // the per-instance default); layout effect timing keeps the pop
+  // paint-correct for new nodes with no flash of their end state. First
+  // sight is RECORDED even under reduced motion (nothing plays there) so
+  // flipping the OS setting on later never pops every already-open tab at
+  // once.
+  const defaultPoppedIdsRef = useRef<Set<string>>(new Set())
+  const poppedIds = poppedIdsRef ?? defaultPoppedIdsRef
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    const reduced = prefersReducedMotion()
+    for (const slot of root.querySelectorAll<HTMLElement>(`[${NAV_ITEM_ID_ATTR}]`)) {
+      const id = slot.getAttribute(NAV_ITEM_ID_ATTR)
+      if (!id || poppedIds.current.has(id)) continue
+      poppedIds.current.add(id)
+      if (reduced) continue
+      slot.querySelector<HTMLElement>('.session-nav-tab, .session-nav-chip')?.animate(
+        [
+          // The rise rides the independent `translate` property, NOT
+          // `transform`: the delete-collapse owns the button's `transform`,
+          // and two owners of one property would fight (WAAPI wins the
+          // cascade and would swallow the collapse mid-pop).
+          { opacity: 0, translate: '0 2px' }, // 2px = --motion-distance-xs
+          { opacity: 1, translate: '0 0' },
+        ],
+        // 120ms / cubic-bezier(0.22, 1, 0.36, 1) = --motion-duration-fast /
+        // --motion-ease-enter, hardcoded like flip.ts's settle curve.
+        { duration: 120, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
+      )
+    }
+  }, [slotIdsKey, poppedIds])
+
+  // Quick-toggle revive needs no JS: dropping `.exiting` switches the
+  // computed animation-name from session-nav-strip-out back to
+  // session-nav-strip-in, and a newly-named CSS animation restarts — the
+  // entrance replays by itself (verified in-browser: the name leaving and
+  // re-entering the list is what replays, the same mechanism as the
+  // toggle-a-class replay idiom).
 
   // The CSS mask (on the scroller) reads these two vars; 0px degrades the
   // gradient to a hard stop, i.e. no fade on that edge.
@@ -344,7 +454,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   )
 
   return (
-    <div className="session-nav-strip" role="group" aria-label="All sessions" style={fadeStyle}>
+    <div ref={rootRef} className={`session-nav-strip${exiting ? ' exiting' : ''}`} inert={exiting} role="group" aria-label="All sessions" style={fadeStyle}>
       <CreateMenuButton
         className="session-nav-new btn btn-icon"
         aria-label="Create"
@@ -378,6 +488,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                   data={sp.chip!.data}
                   disabled={chipDndDisabled}
                   className="session-nav-slot"
+                  nodeAttrs={{ [NAV_ITEM_ID_ATTR]: sec.group.id }}
                   extraDrop={{
                     id: `strip-chip-drop-${sec.group.id}`,
                     data: dndData(
@@ -419,6 +530,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                       focused={s.id === focusedId}
                       unread={!!unread[s.id]}
                       resuming={!!resumingIds?.has(s.id)}
+                      deleting={!!deletingIds?.has(s.id)}
                       onSelect={onSelect}
                       onContextMenu={onSessionContextMenu}
                       dnd={sp.tabs[j]}
@@ -428,7 +540,13 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                 </SortableContext>
               </div>
             ) : (
-              <SortableContext key={`u-${i}`} items={sp.tabItems} strategy={horizontalListSortingStrategy}>
+              // Single ungrouped section by construction (App's sidebarSections
+              // builder appends exactly one), so the key is a constant — an
+              // index-scoped key would remount every ungrouped tab on each
+              // group-count change, cutting in-flight exit fades and delete
+              // collapses. If a producer ever emits TWO ungrouped sections,
+              // React's duplicate-key warning fires loudly here.
+              <SortableContext key="u" items={sp.tabItems} strategy={horizontalListSortingStrategy}>
                 {sec.sessions.map((s, j) => (
                   <SessionNavTab
                     key={s.id}
@@ -436,6 +554,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                     focused={s.id === focusedId}
                     unread={!!unread[s.id]}
                     resuming={!!resumingIds?.has(s.id)}
+                    deleting={!!deletingIds?.has(s.id)}
                     onSelect={onSelect}
                     onContextMenu={onSessionContextMenu}
                     dnd={sp.tabs[j]}

@@ -36,6 +36,7 @@ import { useComposerSnippets } from './hooks/useComposerSnippets'
 import { usePanelColumnResize } from './hooks/usePanelColumnResize'
 import { PANEL_RESHOW_SETTLE_MS } from './components/message-list/useTranscriptScroll'
 import { useSidebarResize } from './hooks/useSidebarResize'
+import { useExitRetention, STRIP_EXIT_WINDOW_MS } from './hooks/useExitRetention'
 import { useSessionNotifications } from './hooks/useSessionNotifications'
 import { useClientDebug } from './hooks/useClientDebug'
 import { useSessionUrl } from './hooks/useSessionUrl'
@@ -138,7 +139,7 @@ import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
 import { groupNameIssue } from './utils/group-name'
 import { escapeAction } from './utils/escape-action'
-import { prepareGroupFlip } from './utils/flip'
+import { prepareGroupFlip, prepareStripFlip } from './utils/flip'
 import { clamp } from './utils/clamp'
 
 /** Shallow-compare two SessionInfo objects across every own property.
@@ -3121,6 +3122,14 @@ export function App() {
 
   /** The strip's mount condition (single source for the JSX below). */
   const stripMounted = !isMobile && sidebarCollapsed && !hostCaps.customTitlebar
+  // The strip outlives its mount condition by one exit window so its
+  // slide-out (session-nav-strip-out) can play while the sidebar's grid
+  // column expands — the mirror of the mount entrance. useExitRetention
+  // skips the hold under reduced motion.
+  const stripExit = useExitRetention(stripMounted ? true : null, STRIP_EXIT_WINDOW_MS)
+  // First-sight ids for the strip's mount pop — one set for the session's
+  // lifetime so a sidebar re-collapse doesn't re-pop every already-open tab.
+  const stripPoppedIdsRef = useRef(new Set<string>())
 
   const shortcuts = useMemo(
     () => [
@@ -3951,16 +3960,17 @@ export function App() {
    *  the session's own section (pure helper, same semantics as the sidebar's
    *  keyboard reorder) and delegate to the same App handlers drag-and-drop
    *  uses. Direction→position mapping matches SessionList.handleMove.
-   *  No FLIP wrapper: SessionList.handleMove animates the sidebar cards, but
-   *  the sidebar is hidden while the strip is up — the strip itself has no
-   *  FLIP markers, so the reorder lands instantly by design. */
+   *  FLIP-wrapped like SessionList.handleMove (prepareStripFlip animates the
+   *  strip's slots; the hidden sidebar's cards are unmeasured). */
   const handleStripMove = useCallback(
     (id: string, direction: 'up' | 'down') => {
       const target = sidebarMoveTarget(sidebarSections, id, direction)
       if (!target) return
       const position = direction === 'up' ? 'before' : 'after'
+      const animateMove = prepareStripFlip()
       if (target.groupId) handleReorderInGroup(id, target.targetId, position, target.groupId)
       else handleReorderSidebar(id, target.targetId, position)
+      animateMove()
     },
     [sidebarSections, handleReorderInGroup, handleReorderSidebar],
   )
@@ -4378,8 +4388,12 @@ export function App() {
     if (!a || !o) return
     if (a.kind === 'sidebar-card' && o.kind === 'group-card') {
       // Card dropped on a group header (sortable node) or group body
-      // droppable → move into that group.
+      // droppable → move into that group. FLIP so the strip's row slides to
+      // the new slots (no-op for sidebar drags — the strip is unmounted
+      // whenever the sidebar is visible).
+      const animateMove = prepareStripFlip()
       handleAddToGroup(a.id, o.id)
+      animateMove()
       return
     }
     if (a.kind === 'sidebar-card' && o.kind === 'sidebar-card') {
@@ -4398,9 +4412,13 @@ export function App() {
           toast.error(capError)
           return
         }
+        const animateMove = prepareStripFlip()
         handleReorderInGroup(a.id, o.id, positionFromOver(e), overGroup)
+        animateMove()
       } else {
+        const animateMove = prepareStripFlip()
         handleReorderSidebar(a.id, o.id, positionFromOver(e))
+        animateMove()
       }
       return
     }
@@ -5136,8 +5154,10 @@ export function App() {
               Clicking routes through the same handler as a sidebar card
               click. Win/darwin Electron titlebars keep their own
               always-visible open-panel tabs instead (no double strip). */}
-          {stripMounted && (
+          {stripExit.shown !== null && (
             <SessionNavStrip
+              exiting={stripExit.exiting}
+              poppedIdsRef={stripPoppedIdsRef}
               sections={sidebarSections}
               focusedId={focusedId}
               activeGroupId={activeGroupId}
@@ -5177,7 +5197,14 @@ export function App() {
                 onNewLikeThis={handleNewLikeThis}
                 onRestart={handleRestart}
                 groups={groups}
-                onAddToGroup={handleAddToGroup}
+                onAddToGroup={(sessionId, groupId) => {
+                  // FLIP like the drag and Move up/down paths — the same
+                  // mutation through one surface must not snap in one menu
+                  // and slide in another.
+                  const animateMove = prepareStripFlip()
+                  handleAddToGroup(sessionId, groupId)
+                  animateMove()
+                }}
                 maxGroupSize={maxGroupSize}
                 onShowSuccess={toast.success}
                 onAskConfirm={stripDialogs.askConfirm}

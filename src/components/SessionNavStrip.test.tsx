@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent, createEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, createEvent, act } from '@testing-library/react'
 import { DndContext } from '@dnd-kit/core'
 import { SessionNavStrip, SessionNavTabGhost, edgeFadeState, stripDndPlan } from './SessionNavStrip'
 import type { SessionInfo, SidebarSection } from '../types'
@@ -36,35 +36,45 @@ function baseSections(): SidebarSection[] {
   ]
 }
 
-function renderStrip(
-  sections: SidebarSection[],
-  overrides: Partial<Parameters<typeof SessionNavStrip>[0]> = {},
-) {
+type StripOverrides = Partial<Parameters<typeof SessionNavStrip>[0]>
+
+function stripProps(sections: SidebarSection[], overrides: StripOverrides = {}) {
   // Handler overrides are honored (the Partial<Props> type invites passing
   // them); only the unwired ones fall back to local mocks.
-  const onSelect = overrides.onSelect ?? vi.fn()
-  const onActivateGroup = overrides.onActivateGroup ?? vi.fn()
-  const onNewSession = overrides.onNewSession ?? vi.fn()
-  const onCreateGroup = overrides.onCreateGroup ?? vi.fn()
-  const askPrompt = overrides.askPrompt ?? vi.fn()
-  const utils = render(
-    <SessionNavStrip
-      sections={sections}
-      focusedId={overrides.focusedId ?? null}
-      activeGroupId={overrides.activeGroupId ?? null}
-      unread={overrides.unread ?? {}}
-      onSelect={onSelect}
-      onActivateGroup={onActivateGroup}
-      onNewSession={onNewSession}
-      onCreateGroup={onCreateGroup}
-      askPrompt={askPrompt}
-      onSessionContextMenu={overrides.onSessionContextMenu}
-      onGroupContextMenu={overrides.onGroupContextMenu}
-      resumingIds={overrides.resumingIds}
-      deletingIds={overrides.deletingIds}
-    />,
-  )
-  return { onSelect, onActivateGroup, onNewSession, onCreateGroup, askPrompt, ...utils }
+  return {
+    sections,
+    focusedId: overrides.focusedId ?? null,
+    activeGroupId: overrides.activeGroupId ?? null,
+    unread: overrides.unread ?? {},
+    onSelect: overrides.onSelect ?? vi.fn(),
+    onActivateGroup: overrides.onActivateGroup ?? vi.fn(),
+    onNewSession: overrides.onNewSession ?? vi.fn(),
+    onCreateGroup: overrides.onCreateGroup ?? vi.fn(),
+    askPrompt: overrides.askPrompt ?? vi.fn(),
+    onSessionContextMenu: overrides.onSessionContextMenu,
+    onGroupContextMenu: overrides.onGroupContextMenu,
+    resumingIds: overrides.resumingIds,
+    deletingIds: overrides.deletingIds,
+    exiting: overrides.exiting,
+    poppedIdsRef: overrides.poppedIdsRef,
+  }
+}
+
+function renderStrip(sections: SidebarSection[], overrides: StripOverrides = {}) {
+  const props = stripProps(sections, overrides)
+  const utils = render(<SessionNavStrip {...props} />)
+  return {
+    onSelect: props.onSelect,
+    onActivateGroup: props.onActivateGroup,
+    onNewSession: props.onNewSession,
+    onCreateGroup: props.onCreateGroup,
+    askPrompt: props.askPrompt,
+    /** Re-render against a new sections snapshot (same override set, or a
+     *  delta merged on top) — drives the exit-retention tests. */
+    rerenderStrip: (next: SidebarSection[], nextOverrides: StripOverrides = {}) =>
+      utils.rerender(<SessionNavStrip {...stripProps(next, { ...overrides, ...nextOverrides })} />),
+    ...utils,
+  }
 }
 
 describe('edgeFadeState', () => {
@@ -700,5 +710,189 @@ describe('SessionNavStrip context menus', () => {
     const unwiredEv = createEvent.contextMenu(unwiredChip)
     fireEvent(unwiredChip, unwiredEv)
     expect(unwiredEv.defaultPrevented).toBe(false)
+  })
+})
+
+describe('delete-exit, FLIP markers, and strip exit wiring', () => {
+  it('marks the tab slot as deleting while the session plays its delete-exit', () => {
+    const { container } = renderStrip(baseSections(), { deletingIds: new Set(['s1']) })
+    expect(container.querySelector<HTMLElement>('[data-nav-item-id="s1"]')!.classList.contains('deleting')).toBe(true)
+    expect(container.querySelector<HTMLElement>('[data-nav-item-id="s2"]')!.classList.contains('deleting')).toBe(false)
+  })
+
+  it('takes the deleting tab out of keyboard reach, like the exiting shell', () => {
+    const { container } = renderStrip(baseSections(), { deletingIds: new Set(['s1']) })
+    const deletingBtn = container
+      .querySelector<HTMLElement>('[data-nav-item-id="s1"]')!
+      .querySelector<HTMLElement>('.session-nav-tab')!
+    expect(deletingBtn.hasAttribute('inert')).toBe(true)
+    const liveBtn = container
+      .querySelector<HTMLElement>('[data-nav-item-id="s2"]')!
+      .querySelector<HTMLElement>('.session-nav-tab')!
+    expect(liveBtn.hasAttribute('inert')).toBe(false)
+  })
+
+  it('tags tab and chip slots with data-nav-item-id for the reorder FLIP', () => {
+    const { container } = renderStrip(baseSections())
+    const chipSlot = container.querySelector<HTMLElement>('[data-nav-item-id="g1"]')!
+    const tabSlot = container.querySelector<HTMLElement>('[data-nav-item-id="s3"]')!
+    expect(chipSlot.classList.contains('session-nav-slot')).toBe(true)
+    expect(tabSlot.classList.contains('session-nav-slot')).toBe(true)
+  })
+
+  it('roots the exiting class on the strip shell while the exit plays', () => {
+    const { container } = renderStrip(baseSections(), { exiting: true })
+    const root = container.querySelector('.session-nav-strip')!
+    expect(root.classList.contains('exiting')).toBe(true)
+    // The dying surface must also drop out of the tab order — pointer-events
+    // alone leaves the tabs keyboard-activatable mid-exit.
+    expect(root.hasAttribute('inert')).toBe(true)
+    const { container: plain } = renderStrip(baseSections())
+    const plainRoot = plain.querySelector('.session-nav-strip')!
+    expect(plainRoot.classList.contains('exiting')).toBe(false)
+    expect(plainRoot.hasAttribute('inert')).toBe(false)
+  })
+})
+
+describe('exit retention on the status dots and the working wash', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const workingSections: SidebarSection[] = [
+    { kind: 'ungrouped', sessions: [makeSession({ id: 's1', title: 'Alpha', working: true })] },
+  ]
+  const idleSections: SidebarSection[] = [
+    { kind: 'ungrouped', sessions: [makeSession({ id: 's1', title: 'Alpha', working: false })] },
+  ]
+
+  it('keeps the working dot mounted as exiting after the turn ends, then drops it', () => {
+    const { container, rerenderStrip } = renderStrip(workingSections)
+    expect(container.querySelector<HTMLElement>('.session-nav-dot')!.classList.contains('exiting')).toBe(false)
+    rerenderStrip(idleSections)
+    const dot = container.querySelector<HTMLElement>('.session-nav-dot')
+    expect(dot, 'working dot must stay mounted during its exit').not.toBeNull()
+    expect(dot!.classList.contains('exiting')).toBe(true)
+    act(() => {
+      vi.advanceTimersByTime(120)
+    })
+    expect(container.querySelector('.session-nav-dot')).toBeNull()
+  })
+
+  it('fades the working wash out after the turn ends instead of cutting it', () => {
+    const { container, rerenderStrip } = renderStrip(workingSections)
+    const tab = container.querySelector<HTMLElement>('.session-nav-tab')!
+    expect(tab.classList.contains('working')).toBe(true)
+    expect(tab.classList.contains('exiting')).toBe(false)
+    rerenderStrip(idleSections)
+    const heldTab = container.querySelector<HTMLElement>('.session-nav-tab')!
+    expect(heldTab.classList.contains('working')).toBe(true)
+    expect(heldTab.classList.contains('exiting')).toBe(true)
+    act(() => {
+      vi.advanceTimersByTime(120)
+    })
+    const clearedTab = container.querySelector<HTMLElement>('.session-nav-tab')!
+    expect(clearedTab.classList.contains('working')).toBe(false)
+    expect(clearedTab.classList.contains('exiting')).toBe(false)
+  })
+
+  it('re-mounts the dot span on a kind swap so the new dot pops in', () => {
+    // Same-position <span>s reconcile to one DOM node; without a key the
+    // shared session-nav-dot-in name would not restart (no pop) and dropping
+    // the working breath mid-cycle would snap the opacity.
+    const unreadWorking: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', working: true })] },
+    ]
+    const unreadIdle: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1', working: false })] },
+    ]
+    const { container, rerenderStrip } = renderStrip(unreadWorking, { unread: { s1: true } })
+    const before = container.querySelector<HTMLElement>('.session-nav-dot')!
+    rerenderStrip(unreadIdle, { unread: { s1: true } })
+    const after = container.querySelector<HTMLElement>('.session-nav-unread')!
+    expect(after).not.toBe(before)
+  })
+})
+
+describe('first-sight mount pop', () => {
+  /** jsdom has no Web Animations API — record pop calls instead. */
+  let popped: HTMLElement[]
+  beforeEach(() => {
+    popped = []
+    Object.defineProperty(HTMLElement.prototype, 'animate', {
+      configurable: true,
+      writable: true,
+      value(this: HTMLElement) {
+        popped.push(this)
+        return {}
+      },
+    })
+  })
+  afterEach(() => {
+    delete (HTMLElement.prototype as { animate?: unknown }).animate
+  })
+
+  it('pops a tab once on first sight, never again when a move remounts it', () => {
+    const inGroup: SidebarSection[] = [
+      {
+        kind: 'group',
+        group: { id: 'g1', name: 'G', sessionIds: ['s1'] },
+        sessions: [makeSession({ id: 's1' })],
+      },
+    ]
+    const ungrouped: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1' })] },
+    ]
+    const { rerenderStrip } = renderStrip(inGroup)
+    // First sight: the g1 chip and the s1 tab pop.
+    expect(popped).toHaveLength(2)
+    // s1 moves out of the group → its tab REMOUNTS under a new parent. The
+    // reorder FLIP owns that motion; a second pop would fade the tab in
+    // while the FLIP slides it.
+    rerenderStrip(ungrouped)
+    expect(popped).toHaveLength(2)
+  })
+
+  it('pops only the genuinely-new tab when one joins an existing section', () => {
+    const one: SidebarSection[] = [{ kind: 'ungrouped', sessions: [makeSession({ id: 's1' })] }]
+    const two: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' })] },
+    ]
+    const { rerenderStrip } = renderStrip(one)
+    expect(popped).toHaveLength(1)
+    rerenderStrip(two)
+    expect(popped).toHaveLength(2)
+    expect(popped[1].closest('[data-nav-item-id]')!.getAttribute('data-nav-item-id')).toBe('s2')
+  })
+
+  it('a shared first-sight set keeps a re-collapse from re-popping known tabs', () => {
+    // App owns one set for the session's lifetime; the per-instance default
+    // would treat every strip remount (each sidebar re-collapse) as first
+    // sight and pop the whole row again.
+    const poppedIdsRef = { current: new Set<string>() }
+    const { unmount } = renderStrip(baseSections(), { poppedIdsRef })
+    expect(popped).toHaveLength(4) // g1 chip + three tabs
+    unmount()
+    renderStrip(baseSections(), { poppedIdsRef })
+    expect(popped).toHaveLength(4)
+  })
+
+  it('records first sight even under reduced motion, so toggling motion on never pops old tabs', () => {
+    let reduced = true
+    vi.stubGlobal('matchMedia', () => ({ matches: reduced, addEventListener() {}, removeEventListener() {} }))
+    const one: SidebarSection[] = [{ kind: 'ungrouped', sessions: [makeSession({ id: 's1' })] }]
+    const two: SidebarSection[] = [
+      { kind: 'ungrouped', sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' })] },
+    ]
+    const { rerenderStrip } = renderStrip(one)
+    expect(popped).toHaveLength(0)
+    reduced = false
+    rerenderStrip(two)
+    expect(popped).toHaveLength(1)
+    expect(popped[0].closest('[data-nav-item-id]')!.getAttribute('data-nav-item-id')).toBe('s2')
+    vi.unstubAllGlobals()
   })
 })
