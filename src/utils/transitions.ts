@@ -243,22 +243,36 @@ const STAGGERED_COLLAPSE_EXIT_TRANSITION = {
  * 90ms delay, so the shrinking box never squashes a still-visible card.
  * AnimatePresence keeps the node mounted through the exit (no manual delayed
  * unmount) and owns the height `auto → 0` animation.
+ *
+ * `height: 'auto'` in initial AND animate is the ABORTED-EXIT recovery (the
+ * same contract useTopCardMotion / useStreamingRegionMotion carry): an exit
+ * interrupted mid-collapse — the same key re-appears inside the exit window,
+ * e.g. the task list empties at a user turn and a TaskCreate repopulates it
+ * right after — freezes the wrapper's inline height at whatever mid-collapse
+ * value motion had reached. With `animate` restoring `'auto'` motion re-grows
+ * the box to natural instead of leaving the wrapper stuck TALLER than the card
+ * inside it (the difference paints as a blank band between the card and the
+ * composer). Carrying it in `initial` too makes the mount a height no-op —
+ * motion skips a target equal to the latest value; a null-origin mount target
+ * would make motion measure the box and tween inline height on every mount
+ * (the same reasoning documented on useStreamingRegionMotion). Pinned by
+ * bottom-card-motion.test.tsx.
  */
 export function useBottomCardMotion() {
   const reduce = useReducedMotion()
   if (reduce) {
     return {
       card: {
-        initial: { opacity: 0 },
-        animate: { opacity: 1, transition: { duration: 0 } },
+        initial: { opacity: 0, height: 'auto' },
+        animate: { opacity: 1, height: 'auto', transition: { duration: 0 } },
         exit: { opacity: 0, height: 0, transition: { duration: 0 } },
       },
     }
   }
   return {
     card: {
-      initial: { opacity: 0, y: 4 },
-      animate: { opacity: 1, y: 0, transition: { duration: 0.24, ease: [0.22, 1, 0.36, 1] as const } },
+      initial: { opacity: 0, y: 4, height: 'auto' },
+      animate: { opacity: 1, y: 0, height: 'auto', transition: { duration: 0.24, ease: [0.22, 1, 0.36, 1] as const } },
       exit: {
         opacity: 0,
         y: 6,
