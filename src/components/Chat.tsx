@@ -1487,17 +1487,6 @@ export const Chat = memo(function Chat({
   // and satisfies react-hooks/exhaustive-deps.
   const pagingLoadOlder = paging.loadOlder
   const pagingLoadingOlder = paging.loadingOlder
-  // SessionMessageList only reads `loadingOlder` and `loadOlder` off the
-  // paging prop; `olderError` belongs to Chat's OlderHistoryFloat. Memoize
-  // a stable subset so an olderError-only flip (a loadOlder failure) re-renders
-  // Chat (for the float) without re-rendering the transcript wrapper.
-  const messageListPaging = useMemo(
-    () => ({ loadingOlder: paging.loadingOlder, olderError: paging.olderError, loadOlder: paging.loadOlder }),
-    // olderError intentionally omitted: SessionMessageList never reads it;
-    // including it would re-render the transcript on a loadOlder failure.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [paging.loadingOlder, paging.loadOlder],
-  )
   useEffect(() => {
     if (!pendingJump) return
     if (debouncedQuery !== pendingJump.query) return
@@ -2355,7 +2344,8 @@ export const Chat = memo(function Chat({
         >
         <SessionMessageList
           sessionId={session.id}
-          paging={messageListPaging}
+          loadingOlder={paging.loadingOlder}
+          loadOlder={paging.loadOlder}
           working={turnActive}
           expectHistory={session.messageCount > 0}
           clearing={effectiveClearing}

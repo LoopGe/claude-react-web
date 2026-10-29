@@ -138,7 +138,6 @@ import { ToastProvider } from './ToastProvider'
 import { getSessionStore } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
 import type { SessionInfo } from '../types'
-import type { TranscriptPaging } from '../session-sync/useSessionSynchronizer'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -300,24 +299,20 @@ describe('live-turn streaming re-renders only the leaves', () => {
   it('overlay mode: SessionMessageList wrapper stays at 0 renders per flush (the overlay leaf owns the subscription)', async () => {
     const SID = 'session-msglist-iso'
     // Seed a settled transcript (items / replayReady are stable across
-    // LIVE_TURN_FLUSH), then mount SessionMessageList with a stable paging
-    // object. The wrapper subscribes only to items / replayReady /
-    // planStatus / planContent / questionAnswers / toolStatus / toolResults
-    // / oldestSeq / hasOlder — none of those change identity during a
-    // streaming flush, so the wrapper (and the controlled MessageList
-    // inside it) must not re-render while the OverlayStreamingRegion leaf
-    // re-renders once per published flush.
+    // LIVE_TURN_FLUSH), then mount SessionMessageList with stable
+    // loadingOlder / loadOlder props. The wrapper subscribes only to items /
+    // replayReady / planStatus / planContent / questionAnswers / toolStatus
+    // / toolResults / oldestSeq / hasOlder — none of those change identity
+    // during a streaming flush, so the wrapper (and the controlled
+    // MessageList inside it) must not re-render while the
+    // OverlayStreamingRegion leaf re-renders once per published flush.
     const store = getSessionStore(SID)
     await act(async () => {
       store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
     })
-    const stablePaging: TranscriptPaging = {
-      loadingOlder: false,
-      olderError: null,
-      loadOlder: async () => 0,
-    }
+    const stableLoadOlder = async () => 0
     const { container } = render(
-      <SessionMessageList sessionId={SID} paging={stablePaging} />,
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
     )
     // Start the assistant message + a text block so the live turn exists
     // and `streamingContent` becomes non-empty after the first flush.
@@ -446,5 +441,43 @@ describe('live-turn streaming re-renders only the leaves', () => {
     })
 
     expect(counts.Chat).toBe(0)
+  }, 30_000)
+
+  it('SessionMessageList memo bails when loadingOlder/loadOlder are unchanged (the olderError-only paging-flip case), but propagates a loadingOlder change', async () => {
+    const SID = 'paging-narrow-iso'
+    const store = getSessionStore(SID)
+    await act(async () => {
+      store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
+    })
+    // SessionMessageList receives loadingOlder and loadOlder as independent
+    // props — NOT a paging object. When the parent (Chat) re-renders because
+    // the paging snapshot's olderError flipped (a loadOlder failure), the
+    // two props SessionMessageList reads are unchanged, so the wrapper's memo
+    // must skip. This test simulates that parent re-render by calling
+    // `rerender` with the same primitive values; a loadingOlder change is
+    // the positive control proving the wrapper does re-render when a prop
+    // it reads actually changes.
+    const stableLoadOlder = async () => 0
+    const { rerender } = render(
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
+    )
+    await act(() => sleep(50))
+    // Reset counts after the initial render churn.
+    for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
+
+    // Parent re-rendered (e.g. from an olderError-only paging change) but
+    // passed the same loadingOlder and loadOlder — the wrapper's memo must
+    // bail.
+    rerender(
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
+    )
+    expect(counts.SessionMessageList).toBe(0)
+
+    // A loadingOlder change MUST propagate — the wrapper re-renders so
+    // MessageList shows the loading indicator.
+    rerender(
+      <SessionMessageList sessionId={SID} loadingOlder={true} loadOlder={stableLoadOlder} />,
+    )
+    expect(counts.SessionMessageList).toBeGreaterThan(0)
   }, 30_000)
 })

@@ -5,8 +5,9 @@
 // `SessionMessageList`:
 //   - renders items the SessionStore owns (no items prop wired by the caller);
 //   - updates when the store dispatches new items;
-//   - forwards paging controls (loadOlder, loadingOlder) and seq-window
-//     fields (oldestSeq, hasOlder) from the `paging` prop / store;
+//   - forwards paging controls (loadOlder, loadingOlder) from the caller's
+//     independent props and seq-window fields (oldestSeq, hasOlder) from
+//     the store;
 //   - derives transcriptSettling as `!replayReady`;
 //   - forwards plan / question / tool maps from the store.
 //
@@ -52,7 +53,6 @@ import {
   selectHasLiveSyncSubagent,
 } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
-import type { TranscriptPaging } from '../session-sync/useSessionSynchronizer'
 import type { SdkMessage } from '../types'
 import type { ActiveSubagent, SessionSnapshot, TranscriptItem } from '../session-store/types'
 
@@ -77,13 +77,12 @@ afterEach(async () => {
   await sessionStoreRegistry.clear()
 })
 
-/** Stable paging object identity across renders (the wrapper must NOT
- *  re-render MessageList just because the parent rerenders). */
-const stablePaging: TranscriptPaging = {
-  loadingOlder: false,
-  olderError: null,
-  loadOlder: async () => 0,
-}
+/** Stable loadOlder callback identity across renders. SessionMessageList
+ *  receives `loadingOlder` and `loadOlder` as independent props (not a
+ *  paging object) so the wrapper's memo compares two primitives / a stable
+ *  callback — an olderError-only change in the caller's paging snapshot
+ *  cannot re-render the wrapper. */
+const stableLoadOlder = async () => 0
 
 /** Seed a tail page of N paired user/assistant messages straight into the
  *  store's seq window (the same shape the synchronizer's tail-page dispatch
@@ -140,7 +139,7 @@ describe('SessionMessageList', () => {
   it('renders items the SessionStore owns', () => {
     const sid = 'sml-render'
     seedHistory(sid, 4)
-    const { container } = render(<SessionMessageList sessionId={sid} paging={stablePaging} />)
+    const { container } = render(<SessionMessageList sessionId={sid} loadingOlder={false} loadOlder={stableLoadOlder} />)
     expect(container.textContent).toContain('q0')
     expect(container.textContent).toContain('a1')
     expect(container.textContent).toContain('q2')
@@ -150,7 +149,7 @@ describe('SessionMessageList', () => {
   it('updates when the store dispatches a new item', () => {
     const sid = 'sml-update'
     seedHistory(sid, 2)
-    const { container } = render(<SessionMessageList sessionId={sid} paging={stablePaging} />)
+    const { container } = render(<SessionMessageList sessionId={sid} loadingOlder={false} loadOlder={stableLoadOlder} />)
     expect(container.textContent).toContain('q0')
     act(() => {
       getSessionStore(sid).dispatch({ type: 'MESSAGE', message: userMessage('a fresh question', 'u-new') })
@@ -164,50 +163,30 @@ describe('SessionMessageList', () => {
     // transcript is "settling".
     const settlingStore = getSessionStore(sid)
     expect(settlingStore.getSnapshot().replayReady).toBe(false)
-    const { container, rerender } = render(<SessionMessageList sessionId={sid} paging={stablePaging} />)
+    const { container, rerender } = render(<SessionMessageList sessionId={sid} loadingOlder={false} loadOlder={stableLoadOlder} />)
     // The component renders nothing (empty items + skeleton-gated) but
     // transcriptSettling=true must reach MessageList. We assert via the
     // reducer mirror: after seeding a tail page, replayReady flips true
     // and transcriptSettling (derived as !replayReady) flips false.
     seedHistory(sid, 2)
-    rerender(<SessionMessageList sessionId={sid} paging={stablePaging} />)
+    rerender(<SessionMessageList sessionId={sid} loadingOlder={false} loadOlder={stableLoadOlder} />)
     expect(settlingStore.getSnapshot().replayReady).toBe(true)
     // Items are now on screen — the settled state.
     expect(container.textContent).toContain('q0')
   })
 
-  it('forwards paging controls (loadOlder, loadingOlder) from the paging prop', () => {
+  it('forwards paging controls (loadOlder, loadingOlder) as independent props', () => {
     const sid = 'sml-paging'
     seedHistory(sid, 2)
-    const captured: { loadingOlder?: boolean; loadOlder?: unknown } = {}
-    const Capture = (props: { children: ReactNode }) => <div>{props.children}</div>
-    // Inject a child capture by mocking MessageList locally — render the
-    // real SessionMessageList, but mock MessageList to record the props it
-    // received. Mocked per-test via vi.mock at the top of the file would
-    // apply to ALL tests in this file, so use a spy on the MessageList
-    // export's render instead: simplest is a wrapping component that
-    // mounts SessionMessageList and reads the resulting DOM via the
-    // underlying MessageList's data-* attributes.
-    //
-    // To avoid a global vi.mock here, we instead verify the contract
-    // behaviourally: a non-stable paging object with loadingOlder=true
-    // must NOT crash, and a stable paging object must keep MessageList
-    // from re-rendering on parent rerender (asserted by the streaming
-    // isolation test instead). Here we just confirm the wrapper accepts
-    // the paging prop and renders.
-    const paging: TranscriptPaging = {
-      loadingOlder: true,
-      olderError: 'fetch failed',
-      loadOlder: async () => 0,
-    }
+    // The wrapper receives loadingOlder and loadOlder as independent props
+    // (not a paging object). Verify it accepts them and forwards without
+    // throwing; items still render. olderError is NOT a prop of
+    // SessionMessageList — it belongs to the caller's OlderHistoryFloat.
     const { container } = render(
-      <Capture>
-        <SessionMessageList sessionId={sid} paging={paging} />
-      </Capture>,
+      <SessionMessageList sessionId={sid} loadingOlder={true} loadOlder={stableLoadOlder} />,
     )
-    // The wrapper forwarded paging without throwing; items still render.
+    // The wrapper forwarded props without throwing; items still render.
     expect(container.textContent).toContain('q0')
-    expect(captured).toEqual({})
   })
 
   it('forwards seq-window fields (oldestSeq, hasOlder) from the store', () => {
@@ -218,7 +197,7 @@ describe('SessionMessageList', () => {
     expect(store.getSnapshot().hasOlder).toBe(true)
     expect(store.getSnapshot().oldestSeq).toBe(0)
     // Mounting the wrapper must not crash and must render items.
-    const { container } = render(<SessionMessageList sessionId={sid} paging={stablePaging} />)
+    const { container } = render(<SessionMessageList sessionId={sid} loadingOlder={false} loadOlder={stableLoadOlder} />)
     expect(container.textContent).toContain('q0')
   })
 
@@ -266,7 +245,7 @@ describe('SessionMessageList', () => {
     expect(snapshot.planStatus.get('tu-plan')).toBeDefined()
     // The wrapper subscribes to planStatus; rendering must not throw and
     // the plan tool_use must reach the transcript.
-    const { container } = render(<SessionMessageList sessionId={sid} paging={stablePaging} />)
+    const { container } = render(<SessionMessageList sessionId={sid} loadingOlder={false} loadOlder={stableLoadOlder} />)
     expect(container.textContent).toContain('do the thing')
   })
 
