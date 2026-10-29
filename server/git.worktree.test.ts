@@ -3,7 +3,11 @@ import { execFile as execFileCb } from 'node:child_process'
 import { promises as fsPromises } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+
+// Real git worktree add/list per test — the 5s default is unrealistic on
+// Windows. Budget follows the heavy-suite precedent (30s).
+vi.setConfig({ testTimeout: 30_000 })
 import { cleanupGitFixtures, makeRepo, worktreePathUnder } from './test-git-fixtures.js'
 import {
   branchExists, commitExists, createWorktree, getGitCommonDir,
@@ -24,7 +28,14 @@ describe('worktree primitives', () => {
     expect(await branchExists(repo, 'crw/test1')).toBe(true)
     const listed = await listWorktrees(repo)
     const realWt = await fsPromises.realpath(wt)
-    expect(listed.some((w) => w.path === realWt)).toBe(true)
+    // Compare CANONICAL forms: git reports worktree paths in its own format
+    // (forward slashes; short names under some Windows temp roots) while
+    // realpath returns the OS form — raw string equality is platform-
+    // dependent and a real identity check must normalize both sides.
+    const listedReal = await Promise.all(
+      listed.map((w) => fsPromises.realpath(w.path).catch(() => w.path)),
+    )
+    expect(listedReal.some((p) => p === realWt)).toBe(true)
   })
 
   it('recreates a worktree on an existing branch (newBranch=false)', async () => {

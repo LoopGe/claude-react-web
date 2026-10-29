@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, writeFile, mkdir, chmod, rm, stat as realStat, readFile, readdir as realReaddir } from 'node:fs/promises'
+import { mkdtemp, writeFile, mkdir, rm, stat as realStat, readFile, readdir as realReaddir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createJsonlPageCache } from './jsonl-cache.js'
@@ -237,9 +237,16 @@ describe('readSubagentTranscriptLines (fixture files)', () => {
     expect(reads).toHaveLength(1)
     await reader(mainPath, 'sess')
     expect(reads).toHaveLength(1) // unchanged → served from cache
-    await writeFile(p, JSON.stringify({ type: 'assistant', timestamp: 't2', message: { content: [] } }) + '\n')
+    // The file must actually GROW (the cache's freshness key is (size,
+    // mtimeMs) — a same-size rewrite leaves the read to mtime resolution
+    // alone, which is not deterministic on Windows). Append-only, like the
+    // JSONL the cache is designed for.
+    await writeFile(p, [
+      JSON.stringify({ type: 'assistant', timestamp: 't2', message: { content: [] } }),
+      JSON.stringify({ type: 'assistant', timestamp: 't3', message: { content: [] } }),
+    ].join('\n') + '\n')
     await reader(mainPath, 'sess')
-    expect(reads).toHaveLength(2) // changed → re-read
+    expect(reads).toHaveLength(2) // grown (size changed) → re-read
     expect((await reader(mainPath, 'sess'))[0]).toMatchObject({ timestamp: 't2' })
   })
 
@@ -300,12 +307,13 @@ describe('deriveTaskListForSession degrades to main-only on subagent-read failur
     await mkdir(subDir, { recursive: true })
     await writeFile(join(subDir, 'agent-a1.jsonl'),
       JSON.stringify({ type: 'assistant', isSidechain: true, timestamp: '2026-01-01T00:00:01Z', message: { content: [update('1', { status: 'completed' })] } }) + '\n')
-    await chmod(mainPath, 0o000)
-    try {
-      expect(await deriveTaskListForSession(sid)).toEqual({ rev: 0, tasks: [] })
-    } finally {
-      await chmod(mainPath, 0o644)
-    }
+    // Make the main transcript unreadable PORTABLY: chmod(0o000) is advisory
+    // on Windows (the owner can still read), so swap the file for a directory
+    // at the same path — the read fails with EISDIR on every platform (the
+    // same trick as the 'unreadable subagent file' case above).
+    await rm(mainPath)
+    await mkdir(mainPath)
+    expect(await deriveTaskListForSession(sid)).toEqual({ rev: 0, tasks: [] })
   })
 })
 

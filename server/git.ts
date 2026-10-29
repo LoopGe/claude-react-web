@@ -19,7 +19,7 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { promises as fsPromises } from 'node:fs'
+import { existsSync, promises as fsPromises } from 'node:fs'
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path'
 import { HttpError } from './errors.js'
 import { createLogger } from './log.js'
@@ -634,9 +634,32 @@ export async function createWorktree(
 }
 
 /** Remove a linked worktree (force — the delete-session flow has already
- *  confirmed the loss of uncommitted changes). Branch is NOT touched. */
+ *  confirmed the loss of uncommitted changes). Branch is NOT touched.
+ *
+ *  Git first (it owns the registration bookkeeping), with paced retries:
+ *  on Windows the dir can stay locked a few hundred ms after the owning
+ *  processes exit and a single `git worktree remove` dies with "failed to
+ *  delete …: Permission denied" (exit 255) — typically AFTER unregistering
+ *  the worktree and leaving the tree half-deleted. So whatever git says, the
+ *  dir remnants are cleared with a paced fs.rm and a `worktree prune` cleans
+ *  any stale registration. A failure here throws — the caller's contract is
+ *  best-effort-and-log, with the orphan sweep as the long-term backstop. */
 export async function removeWorktreeDir(mainRepoCwd: string, worktreePath: string): Promise<void> {
-  await runGit(mainRepoCwd, ['worktree', 'remove', '--force', worktreePath], { timeoutMs: 30_000 })
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await runGit(mainRepoCwd, ['worktree', 'remove', '--force', worktreePath], { timeoutMs: 30_000 })
+      break
+    } catch (err) {
+      // 'is not a working tree' = a prior partial attempt already
+      // unregistered it — nothing left for git to do.
+      if (String(err).includes('not a working tree') || attempt >= 3) break
+      await new Promise((r) => setTimeout(r, 250 * (attempt + 1)))
+    }
+  }
+  if (existsSync(worktreePath)) {
+    await fsPromises.rm(worktreePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    await runGit(mainRepoCwd, ['worktree', 'prune']).catch(() => { /* registration cleanup is best-effort */ })
+  }
 }
 
 /** Clear stale worktree registrations — entries whose directory was deleted

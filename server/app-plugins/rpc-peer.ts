@@ -209,6 +209,23 @@ export class RpcPeer {
       await new Promise((r) => setTimeout(r, 200))
       if (!this.exited) {
         try { proc.kill('SIGKILL') } catch { /* ignore */ }
+        // Wait for the kill to actually LAND (bounded): on Windows the
+        // process holds file handles until it is reaped, and callers
+        // (shutdown → plugin-dir cleanup / test teardown) start deleting
+        // right after close() resolves. Returning while the corpse is still
+        // being torn down makes those deletes fail with EPERM.
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 2000)
+          if (this.exited) {
+            clearTimeout(timer)
+            resolve()
+          } else {
+            proc.once('exit', () => {
+              clearTimeout(timer)
+              resolve()
+            })
+          }
+        })
       }
     }
   }

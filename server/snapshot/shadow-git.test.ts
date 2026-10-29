@@ -1,4 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+
+// Shadow-git tests spawn real git per op — well past the 5s default on
+// Windows under parallel-suite load. Budget follows the heavy-suite
+// precedent (30s).
+vi.setConfig({ testTimeout: 30_000 })
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdtemp, mkdir, writeFile, readFile, rm, access, copyFile } from 'node:fs/promises'

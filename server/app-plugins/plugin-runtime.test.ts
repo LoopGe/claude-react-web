@@ -112,7 +112,10 @@ describe('AppPluginManager — runtime (B2)', () => {
 
   afterEach(async () => {
     await manager.shutdown().catch(() => {})
-    rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    // Windows: the just-exited plugin subprocess can hold the temp dir
+    // handle for seconds (EPERM on the root rmdir). Budget the retries for
+    // that release latency instead of failing the test on cleanup.
+    rmSync(stateDir, { recursive: true, force: true, maxRetries: 40, retryDelay: 250 })
   })
 
   it('activates a subprocess and returns a command result', async () => {

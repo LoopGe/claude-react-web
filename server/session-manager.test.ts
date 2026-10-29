@@ -1,4 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockedFunction } from 'vitest'
+
+// Worktree-chain tests spawn real git per op (add/remove/prune/recreate) —
+// well past the 5s default on Windows. Budget follows the heavy-suite
+// precedent (30s).
+vi.setConfig({ testTimeout: 30_000 })
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -6639,7 +6644,10 @@ describe('SessionManager', () => {
       ;(sm as unknown as { hydrateTasks: (id: string, s: unknown) => void }).hydrateTasks('sess-known', s1)
       await vi.waitFor(() => {
         expect(s1.tasks.get('t1')?.result).toBe('FROM-DISK')
-      })
+        // vi.waitFor's 1s default is tight under parallel-suite load (disk
+        // reads + manager restarts can exceed it); budget follows the file's
+        // 30s heavy-suite precedent.
+      }, { timeout: 15_000 })
 
       // 3. Review Focus #3 — a live frame for a DIFFERENT taskId must coexist.
       const { applyTaskNotificationInjection } = await import('./session-pump.js')
@@ -6701,7 +6709,7 @@ describe('SessionManager', () => {
         const recs = await new TaskResultStore(dir).load(info.id)
         const rec = recs?.find((r) => r.taskId === 'tz')
         expect(rec?.status).toBe('stopped')
-      })
+      }, { timeout: 15_000 })
     })
 
     it("fork inherits the parent's task records (result survives)", async () => {
@@ -6734,7 +6742,7 @@ describe('SessionManager', () => {
       }).sessions.get(forked.id)!
       await vi.waitFor(() => {
         expect(child.tasks.get('ft1')?.result).toBe('FROM-PARENT')
-      })
+      }, { timeout: 15_000 })
     })
 
     it('persists the clean-exit settle to the sidecar when the pump ends (cleanup tail)', async () => {
@@ -6756,7 +6764,7 @@ describe('SessionManager', () => {
       await vi.waitFor(async () => {
         const recs = await new TaskResultStore(dir).load(info.id)
         expect(recs?.find((r) => r.taskId === 'tc')?.status).toBe('stopped')
-      })
+      }, { timeout: 15_000 })
     })
   })
 })
@@ -9845,7 +9853,7 @@ describe('resume() worktree recreate chain', () => {
     expect(existsSync(wtPath)).toBe(true)
     // Realistic manual deletion: plain rm leaves a stale git registration
     // behind — the recreate path must prune it and re-add at the same path.
-    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    await nodeFs.rm(wtPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 
     const resumed = await sm.resume(info.id)
 
@@ -9868,7 +9876,7 @@ describe('resume() worktree recreate chain', () => {
     const xWt = store.get(info.id)!.worktree!
     const legacyWt = { mainRepoPath: xWt.mainRepoPath, branch: xWt.branch, baseSha: xWt.baseSha }
     store.upsert({ ...store.get(info.id)!, worktree: legacyWt })
-    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    await nodeFs.rm(wtPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 
     await sm.resume(info.id)
 
@@ -9883,7 +9891,7 @@ describe('resume() worktree recreate chain', () => {
     const info = await dormantIsolatedSession()
     const wtPath = join(dir, 'worktrees', info.id)
     const branch = `crw/${info.id.slice(0, 8)}`
-    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    await nodeFs.rm(wtPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     // Clear the stale registration first — git refuses to delete a branch
     // that a registered worktree still references.
     await execFile('git', ['-C', repo, 'worktree', 'prune'])
@@ -9901,7 +9909,7 @@ describe('resume() worktree recreate chain', () => {
   it('falls back to the main repo (worktree cleared) when the branch and baseSha are both gone', async () => {
     const info = await dormantIsolatedSession()
     const wtPath = join(dir, 'worktrees', info.id)
-    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    await nodeFs.rm(wtPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     // Hand-built metadata pointing at a branch and commit that never existed.
     const meta = store.get(info.id)!
     store.upsert({ ...meta, worktree: { ...meta.worktree!, branch: 'crw/nonexistent', baseSha: '0'.repeat(40) } })
@@ -9920,7 +9928,7 @@ describe('resume() worktree recreate chain', () => {
   it('rethrows a transient recreate failure while the main repo is still a git repo (isolation kept)', async () => {
     const info = await dormantIsolatedSession()
     const wtPath = join(dir, 'worktrees', info.id)
-    await nodeFs.rm(wtPath, { recursive: true, force: true })
+    await nodeFs.rm(wtPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     // The main repo is untouched and still a valid git repo — the recreate
     // throw is transient (e.g. lock contention). Forced via the wrapped
     // module mock; the real chain would be exercised again on retry.
@@ -9943,8 +9951,8 @@ describe('resume() worktree recreate chain', () => {
     // must treat that as "recreate impossible" and fall back — not 500.
     const info = await dormantIsolatedSession()
     const wtPath = join(dir, 'worktrees', info.id)
-    await nodeFs.rm(wtPath, { recursive: true, force: true })
-    await nodeFs.rm(join(repo, '.git'), { recursive: true, force: true })
+    await nodeFs.rm(wtPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    await nodeFs.rm(join(repo, '.git'), { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 
     const resumed = await sm.resume(info.id)
 

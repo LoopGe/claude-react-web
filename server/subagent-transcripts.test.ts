@@ -88,7 +88,7 @@ describe('normalizeSubagentLine', () => {
 describe('subagentTranscriptPath', () => {
   it('derives <dir-of-main>/<sid>/subagents/agent-<id>.jsonl', () => {
     const p = subagentTranscriptPath(`/x/projects/-proj/${SID}.jsonl`, SID, AGENT)
-    expect(p).toBe(`/x/projects/-proj/${SID}/subagents/agent-${AGENT}.jsonl`)
+    expect(p).toBe(join('/x/projects/-proj', SID, 'subagents', `agent-${AGENT}.jsonl`))
   })
   it('basenames the agentId to block traversal', () => {
     const p = subagentTranscriptPath(`/x/projects/-proj/${SID}.jsonl`, SID, '../../etc/passwd')
@@ -99,7 +99,7 @@ describe('subagentTranscriptPath', () => {
 
 describe('resolveSubagentDir', () => {
   it('returns <dir-of-main>/<sid>/subagents', () => {
-    expect(resolveSubagentDir(`/x/projects/-proj/${SID}.jsonl`, SID)).toBe(`/x/projects/-proj/${SID}/subagents`)
+    expect(resolveSubagentDir(`/x/projects/-proj/${SID}.jsonl`, SID)).toBe(join('/x/projects/-proj', SID, 'subagents'))
   })
 })
 

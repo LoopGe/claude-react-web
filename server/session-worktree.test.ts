@@ -2,7 +2,11 @@
 import { execFile as execFileCb } from 'node:child_process'
 import { promises as fsPromises } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
+
+// Worktree tests spawn real git per op (add/remove/prune) — well past the
+// 5s default on Windows. Budget follows the heavy-suite precedent (30s).
+vi.setConfig({ testTimeout: 30_000 })
 import { promisify } from 'node:util'
 import { HttpError } from './errors.js'
 import { branchExists, commitExists } from './git.js'
@@ -32,7 +36,7 @@ async function provisioned(repo: string, sessionId: string) {
 
 describe('worktreePathFor / branchFor', () => {
   it('derives the worktree path and branch name from the session id', () => {
-    expect(worktreePathFor('/state', 'sess-1234-abcd')).toBe('/state/worktrees/sess-1234-abcd')
+    expect(worktreePathFor('/state', 'sess-1234-abcd')).toBe(join('/state', 'worktrees', 'sess-1234-abcd'))
     expect(branchFor('sess-1234-abcd')).toBe('crw/sess-123')
   })
 })
@@ -40,7 +44,7 @@ describe('worktreePathFor / branchFor', () => {
 describe('worktreePathOf', () => {
   it('prefers a recorded path under the CURRENT worktrees root', () => {
     const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h', path: '/state/worktrees/sess-1' }
-    expect(worktreePathOf('/state', 'sess-1', wt)).toBe('/state/worktrees/sess-1')
+    expect(worktreePathOf('/state', 'sess-1', wt)).toBe(resolve('/state/worktrees/sess-1'))
   })
 
   it('falls back to the id-derived path for legacy metas (no path)', () => {
@@ -73,14 +77,14 @@ describe('worktreePathOf', () => {
       const legacy: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h' }
       expect(worktreePathOf('/state', 'sess-1', legacy, foreign)).toBe(worktreePathFor('/state', 'sess-1'))
     } finally {
-      await fsPromises.rm(foreign, { recursive: true, force: true })
+      await fsPromises.rm(foreign, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     }
   })
 
   it('uses the cwd hint when it is a direct child of the current worktrees root (legacy /clear inheritance)', () => {
     // Y (new id) holds X's pre-`path` WorktreeInfo; Y's cwd IS the X-named dir.
     const wt: WorktreeInfo = { mainRepoPath: '/repo', branch: 'crw/x', baseSha: 'h' }
-    expect(worktreePathOf('/state', 'sess-y', wt, '/state/worktrees/sess-x')).toBe('/state/worktrees/sess-x')
+    expect(worktreePathOf('/state', 'sess-y', wt, '/state/worktrees/sess-x')).toBe(resolve('/state/worktrees/sess-x'))
   })
 
   it('ignores a cwd hint outside the worktrees root', () => {
@@ -173,7 +177,7 @@ describe('ensureWorktreeForResume', () => {
     const { stateDir, worktreePath, wt } = await provisioned(repo, 'res-bbbb-1')
     // Realistic manual deletion: plain rm leaves a stale worktree
     // registration behind — recreate must survive it.
-    await fsPromises.rm(worktreePath, { recursive: true, force: true })
+    await fsPromises.rm(worktreePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     expect(await branchExists(repo, wt.branch)).toBe(true)
 
     const r = await ensureWorktreeForResume(stateDir, 'res-bbbb-1', wt)
@@ -187,7 +191,7 @@ describe('ensureWorktreeForResume', () => {
   it('recreates the same-named branch from baseSha when the branch was deleted too', async () => {
     const repo = await makeRepo()
     const { stateDir, worktreePath, wt } = await provisioned(repo, 'res-cccc-1')
-    await fsPromises.rm(worktreePath, { recursive: true, force: true })
+    await fsPromises.rm(worktreePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     // Clear the stale registration first — git refuses to delete a branch
     // that a registered worktree still references.
     await execGit(repo, ['worktree', 'prune'])
@@ -209,7 +213,7 @@ describe('ensureWorktreeForResume', () => {
     // the recreate must rebuild at the RECORDED dir, not the id-derived one.
     const p = await provisionWorktree(stateDir, 'inh-aaaa-x', repo)
     const wt: WorktreeInfo = { mainRepoPath: repo, branch: p.branch, baseSha: p.baseSha, path: p.worktreePath }
-    await fsPromises.rm(p.worktreePath, { recursive: true, force: true })
+    await fsPromises.rm(p.worktreePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 
     const r = await ensureWorktreeForResume(stateDir, 'inh-aaaa-y', wt)
 
@@ -225,7 +229,7 @@ describe('ensureWorktreeForResume', () => {
     // and runs with its cwd at the X-named dir. Recreate must rebuild THERE.
     const p = await provisionWorktree(stateDir, 'inh-dddd-x', repo)
     const wt: WorktreeInfo = { mainRepoPath: repo, branch: p.branch, baseSha: p.baseSha }
-    await fsPromises.rm(p.worktreePath, { recursive: true, force: true })
+    await fsPromises.rm(p.worktreePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 
     const r = await ensureWorktreeForResume(stateDir, 'inh-dddd-y', wt, p.worktreePath)
 
@@ -237,7 +241,7 @@ describe('ensureWorktreeForResume', () => {
   it('falls back to the main repo when the branch and baseSha are both gone', async () => {
     const repo = await makeRepo()
     const { stateDir, worktreePath } = await provisioned(repo, 'res-dddd-1')
-    await fsPromises.rm(worktreePath, { recursive: true, force: true })
+    await fsPromises.rm(worktreePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     // Hand-built metadata pointing at a branch and commit that never existed.
     const wt: WorktreeInfo = { mainRepoPath: repo, branch: 'crw/nonexistent', baseSha: '0'.repeat(40) }
 
@@ -249,8 +253,8 @@ describe('ensureWorktreeForResume', () => {
   it('falls back to the main repo when the main repo directory is gone', async () => {
     const repo = await makeRepo()
     const { stateDir, worktreePath, wt } = await provisioned(repo, 'res-eeee-1')
-    await fsPromises.rm(worktreePath, { recursive: true, force: true })
-    await fsPromises.rm(repo, { recursive: true, force: true })
+    await fsPromises.rm(worktreePath, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    await fsPromises.rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 
     const r = await ensureWorktreeForResume(stateDir, 'res-eeee-1', wt)
 
@@ -315,7 +319,7 @@ describe('removeWorktreeForSession', () => {
   it('logs a warning instead of throwing when the main repo is gone', async () => {
     const repo = await makeRepo()
     const { stateDir, wt } = await provisioned(repo, 'rm-cccc-1')
-    await fsPromises.rm(repo, { recursive: true, force: true })
+    await fsPromises.rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     const warnings: string[] = []
     await expect(
       removeWorktreeForSession(stateDir, 'rm-cccc-1', wt, { warn: (m) => warnings.push(m) }),
