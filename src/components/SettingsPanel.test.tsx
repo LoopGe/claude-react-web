@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, fireEvent, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ToastHost } from './ToastHost'
 import { ToastProvider } from './ToastProvider'
 import { SettingsPanel } from './SettingsPanel'
 import type { SessionInfo, SlashCommand } from '../types'
+import { mkSkillRecord } from '../test-utils/skill-fixtures'
 
 vi.mock('../hooks/useApi', () => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
@@ -1102,5 +1103,326 @@ describe('SettingsPanel plugins tab — per-session enabled state', () => {
     await view.open()
     expect(view.dotFollows('plugA')).toBe(true)
     expect(view.dotFollows('plugB')).toBe(true)
+  })
+})
+
+describe('SettingsPanel Loaded skills preview', () => {
+  /** The filesystem record the /skills list resolves 'commit-helper' to. */
+  const fsSkill = mkSkillRecord({
+    name: 'commit-helper',
+    description: 'Conventional commit helper',
+    path: '/work/proj/.claude/skills/commit-helper/SKILL.md',
+    relativePath: '.claude/skills/commit-helper/SKILL.md',
+  })
+  /** Its SKILL.md — a heading + bold run so assertions can tell the shared
+   *  markdown pipeline from a raw <pre>. */
+  const fsSkillWithContent = {
+    ...fsSkill,
+    content: [
+      '---',
+      'name: commit-helper',
+      'description: Conventional commit helper',
+      '---',
+      '',
+      '# Commit Helper',
+      '',
+      'Use **conventional commits**.',
+    ].join('\n'),
+  }
+
+  /** Wire the api mock: the context-usage breakdown carries one loaded skill
+   *  row, and GET /skills returns `skills` as the filesystem list. Content
+   *  URLs must be matched BEFORE the bare /skills list route. */
+  const mockApis = (opts: {
+    skills: unknown[]
+    frontmatterRow?: { name: string; source: string; tokens: number }
+  }) => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) {
+        return Promise.resolve({
+          usage: {
+            skills: {
+              includedSkills: 1,
+              totalSkills: 1,
+              tokenCount: 800,
+              skillFrontmatter: [
+                opts.frontmatterRow ?? { name: 'commit-helper', source: 'project', tokens: 800 },
+              ],
+            },
+          },
+        })
+      }
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url.startsWith('/skills/project/commit-helper')) {
+        return Promise.resolve({ skill: fsSkillWithContent })
+      }
+      if (url.startsWith('/skills/user/commit-helper')) {
+        return Promise.resolve({ skill: { ...fsSkillWithContent, scope: 'user' } })
+      }
+      if (url.startsWith('/skills')) {
+        return Promise.resolve({
+          skills: opts.skills,
+          policy: { mode: 'default', enabledSkills: [] },
+        })
+      }
+      return Promise.resolve({})
+    })
+  }
+
+  const loadedRow = (container: HTMLElement) => {
+    const row = [...container.querySelectorAll('.settings-kv-row')].find((r) =>
+      r.textContent?.includes('commit-helper'),
+    )
+    expect(row, 'loaded-skill row').toBeDefined()
+    return row!
+  }
+
+  /** The row becomes a click target only after the /skills list resolves its
+   *  scope — wait for that before clicking (the summary text lands first). */
+  const clickableRow = async (container: HTMLElement) => {
+    await waitFor(() => expect(loadedRow(container).closest('button')).not.toBeNull())
+    return loadedRow(container)
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('opens the skill preview modal when a loaded skill row is clicked', async () => {
+    mockApis({ skills: [fsSkill] })
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+
+    fireEvent.click(await clickableRow(container))
+    // Scope comes from the filesystem record, not the opaque `source` field.
+    await waitFor(() =>
+      expect(
+        (api.get as ReturnType<typeof vi.fn>).mock.calls.some(([u]) =>
+          String(u).startsWith('/skills/project/commit-helper'),
+        ),
+      ).toBe(true),
+    )
+    await waitFor(() => expect(screen.getByText('Frontmatter')).toBeTruthy())
+    // Body renders through the shared markdown pipeline (parity with the
+    // global settings preview): `**conventional commits**` → <strong>.
+    const strong = document.querySelector('.settings-skill-preview-content strong')
+    expect(strong?.textContent).toBe('conventional commits')
+    expect(document.querySelector('.settings-skill-preview-content h3')?.textContent).toBe(
+      'Commit Helper',
+    )
+  })
+
+  it('resolves the scope from the skill list and ignores the row source', async () => {
+    // source 'userSettings' is an opaque SDK identifier (not a scope) —
+    // resolution must come from the filesystem list (here: a user-scope record).
+    mockApis({
+      skills: [{ ...fsSkill, scope: 'user', path: '/home/u/.claude/skills/commit-helper/SKILL.md' }],
+      frontmatterRow: { name: 'commit-helper', source: 'userSettings', tokens: 800 },
+    })
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+
+    fireEvent.click(await clickableRow(container))
+    await waitFor(() =>
+      expect(
+        (api.get as ReturnType<typeof vi.fn>).mock.calls.some(([u]) =>
+          String(u).startsWith('/skills/user/commit-helper'),
+        ),
+      ).toBe(true),
+    )
+    await waitFor(() => expect(screen.getByText('Frontmatter')).toBeTruthy())
+  })
+
+  it('does not preview plugin rows even when a filesystem skill shares their name', async () => {
+    // Two plugin-skill rows (one flagged by source 'plugin', one by the
+    // pluginName sidecar the CLI attaches) colliding with a real filesystem
+    // skill named commit-helper. Name-only resolution would substitute the
+    // filesystem record and show a different skill than the row describes.
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) {
+        return Promise.resolve({
+          usage: {
+            skills: {
+              includedSkills: 2,
+              totalSkills: 2,
+              tokenCount: 1600,
+              skillFrontmatter: [
+                { name: 'commit-helper', source: 'plugin', tokens: 700 },
+                { name: 'commit-helper', source: 'userSettings', pluginName: 'my-plugin', tokens: 100 },
+              ],
+            },
+          },
+        })
+      }
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url.startsWith('/skills/project/commit-helper')) {
+        return Promise.resolve({ skill: fsSkillWithContent })
+      }
+      if (url.startsWith('/skills')) {
+        return Promise.resolve({
+          skills: [fsSkill],
+          policy: { mode: 'default', enabledSkills: [] },
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+    await waitFor(() =>
+      expect(
+        (api.get as ReturnType<typeof vi.fn>).mock.calls.some(([u]) =>
+          String(u).startsWith('/skills'),
+        ),
+      ).toBe(true),
+    )
+    await new Promise((res) => setTimeout(res, 0))
+
+    // Neither plugin row is a click target, and clicking anyway opens nothing.
+    const rows = [...container.querySelectorAll('.settings-kv-row')].filter((r) =>
+      r.textContent?.includes('commit-helper'),
+    )
+    expect(rows).toHaveLength(2)
+    for (const row of rows) {
+      expect(row.closest('button')).toBeNull()
+      fireEvent.click(row)
+    }
+    await new Promise((res) => setTimeout(res, 0))
+    expect(document.body.textContent).not.toContain('Frontmatter')
+  })
+
+  it('keeps rows without a filesystem skill plain — plugin skills are not previewable', async () => {
+    mockApis({
+      skills: [],
+      frontmatterRow: { name: 'commit-helper', source: 'plugin', tokens: 800 },
+    })
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+    // Let the /skills list fetch settle so "not clickable" reads as the
+    // resolver's decision, not as a row that hasn't been classified yet.
+    await waitFor(() =>
+      expect(
+        (api.get as ReturnType<typeof vi.fn>).mock.calls.some(([u]) =>
+          String(u).startsWith('/skills'),
+        ),
+      ).toBe(true),
+    )
+    await new Promise((res) => setTimeout(res, 0))
+
+    const row = loadedRow(container)
+    // No dead click target: an unresolvable row is not (wrapped in) a button.
+    expect(row.closest('button')).toBeNull()
+    fireEvent.click(row)
+    await new Promise((res) => setTimeout(res, 0))
+    const contentFetches = (api.get as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) =>
+      /\/skills\/(user|project)\//.test(String(u)),
+    )
+    expect(contentFetches).toHaveLength(0)
+    expect(document.body.textContent).not.toContain('Frontmatter')
+  })
+
+  it('shows the last-clicked skill when two preview fetches resolve out of order', async () => {
+    // Two rows; each content GET resolves only when the test says so. Click A
+    // then B, resolve B first, then A — the stale A response must not
+    // overwrite B's modal.
+    const fsSkillB = { ...fsSkill, name: 'second-helper', path: '/work/proj/.claude/skills/second-helper/SKILL.md' }
+    const contentA = { ...fsSkillWithContent }
+    const contentB = {
+      ...fsSkillWithContent,
+      name: 'second-helper',
+      content: fsSkillWithContent.content.replace('Commit Helper', 'Second Helper'),
+    }
+    let resolveA!: (v: unknown) => void
+    let resolveB!: (v: unknown) => void
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) {
+        return Promise.resolve({
+          usage: {
+            skills: {
+              includedSkills: 2,
+              totalSkills: 2,
+              tokenCount: 1600,
+              skillFrontmatter: [
+                { name: 'commit-helper', source: 'project', tokens: 800 },
+                { name: 'second-helper', source: 'project', tokens: 800 },
+              ],
+            },
+          },
+        })
+      }
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url.startsWith('/skills/project/commit-helper')) {
+        return new Promise((res) => { resolveA = res })
+      }
+      if (url.startsWith('/skills/project/second-helper')) {
+        return new Promise((res) => { resolveB = res })
+      }
+      if (url.startsWith('/skills')) {
+        return Promise.resolve({
+          skills: [fsSkill, fsSkillB],
+          policy: { mode: 'default', enabledSkills: [] },
+        })
+      }
+      return Promise.resolve({})
+    })
+
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+    await clickableRow(container)
+
+    const rowFor = (name: string) =>
+      [...container.querySelectorAll('.settings-kv-row')].find((r) =>
+        r.textContent?.includes(name),
+      )!
+    fireEvent.click(rowFor('commit-helper'))
+    fireEvent.click(rowFor('second-helper'))
+    await waitFor(() => expect(resolveB).toBeDefined())
+
+    resolveB({ skill: contentB })
+    await waitFor(() =>
+      expect(document.querySelector('.settings-skill-preview-content h3')?.textContent).toBe(
+        'Second Helper',
+      ),
+    )
+    // Stale A lands last — last-clicked B must keep the modal.
+    resolveA({ skill: contentA })
+    await new Promise((res) => setTimeout(res, 0))
+    expect(document.querySelector('.settings-skill-preview-title')?.textContent).toContain(
+      'second-helper',
+    )
+    expect(document.querySelector('.settings-skill-preview-content h3')?.textContent).toBe(
+      'Second Helper',
+    )
+  })
+
+  it('surfaces the skill-list fetch failure instead of silently unpreviewable rows', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/context-usage')) {
+        return Promise.resolve({
+          usage: {
+            skills: {
+              includedSkills: 1,
+              totalSkills: 1,
+              tokenCount: 800,
+              skillFrontmatter: [{ name: 'commit-helper', source: 'project', tokens: 800 }],
+            },
+          },
+        })
+      }
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url.startsWith('/skills')) return Promise.reject(new Error('list down'))
+      return Promise.resolve({})
+    })
+
+    const { container } = renderPanel({ tab: 'skills' })
+    await waitFor(() => expect(container.textContent).toContain('Skills:'))
+    // The failure must be visible in the breakdown, not swallowed into rows
+    // that silently lose their click targets.
+    await waitFor(() => expect(container.textContent).toContain("Couldn't load the skill list"))
+    expect(container.textContent).toContain('list down')
   })
 })

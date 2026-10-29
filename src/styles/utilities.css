@@ -1838,6 +1838,21 @@ button.tool-group-failed-jump:focus-visible {
 .settings-kv-row code { font-weight: 500; }
 .settings-kv-source { color: var(--fg-muted); font-size: var(--fs-xs); }
 .settings-kv-tokens { margin-left: auto; color: var(--fg-muted); font-size: var(--fs-xs); }
+/* Loaded-skill rows that open the preview modal: a button chrome reset so
+   the row keeps the plain .settings-kv-row look until hovered. */
+.settings-kv-row-clickable {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-3xs);
+}
+.settings-kv-row-clickable:hover {
+  background: var(--btn-hover-bg);
+}
 
 /* ── Context composition (SettingsPanel → Context tab) ─────────────
    Kind badges reuse the exact theme token pairs the provenance badges

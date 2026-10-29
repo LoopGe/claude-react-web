@@ -185,7 +185,15 @@ export interface AgentInfo {
 /** Per-skill token usage from context-usage. */
 export interface SkillFrontmatter {
   name: string
+  /** Opaque SDK source identifier (e.g. 'userSettings', 'plugin',
+   *  'syncedSkills') — NOT a skill scope. */
   source: string
+  /** Present only for plugin-bundled skills: the owning plugin's manifest
+   *  name. Verified against the CLI binary's context-usage producer (its
+   *  wire schema parses `skillFrontmatter[].pluginName`; the non-prompt
+   *  producer branch also stamps source 'plugin'). NOTE: sdk.d.ts lags the
+   *  binary here and omits the field — trust the binary, not the d.ts. */
+  pluginName?: string
   tokens: number
 }
 

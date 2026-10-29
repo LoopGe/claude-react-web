@@ -14,7 +14,7 @@ import { parseTaskBudgetInput } from '../../shared/session-info'
 import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { useSessionUsage } from '../hooks/useSessionUsage'
 import { useModelOptions } from '../hooks/useModelOptions'
-import type { AgentInfo, McpServerConfigMeta, McpServerStatus, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillLoadMode, SlashCommand } from '../types'
+import type { AgentInfo, McpServerConfigMeta, McpServerStatus, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillFrontmatter, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
 import type { SkillRecord } from '../../shared/skills'
 import type { SandboxSetting } from '../../shared/sandbox'
@@ -44,6 +44,9 @@ import { Overlay } from './Overlay'
 import { Switch } from './Switch'
 import { SettingsRow } from './SettingsRow'
 import { AgentDefinitionsSection } from './agent-definitions/AgentDefinitionsSection'
+import { SkillPreviewModal } from './settings/SkillPreviewModal'
+import { useSkillPreview } from '../hooks/useSkillPreview'
+import { useSkillList } from '../hooks/useSkillList'
 import ToolsTab from './tools/ToolsTab'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { permissionModeShortLabel } from './permission-mode-display'
@@ -1849,13 +1852,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                 summary={`Skills: ${usage.skills.includedSkills}/${usage.skills.totalSkills} loaded, ${formatTokens(usage.skills.tokenCount)}`}
               >
                 <div className="settings-detail-body">
-                  {usage.skills.skillFrontmatter?.map((s) => (
-                    <div key={s.name} className="settings-kv-row">
-                      <code>{s.name}</code>
-                      <span className="settings-kv-source">{s.source}</span>
-                      <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
-                    </div>
-                  ))}
+                  <LoadedSkillsRows
+                    rows={usage.skills.skillFrontmatter ?? []}
+                    cwd={session.cwd}
+                  />
                 </div>
               </AnimatedDetails>
               {/* Also disabled for dormant sessions: a cached breakdown keeps
@@ -2174,6 +2174,75 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   )
 })
 
+// ── Loaded-skill rows (Skills tab) ─────────────────────────────────
+//
+// The token breakdown's rows double as the entry point to the shared
+// skill preview modal. Each row name is resolved against the filesystem
+// skill list (useSkillList, same source the policy card's allowlist uses)
+// to learn its scope for the content fetch. Plugin-bundled skills are
+// not in that list — and must never borrow a same-named filesystem
+// record's content, so rows the CLI marks as plugin skills (source
+// 'plugin', or the pluginName sidecar) stay plain text. Same-name
+// filesystem collisions resolve project-first, mirroring the policy
+// card's de-dup rule (the SDK loads the project copy when one shadows
+// the other); the opaque `source` value is otherwise unused — it is an
+// SDK identifier like 'userSettings' / 'syncedSkills', not a scope.
+
+function LoadedSkillsRows({ rows, cwd }: { rows: SkillFrontmatter[]; cwd?: string }) {
+  const { skills: fsSkills, error: listError } = useSkillList(cwd)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const { preview, open: openRecord, close } = useSkillPreview(cwd)
+
+  const byName = useMemo(() => {
+    const map = new Map<string, SkillRecord>()
+    for (const s of fsSkills) {
+      const existing = map.get(s.name)
+      if (!existing || (existing.scope !== 'project' && s.scope === 'project')) map.set(s.name, s)
+    }
+    return map
+  }, [fsSkills])
+
+  const openPreview = (record: SkillRecord) => {
+    setPreviewError(null)
+    // useSkillPreview already formats the failure message.
+    openRecord(record).catch((e: unknown) => {
+      setPreviewError((e as Error).message)
+    })
+  }
+
+  return (
+    <>
+      {rows.map((s, i) => {
+        const record = s.pluginName || s.source === 'plugin' ? undefined : byName.get(s.name)
+        const cells = (
+          <>
+            <code>{s.name}</code>
+            <span className="settings-kv-source">{s.source}</span>
+            <span className="settings-kv-tokens">{formatTokens(s.tokens)}</span>
+          </>
+        )
+        return record ? (
+          <button
+            key={`${s.name}:${s.source}:${i}`}
+            type="button"
+            className="settings-kv-row settings-kv-row-clickable"
+            onClick={() => openPreview(record)}
+          >
+            {cells}
+          </button>
+        ) : (
+          <div key={`${s.name}:${s.source}:${i}`} className="settings-kv-row">{cells}</div>
+        )
+      })}
+      {listError && (
+        <span className="hint">Couldn't load the skill list — previews unavailable: {listError}</span>
+      )}
+      {previewError && <span className="hint">{previewError}</span>}
+      <SkillPreviewModal skill={preview} onClose={close} />
+    </>
+  )
+}
+
 // ── Session skill policy card ─────────────────────────────────────
 //
 // Per-session override of the global skill loading policy. Mirrors the
@@ -2223,35 +2292,18 @@ function SessionSkillPolicyCard({
   disabled: boolean
   onApply: (override: SessionSkillOverride) => Promise<void>
 }) {
-  const [skills, setSkills] = useState<SkillRecord[]>([])
-  const [globalPolicy, setGlobalPolicy] = useState<{ mode: SkillLoadMode; enabledSkills: string[] } | null>(null)
-  const [loaded, setLoaded] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  // Fetch the available skill set + the current global policy. Scoped to
-  // session.cwd so project-only skills surface in the allowlist for the
-  // right workspace. Re-runs when cwd changes (rare — usually never on
-  // a live session, but the hook is dirt cheap and bug-correct this way).
-  useEffect(() => {
-    const ac = new AbortController()
-    const cwdParam = session.cwd ? `?cwd=${encodeURIComponent(session.cwd)}` : ''
-    api
-      .get<{ skills: SkillRecord[]; policy: { mode: SkillLoadMode; enabledSkills: string[] } }>(
-        `/skills${cwdParam}`,
-        { signal: ac.signal },
-      )
-      .then((r) => {
-        setSkills(r.skills.filter((s) => s.valid))
-        setGlobalPolicy(r.policy)
-        setLoaded(true)
-      })
-      .catch((e: unknown) => {
-        if (ac.signal.aborted) return
-        setError((e as Error).message || 'Failed to load skills')
-        setLoaded(true)
-      })
-    return () => { ac.abort() }
-  }, [session.cwd])
+  // The skill set + current global policy, scoped to session.cwd so
+  // project-only skills surface in the allowlist for the right workspace.
+  // Shared read via useSkillList (re-runs when cwd changes).
+  const {
+    skills: allSkills,
+    policy: globalPolicy,
+    loaded,
+    error,
+  } = useSkillList(session.cwd)
+  // The allowlist only offers valid skills; the loaded-rows copy keeps
+  // invalid ones previewable on purpose (the modal shows why).
+  const skills = useMemo(() => allSkills.filter((s) => s.valid), [allSkills])
 
   const override = session.skillOverride
   const kind = overrideToKind(override)

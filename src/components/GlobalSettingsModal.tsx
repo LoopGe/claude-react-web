@@ -8,10 +8,8 @@ import { getHostCapabilities } from '../host-capabilities'
 import { RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../constants/recentKeys'
 import { isStringArray } from '../../shared/type-guards'
 import { clamp } from '../utils/clamp'
-import { parseSkillContent } from '../utils/skill-frontmatter'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { IconX, IconCheck, IconChevronDown, IconRefresh, IconSparkles, IconTerminal } from './icons/ToolIcons'
-import { Markdown } from './Markdown'
 import { EmptyState } from './EmptyState'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Skeleton } from './Skeleton'
@@ -29,6 +27,8 @@ import type { AnimationSpeedPreset } from '../../shared/animation-speed'
 import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import { AddSkillCard } from './settings/AddSkillCard'
+import { SkillPreviewModal } from './settings/SkillPreviewModal'
+import { useSkillPreview } from '../hooks/useSkillPreview'
 import { projectRootOfSkill } from '../../shared/skills'
 import { basenameOf } from '../utils/paths'
 import type { SkillLoadMode, SkillRecord, SkillUpdateStatus, SkillsListResponse } from '../../shared/skills'
@@ -1065,7 +1065,6 @@ function SkillsTab({
   const [skills, setSkills] = useState<SkillRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [previewSkill, setPreviewSkill] = useState<SkillRecord | null>(null)
   const [importScope, setImportScope] = useState<'project' | 'user'>('project')
   // Target project for project-scope installs. `defaultCwd` is the server
   // default (config `defaults.cwd`); the override is what the user picked
@@ -1073,6 +1072,10 @@ function SkillsTab({
   // then.
   const [cwdOverride, setCwdOverride] = useState<string | null>(null)
   const cwd = cwdOverride ?? defaultCwd
+  const { preview: previewSkill, open: openPreviewRecord, close: closePreview } = useSkillPreview(cwd)
+  // The row highlight must outlive the close click for the modal's exit
+  // fade — hold the record the way SkillPreviewModal holds its content.
+  const previewPresence = usePresenceValue(previewSkill)
   // Recent projects — the SAME MRU list the New Session dialog offers, so a
   // project used there is pickable here and vice versa.
   const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
@@ -1117,37 +1120,21 @@ function SkillsTab({
     void refresh()
   }, [importScope, cwd, rememberCwd, refresh])
 
-  // Keep the SkillRecord alive during the exit animation so the modal
-  // can render its content while the CSS outro plays.
-  const previewPresence = usePresenceValue(previewSkill)
-  const previewIsOpen = previewSkill !== null
-
   const skillNames = useMemo(() => Array.from(new Set(skills.map((s) => s.name))).sort((a, b) => a.localeCompare(b)), [skills])
   const userSkills = skills.filter((skill) => skill.scope === 'user')
   const projectSkills = skills.filter((skill) => skill.scope === 'project')
   const invalidCount = skills.filter((skill) => !skill.valid).length
-
-  const previewContent = previewPresence.value?.content
-  const parsed = useMemo(
-    () => (previewContent ? parseSkillContent(previewContent) : null),
-    [previewContent],
-  )
-  const hasFields = parsed ? Object.keys(parsed.frontmatter).length > 0 : false
 
   const toggleEnabled = (name: string) => {
     const exists = enabledSkills.includes(name)
     onEnabledSkillsChange(exists ? enabledSkills.filter((s) => s !== name) : [...enabledSkills, name].sort((a, b) => a.localeCompare(b)))
   }
 
-  const openSkill = async (skill: SkillRecord) => {
+  const openSkill = (skill: SkillRecord) => {
     setError(null)
-    try {
-      const query = skill.scope === 'project' && cwd ? `?cwd=${encodeURIComponent(cwd)}` : ''
-      const res = await api.get<{ skill: SkillRecord }>(`/skills/${skill.scope}/${encodeURIComponent(skill.name)}${query}`)
-      setPreviewSkill(res.skill)
-    } catch (e) {
-      setError((e as Error).message)
-    }
+    // useSkillPreview is last-click-wins; only the current request's failure
+    // reaches this catch (a superseded one is dropped inside the hook).
+    openPreviewRecord(skill).catch((e: unknown) => setError((e as Error).message))
   }
 
   // Update-check results for GitHub-installed skills, keyed `${scope}:${name}`
@@ -1349,53 +1336,7 @@ function SkillsTab({
         </div>
       </section>
 
-      {previewPresence.value != null && (() => {
-        const ps = previewPresence.value!
-        return (
-          <Overlay
-            variant="modal"
-            cardClassName="settings-skill-preview-modal"
-            ariaLabel={`Skill preview: ${ps.name}`}
-            open={previewIsOpen}
-            onClose={() => setPreviewSkill(null)}
-          >
-              <div className="modal-header">
-                <div className="settings-skill-preview-title">
-                  <span className="settings-card-name">{ps.name}</span>
-                  <span className="settings-card-badge">{ps.scope}</span>
-                  {!ps.valid && <span className="settings-card-badge warn">invalid</span>}
-                </div>
-                <button className="btn-icon" aria-label="Close" onClick={() => setPreviewSkill(null)}><IconX size={14} /></button>
-              </div>
-              <div className="settings-card-path">{ps.path}</div>
-              {ps.errors.length > 0 && (
-                <div className="settings-error">{ps.errors.join('; ')}</div>
-              )}
-              {hasFields && (
-                <div className="settings-skill-frontmatter">
-                  <div className="settings-skill-frontmatter-title">Frontmatter</div>
-                  <table className="settings-skill-frontmatter-table">
-                    <tbody>
-                      {Object.entries(parsed!.frontmatter).map(([key, value]) => (
-                        <tr key={key}>
-                          <td className="settings-skill-fm-key">{key}</td>
-                          <td className="settings-skill-fm-value">{value}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {parsed ? (
-                <div className="settings-skill-preview-content">
-                  <Markdown text={parsed.body} />
-                </div>
-              ) : (
-                <pre className="settings-skill-preview-content settings-skill-preview-raw">{ps.content || ''}</pre>
-              )}
-          </Overlay>
-        )
-      })()}
+      <SkillPreviewModal skill={previewSkill} onClose={closePreview} />
 
       {showTargetPicker && (
         <DirectoryPicker
