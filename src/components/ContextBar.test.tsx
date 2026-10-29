@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { ContextBar } from './ContextBar'
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 
 // jsdom doesn't implement pointer capture (the drag path calls setPointerCapture
 // on the track wrapper). Stub the prototype with no-ops so the drag path runs.

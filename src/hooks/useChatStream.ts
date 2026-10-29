@@ -1,80 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getSessionStore, useSessionField, useSessionSelector } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
-import type { ActiveSubagent, ActivePhase, PlanStatus, SessionSnapshot, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
+import type { ActiveSubagent, PlanStatus, SessionSnapshot, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import { useWsHub, useWsHubStatus } from './useWsHub'
 import { api } from './useApi'
-import { randomId } from '../utils/uuid'
 import type { WsServerFrame } from '../ws-types'
-import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, SkillFrontmatter, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
+import type { ContextUsage } from '../types/context-usage'
+import type { ElicitationRequestUi, ElicitationResolved, PermissionRequest, PermissionResolved, SdkMessage, TaskRecordUi, UserDialogRequestUi, DialogResolved } from '../types'
+import { useSessionCommands } from './useSessionCommands'
 import { extractMessagePlainText } from '../../shared/search/extract'
 import type { TranscriptPageResponse } from '../../shared/transcript-page'
-
-export interface ContextUsage {
-  totalTokens?: number
-  maxTokens?: number
-  rawMaxTokens?: number
-  percentage?: number
-  model?: string
-  /** Tokens written to the cache on this turn. Present when the source
-   *  iteration reports it; absent otherwise. */
-  cacheCreationTokens?: number
-  /** Tokens served from cache on this turn (cache hit). Present when the
-   *  source iteration reports it; absent otherwise. */
-  cacheReadTokens?: number
-  /** Output tokens the model generated on this API call. Present when the
-   *  source reports it; absent otherwise. */
-  outputTokens?: number
-  /** Token count at which the SDK's auto-compact triggers. Present once a
-   *  `result` has supplied the model's context window; the bar renders
-   *  "X% until auto-compact" from it. */
-  autoCompactThreshold?: number
-  /** The model's advertised max output tokens, surfaced so the draggable
-   *  marker can invert a threshold position back into Settings.autoCompactWindow
-   *  exactly (mirror of the server's LiteContextUsage.maxOutputTokens). */
-  maxOutputTokens?: number
-  /** Whether the CLI says auto-compact is on. Three state: `true`/`false` are
-   *  CLI-authoritative; `null` / absent means unknown — the bar must not claim
-   *  "off" from a formula-only reading. `null` is the explicit cleared form
-   *  (survives JSON + spread-merge over a stale detailed payload). */
-  autoCompactEnabled?: boolean | null
-  skills?: {
-    includedSkills: number
-    totalSkills: number
-    tokenCount: number
-    skillFrontmatter?: SkillFrontmatter[]
-  }
-  agents?: {
-    tokenCount: number
-    agents?: Array<{ agentType: string; source: string; tokens: number }>
-  }
-  /** Two generations, like mcpTools: the old aggregate `{ tokenCount }`
-   *  (feeds the no-categories fallback row) and — SDK 0.3.311+ — the
-   *  per-file array `{ path, type?, tokens }` (aggregated into the same
-   *  fallback row). Classify on `Array.isArray` before use. */
-  memoryFiles?: { tokenCount: number } | Array<{ path: string; type?: string; tokens: number }>
-  /** Per-MCP-server context breakdown (detailed payload only). Shape has
-   *  TWO generations: the old aggregate `{ tokenCount }` (fed the
-   *  no-categories fallback row) and — SDK 0.3.304+ — the per-tool array
-   *  `{ name, serverName, tokens, isLoaded? }` the per-server section
-   *  aggregates. Classify on `Array.isArray` before use. */
-  mcpTools?: { tokenCount: number } | Array<{ name: string; serverName: string; tokens: number; isLoaded?: boolean }>
-  /** Each server's share of the 'mcp_instructions' category row (SDK
-   *  0.3.304+), estimated by the CLI from the length of its text. Present
-   *  only where the CLI answers on its own stdio. */
-  mcpInstructions?: Array<{ serverName: string; tokens: number }>
-  /** Canonical context rows from the SDK control response (0.3.268). Classify
-   *  on `kind` — 'used' occupies the window, 'free' is the remainder,
-   *  'buffer' is the compaction reserve, 'deferred' is an out-of-window tool
-   *  schema listed for awareness — never on the English `name`. */
-  categories?: Array<{
-    name: string
-    tokens: number
-    kind: 'used' | 'free' | 'buffer' | 'deferred'
-  }>
-}
-
-export type { ActivePhase }
 
 export interface ChatStream {
   items: TranscriptItem[]
@@ -762,41 +697,19 @@ export function useChatStream(
     return error
   }, [hubStatus, error])
 
-  const insertUserMessage = useCallback((text: string): string => {
-    const pendingId = `optimistic:${randomId()}`
-    const message: SdkMessage = {
-      type: 'user',
-      uuid: pendingId,
-      message: { role: 'user', content: text },
-    }
-    // Clear any prompt suggestion when the user sends a new message
-    store.dispatch({ type: 'PROMPT_SUGGESTION', suggestion: null })
-    store.dispatch({ type: 'OPTIMISTIC_USER_MESSAGE', message })
-    return pendingId
-  }, [store])
-
-  const rollbackUserMessage = useCallback((pendingId: string) => {
-    store.dispatch({ type: 'ROLLBACK_OPTIMISTIC_USER_MESSAGE', pendingId })
-  }, [store])
-
-  const ackUserMessage = useCallback((pendingId: string, serverUuid: string, receivedAt?: number) => {
-    store.dispatch({ type: 'ACK_USER_MESSAGE', pendingId, serverUuid, receivedAt })
-  }, [store])
+  // The five session commands (insert / ack / rollback / clearError /
+  // dismissSubagent) are delegated to the shared factory result for this
+  // store — the bodies that lived inline here now live in
+  // `createSessionCommands`, and `useSessionCommands` memoizes a single
+  // instance per store so every consumer for this session shares it. The
+  // dispatches are byte-identical to the former inline callbacks; only the
+  // home of the bodies moved. `reset` stays inline because SessionCommands
+  // deliberately excludes it (reset is a store method, not a dispatched
+  // action — `store.reset()` drives the CLEAR_TRANSCRIPT wipe).
+  const commands = useSessionCommands(sessionId)
 
   const reset = useCallback(() => {
     store.reset()
-  }, [store])
-
-  const clearError = useCallback(() => {
-    store.dispatch({ type: 'ERROR', message: null })
-  }, [store])
-
-  /** Dismiss a `pending` background subagent from the Waiting bubble. Flips
-   *  it to `interrupted` so it leaves the chip set; a late task_notification
-   *  for a dismissed subagent is then ignored (the completion branch excludes
-   *  `interrupted`). No-op for non-pending records. */
-  const dismissSubagent = useCallback((toolUseId: string) => {
-    store.dispatch({ type: 'DISMISS_SUBAGENT', toolUseId })
   }, [store])
 
   useEffect(() => {
@@ -901,17 +814,17 @@ export function useChatStream(
       replayReady,
       transcriptSettling,
       oldestSeq,
-      insertUserMessage,
-      ackUserMessage,
-      rollbackUserMessage,
+      insertUserMessage: commands.insertUserMessage,
+      ackUserMessage: commands.ackUserMessage,
+      rollbackUserMessage: commands.rollbackUserMessage,
       reset,
-      clearError,
-      dismissSubagent,
+      clearError: commands.clearError,
+      dismissSubagent: commands.dismissSubagent,
       loadOlder,
       hasOlder,
       loadingOlder,
       olderError,
     }),
-    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, hasActivePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, oldestSeq, insertUserMessage, ackUserMessage, rollbackUserMessage, reset, clearError, dismissSubagent, loadOlder, hasOlder, loadingOlder, olderError],
+    [items, messages, displayedError, contextUsage, promptSuggestion, tasks, apiRetry, hasActivePhase, permissionDecisions, planStatus, planContent, questionAnswers, toolStatus, toolResults, activeSubagents, subagentIndex, workflowIndex, skillIndex, replayReady, transcriptSettling, oldestSeq, commands, reset, loadOlder, hasOlder, loadingOlder, olderError],
   )
 }

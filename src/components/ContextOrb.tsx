@@ -26,7 +26,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 import { ContextBar } from './ContextBar'
 import { ContextComposition } from './ContextComposition'
 import { AnimatedCollapse } from './AnimatedCollapse'

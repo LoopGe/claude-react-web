@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
 import { ContextComposition } from './ContextComposition'
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 
 describe('ContextComposition per-server MCP breakdown', () => {
   it('aggregates mcpTools[] and mcpInstructions[] by server', () => {
