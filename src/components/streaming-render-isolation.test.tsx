@@ -22,6 +22,7 @@ const counts = vi.hoisted(() => ({
   OverlayStreamingRegion: 0,
   StreamingFooter: 0,
   LiveWorkingBubble: 0,
+  DraftTextBody: 0,
 }))
 type CountKey = keyof typeof counts
 
@@ -56,6 +57,10 @@ vi.mock('./message-list/transcript-chrome', async (orig) => {
 vi.mock('./message-list/WorkingBubble', async (orig) => {
   const mod = await orig<typeof import('./message-list/WorkingBubble')>()
   return { ...mod, LiveWorkingBubble: counted('LiveWorkingBubble', mod.LiveWorkingBubble) }
+})
+vi.mock('./message-list/draft-body', async (orig) => {
+  const mod = await orig<typeof import('./message-list/draft-body')>()
+  return { ...mod, DraftTextBody: counted('DraftTextBody', mod.DraftTextBody) }
 })
 
 // Virtuoso needs layout; render a fixed tail window like a real viewport.
@@ -241,7 +246,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(container.querySelector('.working-bar-label')?.textContent).toBe('Writing...')
   }, 30_000)
 
-  it("inline mode still rebuilds the tail row from the store (MessageList owns that subscription)", async () => {
+  it('inline mode keeps MessageList at 0 renders per flush (the draft body leaf owns the subscription)', async () => {
     const SID = 'stream-inline'
     const store = getSessionStore(SID)
     await act(async () => {
@@ -250,65 +255,28 @@ describe('live-turn streaming re-renders only the leaves', () => {
     const { container } = render(
       <MessageList items={store.getSnapshot().items} sessionId={SID} streamingMode="inline" />,
     )
-    expect(container.querySelector('.streaming-msg--inline')).toBeNull()
+    // Start the draft (the row appears — one legitimate row-layer render)…
     await act(async () => {
-      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 'i0', parent_tool_use_id: null, event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } } as never })
-      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 'i1', parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'inline hello' } } } as never })
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 'i0', parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'word0 ' } } } as never })
       await sleep(150)
     })
-    const row = container.querySelector('.streaming-msg--inline')
-    expect(row?.textContent).toContain('inline hello')
-    // The overlay leaf is not mounted in inline mode.
-    expect(container.querySelector('.chat-streaming-region')).toBeNull()
-  })
-
-  it('threads globalPrefs.streamingRenderMode into the MessageList seam', async () => {
-    // The global setting's whole journey ends here: Chat must pass the mode
-    // down to MessageList's streamingMode prop — a dropped hop silently pins
-    // every panel to the floating bubble while the settings switch lies.
-    const SID = 'stream-thread'
-    const emit = (frame: Record<string, unknown>) => {
-      for (const fn of sessionListeners.get(SID) ?? []) fn({ sessionId: SID, ...frame })
+    expect(container.querySelector('.draft-body')).toBeTruthy()
+    for (const k of Object.keys(counts) as (keyof typeof counts)[]) counts[k] = 0
+    // …then grow it through several flushes: only the draft body leaf may
+    // render (MessageList must stay at 0 — the same leaf-isolation contract
+    // the overlay bubble honours).
+    const FLUSHES = 5
+    for (let i = 1; i <= FLUSHES; i++) {
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: `i${i}`, parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `word${i} ` } } } as never })
+      await act(() => sleep(110))
     }
-    const session = {
-      id: SID, title: 'thread', cwd: '/tmp/thread', running: true, working: true, workingSince: Date.now(),
-      terminated: false, messageCount: 4, permissionMode: 'default', model: 'test-model',
-      createdAt: Date.now(), lastActivityAt: Date.now(),
-    } as unknown as SessionInfo
-    const { container } = render(
-      <ToastProvider>
-        <Chat
-          session={session}
-          globalPrefs={{ ...globalPrefs, streamingRenderMode: 'inline' }}
-          snippets={snippets}
-          onOpenSnippetsManager={noop}
-          onSaveCurrentAsSnippet={noop}
-          onSessionUpdate={noop}
-          onRequestResumeForPanel={noop}
-          onOpenSettingsTab={noop}
-          onShowHelp={noop}
-          onClearSession={noop}
-          onHandoffSession={noop}
-          focused
-        />
-      </ToastProvider>,
-    )
-    for (let i = 0; i < 100 && !sessionListeners.get(SID)?.size; i++) await act(() => sleep(20))
-    expect(sessionListeners.get(SID)?.size).toBeGreaterThan(0)
-
-    await act(async () => {
-      emit({ kind: 'replay', messages: history(4) })
-      emit({ kind: 'replay-done' })
-      emit(streamEvent('t-0', { type: 'message_start', message: { id: 'm1' } }))
-      emit(streamEvent('t-1', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }))
-      emit(streamEvent('t-2', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'threaded live text' } }))
-      await sleep(150)
-    })
-
-    // The live text lands as the in-list tail row…
-    const row = container.querySelector('.streaming-msg--inline')
-    expect(row?.textContent).toContain('threaded live text')
-    // …and the floating bubble is not mounted.
+    await act(() => sleep(150))
+    expect(counts.MessageList).toBe(0)
+    expect(counts.DraftTextBody).toBeGreaterThanOrEqual(FLUSHES)
+    // The growing text lives in the draft card; no footer row exists.
+    expect(container.querySelector('.draft-body .md')?.textContent).toContain(`word${FLUSHES}`)
+    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
+    // The overlay leaf is not mounted in inline mode.
     expect(container.querySelector('.chat-streaming-region')).toBeNull()
   }, 30_000)
 })

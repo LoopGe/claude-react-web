@@ -27,7 +27,6 @@ import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/nor
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
-import { StreamingFooter } from './message-list/transcript-chrome'
 import { DEFAULT_STREAMING_RENDER_MODE, type StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { OverlayStreamingRegion } from './message-list/OverlayStreamingRegion'
 import { ChatEmptyState } from './ChatEmptyState'
@@ -89,31 +88,15 @@ export { WorkingBubble, LiveWorkingBubble } from './message-list/WorkingBubble'
  *  times per second for nothing. */
 const EMPTY_VIRT_IDX = new Map<number, number>()
 
-/** Virtualization key of the inline streaming tail row. A module constant
- *  distinct from every message uuid, so the finalized row that replaces it
- *  can never collide in React's key space. */
-const STREAMING_ROW_KEY = 'live-turn-streaming'
-
 /** Commit band for the bottom-stack height (see the hysteresis comment on the
  *  measuring effect): sub-4px wobble never re-fires the spacer re-pin. */
 const BOTTOM_STACK_COMMIT_HYSTERESIS_PX = 4
 
-/** The inline-mode live turn as a Virtuoso data element. NOT a TranscriptRow:
- *  it has no message, no itemIndex, no plainText — consumers that iterate
- *  rows (`renderableItems`) never see it. Narrow with `'kind' in item`
- *  (TranscriptRow carries no `kind` field, so the negative branch of the
- *  narrow is TranscriptRow). */
-interface StreamingRowItem {
-  kind: 'streaming'
-  content: string
-}
-type VirtuosoItem = TranscriptRow | StreamingRowItem
-/** Type predicate for the inline streaming tail row. Runtime-exact: rows
- *  built by buildTranscriptRows never carry a `kind` property. A type
- *  predicate (not an inline `'kind' in x && x.kind === 'streaming'` check)
- *  because TS's composite in+negative narrowing does not exclude
- *  StreamingRowItem from the else branch — the predicate narrows both ways. */
-const isStreamingRowItem = (item: VirtuosoItem): item is StreamingRowItem => 'kind' in item
+/** Virtuoso data elements are transcript rows (the in-place draft card rows
+ *  included). The old inline streaming tail row (a synthetic union member)
+ *  retired with the footer's inline variant — live text grows inside the
+ *  draft card's body leaf now. */
+type VirtuosoItem = TranscriptRow
 
 /** Scroll-navigation surface registered by MessageList and held by the parent
  *  (Chat) for the pinned-header dropdown, the right-click menu, and the
@@ -490,25 +473,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // (Chat / SideChatDrawer / the drill-in overlays); tests force either mode
   // through the same prop. Absent → the floating-bubble default.
   const resolvedMode = streamingMode ?? DEFAULT_STREAMING_RENDER_MODE
-  // Live-turn text. In OVERLAY mode (the default) this component does not
-  // read it at all: the capped bubble, its 12.5 Hz `streamingContent`
-  // subscription and its AnimatePresence exit live in the
-  // OverlayStreamingRegion leaf rendered into `.chat-bottom-stack` below, so
-  // a LIVE_TURN_FLUSH re-renders only that leaf. (The scroll machinery never
-  // needed this render either: the stack's ResizeObserver sees the bubble's
-  // DOM growth and publishes `bottomStackHeight` itself.) In INLINE mode the
-  // text IS row data — it becomes the tail element of Virtuoso's `data` —
-  // so only then does MessageList subscribe (an inert subscription in
-  // overlay mode). Same "" → null rule as the overlay: an empty pre-text
-  // liveTurn renders no row. Prop-fed callers (no `sessionId`) use the prop.
-  const inlineStoreStreamingContent = useOptionalSessionField(
-    resolvedMode === 'inline' ? sessionId : undefined,
-    'streamingContent',
-  )
-  const inlineStreamingSource = resolvedMode !== 'inline'
-    ? null
-    : sessionId != null ? inlineStoreStreamingContent : streamingContent
-  const liveStreamingContent = inlineStreamingSource && inlineStreamingSource.length > 0 ? inlineStreamingSource : null
+  // Live-turn text never flows through this component's render: in OVERLAY
+  // mode the capped bubble (OverlayStreamingRegion) owns the 12.5 Hz
+  // `streamingContent` subscription as a leaf; in INLINE mode the growing
+  // draft card owns `draft.text` as a leaf (DraftTextBody). Both keep
+  // LIVE_TURN_FLUSH re-renders off this layer entirely.
 
   // EnterPlanMode has no lifecycle map (it renders as a stateless marker and
   // nothing consumes its result), so its result ids aren't in any of the maps
@@ -644,9 +613,14 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // changes every flush as its text grows, so subscribing the object here
   // would re-render the whole list at flush rate (the body leaf owns those
   // flushes). frozenDrafts / draftRowKeys change only on freeze/supersede.
-  const draftKey = useOptionalSessionField(sessionId, 'draftKey')
-  const frozenDrafts = useOptionalSessionField(sessionId, 'frozenDrafts')
-  const draftRowKeys = useOptionalSessionField(sessionId, 'draftRowKeys')
+  // Gated on inline mode (the old streamingContent subscription used the same
+  // `resolvedMode === 'inline' ? sessionId : undefined` trick): in overlay
+  // mode the draft fields must stay unsubscribed, or a draftKey flip would
+  // re-render MessageList and break the leaf-isolation pin.
+  const draftSessionId = resolvedMode === 'inline' ? sessionId : undefined
+  const draftKey = useOptionalSessionField(draftSessionId, 'draftKey')
+  const frozenDrafts = useOptionalSessionField(draftSessionId, 'frozenDrafts')
+  const draftRowKeys = useOptionalSessionField(draftSessionId, 'draftRowKeys')
   const { rows: renderableItems, firstItemId, lastItemId, nextItemTypeMap } = useMemo(() => {
     const base = builtRows
     const drafts = resolvedMode === 'inline'
@@ -1325,27 +1299,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     })
   }, [onRegisterNavigate, navigate, navigateToIndex, jumpToBottom])
 
-  const itemContent = useCallback((_index: number, virtuosoItem: VirtuosoItem) => {
+  const itemContent = useCallback((_index: number, item: VirtuosoItem) => {
     // Search state read from a ref (not closure) so this callback stays
     // identity-stable across query changes — see searchRef above.
     const { searchQuery: sq, searchActiveMsgIdx: sami, searchActiveMatchInItem: samii } = searchRef.current
-    if (isStreamingRowItem(virtuosoItem)) {
-      // Inline-mode live turn row (spec §1). No data-message-id, no
-      // enter-animation hooks, no reveal snapshot: it is not a message and
-      // unmounts at finalize. Fresh content arrives via the item (the data
-      // array is rebuilt per flush in inline mode).
-      return (
-        <div className={TRANSCRIPT_ROW_CLASS}>
-          {/* key=variant: remounts on a variant flip so useMergedRef's
-              first-render ref capture (mergedRef.ts) stays correct. */}
-          <StreamingFooter key="inline" content={virtuosoItem.content} variant="inline" />
-        </div>
-      )
-    }
-    // Rebind to a const carrying the narrowed TranscriptRow type: closures
-    // below (handleRowAnimationEnd) reset parameter narrowing, and every
-    // `item.` reference in the body stays untouched by this rename.
-    const item = virtuosoItem
     // Only pipe `activeMatchInItem` into the message that actually
     // contains the active navigation target. Every other message gets
     // `undefined` so its <mark>s render at the default colour. This
@@ -1540,7 +1497,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // `nextItemTypeMap` already rely on.
   const computeItemKey = useCallback(
     (_index: number, item: VirtuosoItem) => {
-      if ('kind' in item) return STREAMING_ROW_KEY
       // Alias-first: a settled message born from an in-place draft keeps the
       // draft key (draftRowKeys), so the hand-off updates the same row in
       // place instead of remounting a fresh one.
@@ -1584,10 +1540,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // mass re-render flashes all cards.
   const searchTick = useMemo(() => (searchQuery?.trim() ? searchQuery : ''), [searchQuery])
   const virtuosoData: VirtuosoItem[] = useMemo(() => {
-    const base: VirtuosoItem[] =
-      resolvedMode === 'inline' && liveStreamingContent != null
-        ? [...renderableItems, { kind: 'streaming', content: liveStreamingContent }]
-        : renderableItems
+    const base: VirtuosoItem[] = renderableItems
     if (!searchTick) return base
     // Shallow-copy only matching items (new object identity = Virtuoso
     // re-render). Non-matching items keep their identity.
@@ -1595,7 +1548,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const out: VirtuosoItem[] = new Array(base.length)
     for (let i = 0; i < base.length; i++) {
       const it = base[i]
-      if ('kind' in it) { out[i] = it; continue }
       const matches = it.plainText == null || countMatches(it.plainText, searchTick.trim()) > 0
       if (matches) {
         if (!copied) { for (let j = 0; j < i; j++) out[j] = base[j]; copied = true }
@@ -1605,7 +1557,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       }
     }
     return copied ? out : base
-  }, [renderableItems, resolvedMode, liveStreamingContent, searchTick])
+  }, [renderableItems, searchTick])
 
   // Virtuoso Footer is reserved for transcript metadata and invisible bottom
   // breathing room. The bottom overlay stack (live streaming bubble + task
@@ -1621,7 +1573,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const heightEstimates: number[] = useMemo(
     () =>
       virtuosoData.map((item) => {
-        const cached = 'kind' in item ? undefined : lookupRowHeight(item.id)
+        const cached = lookupRowHeight(item.id)
         return cached ?? ROW_HEIGHT_FALLBACK_PX
       }),
     [virtuosoData],

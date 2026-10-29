@@ -459,7 +459,7 @@ Tasks 面板分两组：正在跑的（带 `Stop <描述>` 停止按钮）和 `F
 标签页：`Profiles` · `Server` · `Appearance` · `Skills` · `MCP Servers` · `Marketplace` · `App Plugins` · `Open on phone` · `Logs` · `About`。底部提示 `Changes are saved to config.json`，点 `Save` 落盘。
 
 - **Server**：`Max upload size`、`History cap`、`Working-stuck timeout`、`Max group panels`（2–5，即最多几个会话并排）、`Allow editing sensitive paths in auto-approve modes`。
-- **Appearance**：默认值（置顶当前问题、自动 recap、工具组卡片、消息卡头）以及 `Transcript spacing`、`Message text density`、`Font size` 三档密度；`Render live text inline in the transcript` 开关决定流式预览的形态——关（默认）是底部悬浮气泡，开是 transcript 末尾的内嵌尾行（随内容滚动、可回看）。
+- **Appearance**：默认值（置顶当前问题、自动 recap、工具组卡片、消息卡头）以及 `Transcript spacing`、`Message text density`、`Font size` 三档密度；`Render live text inline in the transcript` 开关决定流式预览的形态——关（默认）是底部悬浮气泡，开是消息卡在 transcript 里**原地生长**（流式文本长成真正的消息卡，定稿时原地停长、不换卡）。
 - **Logs**：`Level`（error/warn/info/debug/trace）、`Scope filter`、`Log to file` 开关。注意级别/范围改动**立即生效但不持久**。
 
 ![配置档](screenshots/manual/ch9-global-profiles.png)

@@ -552,7 +552,10 @@ export const MessageView = memo(function MessageView({
     // the surrounding card would still paint an empty "— assistant" shell.
     // The visibility rule lives in willRenderEmpty so renderableItems can
     // drop these before they become empty Virtuoso items (see that fn).
-    if (willRenderEmpty(msg, isCompactSummary, isResultConsumed)) return null
+    // Draft cards exempt: the live draft's content is the STORE's text (the
+    // msg placeholder is empty by design) and a frozen half-card may be empty
+    // after a very early interrupt — neither is a "drop this row" empty.
+    if (!msg.isDraft && willRenderEmpty(msg, isCompactSummary, isResultConsumed)) return null
     // The CLI translates a 404 (model not found / no access) into an
     // assistant error message with error='model_not_found'. Offer a
     // one-click "Switch model" affordance instead of leaving the user to

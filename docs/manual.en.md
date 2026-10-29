@@ -459,7 +459,7 @@ Tabs in order: `General` · `Appearance` · `Context` · `Hooks` · `Plugins` ·
 Tabs: `Profiles` · `Server` · `Appearance` · `Skills` · `MCP Servers` · `Marketplace` · `App Plugins` · `Open on phone` · `Logs` · `About`. The footer notes `Changes are saved to config.json`; press `Save` to persist.
 
 - **Server**: `Max upload size`, `History cap`, `Working-stuck timeout`, `Max group panels` (2–5, i.e. how many conversations sit side by side), and `Allow editing sensitive paths in auto-approve modes`.
-- **Appearance**: the defaults (pinned current question, auto recap, tool-group cards, message card headers) plus `Transcript spacing`, `Message text density`, and `Font size`; the `Render live text inline in the transcript` switch picks the streaming-preview shape — off (default) is the floating bottom bubble, on is a growing tail row inside the transcript (scrolls with it, scrollable back).
+- **Appearance**: the defaults (pinned current question, auto recap, tool-group cards, message card headers) plus `Transcript spacing`, `Message text density`, and `Font size`; the `Render live text inline in the transcript` switch picks the streaming-preview shape — off (default) is the floating bottom bubble, on makes the message card **grow in place** inside the transcript (the live text streams straight into a real message card; it settles in place with no card swap).
 - **Logs**: `Level` (error/warn/info/debug/trace), `Scope filter`, and the `Log to file` toggle. Note that level/scope changes **apply immediately but are not persisted**.
 
 ![Profiles](screenshots/manual/ch9-global-profiles.png)
