@@ -85,11 +85,11 @@ describe('SubagentTranscriptDialog', () => {
     expect(screen.queryByText(/Failed to load transcript/)).toBeNull()
   })
 
-  it('follows the streaming mode: inline renders the live tail row, not the floating bubble', async () => {
+  it('follows the streaming mode: inline grows the text in a draft card (no floating bubble)', async () => {
     // The global streamingRenderMode setting must reach this mount too — the
     // hub feeds a running subagent's transcript live, so the seam is
-    // observable here. Dropping the prop silently pins the dialog to the
-    // floating bubble whatever the user chose.
+    // observable here. Inline mode now renders the in-place draft card (the
+    // old inline footer row retired); the floating bubble must stay absent.
     //
     // The live text goes into the store MessageList reads — its `sessionId`
     // prop is the PARENT session id (the dialog renders scratch-store
@@ -107,9 +107,10 @@ describe('SubagentTranscriptDialog', () => {
       await new Promise((r) => setTimeout(r, 150))
     })
     // Overlay portals to document.body — query there, not in `container`.
-    const row = document.body.querySelector('.streaming-msg--inline')
-    expect(row?.textContent).toContain('live subagent text')
-    // The floating bubble is not mounted in inline mode.
+    const body = document.body.querySelector('.draft-body')
+    expect(body?.textContent).toContain('live subagent text')
+    // No floating bubble and no footer row in inline mode.
     expect(document.body.querySelector('.chat-streaming-region')).toBeNull()
+    expect(document.body.querySelector('.streaming-footer-wrapper')).toBeNull()
   })
 })

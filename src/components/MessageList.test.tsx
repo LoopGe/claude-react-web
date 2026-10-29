@@ -5324,4 +5324,59 @@ describe('in-place draft rows (store-backed)', () => {
     // The old inline footer row is retired — live text lives in the card only.
     expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
   })
+
+  it('interrupt without a salvaged message freezes the half-card in place (stays after result)', () => {
+    streamDelta('half of a thought')
+    flush()
+    const { container, rerender } = renderList('inline')
+    const draftNode = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
+    expect(draftNode?.textContent).toContain('half of a thought')
+    // Interrupt: the turn ends with no finalized message salvaging the draft.
+    act(() => {
+      dispatch({
+        type: 'MESSAGE',
+        message: {
+          type: 'result',
+          subtype: 'error_during_execution',
+          uuid: 'r-abort',
+          terminal_reason: 'aborted_streaming',
+        } as unknown as SdkMessage,
+      })
+      rerender(list('inline'))
+    })
+    // The frozen card keeps the text and its node (no remount, no rollback).
+    const frozen = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
+    expect(frozen).toBe(draftNode)
+    expect(frozen?.textContent).toContain('half of a thought')
+    // A new response's draft grows BELOW the frozen card.
+    act(() => {
+      streamDelta('next response')
+      flush()
+      rerender(list('inline'))
+    })
+    expect(container.querySelector('[data-message-id="draft:2"]')?.textContent).toContain('next response')
+    expect(container.querySelector('[data-message-id="draft:1"]')?.textContent).toContain('half of a thought')
+  })
+
+  it('interrupt with a salvaged message settles normally (no frozen card, same node)', () => {
+    streamDelta('partial answer')
+    flush()
+    const { container, rerender } = renderList('inline')
+    const before = container.querySelector('[data-message-id="draft:1"]') as HTMLElement
+    expect(before).toBeTruthy()
+    // The CLI salvages the partial as a real message, then the turn ends.
+    act(() => {
+      arriveAssistant('a-salvaged', 'partial answer')
+      dispatch({
+        type: 'MESSAGE',
+        message: { type: 'result', subtype: 'error_during_execution', uuid: 'r-abort-2', terminal_reason: 'aborted_streaming' } as unknown as SdkMessage,
+      })
+      rerender(list('inline'))
+    })
+    // Exactly one card — the settled one, on the draft's node; no frozen copy.
+    const settled = container.querySelector('[data-message-id="a-salvaged"]') as HTMLElement
+    expect(settled).toBe(before)
+    expect(container.querySelectorAll('[data-message-id^="draft:"]')).toHaveLength(0)
+    expect(container.textContent?.split('partial answer').length - 1).toBe(1)
+  })
 })
