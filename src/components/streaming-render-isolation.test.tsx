@@ -20,6 +20,8 @@ const counts = vi.hoisted(() => ({
   Chat: 0,
   MessageList: 0,
   SessionMessageList: 0,
+  SessionBottomCards: 0,
+  SessionWorkingBubble: 0,
   OverlayStreamingRegion: 0,
   StreamingFooter: 0,
   LiveWorkingBubble: 0,
@@ -50,6 +52,14 @@ vi.mock('./MessageList', async (orig) => {
 vi.mock('./SessionMessageList', async (orig) => {
   const mod = await orig<typeof import('./SessionMessageList')>()
   return { ...mod, SessionMessageList: counted('SessionMessageList', mod.SessionMessageList) }
+})
+vi.mock('./SessionBottomCards', async (orig) => {
+  const mod = await orig<typeof import('./SessionBottomCards')>()
+  return { ...mod, SessionBottomCards: counted('SessionBottomCards', mod.SessionBottomCards) }
+})
+vi.mock('./message-list/SessionWorkingBubble', async (orig) => {
+  const mod = await orig<typeof import('./message-list/SessionWorkingBubble')>()
+  return { ...mod, SessionWorkingBubble: counted('SessionWorkingBubble', mod.SessionWorkingBubble) }
 })
 vi.mock('./message-list/OverlayStreamingRegion', async (orig) => {
   const mod = await orig<typeof import('./message-list/OverlayStreamingRegion')>()
@@ -115,7 +125,7 @@ vi.mock('../hooks/useWsHub', () => ({
 }))
 vi.mock('../hooks/useApi', () => {
   const get = vi.fn(async (path: string) => {
-    if (path.includes('/messages')) return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
+    if (path.includes('/messages')) return { generation: 0, headSeq: 0, totalCount: 0, startIndex: 0, hasMore: false, messages: [], tombstones: [] }
     return { schedules: [], commands: [], agents: [], models: [], anchors: [], tasks: [], items: [], entries: [] }
   })
   return { api: { get, post: vi.fn(async () => ({})), put: vi.fn(async () => ({})), patch: vi.fn(async () => ({})), del: vi.fn(async () => ({})), delete: vi.fn(async () => ({})) } }
@@ -350,5 +360,91 @@ describe('live-turn streaming re-renders only the leaves', () => {
     // And the streamed text reached the overlay bubble.
     expect(container.querySelector('.chat-streaming-region .streaming-plain')?.textContent).toContain(`word0 `)
     expect(container.querySelector('.chat-streaming-region .streaming-plain')?.textContent).toContain(`word${DELTAS - 1}`)
+  }, 30_000)
+
+  it('main Chat renders the session-bound transcript children (SessionMessageList, SessionBottomCards, SessionWorkingBubble)', async () => {
+    const SID = 'session-children'
+    const session = {
+      id: SID, title: 'children', cwd: '/tmp/children', running: true, working: true, workingSince: Date.now(),
+      terminated: false, messageCount: 0, permissionMode: 'default', model: 'test-model',
+      createdAt: Date.now(), lastActivityAt: Date.now(),
+    } as unknown as SessionInfo
+    render(
+      <ToastProvider>
+        <Chat
+          session={session}
+          globalPrefs={globalPrefs}
+          snippets={snippets}
+          onOpenSnippetsManager={noop}
+          onSaveCurrentAsSnippet={noop}
+          onSessionUpdate={noop}
+          onRequestResumeForPanel={noop}
+          onOpenSettingsTab={noop}
+          onShowHelp={noop}
+          onClearSession={noop}
+          onHandoffSession={noop}
+          focused
+        />
+      </ToastProvider>,
+    )
+    // Wait for the synchronizer's tail fetch + listener registration + the
+    // bottomOverlay ref callbacks (workingSlot / dockSlot) to fire so the
+    // working-bubble portal mounts SessionWorkingBubble.
+    for (let i = 0; i < 100 && !sessionListeners.get(SID)?.size; i++) await act(() => sleep(20))
+    await act(() => sleep(200))
+
+    // Main Chat delegates the transcript, the bottom cards, and the working
+    // bubble to the session-bound wrappers instead of rendering the controlled
+    // components directly.
+    expect(counts.SessionMessageList).toBeGreaterThan(0)
+    expect(counts.SessionBottomCards).toBeGreaterThan(0)
+    expect(counts.SessionWorkingBubble).toBeGreaterThan(0)
+  }, 30_000)
+
+  it('an unused ambient TASKS_SNAPSHOT does not re-render Chat (no root tasks subscription)', async () => {
+    const SID = 'tasks-ambient'
+    const session = {
+      id: SID, title: 'ambient', cwd: '/tmp/ambient', running: true, working: false,
+      terminated: false, messageCount: 0, permissionMode: 'default', model: 'test-model',
+      createdAt: Date.now(), lastActivityAt: Date.now(),
+    } as unknown as SessionInfo
+    render(
+      <ToastProvider>
+        <Chat
+          session={session}
+          globalPrefs={globalPrefs}
+          snippets={snippets}
+          onOpenSnippetsManager={noop}
+          onSaveCurrentAsSnippet={noop}
+          onSessionUpdate={noop}
+          onRequestResumeForPanel={noop}
+          onOpenSettingsTab={noop}
+          onShowHelp={noop}
+          onClearSession={noop}
+          onHandoffSession={noop}
+          focused
+        />
+      </ToastProvider>,
+    )
+    // Wait for the synchronizer to start and seed the store (replayReady flips
+    // so the initial render churn settles).
+    for (let i = 0; i < 100 && !sessionListeners.get(SID)?.size; i++) await act(() => sleep(20))
+    await act(() => sleep(200))
+
+    const store = getSessionStore(SID)
+    // Reset counts AFTER initial mount churn.
+    for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
+
+    // Dispatch an ambient TASKS_SNAPSHOT — a new (empty) tasks array reference.
+    // The reducer creates a fresh mirror (tasks array identity changed), which
+    // notifies all store subscribers. Chat must NOT re-render: it reads only
+    // derived task COUNTS (useSessionTaskCounts), and those don't change when
+    // the list goes from empty to empty.
+    await act(async () => {
+      store.dispatch({ type: 'TASKS_SNAPSHOT', tasks: [] })
+      await sleep(50)
+    })
+
+    expect(counts.Chat).toBe(0)
   }, 30_000)
 })

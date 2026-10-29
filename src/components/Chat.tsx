@@ -37,7 +37,9 @@ import { RecapWindow } from './RecapWindow'
 import { PinnedUserMessage } from './PinnedUserMessage'
 import { api } from '../hooks/useApi'
 import { startUploads } from '../hooks/useUploadQueue'
-import { useChatStream } from '../hooks/useChatStream'
+import { useSessionSynchronizer } from '../session-sync/useSessionSynchronizer'
+import { useSessionStreamError } from '../session-sync/useSessionStreamError'
+import { useSessionCommands } from '../hooks/useSessionCommands'
 import { writeClipboard, COPY_FAILED_MESSAGE } from '../hooks/useCopy'
 import { usePastedImages } from '../hooks/usePastedImages'
 import { useDraftImages } from '../hooks/useDraftImages'
@@ -52,7 +54,10 @@ import { useUserDialogChannel } from '../hooks/useUserDialogChannel'
 import { Composer } from './Composer'
 import { HandoffOverlay } from './HandoffOverlay'
 import { ContextOrb } from './ContextOrb'
-import { MessageList, LiveWorkingBubble, type ScrollNavigator } from './MessageList'
+import { type ScrollNavigator } from './MessageList'
+import { SessionMessageList } from './SessionMessageList'
+import { SessionWorkingBubble } from './message-list/SessionWorkingBubble'
+import { SessionBottomCards } from './SessionBottomCards'
 import { OlderHistoryFloat } from './message-list/transcript-chrome'
 import { ChatEmptyStateEnv } from './ChatEmptyStateEnv'
 import { PermissionDialog } from './PermissionDialog'
@@ -67,8 +72,8 @@ import { SkillProvider, skillRecordAsSubagent } from '../hooks/useSkillContext'
 import { WorktreeChanges } from './WorktreeChanges'
 import { ReopenQuestionProvider } from '../hooks/useReopenQuestion'
 import { useMinimizedSet } from '../hooks/useMinimizedSet'
-import { TodoChecklist } from './TodoChecklist'
-import { MonitorBar } from './MonitorBar'
+// TodoChecklist and MonitorBar are now rendered via <SessionBottomCards>
+// (Task 5 adapter), which subscribes to messages itself — no direct imports.
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { useSessionRecap } from '../hooks/useSessionRecap'
 import { useRecapSettle } from '../hooks/useRecapSettle'
@@ -76,8 +81,8 @@ import { useScheduledSends } from '../hooks/useScheduledSends'
 import { useTaskList } from '../hooks/useTaskList'
 import { MessageSearch } from './MessageSearch'
 import { countMatches } from '../search'
-import { useSessionTaskCounts } from '../session-store/selectors'
-import { computeWaiting, computeTurnActive, hasTranscriptBackground, autoTitleDescription, isHumanUserMessage, countQueuedUserTurns } from '../session-store/normalize'
+import { useSessionTaskCounts, useSessionField, useSessionSelector, selectHasActivePhase, selectHasTranscriptBackground, selectHasLiveSyncSubagent } from '../session-store/selectors'
+import { computeWaiting, computeTurnActive, autoTitleDescription, isHumanUserMessage, countQueuedUserTurns } from '../session-store/normalize'
 import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction } from '../utils/task-actions'
 import { composeOutgoing } from '../utils/outgoing-text'
 import { planSubmission } from '../utils/submission'
@@ -592,12 +597,36 @@ export const Chat = memo(function Chat({
 
   // Permissions first — its onRequest/onResolved are passed into the
   // stream hook so SDK messages and permission events share one WebSocket.
-  // Moved here (before the pendingTurnSince effect) so stream.hasActivePhase
+  // Moved here (before the pendingTurnSince effect) so hasActivePhase
   // is available in the effect's closure and dep array.
   const permissions = usePermissionChannel(session.id)
   const elicitations = useElicitationChannel(session.id)
   const dialogs = useUserDialogChannel(session.id)
-  const stream = useChatStream(session.id, {
+
+  // ── Session-bound synchronization + narrow field subscriptions ───────
+  //
+  // Main Chat no longer uses the aggregate useChatStream hook. Instead it
+  // composes three narrow adapters:
+  //   · useSessionSynchronizer — owns the WS listener, REST tail/gap-fill,
+  //     and the paging snapshot (loadingOlder / olderError / loadOlder).
+  //   · useSessionCommands — the five optimistic-delivery actions
+  //     (insertUserMessage / ackUserMessage / rollbackUserMessage /
+  //     clearError / dismissSubagent).
+  //   · useSessionStreamError — the projected error banner string.
+  //
+  // The transcript fields Chat itself reads (items, messages, the overlay
+  // indexes, the tool/plan maps, context usage, prompt suggestion) are
+  // subscribed individually via useSessionField — each re-renders Chat only
+  // when that specific field's reference changes. The three boolean
+  // turn-status primitives (hasActivePhase, hasTranscriptBackground,
+  // hasLiveSyncSubagent) use useSessionSelector so a derived primitive flip
+  // re-renders exactly once.
+  //
+  // The session-bound wrappers (SessionMessageList / SessionBottomCards /
+  // SessionWorkingBubble) subscribe to their OWN fields — Chat does NOT
+  // forward items / replayReady / toolStatus / activeSubagents / apiRetry
+  // / oldestSeq / hasOlder / loadingOlder to them as props.
+  const paging = useSessionSynchronizer(session.id, {
     onRequest: permissions.onRequest,
     onResolved: permissions.onResolved,
     onCleared: () => {
@@ -615,21 +644,46 @@ export const Chat = memo(function Chat({
       setComposerFocusSignal((n) => n + 1)
     },
   }, session.running, session.terminated)
+  const sessionCommands = useSessionCommands(session.id)
+  const streamError = useSessionStreamError(session.id)
+
+  // Narrow field subscriptions — Chat reads each of these directly (search,
+  // export, pending jump, overlay stacks, context UI). Each is a
+  // useSessionField with an Object.is guard, so a LIVE_TURN_FLUSH (which
+  // mutates only liveTurn / draft) does NOT re-render Chat.
+  const items = useSessionField(session.id, 'items')
+  const messages = useSessionField(session.id, 'messages')
+  const subagentIndex = useSessionField(session.id, 'subagentIndex')
+  const workflowIndex = useSessionField(session.id, 'workflowIndex')
+  const skillIndex = useSessionField(session.id, 'skillIndex')
+  const planStatus = useSessionField(session.id, 'planStatus')
+  const planContent = useSessionField(session.id, 'planContent')
+  const questionAnswers = useSessionField(session.id, 'questionAnswers')
+  const toolStatus = useSessionField(session.id, 'toolStatus')
+  const toolResults = useSessionField(session.id, 'toolResults')
+  const contextUsage = useSessionField(session.id, 'contextUsage')
+  const promptSuggestion = useSessionField(session.id, 'promptSuggestion')
+  const hasOlder = useSessionField(session.id, 'hasOlder')
+  // Boolean turn-status primitives — derived so a transition re-renders
+  // exactly once, not on every snapshot dispatch.
+  const hasActivePhase = useSessionSelector(session.id, selectHasActivePhase)
+  const transcriptBackground = useSessionSelector(session.id, selectHasTranscriptBackground)
+  const hasLiveSyncSubagent = useSessionSelector(session.id, selectHasLiveSyncSubagent)
 
   // Mirror the live values into refs so the fire-and-forget auto-title guard
   // inside `send` reads CURRENT messages/title without recreating `send` on
   // every message (adding them to the deps would churn the composer submit
-  // handler — `stream.messages` changes on every streamed message).
-  const messagesRef = useRef(stream.messages)
-  messagesRef.current = stream.messages
+  // handler — `messages` changes on every streamed message).
+  const messagesRef = useRef(messages)
+  messagesRef.current = messages
   const sessionTitleRef = useRef(session.title)
   sessionTitleRef.current = session.title
   // Top-level user turns queued behind the in-flight turn (server-acked, not
   // yet consumed) — drives the Composer's interrupt-button tooltip. The scan
-  // is cheap: `stream.messages` is reference-stable during token streaming
+  // is cheap: `messages` is reference-stable during token streaming
   // (deltas fold into the live-turn mirror, not the durable list), so this
   // recomputes only when a durable message lands.
-  const queuedCount = useMemo(() => countQueuedUserTurns(stream.messages), [stream.messages])
+  const queuedCount = useMemo(() => countQueuedUserTurns(messages), [messages])
 
   // Clear the optimistic turn bridge once the real turn is confirmed
   // (session.working rose OR the first stream phase arrived). The old fixed 4s
@@ -645,13 +699,13 @@ export const Chat = memo(function Chat({
     // bridge otherwise keeps `turnActive`, `turnActiveRef` and the
     // WorkingBubble's ACTIVE state true on a dead session until the safety net
     // fires 30s later.
-    if (session.terminated || session.working || stream.hasActivePhase) {
+    if (session.terminated || session.working || hasActivePhase) {
       setPendingTurnSince(null)
       return
     }
     const t = setTimeout(() => setPendingTurnSince(null), PENDING_TURN_SAFETY_MS)
     return () => clearTimeout(t)
-  }, [pendingTurnSince, session.working, stream.hasActivePhase, session.terminated])
+  }, [pendingTurnSince, session.working, hasActivePhase, session.terminated])
   // Drop any pending bridge when switching the panel to another session.
   useEffect(() => {
     setPendingTurnSince(null)
@@ -933,7 +987,7 @@ export const Chat = memo(function Chat({
   // processing a background subagent's <task-notification> after the parent
   // turn ended): those turns don't go through send() so `session.working`
   // stays false and `pendingTurnSince` is null, but the store's `activePhase`
-  // is non-null (`stream.hasActivePhase`) while the SDK streams its response.
+  // is non-null (`hasActivePhase`) while the SDK streams its response.
   // `activePhase` is cleared by
   // the result frame (in both replay and live), so this never false-fires on
   // a reconnect replay whose final state has no live turn.
@@ -942,7 +996,7 @@ export const Chat = memo(function Chat({
   const turnActive = computeTurnActive({
     working: session.working,
     pendingTurnSince,
-    hasActivePhase: stream.hasActivePhase,
+    hasActivePhase,
     terminated: session.terminated,
   })
   // The WorkingBubble's dwelled phase label (transient sub-300ms blips between
@@ -972,7 +1026,6 @@ export const Chat = memo(function Chat({
    *  param and the mount predicate). A dead session never receives the
    *  completion signal, so the bare flag would mount an eternal Waiting;
    *  hoisting it into another mount path must carry that guard along. */
-  const transcriptBackground = hasTranscriptBackground(stream.activeSubagents)
   const waiting = computeWaiting({
     turnActive,
     terminated: session.terminated,
@@ -1014,8 +1067,8 @@ export const Chat = memo(function Chat({
   // Memoize the provider value so SubagentCard's `memo()` survives
   // unrelated Chat re-renders. Both providers below share this object.
   const subagentCtxValue = useMemo(
-    () => ({ index: stream.subagentIndex, messages: stream.messages, open: openSubagent }),
-    [stream.subagentIndex, stream.messages, openSubagent],
+    () => ({ index: subagentIndex, messages, open: openSubagent }),
+    [subagentIndex, messages, openSubagent],
   )
 
   // 鈹€鈹€ Workflow overlay state 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -1038,8 +1091,8 @@ export const Chat = memo(function Chat({
     setWorkflowOpenId(null)
   }, [])
   const workflowCtxValue = useMemo(
-    () => ({ index: stream.workflowIndex, open: openWorkflow }),
-    [stream.workflowIndex, openWorkflow],
+    () => ({ index: workflowIndex, open: openWorkflow }),
+    [workflowIndex, openWorkflow],
   )
 
   // ── Skill drill-in ──────────────────────────────────────────────────────
@@ -1049,23 +1102,23 @@ export const Chat = memo(function Chat({
   // than growing a third overlay. The only adaptation needed is the record
   // shape: the overlay reads label/status/timing/result off an ActiveSubagent.
   const skillCtxValue = useMemo(
-    () => ({ index: stream.skillIndex, open: openSubagent }),
-    [stream.skillIndex, openSubagent],
+    () => ({ index: skillIndex, open: openSubagent }),
+    [skillIndex, openSubagent],
   )
   /** The subagent index plus every skill record adapted into it, so one lookup
    *  serves both kinds of drill-in. Returns the subagent index UNCHANGED when
    *  no skill has been seen (the common case), keeping the overlay's memo
    *  intact — a fresh Map every render would defeat it. */
   const overlayIndex = useMemo(() => {
-    if (stream.skillIndex.size === 0) return stream.subagentIndex
-    const merged = new Map(stream.subagentIndex)
-    for (const [id, record] of stream.skillIndex) merged.set(id, skillRecordAsSubagent(record))
+    if (skillIndex.size === 0) return subagentIndex
+    const merged = new Map(subagentIndex)
+    for (const [id, record] of skillIndex) merged.set(id, skillRecordAsSubagent(record))
     return merged
-  }, [stream.subagentIndex, stream.skillIndex])
+  }, [subagentIndex, skillIndex])
   /** A skill fork has no chip to dismiss, so the overlay's × must not offer
    *  "dismiss and close" while one is on top of the stack (DISMISS_SUBAGENT
    *  keys off the subagent index and would find nothing anyway). */
-  const overlayTopIsSkill = stream.skillIndex.has(subagentStack[subagentStack.length - 1] ?? '')
+  const overlayTopIsSkill = skillIndex.has(subagentStack[subagentStack.length - 1] ?? '')
 
   // 鈹€鈹€ AskUserQuestion minimize / re-open 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
   // A minimized question dialog is hidden (not resolved) so the user can
@@ -1247,9 +1300,9 @@ export const Chat = memo(function Chat({
    *  never qualify. This is a UI nicety only — the server re-validates. */
   const isRewindableUserMessage = useCallback((uuid: string | undefined) => {
     if (!uuid) return false
-    const item = stream.items.find((i) => i.id === uuid)
+    const item = items.find((i) => i.id === uuid)
     return !!item && item.msg.type === 'user' && item.msg.parent_tool_use_id == null
-  }, [stream.items])
+  }, [items])
 
   /** True when `uuid` is a rewindable user message AND the snapshot
    *  sidecar has a recorded anchor for it. */
@@ -1368,8 +1421,8 @@ export const Chat = memo(function Chat({
   const searchMatches = useMemo(() => {
     if (!debouncedQuery) return [] as Array<{ itemIdx: number; matchInItem: number }>
     const out: Array<{ itemIdx: number; matchInItem: number }> = []
-    for (let i = 0; i < stream.items.length; i++) {
-      const item = stream.items[i]
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
       // Hidden frames (system init/status, /model command logs, …) carry
       // non-null plainText but aren't in renderableItems, so counting them
       // would inflate the match counter and strand next/prev on matches that
@@ -1381,7 +1434,7 @@ export const Chat = memo(function Chat({
       for (let k = 0; k < n; k++) out.push({ itemIdx: i, matchInItem: k })
     }
     return out
-  }, [stream.items, debouncedQuery])
+  }, [items, debouncedQuery])
   // Clamped view of the raw active-idx state — see the useState comment
   // above. Consumers that render the "N/total" chip or index into
   // `searchMatches` should use this, not the raw value.
@@ -1428,25 +1481,32 @@ export const Chat = memo(function Chat({
     setPendingJump(messageJumpTarget)
   }, [messageJumpTarget, session.id])
 
-  // Destructure the fields the pending-jump effect touches. Naming them
-  // directly in the dep array (instead of bare `stream`) keeps the effect
-  // from re-running every time the hook's return identity churns (e.g.
-  // per streaming token), and satisfies react-hooks/exhaustive-deps.
-  const {
-    items: streamItems,
-    hasOlder: streamHasOlder,
-    loadOlder: streamLoadOlder,
-    loadingOlder: streamLoadingOlder,
-  } = stream
+  // Destructure the paging fields the pending-jump effect touches. Naming
+  // them directly in the dep array (instead of bare `paging`) keeps the
+  // effect from re-running every time the paging snapshot identity churns,
+  // and satisfies react-hooks/exhaustive-deps.
+  const pagingLoadOlder = paging.loadOlder
+  const pagingLoadingOlder = paging.loadingOlder
+  // SessionMessageList only reads `loadingOlder` and `loadOlder` off the
+  // paging prop; `olderError` belongs to Chat's OlderHistoryFloat. Memoize
+  // a stable subset so an olderError-only flip (a loadOlder failure) re-renders
+  // Chat (for the float) without re-rendering the transcript wrapper.
+  const messageListPaging = useMemo(
+    () => ({ loadingOlder: paging.loadingOlder, olderError: paging.olderError, loadOlder: paging.loadOlder }),
+    // olderError intentionally omitted: SessionMessageList never reads it;
+    // including it would re-render the transcript on a loadOlder failure.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [paging.loadingOlder, paging.loadOlder],
+  )
   useEffect(() => {
     if (!pendingJump) return
     if (debouncedQuery !== pendingJump.query) return
 
     const itemIdx = pendingJump.messageUuid
-      ? streamItems.findIndex((item) => item.msg.uuid === pendingJump.messageUuid)
+      ? items.findIndex((item) => item.msg.uuid === pendingJump.messageUuid)
       : -1
     if (itemIdx >= 0) {
-      const beforeTarget = streamItems.slice(0, itemIdx)
+      const beforeTarget = items.slice(0, itemIdx)
       let globalIdx = 0
       for (const item of beforeTarget) if (!item.hiddenByDefault) globalIdx += countMatches(item.plainText, pendingJump.query)
       setSearchActiveIdx(globalIdx)
@@ -1454,8 +1514,8 @@ export const Chat = memo(function Chat({
       return
     }
 
-    if (!streamHasOlder) {
-      const visibleMatches = streamItems.reduce(
+    if (!hasOlder) {
+      const visibleMatches = items.reduce(
         (total, item) => total + (item.hiddenByDefault ? 0 : countMatches(item.plainText, pendingJump.query)),
         0,
       )
@@ -1465,14 +1525,14 @@ export const Chat = memo(function Chat({
       setPendingJump(null)
       return
     }
-    if (streamLoadingOlder) return
+    if (pagingLoadingOlder) return
 
     let cancelled = false
-    void streamLoadOlder().then((loaded) => {
+    void pagingLoadOlder().then((loaded) => {
       if (!cancelled && loaded === 0) setPendingJump(null)
     })
     return () => { cancelled = true }
-  }, [debouncedQuery, pendingJump, streamHasOlder, streamItems, streamLoadOlder, streamLoadingOlder])
+  }, [debouncedQuery, pendingJump, hasOlder, items, pagingLoadOlder, pagingLoadingOlder])
 
   // Ctrl+F opens search on the *focused* panel only. Without the
   // `focused` guard, every mounted Chat would intercept the same
@@ -1523,11 +1583,11 @@ export const Chat = memo(function Chat({
   // Putting the whole hook object in a dep list re-creates callbacks every
   // render and can churn child re-renders (the composer's onChange in
   // particular ?that's what caused the "can't send / can't type" freeze).
-  const { insertUserMessage, ackUserMessage, rollbackUserMessage, clearError: clearStreamError } = stream
+  const { insertUserMessage, ackUserMessage, rollbackUserMessage, clearError: clearStreamError, dismissSubagent } = sessionCommands
   const { clearError: clearPermissionsError } = permissions
 
   // Unified error banner: whichever subsystem reported something.
-  const error = localError ?? stream.error ?? permissions.error
+  const error = localError ?? streamError ?? permissions.error
   const clearError = useCallback(() => {
     setLocalError(null)
     clearStreamError()
@@ -1975,7 +2035,9 @@ export const Chat = memo(function Chat({
   // off (no activePhase to signal the live stream), yet a synchronous
   // subagent is genuinely mid-flight and the session is live. A live sync
   // subagent record keeps the action available for that window.
-  const hasLiveSyncSubagent = stream.activeSubagents?.some((a) => a.status === 'running' && !a.isAsync) ?? false
+  // hasLiveSyncSubagent is subscribed above via useSessionSelector — the
+  // boolean primitive re-renders Chat only when a sync subagent starts or
+  // stops running, not on every activeSubagents identity churn.
   /** Whether this panel mounts the WorkingBubble at all. A tested predicate
    *  (utils/task-actions) rather than an inline expression: the mount condition
    *  is subtle — it deliberately carries no separate `waiting` disjunct, and
@@ -2032,22 +2094,20 @@ export const Chat = memo(function Chat({
     () => (
       <>
         <div ref={setWorkingSlot} className="working-bubble-slot" />
-        <TodoChecklist
-          messages={stream.messages}
+        <SessionBottomCards
+          sessionId={session.id}
           working={session.working}
           skin={skin}
           clearing={effectiveClearing}
-          sessionId={session.id}
           serverTasks={taskList}
         />
-        <MonitorBar messages={stream.messages} clearing={effectiveClearing} sessionId={session.id} />
         {/* Composer dock is last so it stays pinned to the panel bottom;
             MessageList measures the overlay and reserves a Virtuoso footer
             spacer equal to its height. */}
         <div ref={setDockSlot} className="chat-dock-slot" />
       </>
     ),
-    [stream.messages, session.working, skin, effectiveClearing, session.id, taskList],
+    [session.working, skin, effectiveClearing, session.id, taskList],
   )
 
   // Empty-state environment section: the MCP servers / plugins this session
@@ -2173,7 +2233,7 @@ export const Chat = memo(function Chat({
               label: 'Export as Markdown',
               icon: <IconFileText size={14} />,
               onClick: () => {
-                exportConversation(stream.messages, sessionTitleOrFallback(session))
+                exportConversation(messages, sessionTitleOrFallback(session))
                 toast.success('Exported as Markdown')
               },
             },
@@ -2181,7 +2241,7 @@ export const Chat = memo(function Chat({
               label: 'Export as JSON',
               icon: <IconFileCode size={14} />,
               onClick: () => {
-                exportConversationJson(stream.messages, sessionTitleOrFallback(session))
+                exportConversationJson(messages, sessionTitleOrFallback(session))
                 toast.success('Exported as JSON')
               },
             },
@@ -2293,34 +2353,23 @@ export const Chat = memo(function Chat({
             refreshRewindAnchors()
           }}
         >
-        <MessageList
-          items={stream.items}
+        <SessionMessageList
+          sessionId={session.id}
+          paging={messageListPaging}
           working={turnActive}
-          replayReady={stream.replayReady}
           expectHistory={session.messageCount > 0}
           clearing={effectiveClearing}
           transcriptRevealKey={session.id}
           panelVisible={panelVisible}
-          sessionId={session.id}
-          planStatus={stream.planStatus}
-          planContent={stream.planContent}
-          questionAnswers={stream.questionAnswers}
-          toolStatus={stream.toolStatus}
-          toolResults={stream.toolResults}
           searchQuery={searchOpen ? debouncedQuery : ''}
           searchActiveMsgIdx={searchMatches[searchActiveIdx]?.itemIdx ?? -1}
           searchActiveMatchInItem={searchMatches[searchActiveIdx]?.matchInItem ?? -1}
-          loadOlder={stream.loadOlder}
-          hasOlder={stream.hasOlder}
-          oldestSeq={stream.oldestSeq}
-          loadingOlder={stream.loadingOlder}
           onRegisterNavigate={registerNavigate}
           onSwitchModel={handleSwitchModel}
           onAbortBash={abortBashCommand}
           onVisibleRangeChange={handleVisibleRangeChange}
           onPinnedUserMessageChange={handlePinnedUserMessageChange}
           onUserMessagesChange={handleUserMessagesChange}
-          transcriptSettling={stream.transcriptSettling}
           cwd={session.cwd}
           onBackgroundTool={backgroundToolAction}
           tasklist={taskList}
@@ -2470,7 +2519,7 @@ export const Chat = memo(function Chat({
               {error ?? ''}
             </div>
             <Composer
-              suggestion={stream.promptSuggestion}
+              suggestion={promptSuggestion}
               input={input}
               setInput={setInput}
               sending={sending}
@@ -2522,10 +2571,10 @@ export const Chat = memo(function Chat({
         )}
 
       {orbSlot &&
-        stream.contextUsage != null &&
+        contextUsage != null &&
         createPortal(
           <ContextOrb
-            usage={stream.contextUsage}
+            usage={contextUsage}
             sessionId={session.id}
             editable
             custom={session.autoCompactWindow != null}
@@ -2545,16 +2594,14 @@ export const Chat = memo(function Chat({
               <BottomCardMotion key="working-bubble" fixed>
                 {/* tokenRate / activePhase (dwelled) / thinkingTokens are
                     subscribed inside the leaf — see LiveWorkingBubble. */}
-                <LiveWorkingBubble
+                <SessionWorkingBubble
                   sessionId={session.id}
                   dwellPhase
                   showThinkingTokens
                   active={turnActive}
                   startedAt={turnStartedAt}
-                  activeSubagents={stream.activeSubagents}
                   recapping={session.compacting ?? false}
                   waiting={waiting}
-                  apiRetry={stream.apiRetry}
                   onOpenSubagent={openSubagent}
                 />
               </BottomCardMotion>
@@ -2603,7 +2650,7 @@ export const Chat = memo(function Chat({
               open={pendingDialogOpen}
               request={pendingHead}
               onDecide={(d) => void permissions.decide(pendingHead.id, d)}
-              planContentMap={stream.planContent}
+              planContentMap={planContent}
               currentMode={session.permissionMode}
               onMinimize={PLAN_TOOL_NAMES.has(pendingHead.toolName) ? () => minimizePlan(pendingHead.id) : () => minimizePermission(pendingHead.id)}
             />
@@ -2675,7 +2722,7 @@ export const Chat = memo(function Chat({
               onSessionUpdate={onSessionUpdate}
               commands={commands}
               agents={agents}
-              contextUsage={stream.contextUsage}
+              contextUsage={contextUsage}
               tabRequest={settingsTabRequest}
               onPluginsReloaded={() => { refreshCommands(); refreshAgents() }}
               onSkillsReloaded={() => { refreshCommands() }}
@@ -2805,7 +2852,7 @@ export const Chat = memo(function Chat({
             recapOpen: !!recapOpen,
             searchOpen,
             hasRecap: session.recap != null,
-            hasOlder: stream.hasOlder,
+            hasOlder: hasOlder,
             hasPinnedUserMessage: pinnedUserMsg != null,
           }) && session.recap && (
             <RecapWindow
@@ -2837,9 +2884,9 @@ export const Chat = memo(function Chat({
             skips their exit animations. Hidden unless a page is loading or
             the last page failed. */}
         <OlderHistoryFloat
-          loading={stream.loadingOlder}
-          error={stream.olderError}
-          onRetry={streamLoadOlder}
+          loading={paging.loadingOlder}
+          error={paging.olderError}
+          onRetry={paging.loadOlder}
         />
       </div>
 
@@ -2853,19 +2900,19 @@ export const Chat = memo(function Chat({
           <SubagentOverlay
             stack={subagentStack}
             sessionId={session.id}
-            items={stream.items}
+            items={items}
             index={overlayIndex}
             onClose={closeSubagent}
             onPop={popSubagent}
-            onDismiss={overlayTopIsSkill ? undefined : stream.dismissSubagent}
+            onDismiss={overlayTopIsSkill ? undefined : dismissSubagent}
             isExiting={subagentClosing}
             transitionDirection={subagentTransitionDirection}
             onExited={handleSubagentExited}
-            toolStatus={stream.toolStatus}
-            toolResults={stream.toolResults}
-            planStatus={stream.planStatus}
-            planContent={stream.planContent}
-            questionAnswers={stream.questionAnswers}
+            toolStatus={toolStatus}
+            toolResults={toolResults}
+            planStatus={planStatus}
+            planContent={planContent}
+            questionAnswers={questionAnswers}
             onBackgroundTool={backgroundToolAction}
             toolGroupCards={effectiveToolGroupCards}
             autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
@@ -2886,15 +2933,15 @@ export const Chat = memo(function Chat({
           <SkillProvider value={skillCtxValue}>
             <WorkflowOverlay
               record={workflowCtxValue.index.get(workflowOpenId)!}
-              items={stream.items}
+              items={items}
               onClose={closeWorkflow}
               isExiting={workflowClosing}
               onExited={handleWorkflowExited}
-              toolStatus={stream.toolStatus}
-              toolResults={stream.toolResults}
-              planStatus={stream.planStatus}
-              planContent={stream.planContent}
-              questionAnswers={stream.questionAnswers}
+              toolStatus={toolStatus}
+              toolResults={toolResults}
+              planStatus={planStatus}
+              planContent={planContent}
+              questionAnswers={questionAnswers}
               toolGroupCards={effectiveToolGroupCards}
               autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
               showMessageHeaders={effectiveShowMessageHeaders}
