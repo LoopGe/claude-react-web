@@ -78,21 +78,6 @@ vi.mock('./Chat', () => ({
   Chat: () => <div data-testid="chat-stub" />,
 }))
 
-// The migration removes the last production useChatStream caller. Track calls
-// so the test can assert ChatPanel no longer reaches for the aggregate hook —
-// it must drive the side chat through useSessionSynchronizer instead.
-const useChatStreamSpy = vi.fn(() => ({
-  items: [], activeSubagents: [], apiRetry: null, error: null,
-  loadingOlder: false, olderError: null, replayReady: true,
-  planStatus: {}, planContent: {}, questionAnswers: {}, toolStatus: {}, toolResults: {},
-  hasOlder: false, oldestSeq: null, loadOlder: vi.fn(async () => 0),
-  insertUserMessage: vi.fn(), ackUserMessage: vi.fn(), rollbackUserMessage: vi.fn(),
-  clearError: vi.fn(), dismissSubagent: vi.fn(), reset: vi.fn(),
-  promptSuggestion: null, contextUsage: null, streamingContent: null,
-  activePhase: null, tokenRate: null, thinkingTokens: null,
-}))
-vi.mock('../hooks/useChatStream', () => ({ useChatStream: (...a: unknown[]) => useChatStreamSpy(...(a as [])) }))
-
 import { ChatPanel } from './ChatPanel'
 import { ToastProvider } from './ToastProvider'
 import { sessionStoreRegistry } from '../session-store/registry'
@@ -241,10 +226,6 @@ describe('ChatPanel Side Chat lifecycle (session-synchronizer)', () => {
         (c) => typeof c[0] === 'string' && c[0].includes(`/sessions/${SIDE_ID}/messages`),
       ).length,
     ).toBe(1)
-
-    // ChatPanel drives the side chat through useSessionSynchronizer, NOT the
-    // aggregate useChatStream hook (the migration's whole point).
-    expect(useChatStreamSpy).not.toHaveBeenCalled()
 
     // Resolve the deferred tail page (clean shutdown, no pending promises).
     await act(async () => {

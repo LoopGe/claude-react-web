@@ -1,10 +1,10 @@
 // Streaming re-renders stay in the leaves.
 //
 // Mounts the REAL <Chat> against the REAL SessionStore / reducer, fed through
-// the REAL useChatStream WS path (the hub is mocked only at the transport
-// seam), and counts renders of the real memo components by wrapping their
-// render functions (same memo compare, same hooks). A React <Profiler> around
-// the tree counts commits. During a window of live text deltas — i.e. N
+// the REAL session-synchronizer WS path (the hub is mocked only at the
+// transport seam), and counts renders of the real memo components by
+// wrapping their render functions (same memo compare, same hooks). A React
+// <Profiler> around the tree counts commits. During a window of live text deltas — i.e. N
 // LIVE_TURN_FLUSH cycles plus char-estimated token-rate samples — the panel
 // body (Chat) and the transcript (MessageList) must not render at all, while
 // the overlay bubble (StreamingFooter) renders once per flush and the

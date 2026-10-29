@@ -2,8 +2,8 @@
 //
 // A thin wrapper around the CONTROLLED `MessageList` that subscribes to the
 // session-owned transcript fields itself and forwards them as plain props,
-// so the main Chat / Side Chat panels stop reading the whole `ChatStream`
-// aggregate just to feed this one virtualized list.
+// so the main Chat / Side Chat panels read only the narrow fields this
+// virtualized list needs — not the full session snapshot.
 //
 // What it owns (per the brief):
 //   - Subscribes ONLY to the session-owned MessageList fields:
@@ -31,9 +31,8 @@
 //     callers continue to pass `items` / `planStatus` / etc. directly —
 //     those props are omitted from this wrapper's prop type, so the
 //     type system rejects a caller that mixes the two sources. Main Chat
-//     (Task 6) has been migrated to this wrapper; SideChatDrawer (Task 7)
-//     still uses the direct MessageList + useChatStream path and will be
-//     migrated next.
+//     (Task 6) and SideChatDrawer (Task 7) both render through this
+//     wrapper.
 //
 // Streaming isolation (the load-bearing invariant the
 // streaming-render-isolation test pins): LIVE_TURN_FLUSH mutates only
