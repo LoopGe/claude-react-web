@@ -126,7 +126,10 @@ export function buildDraftRows(
       uuid: d.key,
       isDraft: true,
       parent_tool_use_id: null,
-      message: { role: 'assistant', content: [{ type: 'text', text: '' }] },
+      // Frozen half-cards carry their text (MessageView renders it
+      // statically); the live row passes '' (MessageList feeds the store's
+      // live text instead) — see MessageView's draft branch.
+      message: { role: 'assistant', content: [{ type: 'text', text: d.text }] },
     } as unknown as SdkMessage,
     isCompactSummary: false,
     plainText: '',

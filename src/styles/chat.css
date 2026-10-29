@@ -2587,6 +2587,23 @@ button.chat-empty-env-chip:hover {
 .streaming-plain .streaming-tail > .md:not(:has(> *)) + .streaming-cursor-fallback {
   display: inline-block;
 }
+/* In-place draft card body: the typing cursor rides the tail's last leaf as
+   ::after — DOM-free, so the mid-stream DOM stays byte-identical to the
+   settled render (the pixel-parity contract). The code-tail variant hugs the
+   code text end; the fallback span (childless body) is styled by the shared
+   .streaming-cursor bar and only ever renders when the body is empty. */
+.draft-body > .md > *:last-child:not(ul, ol, .code-block)::after,
+.draft-body > .md > :is(ul, ol):last-child > li:last-child::after,
+.draft-body > .md > .code-block:last-child code::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  background: var(--fg);
+  margin-left: var(--space-0-5);
+  vertical-align: text-bottom;
+  animation: cursor-blink 0.8s step-end infinite;
+}
 @keyframes cursor-blink {
   50% {
     opacity: 0;

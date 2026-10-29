@@ -290,6 +290,12 @@ export interface SdkMessage {
    *  flag rides the localStorage/IDB cache and is read at hydrate time
    *  (SessionSnapshot.cacheHasDroppedMedia). Never sent to the server. */
   cacheDroppedMedia?: true
+  /** Client-only marker for the in-place draft card (inline streaming): a
+   *  synthetic assistant message born from `liveTurn.draft` (or a frozen
+   *  interrupted half-card). Renders through MessageView's draft branch,
+   *  is excluded from search/indices, and its row is later adopted by the
+   *  real message via `mirror.draftRowKeys`. Never sent to the server. */
+  isDraft?: true
   /** SDK `SDKUserMessage.origin` — the true source of a user-role message.
    *  `kind: 'human'` is genuine human input; `'task-notification'` /
    *  `'peer'` / `'channel'` / `'coordinator'` / `'auto-continuation'` are

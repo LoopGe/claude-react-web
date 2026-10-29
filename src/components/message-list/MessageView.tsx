@@ -17,6 +17,7 @@ import { localCommandOf } from '../../../shared/results.js'
 import { countMatches, extractPlainText, extractMessagePlainText, extractToolUseDiffText } from '../../search'
 import { getBlocks, isHumanUserMessage, userMessageOriginKind } from '../../session-store/normalize'
 import { BlockView, ToolResultBlock } from './blocks'
+import { DraftTextBody } from './draft-body'
 import { useResultConsumed } from './result-consumed-context'
 import { extractUserText, willRenderEmpty } from './rendering'
 import { FoldableBody } from './FoldableBody'
@@ -92,6 +93,7 @@ export const MessageView = memo(function MessageView({
   deliveryStatus,
   working,
   nextItemType,
+  sessionId,
   showMessageHeaders = true,
   onSwitchModel,
   onAbortBash,
@@ -133,6 +135,9 @@ export const MessageView = memo(function MessageView({
    *  processing indicator once the model has started responding
    *  (assistant/result after a consumed user message). */
   nextItemType?: string
+  /** Session store id — used only by the draft branch (isDraft messages) to
+   *  read the live `draft.text` from the store; harmless elsewhere. */
+  sessionId?: string
   /** Whether user bubbles and assistant cards render their `.msg-header`
    *  row (label + timestamp + sending/queued/processing indicators) —
    *  the `showMessageHeaders` UI pref. False renders those cards as bare
@@ -553,6 +558,15 @@ export const MessageView = memo(function MessageView({
     // one-click "Switch model" affordance instead of leaving the user to
     // decode the CLI's "Run /model" text (which doesn't apply to a web UI).
     const modelNotFound = msg.error === 'model_not_found'
+    // In-place draft card (inline streaming — design §5.3/§5.5): the body is
+    // the bare-block incremental renderer. A FROZEN interrupted half-card
+    // carries its text in content (rendered statically); the live row's
+    // placeholder reads `draft.text` from the store via `sessionId`, so the
+    // 80ms flushes re-render that leaf only. The header renders as usual —
+    // the absent timestamp hides the slot (no height jump at settle).
+    const draftFrozenText = msg.isDraft
+      ? blocks.map((b) => (b as { type?: string; text?: string }).type === 'text' ? (b as { text?: string }).text ?? '' : '').join('')
+      : ''
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
         {showMessageHeaders && (
@@ -566,23 +580,29 @@ export const MessageView = memo(function MessageView({
           )}
         </div>
         )}
-        <div className="msg-body">
-          {/* Structured twins of `/context` and `/usage` (SDK 0.3.232 / 0.3.273)
+        <div className={msg.isDraft ? 'msg-body assistant-body draft-body' : 'msg-body'}>
+          {msg.isDraft ? (
+            <DraftTextBody sessionId={sessionId} frozenText={draftFrozenText || undefined} />
+          ) : (
+            <>
+            {/* Structured twins of `/context` and `/usage` (SDK 0.3.232 / 0.3.273)
               render as cards; the canonical markdown output stays available
               inside the collapsible below so no information is lost. */}
-          {msg.context_usage && <ContextUsageReportCard usage={msg.context_usage} />}
-          {msg.usage_report && <UsageReportCard report={msg.usage_report} />}
-          {(msg.context_usage || msg.usage_report) ? (
-            <details className="msg-report-raw">
-              <summary>Raw output</summary>
-              {blocks.map((b, i) => (
+            {msg.context_usage && <ContextUsageReportCard usage={msg.context_usage} />}
+            {msg.usage_report && <UsageReportCard report={msg.usage_report} />}
+            {(msg.context_usage || msg.usage_report) ? (
+              <details className="msg-report-raw">
+                <summary>Raw output</summary>
+                {blocks.map((b, i) => (
+                  <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} toolResultActiveMatchIdx={toolResultActiveMatchIdx} />
+                ))}
+              </details>
+            ) : (
+              blocks.map((b, i) => (
                 <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} toolResultActiveMatchIdx={toolResultActiveMatchIdx} />
-              ))}
-            </details>
-          ) : (
-            blocks.map((b, i) => (
-              <BlockView key={i} block={b} searchQuery={searchQuery} activeMatchIdx={blockActiveIdx[i]} toolResultActiveMatchIdx={toolResultActiveMatchIdx} />
-            ))
+              ))
+            )}
+            </>
           )}
           {modelNotFound && onSwitchModel && (
             <button type="button" className="btn btn-sm msg-switch-model-btn" onClick={onSwitchModel}>

@@ -1458,6 +1458,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             deliveryStatus={item.deliveryStatus}
             working={working}
             nextItemType={nextItemTypeMap.get(item.id)}
+            sessionId={sessionId}
             showMessageHeaders={showMessageHeaders}
             onSwitchModel={onSwitchModel}
             onAbortBash={onAbortBash}
