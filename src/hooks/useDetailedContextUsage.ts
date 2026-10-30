@@ -17,7 +17,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
-import type { ContextUsage } from './useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 
 /** How long a fetched breakdown may serve later opens of the SAME session
  *  without a fresh control round-trip. Context shifts between turns, so

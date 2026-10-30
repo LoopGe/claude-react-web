@@ -11,7 +11,7 @@
 
 import { memo, useEffect, useState } from 'react'
 import { useIsPresent } from 'motion/react'
-import type { ActiveSubagent } from '../../session-store/types'
+import type { ActiveSubagent, ActivePhase } from '../../session-store/types'
 import { useOptionalSessionField, useSessionField } from '../../session-store/selectors'
 import type { SdkMessage } from '../../types'
 import { formatTokens } from '../../utils/format'
@@ -149,7 +149,7 @@ export interface WorkingBubbleProps {
    *  tokenRate stays silent because no text deltas stream). Approximate;
    *  cleared when the thinking block ends / at turn end. */
   thinkingTokens?: number | null
-  activePhase?: import('../../hooks/useChatStream').ActivePhase
+  activePhase?: ActivePhase
   /** True while the CLI is compacting the transcript mid-turn (SDK
    *  `system/status` `status: 'compacting'`, mirrored from
    *  `session.compacting`). Overrides the phase label with a "Recap…"

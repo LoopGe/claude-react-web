@@ -1,10 +1,10 @@
 // Streaming re-renders stay in the leaves.
 //
 // Mounts the REAL <Chat> against the REAL SessionStore / reducer, fed through
-// the REAL useChatStream WS path (the hub is mocked only at the transport
-// seam), and counts renders of the real memo components by wrapping their
-// render functions (same memo compare, same hooks). A React <Profiler> around
-// the tree counts commits. During a window of live text deltas — i.e. N
+// the REAL session-synchronizer WS path (the hub is mocked only at the
+// transport seam), and counts renders of the real memo components by
+// wrapping their render functions (same memo compare, same hooks). A React
+// <Profiler> around the tree counts commits. During a window of live text deltas — i.e. N
 // LIVE_TURN_FLUSH cycles plus char-estimated token-rate samples — the panel
 // body (Chat) and the transcript (MessageList) must not render at all, while
 // the overlay bubble (StreamingFooter) renders once per flush and the
@@ -19,6 +19,9 @@ import { act, render } from '@testing-library/react'
 const counts = vi.hoisted(() => ({
   Chat: 0,
   MessageList: 0,
+  SessionMessageList: 0,
+  SessionBottomCards: 0,
+  SessionWorkingBubble: 0,
   OverlayStreamingRegion: 0,
   StreamingFooter: 0,
   LiveWorkingBubble: 0,
@@ -45,6 +48,18 @@ vi.mock('./Chat', async (orig) => {
 vi.mock('./MessageList', async (orig) => {
   const mod = await orig<typeof import('./MessageList')>()
   return { ...mod, MessageList: counted('MessageList', mod.MessageList) }
+})
+vi.mock('./SessionMessageList', async (orig) => {
+  const mod = await orig<typeof import('./SessionMessageList')>()
+  return { ...mod, SessionMessageList: counted('SessionMessageList', mod.SessionMessageList) }
+})
+vi.mock('./SessionBottomCards', async (orig) => {
+  const mod = await orig<typeof import('./SessionBottomCards')>()
+  return { ...mod, SessionBottomCards: counted('SessionBottomCards', mod.SessionBottomCards) }
+})
+vi.mock('./message-list/SessionWorkingBubble', async (orig) => {
+  const mod = await orig<typeof import('./message-list/SessionWorkingBubble')>()
+  return { ...mod, SessionWorkingBubble: counted('SessionWorkingBubble', mod.SessionWorkingBubble) }
 })
 vi.mock('./message-list/OverlayStreamingRegion', async (orig) => {
   const mod = await orig<typeof import('./message-list/OverlayStreamingRegion')>()
@@ -110,7 +125,7 @@ vi.mock('../hooks/useWsHub', () => ({
 }))
 vi.mock('../hooks/useApi', () => {
   const get = vi.fn(async (path: string) => {
-    if (path.includes('/messages')) return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
+    if (path.includes('/messages')) return { generation: 0, headSeq: 0, totalCount: 0, startIndex: 0, hasMore: false, messages: [], tombstones: [] }
     return { schedules: [], commands: [], agents: [], models: [], anchors: [], tasks: [], items: [], entries: [] }
   })
   return { api: { get, post: vi.fn(async () => ({})), put: vi.fn(async () => ({})), patch: vi.fn(async () => ({})), del: vi.fn(async () => ({})), delete: vi.fn(async () => ({})) } }
@@ -118,6 +133,7 @@ vi.mock('../hooks/useApi', () => {
 
 import { Chat } from './Chat'
 import { MessageList } from './MessageList'
+import { SessionMessageList } from './SessionMessageList'
 import { ToastProvider } from './ToastProvider'
 import { getSessionStore } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
@@ -278,5 +294,190 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
     // The overlay leaf is not mounted in inline mode.
     expect(container.querySelector('.chat-streaming-region')).toBeNull()
+  }, 30_000)
+
+  it('overlay mode: SessionMessageList wrapper stays at 0 renders per flush (the overlay leaf owns the subscription)', async () => {
+    const SID = 'session-msglist-iso'
+    // Seed a settled transcript (items / replayReady are stable across
+    // LIVE_TURN_FLUSH), then mount SessionMessageList with stable
+    // loadingOlder / loadOlder props. The wrapper subscribes only to items /
+    // replayReady / planStatus / planContent / questionAnswers / toolStatus
+    // / toolResults / oldestSeq / hasOlder — none of those change identity
+    // during a streaming flush, so the wrapper (and the controlled
+    // MessageList inside it) must not re-render while the
+    // OverlayStreamingRegion leaf re-renders once per published flush.
+    const store = getSessionStore(SID)
+    await act(async () => {
+      store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
+    })
+    const stableLoadOlder = async () => 0
+    const { container } = render(
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
+    )
+    // Start the assistant message + a text block so the live turn exists
+    // and `streamingContent` becomes non-empty after the first flush.
+    await act(async () => {
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 's-0', parent_tool_use_id: null, event: { type: 'message_start', message: { id: 'm1' } } } as never })
+      store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: 's-1', parent_tool_use_id: null, event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } } } as never })
+      await sleep(150)
+    })
+    // The store's activePhase is 'writing' (the content_block_start landed),
+    // but SessionMessageList does NOT subscribe to activePhase — it must
+    // not have rendered for that transition either.
+    expect(store.getSnapshot().activePhase).toBe('writing')
+
+    // Track every distinct streamingContent the store publishes = one flush.
+    const seen = new Set<string>()
+    const unsub = store.subscribe(() => {
+      const c = store.getSnapshot().streamingContent
+      if (c) seen.add(c)
+    })
+    for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
+
+    const DELTAS = 24
+    for (let i = 0; i < DELTAS; i++) {
+      await act(async () => {
+        store.dispatch({ type: 'MESSAGE', message: { type: 'stream_event', uuid: `d-${i}`, parent_tool_use_id: null, event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `word${i} ` } } } as never })
+        await sleep(25)
+      })
+    }
+    await act(() => sleep(150)) // trailing flush
+    unsub()
+
+    const flushes = seen.size
+    expect(flushes).toBeGreaterThanOrEqual(5)
+    // The wrapper never rendered across the whole streaming window…
+    expect(counts.SessionMessageList).toBe(0)
+    expect(counts.MessageList).toBe(0)
+    // …while the overlay leaf re-rendered at least once per published flush.
+    expect(counts.OverlayStreamingRegion).toBeGreaterThanOrEqual(flushes)
+    expect(counts.StreamingFooter).toBeGreaterThanOrEqual(flushes)
+    // And the streamed text reached the overlay bubble.
+    expect(container.querySelector('.chat-streaming-region .streaming-plain')?.textContent).toContain(`word0 `)
+    expect(container.querySelector('.chat-streaming-region .streaming-plain')?.textContent).toContain(`word${DELTAS - 1}`)
+  }, 30_000)
+
+  it('main Chat renders the session-bound transcript children (SessionMessageList, SessionBottomCards, SessionWorkingBubble)', async () => {
+    const SID = 'session-children'
+    const session = {
+      id: SID, title: 'children', cwd: '/tmp/children', running: true, working: true, workingSince: Date.now(),
+      terminated: false, messageCount: 0, permissionMode: 'default', model: 'test-model',
+      createdAt: Date.now(), lastActivityAt: Date.now(),
+    } as unknown as SessionInfo
+    render(
+      <ToastProvider>
+        <Chat
+          session={session}
+          globalPrefs={globalPrefs}
+          snippets={snippets}
+          onOpenSnippetsManager={noop}
+          onSaveCurrentAsSnippet={noop}
+          onSessionUpdate={noop}
+          onRequestResumeForPanel={noop}
+          onOpenSettingsTab={noop}
+          onShowHelp={noop}
+          onClearSession={noop}
+          onHandoffSession={noop}
+          focused
+        />
+      </ToastProvider>,
+    )
+    // Wait for the synchronizer's tail fetch + listener registration + the
+    // bottomOverlay ref callbacks (workingSlot / dockSlot) to fire so the
+    // working-bubble portal mounts SessionWorkingBubble.
+    for (let i = 0; i < 100 && !sessionListeners.get(SID)?.size; i++) await act(() => sleep(20))
+    await act(() => sleep(200))
+
+    // Main Chat delegates the transcript, the bottom cards, and the working
+    // bubble to the session-bound wrappers instead of rendering the controlled
+    // components directly.
+    expect(counts.SessionMessageList).toBeGreaterThan(0)
+    expect(counts.SessionBottomCards).toBeGreaterThan(0)
+    expect(counts.SessionWorkingBubble).toBeGreaterThan(0)
+  }, 30_000)
+
+  it('an unused ambient TASKS_SNAPSHOT does not re-render Chat (no root tasks subscription)', async () => {
+    const SID = 'tasks-ambient'
+    const session = {
+      id: SID, title: 'ambient', cwd: '/tmp/ambient', running: true, working: false,
+      terminated: false, messageCount: 0, permissionMode: 'default', model: 'test-model',
+      createdAt: Date.now(), lastActivityAt: Date.now(),
+    } as unknown as SessionInfo
+    render(
+      <ToastProvider>
+        <Chat
+          session={session}
+          globalPrefs={globalPrefs}
+          snippets={snippets}
+          onOpenSnippetsManager={noop}
+          onSaveCurrentAsSnippet={noop}
+          onSessionUpdate={noop}
+          onRequestResumeForPanel={noop}
+          onOpenSettingsTab={noop}
+          onShowHelp={noop}
+          onClearSession={noop}
+          onHandoffSession={noop}
+          focused
+        />
+      </ToastProvider>,
+    )
+    // Wait for the synchronizer to start and seed the store (replayReady flips
+    // so the initial render churn settles).
+    for (let i = 0; i < 100 && !sessionListeners.get(SID)?.size; i++) await act(() => sleep(20))
+    await act(() => sleep(200))
+
+    const store = getSessionStore(SID)
+    // Reset counts AFTER initial mount churn.
+    for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
+
+    // Dispatch an ambient TASKS_SNAPSHOT — a new (empty) tasks array reference.
+    // The reducer creates a fresh mirror (tasks array identity changed), which
+    // notifies all store subscribers. Chat must NOT re-render: it reads only
+    // derived task COUNTS (useSessionTaskCounts), and those don't change when
+    // the list goes from empty to empty.
+    await act(async () => {
+      store.dispatch({ type: 'TASKS_SNAPSHOT', tasks: [] })
+      await sleep(50)
+    })
+
+    expect(counts.Chat).toBe(0)
+  }, 30_000)
+
+  it('SessionMessageList memo bails when loadingOlder/loadOlder are unchanged (the olderError-only paging-flip case), but propagates a loadingOlder change', async () => {
+    const SID = 'paging-narrow-iso'
+    const store = getSessionStore(SID)
+    await act(async () => {
+      store.dispatch({ type: 'REPLAY_REPLACE', messages: history(4) as never, permissions: [] })
+    })
+    // SessionMessageList receives loadingOlder and loadOlder as independent
+    // props — NOT a paging object. When the parent (Chat) re-renders because
+    // the paging snapshot's olderError flipped (a loadOlder failure), the
+    // two props SessionMessageList reads are unchanged, so the wrapper's memo
+    // must skip. This test simulates that parent re-render by calling
+    // `rerender` with the same primitive values; a loadingOlder change is
+    // the positive control proving the wrapper does re-render when a prop
+    // it reads actually changes.
+    const stableLoadOlder = async () => 0
+    const { rerender } = render(
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
+    )
+    await act(() => sleep(50))
+    // Reset counts after the initial render churn.
+    for (const k of Object.keys(counts) as CountKey[]) counts[k] = 0
+
+    // Parent re-rendered (e.g. from an olderError-only paging change) but
+    // passed the same loadingOlder and loadOlder — the wrapper's memo must
+    // bail.
+    rerender(
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
+    )
+    expect(counts.SessionMessageList).toBe(0)
+
+    // A loadingOlder change MUST propagate — the wrapper re-renders so
+    // MessageList shows the loading indicator.
+    rerender(
+      <SessionMessageList sessionId={SID} loadingOlder={true} loadOlder={stableLoadOlder} />,
+    )
+    expect(counts.SessionMessageList).toBeGreaterThan(0)
   }, 30_000)
 })

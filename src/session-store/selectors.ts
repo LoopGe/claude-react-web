@@ -3,6 +3,53 @@ import { sessionStoreRegistry } from './registry'
 import type { SessionSnapshot, SessionState } from './types'
 import { countTaskActivity, type ActiveWorktree } from './normalize'
 
+// ── Module-level (referentially stable) selectors ──────────────────
+//
+// The brief's Task 5 asks for three primitive boolean selectors that the
+// session-bound adapters and turn-status consumers feed into
+// `useSessionSelector` — the wrapper that re-renders only when the
+// derived primitive changes (Object.is), not on every snapshot dispatch.
+//
+// Defining them at module scope (rather than inline arrows at the call
+// site) is the contract `useSessionSelector` documents: a stable
+// `select` reference keeps `getSnapshot`'s `useCallback` deps stable,
+// otherwise the hook re-binds on every render and the Object.is guard
+// never gets a chance to dedup. They live here (next to the other
+// reactive readers) so Task 6+ can retire the inline arrow
+// `selectHasActivePhase` still living in `useChatStream.ts` and import
+// this one instead — the still-active hook keeps its own copy until
+// then to avoid touching `useChatStream` (out of scope for Task 5).
+
+/** True when any live-turn phase is active (thinking / writing / tool_use).
+ *  Drives the turn-active gate the WorkingBubble mount condition and the
+ *  per-card background-action availability read off; a primitive so a
+ *  transition (null → phase or phase → null) re-renders exactly once. */
+export const selectHasActivePhase = (snapshot: SessionSnapshot): boolean =>
+  snapshot.activePhase != null
+
+/** True when the transcript mirror lists at least one `pending` or
+ *  `background` subagent — the post-turn-end forms that keep the
+ *  WorkingBubble mounted in its `Waiting` state. Mirrors the
+ *  `hasTranscriptBackground` predicate in `normalize.ts` so the main
+ *  panel and the side drawer cannot disagree about which statuses count;
+ *  read here as a primitive over `activeSubagents`, so a change in any
+ *  OTHER subagent field (lastToolName, progressSummary, …) does not
+ *  re-render the gate consumer. */
+export const selectHasTranscriptBackground = (snapshot: SessionSnapshot): boolean =>
+  snapshot.activeSubagents.some(
+    (a) => a.status === 'pending' || a.status === 'background',
+  )
+
+/** True when at least one synchronous subagent (`!isAsync`) is currently
+ *  `running`. Drives the SDK-auto-continuation carve-out of the per-card
+ *  background-action gate: a sync subagent can still be mid-flight when
+ *  `turnActive` (driven by `activePhase`) reads false, so the action
+ *  stays available for that window. Read as a primitive over
+ *  `activeSubagents` for the same re-render reason as above. */
+export const selectHasLiveSyncSubagent = (snapshot: SessionSnapshot): boolean =>
+  snapshot.activeSubagents.some((a) => a.status === 'running' && !a.isAsync)
+
+
 export function useSessionSnapshot(sessionId: string): SessionSnapshot {
   const store = sessionStoreRegistry.getOrCreate(sessionId)
   return useSyncExternalStore(

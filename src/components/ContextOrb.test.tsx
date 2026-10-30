@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 import { ContextOrb } from './ContextOrb'
 import { __clearDetailedContextUsageCache } from '../hooks/useDetailedContextUsage'
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 
 vi.mock('../hooks/useApi', () => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },

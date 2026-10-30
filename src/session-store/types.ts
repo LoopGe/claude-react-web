@@ -1,5 +1,5 @@
 import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { emptyWindow, type WindowState } from './seq-window'
 import type { DraftState } from './draft-state'

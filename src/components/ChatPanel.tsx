@@ -24,7 +24,7 @@ import { useSessionActiveWorktree } from '../session-store/selectors'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import { dndData, pointerOnlyListeners } from '../dnd/payload'
 import { useGitStatus } from '../hooks/useGitStatus'
-import { useChatStream } from '../hooks/useChatStream'
+import { useSessionSynchronizer } from '../session-sync/useSessionSynchronizer'
 import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useDiagnostics } from '../hooks/useDiagnostics'
@@ -593,17 +593,28 @@ export const ChatPanel = memo(function ChatPanel({
     if (worktreeOpen && !activeWorktree) onCloseWorktree()
   }, [worktreeOpen, activeWorktree, onCloseWorktree])
 
-  // Side Chat stream — always subscribed so the drawer can mount without
-  // replay cost and the collapsed badge gets live permission data.
-  // useChatStream gates on a valid sessionId internally (empty string
-  // is a safe no-op), so this is free when no side chat exists.
+  // Side Chat synchronization + permission lifecycle — owned HERE (at the
+  // panel level) so the WS subscription stays alive across collapse/expand.
+  // The SideChatDrawer unmounts on collapse; if the synchronizer lived in the
+  // drawer, each expand would re-subscribe and re-fetch the tail. Instead
+  // ChatPanel calls useSessionSynchronizer with the effective side chat id
+  // and passes only the narrow `paging` (for OlderHistoryFloat) + the
+  // permission channel down to the drawer.
+  // useSessionSynchronizer is fully inert on an empty sessionId (no subscribe,
+  // no fetch, no store retain), so this is free when no side chat exists —
+  // matching the old useChatStream gating.
   const effectiveSideChatId = sideChatSession?.id ?? ''
   const sideChatPermissions = usePermissionChannel(effectiveSideChatId)
-  const sideChatStream = useChatStream(effectiveSideChatId, {
-    onRequest: sideChatPermissions.onRequest,
-    onResolved: sideChatPermissions.onResolved,
-    onCleared: sideChatPermissions.clearError,
-  }, sideChatSession?.running ?? false, sideChatSession?.terminated ?? false)
+  const sideChatPaging = useSessionSynchronizer(
+    effectiveSideChatId,
+    {
+      onRequest: sideChatPermissions.onRequest,
+      onResolved: sideChatPermissions.onResolved,
+      onCleared: sideChatPermissions.clearError,
+    },
+    sideChatSession?.running ?? false,
+    sideChatSession?.terminated ?? false,
+  )
 
   const commitModel = (next: string) => {
     const value = next.trim()
@@ -1490,7 +1501,7 @@ export const ChatPanel = memo(function ChatPanel({
         <SideChatDrawer
           session={sideChatSession}
           parentSession={session}
-          stream={sideChatStream}
+          paging={sideChatPaging}
           permissions={sideChatPermissions}
           toolGroupCards={sideChatSession.toolGroupCards ?? globalPrefs.toolGroupCards}
           autoExpandRunningGroups={

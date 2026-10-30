@@ -2,16 +2,28 @@
 // ChatPanel. Renders a lightweight message list + input for the ephemeral
 // Side Chat session. Uses the same overlay pattern as SubagentOverlay.
 //
-// The stream and permission hooks run at the ChatPanel level so the WS
-// subscription stays alive during collapse. This component receives them
-// as props and focuses purely on rendering + input.
+// Task 7: the drawer no longer takes a `stream: ChatStream` prop. ChatPanel
+// owns the Side Chat synchronization/permission lifecycle (it calls
+// useSessionSynchronizer + usePermissionChannel at the panel level so the WS
+// subscription stays alive across collapse/expand). The drawer receives only
+// the narrow `paging: TranscriptPaging` (for OlderHistoryFloat) and
+// `permissions: UsePermissionChannel`, and reads every transcript field
+// itself via the session-bound wrappers + narrow selectors:
+//   · SessionMessageList  — items / replayReady / plan / tool maps / seq window
+//   · SessionWorkingBubble — activeSubagents / apiRetry
+//   · useSessionCommands  — insertUserMessage / ackUserMessage / rollbackUserMessage
+//   · useSessionStreamError — the projected error banner string
+//   · useSessionField('activeSubagents') — the waiting/mountBubble computation
+//   · useSessionField('planContent')    — the PermissionDialog's plan map
+// Drawer components never call hub.subscribe.
 
 import { memo, useEffect, useRef, useState, useCallback } from 'react'
 import type { SessionInfo } from '../types'
 import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
-import type { ChatStream } from '../hooks/useChatStream'
+import type { TranscriptPaging } from '../session-sync/useSessionSynchronizer'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
-import { MessageList, LiveWorkingBubble } from './MessageList'
+import { SessionMessageList } from './SessionMessageList'
+import { SessionWorkingBubble } from './message-list/SessionWorkingBubble'
 import { OlderHistoryFloat } from './message-list/transcript-chrome'
 import { PermissionDialog } from './PermissionDialog'
 import { RichPromptInput } from './RichPromptInput'
@@ -25,10 +37,12 @@ import { usePastedTexts } from '../hooks/usePastedTexts'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
+import { useSessionCommands } from '../hooks/useSessionCommands'
+import { useSessionStreamError } from '../session-sync/useSessionStreamError'
+import { useSessionField, useOptionalSessionField } from '../session-store/selectors'
 import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
 import { shouldMountWorkingBubble } from '../utils/task-actions'
-import { useOptionalSessionField } from '../session-store/selectors'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { buildOutgoingBody } from '../utils/message-body'
 import { prefersReducedMotion } from '../utils/reduced-motion'
@@ -42,8 +56,12 @@ interface SendMessageResponse {
 interface Props {
   session: SessionInfo
   parentSession: SessionInfo
-  /** Live stream data from the ChatPanel-level useChatStream hook. */
-  stream: ChatStream
+  /** Narrow paging snapshot (loadingOlder / olderError / loadOlder) from
+   *  ChatPanel's useSessionSynchronizer. Drives ONLY the OlderHistoryFloat —
+   *  SessionMessageList receives loadingOlder / loadOlder as independent props
+   *  so an olderError-only paging flip re-renders the caller (this drawer) for
+   *  its float without re-rendering the wrapper. */
+  paging: TranscriptPaging
   /** Permission state from the ChatPanel-level usePermissionChannel hook. */
   permissions: UsePermissionChannel
   /** Transcript's collapsible transcript-group-cards pref (tool-group fold) (effective value —
@@ -57,7 +75,7 @@ interface Props {
   showMessageHeaders?: boolean
   /** Where the live turn's text renders ('overlay' | 'inline'). Global-only
    *  pref (no per-session override), resolved by ChatPanel and fed verbatim
-   *  to MessageList's `streamingMode` seam. */
+   *  to SessionMessageList's `streamingMode` seam. */
   streamingMode: StreamingRenderMode
   /** True close — deletes the ephemeral session. */
   onClose: () => void
@@ -68,13 +86,14 @@ interface Props {
 /** Owns the 12.5 Hz streamingContent subscription that drives the drawer's
  *  auto-scroll. Renders null — a flush re-renders ONLY this component, never
  *  the drawer body (editor/footer would otherwise re-render every
- *  LIVE_TURN_FLUSH). Semantics match the original drawer-level effect:
- *  scroll on items-length change OR streaming-content change. */
-function SideChatAutoScroll({ sessionId, bodyRef, itemsLength }: {
+ *  LIVE_TURN_FLUSH). Subscribes to `items` (for length) and `streamingContent`
+ *  itself — the drawer does not thread an itemsLength prop. */
+function SideChatAutoScroll({ sessionId, bodyRef }: {
   sessionId: string
   bodyRef: React.RefObject<HTMLDivElement | null>
-  itemsLength: number
 }) {
+  const items = useSessionField(sessionId, 'items')
+  const itemsLength = items.length
   const streamingContent = useOptionalSessionField(sessionId, 'streamingContent')
   useEffect(() => {
     const el = bodyRef.current
@@ -86,7 +105,7 @@ function SideChatAutoScroll({ sessionId, bodyRef, itemsLength }: {
 export const SideChatDrawer = memo(function SideChatDrawer({
   session,
   parentSession,
-  stream,
+  paging,
   permissions,
   toolGroupCards,
   autoExpandRunningGroups,
@@ -114,6 +133,14 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const fileInputRef = useRef<HTMLInputElement>(null)
   // Paste policy — the rich editor handles Backspace/Delete/arrows natively.
   const { placePastedText } = usePastedTextEditing({ addPastedText })
+
+  // Session-bound optimistic-delivery commands (the same five actions the old
+  // useChatStream exposed). Stable per session store (WeakMap cache).
+  const { insertUserMessage, ackUserMessage, rollbackUserMessage } = useSessionCommands(session.id)
+  // Projected stream-error banner. Re-renders this drawer only when the store
+  // error OR the hub status actually changes — not on every transcript flush.
+  const streamError = useSessionStreamError(session.id)
+
   /** Waiting = a background subagent is still in flight after the side-chat
    *  turn ended. Uses the SHARED predicates (computeWaiting /
    *  shouldMountWorkingBubble) so the RULE is the main panel's, with the task
@@ -129,8 +156,13 @@ export const SideChatDrawer = memo(function SideChatDrawer({
    *  show nothing during an SDK auto-continuation turn while the main panel
    *  shows its bubble); it is not a claim that the two surfaces agree on which
    *  turns count. The transcript-side leg is shared (hasTranscriptBackground).
+   *
+   *  `activeSubagents` is read directly from the store (a narrow selector) so
+   *  the drawer re-renders only when the subagent list actually changes — not
+   *  on every streaming flush the old aggregate ChatStream pulled along.
    */
-  const hasBackgroundSubagent = hasTranscriptBackground(stream.activeSubagents)
+  const activeSubagents = useSessionField(session.id, 'activeSubagents')
+  const hasBackgroundSubagent = hasTranscriptBackground(activeSubagents)
   const waiting = computeWaiting({
     turnActive: session.working,
     terminated: session.terminated,
@@ -150,13 +182,9 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   // clip); AnimatePresence keeps it mounted through the exit. Snaps under
   // reduced motion.
 
-  // Destructure the stable callbacks off `stream` so `handleSend`'s dep
-  // list can name them directly. Depending on bare `stream` would rebuild
-  // the callback every time the hook's return identity churns (e.g. on
-  // each `streamingContent` token), which defeats Composer memoization
-  // downstream. These three are `useCallback([store])`-stable so listing
-  // them individually keeps `handleSend` stable for a session's lifetime.
-  const { insertUserMessage, ackUserMessage, rollbackUserMessage } = stream
+  // Plan-content map for the PermissionDialog (plan-permission cards). Read
+  // from the store so the drawer doesn't carry it off the aggregate stream.
+  const planContent = useSessionField(session.id, 'planContent')
 
   const handleSend = useCallback(async () => {
     // Expand first so no bare `[Pasted text #N]` can reach the model.
@@ -233,7 +261,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         else if (isCollapsing) handleCollapsed()
       }}
     >
-      <SideChatAutoScroll sessionId={session.id} bodyRef={bodyRef} itemsLength={stream.items.length} />
+      <SideChatAutoScroll sessionId={session.id} bodyRef={bodyRef} />
       <div className="side-chat-drawer-header">
         <Tooltip label={`Back to ${sessionTitleOrFallback(parentSession)}`} placement="bottom">
           <button
@@ -266,26 +294,17 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           scroll away with the content. The stage stays put. */}
       <div className="side-chat-drawer-stage">
         <OlderHistoryFloat
-          loading={stream.loadingOlder}
-          error={stream.olderError}
-          onRetry={stream.loadOlder}
+          loading={paging.loadingOlder}
+          error={paging.olderError}
+          onRetry={paging.loadOlder}
         />
         <div className="side-chat-drawer-body" ref={bodyRefMerged}>
-        <MessageList
-          items={stream.items}
-          working={session.working}
-          replayReady={stream.replayReady}
-          transcriptRevealKey={session.id}
+        <SessionMessageList
           sessionId={session.id}
-          planStatus={stream.planStatus}
-          planContent={stream.planContent}
-          questionAnswers={stream.questionAnswers}
-          toolStatus={stream.toolStatus}
-          toolResults={stream.toolResults}
-          loadOlder={stream.loadOlder}
-          hasOlder={stream.hasOlder}
-          oldestSeq={stream.oldestSeq}
-          loadingOlder={stream.loadingOlder}
+          loadingOlder={paging.loadingOlder}
+          loadOlder={paging.loadOlder}
+          working={session.working}
+          transcriptRevealKey={session.id}
           toolGroupCards={toolGroupCards}
           autoExpandRunningGroups={autoExpandRunningGroups}
           showMessageHeaders={showMessageHeaders}
@@ -309,14 +328,13 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             <BottomCardMotion key="working-bubble" fixed>
               {/* Raw phase (no dwell) and no thinking-token hint — the
                   drawer's behaviour before the telemetry moved into the
-                  leaf. */}
-              <LiveWorkingBubble
+                  leaf. SessionWorkingBubble subscribes to activeSubagents /
+                  apiRetry itself; ChatPanel owns the sync lifecycle. */}
+              <SessionWorkingBubble
                 sessionId={session.id}
                 active={session.working}
                 startedAt={session.workingSince}
-                activeSubagents={stream.activeSubagents}
                 waiting={waiting}
-                apiRetry={stream.apiRetry}
               />
             </BottomCardMotion>
           )}
@@ -324,9 +342,9 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         </div>
       </div>
 
-      {stream.error && (
+      {streamError && (
         <div className="error-bar" style={{ flexShrink: 0 }}>
-          {stream.error}
+          {streamError}
         </div>
       )}
 
@@ -336,7 +354,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             open
             request={pendingHead}
             onDecide={(d) => void permissions.decide(pendingHead.id, d)}
-            planContentMap={stream.planContent}
+            planContentMap={planContent}
             currentMode={session.permissionMode}
           />
         </div>

@@ -62,7 +62,7 @@ const MarketplaceTab = lazy(() =>
 )
 import { formatTokens, formatJson } from '../utils/format'
 import { pluginTagOf } from '../utils/text'
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 
 type SettingsTab = 'general' | 'appearance' | 'context' | 'skills' | 'hooks' | 'plugins' | 'mcp' | 'usage' | 'agents' | 'tools' | 'diagnostics' | 'performance'
 

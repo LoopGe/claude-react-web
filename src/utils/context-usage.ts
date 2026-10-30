@@ -3,7 +3,7 @@
 // module — not inside a component file — so consumers don't pull the whole
 // component graph and react-refresh keeps working for all of them.
 
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 import { clamp } from './clamp'
 
 /** The model's real advertised context window: rawMaxTokens preferred over

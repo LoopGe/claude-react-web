@@ -21,7 +21,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 import { contextUsageStats } from '../utils/context-usage'
 import { formatTokens } from '../utils/format'
 import { autoCompactWindowForPct } from '../../shared/auto-compact'

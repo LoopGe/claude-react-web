@@ -5,7 +5,7 @@
 // (same pattern as every other tab). The live table is driven by the SDK's
 // canonical `categories` rows. Rows are classified on `kind` — never on the
 // English `name` — so new SDK categories render with no changes here (see
-// ContextUsage.categories in useChatStream.ts). memoryFiles / mcpTools ride
+// ContextUsage.categories in types/context-usage.ts). memoryFiles / mcpTools ride
 // in as supplement rows only when the payload carries no categories (older
 // SDK shapes); the per-server MCP section below is a deliberate DRILL-DOWN
 // of the mcp_tools / mcp_instructions category rows (which stay totals) —
@@ -13,7 +13,7 @@
 // server, so those views must not be summed together.
 
 import { memo } from 'react'
-import type { ContextUsage } from '../hooks/useChatStream'
+import type { ContextUsage } from '../types/context-usage'
 import { contextWindowTokens } from '../utils/context-usage'
 import { formatTokens } from '../utils/format'
 
