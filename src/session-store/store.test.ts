@@ -2,10 +2,10 @@
 // Task 7). The client persistence layers (localStorage transcript cache +
 // IndexedDB) are deleted; what remains to test here is the store shell:
 // snapshot publication, the WINDOW_* path end-to-end (window + ordered
-// log + derived snapshot fields), the wipe flows, and the ready-state
-// constants the subscribe gate still reads.
+// log + derived snapshot fields), and the CLEAR_TRANSCRIPT wipe flow.
 import { describe, expect, it } from 'vitest'
 import { SessionStore } from './store'
+import * as selectorsModule from './selectors'
 import type { SdkMessage } from '../types'
 
 function userMsg(uuid: string, text: string): SdkMessage {
@@ -33,8 +33,6 @@ describe('SessionStore construction (no persistence)', () => {
   it('starts synchronously ready with an empty transcript', () => {
     const store = new SessionStore('s-ready')
     const snap = store.getSnapshot()
-    expect(snap.idbReady).toBe(true)
-    expect(snap.hydrateReady).toBe(true)
     expect(snap.replayReady).toBe(false)
     expect(snap.items).toEqual([])
     expect(snap.messages).toEqual([])
@@ -43,6 +41,19 @@ describe('SessionStore construction (no persistence)', () => {
     expect(snap.hasOlder).toBe(false)
     expect(snap.generation).toBe(-1) // no server generation adopted yet
     expect(snap.hole).toBeNull()
+  })
+
+  it('does not project removed readiness/cache/workflow fields', () => {
+    // Task 1 cleanup: hydrateReady / idbReady (no persistence layer to wait
+    // for), cacheHasDroppedMedia (no persist projection), and the running-only
+    // activeWorkflows projection (the full workflowIndex is the single read
+    // path) are gone from the snapshot.
+    const store = new SessionStore('s-fields')
+    const snap = store.getSnapshot() as unknown as Record<string, unknown>
+    expect(snap.hydrateReady).toBeUndefined()
+    expect(snap.idbReady).toBeUndefined()
+    expect(snap.cacheHasDroppedMedia).toBeUndefined()
+    expect(snap.activeWorkflows).toBeUndefined()
   })
 
   it('no longer touches localStorage transcript keys', () => {
@@ -180,10 +191,13 @@ describe('SessionStore: eviction + generation reset', () => {
     expect(snap.hasOlder).toBe(false)
   })
 
-  it('clearPersisted wipes the in-memory transcript', () => {
+  it('CLEAR_TRANSCRIPT wipes the in-memory transcript', () => {
+    // Replaces the former clearPersisted() test: the /clear wipe is now driven
+    // by a direct CLEAR_TRANSCRIPT dispatch (the reducer is the single owner
+    // of the wipe semantic).
     const store = new SessionStore('s-purge')
     store.dispatch({ type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 1, messages: pageMsgs([0], (u) => userMsg(u, 'hi')), hasMore: false, tombstones: [] })
-    store.clearPersisted()
+    store.dispatch({ type: 'CLEAR_TRANSCRIPT' })
     const snap = store.getSnapshot()
     expect(snap.messages).toEqual([])
     expect(snap.replayReady).toBe(true)
@@ -261,5 +275,85 @@ describe('SessionStore: tombstone race (interrupt withdrawal vs result frame)', 
     expect(snap.newestSeq).toBe(3)
     expect(snap.messages.at(-1)?.uuid).toBe('res')
     expect(snap.activePhase).toBeNull()
+  })
+})
+
+describe('SessionStore: workflowIndex (running + completed)', () => {
+  // Task 1 cleanup: the running-only activeWorkflows projection is gone. The
+  // full workflowIndex (running + completed) is the single read path for
+  // WorkflowCard + WorkflowOverlay, so a completed Workflow must stay
+  // inspectable after its tool_result lands.
+  function workflowToolUse(id: string, name: string): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid: `a-${id}`,
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id,
+            name: 'Workflow',
+            input: { script: `export const meta = { name: '${name}' }\n` },
+          },
+        ],
+      },
+    } as unknown as SdkMessage
+  }
+  function workflowResult(id: string): SdkMessage {
+    return {
+      type: 'user',
+      uuid: `u-${id}`,
+      parent_tool_use_id: null,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: id, content: 'done' }],
+      },
+    } as unknown as SdkMessage
+  }
+
+  it('exposes both a running and a completed Workflow through workflowIndex', () => {
+    const store = new SessionStore('s-wf-idx')
+    store.dispatch({
+      type: 'WINDOW_PAGE',
+      at: 'tail',
+      generation: 0,
+      headSeq: 3,
+      messages: [
+        { seq: 0, msg: workflowToolUse('wf-run', 'running') },
+        { seq: 1, msg: workflowToolUse('wf-done', 'completed') },
+        { seq: 2, msg: workflowResult('wf-done') },
+      ],
+      hasMore: false,
+      tombstones: [],
+    })
+    const snap = store.getSnapshot()
+    // The running-only projection is gone — the snapshot no longer exposes
+    // activeWorkflows; workflowIndex is the single read path.
+    expect((snap as unknown as Record<string, unknown>).activeWorkflows).toBeUndefined()
+    expect(snap.workflowIndex.get('wf-run')?.status).toBe('running')
+    expect(snap.workflowIndex.get('wf-done')?.status).toBe('done')
+    // The completed record carries its result so WorkflowCard merges it inline.
+    expect(snap.workflowIndex.get('wf-done')?.result?.content).toBe('done')
+  })
+})
+
+describe('SessionStore: removed API surface', () => {
+  // Task 1 cleanup: the unused store/selector surface is deleted. These
+  // assertions pin the deletion so a future reintroduction is caught.
+  it('does not expose dispatchMany / reset / clearPersisted', () => {
+    const store = new SessionStore('s-surface')
+    const proto = Object.getPrototypeOf(store) as Record<string, unknown>
+    expect(proto.dispatchMany).toBeUndefined()
+    expect(proto.reset).toBeUndefined()
+    expect(proto.clearPersisted).toBeUndefined()
+    // The private wipe() helper is gone too.
+    expect(proto.wipe).toBeUndefined()
+  })
+
+  it('does not export useSessionSnapshot or getSessionState from selectors', () => {
+    const mod = selectorsModule as unknown as Record<string, unknown>
+    expect(mod.useSessionSnapshot).toBeUndefined()
+    expect(mod.getSessionState).toBeUndefined()
   })
 })

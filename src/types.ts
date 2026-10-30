@@ -293,10 +293,12 @@ export interface SdkMessage {
   parent_tool_use_id?: string | null
   /** Server marker for frames normalized from the CLI's persisted JSONL. */
   restoredFromDisk?: boolean
-  /** Client-only marker stamped by projectMessage when the persist projection
-   *  had to drop an image block from this message's cached copy. The stamped
-   *  flag rides the localStorage/IDB cache and is read at hydrate time
-   *  (SessionSnapshot.cacheHasDroppedMedia). Never sent to the server. */
+  /** Legacy client-only marker stamped by the deleted persist projection when
+   *  it had to drop an image block from this message's cached copy. The
+   *  localStorage/IDB cache and the `cacheHasDroppedMedia` snapshot gate were
+   *  removed in the seq-window refactor; nothing stamps or reads this field
+   *  anymore. Retained on the loose type for safety; never sent to the
+   *  server. */
   cacheDroppedMedia?: true
   /** Client-only marker for the in-place draft card (inline streaming): a
    *  synthetic assistant message born from `liveTurn.draft` (or a frozen

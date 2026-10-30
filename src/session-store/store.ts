@@ -35,11 +35,6 @@ export class SessionStore {
    *  thrash a shared single-slot cache against each other. */
   private cachedSubagentsMap: ServerMirror['activeSubagents'] | null = null
   private cachedRunningSubagents: SessionSnapshot['activeSubagents'] = []
-  /** Per-instance Workflow filter cache — mirrors cachedSubagentsMap so
-   *  the running-workflow list only reallocates when activeWorkflows
-   *  actually changes (drives any future Workflow pill in WorkingBubble). */
-  private cachedWorkflowsMap: ServerMirror['activeWorkflows'] | null = null
-  private cachedRunningWorkflows: SessionSnapshot['activeWorkflows'] = []
 
   constructor(sessionId: string) {
     registerStoreForDebug(sessionId, this)
@@ -47,9 +42,7 @@ export class SessionStore {
     // persistence: no localStorage transcript cache, no IndexedDB layer. The
     // constructor is therefore synchronous and trivially "ready" — there is
     // no hydrate to defer and no cache state to settle before subscribing.
-    // Opening a session = REST tail page + WS subscribe (Task 8); the old
-    // hydrateReady/idbReady snapshot gates read as constant `true` so their
-    // consumers keep compiling until Task 8 removes the gates.
+    // Opening a session = REST tail page + WS subscribe (SessionSynchronizer).
     this.state = createInitialSessionState(sessionId)
     this.snapshot = this.buildSnapshot(this.state)
   }
@@ -76,47 +69,6 @@ export class SessionStore {
     this.snapshot = this.buildSnapshot(next)
     this.scheduleFlush()
     this.emit()
-  }
-
-  dispatchMany(actions: SessionAction[]): void {
-    if (actions.length === 0) return
-    let next = this.state
-    for (const action of actions) {
-      next = reduceSessionState(next, action)
-    }
-    if (next === this.state) return
-    this.state = next
-    this.snapshot = this.buildSnapshot(next)
-    this.scheduleFlush()
-    this.emit()
-  }
-
-  /** Wipe the transcript and mark it ready (replayReady=true). Shared by
-   *  reset() and clearPersisted(). The post-wipe state is "live and empty" —
-   *  the window is empty (generation/headSeq preserved until the server's
-   *  WINDOW_BUMP re-anchors it), there is no pending replay, so replayReady
-   *  MUST be true or MessageList sits on the skeleton forever. Cancels the
-   *  flushTimer first so a pending live-turn flush can't fire after the
-   *  mirror is rebuilt. */
-  private wipe(): void {
-    if (this.flushTimer != null) {
-      window.clearTimeout(this.flushTimer)
-      this.flushTimer = null
-    }
-    this.dispatch({ type: 'CLEAR_TRANSCRIPT' })
-  }
-
-  reset(): void {
-    this.wipe()
-  }
-
-  /** Wipe the in-memory transcript. Historically this also erased the
-   *  localStorage + IndexedDB caches; the seq-window store keeps no client
-   *  persistence, so there is nothing left to erase. Legacy pre-refactor
-   *  cache keys are handled solely by the boot-time sweep
-   *  (legacy-transcript-cache.ts). Used by the /clear flow. */
-  clearPersisted(): void {
-    this.wipe()
   }
 
   /** Permanently drop a session's store (registry.delete path). With no
@@ -172,8 +124,6 @@ export class SessionStore {
     const win = mirror.window
     return {
       replayReady: mirror.replayReady,
-      hydrateReady: true,
-      idbReady: true,
       items,
       messages,
       streamingContent: mirror.liveTurn ? joinLiveTurnSegments(mirror.liveTurn.flushedText) : null,
@@ -198,13 +148,15 @@ export class SessionStore {
       toolResults: mirror.toolResults,
       activeSubagents: this.getRunningSubagents(mirror.activeSubagents),
       subagentIndex: mirror.activeSubagents,
-      activeWorkflows: this.getRunningWorkflows(mirror.activeWorkflows),
+      // Exposed unfiltered (the full index) — a Workflow card must still find
+      // its record after the call settles (the drill-in stays open/reopenable).
+      // The running-only projection was removed (Task 1 cleanup); workflowIndex
+      // is the single read path for WorkflowCard + WorkflowOverlay.
       workflowIndex: mirror.activeWorkflows,
       // Exposed unfiltered — a Skill card must still find its record after the
       // call settles (the drill-in stays open/reopenable), and skills feed no
       // running-only sibling, so there is nothing to filter for.
       skillIndex: mirror.activeSkills,
-      lastMessageUuid: mirror.lastMessageUuid,
       // Seq window view (Tasks 8/9 consume): loadOlder pages before=oldestSeq
       // gated on hasOlder; MessageList anchors firstItemIndex on oldestSeq;
       // reconnect/hole handling compares these snapshots.
@@ -215,7 +167,6 @@ export class SessionStore {
       generation: win.generation,
       headSeq: win.headSeq,
       hole: win.hole,
-      cacheHasDroppedMedia: false,
     }
   }
 
@@ -237,18 +188,6 @@ export class SessionStore {
     this.cachedRunningSubagents = Array.from(map.values())
       .filter((s) => s.status === 'running' || s.status === 'background' || s.status === 'pending')
     return this.cachedRunningSubagents
-  }
-
-  /** Workflow analogue of getRunningSubagents. The Map reference is compared
-   *  by identity so the filtered array is only reallocated when activeWorkflows
-   *  actually changes. Reserved for a future Workflow pill (if/when wired);
-   *  the full index (workflowIndex) is exposed unfiltered so
-   *  WorkflowCard can read completed records too. */
-  private getRunningWorkflows(map: ServerMirror['activeWorkflows']): SessionSnapshot['activeWorkflows'] {
-    if (map === this.cachedWorkflowsMap) return this.cachedRunningWorkflows
-    this.cachedWorkflowsMap = map
-    this.cachedRunningWorkflows = Array.from(map.values()).filter((w) => w.status === 'running')
-    return this.cachedRunningWorkflows
   }
 }
 

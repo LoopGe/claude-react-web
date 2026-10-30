@@ -9,10 +9,10 @@
 // through the same reducer contract without going through the broad
 // `useChatStream` hook.
 //
-// The factory deliberately does NOT own `reset` (the ChatStream.reset path
-// is `store.reset()`, a method on the store itself, not a dispatched
-// action) — `SessionCommands` is the 5-action surface the hook and the
-// synchronizer share.
+// The factory deliberately does NOT own the transcript wipe (the /clear path
+// is a direct `CLEAR_TRANSCRIPT` dispatch, owned by the reducer) —
+// `SessionCommands` is the 5-action optimistic-delivery surface the React
+// layer (useSessionCommands) shares with Chat / SideChatDrawer.
 import type { SdkMessage } from '../types'
 import { randomId } from '../utils/uuid'
 import type { SessionStore } from './store'

@@ -1,6 +1,6 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react'
 import { sessionStoreRegistry } from './registry'
-import type { SessionSnapshot, SessionState } from './types'
+import type { SessionSnapshot } from './types'
 import { countTaskActivity, type ActiveWorktree } from './normalize'
 
 // ── Module-level (referentially stable) selectors ──────────────────
@@ -50,18 +50,9 @@ export const selectHasLiveSyncSubagent = (snapshot: SessionSnapshot): boolean =>
   snapshot.activeSubagents.some((a) => a.status === 'running' && !a.isAsync)
 
 
-export function useSessionSnapshot(sessionId: string): SessionSnapshot {
-  const store = sessionStoreRegistry.getOrCreate(sessionId)
-  return useSyncExternalStore(
-    (listener) => store.subscribe(listener),
-    () => store.getSnapshot(),
-    () => store.getSnapshot(),
-  )
-}
-
 /** Subscribe to a single field of the session snapshot. Only triggers a
  *  re-render when the field's reference identity changes (via Object.is),
- *  unlike useSessionSnapshot which re-renders on every dispatch. */
+ *  unlike a whole-snapshot subscription which re-renders on every dispatch. */
 export function useSessionField<K extends keyof SessionSnapshot>(
   sessionId: string,
   field: K,
@@ -198,9 +189,5 @@ export function useSessionActiveWorktree(sessionId: string): ActiveWorktree | nu
 
 export function getSessionStore(sessionId: string) {
   return sessionStoreRegistry.getOrCreate(sessionId)
-}
-
-export function getSessionState(sessionId: string): SessionState {
-  return sessionStoreRegistry.getOrCreate(sessionId).getState()
 }
 

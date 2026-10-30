@@ -571,9 +571,15 @@ describe('SessionSynchronizer protocol', () => {
     sync.stop()
   })
 
-  // ── reset ─────────────────────────────────────────────────────
+  // ── clear (CLEAR_TRANSCRIPT) ───────────────────────────────────
 
-  it('resets all state on store.reset()', async () => {
+  it('wipes state on CLEAR_TRANSCRIPT and leaves no stale live-turn flush', async () => {
+    // Replaces the former store.reset() test: the wipe is driven by a direct
+    // CLEAR_TRANSCRIPT dispatch (the reducer is the single owner of the wipe
+    // semantic). A dirty live turn is in flight before the wipe (the
+    // flushTimer is armed), so this exercises the stale-flush path: after the
+    // wipe the live turn is null, and a later LIVE_TURN_FLUSH (the armed
+    // timer firing) is a no-op because the reducer guards on `!liveTurn`.
     const sid = 's1'
     const store = getSessionStore(sid)
     const sync = new SessionSynchronizer({
@@ -592,18 +598,36 @@ describe('SessionSynchronizer protocol', () => {
       usage: { totalTokens: 1000 },
     } as WsServerFrame)
     dispatchToSession(sid, { kind: 'error', sessionId: sid, message: 'test error' } as WsServerFrame)
+    // Start a live turn with a dirty text delta so the flushTimer is armed.
+    dispatchToSession(sid, {
+      kind: 'message',
+      sessionId: sid,
+      message: {
+        type: 'stream_event',
+        uuid: 'evt-delta',
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial' } },
+      },
+    } as WsServerFrame)
 
     await vi.waitFor(() => expect(store.getSnapshot().messages).toHaveLength(1))
     expect(store.getSnapshot().contextUsage).not.toBeNull()
+    expect(store.getState().mirror.liveTurn).not.toBeNull()
+    expect(store.getState().mirror.liveTurn?.dirty).toBe(true)
 
-    store.reset()
+    store.dispatch({ type: 'CLEAR_TRANSCRIPT' })
 
     expect(store.getSnapshot().messages).toEqual([])
     expect(store.getSnapshot().contextUsage).toBeNull()
     expect(store.getSnapshot().error).toBeNull()
-    // reset() shares the /clear wipe semantic: the post-reset state is
-    // live and empty with no pending page, so replayReady must be true.
     expect(store.getSnapshot().replayReady).toBe(true)
+    // The live turn is gone, so the armed flushTimer's later LIVE_TURN_FLUSH
+    // is a no-op (the reducer guards on `!liveTurn` and returns state
+    // unchanged) — no stale content is resurrected.
+    expect(store.getState().mirror.liveTurn).toBeNull()
+    const beforeFlush = store.getSnapshot()
+    store.dispatch({ type: 'LIVE_TURN_FLUSH' })
+    expect(store.getSnapshot()).toBe(beforeFlush)
     sync.stop()
   })
 

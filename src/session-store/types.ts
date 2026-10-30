@@ -739,12 +739,12 @@ export type SessionAction =
    *  ignored — the user explicitly gave up on tracking it. */
   | { type: 'DISMISS_SUBAGENT'; toolUseId: string }
   /** Wipe BOTH layers (mirror + intent) and leave `replayReady=true`. Used
-   *  by the /clear flow (and by store.reset()): the post-wipe state is
-   *  "live and empty" with no pending replay, so the MessageList shows the
-   *  empty-state, not the skeleton. This is the ONLY wipe semantic — the
-   *  WS subscription persists across the wipe, the server doesn't re-replay,
-   *  and the new Query's `system/init` isn't broadcast to clients, so nothing
-   *  else flips replayReady back to true. The initial pre-subscribe state
+   *  by the /clear flow: the post-wipe state is "live and empty" with no
+   *  pending replay, so the MessageList shows the empty-state, not the
+   *  skeleton. This is the ONLY wipe semantic — the WS subscription persists
+   *  across the wipe, the server doesn't re-replay, and the new Query's
+   *  `system/init` isn't broadcast to clients, so nothing else flips
+   *  replayReady back to true. The initial pre-subscribe state
    *  (replayReady=false) is set by createInitialServerMirror at construction,
    *  not by an action. */
   | { type: 'CLEAR_TRANSCRIPT' }
@@ -800,17 +800,6 @@ export type SessionAction =
 
 export interface SessionSnapshot {
   replayReady: boolean
-  /** Constant `true` since the seq-window refactor (Task 7) deleted the IDB
-   *  layer — there is no async store state left to wait for. Kept so the
-   *  subscribe gate consumers keep compiling; Task 8 (P3) removes the gate. */
-  idbReady: boolean
-  /** Constant `true` since the seq-window refactor (Task 7) — there is no
-   *  localStorage hydrate to defer anymore (the store constructor is
-   *  synchronous). Kept so the subscribe-gate consumers keep compiling;
-   *  Task 8 removes the gate. Distinct from `replayReady`, which means
-   *  "transcript content is on screen" — a freshly opened session has
-   *  hydrateReady=true but replayReady=false until the tail page lands. */
-  hydrateReady: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
   streamingContent: string | null
@@ -849,25 +838,17 @@ export interface SessionSnapshot {
    *  SubagentCard placeholder and the SubagentOverlay so completed
    *  subagents are still inspectable after their tool_result lands. */
   subagentIndex: ReadonlyMap<string, ActiveSubagent>
-  /** Currently-running Workflows only — drives the WorkflowCard status +
-   *  any live row. Mirrors activeSubagents (running-only filter of the
-   *  full workflowIndex). */
-  activeWorkflows: WorkflowRecord[]
   /** Full Workflow index (running + completed) keyed by the Workflow's
    *  tool_use_id. Used by WorkflowCard and WorkflowOverlay so a completed
    *  Workflow stays inspectable after its tool_result lands. Mirrors
-   *  subagentIndex. */
+   *  subagentIndex. The single read path — the running-only projection
+   *  was removed (Task 1 cleanup). */
   workflowIndex: ReadonlyMap<string, WorkflowRecord>
   /** Full Skill index (running + completed) keyed by the Skill's tool_use_id.
    *  Read by the Skill card for its status / child counts / drill-in gate, and
    *  by Chat to adapt a forked skill into the record SubagentOverlay expects.
    *  No running-only sibling: skills feed no subagent pill. */
   skillIndex: ReadonlyMap<string, SkillRecord>
-  lastMessageUuid: string | null
-  /** True when the hydrated localStorage cache holds at least one message
-   *  stamped `cacheDroppedMedia` by the persist projection (an image block
-   *  had to be dropped). Fixed at hydrate time. */
-  cacheHasDroppedMedia: boolean
   /** Transient `api_retry` frame mirrored from ServerMirror (see there). */
   apiRetry: SdkMessage | null
   /** Transient thinking-token estimate mirrored from ServerMirror

@@ -2,9 +2,10 @@
 // Workflow tool calls (the multi-agent orchestration tool).
 //
 // Mirrors SubagentCard's shape (one-line summary: status, elapsed, child count)
-// but reads from the Workflow context (activeWorkflows index) instead of the
-// subagent index, and opens the WorkflowOverlay (two-column phase tree +
-// messages) rather than the single-conversation SubagentOverlay.
+// but reads from the Workflow context (workflowIndex — the full running +
+// completed index) instead of the subagent index, and opens the
+// WorkflowOverlay (two-column phase tree + messages) rather than the
+// single-conversation SubagentOverlay.
 //
 // The card is the persistent inline entry point: once the Workflow's tool_result
 // lands the record is KEPT (status flips to done/interrupted) so the overlay
