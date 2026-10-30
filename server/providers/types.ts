@@ -33,12 +33,6 @@ export interface CreateSessionOptions {
    *  Settings (applyFlagSettings cannot carry it) and Query has no control
    *  method, so it reaches a session only here at spawn. */
   taskBudget?: { total: number }
-  /** Per-session auto-compact window intent in absolute tokens (SDK
-   *  Settings.autoCompactWindow). No spawn-time Options equivalent — the
-   *  provider re-applies it post-spawn via applyFlagSettings, like
-   *  fastMode/effortLevel. Undefined means "auto" (CLI derives the threshold
-   *  from the model's context window). */
-  autoCompactWindow?: number
   fastMode?: boolean
   /** Per-session auto-memory intent (SDK Settings keys applied post-spawn
    *  via applyFlagSettings — the SDK has no spawn-time Options.memory). */

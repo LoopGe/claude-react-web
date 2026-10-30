@@ -11,7 +11,6 @@ import { useMergedRef } from '../utils/mergedRef'
 import { measureSettingsPanelBodyHeight } from '../utils/settings-panel-measure'
 import { useToast, apiErrorToastOpts } from '../hooks/useToast'
 import { parseTaskBudgetInput } from '../../shared/session-info'
-import { useAutoCompactWindow } from '../hooks/useAutoCompactWindow'
 import { useSessionUsage } from '../hooks/useSessionUsage'
 import { useModelOptions } from '../hooks/useModelOptions'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillFrontmatter, SlashCommand } from '../types'
@@ -537,12 +536,9 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     [detailedUsage, contextUsage],
   )
 
-  // ── Auto-compact window (fused into the ContextBar as a draggable marker) ──
-  // The ContextBar owns the %→tokens inversion and the drag/double-click
-  // gestures; this panel only ships the commit (via the shared hook) and
-  // blocks interaction while busy / terminated / dormant.
-  const { commitWindow } = useAutoCompactWindow(session, onSessionUpdate)
-  const autoCompactDisabled = busy || session.terminated || !session.running
+  // ── Auto-compact window ──
+  // Display-only (ContextBar): the drag-to-pin feature was removed. Set the
+  // window on the New session form or mid-session via the CLI's /autocompact.
 
   const runAndRefresh = async (fn: () => Promise<{ session: SessionInfo }>) => {
     setBusy(true)
@@ -1720,28 +1716,17 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           {/* ContextBar runs off the WS-pushed lite usage — paints instantly,
               no blocking request. The full breakdown (composition table and
               agents below) comes from the detailed fetch, which the tab-open
-              effect fires automatically for running sessions. The marker IS
-              the auto-compact control, so its instructions ride here. */}
-          <ContextBar
-            usage={usage}
-            editable
-            custom={session.autoCompactWindow != null}
-            disabled={autoCompactDisabled}
-            onSetWindow={commitWindow}
-          />
+              effect fires automatically for running sessions. */}
+          <ContextBar usage={usage} />
           <span className="hint">
             {usage?.autoCompactEnabled === false
-              ? 'Auto-compact is off for this session (CLI-reported), so the marker is display-only.'
-              : 'Drag the marker to pin when the conversation auto-compacts (20–100%). Double-click it to reset to the model default.'}
+              ? 'Auto-compact is off for this session (CLI-reported).'
+              : 'The marker shows when the conversation auto-compacts.'}
           </span>
           <span className="hint">
-            Auto-compact triggers when the conversation reaches the marked share
-            of the context window. Lower values compact earlier — cheaper turns
-            at the cost of more summarization.
+            Set the auto-compact window on the New session form, or mid-session
+            with the CLI's /autocompact command.
           </span>
-          {!session.running && !session.terminated && (
-            <span className="hint">Resume the session to change the auto-compact window.</span>
-          )}
         </div>
       </section>
 

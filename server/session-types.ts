@@ -389,17 +389,11 @@ export interface Session {
    *   - true     : supported.
    *  Not persisted — re-derived on every spawn / model switch. */
   thinkingSupported?: boolean
-  /** User intent: absolute auto-compact window size in tokens (SDK
-   *  Settings.autoCompactWindow). Set via setAutoCompactWindow (forwarded to
-   *  the SDK as applyFlagSettings({ autoCompactWindow, autoCompactEnabled })),
-   *  persisted so it survives resume/restart, and re-applied on respawn.
-   *  Undefined means "auto" — the CLI derives the threshold from the model's
-   *  context window. */
+  /** Spawn intent: the auto-compact window chosen on the New session form
+   *  (absolute tokens; undefined = auto). Folded into
+   *  `Options.settings.autoCompactWindow` on every spawn — the only channel
+   *  the CLI honors for this key. Pure spawn-time, like taskBudget. */
   autoCompactWindow?: number
-  /** Brand-new session awaiting the default auto-compact pin (config
-   *  `autoCompactThresholdPct`) once the model window is known. Create-only;
-   *  cleared on apply or user pin. */
-  autoCompactDefaultPending?: boolean
   handle: ProviderSessionHandle
   subscribers: Map<string, Subscriber>
   permissionSubscribers: Map<string, PermissionSubscriber>

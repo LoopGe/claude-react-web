@@ -19,7 +19,6 @@ import {
   pump,
   applySdkAutoCompactFacts,
   parseSdkAutoCompactFacts,
-  reapplyAutoCompactWindow,
   toolResultIds,
   type PumpDeps,
 } from './session-pump.js'
@@ -713,37 +712,6 @@ describe('liteContextUsageFromResult', () => {
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000 } },
     })
     expect(liteContextUsageFromResult(msg)!.maxOutputTokens).toBeUndefined()
-  })
-
-  it('derives autoCompactThreshold from windowOverride instead of the model contextWindow', () => {
-    // A 1M model (contextWindow 1000000) pinned to a 200K window via
-    // windowOverride. effective = 200000 - min(20000, 20000) = 180000;
-    // threshold = 180000 - 13000 = 167000 — NOT the model-derived value.
-    const msg = makeResult({
-      usage: { input_tokens: 1000 },
-      modelUsage: { 'claude-opus-4-7': { contextWindow: 1000000 } },
-    })
-    expect(liteContextUsageFromResult(msg, 200000)!.autoCompactThreshold).toBe(167000)
-  })
-
-  it('windowOverride respects the maxOutputTokens floor like the model window does', () => {
-    // maxOutputTokens 8000 < 20000 floor → effective = 200000 - 8000 = 192000
-    // threshold = 192000 - 13000 = 179000
-    const msg = makeResult({
-      usage: { input_tokens: 1000 },
-      modelUsage: { 'claude-opus-4-7': { contextWindow: 1000000, maxOutputTokens: 8000 } },
-    })
-    expect(liteContextUsageFromResult(msg, 200000)!.autoCompactThreshold).toBe(179000)
-  })
-
-  it('ignores a non-positive windowOverride (falls back to the model window)', () => {
-    // windowOverride 0 / undefined / negative must not produce a bogus
-    // threshold — the existing tests above already cover the undefined case.
-    const msg = makeResult({
-      usage: { input_tokens: 1000 },
-      modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
-    })
-    expect(liteContextUsageFromResult(msg, 0)!.autoCompactThreshold).toBe(167000)
   })
 
   it('returns null for a spawn/restart warm-up result with all-zero usage', () => {
@@ -3478,142 +3446,6 @@ describe('pump: reconcileContextUsage dep', () => {
 })
 
 // ---------------------------------------------------------------------------
-// reapplyAutoCompactWindow — immediate threshold refresh after a pin/clear.
-//
-// The auto-compact threshold only ever derives from a turn's `result` payload,
-// so a successful setAutoCompactWindow used to leave every live ContextBar on
-// the STALE threshold (the auto position, e.g. 83.5% on a 200k model) until
-// the next completed turn — which reads as "the drag did nothing / it snapped
-// back to 84%" (and the pinned "Compact at X%" label stuck with the wrong
-// number). The helper re-derives the threshold from the cached snapshot under
-// the new windowOverride and re-broadcasts without waiting for a turn.
-// ---------------------------------------------------------------------------
-
-describe('reapplyAutoCompactWindow', () => {
-  /** Snapshot shape mirrored from a real deepseek turn on a 200k window:
-   *  auto threshold = 200000 − min(32000, 20000) − 13000 = 167000. */
-  const baseSnapshot = (): LiteContextUsage => ({
-    totalTokens: 38626,
-    maxTokens: 200000,
-    rawMaxTokens: 200000,
-    percentage: 19.3,
-    model: 'deepseek/deepseek-v4-flash',
-    cacheReadTokens: 17152,
-    outputTokens: 42,
-    autoCompactThreshold: 167000,
-    maxOutputTokens: 32000,
-  })
-
-  it('recomputes and broadcasts the threshold immediately on pin', () => {
-    const { session } = makePumpSession([])
-    session.lastContextUsage = baseSnapshot()
-    const pushes: LiteContextUsage[] = []
-    addContextSubscriber(session, pushes)
-
-    reapplyAutoCompactWindow(session, 113000)
-
-    // 113000 − 20000 − 13000 = 80000 → marker lands at the dragged 40%.
-    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
-    expect(pushes).toHaveLength(1)
-    expect(pushes[0].autoCompactThreshold).toBe(80000)
-    // Everything else in the snapshot is carried through untouched.
-    expect(pushes[0].totalTokens).toBe(38626)
-    expect(pushes[0].maxTokens).toBe(200000)
-  })
-
-  it('pinning stamps autoCompactEnabled:true even when the threshold is unchanged', () => {
-    // setAutoCompactWindow sends { autoCompactWindow, autoCompactEnabled: true }
-    // to the SDK — drag-to-pin IS enable+pin. The bar must flip off→on
-    // immediately, not wait for the background probe (which may time out).
-    const { session } = makePumpSession([])
-    session.lastContextUsage = {
-      ...baseSnapshot(),
-      autoCompactThreshold: 80000,
-      autoCompactEnabled: false,
-    }
-    const pushes: LiteContextUsage[] = []
-    addContextSubscriber(session, pushes)
-
-    // Pin the window that the snapshot's threshold already reflects → threshold
-    // recomputes to the same 80000, but enabled must still flip and push.
-    reapplyAutoCompactWindow(session, 113000, { autoCompactEnabled: true })
-
-    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
-    expect(session.lastContextUsage!.autoCompactEnabled).toBe(true)
-    expect(pushes).toHaveLength(1)
-    expect(pushes[0].autoCompactEnabled).toBe(true)
-  })
-
-  it('clearing the pin restores the auto threshold from the model window', () => {
-    const { session } = makePumpSession([])
-    session.lastContextUsage = { ...baseSnapshot(), autoCompactThreshold: 80000 }
-    const pushes: LiteContextUsage[] = []
-    addContextSubscriber(session, pushes)
-
-    reapplyAutoCompactWindow(session, undefined)
-
-    expect(session.lastContextUsage!.autoCompactThreshold).toBe(167000)
-    expect(pushes).toHaveLength(1)
-  })
-
-  it('is a no-op (no broadcast) when the recomputed threshold is unchanged', () => {
-    const { session } = makePumpSession([])
-    // Seed enabled:true — a pin always stamps that, so this is a pure
-    // threshold-no-op (the off→on flip has its own test above).
-    session.lastContextUsage = { ...baseSnapshot(), autoCompactEnabled: true }
-    const pushes: LiteContextUsage[] = []
-    addContextSubscriber(session, pushes)
-
-    reapplyAutoCompactWindow(session, 200000) // threshold stays 167000
-
-    expect(session.lastContextUsage!.autoCompactThreshold).toBe(167000)
-    expect(session.lastContextUsage!.autoCompactEnabled).toBe(true)
-    expect(pushes).toHaveLength(0)
-  })
-
-  it('is a no-op when no snapshot is cached yet (fresh session)', () => {
-    const { session } = makePumpSession([])
-    const pushes: LiteContextUsage[] = []
-    addContextSubscriber(session, pushes)
-
-    expect(() => reapplyAutoCompactWindow(session, 113000)).not.toThrow()
-    expect(session.lastContextUsage).toBeUndefined()
-    expect(pushes).toHaveLength(0)
-  })
-
-  it('adds a threshold to a snapshot that lacked one, and drops it when undefined', () => {
-    const { session } = makePumpSession([])
-    const withoutThreshold = baseSnapshot()
-    delete withoutThreshold.autoCompactThreshold
-    session.lastContextUsage = withoutThreshold
-
-    reapplyAutoCompactWindow(session, 113000)
-    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
-
-    // A zero window can't yield a threshold (computeAutoCompactThreshold →
-    // undefined) — the key must be REMOVED, not set to undefined, mirroring
-    // assembleLiteUsage's "absent stays distinguishable" convention.
-    session.lastContextUsage = { ...baseSnapshot(), maxTokens: 0, rawMaxTokens: 0 }
-    reapplyAutoCompactWindow(session, undefined)
-    expect(session.lastContextUsage!.autoCompactThreshold).toBeUndefined()
-    expect('autoCompactThreshold' in session.lastContextUsage!).toBe(false)
-  })
-
-  it('drops cached CLI facts, since the pin they described no longer applies', () => {
-    const { session } = makePumpSession([])
-    session.lastContextUsage = baseSnapshot()
-    session.lastSdkAutoCompact = { model: 'deepseek/deepseek-v4-flash', threshold: 167000 }
-
-    reapplyAutoCompactWindow(session, 113000)
-
-    // Without the invalidation the stale CLI threshold would win over the
-    // freshly-derived one and the marker would not move at all.
-    expect(session.lastSdkAutoCompact).toBeUndefined()
-    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
-  })
-})
-
-// ---------------------------------------------------------------------------
 // Authoritative auto-compact facts (SdkAutoCompactFacts)
 //
 // The threshold the ContextBar renders used to be a local replica of a
@@ -3687,7 +3519,7 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
   it("prefers the CLI's threshold over the locally derived one", () => {
     // Formula would say 200000 − 20000 − 13000 = 167000; the CLI says 164500.
     const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', threshold: 164500 }
-    const out = liteContextUsageFromResult(result(), undefined, facts)
+    const out = liteContextUsageFromResult(result(), facts)
     expect(out!.autoCompactThreshold).toBe(164500)
   })
 
@@ -3695,24 +3527,28 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
     expect(liteContextUsageFromResult(result())!.autoCompactThreshold).toBe(167000)
   })
 
+  it('derives the fallback threshold against the spawn-intent window (opts.windowOverride)', () => {
+    // A 1M model spawned with Options.settings.autoCompactWindow = 200000
+    // (the only channel the CLI honors). When facts are absent the fallback
+    // must derive against the PINNED window, not the model window — otherwise
+    // the marker sits at ~97% while the CLI compacts at ~83%.
+    const msg = makeResult({
+      usage: { input_tokens: 1000 },
+      modelUsage: { 'claude-opus-4-7': { contextWindow: 1000000 } },
+    })
+    expect(liteContextUsageFromResult(msg, undefined, { windowOverride: 200000 })!.autoCompactThreshold).toBe(167000)
+  })
+
   it('ignores facts computed for a different model', () => {
     // A model switch (or a CLI-side fallback) changes the window, so the
     // cached number describes something that is no longer in play.
     const facts: SdkAutoCompactFacts = { model: 'claude-haiku-4-7', threshold: 90000 }
-    expect(liteContextUsageFromResult(result(), undefined, facts)!.autoCompactThreshold).toBe(167000)
+    expect(liteContextUsageFromResult(result(), facts)!.autoCompactThreshold).toBe(167000)
   })
 
   it('ignores facts that carry no threshold', () => {
     const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', enabled: true }
-    expect(liteContextUsageFromResult(result(), undefined, facts)!.autoCompactThreshold).toBe(167000)
-  })
-
-  it("lets the CLI's threshold win over a pinned window's derived one", () => {
-    // Pin 113000 → formula derives 80000. The CLI is the authority on what it
-    // actually did with that pin, so its answer is what the marker shows.
-    const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', threshold: 78000 }
-    expect(liteContextUsageFromResult(result(), 113000, facts)!.autoCompactThreshold).toBe(78000)
-    expect(liteContextUsageFromResult(result(), 113000)!.autoCompactThreshold).toBe(80000)
+    expect(liteContextUsageFromResult(result(), facts)!.autoCompactThreshold).toBe(167000)
   })
 
   it('leaves the bar denominator on the model window, not the resolved one', () => {
@@ -3720,7 +3556,7 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
     // reference frame to the CLI's resolved window would silently change every
     // percentage the user reads, so maxTokens/rawMaxTokens stay the model's.
     const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', threshold: 164500, rawMaxTokens: 120000 }
-    const out = liteContextUsageFromResult(result(), undefined, facts)
+    const out = liteContextUsageFromResult(result(), facts)
     expect(out!.maxTokens).toBe(200000)
     expect(out!.rawMaxTokens).toBe(200000)
   })
@@ -3729,22 +3565,22 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
     // Three-state: true / false are CLI-authoritative; absent stays absent so
     // the bar never claims "off" from a formula-only reading.
     expect(
-      liteContextUsageFromResult(result(), undefined, { model: 'claude-opus-4-7', enabled: true })!
+      liteContextUsageFromResult(result(), { model: 'claude-opus-4-7', enabled: true })!
         .autoCompactEnabled,
     ).toBe(true)
     expect(
-      liteContextUsageFromResult(result(), undefined, { model: 'claude-opus-4-7', enabled: false })!
+      liteContextUsageFromResult(result(), { model: 'claude-opus-4-7', enabled: false })!
         .autoCompactEnabled,
     ).toBe(false)
   })
 
   it('omits autoCompactEnabled when facts do not report it, mismatch the model, or are missing', () => {
     expect(
-      liteContextUsageFromResult(result(), undefined, { model: 'claude-opus-4-7', threshold: 164500 })!
+      liteContextUsageFromResult(result(), { model: 'claude-opus-4-7', threshold: 164500 })!
         .autoCompactEnabled,
     ).toBeUndefined()
     expect(
-      liteContextUsageFromResult(result(), undefined, { model: 'claude-haiku-4-7', enabled: false })!
+      liteContextUsageFromResult(result(), { model: 'claude-haiku-4-7', enabled: false })!
         .autoCompactEnabled,
     ).toBeUndefined()
     expect(liteContextUsageFromResult(result())!.autoCompactEnabled).toBeUndefined()
@@ -3755,16 +3591,16 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
     // only). The next result must not wipe that back to unknown.
     const cached = { model: 'claude-opus-4-7', autoCompactEnabled: false }
     expect(
-      liteContextUsageFromResult(result(), undefined, undefined, { cached })!.autoCompactEnabled,
+      liteContextUsageFromResult(result(), undefined, { cached })!.autoCompactEnabled,
     ).toBe(false)
     // Facts that know better win over the cached carry.
     expect(
-      liteContextUsageFromResult(result(), undefined, { model: 'claude-opus-4-7', enabled: true }, { cached })!
+      liteContextUsageFromResult(result(), { model: 'claude-opus-4-7', enabled: true }, { cached })!
         .autoCompactEnabled,
     ).toBe(true)
     // Mismatched-model facts fall back to the cached carry, not `undefined`.
     expect(
-      liteContextUsageFromResult(result(), undefined, { model: 'claude-haiku-4-7', enabled: true }, { cached })!
+      liteContextUsageFromResult(result(), { model: 'claude-haiku-4-7', enabled: true }, { cached })!
         .autoCompactEnabled,
     ).toBe(false)
   })
@@ -3774,7 +3610,7 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
     // old model's on/off must not paint onto the new model's bar.
     const cached = { model: 'claude-haiku-4-7', autoCompactEnabled: false }
     expect(
-      liteContextUsageFromResult(result(), undefined, undefined, { cached })!.autoCompactEnabled,
+      liteContextUsageFromResult(result(), undefined, { cached })!.autoCompactEnabled,
     ).toBeUndefined()
   })
 })
@@ -3879,26 +3715,6 @@ describe('applySdkAutoCompactFacts', () => {
 
     expect(session.lastContextUsage!.autoCompactThreshold).toBe(167000)
     expect(pushes).toHaveLength(0)
-  })
-
-  it('re-derives against the pinned window when one is set', () => {
-    // The CLI's threshold still wins; this pins that the pinned window is what
-    // the FALLBACK would have used, so a factless response can't resurrect the
-    // unpinned 167000. The `enabled: true` stamp is new information (the
-    // snapshot had none), so the fold DOES push — but only that field moves.
-    const { session } = makePumpSession([])
-    session.lastContextUsage = { ...snapshot(), autoCompactThreshold: 80000 }
-    session.autoCompactWindow = 113000
-    const pushes: LiteContextUsage[] = []
-    addContextSubscriber(session, pushes)
-
-    applySdkAutoCompactFacts(session, { model: 'claude-opus-4-7', enabled: true })
-
-    expect(session.lastContextUsage!.autoCompactThreshold).toBe(80000)
-    expect(session.lastContextUsage!.autoCompactEnabled).toBe(true)
-    expect(pushes).toHaveLength(1)
-    expect(pushes[0].autoCompactThreshold).toBe(80000)
-    expect(pushes[0].autoCompactEnabled).toBe(true)
   })
 })
 

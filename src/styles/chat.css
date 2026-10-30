@@ -1067,29 +1067,24 @@ button.chat-empty-env-chip:hover {
 }
 /* All levels use accent ?urgency is conveyed by the percentage text. */
 
-/* Draggable auto-compact threshold marker, fused onto the ContextBar track.
-   The marker sits at the pump's autoCompactThreshold (% of the model window):
-   drag it to pin Settings.autoCompactWindow so auto-compact triggers at that
-   spot; double-click to reset to auto. The wrap is the positioning context —
-   the track itself keeps overflow:hidden so the fill clips to its radius.
-   The handle is hidden by default and only reveals on hover / focus / drag
-   (see .ctx-bar-marker-interactive below) so the progress bar reads clean. */
+/* Auto-compact threshold marker, fused onto the ContextBar track. Read-only:
+   it sits at the CLI-reported autoCompactThreshold (% of the model window).
+   (The drag-to-pin interaction was removed — thresholds are set on the New
+   session form or mid-session via the CLI's /autocompact.) The wrap is the
+   positioning context — the track itself keeps overflow:hidden so the fill
+   clips to its radius. */
 .ctx-bar-track-wrap {
   position: relative;
   height: var(--size-4px);
-}
-.ctx-bar-track-editable {
-  cursor: ew-resize;
-  touch-action: none;
 }
 .ctx-bar-marker {
   position: absolute;
   top: 50%;
   left: 0%;
-  /* The handle overhangs the 4px track, so it (and its drag glow) spills
-     below the ContextBar into the composer's area. The composer is
-     position:relative (paints after this earlier-DOM element), so without a
-     positive z-index it would cover the lower half of the handle/glow. */
+  /* The dot overhangs the 4px track, so it spills below the ContextBar into
+     the composer's area. The composer is position:relative (paints after
+     this earlier-DOM element), so without a positive z-index it would cover
+     the lower half of the dot. */
   z-index: 1;
   width: var(--size-14px);
   height: var(--size-14px);
@@ -1098,79 +1093,22 @@ button.chat-empty-env-chip:hover {
   transform: translate(-50%, -50%);
   background: var(--accent);
   border: 2px solid var(--bg-elev);
-  /* Soft accent rim (not a harsh full ring) + a small lift so the handle
-     reads as a raised, grabbable thumb rather than a flat dot. */
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
     var(--handle-shadow);
 }
-/* Auto (no custom pin): muted, reads as the model-default threshold. */
+/* Muted (always, post-removal): reads as the model/CLI threshold. */
 .ctx-bar-marker-auto {
   background: var(--border);
   box-shadow: var(--handle-shadow);
 }
-/* CLI auto-compact is off — the threshold is only a "would fire here" guide
-   and a drag handle (drag = enable + pin), never an active trigger. Compound
-   + reveal rules so the dim survives .ctx-bar-marker-interactive's opacity. */
+/* CLI auto-compact is off — the threshold is only a "would fire here" guide,
+   never an active trigger. */
 .ctx-bar-marker.ctx-bar-marker-disabled {
   background: var(--bg-elev);
   border: 2px dashed var(--border);
   box-shadow: none;
-}
-.ctx-bar-marker.ctx-bar-marker-disabled,
-.ctx-bar:hover .ctx-bar-marker-interactive.ctx-bar-marker-disabled,
-.ctx-bar-marker-interactive.ctx-bar-marker-disabled:focus-visible {
   opacity: 0.7;
-}
-.ctx-bar-marker-interactive {
-  cursor: grab;
-  /* Hidden by default; the handle only appears when the user is about to
-     interact with it — hovering the bar, keyboard-focusing it, or dragging
-     it. pointer-events:none while hidden so the invisible handle can't
-     intercept clicks aimed at the track. Reveal fades in and scales up. */
-  opacity: 0;
-  transform: translate(-50%, -50%) scale(0.85);
-  pointer-events: none;
-  transition:
-    opacity var(--motion-duration-fast) var(--motion-ease-standard),
-    transform var(--motion-duration-fast) var(--motion-ease-standard),
-    background var(--motion-duration-fast) var(--motion-ease-standard),
-    box-shadow var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.ctx-bar:hover .ctx-bar-marker-interactive,
-.ctx-bar-marker-interactive:focus-visible {
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1);
-  pointer-events: auto;
-}
-/* Directly hovering the revealed handle nudges it up — a grab affordance
-   that sits between "idle" and "dragging". */
-.ctx-bar-marker-interactive:hover:not(.ctx-bar-marker-dragging) {
-  transform: translate(-50%, -50%) scale(1.08);
-}
-/* Dragging: larger + accent halo. The reveal rule is also hover-qualified
-   (.ctx-bar:hover ... = 0,3,0), so the dragging rule needs its own :hover
-   qualifier to out-specify it and keep the enlarge while the pointer is over
-   the bar. The bare compound selector is the fallback for touch drags where
-   :hover isn't engaged. */
-.ctx-bar:hover .ctx-bar-marker-interactive.ctx-bar-marker-dragging,
-.ctx-bar-marker-interactive.ctx-bar-marker-dragging {
-  cursor: grabbing;
-  opacity: 1;
-  transform: translate(-50%, -50%) scale(1.3);
-  pointer-events: auto;
-  box-shadow:
-    0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent),
-    var(--handle-shadow);
-}
-.ctx-bar-marker:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 2px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .ctx-bar-marker-interactive {
-    transition: none;
-  }
 }
 /* Expanded textarea — Alt+Enter enlarges the composer textarea from its
    default 180px cap to a much larger area. */

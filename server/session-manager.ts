@@ -57,10 +57,6 @@ import { metrics } from './metrics.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
-import {
-  autoCompactWindowForPct,
-  clampAutoCompactThresholdPct,
-} from '../shared/auto-compact.js'
 import { findProfile, profileDefaultModel, resolveActiveProfile } from './profiles.js'
 import { auxFallbackModel, fallbackAliasesFor, resolveConfiguredModelId, resolveGroup } from './model-groups.js'
 import { isSdkForwardedMode } from './permission-modes.js'
@@ -73,7 +69,6 @@ import {
   reconcileTasksFromStopHook as reconcileTaskMapFromStopHook,
   settleTasksOnProcessExit,
   type StopHookTaskSummary,
-  reapplyAutoCompactWindow,
   applySdkAutoCompactFacts,
   parseSdkAutoCompactFacts,
   applyContextUsage,
@@ -1443,7 +1438,6 @@ export class SessionManager {
       thinking: s.thinking,
       taskBudget: s.taskBudget,
       autoCompactWindow: s.autoCompactWindow,
-      autoCompactDefaultPending: s.autoCompactDefaultPending,
       hooks: s.hooks,
       // Both rings count — parity with the old single mixed ring.
       messageCount: s.history.length + s.subagentHistory.length,
@@ -1523,7 +1517,7 @@ export class SessionManager {
   }
 
   /** Options we store and expose on SessionInfo (subset of full SDK Options). */
-  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; taskBudget?: { total: number }; autoCompactWindow?: number; autoCompactDefaultPending?: boolean; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
+  private snapshotMeta(opts: Options, provider: string): { provider: string; cwd?: string; model?: string; agent?: string; modelGroupId?: string; profileId?: string; permissionMode?: PermissionMode; title?: string; betas?: string[]; memory?: SessionMemorySettings; effortLevel?: EffortLevel; thinking?: ThinkingSetting; taskBudget?: { total: number }; autoCompactWindow?: number; hooks?: SessionHooksConfig; mcpServerNames?: string[]; enabledPlugins?: string[]; sandbox?: SandboxSetting; cliDebug?: boolean; worktree?: WorktreeInfo } {
     const settingsHooks = typeof opts.settings === 'object' && opts.settings && !Array.isArray(opts.settings)
       ? (opts.settings as { hooks?: SessionHooksConfig }).hooks
       : undefined
@@ -1556,19 +1550,16 @@ export class SessionManager {
       // session's initial budget intent (pure spawn-time key — re-applied on
       // re-spawn only).
       taskBudget: coerceTaskBudget(opts.taskBudget),
-      // Auto-compact window is an app-level custom opts field (no SDK
-      // Options key — it's re-applied post-spawn via applyFlagSettings, like
-      // fastMode/effortLevel). Carried through resume/fork/clear opts so a
-      // pinned window survives re-spawns; normalised to a positive finite
-      // token count (undefined = "auto").
+      // Auto-compact window — a spawn INTENT (folded into
+      // Options.settings.autoCompactWindow on every spawn; the applyFlagSettings
+      // channel is inert for this key). Read from the `settings` map — the one
+      // place every spawn path carries it (create body, baseSpawnOptions and
+      // the side-chat / resume builders fold it there). Normalised to a
+      // positive finite token count (undefined = "auto").
       autoCompactWindow: (() => {
-        const w = (opts as { autoCompactWindow?: unknown }).autoCompactWindow
+        const w = (opts as { settings?: { autoCompactWindow?: unknown } }).settings?.autoCompactWindow
         return typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
       })(),
-      // Create-only default-threshold pin (see maybeApplyDefaultAutoCompactWindow).
-      autoCompactDefaultPending: (opts as { autoCompactDefaultPending?: unknown }).autoCompactDefaultPending === true
-        ? true
-        : undefined,
       hooks: settingsHooks,
       // Capture the resolved MCP server names so the client can compute
       // "available" without the flaky mcp-status SDK control request.
@@ -1657,19 +1648,10 @@ export class SessionManager {
     // selected — instead of an undefined that silently resolves to whatever
     // model the `claude` CLI happens to pick. Resume/fork are unaffected:
     // they carry the persisted model forward through their own opts.
-    const withDefault: Options & { provider?: string; modelGroupId?: string; autoCompactDefaultPending?: boolean } = {
+    const withDefault: Options & { provider?: string; modelGroupId?: string } = {
       ...opts,
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? profileDefaultModel(profile),
-    }
-    // Brand-new sessions with no pin: once the model window is known, pin
-    // `autoCompactWindow` so the CLI threshold lands at config
-    // `autoCompactThresholdPct` (default 85%) instead of the formula ~97%.
-    // Create-only — resume/fork/clear never set this flag.
-    {
-      const w = (opts as { autoCompactWindow?: unknown }).autoCompactWindow
-      const hasPin = typeof w === 'number' && Number.isFinite(w) && w > 0
-      if (!hasPin) withDefault.autoCompactDefaultPending = true
     }
     // Create-time per-first-party-server override (app-level `firstPartyTools`
     // body field — NOT an SDK Options key; the provider whitelists what
@@ -2360,8 +2342,6 @@ export class SessionManager {
       // Same for the task budget (Options.taskBudget — pure spawn-time key,
       // no post-spawn re-apply exists).
       taskBudget: meta.taskBudget,
-      // Same for the auto-compact window (re-applied post-spawn via
-      // applyFlagSettings, like fastMode — snapshotMeta captures it from here).
       autoCompactWindow: meta.autoCompactWindow,
       // Same as resume: preserve `context-1m-...` etc. so the fork has the
       // same effective window as the source. See resume() for the cast rationale.
@@ -2369,7 +2349,7 @@ export class SessionManager {
       hooks: meta.hooks,
       enabledPlugins: meta.enabledPlugins,
       cliDebug: meta.cliDebug,
-    }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting; cliDebug?: boolean }
+    }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; cliDebug?: boolean }
     forkOpts.resume = id
     forkOpts.forkSession = true
     // Carry the start-as agent forward only while its def still exists and
@@ -2897,7 +2877,6 @@ export class SessionManager {
       forkBoundaryUuid?: string
       enabledPlugins?: string[]
       memory?: unknown
-      autoCompactWindow?: number
     } = {
       provider: sourceProvider,
       resume: parentId,
@@ -2909,10 +2888,14 @@ export class SessionManager {
       effort: meta.effortLevel,
       thinking: thinkingForSpawn(meta.thinking),
       taskBudget: meta.taskBudget,
-      autoCompactWindow: meta.autoCompactWindow,
       betas: meta.betas as Options['betas'],
       enabledPlugins: meta.enabledPlugins,
-      settings: meta.hooks ? ({ hooks: toSdkHooksSettings(meta.hooks) } as Settings) : undefined,
+      settings: meta.hooks || meta.autoCompactWindow !== undefined
+        ? ({
+            ...(meta.hooks ? { hooks: toSdkHooksSettings(meta.hooks) } : {}),
+            ...(meta.autoCompactWindow !== undefined ? { autoCompactWindow: meta.autoCompactWindow } : {}),
+          } as Settings)
+        : undefined,
       // New id (same as fork): carry the auto-memory intent via opts.
       memory: meta.memory,
       parentId,
@@ -3205,12 +3188,6 @@ export class SessionManager {
       gitStartSha: existingMeta?.gitStartSha,
       repoRoot: existingMeta?.repoRoot,
       fastMode: existingMeta?.fastMode,
-      // Auto-compact window intent. Resume paths (same id) restore from the
-      // persisted meta; create/fork/clear pass it on opts where snapshotMeta
-      // captured it. `??` so an explicit intent survives (undefined = "auto").
-      autoCompactWindow: existingMeta?.autoCompactWindow ?? metaSnapshot.autoCompactWindow,
-      autoCompactDefaultPending:
-        existingMeta?.autoCompactDefaultPending ?? metaSnapshot.autoCompactDefaultPending,
       // Auto-memory intent. Resume paths (same id) restore from the
       // persisted meta; create/fork/clear pass the intent on opts where
       // snapshotMeta captured it. `??` so an explicit intent survives.
@@ -3349,9 +3326,6 @@ export class SessionManager {
     // applyFlagSettings by the provider. Leaving it in would hand the CLI
     // arg builder an unknown key.
     delete (sdkOptions as { memory?: unknown }).memory
-    // Same for autoCompactWindow: no SDK Options key (re-applied post-spawn
-    // via applyFlagSettings) — strip so the CLI arg builder never sees it.
-    delete (sdkOptions as { autoCompactWindow?: unknown }).autoCompactWindow
     // Same for sandbox: applied post-spawn via applyFlagSettings (the flag-
     // settings layer), NOT Options.sandbox (whose `enabled` would default
     // failIfUnavailable=true and hard-fail a session missing sandbox deps).
@@ -3401,7 +3375,6 @@ export class SessionManager {
       thinking: session.thinking,
       taskBudget: session.taskBudget,
       fastMode: session.fastMode,
-      autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,
       sandbox: session.sandbox,
       cliDebug: this.resolveCliDebug(session),
@@ -4340,7 +4313,7 @@ export class SessionManager {
         // delete-confirm dirty check, worktree cleanup) while running in the
         // inherited worktree dir.
         worktree: settings.worktree,
-      }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; autoCompactWindow?: number; sandbox?: SandboxSetting; parentId?: string }
+      }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; parentId?: string }
       // Carry the auto-memory intent onto the fresh session (new id —
       // snapshotMeta captures it from here, same as fork).
       freshOpts.memory = settings.memory
@@ -5071,23 +5044,10 @@ export class SessionManager {
       // Mirror the persona onto the session so SessionInfo / the persisted
       // meta / every re-spawn path agree with what the CLI was just told.
       if (agentIntent) s.agent = agentIntent.next ?? undefined
-      // Keep the session's persisted auto-compact window in sync when the
-      // generic /settings route forwards it directly (the dedicated
-      // setAutoCompactWindow route is the primary path). `autoCompactEnabled`
-      // alone (no window) is a plain toggle and doesn't pin a window — only
-      // `autoCompactWindow` writes the intent.
-      if ('autoCompactWindow' in forwarded) {
-        const w = forwarded.autoCompactWindow
-        s.autoCompactWindow = typeof w === 'number' && Number.isFinite(w) && w > 0 ? Math.round(w) : undefined
-        // Same "user wins" rule as setAutoCompactWindow — an explicit clear
-        // must not be overridden by the create-time default pin.
-        delete s.autoCompactDefaultPending
-        // Same immediate refresh as the dedicated setAutoCompactWindow path —
-        // the generic /settings route also moves the effective threshold —
-        // followed by the same background probe for the CLI's real answer.
-        reapplyAutoCompactWindow(s, s.autoCompactWindow, { autoCompactEnabled: true })
-        this.probeAutoCompactFacts(s)
-      }
+      // `autoCompactEnabled` (the CLI's on/off toggle) — refresh the cached
+      // CLI facts so the ContextBar's off-state display follows. The
+      // compaction WINDOW is no longer managed here: it rides spawn-time
+      // Options.settings or the CLI's /autocompact.
       if ('autoCompactEnabled' in forwarded) {
         s.lastSdkAutoCompact = undefined
         this.probeAutoCompactFacts(s)
@@ -5254,7 +5214,7 @@ export class SessionManager {
 
   /** Shared implementation for the "forward a flag to the SDK via
    *  applyFlagSettings, then record the intent locally" pattern shared by
-   *  ~10 session setters (setFastMode, setEffortLevel, setAutoCompactWindow,
+   *  ~10 session setters (setFastMode, setEffortLevel,
    *  setSandbox, setMemorySettings, togglePlugin, applyHooks, applySettings).
    *  Each setter differs only in: which flags to send, the action label
    *  (for capability gating + error messages), an optional capability, and
@@ -5417,85 +5377,6 @@ export class SessionManager {
       (s) => { s.effortLevel = level },
       'supportsEffortLevel',
     )
-  }
-
-  /** Pin the auto-compact window for a session. `tokens > 0` sets an
-   *  absolute window (SDK Settings.autoCompactWindow) and enables
-   *  auto-compact; `null` clears both keys back to "auto" (the CLI derives
-   *  the threshold from the model's context window). Forwards the intent to
-   *  the SDK via applyFlagSettings and records it locally so it survives
-   *  resume/restart (re-applied on respawn). No capability gate — the
-   *  applyFlagSettings handle method is the only prerequisite, same as
-   *  setMemorySettings. */
-  async setAutoCompactWindow(id: string, tokens: number | null): Promise<SessionInfo> {
-    const window = tokens && tokens > 0 ? Math.round(tokens) : undefined
-    // Product rule: auto-compact stays ON — clear only drops the window pin.
-    const flags: Record<string, unknown> = window
-      ? { autoCompactWindow: window, autoCompactEnabled: true }
-      : { autoCompactWindow: null, autoCompactEnabled: true }
-    return this.applyFlagSettingAndPersist(id, flags, 'auto-compact window', (s) => {
-      s.autoCompactWindow = window
-      // A user pin (or explicit clear) always wins over the create-time default.
-      delete s.autoCompactDefaultPending
-      // Refresh the cached context-usage snapshot NOW so every live ContextBar
-      // jumps to the new threshold immediately — the threshold otherwise only
-      // derives from the next turn's `result`, leaving the bar (and the
-      // "Compact at X%" label) stuck on the stale auto position, which reads
-      // as a failed commit. This is the DERIVED (approximate) threshold, and
-      // it also drops any now-stale CLI-reported one. Auto-compact stays
-      // enabled on both pin and clear.
-      reapplyAutoCompactWindow(s, window, { autoCompactEnabled: true })
-      // Then ask the CLI what it actually decided, in the background, and
-      // re-broadcast if its answer differs from our approximation. This is
-      // what makes a pin verifiable rather than merely optimistic.
-      this.probeAutoCompactFacts(s)
-    })
-  }
-
-  /** Apply the create-time default auto-compact pin once the model window is
-   *  known (config `autoCompactThresholdPct`, default 85%). No-op unless the
-   *  session is still `autoCompactDefaultPending` and has no user pin.
-   *  Called after a context-usage snapshot lands with a usable maxTokens. */
-  maybeApplyDefaultAutoCompactWindow(id: string): Promise<void> {
-    const s = this.sessions.get(id)
-    if (!s?.autoCompactDefaultPending) return Promise.resolve()
-    if (s.autoCompactWindow != null && s.autoCompactWindow > 0) {
-      delete s.autoCompactDefaultPending
-      this.persist(s)
-      return Promise.resolve()
-    }
-    const usage = s.lastContextUsage
-    if (!usage || !(usage.maxTokens > 0)) return Promise.resolve()
-    // A threshold on a PROBE-sourced snapshot is the CLI's own answer and is
-    // authoritative — pinning the 85% default over it would overwrite what
-    // the subprocess actually does and churn every later reconcile that
-    // carries the real number back. Derived snapshots (result/assistant
-    // paths) carry the LOCAL formula replica instead — replacing that with
-    // the configured default is exactly what this pin is FOR (see
-    // CONFIG.md autoCompactThresholdPct). No source stamp = test/seed shape,
-    // treated as derived.
-    if (
-      usage.source === 'probe'
-      && typeof usage.autoCompactThreshold === 'number'
-      && usage.autoCompactThreshold > 0
-    ) {
-      delete s.autoCompactDefaultPending
-      this.persist(s)
-      return Promise.resolve()
-    }
-    const pct = clampAutoCompactThresholdPct(defaultConfig.autoCompactThresholdPct)
-    const window = autoCompactWindowForPct(pct, usage.maxTokens, usage.maxOutputTokens)
-    // 0 = the pct is not achievable on this window (or no window) — leave auto.
-    if (!(window > 0)) {
-      delete s.autoCompactDefaultPending
-      this.persist(s)
-      return Promise.resolve()
-    }
-    // Clear pending only after the pin lands; a failed apply must stay pending
-    // so a later usage snapshot can retry.
-    return this.setAutoCompactWindow(id, window).then(() => undefined).catch((err) => {
-      log.warn(`[${id}] applying default auto-compact window ${window} failed:`, err)
-    })
   }
 
   /** Change extended thinking on a LIVE session. Unlike effort (a Settings
@@ -5868,16 +5749,15 @@ export class SessionManager {
     return { ...(raw as Record<string, unknown>), autoCompactEnabled: rawEnabled }
   }
 
-  /** Fire-and-forget getContextUsage() purely to learn the CLI's real
-   *  auto-compact threshold after the pinned window changed, so the ContextBar
-   *  marker settles on the truth instead of our derived approximation.
+  /** Fire-and-forget getContextUsage() purely to refresh the CLI's real
+   *  auto-compact facts after an `autoCompactEnabled` toggle, so the
+   *  ContextBar settles on the truth instead of our derived approximation.
    *
    *  Deliberately background: this control request has no SDK-side timeout, so
-   *  awaiting it would let a wedged subprocess hang the pin response. Skipped
-   *  mid-turn (a busy subprocess delays control_response) and while another
-   *  probe is in flight, and every failure is swallowed to debug — the derived
-   *  threshold reapplyAutoCompactWindow already broadcast stays as the
-   *  fallback, which is the pre-existing behaviour. */
+   *  awaiting it would let a wedged subprocess hang the settings response.
+   *  Skipped mid-turn (a busy subprocess delays control_response) and while
+   *  another probe is in flight, and every failure is swallowed to debug —
+   *  the derived threshold already on the snapshot stays as the fallback. */
   private probeAutoCompactFacts(s: Session): void {
     this.fireContextUsageProbe(s, {
       flag: 'autoCompactProbeInFlight',
@@ -5886,7 +5766,6 @@ export class SessionManager {
       onResolved: (raw) => {
         const facts = parseSdkAutoCompactFacts(raw)
         if (facts) applySdkAutoCompactFacts(s, facts)
-        this.maybeApplyDefaultAutoCompactWindow(s.id)
       },
     })
   }
@@ -5958,9 +5837,6 @@ export class SessionManager {
             && last.autoCompactThreshold === corrected.autoCompactThreshold
             && last.autoCompactEnabled === corrected.autoCompactEnabled
           ) {
-            // No-churn snapshot still knows the window — the create-time
-            // default pin must not miss this path.
-            this.maybeApplyDefaultAutoCompactWindow(s.id)
             return
           }
           applyContextUsage(s, corrected)
@@ -5970,7 +5846,6 @@ export class SessionManager {
         // see foldSdkAutoCompactFacts). Runs after the correction so the
         // fold lands on the corrected snapshot.
         this.foldSdkAutoCompactFacts(s, raw)
-        this.maybeApplyDefaultAutoCompactWindow(s.id)
       },
       onSettled: () => {
         if (!stale) return
@@ -6053,7 +5928,6 @@ export class SessionManager {
         const seeded = liteContextUsageFromSdkUsage(raw)
         if (seeded) applyContextUsage(s, seeded)
         this.foldSdkAutoCompactFacts(s, raw)
-        this.maybeApplyDefaultAutoCompactWindow(s.id)
       },
     })
     if (started) s.lastContextUsageSeedAt = Date.now()
@@ -7903,7 +7777,6 @@ export class SessionManager {
     effortLevel?: EffortLevel
     thinking?: ThinkingSetting
     taskBudget?: { total: number }
-    autoCompactWindow?: number
     terminated: boolean
     terminatedReason?: string
     error?: string
@@ -7944,7 +7817,6 @@ export class SessionManager {
       effortLevel: x.effortLevel,
       thinking: x.thinking,
       taskBudget: x.taskBudget,
-      autoCompactWindow: x.autoCompactWindow,
       terminated: x.terminated,
       terminatedReason: x.terminatedReason,
       canRetryResume: x.terminated && isTransientTerminatedReason(x.terminatedReason),
@@ -8170,7 +8042,6 @@ export class SessionManager {
         // call (see reconcileContextUsage for the aggregate-payload bug
         // this corrects).
         reconcileContextUsage: (s) => this.reconcileContextUsage(s),
-        onContextUsage: (s) => { void this.maybeApplyDefaultAutoCompactWindow(s.id) },
         // Zero-turn Context bar seed — see seedContextUsage. Fired here on
         // the init handshake as a free retry when the spawn-time probe
         // timed out (the cache/in-flight guards make it a no-op otherwise).
@@ -8267,7 +8138,7 @@ export class SessionManager {
    *    applyFlagSettingAndPersist — the sole persist path of setAgent,
    *                        applySettings, applyHooks, setFastMode,
    *                        setMemorySettings, setSandbox, setEffortLevel,
-   *                        setAutoCompactWindow, togglePlugin; locked there.
+   *                        togglePlugin; locked there.
    *
    *  NOT LOCKED:
    *    compact           — its summary is a long outbound model call; holding
@@ -8477,7 +8348,7 @@ export class SessionManager {
     hooks?: SessionHooksConfig
     enabledPlugins?: string[]
     cliDebug?: boolean
-  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; autoCompactWindow?: number; cliDebug?: boolean; worktree?: WorktreeInfo } {
+  }): Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; cliDebug?: boolean; worktree?: WorktreeInfo } {
     return {
       provider: source.provider,
       cwd: source.cwd,
@@ -8493,9 +8364,16 @@ export class SessionManager {
       effort: source.effortLevel,
       thinking: thinkingForSpawn(source.thinking),
       taskBudget: source.taskBudget,
-      autoCompactWindow: source.autoCompactWindow,
       betas: source.betas as Options['betas'],
-      settings: source.hooks ? ({ hooks: toSdkHooksSettings(source.hooks) } as Settings) : undefined,
+      // The ONLY channel the CLI honors for the auto-compact window (the
+      // applyFlagSettings route is inert for the key) — fold the spawn intent
+      // into `settings.autoCompactWindow` alongside the hooks settings.
+      settings: source.hooks || source.autoCompactWindow !== undefined
+        ? ({
+            ...(source.hooks ? { hooks: toSdkHooksSettings(source.hooks) } : {}),
+            ...(source.autoCompactWindow !== undefined ? { autoCompactWindow: source.autoCompactWindow } : {}),
+          } as Settings)
+        : undefined,
       enabledPlugins: source.enabledPlugins,
       cliDebug: source.cliDebug,
     }
@@ -8517,7 +8395,12 @@ export class SessionManager {
       thinking: thinkingForSpawn(session.thinking),
       taskBudget: session.taskBudget,
       betas: session.betas as Options['betas'],
-      settings: session.hooks ? ({ hooks: toSdkHooksSettings(session.hooks) } as Settings) : undefined,
+      settings: session.hooks || session.autoCompactWindow !== undefined
+        ? ({
+            ...(session.hooks ? { hooks: toSdkHooksSettings(session.hooks) } : {}),
+            ...(session.autoCompactWindow !== undefined ? { autoCompactWindow: session.autoCompactWindow } : {}),
+          } as Settings)
+        : undefined,
     }
     // Side Chat sessions carry a systemPrompt boundary (SIDE_DEVELOPER_INSTRUCTIONS)
     // that establishes the "non-mutating inspection" contract at turn-zero. The
@@ -8612,7 +8495,6 @@ export class SessionManager {
       thinking: session.thinking,
       taskBudget: session.taskBudget,
       fastMode: session.fastMode,
-      autoCompactWindow: session.autoCompactWindow,
       memory: session.memory,
       cliDebug: this.resolveCliDebug(session),
       enabledPlugins: session.enabledPlugins,

@@ -7,10 +7,9 @@
 //
 // Hover (with a short dwell so a pass-through toward Send doesn't flash the
 // panel) / click-to-pin / keyboard focus opens a popover that hosts the
-// existing ContextBar plus the composition breakdown. All drag / keyboard /
-// commit logic stays there — this file is only the trigger + chrome. Level
-// math is shared via contextUsageStats so the ring tint can never drift
-// from the panel.
+// ContextBar (display-only) plus the composition breakdown. This file is only
+// the trigger + chrome. Level math is shared via contextUsageStats so the ring
+// tint can never drift from the panel.
 //
 // The popover portals to <body> with position:fixed, exactly like
 // ModelPicker: AnimatePresence's direct child is a KEYED COMPONENT whose
@@ -42,10 +41,7 @@ interface Props {
   /** Session id — the popover's composition breakdown needs the on-demand
    *  detailed fetch (the lite WS snapshot carries no categories). */
   sessionId: string
-  editable?: boolean
-  custom?: boolean
   disabled?: boolean
-  onSetWindow?: (windowTokens: number | null) => void
 }
 
 /** SVG ring geometry. pathLength=100 so stroke-dashoffset maps 1:1 to %.
@@ -70,10 +66,7 @@ const HOVER_CLOSE_MS = 200
 function OrbPopover({
   usage,
   sessionId,
-  editable,
-  custom,
   disabled,
-  onSetWindow,
   anchorRef,
   popRef,
   onClose,
@@ -82,10 +75,7 @@ function OrbPopover({
 }: {
   usage: ContextUsage | null
   sessionId: string
-  editable: boolean
-  custom: boolean
   disabled: boolean
-  onSetWindow?: (windowTokens: number | null) => void
   anchorRef: RefObject<HTMLSpanElement | null>
   popRef: RefObject<HTMLDivElement | null>
   onClose: () => void
@@ -156,13 +146,7 @@ function OrbPopover({
       onMouseEnter={onPointerEnter}
       onMouseLeave={onPointerLeave}
     >
-      <ContextBar
-        usage={mergedUsage}
-        editable={editable}
-        custom={custom}
-        disabled={disabled}
-        onSetWindow={onSetWindow}
-      />
+      <ContextBar usage={mergedUsage} />
       {!disabled && (
         <div className="ctx-orb-pop-comp">
           {/* animateResize: the breakdown arrives ASYNC (loading note → rows),
@@ -184,10 +168,7 @@ function OrbPopover({
 export const ContextOrb = memo(function ContextOrb({
   usage,
   sessionId,
-  editable = false,
-  custom = false,
   disabled = false,
-  onSetWindow,
 }: Props) {
   const wrapRef = useRef<HTMLSpanElement>(null)
   // The portaled panel's ref is OWNED here: the button's blur dismissal must
@@ -301,8 +282,8 @@ export const ContextOrb = memo(function ContextOrb({
         }}
       >
         {/* Ring only — used % as arc length. No threshold tick: the compact
-            marker lives on the popover's track, where it is actually
-            draggable; a 1.2-dash tick on a 32px ring was unreadable noise. */}
+            marker lives on the popover's track; a 1.2-dash tick on a 32px
+            ring was unreadable noise. */}
         <svg className="ctx-orb-ring" viewBox={`0 0 ${VIEW} ${VIEW}`} aria-hidden>
           <circle className="track" cx={VIEW / 2} cy={VIEW / 2} r={RING_R} />
           {fillOffset != null && (
@@ -326,10 +307,7 @@ export const ContextOrb = memo(function ContextOrb({
             key="ctx-orb-pop"
             usage={usage}
             sessionId={sessionId}
-            editable={editable}
-            custom={custom}
             disabled={disabled}
-            onSetWindow={onSetWindow}
             anchorRef={wrapRef}
             popRef={popRef}
             onClose={close}

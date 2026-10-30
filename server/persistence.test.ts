@@ -454,28 +454,24 @@ describe('SessionStore', () => {
     expect(loaded[0].profileId).toBeUndefined()
   })
 
-  // ── autoCompactWindow (absolute token window) persistence ────────
-  it('round-trips a positive autoCompactWindow', async () => {
-    const store = new SessionStore({ stateDir: dir })
-    await store.load()
-    store.upsert(makeMeta('a', { autoCompactWindow: 180000 }))
-    await store.flush()
-
-    const store2 = new SessionStore({ stateDir: dir })
-    await store2.load()
-    expect(store2.get('a')?.autoCompactWindow).toBe(180000)
-  })
-
-  it('rounds fractional autoCompactWindow tokens during coerce', async () => {
+  // ── auto-compact window (spawn intent) persistence ────────
+  it('round-trips a positive autoCompactWindow and drops stale autoCompactDefaultPending', async () => {
+    // The window is a spawn intent again (folded into Options.settings on
+    // every spawn); the old default-pin flag stays removed, so an older
+    // sessions.json loads with only the window kept.
     writeFileSync(
       join(dir, 'sessions.json'),
       JSON.stringify([
-        { id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, autoCompactWindow: 180000.6 },
+        {
+          id: 'a', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false,
+          autoCompactWindow: 180000, autoCompactDefaultPending: true,
+        },
       ]),
     )
     const store = new SessionStore({ stateDir: dir })
     const loaded = await store.load()
-    expect(loaded[0].autoCompactWindow).toBe(180001)
+    expect(loaded[0].autoCompactWindow).toBe(180000)
+    expect((loaded[0] as unknown as Record<string, unknown>).autoCompactDefaultPending).toBeUndefined()
   })
 
   it('drops malformed autoCompactWindow values during coerce', async () => {

@@ -126,7 +126,7 @@ function summarizeSystemPrompt(sp: unknown): unknown {
  *  JSON-serializable object for permanent diagnostic logging. Captures every
  *  option the CLI subprocess receives at spawn (model, cwd, betas, resume/
  *  fork, permission mode, thinking, mcp/plugins, sanitized env, …) plus the
- *  post-spawn applyFlagSettings intents (fastMode/effortLevel/autoCompactWindow/
+ *  post-spawn applyFlagSettings intents (fastMode/effortLevel/
  *  memory) that have no spawn-time Options equivalent — so one spawn log line
  *  tells the whole story for debugging session-shape drift (e.g. the
  *  200K-vs-1M context-window question). Env values whose key looks sensitive
@@ -169,7 +169,6 @@ export function summarizeSpawn(opts: CreateSessionOptions, sdkOptions: Options):
     postSpawn: {
       fastMode: opts.fastMode,
       effortLevel: opts.effortLevel,
-      autoCompactWindow: opts.autoCompactWindow,
       memory: opts.memory,
       sandbox: opts.sandbox,
       enabledPlugins: opts.enabledPlugins,
@@ -536,13 +535,12 @@ export class ClaudeProvider implements AgentProvider {
       })
     }
     // Auto-compact is ALWAYS on in this app (product rule) — spawn stamps
-    // `autoCompactEnabled: true` whether or not a window is pinned. A positive
-    // `autoCompactWindow` additionally pins the threshold; undefined = "auto".
+    // `autoCompactEnabled: true`. The compaction window itself is NOT managed
+    // here: it rides `Options.settings.autoCompactWindow` at spawn (the New
+    // session form) or the CLI's own /autocompact — the applyFlagSettings
+    // channel is inert for that key (see docs/research/2026-10-30-autocompact-semantics.md).
     {
       const flags: Record<string, unknown> = { autoCompactEnabled: true }
-      if (opts.autoCompactWindow !== undefined && opts.autoCompactWindow > 0) {
-        flags.autoCompactWindow = Math.round(opts.autoCompactWindow)
-      }
       void q.applyFlagSettings(flags).catch((err) => {
         log.warn(`[${opts.id}] applying auto-compact flags on spawn failed:`, err)
       })
@@ -567,7 +565,7 @@ export class ClaudeProvider implements AgentProvider {
       })
     }
     // Sandbox intent (SDK Settings.sandbox, no spawn-time Options equivalent)
-    // — re-applied post-spawn exactly like memory/autoCompactWindow above,
+    // — re-applied post-spawn exactly like memory above,
     // via the flag-settings layer. NOT Options.sandbox: passing `enabled` via
     // Options defaults failIfUnavailable=true, which makes a whole session
     // error out when sandbox dependencies are missing (e.g. bubblewrap on

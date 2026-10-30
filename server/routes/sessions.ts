@@ -97,7 +97,7 @@ const CREATE_BODY_FIELDS = new Set([
   'fallbackModel', 'maxTurns', 'maxBudgetUsd', 'taskBudget',
   'tools', 'allowedTools', 'disallowedTools', 'toolAliases', 'toolConfig',
   'includePartialMessages', 'includeHookEvents', 'settings', 'memory', 'sandbox',
-  'autoCompactWindow', 'cliDebug', 'firstPartyTools',
+  'cliDebug', 'firstPartyTools',
   'showPinnedUserMessage', 'autoRecap', 'toolGroupCards', 'autoExpandRunningGroups',
   'showMessageHeaders',
   'mcpServers', 'enabledMcpServers', 'enabledPlugins',
@@ -210,9 +210,17 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
   } else if (taskBudget !== undefined && coerceTaskBudget(taskBudget) === undefined) {
     return { ok: false, error: 'taskBudget.total must be a finite positive number' }
   }
-  const acw = rest.autoCompactWindow
-  if (acw !== undefined && acw !== null && (typeof acw !== 'number' || !Number.isFinite(acw) || acw <= 0)) {
-    return { ok: false, error: 'autoCompactWindow must be a finite number > 0' }
+  // The auto-compact window rides `settings.autoCompactWindow` (the spawn
+  // channel — the top-level key it replaced was dropped from the whitelist
+  // above). Validate it where it lives now: a malformed value must be a 400,
+  // not a silent drop paired with a raw value leaking into the CLI's
+  // settings parser.
+  const settingsAcw = (rest.settings as { autoCompactWindow?: unknown } | undefined)?.autoCompactWindow
+  if (
+    settingsAcw !== undefined && settingsAcw !== null
+    && (typeof settingsAcw !== 'number' || !Number.isFinite(settingsAcw) || settingsAcw <= 0)
+  ) {
+    return { ok: false, error: 'settings.autoCompactWindow must be a finite number > 0' }
   }
   if (rest.cliDebug !== undefined && typeof rest.cliDebug !== 'boolean') {
     return { ok: false, error: 'cliDebug must be a boolean' }
@@ -864,23 +872,6 @@ export function buildSessionRouter(
       return c.json({ error: 'level must be one of low, medium, high, xhigh, max' }, 400)
     }
     const info = await sm.setEffortLevel(c.req.param('id'), level)
-    return c.json({ session: info })
-  })
-
-  // Set the auto-compact window (absolute tokens). Body `{ window?: number |
-  // null }`: a positive finite number pins the window (and enables
-  // auto-compact); `null` clears back to "auto" (the CLI derives the
-  // threshold from the model's context window). Forwarded to the SDK via
-  // applyFlagSettings and persisted so it survives resume / fork / restart.
-  app.post('/sessions/:id/auto-compact-window', async (c) => {
-    const body = await safeJson<{ window?: unknown }>(c.req)
-    const w = body.window
-    if (w !== null && w !== undefined) {
-      if (typeof w !== 'number' || !Number.isFinite(w) || w <= 0) {
-        return c.json({ error: 'window must be a positive finite number or null' }, 400)
-      }
-    }
-    const info = await sm.setAutoCompactWindow(c.req.param('id'), w == null ? null : w)
     return c.json({ session: info })
   })
 

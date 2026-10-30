@@ -138,6 +138,13 @@ export interface NewSessionForm {
   /** Opt-in: run this session in its own git worktree (server provisions
    *  <stateDir>/worktrees/<sessionId> off the repo HEAD). */
   isolateWorktree?: boolean
+  /** Official auto-compact window (CLI semantics, absolute tokens) applied at
+   *  spawn via `Options.settings.autoCompactWindow`. Omitted = auto (the
+   *  model-tuned window). This is the ONLY app-side way to set the compaction
+   *  threshold: the SDK's applyFlagSettings channel is inert for this key on
+   *  current CLIs, and mid-session changes go through the CLI's own
+   *  `/autocompact` command. */
+  settings?: { autoCompactWindow?: number }
   // Advanced (JSON blobs — rendered as <textarea> and parsed on submit)
   mcpServers?: unknown
   /** Custom environment variables merged into the subprocess environment. */

@@ -25,9 +25,9 @@ export interface ContextUsage {
    *  `result` has supplied the model's context window; the bar renders
    *  "X% until auto-compact" from it. */
   autoCompactThreshold?: number
-  /** The model's advertised max output tokens, surfaced so the draggable
-   *  marker can invert a threshold position back into Settings.autoCompactWindow
-   *  exactly (mirror of the server's LiteContextUsage.maxOutputTokens). */
+  /** The model's advertised max output tokens (mirror of the server's
+   *  LiteContextUsage.maxOutputTokens). Wire passthrough — the server's
+   *  threshold math uses it; the client just carries the field. */
   maxOutputTokens?: number
   /** Whether the CLI says auto-compact is on. Three state: `true`/`false` are
    *  CLI-authoritative; `null` / absent means unknown — the bar must not claim

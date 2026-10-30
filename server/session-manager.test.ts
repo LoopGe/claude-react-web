@@ -2811,126 +2811,12 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.effortLevel).toBe('xhigh')
   })
 
-  // --- auto-compact window (SDK Settings.autoCompactWindow via applyFlagSettings) ---
-
-  it('setAutoCompactWindow() pins a positive token window and enables auto-compact', async () => {
-    const info = await sm.create({})
-    expect(info.autoCompactWindow).toBeUndefined()
-    const updated = await sm.setAutoCompactWindow(info.id, 180000)
-    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
-      autoCompactWindow: 180000,
-      autoCompactEnabled: true,
-    })
-    expect(updated.autoCompactWindow).toBe(180000)
-    expect(sm.get(info.id).autoCompactWindow).toBe(180000)
-  })
-
-  it('setAutoCompactWindow() rounds fractional tokens', async () => {
-    const info = await sm.create({})
-    const updated = await sm.setAutoCompactWindow(info.id, 180000.6)
-    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
-      autoCompactWindow: 180001,
-      autoCompactEnabled: true,
-    })
-    expect(updated.autoCompactWindow).toBe(180001)
-  })
-
-  it('setAutoCompactWindow() with null clears the window but keeps auto-compact enabled', async () => {
-    const info = await sm.create({})
-    await sm.setAutoCompactWindow(info.id, 180000)
-    expect(sm.get(info.id).autoCompactWindow).toBe(180000)
-    const updated = await sm.setAutoCompactWindow(info.id, null)
-    // Product rule: auto-compact stays ON — clear only drops the pin.
-    expect(mockHandles[0].applyFlagSettings).toHaveBeenLastCalledWith({
-      autoCompactWindow: null,
-      autoCompactEnabled: true,
-    })
-    expect(updated.autoCompactWindow).toBeUndefined()
-    expect(sm.get(info.id).autoCompactWindow).toBeUndefined()
-  })
-
-  it('setAutoCompactWindow() persists the window so it survives resume', async () => {
-    const info = await sm.create({})
-    await sm.setAutoCompactWindow(info.id, 100000)
-    await store.flush()
-    expect(store.get(info.id)?.autoCompactWindow).toBe(100000)
-  })
-
-  it('create() marks autoCompactDefaultPending when no window is supplied', async () => {
-    const info = await sm.create({})
-    expect(store.get(info.id)?.autoCompactDefaultPending).toBe(true)
-    expect(sm.get(info.id).autoCompactWindow).toBeUndefined()
-  })
-
-  it('create() with an explicit window does not mark pending', async () => {
-    const info = await sm.create({ autoCompactWindow: 180000 } as never)
-    expect(store.get(info.id)?.autoCompactDefaultPending).toBeUndefined()
-    expect(sm.get(info.id).autoCompactWindow).toBe(180000)
-  })
-
-  it('applies the default 85% pin once the model window is known, then clears pending', async () => {
-    // 1M window: want threshold 850000 → window 883000.
-    const info = await sm.create({})
-    usageStateOf(info.id).lastContextUsage = {
-      totalTokens: 1000,
-      maxTokens: 1_000_000,
-      rawMaxTokens: 1_000_000,
-      percentage: 0.1,
-      model: 'claude-opus-4-7',
-      maxOutputTokens: 32_000,
-    }
-    await (sm as unknown as { maybeApplyDefaultAutoCompactWindow: (id: string) => Promise<void> })
-      .maybeApplyDefaultAutoCompactWindow(info.id)
-
-    expect(mockHandles[0].applyFlagSettings).toHaveBeenCalledWith({
-      autoCompactWindow: 883000,
-      autoCompactEnabled: true,
-    })
-    expect(sm.get(info.id).autoCompactWindow).toBe(883000)
-    await store.flush()
-    expect(store.get(info.id)?.autoCompactDefaultPending).toBeFalsy()
-  })
-
-  it('does not apply the default pin over a user pin or a second time', async () => {
-    const info = await sm.create({ autoCompactWindow: 120000 } as never)
-    usageStateOf(info.id).lastContextUsage = {
-      totalTokens: 1000,
-      maxTokens: 1_000_000,
-      rawMaxTokens: 1_000_000,
-      percentage: 0.1,
-      model: 'claude-opus-4-7',
-      maxOutputTokens: 32_000,
-    }
-    ;(sm as unknown as { maybeApplyDefaultAutoCompactWindow: (id: string) => Promise<void> })
-      .maybeApplyDefaultAutoCompactWindow(info.id)
-    expect(sm.get(info.id).autoCompactWindow).toBe(120000)
-
-    const info2 = await sm.create({})
-    usageStateOf(info2.id).lastContextUsage = {
-      totalTokens: 1000,
-      maxTokens: 200_000,
-      rawMaxTokens: 200_000,
-      percentage: 0.5,
-      model: 'm',
-    }
-    const apply = (sm as unknown as { maybeApplyDefaultAutoCompactWindow: (id: string) => Promise<void> })
-      .maybeApplyDefaultAutoCompactWindow.bind(sm)
-    await apply(info2.id)
-    // 85% is not achievable on 200k (inverse exceeds the window) — leave auto
-    // rather than pinning a sticky 200k that mis-fires after a model switch.
-    expect(sm.get(info2.id).autoCompactWindow).toBeUndefined()
-    await store.flush()
-    expect(store.get(info2.id)?.autoCompactDefaultPending).toBeFalsy()
-  })
-
   // --- authoritative auto-compact facts (the CLI's own threshold) ---------
   //
-  // The pinned window genuinely reaches the CLI, but the THRESHOLD the
-  // ContextBar renders was a local replica of a CLI-internal formula with no
-  // way to tell it had drifted. getContextUsage() is the one place the SDK
-  // reports the real numbers, so every call to it is harvested, and a pin
-  // additionally fires one background probe so the marker settles on the
-  // CLI's answer instead of our approximation.
+  // The THRESHOLD the ContextBar renders was a local replica of a CLI-internal
+  // formula with no way to tell it had drifted. getContextUsage() is the one
+  // place the SDK reports the real numbers, so every call to it is harvested
+  // and folded into the live snapshot (the CLI's answer wins).
 
   /** Reach the live Session to seed / inspect the cached usage + facts. */
   const usageStateOf = (id: string) =>
@@ -3011,58 +2897,6 @@ describe('SessionManager', () => {
 
     expect(usageStateOf(info.id).lastSdkAutoCompact).toBeUndefined()
     expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(167000)
-  })
-
-  it('setAutoCompactWindow() probes the CLI in the background and lands its threshold', async () => {
-    const info = await sm.create({})
-    seedSnapshot(info.id)
-    // Hold the probe open: getContextUsage has no SDK-side timeout, so the pin
-    // response must not be waiting on it.
-    let resolveProbe: (v: unknown) => void = () => {}
-    mockHandles[0].getContextUsage.mockReturnValueOnce(new Promise((res) => { resolveProbe = res }))
-
-    await sm.setAutoCompactWindow(info.id, 113000)
-    // The background probe asks for the cheap summary (no per-category
-    // token-count API calls) — it only needs the auto-compact facts.
-    expect(mockHandles[0].getContextUsage).toHaveBeenCalledWith({ detail: 'summary' })
-    // Pin already committed, with our derived approximation on the bar.
-    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(80000)
-
-    // The CLI answers 78000 — its number replaces the approximation, with no
-    // turn needed in between.
-    resolveProbe({
-      model: 'claude-opus-4-7',
-      autoCompactThreshold: 78000,
-      isAutoCompactEnabled: true,
-      categories: [],
-    })
-    for (let i = 0; i < 20 && sm.getCachedContextUsage(info.id)?.autoCompactThreshold !== 78000; i++) await tick()
-    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(78000)
-  })
-
-  it('a failing background probe leaves the derived threshold in place', async () => {
-    const info = await sm.create({})
-    seedSnapshot(info.id)
-    mockHandles[0].getContextUsage.mockRejectedValueOnce(new Error('subprocess busy'))
-
-    await sm.setAutoCompactWindow(info.id, 113000)
-    for (let i = 0; i < 5; i++) await tick()
-
-    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(80000)
-  })
-
-  it('setAutoCompactWindow() skips the probe mid-turn (a busy subprocess stalls control requests)', async () => {
-    const info = await sm.create({})
-    seedSnapshot(info.id)
-    const s = usageStateOf(info.id) as unknown as { pendingTurns: number }
-    s.pendingTurns = 1
-    mockHandles[0].getContextUsage.mockClear()
-
-    await sm.setAutoCompactWindow(info.id, 113000)
-    for (let i = 0; i < 5; i++) await tick()
-
-    expect(mockHandles[0].getContextUsage).not.toHaveBeenCalled()
-    expect(sm.getCachedContextUsage(info.id)?.autoCompactThreshold).toBe(80000)
   })
 
   it('setModel() drops facts computed for the previous model', async () => {
@@ -4171,6 +4005,24 @@ describe('SessionManager', () => {
     const info = await sm.create({ taskBudget: { total: 64000 } } as unknown as Parameters<typeof sm.create>[0])
     expect(mockHandles[0].options.taskBudget).toEqual({ total: 64000 })
     expect(info.taskBudget).toEqual({ total: 64000 })
+  })
+
+  // --- auto-compact window (spawn intent via Options.settings.autoCompactWindow) ---
+
+  it('create({ settings: { autoCompactWindow } }) spawns with it and records the intent', async () => {
+    const info = await sm.create({ settings: { autoCompactWindow: 500000 } } as unknown as Parameters<typeof sm.create>[0])
+    expect((mockHandles[0].options.settings as { autoCompactWindow?: number } | undefined)?.autoCompactWindow).toBe(500000)
+    await store.flush()
+    expect(store.get(info.id)?.autoCompactWindow).toBe(500000)
+  })
+
+  it('the create-time auto-compact window survives a /clear respawn (re-applied via settings)', async () => {
+    // Spawn intent, like taskBudget: /clear rebuilds Y through baseSpawnOptions,
+    // which must fold the recorded window back into Options.settings — the ONLY
+    // channel the CLI honors for it (applyFlagSettings is inert for this key).
+    const info = await sm.create({ settings: { autoCompactWindow: 500000 } } as unknown as Parameters<typeof sm.create>[0])
+    await sm.clear(info.id)
+    expect((mockHandles[1].options.settings as { autoCompactWindow?: number } | undefined)?.autoCompactWindow).toBe(500000)
   })
 
   it('setTaskBudget() records the intent without contacting the SDK (no live setter exists)', async () => {

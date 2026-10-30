@@ -586,29 +586,6 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('fileSnapshotsMaxUntrackedBytes')
   })
 
-  it('defaults autoCompactThresholdPct to 85', () => {
-    expect(config.autoCompactThresholdPct).toBe(85)
-  })
-
-  it('honors autoCompactThresholdPct and clamps it to 20–100', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ autoCompactThresholdPct: 70 }))
-    vi.spyOn(console, 'log').mockImplementation(() => {})
-    await loadConfig(dir)
-    expect(config.autoCompactThresholdPct).toBe(70)
-
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ autoCompactThresholdPct: 150 }))
-    await loadConfig(dir)
-    expect(config.autoCompactThresholdPct).toBe(100)
-
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ autoCompactThresholdPct: 5 }))
-    await loadConfig(dir)
-    expect(config.autoCompactThresholdPct).toBe(20)
-  })
-
-  it('exposes autoCompactThresholdPct as a writable config key', () => {
-    expect(WRITABLE_CONFIG_KEYS).toContain('autoCompactThresholdPct')
-  })
-
   describe('clearCredentials', () => {
     it('clears authToken, baseUrl, and accessToken from config.json', async () => {
       writeFileSync(join(dir, 'config.json'), JSON.stringify({

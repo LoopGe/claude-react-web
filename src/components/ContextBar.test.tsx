@@ -1,22 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render } from '@testing-library/react'
 import { ContextBar } from './ContextBar'
 import type { ContextUsage } from '../types/context-usage'
 
-// jsdom doesn't implement pointer capture (the drag path calls setPointerCapture
-// on the track wrapper). Stub the prototype with no-ops so the drag path runs.
-beforeEach(() => {
-  if (typeof Element.prototype.setPointerCapture !== 'function') {
-    Element.prototype.setPointerCapture = () => {}
-  }
-  if (typeof Element.prototype.releasePointerCapture !== 'function') {
-    Element.prototype.releasePointerCapture = () => {}
-  }
-})
-
-afterEach(() => {
-  cleanup()
-})
+// Cleanup is registered globally in src/test-setup.ts — do not re-add a
+// per-file afterEach(cleanup) (CLAUDE.md).
 
 const usage: ContextUsage = {
   totalTokens: 50000,
@@ -28,163 +16,37 @@ const usage: ContextUsage = {
   maxOutputTokens: 32000,
 }
 
-/** Mock the track wrapper's getBoundingClientRect (jsdom returns all zeros)
- *  so the drag math sees a 200px-wide track starting at x=0. */
-function stubTrackRect(container: HTMLElement): void {
-  const wrap = container.querySelector('.ctx-bar-track-wrap')
-  expect(wrap).not.toBeNull()
-  ;(wrap as HTMLElement).getBoundingClientRect = () =>
-    ({ left: 0, top: 0, width: 200, height: 4, right: 200, bottom: 4 }) as DOMRect
-}
-
 describe('ContextBar', () => {
   it('renders the marker at the auto-compact threshold position', () => {
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={vi.fn()} />,
-    )
+    const { container } = render(<ContextBar usage={usage} />)
     const marker = container.querySelector('.ctx-bar-marker')
     expect(marker).not.toBeNull()
     // 167000 / 200000 = 83.5% — the marker sits where auto-compact triggers.
     expect(marker?.getAttribute('style')).toContain('left: 83.5%')
-    expect(marker?.getAttribute('role')).toBe('slider')
-    expect(marker?.getAttribute('aria-valuenow')).toBe('84')
-    // Custom pin → accent marker.
-    expect(marker?.classList.contains('ctx-bar-marker-auto')).toBe(false)
-  })
-
-  it('shows a muted marker when the window is auto (not custom)', () => {
-    const { container } = render(
-      <ContextBar usage={usage} editable onSetWindow={vi.fn()} />,
-    )
-    const marker = container.querySelector('.ctx-bar-marker')
+    // Read-only marker — always the muted (non-custom) style.
     expect(marker?.classList.contains('ctx-bar-marker-auto')).toBe(true)
   })
 
-  it('hides the marker while a pinned window has no threshold yet', () => {
-    // A just-resumed session with a pinned window but no `result` yet has no
-    // autoCompactThreshold — there is no position to show. No marker may appear.
-    const { container } = render(
-      <ContextBar usage={{ ...usage, autoCompactThreshold: undefined }} editable custom onSetWindow={vi.fn()} />,
-    )
-    expect(container.querySelector('.ctx-bar-marker')).toBeNull()
-  })
-
-  it('commits the inverted window on an editable drag', () => {
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
-    )
-    stubTrackRect(container)
-    const wrap = container.querySelector('.ctx-bar-track-wrap')!
-
-    fireEvent.pointerDown(wrap, { pointerId: 1, button: 0, clientX: 0 })
-    fireEvent.pointerMove(wrap, { pointerId: 1, clientX: 100 }) // 50% of 200px
-    fireEvent.pointerUp(wrap, { pointerId: 1 })
-
-    // 50% of 200k = 100k threshold + min(32000,20000)+13000 = 133k window.
-    expect(onSetWindow).toHaveBeenCalledTimes(1)
-    expect(onSetWindow).toHaveBeenCalledWith(133000)
-  })
-
-  it('never pins a window larger than the model can hold', () => {
-    // Dragging to the top of the track asks for a threshold at 100% of the
-    // window; the inverse adds the 33k output+buffer headroom back on, which
-    // would POST 233000 for a 200k model. The CLI resolves that back down to
-    // its real limit, so the request must be clamped rather than describing a
-    // threshold ("compacts at 100%") that can never be reached.
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
-    )
-    stubTrackRect(container)
-    const wrap = container.querySelector('.ctx-bar-track-wrap')!
-
-    fireEvent.pointerDown(wrap, { pointerId: 1, button: 0, clientX: 0 })
-    fireEvent.pointerMove(wrap, { pointerId: 1, clientX: 200 }) // 100% of 200px
-    fireEvent.pointerUp(wrap, { pointerId: 1 })
-
-    expect(onSetWindow).toHaveBeenCalledWith(200000)
-  })
-
-  it('does not commit on a plain click (no movement)', () => {
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
-    )
-    stubTrackRect(container)
-    const wrap = container.querySelector('.ctx-bar-track-wrap')!
-
-    fireEvent.pointerDown(wrap, { pointerId: 1, button: 0, clientX: 100 })
-    fireEvent.pointerUp(wrap, { pointerId: 1 })
-
-    // A click must be a no-op so double-click-to-reset never races a pin POST.
-    expect(onSetWindow).not.toHaveBeenCalled()
-  })
-
-  it('resets to auto on double-click', () => {
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
-    )
-    const wrap = container.querySelector('.ctx-bar-track-wrap')!
-
-    fireEvent.doubleClick(wrap)
-    expect(onSetWindow).toHaveBeenCalledTimes(1)
-    expect(onSetWindow).toHaveBeenCalledWith(null)
-  })
-
-  it('commits an arrow-key change on keyup', () => {
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
-    )
-    const marker = container.querySelector('.ctx-bar-marker') as HTMLElement
-
-    fireEvent.keyDown(marker, { key: 'ArrowLeft' })
-    fireEvent.keyUp(marker, { key: 'ArrowLeft' })
-
-    // threshold 83.5 → 82.5 → snap to 83 → window = 0.83*200k + 33k = 199k.
-    expect(onSetWindow).toHaveBeenCalledTimes(1)
-    expect(onSetWindow).toHaveBeenCalledWith(199000)
-  })
-
-  it('resets to auto on Delete key', () => {
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
-    )
-    const marker = container.querySelector('.ctx-bar-marker') as HTMLElement
-
-    fireEvent.keyDown(marker, { key: 'Delete' })
-    expect(onSetWindow).toHaveBeenCalledWith(null)
-  })
-
-  it('blocks all interaction when disabled', () => {
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable disabled onSetWindow={onSetWindow} />,
-    )
-    stubTrackRect(container)
-    const wrap = container.querySelector('.ctx-bar-track-wrap')!
-    const marker = container.querySelector('.ctx-bar-marker') as HTMLElement
-
-    fireEvent.pointerDown(wrap, { pointerId: 1, button: 0, clientX: 0 })
-    fireEvent.pointerMove(wrap, { pointerId: 1, clientX: 100 })
-    fireEvent.pointerUp(wrap, { pointerId: 1 })
-    fireEvent.doubleClick(wrap)
-    fireEvent.keyDown(marker, { key: 'ArrowLeft' })
-    fireEvent.keyUp(marker, { key: 'ArrowLeft' })
-
-    expect(onSetWindow).not.toHaveBeenCalled()
-  })
-
-  it('is a pure display component by default (no marker interaction)', () => {
+  it('is display-only: the marker is never an interactive slider', () => {
+    // The drag-to-pin feature was removed (the SDK's applyFlagSettings channel
+    // is inert for autoCompactWindow; thresholds are set at spawn or via the
+    // CLI's /autocompact). The bar must not advertise slider semantics.
     const { container } = render(<ContextBar usage={usage} />)
     const marker = container.querySelector('.ctx-bar-marker')
     expect(marker).not.toBeNull()
-    // Not interactive: no role/tabindex, hidden from AT.
-    expect(marker?.getAttribute('role')).toBeNull()
+    expect(marker?.getAttribute('role')).not.toBe('slider')
+    expect(marker?.getAttribute('tabindex')).toBeNull()
+    expect(marker?.getAttribute('aria-valuenow')).toBeNull()
     expect(marker?.getAttribute('aria-hidden')).toBe('true')
+  })
+
+  it('hides the marker when there is no threshold yet', () => {
+    // A session before the first `result` has no autoCompactThreshold — there
+    // is no position to show, so no marker may appear.
+    const { container } = render(
+      <ContextBar usage={{ ...usage, autoCompactThreshold: undefined }} />,
+    )
+    expect(container.querySelector('.ctx-bar-marker')).toBeNull()
   })
 
   it('shows bare percentages by default and reveals labels on hover', () => {
@@ -284,9 +146,8 @@ describe('ContextBar', () => {
     expect(container.querySelector('.ctx-bar-stat-used')?.getAttribute('aria-label')).toBe(
       'used —',
     )
-    // No marker, no draggable handle — nothing to steer.
+    // No marker — nothing to point at.
     expect(container.querySelector('.ctx-bar-marker')).toBeNull()
-    expect(container.querySelector('.ctx-bar-track-editable')).toBeNull()
   })
 
   it('places commas/placeholder for a buried stat (no threshold yet)', () => {
@@ -306,13 +167,12 @@ describe('ContextBar', () => {
     ).toBe('until —')
   })
 
-  it('shows compact off / until — and a disabled non-draggable marker when CLI auto-compact is off', () => {
-    const onSetWindow = vi.fn()
+  it('shows compact off / until — and a dimmed marker when CLI auto-compact is off', () => {
     const { container } = render(
-      <ContextBar usage={{ ...usage, autoCompactEnabled: false }} editable custom onSetWindow={onSetWindow} />,
+      <ContextBar usage={{ ...usage, autoCompactEnabled: false }} />,
     )
-    // Product rule: when the CLI reports off, the marker is display-only —
-    // dragging must not commit a pin (and must not claim slider semantics).
+    // When the CLI reports off, the stats say so instead of a percentage
+    // that will never trigger.
     expect(container.querySelector('.ctx-bar-stat-compact')?.getAttribute('aria-label')).toBe(
       'compact off',
     )
@@ -322,15 +182,7 @@ describe('ContextBar', () => {
     const marker = container.querySelector('.ctx-bar-marker')
     expect(marker).not.toBeNull()
     expect(marker?.classList.contains('ctx-bar-marker-disabled')).toBe(true)
-    expect(marker?.getAttribute('role')).toBeNull()
     expect(marker?.getAttribute('aria-hidden')).toBe('true')
-
-    stubTrackRect(container)
-    const wrap = container.querySelector('.ctx-bar-track-wrap')!
-    fireEvent.pointerDown(wrap, { pointerId: 1, button: 0, clientX: 0 })
-    fireEvent.pointerMove(wrap, { pointerId: 1, button: 0, clientX: 100 })
-    fireEvent.pointerUp(wrap, { pointerId: 1 })
-    expect(onSetWindow).not.toHaveBeenCalled()
   })
 
   it('keeps the percentage readout when auto-compact is enabled', () => {
@@ -373,27 +225,6 @@ describe('ContextBar', () => {
     expect(until?.classList.contains('ctx-bar-stat-warn')).toBe(false)
   })
 
-  it('mirrors the compact stat to the marker while dragging', () => {
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={vi.fn()} />,
-    )
-    stubTrackRect(container)
-    const wrap = container.querySelector('.ctx-bar-track-wrap')!
-
-    fireEvent.pointerDown(wrap, { pointerId: 1, button: 0, clientX: 0 })
-    // Drag to the middle of the 200px track → draft 50% while still down.
-    fireEvent.pointerMove(wrap, { pointerId: 1, clientX: 100 })
-    const before = container.querySelector('.ctx-bar-stat-compact')?.textContent
-    expect(before).toContain('50%')
-    // ...but the committed (pre-drag) auto threshold is still 84%.
-    expect(before).not.toContain('84%')
-
-    fireEvent.pointerUp(wrap, { pointerId: 1 })
-    // After release the stat snaps back to the committed threshold.
-    const after = container.querySelector('.ctx-bar-stat-compact')?.textContent
-    expect(after).toContain('84%')
-  })
-
   it('colors the until percentage by nearness to the threshold', () => {
     // used = 130k → (167000-130000)/167000 = 22.2% → warn (15 < 22 <= 30).
     const warnUsage = { ...usage, totalTokens: 130000, percentage: 65 }
@@ -413,35 +244,5 @@ describe('ContextBar', () => {
     until = c3.querySelector('.ctx-bar-stat-until')
     expect(until?.classList.contains('ctx-bar-stat-warn')).toBe(false)
     expect(until?.classList.contains('ctx-bar-stat-danger')).toBe(false)
-  })
-
-  // Ctrl/Cmd+↑ and Ctrl/Cmd+↓ are the app-level prev/next-turn transcript
-  // jumps (scroll-nav-shortcuts.ts, allowInInput). The threshold marker's own
-  // arrow handling must not ALSO act on the modifier-held variant — one
-  // keypress must not both bump the threshold and jump the transcript.
-  it('does not bump the threshold on Ctrl+ArrowUp (modifier-held arrows are the transcript turn jump)', () => {
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
-    )
-    const marker = container.querySelector('.ctx-bar-marker') as HTMLElement
-    const before = marker.getAttribute('aria-valuenow')
-
-    fireEvent.keyDown(marker, { key: 'ArrowUp', ctrlKey: true })
-    expect(marker.getAttribute('aria-valuenow')).toBe(before)
-    fireEvent.keyUp(marker, { key: 'ArrowUp', ctrlKey: true })
-    expect(onSetWindow).not.toHaveBeenCalled()
-  })
-
-  it('still bumps the threshold on a plain ArrowUp', () => {
-    const onSetWindow = vi.fn()
-    const { container } = render(
-      <ContextBar usage={usage} editable custom onSetWindow={onSetWindow} />,
-    )
-    const marker = container.querySelector('.ctx-bar-marker') as HTMLElement
-    const before = Number(marker.getAttribute('aria-valuenow'))
-
-    fireEvent.keyDown(marker, { key: 'ArrowUp' })
-    expect(Number(marker.getAttribute('aria-valuenow'))).toBeGreaterThan(before)
   })
 })

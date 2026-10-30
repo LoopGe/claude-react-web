@@ -250,7 +250,6 @@ describe('session create body validation (narrowCreateBody)', () => {
       settings: { model: 'x' },
       includePartialMessages: true,
       includeHookEvents: false,
-      autoCompactWindow: 100000,
       cliDebug: true,
       sandbox: { enabled: true, network: { allowedDomains: ['example.com'] } },
       toolAliases: { Grep: 'Search' },
@@ -270,14 +269,25 @@ describe('session create body validation (narrowCreateBody)', () => {
     expect(sm.create.mock.calls[0]?.[3]).toBe(true)
   })
 
+  it('drops a stale autoCompactWindow key instead of forwarding it (feature removed)', async () => {
+    // The app-managed pin was removed — thresholds ride settings.autoCompactWindow
+    // (spawn) now. An older client still sending the top-level key gets it
+    // dropped silently (dropped, not 400 — the whitelist contract).
+    const { app, sm } = makeApp()
+    const res = await post(app, { model: 'm', autoCompactWindow: 180000 })
+    expect(res.status).toBe(201)
+    const arg = sm.create.mock.calls[0]?.[0] as Record<string, unknown> | undefined
+    expect(arg?.autoCompactWindow).toBeUndefined()
+  })
+
   it.each([
     [{ provider: 1 }, 'provider must be a string'],
     [{ fallbackModel: false }, 'fallbackModel must be a string'],
     [{ effort: 3 }, 'effort must be a string'],
     [{ maxBudgetUsd: '5' }, 'maxBudgetUsd must be a finite number'],
-    [{ autoCompactWindow: 0 }, 'autoCompactWindow must be a finite number > 0'],
-    [{ autoCompactWindow: -5 }, 'autoCompactWindow must be a finite number > 0'],
-    [{ autoCompactWindow: '100000' }, 'autoCompactWindow must be a finite number > 0'],
+    [{ settings: { autoCompactWindow: 0 } }, 'settings.autoCompactWindow must be a finite number > 0'],
+    [{ settings: { autoCompactWindow: -5 } }, 'settings.autoCompactWindow must be a finite number > 0'],
+    [{ settings: { autoCompactWindow: '100000' } }, 'settings.autoCompactWindow must be a finite number > 0'],
     [{ taskBudget: 'x' }, 'taskBudget.total must be a finite positive number'],
     [{ taskBudget: {} }, 'taskBudget.total must be a finite positive number'],
     [{ taskBudget: { total: 'x' } }, 'taskBudget.total must be a finite positive number'],

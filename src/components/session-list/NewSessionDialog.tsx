@@ -21,7 +21,7 @@ const McpInstaller = lazy(() =>
   import('../McpInstaller').then((m) => ({ default: m.McpInstaller })),
 )
 import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
-import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../../constants/recentKeys'
+import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT, NEW_SESSION_AUTO_COMPACT_WINDOW_KEY } from '../../constants/recentKeys'
 import { clamp } from '../../utils/clamp'
 import { groupNameIssue } from '../../utils/group-name'
 
@@ -178,6 +178,16 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [maxTurns, setMaxTurns] = useState('')
   const [maxBudgetUsd, setMaxBudgetUsd] = useState('')
   const [taskBudget, setTaskBudget] = useState('')
+  // Auto-compact window (official token semantics). Seeded from the last
+  // choice; written synchronously at submit because the dialog unmounts on
+  // the same tick (see the rememberIn note below).
+  const [autoCompactWindow, setAutoCompactWindow] = useState(() => {
+    try {
+      return window.localStorage.getItem(NEW_SESSION_AUTO_COMPACT_WINDOW_KEY) ?? ''
+    } catch {
+      return ''
+    }
+  })
   const [allowedToolsStr, setAllowedToolsStr] = useState('')
   const [disallowedToolsStr, setDisallowedToolsStr] = useState('')
   const [toolsStr, setToolsStr] = useState('')
@@ -494,14 +504,40 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     if (thinkingMode === 'adaptive') thinking = 'adaptive'
     else if (thinkingMode === 'disabled') thinking = 'disabled'
     else if (thinkingMode === 'enabled') {
-      const budget = parseInt(thinkingBudget, 10)
-      thinking = budget > 0 ? { type: 'enabled', budgetTokens: budget } : 'enabled'
+      // Number(), not parseInt: accepts exponent notation ("1e4") like the
+      // number input does.
+      const budget = thinkingBudget ? Number(thinkingBudget) : NaN
+      thinking = Number.isFinite(budget) && budget > 0 ? { type: 'enabled', budgetTokens: budget } : 'enabled'
     }
 
     // Shared parse: '' → unset; "1e4" → 10000 (never parseInt); garbage →
     // unset at create time (the field is optional and the user sees the
     // result immediately, unlike the persisted-clear hazard in SettingsPanel).
     const taskBudgetValue = parseTaskBudgetInput(taskBudget) ?? undefined
+
+    // Auto-compact window — official token semantics: '' / garbage = auto
+    // (omit), out-of-range clamps into the CLI's 100k–1M window range. The
+    // raw choice is remembered synchronously — the dialog unmounts on this
+    // same tick (see the rememberIn note below).
+    const rawAutoCompactWindow = autoCompactWindow.trim()
+    // Number(), not parseInt: a type=number input accepts exponent notation
+    // ("5e5"), which parseInt would misread as 5 (same pitfall as
+    // parseTaskBudgetInput's contract above).
+    const parsedAutoCompactWindow = rawAutoCompactWindow ? Number(rawAutoCompactWindow) : NaN
+    const autoCompactWindowValue = Number.isFinite(parsedAutoCompactWindow)
+      ? clamp(parsedAutoCompactWindow, 100000, 1000000)
+      : undefined
+    // Remember the EFFECTIVE choice (the parsed+clamped number, or '' for
+    // auto) — persisting raw garbage ('500k') would pre-fill the next dialog
+    // with a string that silently keeps meaning auto.
+    try {
+      window.localStorage.setItem(
+        NEW_SESSION_AUTO_COMPACT_WINDOW_KEY,
+        autoCompactWindowValue != null ? String(autoCompactWindowValue) : '',
+      )
+    } catch {
+      /* quota / SecurityError — the in-memory state still wins this session */
+    }
 
     // Parse mcpServers JSON if provided
     let mcpServers: unknown = undefined
@@ -536,6 +572,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
       maxTurns: maxTurns ? parseInt(maxTurns, 10) || undefined : undefined,
       maxBudgetUsd: maxBudgetUsd ? parseFloat(maxBudgetUsd) || undefined : undefined,
       taskBudget: taskBudgetValue,
+      settings: autoCompactWindowValue != null ? { autoCompactWindow: autoCompactWindowValue } : undefined,
       allowedTools: csv(allowedToolsStr),
       disallowedTools: csv(disallowedToolsStr),
       tools: csv(toolsStr),
@@ -868,6 +905,17 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     placeholder="unlimited"
                     value={taskBudget}
                     onChange={(e) => setTaskBudget(e.target.value)}
+                  />
+                </div>
+                <div className="settings-field">
+                  <label htmlFor={uid + '-auto-compact-window'}>Auto-compact window (tokens)</label>
+                  <input
+                    className="input"
+                    id={uid + '-auto-compact-window'}
+                    type="number"
+                    placeholder="auto"
+                    value={autoCompactWindow}
+                    onChange={(e) => setAutoCompactWindow(e.target.value)}
                   />
                 </div>
                 <div className="settings-field">

@@ -1,15 +1,14 @@
-// Tiny progress bar showing how full the context window is, with an optional
-// draggable auto-compact threshold marker.
+// Tiny progress bar showing how full the context window is, with a read-only
+// marker at the auto-compact threshold.
 //
-// Display-only by default — data arrives via the WebSocket hub (the server
-// pushes a `context_usage` event periodically). No fetch calls, no timers.
-//
-// When `editable`, the marker on the track is a draggable slider that pins
-// `Settings.autoCompactWindow`: dragging it to pct% sets the window so the
-// auto-compact THRESHOLD lands on pct% (the marker shows where auto-compact
-// actually triggers, matching the "X% until auto-compact" warning). A commit
-// fires only when the pointer moved ≥ DRAG_SLOP_PX, so a plain click is a
-// no-op and double-clicking the bar resets to auto without racing a pin POST.
+// Display-only by design — data arrives via the WebSocket hub (the server
+// pushes a `context_usage` event periodically). No fetch calls, no timers, no
+// interaction. The drag-to-pin-threshold feature was removed: the SDK's
+// applyFlagSettings channel is inert for `autoCompactWindow` on current CLIs,
+// so thresholds are set at spawn (New session form → Options.settings) or
+// mid-session via the CLI's own `/autocompact` command. The marker therefore
+// only ever reports where auto-compact ACTUALLY triggers, per the CLI's own
+// answer (or the local formula replica when the CLI hasn't answered yet).
 
 import {
   memo,
@@ -18,75 +17,27 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
 } from 'react'
 import type { ContextUsage } from '../types/context-usage'
 import { contextUsageStats } from '../utils/context-usage'
 import { formatTokens } from '../utils/format'
-import { autoCompactWindowForPct } from '../../shared/auto-compact'
-import { clamp } from '../utils/clamp'
 
-/** Marker drag range / grid. Min 20 keeps auto-compact far enough from the
- *  prompt edge to be useful; step 1 gives per-point fine control over both
- *  the drag snap grid and the arrow-key increment. */
-const MIN_PCT = 20
-const MAX_PCT = 100
-const STEP_PCT = 1
-/** A pointer interaction must move this far (px) before it counts as a drag
- *  and commits. Below this a click is a no-op → double-click-to-reset is
- *  clean (no intermediate pin POST). */
-const DRAG_SLOP_PX = 3
 /** The percentage-cells show bare numbers (25% · 84% · 70%) by default; the
  *  "used · compact · until" word labels are revealed on hover and revert to
  *  numbers-only this many ms after the pointer leaves the readout. */
 const REVEAL_DELAY_MS = 3000
 
-function snapPct(p: number): number {
-  return clamp(Math.round(p / STEP_PCT) * STEP_PCT, MIN_PCT, MAX_PCT)
-}
-
 interface Props {
   /** Latest usage snapshot from the WebSocket hub, or null if none yet. */
   usage: ContextUsage | null
-  /** When true, the auto-compact threshold marker is draggable: dragging it
-   *  pins Settings.autoCompactWindow so auto-compact triggers at the drop
-   *  position. Default false = pure display. */
-  editable?: boolean
-  /** True when the session has a pinned custom window (session.autoCompactWindow
-   *  set) — drives marker styling (accent = custom, muted = auto). */
-  custom?: boolean
-  /** Disable marker interaction (terminated / dormant / busy). */
-  disabled?: boolean
-  /** Called with the absolute window tokens to pin, or null to reset to auto. */
-  onSetWindow?: (windowTokens: number | null) => void
 }
 
-export const ContextBar = memo(function ContextBar({
-  usage,
-  editable = false,
-  custom = false,
-  disabled = false,
-  onSetWindow,
-}: Props) {
+export const ContextBar = memo(function ContextBar({ usage }: Props) {
   // Prefer rawMaxTokens (the model's real advertised context window) over
   // maxTokens (which may be reduced by compaction headroom reserves).
   // Shared used%/threshold/level math — one ladder for the bar and the orb.
   const { max, hasData, usedTokens, bounded, level: barLevel, threshold, thresholdPct } =
     contextUsageStats(usage)
-
-  // ── drag / keyboard state ─────────────────────────────────────────────
-  // All hooks are declared unconditionally (before the empty-state early
-  // return below) so the hook order is stable across renders.
-  const [dragging, setDragging] = useState(false)
-  const [draftPct, setDraftPct] = useState<number | null>(null)
-  const draggingRef = useRef(false)
-  const wrapRef = useRef<HTMLDivElement>(null)
-  const pointerIdRef = useRef<number | null>(null)
-  const startClientXRef = useRef(0)
-  const movedRef = useRef(false)
-  const trackRectRef = useRef<DOMRect | null>(null)
-  const keyboardDraftRef = useRef<number | null>(null)
 
   // ── hover-reveal of the used/compact/until word labels ────────────────
   // Resting state shows bare percentages; hovering the natural-width
@@ -118,43 +69,10 @@ export const ContextBar = memo(function ContextBar({
     }
   }, [])
 
-  // CLI reports auto-compact OFF → the marker is display-only. Product rule:
-  // drag is not "enable + pin" here, so the handle must not take pointer or
-  // keyboard input (and must not commit a window).
+  // CLI reports auto-compact OFF → the marker is informational only and the
+  // compact/until stats say so instead of showing a percentage that will
+  // never trigger.
   const autoCompactOff = usage?.autoCompactEnabled === false
-  const interactive = editable && !disabled && !autoCompactOff && onSetWindow != null
-
-  // % of the model window → absolute Settings.autoCompactWindow tokens such
-  // that the derived threshold lands exactly at pct% (inverse of the pump's
-  // computeAutoCompactThreshold). Uses the same maxOutputTokens the pump used.
-  //
-  // Clamped to the model's own window: the inverse ADDS the output+buffer
-  // headroom back on, so the top of the track (MAX_PCT = 100) would otherwise
-  // ask for `max + 33000` — a window larger than the model can hold. The CLI
-  // resolves that back down to its real limit, so we'd be POSTing an
-  // impossible number and then rendering "auto-compact fires at 100%", which
-  // can never happen. Clamping keeps the request honest; the marker then
-  // settles at the highest threshold the model actually allows.
-  const pctToWindow = useCallback(
-    (pct: number) => {
-      if (typeof max !== 'number' || max <= 0) return 0
-      // Drag path: clamp to the model window so the highest achievable marker
-      // is still committable (shared inverse; default-pin uses no clamp).
-      return autoCompactWindowForPct(pct, max, usage?.maxOutputTokens, { clampToWindow: true })
-    },
-    [max, usage?.maxOutputTokens],
-  )
-
-  const commit = useCallback(
-    (pct: number | null) => {
-      // Re-check at commit time: a drag that started while enabled must not
-      // pin after a mid-drag flip to off.
-      if (!onSetWindow || usage?.autoCompactEnabled === false) return
-      if (pct == null) onSetWindow(null)
-      else onSetWindow(pctToWindow(pct))
-    },
-    [onSetWindow, pctToWindow, usage?.autoCompactEnabled],
-  )
 
   // The bar always shows the same three percentages (used / auto-compact
   // threshold / until auto-compact). When there's no data yet — no usage
@@ -170,12 +88,9 @@ export const ContextBar = memo(function ContextBar({
     untilLevel = pct <= 15 ? 'danger' : pct <= 30 ? 'warn' : 'ok'
   }
 
-  const displayPct = draftPct ?? thresholdPct
-
   // CLI says auto-compact will not fire: show `off` rather than a percentage
-  // that will never trigger. Drag is already disabled (see `interactive`), so
-  // there is no draft to override this.
-  const compactStat: number | null | 'off' = autoCompactOff ? 'off' : displayPct
+  // that will never trigger.
+  const compactStat: number | null | 'off' = autoCompactOff ? 'off' : thresholdPct
   const untilStat: number | null = autoCompactOff ? null : percentLeft
 
   // One percentage cell. The word label is always mounted; it is visually
@@ -210,130 +125,10 @@ export const ContextBar = memo(function ContextBar({
     )
   }
 
-  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!interactive || e.button !== 0) return
-    const wrap = wrapRef.current
-    if (!wrap) return
-    try {
-      wrap.setPointerCapture(e.pointerId)
-    } catch {
-      // jsdom / detached node: setPointerCapture throws — abort the drag.
-      return
-    }
-    pointerIdRef.current = e.pointerId
-    startClientXRef.current = e.clientX
-    movedRef.current = false
-    trackRectRef.current = wrap.getBoundingClientRect()
-    // A new pointer interaction cancels any pending keyboard commit.
-    keyboardDraftRef.current = null
-    draggingRef.current = true
-    setDragging(true)
-  }
-
-  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current || e.pointerId !== pointerIdRef.current) return
-    const rect = trackRectRef.current
-    if (!rect || rect.width <= 0) return
-    if (Math.abs(e.clientX - startClientXRef.current) >= DRAG_SLOP_PX) {
-      movedRef.current = true
-    }
-    const ratio = (e.clientX - rect.left) / rect.width
-    setDraftPct(snapPct(ratio * 100))
-  }
-
-  const endDrag = () => {
-    const wrap = wrapRef.current
-    const pid = pointerIdRef.current
-    draggingRef.current = false
-    setDragging(false)
-    pointerIdRef.current = null
-    trackRectRef.current = null
-    if (wrap && pid != null) {
-      try {
-        wrap.releasePointerCapture(pid)
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current || e.pointerId !== pointerIdRef.current) return
-    const didMove = movedRef.current
-    const pct = draftPct
-    endDrag()
-    setDraftPct(null)
-    if (didMove && pct != null) commit(pct)
-  }
-
-  const onPointerCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!draggingRef.current || e.pointerId !== pointerIdRef.current) return
-    endDrag()
-    setDraftPct(null)
-  }
-
-  const onDoubleClick = () => {
-    if (!interactive) return
-    commit(null)
-  }
-
-  const commitKeyboardDraft = () => {
-    const d = keyboardDraftRef.current
-    if (d == null) return
-    keyboardDraftRef.current = null
-    setDraftPct(null)
-    commit(d)
-  }
-
-  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!interactive) return
-    // Modifier-held ↑/↓ are the app-level prev/next-turn transcript jumps
-    // (scroll-nav-shortcuts.ts) — the stepper must not ALSO bump the
-    // threshold on the same keypress. ←/→ are left alone: no global combo
-    // binds them.
-    if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && (e.ctrlKey || e.metaKey)) return
-    const current = draftPct ?? thresholdPct ?? MIN_PCT
-    let next: number | null
-    switch (e.key) {
-      case 'ArrowRight':
-      case 'ArrowUp':
-        next = snapPct(current + STEP_PCT)
-        break
-      case 'ArrowLeft':
-      case 'ArrowDown':
-        next = snapPct(current - STEP_PCT)
-        break
-      case 'Home':
-        next = MIN_PCT
-        break
-      case 'End':
-        next = MAX_PCT
-        break
-      case 'Delete':
-      case 'Backspace':
-        next = null
-        break
-      default:
-        return
-    }
-    e.preventDefault()
-    if (next == null) {
-      keyboardDraftRef.current = null
-      commit(null)
-    } else {
-      keyboardDraftRef.current = next
-      setDraftPct(next)
-    }
-  }
-
   const markerClass =
-    `ctx-bar-marker` +
-    (!custom && !dragging ? ' ctx-bar-marker-auto' : '') +
-    // Same gate as the readout: a live drag is enable+pin, so the handle must
-    // not stay dashed/muted while the stat already shows the draft %.
-    (autoCompactOff ? ' ctx-bar-marker-disabled' : '') +
-    (dragging ? ' ctx-bar-marker-dragging' : '') +
-    (interactive ? ' ctx-bar-marker-interactive' : '')
+    'ctx-bar-marker ctx-bar-marker-auto' +
+    // The CLI reports auto-compact off — dim the marker to match the stats.
+    (autoCompactOff ? ' ctx-bar-marker-disabled' : '')
 
   return (
     <div className={`ctx-bar ctx-bar-${barLevel}${revealed ? ' ctx-bar-revealed' : ''}`}>
@@ -382,40 +177,18 @@ export const ContextBar = memo(function ContextBar({
           )}
         </span>
       </div>
-      <div
-        className={`ctx-bar-track-wrap${interactive ? ' ctx-bar-track-editable' : ''}`}
-        ref={wrapRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerCancel}
-        onDoubleClick={onDoubleClick}
-      >
+      <div className="ctx-bar-track-wrap">
         <div className="ctx-bar-track" aria-hidden>
           <div
             className="ctx-bar-fill"
             style={{ ['--ctx-progress' as string]: (bounded ?? 0) / 100 } as CSSProperties}
           />
         </div>
-        {displayPct != null && (
+        {thresholdPct != null && (
           <div
             className={markerClass}
-            style={{ left: `${displayPct}%` }}
-            {...(interactive
-              ? {
-                  role: 'slider',
-                  tabIndex: 0,
-                  'aria-label': 'Auto-compact threshold',
-                  'aria-valuemin': MIN_PCT,
-                  'aria-valuemax': MAX_PCT,
-                  'aria-valuenow': Math.round(displayPct),
-                  'aria-valuetext': `${Math.round(displayPct)}%`,
-                  title: 'Drag to set when auto-compact triggers · double-click to reset to auto',
-                  onKeyDown,
-                  onKeyUp: commitKeyboardDraft,
-                  onBlur: commitKeyboardDraft,
-                }
-              : { 'aria-hidden': true })}
+            style={{ left: `${thresholdPct}%` }}
+            aria-hidden
           />
         )}
       </div>

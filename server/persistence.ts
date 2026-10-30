@@ -76,16 +76,13 @@ export interface SessionMeta {
    *  re-applies to the SDK only on re-spawn (resume / restart / fork); a
    *  running session is never contacted. */
   taskBudget?: { total: number }
-  /** User intent: absolute auto-compact window size in tokens (SDK
-   *  Settings.autoCompactWindow). Undefined = "auto" (the CLI derives the
-   *  threshold from the model's context window). Re-applied to the SDK via
-   *  applyFlagSettings on every re-spawn (resume / restart / fork). */
+  /** Spawn intent: the auto-compact window chosen on the New session form
+   *  (absolute tokens; undefined = auto). Folded into
+   *  `Options.settings.autoCompactWindow` on EVERY spawn (create / resume /
+   *  fork / clear / restart) — the only channel the CLI honors for this key
+   *  (applyFlagSettings is inert for it). Like taskBudget: pure spawn-time,
+   *  never touches a running subprocess. */
   autoCompactWindow?: number
-  /** Set only on brand-new sessions that started without a pinned window:
-   *  once the model context window is known, pin `autoCompactWindow` so the
-   *  CLI threshold lands at config `autoCompactThresholdPct` (default 85%).
-   *  Cleared when the pin is applied or the user pins manually. */
-  autoCompactDefaultPending?: boolean
   /** Structured hook configuration applied via Query.applyFlagSettings(). */
   hooks?: SessionHooksConfig
   /** Monotonic counter of user turns seen; used as a rough "is there
@@ -283,7 +280,6 @@ function coerceMeta(raw: unknown): SessionMeta | null {
       typeof r.autoCompactWindow === 'number' && Number.isFinite(r.autoCompactWindow) && r.autoCompactWindow > 0
         ? Math.round(r.autoCompactWindow)
         : undefined,
-    autoCompactDefaultPending: r.autoCompactDefaultPending === true ? true : undefined,
     hooks: coerceHooks(r.hooks),
     messageCount: typeof r.messageCount === 'number' ? r.messageCount : 0,
     terminated: typeof r.terminated === 'boolean' ? r.terminated : false,

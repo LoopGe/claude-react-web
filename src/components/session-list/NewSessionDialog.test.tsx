@@ -847,3 +847,121 @@ describe('NewSessionDialog project prefill', () => {
     expect(document.activeElement).toBe(trigger)
   })
 })
+
+describe('NewSessionDialog auto-compact window', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  })
+  afterEach(() => window.localStorage.clear())
+
+  const windowInput = (root: HTMLElement) => {
+    const label = Array.from(root.querySelectorAll('label')).find((l) =>
+      l.textContent?.includes('Auto-compact window'),
+    )
+    expect(label, 'auto-compact window row').toBeDefined()
+    return label!.parentElement!.querySelector('input') as HTMLInputElement
+  }
+
+  const clickCreate = async (onSubmit: ReturnType<typeof vi.fn>) => {
+    const createBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    )!
+    fireEvent.click(createBtn)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    return onSubmit.mock.calls[0][0] as NewSessionForm
+  }
+
+  it('submits settings.autoCompactWindow when a window is entered', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.change(windowInput(baseElement), { target: { value: '500000' } })
+
+    const form = await clickCreate(onSubmit)
+    expect(form.settings).toEqual({ autoCompactWindow: 500000 })
+  })
+
+  it('omits settings when the field is empty (auto)', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    expect(windowInput(baseElement).value).toBe('')
+
+    const form = await clickCreate(onSubmit)
+    expect(form.settings).toBeUndefined()
+  })
+
+  it('omits settings on unparseable input', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.change(windowInput(baseElement), { target: { value: 'abc' } })
+
+    const form = await clickCreate(onSubmit)
+    expect(form.settings).toBeUndefined()
+  })
+
+  it('accepts exponent notation like a number input does (5e5 → 500000)', async () => {
+    // type=number lets the user type 5e5 / 1e6; parseInt would read those as
+    // 5 / 1 and silently clamp to the 100k floor.
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.change(windowInput(baseElement), { target: { value: '5e5' } })
+
+    const form = await clickCreate(onSubmit)
+    expect(form.settings).toEqual({ autoCompactWindow: 500000 })
+  })
+
+  it('clamps a window below 100k up to 100000', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.change(windowInput(baseElement), { target: { value: '50000' } })
+
+    const form = await clickCreate(onSubmit)
+    expect(form.settings).toEqual({ autoCompactWindow: 100000 })
+  })
+
+  it('clamps a window above 1M down to 1000000', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.change(windowInput(baseElement), { target: { value: '2000000' } })
+
+    const form = await clickCreate(onSubmit)
+    expect(form.settings).toEqual({ autoCompactWindow: 1000000 })
+  })
+
+  it('remembers the last window choice and pre-fills the field', async () => {
+    const onSubmit = vi.fn()
+    const first = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.change(windowInput(first.baseElement), { target: { value: '500000' } })
+    await clickCreate(onSubmit)
+    first.unmount()
+
+    const second = render(<NewSessionDialog {...baseProps} onSubmit={vi.fn()} />)
+    expect(windowInput(second.baseElement).value).toBe('500000')
+  })
+
+  it('remembers the effective value, not raw garbage', async () => {
+    // '5e5' parses to 500000 — remember the parsed number, not the raw text;
+    // unparseable input means "auto" and must not pre-fill the next dialog
+    // with a string that silently keeps meaning auto.
+    const onSubmit = vi.fn()
+    const first = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    fireEvent.change(windowInput(first.baseElement), { target: { value: '5e5' } })
+    await clickCreate(onSubmit)
+    first.unmount()
+
+    const second = render(<NewSessionDialog {...baseProps} onSubmit={vi.fn()} />)
+    expect(windowInput(second.baseElement).value).toBe('500000')
+
+    fireEvent.change(windowInput(second.baseElement), { target: { value: '500k' } })
+    await clickCreate(onSubmit)
+    second.unmount()
+
+    const third = render(<NewSessionDialog {...baseProps} onSubmit={vi.fn()} />)
+    expect(windowInput(third.baseElement).value).toBe('')
+  })
+})
