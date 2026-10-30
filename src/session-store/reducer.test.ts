@@ -2602,6 +2602,101 @@ describe('reducer: PERMISSION_RESOLVED → questionAnswers (AskUserQuestion)', (
   })
 })
 
+describe('reducer: permission state (write-only maps removed, behavior preserved)', () => {
+  // Task 2: permissionDecisions and permissionPending were write-only —
+  // written by PERMISSION_REQUEST / PERMISSION_RESOLVED but never read by
+  // any component or selector. They are gone from the mirror. The permission
+  // channel still drives pidToToolUseId cleanup, planStatus flips, and
+  // questionAnswers updates exactly as before.
+
+  function seedExitPlanMode(state: ReturnType<typeof createInitialSessionState>, toolUseId: string) {
+    const msg: SdkMessage = {
+      type: 'assistant',
+      uuid: `a-${toolUseId}`,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: toolUseId, name: 'ExitPlanMode', input: {} }],
+      },
+    } as unknown as SdkMessage
+    return reduceSessionState(state, { type: 'MESSAGE', message: msg })
+  }
+
+  function seedPermission(state: ReturnType<typeof createInitialSessionState>, pid: string, toolUseId: string) {
+    const request: PermissionRequest = {
+      kind: 'permission',
+      id: pid,
+      toolName: 'ExitPlanMode',
+      input: {},
+      toolUseID: toolUseId,
+      createdAt: 0,
+    }
+    return reduceSessionState(state, { type: 'PERMISSION_REQUEST', request })
+  }
+
+  it('mirror no longer carries permissionDecisions', () => {
+    const state = createInitialSessionState('s1')
+    expect('permissionDecisions' in state.mirror).toBe(false)
+  })
+
+  it('mirror no longer carries permissionPending', () => {
+    const state = createInitialSessionState('s1')
+    expect('permissionPending' in state.mirror).toBe(false)
+  })
+
+  it('allow flips an existing plan to approved via planStatus', () => {
+    let state = createInitialSessionState('s1')
+    state = seedExitPlanMode(state, 'plan-1')
+    expect(state.mirror.planStatus.get('plan-1')).toBe('pending')
+    state = seedPermission(state, 'pid-1', 'plan-1')
+    state = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'pid-1',
+      decision: { behavior: 'allow', persisted: false },
+    })
+    expect(state.mirror.planStatus.get('plan-1')).toBe('approved')
+  })
+
+  it('deny flips an existing plan to rejected via planStatus', () => {
+    let state = createInitialSessionState('s1')
+    state = seedExitPlanMode(state, 'plan-1')
+    state = seedPermission(state, 'pid-1', 'plan-1')
+    state = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'pid-1',
+      decision: { behavior: 'deny', persisted: false },
+    })
+    expect(state.mirror.planStatus.get('plan-1')).toBe('rejected')
+  })
+
+  it('PERMISSION_RESOLVED removes the matching pidToToolUseId entry', () => {
+    let state = createInitialSessionState('s1')
+    state = seedExitPlanMode(state, 'plan-1')
+    state = seedPermission(state, 'pid-1', 'plan-1')
+    expect(state.mirror.pidToToolUseId.has('pid-1')).toBe(true)
+    state = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'pid-1',
+      decision: { behavior: 'allow', persisted: false },
+    })
+    expect(state.mirror.pidToToolUseId.has('pid-1')).toBe(false)
+  })
+
+  it('PERMISSION_RESOLVED with no mapping and no plan/question is a no-op (identity-stable)', () => {
+    // A resolution for a pid with no toolUseID mapping and no plan/question
+    // entry leaves ALL observable mirror fields unchanged — the reducer
+    // returns the exact same state reference.
+    let state = createInitialSessionState('s1')
+    state = seedExitPlanMode(state, 'plan-1') // seed some state to prove it survives
+    const before = state
+    const after = reduceSessionState(state, {
+      type: 'PERMISSION_RESOLVED',
+      id: 'unknown-pid',
+      decision: { behavior: 'allow', persisted: false },
+    })
+    expect(after).toBe(before)
+  })
+})
+
 describe('PREPEND_MESSAGES', () => {
   function userMsg(uuid: string, content: string): SdkMessage {
     return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
@@ -3918,7 +4013,7 @@ describe('reducer: CLEAR_TRANSCRIPT', () => {
     let state = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello')])
     state = applyOptimistic(state, 'pending turn', 'optimistic:p1')
     expect(renderedItems(state).length).toBeGreaterThan(0)
-    expect(state.mirror.permissionPending.size).toBe(0)
+    expect(state.mirror.pidToToolUseId.size).toBe(0)
     expect(state.mirror.replayReady).toBe(true)
 
     const after = reduceSessionState(state, { type: 'CLEAR_TRANSCRIPT' })

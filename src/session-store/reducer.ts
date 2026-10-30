@@ -90,48 +90,23 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       return withIntent(state, { ...state.intent, pendingPlaceholders: nextPlaceholders })
     }
     case 'PERMISSION_REQUEST': {
-      const permissionPending = new Map(state.mirror.permissionPending)
-      permissionPending.set(action.request.id, action.request)
+      if (!action.request.toolUseID) return state
       const pidToToolUseId = new Map(state.mirror.pidToToolUseId)
-      if (action.request.toolUseID) pidToToolUseId.set(action.request.id, action.request.toolUseID)
-      return withMirror(state, { ...state.mirror, permissionPending, pidToToolUseId })
+      pidToToolUseId.set(action.request.id, action.request.toolUseID)
+      return withMirror(state, { ...state.mirror, pidToToolUseId })
     }
     case 'PERMISSION_RESOLVED': {
       // Allocate fresh Maps lazily — most PERMISSION_RESOLVED frames
       // arrive for permissions we already cleaned up locally (the user
-      // optimistically decided), so cloning four Maps unconditionally
-      // burns CPU and breaks reference equality for selectors that
-      // depend on stable Map identity (e.g. PlanCard memoization).
-      let permissionPending = state.mirror.permissionPending
+      // optimistically decided), so cloning Maps unconditionally burns
+      // CPU and breaks reference equality for selectors that depend on
+      // stable Map identity (e.g. PlanCard memoization).
       let pidToToolUseId = state.mirror.pidToToolUseId
-      let permissionDecisions = state.mirror.permissionDecisions
       let planStatus = state.mirror.planStatus
       let questionAnswers = state.mirror.questionAnswers
       let changed = false
-      if (permissionPending.has(action.id)) {
-        permissionPending = new Map(permissionPending)
-        permissionPending.delete(action.id)
-        changed = true
-      }
       const toolUseId = pidToToolUseId.get(action.id)
       if (toolUseId) {
-        permissionDecisions = new Map(permissionDecisions)
-        permissionDecisions.set(toolUseId, action.decision.behavior)
-        // Cap entries — a session with thousands of approved tool runs
-        // (long autonomous agent loops) would otherwise grow this Map
-        // forever. Keys are tool_use_ids that have already been
-        // surfaced in the UI; evicting the oldest just means a
-        // (typically already-scrolled-out-of-view) plan/tool card no
-        // longer flips its badge from "pending" to "approved/rejected"
-        // on a future scroll-back. Maps preserve insertion order, so
-        // keys().next() is the oldest.
-        const PERMISSION_DECISIONS_CAP = 1024
-        while (permissionDecisions.size > PERMISSION_DECISIONS_CAP) {
-          const oldest = permissionDecisions.keys().next().value
-          if (oldest === undefined) break
-          permissionDecisions.delete(oldest)
-        }
-        changed = true
         if (planStatus.has(toolUseId)) {
           planStatus = new Map(planStatus)
           planStatus.set(toolUseId, action.decision.behavior === 'allow' ? 'approved' : 'rejected')
@@ -169,9 +144,7 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       if (!changed) return state
       return withMirror(state, {
         ...state.mirror,
-        permissionPending,
         pidToToolUseId,
-        permissionDecisions,
         planStatus,
         questionAnswers,
       })
@@ -1848,8 +1821,7 @@ function pruneSettledToLive<V extends { status: string }>(
  *  that "it clears each result frame" — false: sweepAtTurnEnd only flips
  *  status, never deletes, so a long-lived tab accumulated every Agent launch
  *  it had ever seen and one stranded `running`/`pending` record made
- *  SubagentSwarm.oldestStart paint a multi-dozen-hour timer. permissionDecisions
- *  self-caps at 1024 and is left alone. */
+ *  SubagentSwarm.oldestStart paint a multi-dozen-hour timer. */
 function trimFront(state: SessionState): SessionState {
   const mirror = state.mirror
   if (mirror.items.length <= MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK) return state

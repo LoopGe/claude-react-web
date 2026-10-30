@@ -140,7 +140,6 @@ export class SessionStore {
       thinkingTokens: mirror.thinkingTokens,
       sessionState: mirror.sessionState,
       error: intent.error,
-      permissionDecisions: mirror.permissionDecisions,
       planStatus: mirror.planStatus,
       planContent: mirror.planContent,
       questionAnswers: mirror.questionAnswers,

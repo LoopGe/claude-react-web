@@ -511,8 +511,6 @@ export interface ServerMirror {
   draftRowKeys: Readonly<Record<string, string>>
   /** Last draft key sequence used (drives `draft:<n>` keys). */
   draftSeq: number
-  permissionPending: Map<string, PermissionRequest>
-  permissionDecisions: Map<string, 'allow' | 'deny'>
   pidToToolUseId: Map<string, string>
   planStatus: Map<string, PlanStatus>
   /** Plan body text extracted from ExitPlanMode tool_result output.
@@ -820,7 +818,6 @@ export interface SessionSnapshot {
   /** Full task list — drives the TasksPanel and the header task-count chip. */
   tasks: TaskRecordUi[]
   error: string | null
-  permissionDecisions: ReadonlyMap<string, 'allow' | 'deny'>
   planStatus: ReadonlyMap<string, PlanStatus>
   planContent: ReadonlyMap<string, string>
   /** Parsed AskUserQuestion answers keyed by tool_use_id.  Empty array
@@ -909,8 +906,6 @@ export function createInitialServerMirror(): ServerMirror {
     frozenDrafts: [],
     draftRowKeys: {},
     draftSeq: 0,
-    permissionPending: new Map(),
-    permissionDecisions: new Map(),
     pidToToolUseId: new Map(),
     planStatus: new Map(),
     planContent: new Map(),
