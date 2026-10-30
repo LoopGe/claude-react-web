@@ -150,5 +150,3 @@ export function ResetConfigDialog({ open, onClose }: Props) {
     </Overlay>
   )
 }
-
-export default ResetConfigDialog

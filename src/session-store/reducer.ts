@@ -1716,8 +1716,8 @@ function pruneSettledToLive<V extends { status: string }>(
  *  matters for two downstream consumers:
  *    - loadOlder()'s first page anchors `beforeUuid` on items[0]. That uuid
  *      MUST exist on disk, or the server falls back to the newest page and
- *      reverse-paging silently stalls. isTrimBoundary (not the looser
- *      isDiskStableMsg) guarantees a persisted frame — see its doc comment.
+ *      reverse-paging silently stalls. isTrimBoundary guarantees a persisted
+ *      frame — see its doc comment in normalize.ts.
  *    - countPromptOverlap() dedups the leading user-prompt run against an
  *      incoming disk page by content signature (uuids differ disk vs memory).
  *      A non-empty leading prompt run after a trim could resurface as

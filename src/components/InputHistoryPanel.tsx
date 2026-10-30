@@ -157,5 +157,3 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
     </PanelOverlay>
   )
 }
-
-export default InputHistoryPanel

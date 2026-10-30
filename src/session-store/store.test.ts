@@ -357,3 +357,59 @@ describe('SessionStore: removed API surface', () => {
     expect(mod.getSessionState).toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Task 2 behavior controls: trim + replay still work without isDiskStableMsg.
+//
+// isDiskStableMsg was deleted from normalize.ts; trimFront uses
+// isTrimBoundary (the stricter predicate) and the replay path uses
+// overlapAnchorUuid — neither path ever called isDiskStableMsg in code, only
+// in doc comments. These controls pin the behavior so the helper's removal
+// can't silently regress trim or replay.
+describe('SessionStore: trim + replay without isDiskStableMsg', () => {
+  it('trimFront still lands items[0] on a disk-persisted boundary', () => {
+    // Push a single large tail page (1400 assistant frames) through the store.
+    // Each applyMessage inside windowPage calls trimFront; once items exceed
+    // MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK (1256) the trim fires and snaps
+    // items[0] forward to the first isTrimBoundary frame.
+    const store = new SessionStore('s-task2-trim')
+    const big = Array.from({ length: 1400 }, (_, i) => ({
+      seq: i,
+      msg: asstMsg(`a${i}`, `turn ${i}`),
+    }))
+    store.dispatch({
+      type: 'WINDOW_PAGE',
+      at: 'tail',
+      generation: 0,
+      headSeq: 1400,
+      messages: big,
+      hasMore: false,
+      tombstones: [],
+    })
+    const snap = store.getSnapshot()
+    // Trim fired: we're back under CAP + SLACK.
+    expect(snap.items.length).toBeLessThanOrEqual(1000 + 256)
+    // items[0] is an assistant frame — a valid isTrimBoundary.
+    expect(snap.items[0].msg.type).toBe('assistant')
+  })
+
+  it('replay (tail page + live append) still merges in seq order', () => {
+    // The seq-window replay path: a tail page seeds the transcript, then a
+    // live frame appends. This is the path that replaced the old
+    // REPLAY_REPLACE + isDiskStableMsg anchor logic.
+    const store = new SessionStore('s-task2-replay')
+    store.dispatch({
+      type: 'WINDOW_PAGE',
+      at: 'tail',
+      generation: 0,
+      headSeq: 3,
+      messages: pageMsgs([0, 1, 2], (u) => userMsg(u, 'first')),
+      hasMore: false,
+      tombstones: [],
+    })
+    store.dispatch({ type: 'WINDOW_LIVE', seq: 3, generation: 0, message: asstMsg('a-live', 'reply') })
+    const snap = store.getSnapshot()
+    expect(snap.messages.map((m) => m.uuid)).toEqual(['u0', 'u1', 'u2', 'a-live'])
+    expect(snap.newestSeq).toBe(3)
+  })
+})
