@@ -106,7 +106,7 @@ export interface ActiveSubagent {
    *  task_notification can flip it to `done`.
    *
    *  `dismissed` is set ONLY by an explicit user action — the × in
-   *  SubagentOverlay (`Chat.tsx` → `useChatStream.dismissSubagent` →
+   *  SubagentOverlay (`Chat.tsx` → `sessionCommands.dismissSubagent` →
    *  `DISMISS_SUBAGENT`). It is distinct from `interrupted`
    *  (which means the subagent was aborted/errored) so the inline
    *  SubagentCard can render a neutral "tracking dismissed" state instead of

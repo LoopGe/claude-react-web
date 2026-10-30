@@ -1,8 +1,9 @@
 /** One column in the App main-body grid. Wraps <ChatPanel>. Keyed by **session
  *  id** (not slot index) by the parent, so structural changes to the open-panel
  *  set (close / reorder / /clear's atomic X→Y swap) reflow the grid without
- *  remounting surviving panels — a remount would re-run `useChatStream`'s
- *  subscribe effect and replay the transcript ("reload").
+ *  remounting surviving panels — a remount would re-run the
+ *  SessionSynchronizer's subscribe effect and replay the transcript
+ *  ("reload").
  *
  *  `hidden` is the keep-alive cache: a panel that left the open view stays
  *  mounted with `.panel-slot-cached` (display:none) so its scroll position,

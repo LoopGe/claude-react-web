@@ -1354,8 +1354,8 @@ export function App() {
         }
         default:
           // Other frame kinds (per-session replay/message/etc.) are
-          // consumed by useChatStream listeners. App-level code only
-          // cares about the global slice above.
+          // consumed by session-scoped listeners (SessionSynchronizer).
+          // App-level code only cares about the global slice above.
           break
       }
     })

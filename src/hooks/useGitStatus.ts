@@ -113,7 +113,8 @@ export function useGitStatus(
       // a hidden state instead of showing stale data from a prior repo.
       // The set-state-in-effect rule flags this as a cascading-render
       // hazard, but here it's the *correct* way to invalidate a cache
-      // keyed on a changing input — same pattern useChatStream uses.
+      // keyed on a changing input — the standard reset-on-input-change
+      // pattern used by the other input-keyed hooks (e.g. useReadFile).
       // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
       setData(null)
       setError(null)

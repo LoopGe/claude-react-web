@@ -8,8 +8,8 @@
 // Design:
 // - Exactly ONE <WsHubProvider> at the App root. It owns the WebSocket
 //   instance and handles auto-reconnect with backoff.
-// - Consumers (useChatStream, usePermissionChannel, App-level global
-//   listener) read from the hub via `useWsHubContext` and attach their
+// - Consumers (useSessionSynchronizer, usePermissionChannel, App-level
+//   global listener) read from the hub via `useWsHubContext` and attach their
 //   own handlers. Handlers are stored in a ref so adding/removing a
 //   listener never churns the connection.
 // - The hub keeps a local record of "which sessions are we subscribed
@@ -56,7 +56,7 @@ interface WsHubApi {
   /** Register a session-scope listener. Only receives frames whose
    *  `sessionId` field matches. This is O(1) dispatch per frame
    *  (indexed by sessionId) instead of O(N) global fan-out — use it
-   *  in useChatStream for per-panel message handling. Returns an
+   *  in the SessionSynchronizer for per-panel message handling. Returns an
    *  unregister fn. */
   addSessionListener: (sessionId: string, fn: WsHubListener) => () => void
   /** Hold a session's channel. Safe to call repeatedly: the hub ref-counts
@@ -95,7 +95,7 @@ const WsStatusContext = createContext<WsHubStatus>('connecting')
  *  count of interested consumers, NOT proof of a channel. Treating the count
  *  as proof is what produced the reported bug — a subscribe refused while the
  *  session was unservable still incremented it, so the panel's
- *  <Chat>/useChatStream (which mounts only once the resume lands) had its
+ *  SessionSynchronizer (which mounts only once the resume lands) had its
  *  subscribe suppressed as a duplicate and the server was never asked for a
  *  replay. `subscribe-result` now states the truth.
  *
@@ -327,8 +327,8 @@ export function WsHubProvider({ children, url }: ProviderProps) {
           }
         }
         // Fan out to session-scope listeners (O(1) lookup by sessionId).
-        // This is the fast path used by useChatStream — each panel only
-        // processes frames for its own session without scanning others.
+        // This is the fast path used by the SessionSynchronizer — each panel
+        // only processes frames for its own session without scanning others.
         const sid = 'sessionId' in frame ? (frame as { sessionId?: string }).sessionId : undefined
         if (sid) {
           const sessionSet = sessionListenersRef.current.get(sid)
@@ -505,7 +505,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
   // lives in its own WsStatusContext so status flips (connecting →
   // online → reconnecting) don't change the hub object's identity.
   // This prevents effect teardown/rebuild in consumers like
-  // useChatStream that have `[hub]` in their dependency arrays.
+  // useSessionSynchronizer that have `[hub]` in their dependency arrays.
   const api = useMemo<WsHubApi>(
     () => ({ addListener, addSessionListener, subscribe, subscribeSubagentTranscript }),
     [addListener, addSessionListener, subscribe, subscribeSubagentTranscript],

@@ -3,8 +3,8 @@
 // returns its shared `SessionCommands` instance.
 //
 // Memoization is keyed by the SessionStore instance (a WeakMap), so every
-// caller for a given session — useChatStream today, the SessionSynchronizer
-// and message components later — shares ONE factory result. The entry is
+// caller for a given session — the Chat and SideChatDrawer components today
+// — shares ONE factory result. The entry is
 // GC'd when the store leaves the registry (session deleted), so the cache
 // never outlives the store it serves.
 import { getSessionStore } from '../session-store/selectors'

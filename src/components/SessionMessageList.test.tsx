@@ -275,15 +275,13 @@ describe('SessionMessageList', () => {
 
 // ── Stable module-level selectors ──────────────────────────────────
 //
-// The brief asks for three primitive boolean selectors (`selectHasActivePhase`,
+// The brief asked for three primitive boolean selectors (`selectHasActivePhase`,
 // `selectHasTranscriptBackground`, `selectHasLiveSyncSubagent`) that
-// Task 6+ turn-status consumers feed into `useSessionSelector`. They have
-// no consumer yet (the still-active `useChatStream.ts` keeps its own inline
-// `selectHasActivePhase` until Task 6 retires it), so these tests are the
-// only thing pinning their behavior against a future `ActiveSubagent`
-// shape change. They are pure functions over a `SessionSnapshot`, so we
-// construct minimal snapshot literals and assert the predicate output —
-// no store, no React, no DOM.
+// turn-status consumers feed into `useSessionSelector`. Chat imports them
+// from `selectors.ts`, so these tests pin their behavior against a future
+// `ActiveSubagent` shape change alongside the live call sites. They are
+// pure functions over a `SessionSnapshot`, so we construct minimal snapshot
+// literals and assert the predicate output — no store, no React, no DOM.
 
 /** Build a minimal SessionSnapshot with just the fields the selectors read.
  *  The other fields are not accessed, so a partial cast is safe. */
