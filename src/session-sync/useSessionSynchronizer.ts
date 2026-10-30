@@ -5,7 +5,7 @@
 //
 //   1. Construct one SessionSynchronizer per `sessionId` (re-created when the
 //      session changes), injecting the live WsHub and `api.get`.
-//   2. Drive start/stop from a `running` effect — the existing useChatStream
+//   2. Drive start/stop from a `running` effect — the prior useChatStream
 //      behavior where every `running` flip forces a fresh subscribe is
 //      preserved (the synchronizer's `start()` calls `stopInternal()` first,
 //      so a re-run cleanly tears down the previous run).
@@ -90,7 +90,7 @@ export function useSessionSynchronizer(
 
   // Mount: start. Unmount: stop. running change: re-start. The synchronizer's
   // start() calls stopInternal() first, so a re-run cleanly tears down the
-  // previous run before starting a fresh one — preserving the existing
+  // previous run before starting a fresh one — preserving the prior
   // useChatStream behavior where every running flip forces a fresh
   // subscribe with `force: true`. Empty session is inert — no start.
   useEffect(() => {

@@ -4,7 +4,7 @@
 // Mirrors usePermissionChannel.ts: this hook does NOT open its own
 // connection — elicitation events are multiplexed onto the WebSocket hub.
 // The caller routes `elicitation-request` / `elicitation-resolved` frames
-// (via useChatStream's frame switch) into `onRequest()` / `onResolved()`.
+// (via the SessionSynchronizer's frame switch) into `onRequest()` / `onResolved()`.
 // A one-shot REST call seeds the initial pending list, covering the race
 // where a request was broadcast before the WebSocket subscription opened.
 // Reconnects are covered by the server's replay snapshot (the `replay` /

@@ -56,7 +56,7 @@ function errorSentence(error: string): string {
  *  carrying a stale error (session-status.ts's 'err' state) must keep its
  *  transcript and composer, and a recovering session's paired ephemeral
  *  crash-recovery notices ("recovering" / "recovered") only resolve for
- *  live subscribers — the transcript view (and its useChatStream
+ *  live subscribers — the transcript view (and its SessionSynchronizer
  *  subscription) must stay mounted through the window. */
 export function errorCardState(session: ErrorCardSession): { kind: ErrorCardKind; error: string } | null {
   if (!session.error) return null

@@ -2,7 +2,7 @@
 //
 // Replaces the `displayedError` useMemo that lived at the bottom of
 // useChatStream. The projection rule is unchanged (every line is a faithful
-// port of the existing useChatStream logic):
+// port of the former useChatStream logic):
 //
 //   · connecting   — pass the store error through unchanged.
 //   · online       — suppress ONLY the reconnecting placeholder; real

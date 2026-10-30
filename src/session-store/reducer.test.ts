@@ -3332,8 +3332,8 @@ describe('reducer: front-trim memory bound', () => {
   // with subtype error|compact_boundary|api_retry. A non-persisted frame
   // (system 'init', or a sidechain frame) at items[0] would anchor loadOlder's
   // beforeUuid on a uuid the server can't find → silent fallback to the newest
-  // page → reverse-paging stalls. isTrimBoundary excludes those; the old
-  // isDiskStableMsg (system→true, parent!=null user→true) did not.
+  // page → reverse-paging stalls. isTrimBoundary excludes those — it accepts
+  // only main-thread assistant frames and the three persisted system subtypes.
   function systemInitMsg(uuid: string): SdkMessage {
     // subtype 'init' is broadcast live but NOT persisted to disk.
     return { type: 'system', subtype: 'init', uuid, message: {} } as unknown as SdkMessage

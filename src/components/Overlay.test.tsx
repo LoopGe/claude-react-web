@@ -316,4 +316,35 @@ describe('Overlay', () => {
     expect(inline).not.toBeNull()
     expect(inline!.hasAttribute(PORTAL_MARKER)).toBe(false)
   })
+
+  it('rejects variant="subagent" (removed — SubagentOverlay hand-rolls its markup)', () => {
+    // The subagent/workflow variant map entries were deleted because
+    // SubagentOverlay/WorkflowOverlay hand-roll their markup (their scrim
+    // must be a separate child, not an ancestor of the virtualised
+    // transcript — see the compositing contract on .subagent-overlay in
+    // chat.css). A caller routing through <Overlay> with these variants
+    // would get a transparent backdrop, so the entries were dead. After
+    // removal, VARIANT_CLASSES['subagent'] is undefined, so Overlay throws
+    // accessing classes.card — proving the variant is truly gone at runtime.
+    expect(() =>
+      render(
+        // @ts-expect-error 'subagent' is no longer a valid OverlayVariant
+        <Overlay variant="subagent" open onClose={() => {}} ariaLabel="Removed">
+          <div>x</div>
+        </Overlay>,
+      ),
+    ).toThrow()
+  })
+
+  it('rejects variant="workflow" (removed — WorkflowOverlay hand-rolls its markup)', () => {
+    // Same rationale as the subagent variant above.
+    expect(() =>
+      render(
+        // @ts-expect-error 'workflow' is no longer a valid OverlayVariant
+        <Overlay variant="workflow" open onClose={() => {}} ariaLabel="Removed">
+          <div>x</div>
+        </Overlay>,
+      ),
+    ).toThrow()
+  })
 })

@@ -15,10 +15,8 @@ import { countTaskActivity, type ActiveWorktree } from './normalize'
 // `select` reference keeps `getSnapshot`'s `useCallback` deps stable,
 // otherwise the hook re-binds on every render and the Object.is guard
 // never gets a chance to dedup. They live here (next to the other
-// reactive readers) so Task 6+ can retire the inline arrow
-// `selectHasActivePhase` still living in `useChatStream.ts` and import
-// this one instead — the still-active hook keeps its own copy until
-// then to avoid touching `useChatStream` (out of scope for Task 5).
+// reactive readers) as the canonical selectors that Chat and the
+// turn-status components import via `useSessionSelector`.
 
 /** True when any live-turn phase is active (thinking / writing / tool_use).
  *  Drives the turn-active gate the WorkingBubble mount condition and the

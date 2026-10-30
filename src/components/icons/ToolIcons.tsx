@@ -132,15 +132,6 @@ export function IconFileCode(props: IconProps) {
   )
 }
 
-export function IconLink(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1" />
-      <path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" />
-    </Icon>
-  )
-}
-
 export function IconListTodo(props: IconProps) {
   return (
     <Icon {...props}>
@@ -729,27 +720,6 @@ export function IconUser(props: IconProps) {
   )
 }
 
-export function IconBug(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <rect x="8" y="6" width="8" height="13" rx="4" />
-      <path d="M9 3.5 10.5 6M15 3.5 13.5 6" />
-      <path d="M8 11H4M8 15H4M16 11h4M16 15h4M8 8 5 6M16 8l3-2M8 18l-3 2M16 18l3 2" />
-    </Icon>
-  )
-}
-
-export function IconBugOff(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M16 9v6a4 4 0 0 1-7 2.6" />
-      <path d="M8 13v-2a4 4 0 0 1 4-4" />
-      <path d="M15 3.5 13.5 6M8 11H4M8 15H4M16 11h4M8 8 5 6M8 18l-3 2" />
-      <path d="m3 3 18 18" />
-    </Icon>
-  )
-}
-
 export function IconSparkles(props: IconProps) {
   return (
     <Icon {...props}>
@@ -792,23 +762,6 @@ export function IconEyeOff(props: IconProps) {
       <path d="M14.084 14.158a3 3 0 0 1-4.242-4.242" />
       <path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143" />
       <path d="m2 2 20 20" />
-    </Icon>
-  )
-}
-
-export function IconDollar(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M12 3v18" />
-      <path d="M16 7.5a3.5 3.5 0 0 0-3.5-2.5h-1A3.25 3.25 0 0 0 11 11.5h2a3.25 3.25 0 0 1 .5 6.5h-1.5A3.5 3.5 0 0 1 8 15.5" />
-    </Icon>
-  )
-}
-
-export function IconWrench(props: IconProps) {
-  return (
-    <Icon {...props}>
-      <path d="M14.5 6a3.5 3.5 0 0 0-4.6 4.3L4 16.2a2 2 0 0 0 2.8 2.8l5.9-5.9A3.5 3.5 0 0 0 18 9.5a3.5 3.5 0 0 0-1-2.4l-2.2 2.2-1.6-1.6L15.4 5.5A3.5 3.5 0 0 0 14.5 6Z" />
     </Icon>
   )
 }

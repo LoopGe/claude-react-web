@@ -170,7 +170,7 @@ describe('SessionBody', () => {
   it('keeps children mounted for a recovering session so its paired crash-recovery notices resolve', () => {
     // The server's "正在尝试自动恢复… / 已从崩溃恢复" notice pair is pushed to
     // live subscribers only — unmounting the transcript view (and its
-    // useChatStream subscription) strands the first row without its
+    // SessionSynchronizer subscription) strands the first row without its
     // resolution.
     render(
       <SessionBody session={{ running: true, terminated: false, recovering: true, error: 'cli crashed' }}>

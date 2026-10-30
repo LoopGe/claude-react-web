@@ -23,7 +23,7 @@ export function useReadFile(
       // Reset state when no file is selected so the viewer's body falls back
       // to the "not available" hint instead of showing stale content from a
       // previously viewed file. Same cache-invalidation-on-input-change pattern
-      // useGitStatus / useChatStream use.
+      // useGitStatus uses.
       // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
       setData(null)
       setError(null)

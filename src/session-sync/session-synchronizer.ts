@@ -41,7 +41,7 @@ export interface TranscriptPagingSnapshot {
   olderError: string | null
 }
 
-/** Same fields as the current PermissionHandlers in useChatStream.ts —
+/** The handler callbacks the host (useSessionSynchronizer) supplies —
  *  kept here so this module has no React import. */
 export interface SessionSyncHandlers {
   onRequest: (req: PermissionRequest) => void

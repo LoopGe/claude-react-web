@@ -73,9 +73,16 @@ vi.mock('../hooks/useApi', () => ({
 
 // Mock the heavy <Chat> to a stub. The main-session synchronizer lives inside
 // <Chat>; stubbing it isolates the Side Chat synchronizer ChatPanel owns, so
-// the subscribe/tail-fetch counts reflect ONLY the side chat session.
+// the subscribe/tail-fetch counts reflect ONLY the side chat session. The stub
+// also captures the props ChatPanel forwards, so the working-dot derivation
+// (sideChatWorking from sideChatSession.working) can be pinned without mounting
+// the real Chat.
+let lastChatProps: Record<string, unknown> = {}
 vi.mock('./Chat', () => ({
-  Chat: () => <div data-testid="chat-stub" />,
+  Chat: (props: Record<string, unknown>) => {
+    lastChatProps = props
+    return <div data-testid="chat-stub" />
+  },
 }))
 
 import { ChatPanel } from './ChatPanel'
@@ -260,4 +267,76 @@ describe('ChatPanel Side Chat lifecycle (session-synchronizer)', () => {
       ).length,
     ).toBe(0)
   }, 15_000)
+})
+
+describe('ChatPanel Side Chat collapsed working indication', () => {
+  // Pins that the collapsed working dot/label derives SOLELY from
+  // sideChatSession.working (forwarded as sideChatWorking to <Chat>), with no
+  // dependency on the removed sideChatUnread / initialMessageCount plumbing.
+  // The <Chat> stub captures the props ChatPanel forwards so the derivation
+  // can be asserted without mounting the real Chat's collapsed-tab markup.
+
+  beforeEach(() => {
+    lastChatProps = {}
+  })
+
+  it('forwards sideChatWorking=true when the side chat session is working', () => {
+    const mainSession = makeSession('main-working')
+    const sideSession = makeSession('side-working', { working: true })
+    render(
+      <ToastProvider>
+        <ChatPanel
+          {...basePanelProps}
+          session={mainSession}
+          sideChatSession={sideSession}
+          sideChatCollapsed
+          onToggleCollapseSideChat={noop}
+          onCloseSideChat={noop}
+        />
+      </ToastProvider>,
+    )
+    expect(lastChatProps.sideChatWorking).toBe(true)
+    // sideChatUnread was removed from ChatPanelProps — it must never be
+    // forwarded to Chat.
+    expect('sideChatUnread' in lastChatProps).toBe(false)
+  })
+
+  it('forwards sideChatWorking=false when the side chat session is idle', () => {
+    const mainSession = makeSession('main-idle')
+    const sideSession = makeSession('side-idle', { working: false })
+    render(
+      <ToastProvider>
+        <ChatPanel
+          {...basePanelProps}
+          session={mainSession}
+          sideChatSession={sideSession}
+          sideChatCollapsed
+          onToggleCollapseSideChat={noop}
+          onCloseSideChat={noop}
+        />
+      </ToastProvider>,
+    )
+    expect(lastChatProps.sideChatWorking).toBe(false)
+    expect('sideChatUnread' in lastChatProps).toBe(false)
+  })
+
+  it('no longer accepts sideChatUnread as a prop (removed from ChatPanelProps)', () => {
+    // Type-level assertion: after removing the unread plumbing, passing
+    // sideChatUnread is a type error. @ts-expect-error suppresses it so the
+    // file compiles post-deletion; on the pre-deletion code the directive is
+    // unused (the prop still exists) and tsc flags it — the RED signal.
+    const mainSession = makeSession('main-typecheck')
+    const { container } = render(
+      <ToastProvider>
+        <ChatPanel
+          {...basePanelProps}
+          session={mainSession}
+          // @ts-expect-error sideChatUnread was removed from ChatPanelProps
+          sideChatUnread={5}
+        />
+      </ToastProvider>,
+    )
+    // Runtime: the unknown prop is ignored — ChatPanel renders fine.
+    expect(container.querySelector('[data-testid="chat-stub"]')).not.toBeNull()
+  })
 })
