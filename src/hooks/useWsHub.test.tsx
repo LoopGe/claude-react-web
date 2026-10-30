@@ -485,7 +485,7 @@ describe('useWsHub: subscribe ref-counting and channel state', () => {
     // SLEPT session mounts useGitStatus's subscribe FIRST (that hook runs
     // regardless of `running`; startSession refuses to wake a slept session
     // from a subscribe, so the answer is ok:false and nothing is established).
-    // <Chat>/useChatStream mounts only once the resume lands, so its subscribe
+    // <Chat>/useSessionSynchronizer mounts only once the resume lands, so its subscribe
     // is the one that must actually reach the server. Counting the refusal as
     // a held channel suppressed it and the session was never served.
     const { result } = mountHub()

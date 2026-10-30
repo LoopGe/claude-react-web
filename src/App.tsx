@@ -5406,6 +5406,7 @@ export function App() {
                       onCloseSideChat={sideChat?.parentId === s.id ? handleCloseSideChat : undefined}
                       onSideChat={handleSideChat}
                       settingsTabRequest={
+                        // Outer sessionId filter stays intentionally: downstream props ignore the extra field via structural subtyping, but nulling here scopes the request to its own panel.
                         settingsTabRequest?.sessionId === s.id
                           ? settingsTabRequest
                           : null

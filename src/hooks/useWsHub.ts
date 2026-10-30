@@ -95,7 +95,7 @@ const WsStatusContext = createContext<WsHubStatus>('connecting')
  *  count of interested consumers, NOT proof of a channel. Treating the count
  *  as proof is what produced the reported bug — a subscribe refused while the
  *  session was unservable still incremented it, so the panel's
- *  SessionSynchronizer (which mounts only once the resume lands) had its
+ *  `useSessionSynchronizer` (which mounts only once the resume lands) had its
  *  subscribe suppressed as a duplicate and the server was never asked for a
  *  replay. `subscribe-result` now states the truth.
  *
