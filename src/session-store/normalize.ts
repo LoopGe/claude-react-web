@@ -145,40 +145,6 @@ export function isTrimBoundary(msg: SdkMessage): boolean {
   return false
 }
 
-/** True when this message's uuid is a SAFE reconnect cursor anchor — i.e. the
- *  rebuilt history ring will still resolve it after a server restart.
- *
- *  The restart seed is built from the disk transcript (history-reader) plus
- *  the result-frames sidecar. Frames that live ONLY in the in-memory ring —
- *  `command_lifecycle`, non-persisted `system` subtypes (init, …), transient
- *  slots — are broadcast live with uuids and advance the cursor today, but a
- *  restart drops them: a cursor anchored on one then misses the rebuilt ring
- *  and forces a full replay on EVERY reconnect (live-verified 2026-10-12,
- *  session 94330c21: the cursor sat on a `command_lifecycle` frame; the same
- *  shape repeatedly re-sent ~460 messages). Anchoring on a durable frame is
- *  conservative in the right direction: the few non-durable frames after it
- *  are re-sent by the incremental slice and deduped client-side — a handful
- *  of redundant frames instead of the whole ring.
- *
- *  Durable set:
- *    - main-thread assistant frames (parent_tool_use_id == null) — disk
- *    - tool_result-bearing user frames (parent != null) — disk
- *    - top-level user prompts — disk (and the server bridges their
- *      server-minted uuid across restarts via prompt-uuid-store; an
- *      un-bridged miss falls back to a full replay, the pre-existing
- *      behaviour)
- *    - non-empty result frames — result-frames sidecar
- *    - the persisted system subtypes (error / compact_boundary / api_retry)
- *  Everything else (command_lifecycle, init, task_notification system
- *  frames, local_command_output, …) is broadcast-only and must not anchor. */
-export function isCursorAnchorable(msg: SdkMessage): boolean {
-  if (msg.type === 'assistant') return msg.parent_tool_use_id == null
-  if (msg.type === 'user') return true
-  if (msg.type === 'result') return !isEmptyResultFrame(msg)
-  if (msg.type === 'system') return PERSISTED_SYSTEM_SUBTYPES.has(msg.subtype as string)
-  return false
-}
-
 export function toTranscriptItem(
   msg: SdkMessage,
   prev: TranscriptItem | undefined,

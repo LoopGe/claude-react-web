@@ -425,16 +425,6 @@ export interface LiveTurnState {
  *  double-mount. */
 export interface ServerMirror {
   replayReady: boolean
-  /** Set when a tail-first replay burst applies frames OUT OF ORDER (the
-   *  newest chunk first), and cleared once the results have been re-applied.
-   *  A tail-first burst can land a tool_result before the tool_use it belongs
-   *  to, so the result is skipped and the later tool_use seeds `running` with
-   *  nothing left to flip it. The marker lives HERE — in the store, which
-   *  outlives the effect closure that applied the burst — because the burst
-   *  can be interrupted (socket drop) and finished by a later, ordinary
-   *  replay whose buffer is non-empty: a closure-local check would miss
-   *  exactly that case. See SETTLE_RESULT_INDEXES. */
-  tailFirstUnsettled: boolean
   items: TranscriptItem[]
   messages: SdkMessage[]
   /** The session's "isolated in a worktree" state, folded from the
@@ -465,7 +455,6 @@ export interface ServerMirror {
    * promptSuggestion it never enters the transcript; reset by
    * CLEAR_TRANSCRIPT. */
   tasks: TaskRecordUi[]
-  lastMessageUuid: string | null
   /** Transient `api_retry` system frame (rate-limit retry indicator). Lives
    *  OUTSIDE items/messages/IDB — it is purely transient (only meaningful
    *  while a retry is in flight, cleared by the next non-retry message), so
@@ -633,53 +622,7 @@ export interface SessionState {
 
 export type SessionAction =
   | { type: 'REPLAY_REPLACE'; messages: SdkMessage[]; permissions: PermissionRequest[] }
-  /** Prepend older messages fetched from disk (lazy-load on scroll-up).
-   *  Messages are in chronological order (oldest first) and are unshifted
-   *  ahead of the current transcript. Deduped by uuid against what's
-   *  already present.
-   *
-   *  `trustUuidDedup: true` (tail-first replay backfill chunks) skips the
-   *  prompt content-signature overlap check: backfill chunks come from the
-   *  same server history ring as the on-screen tail, so uuids match
-   *  one-to-one and uuid dedup is exact — while the signature check exists
-   *  for the DISK pager, where disk and memory mint different uuids for the
-   *  same logical prompt. Running it on backfill chunks would false-drop a
-   *  genuinely distinct older prompt whose text repeats ("continue") across
-   *  a chunk boundary. */
-  | { type: 'PREPEND_MESSAGES'; messages: SdkMessage[]; trustUuidDedup?: boolean }
   | { type: 'MESSAGE'; message: SdkMessage }
-  /** Adopt the newest DISK-STABLE message as the reconnect cursor when the
-   *  transcript has rows but no cursor. Rows can land without one — an IDB
-   *  cold-load prepends into an empty store, and a v2 cache may carry a null
-   *  `lastMessageUuid` — and the cursor is what tells the server "everything
-   *  up to here is on screen" (incremental replay instead of a full one, and
-   *  the precondition tail-first replay is gated on). No-op when a cursor is
-   *  already set or no disk-stable message is present: a server-minted
-   *  top-level prompt uuid is deliberately NOT adopted, since it exists in
-   *  neither the ring nor the transcript and would miss every anchor lookup. */
-  | { type: 'ADOPT_CURSOR' }
-  /** Re-apply every RESULT-bearing message through the index updater, once a
-   *  tail-first replay burst is complete. The burst applies the newest chunk
-   *  first, so a tool_result can land before the tool_use it belongs to: the
-   *  status branch skips a result with no seeded entry, and the subagent /
-   *  workflow / skill merges skip a record that does not exist yet. The later
-   *  (prepended) tool_use then seeds `running` with no future result to flip
-   *  it — a card that spins forever. By the terminator the chronological
-   *  transcript is whole, so re-running the results settles every such pair.
-   *  Idempotent, and deliberately narrow: only result-bearing messages are
-   *  re-applied, never the tool_use ones, so a status set out-of-band (a plan
-   *  approved via PERMISSION_RESOLVED with no tool_result) is never reset.
-   *
-   *  SUPERSEDED by ServerMirror.pendingResults, which parks an orphan result
-   *  the moment it arrives (any path) and re-applies it when the tool_use
-   *  lands — so this action is now a redundant safety net, kept for one
-   *  release. It remains idempotent and correct; nothing depends on it. */
-  | { type: 'SETTLE_RESULT_INDEXES' }
-  /** Record that a tail-first replay burst just applied its newest chunk
-   *  first, so the transcript may hold results whose tool_use has not been
-   *  applied yet (see ServerMirror.tailFirstUnsettled). Dispatched by the
-   *  client right after the tail frame's REPLAY_REPLACE. */
-  | { type: 'MARK_TAIL_FIRST_APPLIED' }
   | { type: 'OPTIMISTIC_USER_MESSAGE'; message: SdkMessage }
   /** The REST send endpoint accepted an optimistic user message and returned
    *  the server-side uuid. Clears the local sending spinner immediately while
@@ -888,7 +831,6 @@ export interface SessionSnapshot {
 export function createInitialServerMirror(): ServerMirror {
   return {
     replayReady: false,
-    tailFirstUnsettled: false,
     items: [],
     messages: [],
     activeWorktree: null,
@@ -897,7 +839,6 @@ export function createInitialServerMirror(): ServerMirror {
     contextUsage: null,
     promptSuggestion: null,
     tasks: [],
-    lastMessageUuid: null,
     apiRetry: null,
     thinkingTokens: null,
     sessionState: null,

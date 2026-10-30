@@ -15,8 +15,7 @@
 //     `model_refusal_fallback`) and EVICT_MESSAGES
 //   - REPLAY_REPLACE: fresh, overlapping (uuid bracket), degraded-copy replace,
 //     older-than-cache prepend, in-span mid fill + chronology repair
-//   - tail-first bursts (tail REPLAY_REPLACE + MARK_TAIL_FIRST_APPLIED +
-//     trusted PREPEND chunks + SETTLE_RESULT_INDEXES) and loadOlder prepends
+//   - tail-first bursts (tail WINDOW_PAGE + trusted head-page backfill chunks)
 //   - the seq-window actions: WINDOW_PAGE (tail, head, and a page filling an
 //     open hole), WINDOW_LIVE (contiguous, gapped/parked, and at the hole's
 //     first seq), the pending drain a fill triggers (counted, so it cannot
@@ -225,8 +224,19 @@ function randomAction(state: SessionState, gen: MessageGen, rng: Rng): SessionAc
     return { type: 'REPLAY_REPLACE', messages: payload, permissions: [] }
   }
   if (roll < 80) {
+    // Head-page prepend (uuid-dedup path via WINDOW_PAGE at:'head'). Only
+    // fires when the window has seqs to prepend below; otherwise falls back
+    // to a REPLAY_REPLACE older-slice prepend (signature-dedup path).
+    const w = state.mirror.window
     const head = (state.mirror.messages[0] as { receivedAt?: number } | undefined)?.receivedAt ?? Date.now()
-    return { type: 'PREPEND_MESSAGES', messages: gen.olderBatch(1 + rng.int(6), head), trustUuidDedup: rng.chance(0.5) }
+    const batch = gen.olderBatch(1 + rng.int(6), head)
+    if (w.oldestSeq != null && w.oldestSeq > 0) {
+      const generation = w.generation < 0 ? 0 : w.generation
+      const n = Math.min(w.oldestSeq, batch.length)
+      const messages = batch.slice(0, n).map((msg, i) => ({ seq: w.oldestSeq! - n + i, msg }))
+      return { type: 'WINDOW_PAGE', at: 'head', generation, headSeq: w.headSeq, messages, hasMore: rng.chance(0.5), tombstones: [] }
+    }
+    return { type: 'REPLAY_REPLACE', messages: batch, permissions: [] }
   }
   if (roll < 84) {
     return { type: 'MESSAGE_CONSUMED', uuid: uuids.length && rng.chance(0.8) ? rng.pick(uuids) : 'missing', consumedAt: Date.now() }
@@ -238,9 +248,6 @@ function randomAction(state: SessionState, gen: MessageGen, rng: Rng): SessionAc
   if (roll < 93) return randomWindowAction(state, gen, rng)
   // Actions that must not move the field at all.
   const inert: SessionAction[] = [
-    { type: 'ADOPT_CURSOR' },
-    { type: 'SETTLE_RESULT_INDEXES' },
-    { type: 'MARK_TAIL_FIRST_APPLIED' },
     { type: 'SESSION_TERMINATED' },
     { type: 'LIVE_TURN_FLUSH' },
     { type: 'TASKS_SNAPSHOT', tasks: [] },
@@ -352,7 +359,7 @@ describe('ServerMirror.activeWorktree — incremental === getActiveWorktree(mess
     expect(drains).toBeGreaterThan(0)
   }, HEAVY_TIMEOUT_MS)
 
-  it('holds through tail-first bursts (tail first, then trusted backfill chunks)', () => {
+  it('holds through tail-first bursts (tail page, then head-page backfill chunks)', () => {
     for (let seed = 100; seed < 130; seed++) {
       const rng = makeRng(seed)
       const gen = new MessageGen(rng, `tf${seed}`)
@@ -361,19 +368,30 @@ describe('ServerMirror.activeWorktree — incremental === getActiveWorktree(mess
       for (let i = 0; i < 40; i++) history.push(gen.any())
       const chunks: SdkMessage[][] = []
       for (let i = history.length; i > 0; i -= 8) chunks.push(history.slice(Math.max(0, i - 8), i))
+      // Tail page: the newest chunk (seqs 33..40).
       let state = createInitialSessionState(`tf-${seed}`)
-      state = reduceSessionState(state, { type: 'REPLAY_REPLACE', messages: chunks[0], permissions: [] })
+      const tailMsgs = chunks[0].map((msg, i) => ({ seq: 33 + i, msg }))
+      state = reduceSessionState(state, {
+        type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 41,
+        messages: tailMsgs, hasMore: false, tombstones: [],
+      })
       assertInvariant(state, `seed=${seed} tail`)
-      state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
+      // Backfill chunks: strictly older pages prepended via WINDOW_PAGE at:head
+      // (trustUuidDedup: true — the uuid-dedup path).
+      let nextBelow = 32
       for (let c = 1; c < chunks.length; c++) {
-        state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: chunks[c], trustUuidDedup: true })
+        const chunk = chunks[c]
+        const headMsgs = chunk.map((msg, i) => ({ seq: nextBelow - chunk.length + 1 + i, msg }))
+        nextBelow -= chunk.length
+        state = reduceSessionState(state, {
+          type: 'WINDOW_PAGE', at: 'head', generation: 0, headSeq: 41,
+          messages: headMsgs, hasMore: false, tombstones: [],
+        })
         assertInvariant(state, `seed=${seed} chunk=${c}`)
         // Live frames interleave with the drain.
         state = reduceSessionState(state, { type: 'MESSAGE', message: gen.any() })
         assertInvariant(state, `seed=${seed} live-after-chunk=${c}`)
       }
-      state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
-      assertInvariant(state, `seed=${seed} settle`)
     }
   }, HEAVY_TIMEOUT_MS)
 

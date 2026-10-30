@@ -30,8 +30,6 @@ import {
   getToolUseStarts,
   getWorkflowChildStarts,
   getWorkflowStarts,
-  isCursorAnchorable,
-  isDiskStableMsg,
   isTrimBoundary,
   messageTouchesWorktree,
   msgTime,
@@ -49,7 +47,6 @@ import { toolDebug, toolDebugEnabled } from './debug'
 import { appendDraftText, supersedeDraft } from './draft-state'
 import { parseWorkflowOutput } from './workflow-meta'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
-import { isEmptyResultFrame } from '../../shared/results.js'
 import {
   bumpGeneration,
   emptyWindow,
@@ -63,18 +60,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
   switch (action.type) {
     case 'REPLAY_REPLACE':
       return replayReplace(state, action.messages, action.permissions)
-    case 'PREPEND_MESSAGES':
-      return prependMessages(state, action.messages, { trustUuidDedup: action.trustUuidDedup === true })
     case 'MESSAGE':
       return applyMessage(state, action.message)
-    case 'ADOPT_CURSOR':
-      return adoptCursor(state)
-    case 'SETTLE_RESULT_INDEXES':
-      return settleResultIndexes(state)
-    case 'MARK_TAIL_FIRST_APPLIED':
-      return state.mirror.tailFirstUnsettled
-        ? state
-        : withMirror(state, { ...state.mirror, tailFirstUnsettled: true })
     case 'OPTIMISTIC_USER_MESSAGE':
       return applyOptimisticUserMessage(state, action.message)
     case 'ACK_USER_MESSAGE':
@@ -637,51 +624,6 @@ function replayReplace(
     // Chronology repair: repositions anything the merge (or a historical
     // bug) left out of time order. No-op on healthy state.
     state = repairChronology(state)
-    // Cursor advance. Two regimes:
-    //
-    //  - Fully-dropped payload (everything matched or the degenerate
-    //    prompt-equal branch): applyMessage never ran, so lastMessageUuid
-    //    stays at the cached value — which after a restart re-seed is a
-    //    server-minted prompt uuid the rebuilt ring does not carry. Advance
-    //    to the payload's last uuid (the newest the server's ring actually
-    //    recognizes) so the next reconnect doesn't miss and re-send the full
-    //    replay forever.
-    //  - Anything applied or merged: the mirror's own last uuid-bearing
-    //    message is the newest content the mirror holds — which is what the
-    //    cursor must track (applyMessage already does this for the append
-    //    path; the scan also covers prepend-only merges, mid fills whose
-    //    frames were repositioned away from the tail by the repair pass, and
-    //    a displaced tail the repair moved — each of which would otherwise
-    //    anchor the cursor on a mid-transcript uuid).
-    const fullyDropped = older.length === 0 && newer.length === 0 && mid.length === 0
-    if (fullyDropped) {
-      // The payload was fully dropped — anchor on its newest DURABLE uuid
-      // (the uuid the rebuilt ring will recognize). A backward scan: the
-      // payload's literal last frame may be broadcast-only (command_lifecycle,
-      // init) and would miss the rebuilt ring (94330c21).
-      let lastUuid: string | null = null
-      for (let i = payload.length - 1; i >= 0; i--) {
-        const u = payload[i]?.uuid
-        if (typeof u === 'string' && isCursorAnchorable(payload[i])) { lastUuid = u; break }
-      }
-      if (lastUuid && state.mirror.lastMessageUuid !== lastUuid) {
-        state = withMirror(state, { ...state.mirror, lastMessageUuid: lastUuid })
-      }
-    } else {
-      // Anchor on the mirror's newest DURABLE uuid — the mid fill appends
-      // (then repositions) hole frames and the repair pass moves displaced
-      // tails, so the literal last message is not necessarily the right
-      // anchor.
-      const msgs = state.mirror.messages
-      let lastUuid: string | null = null
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        const u = msgs[i]?.uuid
-        if (typeof u === 'string' && isCursorAnchorable(msgs[i])) { lastUuid = u; break }
-      }
-      if (lastUuid && state.mirror.lastMessageUuid !== lastUuid) {
-        state = withMirror(state, { ...state.mirror, lastMessageUuid: lastUuid })
-      }
-    }
     const finalLen = state.mirror.items.length
     const prevLen = prevMirror.items.length
     if (finalLen < prevLen) {
@@ -1311,35 +1253,6 @@ function promptSequencesEqual(
   }
 }
 
-/** See the SETTLE_RESULT_INDEXES action doc. Gated on the marker rather than
- *  run unconditionally: the scan + re-apply is O(result-bearing messages) and
- *  every ordinary reconnect would otherwise pay it for nothing. The marker is
- *  durable, so a burst that was interrupted (and finished later by an ordinary
- *  replay) still settles. */
-function settleResultIndexes(state: SessionState): SessionState {
-  if (!state.mirror.tailFirstUnsettled) return state
-  const cleared = withMirror(state, { ...state.mirror, tailFirstUnsettled: false })
-  const results = cleared.mirror.messages.filter((m) => getToolResultIds(m).length > 0)
-  if (results.length === 0) return cleared
-  return rebuildIndexesFromMessages(cleared, results)
-}
-
-/** See the ADOPT_CURSOR action doc. Walks back to the newest disk-stable
- *  message — the only kind whose uuid matches between the in-memory ring and
- *  the on-disk transcript, so the only kind that can anchor an incremental
- *  replay. */
-function adoptCursor(state: SessionState): SessionState {
-  const mirror = state.mirror
-  if (mirror.lastMessageUuid != null || mirror.items.length === 0) return state
-  for (let i = mirror.items.length - 1; i >= 0; i--) {
-    const uuid = mirror.items[i].msg.uuid
-    if (typeof uuid === 'string' && isDiskStableMsg(mirror.items[i].msg)) {
-      return withMirror(state, { ...mirror, lastMessageUuid: uuid })
-    }
-  }
-  return state
-}
-
 /** Prepend a chronological batch of older messages (loaded from disk on
  *  scroll-up) ahead of the current transcript.
  *
@@ -1388,9 +1301,9 @@ function prependMessages(
   // batch's trailing prompt run against the on-screen leading prompt run
   // element-wise, from the boundary inward, by content signature.
   // Skipped entirely for same-uuid-space batches (tail-first replay
-  // backfill): uuid dedup is exact there, and the signature check would
-  // false-drop a distinct older prompt whose text repeats across the chunk
-  // boundary (see the PREPEND_MESSAGES action doc).
+  // backfill / WINDOW_PAGE at:'head'): uuid dedup is exact there, and the
+  // signature check would false-drop a distinct older prompt whose text
+  // repeats across the chunk boundary.
   const overlap = opts?.trustUuidDedup ? 0 : countPromptOverlap(older, mirror.items)
   const batch = overlap > 0 ? older.slice(0, older.length - overlap) : older
 
@@ -1916,8 +1829,7 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
   // to (window + pending) so the boundaries stay honest.
   const evictedSeqs = seqsForUuids(mirror.window, uuidSet)
   const window = evictedSeqs.length > 0 ? evictSeqs(mirror.window, evictedSeqs) : mirror.window
-  // Clear the consumed-timestamp cache for evicted user turns too, and drop
-  // lastMessageUuid if its owner was evicted (the next MESSAGE rebuilds it).
+  // Clear the consumed-timestamp cache for evicted user turns too.
   const pendingConsumedMessages = new Map(mirror.pendingConsumedMessages)
   for (const [uuid] of pendingConsumedMessages) {
     if (uuidSet.has(uuid)) pendingConsumedMessages.delete(uuid)
@@ -1931,10 +1843,6 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
     window,
     activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
     pendingConsumedMessages,
-    lastMessageUuid:
-      mirror.lastMessageUuid && uuidSet.has(mirror.lastMessageUuid)
-        ? (items.at(-1)?.id ?? null)
-        : mirror.lastMessageUuid,
     toolStatus: pruneMapToLive(mirror.toolStatus, live),
     toolResults: pruneMapToLive(mirror.toolResults, live),
     pendingResults: prunePendingResults(mirror.pendingResults, retained),
@@ -2230,11 +2138,8 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
 
   // `api_retry` is a TRANSIENT rate-limit-retry indicator: it never enters
   // items/messages/IDB (keeping the transcript append-only). It is routed to
-  // a dedicated slot here, and cleared by the next non-retry message. It also
-  // does NOT advance lastMessageUuid — it must not anchor sinceUuid (the
-  // server ring still holds the frame, so a reconnect whose sinceUuid points
-  // at the prior non-retry message re-sends the api_retry and re-arms the
-  // slot). updateTranscriptMirror is a no-op for api_retry (toTranscriptItem
+  // a dedicated slot here, and cleared by the next non-retry message.
+  // updateTranscriptMirror is a no-op for api_retry (toTranscriptItem
   // returns null), so it neither appends nor needs the old in-place
   // replace/strip logic.
   //
@@ -2255,30 +2160,12 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   // during the same thinking phase, and clearing on them would flicker the
   // display off between estimates. It clears when the thinking block it
   // describes ends (any main-thread block-boundary frame — content_block_start
-  // or the per-block `assistant` finalize) and on `result` (turn end). It also
-  // must not advance lastMessageUuid — the server never stores it in the ring,
-  // so a sinceUuid pointing at it would miss the ring and force full replays.
+  // or the per-block `assistant` finalize) and on `result` (turn end).
   const isThinkingTokens = message.type === 'system' && message.subtype === 'thinking_tokens'
   // `stream_event` is a live-streaming delta (one per content chunk — hundreds
-  // per heavy turn). It must NOT advance lastMessageUuid: the uuid-anchored WS
-  // incremental replay (`sinceUuid`) relies on the cursor pointing at a durable
-  // message the server ring still holds. Stream_event uuids are ephemeral —
-  // never persisted to the disk transcript and (since the server ring fix)
-  // never in the ring — so a sinceUuid pointing at one misses the ring and
-  // forces a full replay on every reconnect. Anchoring on durable messages
-  // keeps the incremental path working.
+  // per heavy turn). It never enters items/messages (toTranscriptItem returns
+  // null), but it drives the live-turn accumulator and the WorkingBubble phase.
   const isStreamEvent = message.type === 'stream_event'
-  // `tool_progress` is a per-tool liveness ping (no renderable content — see
-  // toTranscriptItem's null return). The server drops it in the pump, but a
-  // frame from an older server / stale replay cache must not advance the
-  // cursor either: its uuid is never in the ring, so anchoring on it would
-  // break the sinceUuid incremental replay path.
-  const isToolProgress = message.type === 'tool_progress'
-  // Empty result frames are suppressed by toTranscriptItem, so they must not
-  // anchor the sinceUuid incremental replay either — the server never persists
-  // them (result-frames sidecar / disk) and after a restart the anchor would
-  // miss the rebuilt ring and force a full replay. See isEmptyResultFrame.
-  const isEmptyResult = isEmptyResultFrame(incomingMessage)
 
   let thinkingTokens: number | null = mirror.thinkingTokens
   if (isThinkingTokens) {
@@ -2316,13 +2203,6 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   const workingMirror: ServerMirror = {
     ...mirror,
     eventCount: mirror.eventCount + 1,
-    // The cursor anchors ONLY on frames a rebuilt ring will still resolve
-    // (isCursorAnchorable) — a restart drops broadcast-only frames
-    // (command_lifecycle, init, …), and a cursor parked on one then misses
-    // every reconnect until a durable frame lands (the 94330c21 full-replay
-    // loop). The per-type transient exclusions below are subsumed by the
-    // durability check except where a frame type needs call-site context.
-    ...(messageUuid && !isApiRetry && !isThinkingTokens && !isStreamEvent && !isToolProgress && !isEmptyResult && isCursorAnchorable(incomingMessage) ? { lastMessageUuid: messageUuid } : {}),
     apiRetry: isApiRetry ? incomingMessage : null,
     thinkingTokens,
   }

@@ -68,6 +68,34 @@ function applyAck(
   })
 }
 
+describe('reducer: legacy cursor fields are absent from the mirror', () => {
+  // After retiring the uuid-cursor protocol, the mirror no longer carries
+  // `lastMessageUuid` or `tailFirstUnsettled`, and the four retired action
+  // variants are gone from the SessionAction union. These assertions pin the
+  // deletion so a future re-introduction surfaces as a compile/test failure.
+  it('createInitialServerMirror omits lastMessageUuid and tailFirstUnsettled', () => {
+    const mirror = createInitialSessionState('s').mirror
+    expect('lastMessageUuid' in mirror).toBe(false)
+    expect('tailFirstUnsettled' in mirror).toBe(false)
+  })
+
+  it('MESSAGE does not add lastMessageUuid or tailFirstUnsettled', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
+    expect('lastMessageUuid' in state.mirror).toBe(false)
+    expect('tailFirstUnsettled' in state.mirror).toBe(false)
+  })
+
+  it('REPLAY_REPLACE does not add lastMessageUuid or tailFirstUnsettled', () => {
+    const state = reduceSessionState(
+      createInitialSessionState('s'),
+      { type: 'REPLAY_REPLACE', messages: [asstMsg('a1', 'hi')], permissions: [] },
+    )
+    expect('lastMessageUuid' in state.mirror).toBe(false)
+    expect('tailFirstUnsettled' in state.mirror).toBe(false)
+  })
+})
+
 describe('reducer: optimistic user message + server echo', () => {
   it('replaces the optimistic placeholder in-place (does NOT append a duplicate)', () => {
     // Regression: when insertUserMessage runs BEFORE the POST awaits, the
@@ -1206,7 +1234,6 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
       ...fresh.mirror,
       messages: state.mirror.messages,
       items: state.mirror.items,
-      lastMessageUuid: state.mirror.lastMessageUuid,
       replayReady: true,
     }
     const seeded: SessionState = {
@@ -1259,7 +1286,6 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
       ...fresh.mirror,
       messages: state.mirror.messages,
       items: state.mirror.items,
-      lastMessageUuid: state.mirror.lastMessageUuid,
       replayReady: true,
     }
     const seeded: SessionState = {
@@ -1719,7 +1745,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     expect(padded.mirror.activeSubagents.get('tu_keep')?.status).toBe('background')
   })
 
-  it('PREPEND_MESSAGES does NOT sweep live in-flight tools via historical result frames', () => {
+  it('WINDOW_PAGE at:head does NOT sweep live in-flight tools via historical result frames', () => {
     // Regression: the turn-end sweep must NOT run on the prepend/loadOlder
     // path. prependMessages starts from the LIVE mirror (which holds the
     // active turn's running tools) and calls rebuildIndexesFromMessages on the
@@ -1736,20 +1762,38 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
         content: [{ type: 'tool_use', id: 'tu_live', name: 'Bash', input: { command: 'echo hi' } }],
       },
     } as unknown as SdkMessage
-    // An OLDER turn's result frame, prepended via loadOlder.
+    // An OLDER turn's result frame, prepended via a head page.
     const oldResult: SdkMessage = {
       type: 'result',
       subtype: 'success',
       uuid: 'r-old',
       receivedAt: 1_000,
+      num_turns: 1,
+      result: 'done',
     } as unknown as SdkMessage
 
     let state = createInitialSessionState('s1')
-    // Live turn emits a tool_use (seeds toolStatus['tu_live'] = 'running').
-    state = reduceSessionState(state, { type: 'MESSAGE', message: liveToolUse })
+    // Seed the tail: live tool_use at seq 1 (seeds toolStatus['tu_live'] = 'running').
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE',
+      at: 'tail',
+      generation: 0,
+      headSeq: 2,
+      messages: [{ seq: 1, msg: liveToolUse }],
+      hasMore: false,
+      tombstones: [],
+    })
     expect(state.mirror.toolStatus.get('tu_live')).toBe('running')
-    // User scrolls up: an older result frame is prepended.
-    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [oldResult] })
+    // User scrolls up: a head page prepends an older result frame at seq 0.
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE',
+      at: 'head',
+      generation: 0,
+      headSeq: 2,
+      messages: [{ seq: 0, msg: oldResult }],
+      hasMore: false,
+      tombstones: [],
+    })
     // The live tool must NOT have been swept to 'error' by the old result frame.
     expect(state.mirror.toolStatus.get('tu_live')).toBe('running')
   })
@@ -2697,7 +2741,8 @@ describe('reducer: permission state (write-only maps removed, behavior preserved
   })
 })
 
-describe('PREPEND_MESSAGES', () => {
+
+describe('WINDOW_PAGE at:head (uuid-dedup prepend path)', () => {
   function userMsg(uuid: string, content: string): SdkMessage {
     return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
   }
@@ -2710,41 +2755,54 @@ describe('PREPEND_MESSAGES', () => {
     } as unknown as SdkMessage
   }
 
+  /** Helper: seed a tail page so the window is non-empty, then dispatch a
+   *  head page. WINDOW_PAGE at:'head' calls the internal prependMessages
+   *  helper with trustUuidDedup: true — the uuid-dedup prepend path. */
+  function seedTail(state: ReturnType<typeof createInitialSessionState>, msgs: SdkMessage[]): ReturnType<typeof createInitialSessionState> {
+    const seqMessages = msgs.map((msg, i) => ({ seq: i + 1, msg }))
+    return reduceSessionState(state, {
+      type: 'WINDOW_PAGE',
+      at: 'tail',
+      generation: 0,
+      headSeq: msgs.length + 1,
+      messages: seqMessages,
+      hasMore: false,
+      tombstones: [],
+    })
+  }
+  function headPage(state: ReturnType<typeof createInitialSessionState>, msgs: SdkMessage[], oldestSeq: number): ReturnType<typeof createInitialSessionState> {
+    const seqMessages = msgs.map((msg, i) => ({ seq: oldestSeq - msgs.length + i, msg }))
+    return reduceSessionState(state, {
+      type: 'WINDOW_PAGE',
+      at: 'head',
+      generation: 0,
+      headSeq: oldestSeq,
+      messages: seqMessages,
+      hasMore: false,
+      tombstones: [],
+    })
+  }
+
   it('unshifts older messages ahead of the current transcript in order', () => {
     let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('live-1', 'newest') })
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [userMsg('old-1', 'a'), assistantMsg('old-2', 'b')],
-    })
+    state = seedTail(state, [userMsg('live-1', 'newest')])
+    state = headPage(state, [userMsg('old-1', 'a'), assistantMsg('old-2', 'b')], 1)
     expect(state.mirror.items.map((i) => i.id)).toEqual(['old-1', 'old-2', 'live-1'])
     expect(state.mirror.messages.map((m) => m.uuid)).toEqual(['old-1', 'old-2', 'live-1'])
   })
 
   it('dedupes by uuid against messages already present', () => {
     let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('shared', 'x') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('live', 'y') })
-    // The page overlaps on 'shared' (the cursor anchor) plus a genuinely older one.
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [userMsg('older', 'z'), assistantMsg('shared', 'x')],
-    })
-    // 'shared' must not be duplicated; 'older' is inserted at the front.
+    state = seedTail(state, [assistantMsg('shared', 'x'), userMsg('live', 'y')])
+    // Head page: an older message only — 'shared' is already in the window at
+    // seq 1, so the head page carries only seqs below 1.
+    state = headPage(state, [userMsg('older', 'z')], 1)
     expect(state.mirror.items.map((i) => i.id)).toEqual(['older', 'shared', 'live'])
-  })
-
-  it('is a no-op for an empty batch', () => {
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('live', 'y') })
-    const before = state
-    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [] })
-    expect(state).toBe(before)
   })
 
   it('rebuilds tool status for prepended tool_use/tool_result pairs', () => {
     let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('live', 'y') })
+    state = seedTail(state, [userMsg('live', 'y')])
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'old-asst',
@@ -2757,25 +2815,71 @@ describe('PREPEND_MESSAGES', () => {
       message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok' }] },
       parent_tool_use_id: 'tool-1',
     } as unknown as SdkMessage
-    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [toolUse, toolResult] })
+    state = headPage(state, [toolUse, toolResult], 1)
     expect(state.mirror.toolStatus.get('tool-1')).toBe('success')
   })
 
-  // The in-memory prompt carries a server-minted uuid; the on-disk copy of
-  // the SAME prompt carries the SDK's uuid (the pump drops the SDK's echo).
+  it('an empty head page does not add items or messages', () => {
+    let state = createInitialSessionState('s')
+    state = seedTail(state, [userMsg('live', 'y')])
+    const beforeItems = state.mirror.items
+    const beforeMsgs = state.mirror.messages
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'head', generation: 0, headSeq: 2,
+      messages: [], hasMore: false, tombstones: [],
+    })
+    expect(state.mirror.items).toBe(beforeItems)
+    expect(state.mirror.messages).toBe(beforeMsgs)
+  })
+
+  // Tail-first replay backfill chunks share the ring's uuid space with the
+  // on-screen tail, so uuid dedup is exact there. WINDOW_PAGE at:'head'
+  // always uses trustUuidDedup: true, so a genuinely distinct older prompt
+  // whose text repeats ("continue") survives — the signature check is
+  // skipped.
+  it('keeps a distinct older prompt with identical text (uuid dedup, backfill boundary)', () => {
+    let state = createInitialSessionState('s')
+    state = seedTail(state, [userMsg('tail-prompt', 'continue'), assistantMsg('tail-reply', 'ok')])
+    // A DIFFERENT, textually-identical older turn at a lower seq.
+    state = headPage(state, [userMsg('old-prompt', 'continue')], 1)
+    expect(state.mirror.items.map((i) => i.id)).toEqual(['old-prompt', 'tail-prompt', 'tail-reply'])
+  })
+})
+
+describe('REPLAY_REPLACE older slice (signature-dedup prepend path)', () => {
+  function userMsg(uuid: string, content: string): SdkMessage {
+    return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
+  }
+  function assistantMsg(uuid: string, text: string): SdkMessage {
+    return {
+      type: 'assistant',
+      uuid,
+      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      parent_tool_use_id: null,
+    } as unknown as SdkMessage
+  }
+
+  /** Helper: seed a cache, then replay with an older slice + an overlap
+   *  bracket. The older slice is prepended via prependMessages with
+   *  trustUuidDedup: false — the signature/prompt-overlap path. The overlap
+   *  anchor (an assistant that IS in the cache) is required so
+   *  splitReplayAgainstCache routes the older portion through prependMessages. */
+  function replayOlderSlice(cache: SdkMessage[], older: SdkMessage[], overlapAnchor: SdkMessage): SessionState {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'REPLAY_REPLACE', messages: cache, permissions: [] })
+    return reduceSessionState(state, { type: 'REPLAY_REPLACE', messages: [...older, overlapAnchor], permissions: [] })
+  }
+
+  // The in-memory prompt carries a server-minted uuid; the on-disk copy of the
+  // SAME prompt carries the SDK's uuid (the pump drops the SDK's echo).
   // uuid dedup can't bridge that, so the leading prompt(s) above the paging
   // anchor must be deduped by content instead — otherwise they render twice.
   it('dedupes a leading prompt across the server/SDK uuid boundary by content', () => {
-    let state = createInitialSessionState('s')
-    // On screen: prompt (server uuid) → assistant reply (SDK uuid, the anchor).
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('server-uuid', 'hello') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('asst-1', 'hi') })
-    // Disk page read strictly before the anchor: re-returns the prompt with
-    // its DIFFERENT (SDK) uuid, plus a genuinely-older message.
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [assistantMsg('older-asst', 'earlier'), userMsg('sdk-uuid', 'hello')],
-    })
+    const cache = [userMsg('server-uuid', 'hello'), assistantMsg('asst-1', 'hi')]
+    // Older slice: a genuinely older message + the prompt under its SDK uuid.
+    // asst-1 is the overlap anchor (it's in the cache).
+    const older = [assistantMsg('older-asst', 'earlier'), userMsg('sdk-uuid', 'hello')]
+    const state = replayOlderSlice(cache, older, assistantMsg('asst-1', 'hi'))
     // 'hello' must appear exactly once (not duplicated under two uuids).
     const helloCount = state.mirror.items.filter(
       (i) => i.msg.type === 'user' && i.msg.message?.content === 'hello',
@@ -2785,145 +2889,29 @@ describe('PREPEND_MESSAGES', () => {
   })
 
   it('dedupes multiple consecutive leading prompts at the boundary', () => {
-    let state = createInitialSessionState('s')
-    // Two queued prompts, then the assistant reply (anchor).
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-a', 'first') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-b', 'second') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('asst', 'reply') })
-    // Disk re-returns both prompts (SDK uuids) at the page tail.
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [userMsg('disk-a', 'first'), userMsg('disk-b', 'second')],
-    })
-    // Both deduped — order and count unchanged.
+    const cache = [userMsg('srv-a', 'first'), userMsg('srv-b', 'second'), assistantMsg('asst', 'reply')]
+    // Older slice: both prompts under SDK uuids. asst is the overlap anchor.
+    const older = [userMsg('disk-a', 'first'), userMsg('disk-b', 'second')]
+    const state = replayOlderSlice(cache, older, assistantMsg('asst', 'reply'))
     expect(state.mirror.items.map((i) => i.id)).toEqual(['srv-a', 'srv-b', 'asst'])
   })
 
   it('preserves a genuinely-older prompt with identical text further back', () => {
-    let state = createInitialSessionState('s')
-    // On screen: one prompt above the anchor.
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-dup', 'repeat') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('asst', 'reply') })
-    // Disk page: an OLDER 'repeat' prompt (different turn) followed by the
-    // boundary 'repeat'. Only the boundary one (page tail) overlaps; the
-    // older one must survive.
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [userMsg('disk-old', 'repeat'), userMsg('disk-boundary', 'repeat')],
-    })
-    // disk-old is prepended; disk-boundary is deduped against srv-dup.
+    const cache = [userMsg('srv-dup', 'repeat'), assistantMsg('asst', 'reply')]
+    // Older slice: an OLDER 'repeat' prompt (different turn) + the boundary
+    // 'repeat'. Only the boundary one (page tail) overlaps; the older must survive.
+    const older = [userMsg('disk-old', 'repeat'), userMsg('disk-boundary', 'repeat')]
+    const state = replayOlderSlice(cache, older, assistantMsg('asst', 'reply'))
     expect(state.mirror.items.map((i) => i.id)).toEqual(['disk-old', 'srv-dup', 'asst'])
   })
 
-  // Tail-first replay backfill chunks share the ring's uuid space with the
-  // on-screen tail, so uuid dedup is exact there. The content-signature
-  // overlap check exists for the DISK pager, where the same logical prompt
-  // arrives under a different uuid — run on a backfill chunk it would
-  // false-drop a genuinely distinct older prompt whose text repeats
-  // ("continue") across a chunk boundary.
-  it('trustUuidDedup keeps a distinct older prompt with identical text (backfill boundary)', () => {
-    let state = createInitialSessionState('s')
-    // On screen (tail): the boundary "continue" prompt + its reply.
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('tail-prompt', 'continue') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('tail-reply', 'ok') })
-    // Backfill chunk: a DIFFERENT, textually-identical older turn.
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [userMsg('old-prompt', 'continue')],
-      trustUuidDedup: true,
-    })
-    // Both prompts survive — they are distinct ring entries.
-    expect(state.mirror.items.map((i) => i.id)).toEqual(['old-prompt', 'tail-prompt', 'tail-reply'])
-  })
-
-  it('without trustUuidDedup the same shape is treated as disk-pager overlap (prompt dropped)', () => {
-    // Pin the contrast: the default (disk pager) semantics intentionally
-    // dedupe the identical-text prompt across the uuid boundary, which is
-    // why the backfill path must opt out.
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('tail-prompt', 'continue') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('tail-reply', 'ok') })
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [userMsg('old-prompt', 'continue')],
-    })
+  it('drops a same-text older prompt when no uuid bridges them (signature overlap)', () => {
+    // Pin the contrast: the default (signature) semantics intentionally
+    // dedupe the identical-text prompt across the uuid boundary.
+    const cache = [userMsg('tail-prompt', 'continue'), assistantMsg('tail-reply', 'ok')]
+    const older = [userMsg('old-prompt', 'continue')]
+    const state = replayOlderSlice(cache, older, assistantMsg('tail-reply', 'ok'))
     expect(state.mirror.items.map((i) => i.id)).toEqual(['tail-prompt', 'tail-reply'])
-  })
-})
-
-describe('SETTLE_RESULT_INDEXES', () => {
-  const toolUse = (uuid: string, id: string, name = 'Read'): SdkMessage => ({
-    type: 'assistant',
-    uuid,
-    message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input: {} }] },
-    parent_tool_use_id: null,
-  } as unknown as SdkMessage)
-  const toolResult = (uuid: string, toolUseId: string, isError = false): SdkMessage => ({
-    type: 'user',
-    uuid,
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'ok', is_error: isError }] },
-    parent_tool_use_id: toolUseId,
-  } as unknown as SdkMessage)
-
-  it('settles a tool_result whose tool_use arrived later (tail-first order)', () => {
-    // Tail-first replay applies the NEWEST chunk first, so a result can land
-    // before its tool_use. The index fold is order-insensitive now: the
-    // orphan result is parked in mirror.pendingResults and re-applied when the
-    // tool_use lands, so the card never strands on 'running'. No marker or
-    // SETTLE_RESULT_INDEXES dispatch is needed.
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-1', 'tu-1') })
-    // Parked — no owner yet.
-    expect(state.mirror.pendingResults.size).toBe(1)
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-1', 'tu-1') })
-    expect(state.mirror.toolStatus.get('tu-1')).toBe('success')
-    expect(state.mirror.toolResults.get('tu-1')).toBeDefined()
-    // The park is consumed once paired.
-    expect(state.mirror.pendingResults.size).toBe(0)
-
-    // The legacy settle path stays a harmless no-op.
-    state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
-    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
-    expect(state.mirror.toolStatus.get('tu-1')).toBe('success')
-    expect(state.mirror.toolResults.get('tu-1')).toBeDefined()
-  })
-
-  it('settles a subagent record whose result arrived first', () => {
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-2', 'tu-2') })
-    expect(state.mirror.pendingResults.size).toBe(1)
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-2', 'tu-2', 'Agent') })
-    expect(state.mirror.activeSubagents.get('tu-2')?.status).toBe('done')
-    expect(state.mirror.pendingResults.size).toBe(0)
-
-    state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
-    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
-    expect(state.mirror.activeSubagents.get('tu-2')?.status).toBe('done')
-  })
-
-  it('is a no-op without the marker (a chronological transcript never pays for it)', () => {
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-3', 'tu-3') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-3', 'tu-3') })
-    const before = state
-    // No MARK: the settle must be a pure identity return, so an ordinary
-    // reconnect (which always ends in a replay-done) pays no scan.
-    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
-    expect(state).toBe(before)
-    expect(state.mirror.toolStatus.get('tu-3')).toBe('success')
-  })
-
-  it('clears the marker after settling, so a later replay pays nothing', () => {
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r-4', 'tu-4') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolUse('a-4', 'tu-4') })
-    state = reduceSessionState(state, { type: 'MARK_TAIL_FIRST_APPLIED' })
-    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
-    expect(state.mirror.tailFirstUnsettled).toBe(false)
-
-    const settled = state
-    state = reduceSessionState(state, { type: 'SETTLE_RESULT_INDEXES' })
-    expect(state).toBe(settled)
   })
 })
 
@@ -2943,11 +2931,17 @@ describe('order-insensitive tool_result pairing (pendingResults)', () => {
 
   it('disk paging: a ring result is paired when its tool_use is prepended', () => {
     // Path 2 — the tool_use is older than the ring, so the first-screen replay
-    // only carried the result; loadOlder then prepends the tool_use.
+    // only carried the result; a head page then prepends the tool_use.
     let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r', 'tu') })
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 2,
+      messages: [{ seq: 1, msg: toolResult('r', 'tu') }], hasMore: false, tombstones: [],
+    })
     expect(state.mirror.pendingResults.size).toBe(1)
-    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [toolUse('a', 'tu')] })
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'head', generation: 0, headSeq: 2,
+      messages: [{ seq: 0, msg: toolUse('a', 'tu') }], hasMore: false, tombstones: [],
+    })
     expect(state.mirror.toolStatus.get('tu')).toBe('success')
     expect(state.mirror.toolResults.get('tu')).toBeDefined()
     expect(state.mirror.pendingResults.size).toBe(0)
@@ -2972,20 +2966,28 @@ describe('order-insensitive tool_result pairing (pendingResults)', () => {
     // A refresh mid-burst: the cache holds only the result (its tool_use was
     // in an unsent backfill chunk). The index rebuild must park it, and the
     // later page-in must settle it — this is what makes the fix survive a
-    // refresh without a persisted marker.
-    const seeded = createInitialSessionState('s')
-    let state = rebuildIndexesFromMessages(seeded, [toolResult('r', 'tu')])
+    // refresh without a persisted marker. Modeled here as a first replay
+    // carrying only the result, then a second replay whose older slice
+    // brings the tool_use (prependMessages path).
+    let state = reduceSessionState(
+      createInitialSessionState('s'),
+      { type: 'REPLAY_REPLACE', messages: [toolResult('r', 'tu')], permissions: [] },
+    )
     expect(state.mirror.pendingResults.size).toBe(1)
-    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [toolUse('a', 'tu')] })
+    state = reduceSessionState(state, {
+      type: 'REPLAY_REPLACE',
+      messages: [toolUse('a', 'tu'), toolResult('r', 'tu')],
+      permissions: [],
+    })
     expect(state.mirror.toolStatus.get('tu')).toBe('success')
     expect(state.mirror.pendingResults.size).toBe(0)
   })
 
   it('preserves a sidechain record\'s child detail across a parked result', () => {
-    // The result is parked, then a batch prepends the Agent tool_use AND one
-    // of its child frames. Settling must wait for the batch boundary so the
-    // child frame lands before the record flips terminal — otherwise the
-    // drill-in detail is silently dropped.
+    // The result is parked, then a head page prepends the Agent tool_use AND one
+    // of its child frames in the same batch. Settling must wait for the batch
+    // boundary so the child frame lands before the record flips terminal —
+    // otherwise the drill-in detail is silently dropped.
     const agentUse = toolUse('a', 'tu', 'Agent')
     const childFrame: SdkMessage = {
       type: 'assistant',
@@ -2995,9 +2997,15 @@ describe('order-insensitive tool_result pairing (pendingResults)', () => {
     } as unknown as SdkMessage
 
     let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: toolResult('r', 'tu') })
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 3,
+      messages: [{ seq: 2, msg: toolResult('r', 'tu') }], hasMore: false, tombstones: [],
+    })
     expect(state.mirror.pendingResults.size).toBe(1)
-    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [agentUse, childFrame] })
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'head', generation: 0, headSeq: 3,
+      messages: [{ seq: 0, msg: agentUse }, { seq: 1, msg: childFrame }], hasMore: false, tombstones: [],
+    })
     const sub = state.mirror.activeSubagents.get('tu')
     expect(sub?.status).toBe('done')
     expect(sub?.childToolCalls?.length).toBe(1)
@@ -3056,10 +3064,18 @@ describe('order-insensitive tool_result pairing (pendingResults)', () => {
     } as unknown as SdkMessage
 
     let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: agentUse })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: childResult })
+    // Seed the tail: agentUse at seq 2, childResult at seq 3 (lands before
+    // the child tool_use, so it's parked).
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 4,
+      messages: [{ seq: 2, msg: agentUse }, { seq: 3, msg: childResult }], hasMore: false, tombstones: [],
+    })
     expect(state.mirror.pendingResults.size).toBe(1)
-    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [childUse] })
+    // Head page: the child tool_use at seq 1 (below oldestSeq=2).
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'head', generation: 0, headSeq: 4,
+      messages: [{ seq: 1, msg: childUse }], hasMore: false, tombstones: [],
+    })
     expect(state.mirror.activeSubagents.get('tu')?.childToolCalls?.[0]?.status).toBe('success')
     expect(state.mirror.pendingResults.size).toBe(0)
   })
@@ -3200,59 +3216,6 @@ describe('order-insensitive tool_result pairing (pendingResults)', () => {
   })
 })
 
-describe('ADOPT_CURSOR', () => {
-  function userMsg(uuid: string, content: string): SdkMessage {
-    return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
-  }
-  function assistantMsg(uuid: string, text: string): SdkMessage {
-    return {
-      type: 'assistant',
-      uuid,
-      message: { role: 'assistant', content: [{ type: 'text', text }] },
-      parent_tool_use_id: null,
-    } as unknown as SdkMessage
-  }
-
-  it('adopts the newest disk-stable message as the cursor when none is set', () => {
-    // A store that cold-loads rows without a cursor (an IDB prepend into an
-    // empty store, a v2 cache that lost the field) otherwise looks like a
-    // NO-CACHE client: every reconnect re-sends the full ring, and — with
-    // tail-first replay — the client would advertise a precondition it does
-    // not meet.
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [assistantMsg('a-1', 'x'), assistantMsg('a-2', 'y')],
-    })
-    expect(state.mirror.lastMessageUuid).toBeNull()
-
-    state = reduceSessionState(state, { type: 'ADOPT_CURSOR' })
-    expect(state.mirror.lastMessageUuid).toBe('a-2')
-  })
-
-  it('leaves an existing cursor alone', () => {
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: assistantMsg('a-1', 'x') })
-    expect(state.mirror.lastMessageUuid).toBe('a-1')
-    state = reduceSessionState(state, { type: 'PREPEND_MESSAGES', messages: [assistantMsg('a-0', 'older')] })
-    const before = state
-    state = reduceSessionState(state, { type: 'ADOPT_CURSOR' })
-    expect(state).toBe(before)
-  })
-
-  it('never adopts a server-minted prompt uuid', () => {
-    // A top-level prompt's uuid is minted server-side at send() time and does
-    // not exist on disk or in the ring, so it cannot anchor an incremental
-    // replay — adopting it would trade a full replay for a full replay.
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [userMsg('prompt-1', 'hello')],
-    })
-    state = reduceSessionState(state, { type: 'ADOPT_CURSOR' })
-    expect(state.mirror.lastMessageUuid).toBeNull()
-  })
-})
 
 describe('reducer: front-trim memory bound', () => {
   // Mirror the reducer's constants (kept module-private there).
@@ -3344,12 +3307,6 @@ describe('reducer: front-trim memory bound', () => {
     // trimmed tool's payload must not leak; the live tool's must survive.
     expect(state.mirror.toolResults.has('tool-old')).toBe(false)
     expect(state.mirror.toolResults.has('tool-new')).toBe(true)
-  })
-
-  it('preserves lastMessageUuid (points at the newest message)', () => {
-    let state = createInitialSessionState('s')
-    state = pushTurns(state, 700)
-    expect(state.mirror.lastMessageUuid).toBe('a-699')
   })
 
   it('does not disturb a pending optimistic placeholder at the tail', () => {
@@ -3736,14 +3693,15 @@ describe('replay merge: time-aware ordering (96b4eaaa reorder regression)', () =
     expect(ids(after)).toEqual(['a', 'b', 'c', 'n1'])
   })
 
-  it('the merge cursor tracks the mirror tail after a mid fill (not the hole uuid)', () => {
+  it('a mid fill is inserted at its chronological position (not appended at the tail)', () => {
     const cache = seedCache([
       timedAsst('x1', 'a', T('2026-10-12T01:00:00Z')),
       timedAsst('x2', 'c', T('2026-10-12T03:00:00Z')),
     ])
     const incoming = [timedAsst('h1', 'hole', T('2026-10-12T02:00:00Z'))]
     const after = replay(cache, incoming)
-    expect(after.mirror.lastMessageUuid).toBe('x2')
+    // The hole frame is repositioned between x1 and x2 by repairChronology.
+    expect(ids(after)).toEqual(['x1', 'h1', 'x2'])
   })
 })
 
@@ -3758,8 +3716,7 @@ describe('reducer: REPLAY_REPLACE on top of a cache', () => {
   it('does NOT double-append when the seed overlaps the cache (the regression)', () => {
     const cache = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'hello'), resultMsg('r1')])
     // Resume seed from disk: same transcript, but result frames are not on
-    // disk, so the seed is u1 + a1 (overlap) — and the cache's lastMessageUuid
-    // was r1, which is NOT in the seed → server fell back to FULL replay.
+    // disk, so the seed is u1 + a1 (overlap).
     const seed = [userMsg('u1-disk', 'hi'), asstMsg('a1', 'hello')]
     const after = replay(cache, seed)
     // u1 (prompt) dedups by content signature, a1 by uuid → no growth.
@@ -3943,21 +3900,6 @@ describe('reducer: prompt-only replay does not stack duplicates', () => {
     expect(ids(state)).toEqual(['srv-minted'])
     expect(state.mirror.items.filter((it) => it.msg.type === 'user')).toHaveLength(1)
   })
-
-  it('a full-overlap drop still advances lastMessageUuid to the replay uuid (no reconnect loop)', () => {
-    // Regression: dropping the payload used to leave lastMessageUuid at the
-    // stale server-minted uuid, so the next reconnect's sinceUuid missed the
-    // post-restart ring and the server re-sent the same full replay forever.
-    // The drop must advance the cursor to the replay's (disk) uuid.
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: userMsg('srv-minted', 'hi') })
-    expect(state.mirror.lastMessageUuid).toBe('srv-minted')
-    state = replay(state, [userMsg('disk-sdk-uuid', 'hi')])
-    // Still one bubble (no dup) ...
-    expect(ids(state)).toEqual(['srv-minted'])
-    // ... but the cursor now points at the uuid the server's ring recognizes.
-    expect(state.mirror.lastMessageUuid).toBe('disk-sdk-uuid')
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -4082,13 +4024,6 @@ describe('reducer: EVICT_MESSAGES (refusal-fallback retraction)', () => {
     expect(state.mirror.toolStatus.has('t2')).toBe(false)
   })
 
-  it('rewinds lastMessageUuid when its owner was evicted', () => {
-    let state = seedCache([userMsg('u1', 'hi'), asstMsg('a1', 'partial')])
-    expect(state.mirror.lastMessageUuid).toBe('a1')
-    state = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['a1'] })
-    expect(state.mirror.lastMessageUuid).toBe('u1')
-  })
-
   it('is identity-stable for absent uuids (late/duplicate frames)', () => {
     const state = seedCache([userMsg('u1', 'hi')])
     const after = reduceSessionState(state, { type: 'EVICT_MESSAGES', uuids: ['nope'] })
@@ -4102,16 +4037,14 @@ describe('reducer: EVICT_MESSAGES (refusal-fallback retraction)', () => {
 })
 
 describe('reducer: api_retry transient slot', () => {
-  it('routes api_retry to the slot, not items/messages, and does not advance lastMessageUuid', () => {
+  it('routes api_retry to the slot, not items/messages', () => {
     let state = createInitialSessionState('s')
     state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
-    expect(state.mirror.lastMessageUuid).toBe('a1')
     state = reduceSessionState(state, { type: 'MESSAGE', message: apiRetryMsg('r1') })
-    // Slot holds the frame; items/messages untouched; cursor stays at a1.
+    // Slot holds the frame; items/messages untouched.
     expect(state.mirror.apiRetry?.uuid).toBe('r1')
     expect(ids(state)).toEqual(['a1'])
     expect(state.mirror.messages.map((m) => m.uuid)).toEqual(['a1'])
-    expect(state.mirror.lastMessageUuid).toBe('a1')
   })
 
   it('overwrites the slot on consecutive api_retry (latest wins, no in-place replace)', () => {
@@ -4143,11 +4076,15 @@ describe('reducer: api_retry transient slot', () => {
     expect(ids(state)).toEqual(['a2'])
   })
 
-  it('loadOlder (PREPEND) drops historical api_retry (never an item, never sets the slot)', () => {
-    let state = seedCache([asstMsg('a1', 'anchor')])
+  it('head page drops historical api_retry (never an item, never sets the slot)', () => {
+    let state = createInitialSessionState('s')
     state = reduceSessionState(state, {
-      type: 'PREPEND_MESSAGES',
-      messages: [apiRetryMsg('old-r'), asstMsg('old-a', 'older')],
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 3,
+      messages: [{ seq: 2, msg: asstMsg('a1', 'anchor') }], hasMore: false, tombstones: [],
+    })
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'head', generation: 0, headSeq: 3,
+      messages: [{ seq: 0, msg: apiRetryMsg('old-r') }, { seq: 1, msg: asstMsg('old-a', 'older') }], hasMore: false, tombstones: [],
     })
     expect(ids(state)).toEqual(['old-a', 'a1']) // old-r dropped, no slot set
     expect(state.mirror.apiRetry).toBeNull()
@@ -4157,7 +4094,7 @@ describe('reducer: api_retry transient slot', () => {
 // ---------------------------------------------------------------------------
 // thinking_tokens is a TRANSIENT live progress signal (thinking-block token
 // estimate), routed to `mirror.thinkingTokens` for the WorkingBubble — same
-// discipline as api_retry: never an item, never advancing lastMessageUuid.
+// discipline as api_retry: never an item, never in the ordered message log.
 // Unlike api_retry it is NOT cleared by every other message (stream_event
 // deltas interleave with the estimates during the same thinking phase —
 // clearing on them would flicker). It clears at any main-thread block
@@ -4171,13 +4108,12 @@ describe('reducer: api_retry transient slot', () => {
 // ---------------------------------------------------------------------------
 
 describe('reducer: thinking_tokens transient slot', () => {
-  it('routes thinking_tokens to the slot, not items, and does not advance lastMessageUuid', () => {
+  it('routes thinking_tokens to the slot, not items', () => {
     let state = createInitialSessionState('s')
     state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
     state = reduceSessionState(state, { type: 'MESSAGE', message: thinkingTokensMsg('tt1', 4200) })
     expect(state.mirror.thinkingTokens).toBe(4200)
     expect(ids(state)).toEqual(['a1'])
-    expect(state.mirror.lastMessageUuid).toBe('a1')
   })
 
   it('overwrites the slot on consecutive estimates (latest wins)', () => {
@@ -4353,8 +4289,6 @@ describe('reducer: tool_progress dropped', () => {
     })
     expect(ids(state)).toEqual([])
     expect(state.mirror.messages).toEqual([])
-    // Defensive: the ephemeral uuid must not become the replay cursor either.
-    expect(state.mirror.lastMessageUuid).toBeNull()
   })
 })
 
@@ -4385,7 +4319,6 @@ describe('reducer: refusal-fallback eviction on message arrival', () => {
     })
     // The notice stays as the canonical record; the refused leg is gone.
     expect(ids(state)).toEqual(['u1', 'mrf1'])
-    expect(state.mirror.lastMessageUuid).toBe('mrf1')
   })
 
   it('assistant supersedes evicts the superseded uuids on arrival', () => {
@@ -4425,41 +4358,6 @@ describe('reducer: refusal-fallback eviction on message arrival', () => {
       } as unknown as SdkMessage,
     })
     expect(ids(after)).toEqual(['u1', 'mrf1'])
-  })
-})
-
-// ---------------------------------------------------------------------------
-// stream_event deltas must NOT advance lastMessageUuid — the uuid-anchored WS
-// incremental replay (`sinceUuid`) relies on the cursor pointing at a durable
-// message the server ring still holds. A stream_event uuid is ephemeral (never
-// on the disk transcript, never in the ring), so a sinceUuid pointing at one
-// misses the ring and forces a full replay on every reconnect.
-// ---------------------------------------------------------------------------
-
-describe('reducer: stream_event does not advance lastMessageUuid', () => {
-  it('keeps the cursor on the last durable message when stream_event deltas land', () => {
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
-    expect(state.mirror.lastMessageUuid).toBe('a1')
-
-    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1', 'par') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se2', 'tial') })
-
-    // Cursor stays at the durable anchor; no transcript item was created.
-    expect(state.mirror.lastMessageUuid).toBe('a1')
-    expect(ids(state)).toEqual(['a1'])
-    expect(state.mirror.messages.map((m) => m.uuid)).toEqual(['a1'])
-  })
-
-  it('advances again once a durable message lands after the deltas', () => {
-    let state = createInitialSessionState('s')
-    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a1', 'hi') })
-    state = reduceSessionState(state, { type: 'MESSAGE', message: streamEventMsg('se1') })
-    expect(state.mirror.lastMessageUuid).toBe('a1')
-
-    state = reduceSessionState(state, { type: 'MESSAGE', message: asstMsg('a2', 'done') })
-    expect(state.mirror.lastMessageUuid).toBe('a2')
-    expect(ids(state)).toEqual(['a1', 'a2'])
   })
 })
 
