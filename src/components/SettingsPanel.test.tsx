@@ -1021,6 +1021,73 @@ describe('SettingsPanel grouped tab nav', () => {
     clickBtn(() => groupBtns(container), 'Integrations')
     await waitFor(() => expect(activeLeaf(container)).toBe('Plugins'))
   })
+
+  it('a fresh nonce in tabRequest switches to the requested tab even while mounted', async () => {
+    // Pins the deep-link contract: the nonce (not the tab value) drives the
+    // re-apply, so a second request for a DIFFERENT tab lands even when the
+    // panel is already mounted on the first tab. The outer App-level sessionId
+    // filter and the (removed) stableSettingsTabRequest memo are not involved
+    // here — this pins the SettingsPanel's own nonce-re-apply logic.
+    const { container, rerender } = renderPanel({ tab: 'general' })
+    await waitFor(() => expect(activeLeaf(container)).toBe('General'))
+
+    // Re-render with a new nonce pointing at a different leaf.
+    rerender(
+      <ToastProvider>
+        <div className="settings-overlay">
+          <SettingsPanel
+            session={mkSession()}
+            globalPrefs={
+              {
+                showPinnedUserMessage: true,
+                autoRecap: true,
+                toolGroupCards: true,
+                autoExpandRunningGroups: true,
+                showMessageHeaders: true,
+              } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
+            }
+            onClose={() => {}}
+            onSessionUpdate={() => {}}
+            tabRequest={{ tab: 'mcp', nonce: 2 }}
+          />
+        </div>
+      </ToastProvider>,
+    )
+    await waitFor(() => expect(activeGroup(container)).toBe('Integrations'))
+    await waitFor(() => expect(activeLeaf(container)).toBe('MCP Servers'))
+  })
+
+  it('a null tabRequest (a request for another sessionId) does not switch the current tab', async () => {
+    // The App's sessionId filter passes null to panels whose sessionId does
+    // not match the request. A null tabRequest must NOT switch the tab — the
+    // panel stays where the user left it.
+    const { container, rerender } = renderPanel({ tab: 'general' })
+    await waitFor(() => expect(activeLeaf(container)).toBe('General'))
+
+    rerender(
+      <ToastProvider>
+        <div className="settings-overlay">
+          <SettingsPanel
+            session={mkSession()}
+            globalPrefs={
+              {
+                showPinnedUserMessage: true,
+                autoRecap: true,
+                toolGroupCards: true,
+                autoExpandRunningGroups: true,
+                showMessageHeaders: true,
+              } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
+            }
+            onClose={() => {}}
+            onSessionUpdate={() => {}}
+            tabRequest={null}
+          />
+        </div>
+      </ToastProvider>,
+    )
+    // Still on General — the null request did not switch.
+    await waitFor(() => expect(activeLeaf(container)).toBe('General'))
+  })
 })
 
 describe('SettingsPanel plugins tab — per-session enabled state', () => {

@@ -31,9 +31,17 @@ import { useOverlayMotion } from '../utils/transitions'
  * direct-child relationship (enter/exit keyframes, glass surfaces, the
  * `:has(> .global-settings-modal)` mobile rule), so inserting a wrapper would
  * silently break them. The variant map uses ONLY existing class names — zero
- * CSS additions. `renderCard={false}` (settings/git/subagent/workflow) renders
+ * CSS additions. `renderCard={false}` (settings/git/tasks/lightbox) renders
  * `backdrop > children`, where the child IS the card (the panel's root element
  * carries the card class), preserving the same contract.
+ *
+ * SubagentOverlay and WorkflowOverlay do NOT route through <Overlay> — they
+ * hand-roll their markup because their scrim (background + backdrop-filter)
+ * has to be a SEPARATE child so it isn't an ancestor of the virtualised
+ * transcript they host (see the compositing contract on .subagent-overlay in
+ * chat.css). A caller routing through <Overlay> with a hypothetical
+ * subagent/workflow variant would get a transparent backdrop; add the scrim
+ * element first if you ever need that path.
  */
 
 const VARIANT_CLASSES = {
@@ -46,15 +54,6 @@ const VARIANT_CLASSES = {
   palette: { backdrop: 'palette-backdrop', card: 'palette', roleOn: 'card', ariaModal: 'true' },
   marketplace: { backdrop: 'marketplace-overlay', card: 'marketplace-card', roleOn: 'card', ariaModal: 'true' },
   globalSettings: { backdrop: 'modal-backdrop', card: 'global-settings-modal', roleOn: 'card', ariaModal: 'true' },
-  // NOTE: these two are currently declared but unused — SubagentOverlay and
-  // WorkflowOverlay hand-roll their markup, because their scrim (background +
-  // backdrop-filter) has to be a SEPARATE child so it isn't an ancestor of the
-  // virtualised transcript they host (see the compositing contract on
-  // .subagent-overlay in chat.css). A caller routing through <Overlay> with
-  // these variants would get a transparent backdrop; add the scrim element
-  // first if you ever need that path.
-  subagent: { backdrop: 'subagent-overlay', card: null, roleOn: 'backdrop', ariaModal: 'false' },
-  workflow: { backdrop: 'workflow-overlay', card: null, roleOn: 'backdrop', ariaModal: 'false' },
   // Full-viewport image viewer (Lightbox). card: null like settings/git — the
   // child IS the card (the .lightbox-stage div carries the interactive
   // handlers), so there is exactly ONE .lightbox-stage element. The stage
@@ -74,9 +73,9 @@ export type OverlayVariant = keyof typeof VARIANT_CLASSES
  *  rendered 279x1009 at (0,0), i.e. squeezed into the sidebar. Canonical
  *  statement: the CONTAINING-BLOCK HAZARD note in layout.css.
  *
- *  The remaining variants (perm / panel / settings / git / tasks / subagent /
- *  workflow) are `position: absolute` and panel-scoped BY DESIGN — portalling
- *  them would move them out of the panel they belong to. */
+ *  The remaining variants (perm / panel / settings / git / tasks) are
+ *  `position: absolute` and panel-scoped BY DESIGN — portalling them would
+ *  move them out of the panel they belong to. */
 const FIXED_BACKDROP_VARIANTS: readonly OverlayVariant[] = [
   'modal',
   'globalSettings',
@@ -119,7 +118,7 @@ export interface OverlayProps {
    *  document.body (see FIXED_BACKDROP_VARIANTS), the panel-scoped absolute
    *  variants never do unless you ask. */
   portal?: boolean
-  /** When false, children ARE the card (settings/git/subagent/workflow panels
+  /** When false, children ARE the card (settings/git/tasks/lightbox panels
    *  carry their own card class). Default: true unless the variant has no card
    *  class. */
   renderCard?: boolean

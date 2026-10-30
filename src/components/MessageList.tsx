@@ -405,7 +405,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // the same ref callback that captures it.
   const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
   const bottomStackRef = useRef<HTMLDivElement | null>(null)
-  const bottomOverlayRef = useRef<HTMLDivElement | null>(null)
   // --- /clear blur ----------------------------------------------------
   // MessageList applies `.chat-messages-clearing` (see messagesClassName
   // below) while `clearing` is true — the view-only blur that signals a
@@ -1730,7 +1729,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         {resolvedMode === 'overlay' && (
           <OverlayStreamingRegion sessionId={sessionId} streamingContent={streamingContent} />
         )}
-        <div className="chat-bottom-overlay" ref={bottomOverlayRef}>
+        <div className="chat-bottom-overlay">
           {bottomOverlay}
         </div>
       </div>

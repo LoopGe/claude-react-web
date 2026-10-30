@@ -250,8 +250,6 @@ export interface ChatPanelProps {
   sideChatSession?: SessionInfo
   /** True when the Side Chat drawer is hidden but the session is alive. */
   sideChatCollapsed?: boolean
-  /** Number of new messages since collapse (for the collapsed badge). */
-  sideChatUnread?: number
   /** Toggle between expanded drawer and collapsed badge. */
   onToggleCollapseSideChat?: () => void
   /** Close the Side Chat and delete the ephemeral session. */
@@ -355,7 +353,6 @@ export const ChatPanel = memo(function ChatPanel({
   onShowHelp,
   sideChatSession,
   sideChatCollapsed,
-  sideChatUnread: _sideChatUnread,
   onToggleCollapseSideChat,
   onCloseSideChat,
   onSideChat,

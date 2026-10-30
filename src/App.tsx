@@ -279,13 +279,11 @@ export function App() {
    *  Stores the full SessionInfo from the POST response so the drawer
    *  can mount immediately without waiting for the WS session-created
    *  frame to update the sessions array. `collapsed` tracks whether
-   *  the drawer is hidden (session stays alive). `initialMessageCount`
-   *  snapshots messageCount at collapse time for unread badge tracking. */
+   *  the drawer is hidden (session stays alive). */
   const [sideChat, setSideChat] = useState<{
     parentId: string
     session: SessionInfo
     collapsed: boolean
-    initialMessageCount: number
   } | null>(null)
   const sideChatRef = useRef(sideChat)
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync; async close/create callbacks read this ref so they don't capture a stale `sideChat` (useEffect would lag by one render)
@@ -2121,17 +2119,11 @@ export function App() {
   }, [])
 
   /** Toggle the Side Chat drawer between expanded and collapsed.
-   *  Collapse hides the drawer but keeps the session alive on the server.
-   *  Expand clears the unread badge. */
+   *  Collapse hides the drawer but keeps the session alive on the server. */
   const handleToggleCollapseSideChat = useCallback(() => {
     setSideChat((prev) => {
       if (!prev) return null
-      if (prev.collapsed) {
-        // Expanding: clear unread by resetting initialMessageCount
-        return { ...prev, collapsed: false, initialMessageCount: 0 }
-      }
-      // Collapsing: snapshot the current messageCount for unread tracking
-      return { ...prev, collapsed: true, initialMessageCount: prev.session.messageCount }
+      return { ...prev, collapsed: !prev.collapsed }
     })
   }, [])
 
@@ -2153,7 +2145,7 @@ export function App() {
           sessionStoreRegistry.delete(oldId)
         }
         const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/side-chat`, {})
-        setSideChat({ parentId: id, session: res.session, collapsed: false, initialMessageCount: 0 })
+        setSideChat({ parentId: id, session: res.session, collapsed: false })
       } catch (e) {
         toast.error(`Couldn't create Side Chat: ${(e as Error).message}`)
       } finally {
@@ -4945,13 +4937,6 @@ export function App() {
     updateInfo.refresh()
   }, [refreshConfigResponse, updateInfo])
 
-  // Memoize the settings tab request so ChatPanel's React.memo doesn't
-  // see a new object reference on every render.
-  const stableSettingsTabRequest = useMemo(
-    () => settingsTabRequest ? { tab: settingsTabRequest.tab, nonce: settingsTabRequest.nonce } : null,
-    [settingsTabRequest],
-  )
-
   if (isConfigured === null) {
     return (
       <div className="app-loading">
@@ -5415,11 +5400,6 @@ export function App() {
                       onShowHelp={showHelpWithCommands}
                       sideChatSession={sideChat?.parentId === s.id ? sideChat.session : undefined}
                       sideChatCollapsed={sideChat?.parentId === s.id ? sideChat.collapsed : undefined}
-                      sideChatUnread={
-                        sideChat?.parentId === s.id && sideChat.collapsed
-                          ? Math.max(0, sideChat.session.messageCount - sideChat.initialMessageCount)
-                          : 0
-                      }
                       onToggleCollapseSideChat={
                         sideChat?.parentId === s.id ? handleToggleCollapseSideChat : undefined
                       }
@@ -5427,7 +5407,7 @@ export function App() {
                       onSideChat={handleSideChat}
                       settingsTabRequest={
                         settingsTabRequest?.sessionId === s.id
-                          ? stableSettingsTabRequest
+                          ? settingsTabRequest
                           : null
                       }
                       isResuming={resuming.has(s.id)}
