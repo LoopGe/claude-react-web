@@ -3,7 +3,8 @@
 // `position: fixed` at the cursor on `contextmenu`, portalled to <body>. The
 // parent owns visibility state (so it knows which session the menu targets);
 // this component only handles the rendering, outside-click / Esc dismissal,
-// and a small nudge to stay within the viewport.
+// and a small nudge to stay within the viewport. One-open-at-a-time
+// enforcement lives in ./context-menu-registry.
 
 import { memo, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
@@ -12,6 +13,7 @@ import { motion } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import { claimExclusiveOpen } from './context-menu-registry'
 import { markPortaledSurface } from '../theme'
 
 export interface ContextMenuItem {
@@ -59,6 +61,21 @@ export const ContextMenu = memo(function ContextMenu({
   autoFocus = false,
   nonPrimary = 'ignore',
 }: Props) {
+  // Latest onClose for the registry entry (the entry itself is mount-scoped).
+  const onCloseRef = useRef(onClose)
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose
+  })
+
+  // Single-open registry: on mount, close every other open menu, then
+  // register ours. Layout timing so the buried menu is dismissed before the
+  // stacked frame paints. The replace flow (same menu, new anchor) only
+  // re-renders — no remount, so this effect does not re-run and the menu
+  // never closes itself.
+  useLayoutEffect(() => {
+    return claimExclusiveOpen(() => onCloseRef.current())
+  }, [])
+
   const ref = useRef<HTMLDivElement>(null)
   // Measured position after layout — nudged inward if the menu would
   // otherwise overflow the viewport.

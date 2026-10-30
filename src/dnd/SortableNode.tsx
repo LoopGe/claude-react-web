@@ -1,6 +1,6 @@
 // Shared dnd-kit sortable node wrapper — the visual/behavioural contract every
 // reorderable row/card/pill in the app drags through (sidebar cards, group
-// sections, group pills, and the collapsed-sidebar nav strip). Extracted from
+// sections, group pills, and the header nav strip). Extracted from
 // SessionList so the nav strip mounts the identical node without importing the
 // whole sidebar.
 

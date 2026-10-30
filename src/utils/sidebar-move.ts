@@ -1,5 +1,5 @@
 // Move math shared by context-menu "Move up / Move down" actions. Pure so the
-// callers (sidebar cards, the collapsed-sidebar nav strip) only wire the
+// callers (sidebar cards, the header nav strip) only wire the
 // result into their reorder handlers.
 //
 // Mirrors SessionList's keyboard-reorder semantics: a session moves within

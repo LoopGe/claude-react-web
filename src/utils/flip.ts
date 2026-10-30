@@ -55,11 +55,12 @@ export function prepareFlip(selector: string, keyAttr: string): () => void {
  *  pop) — a rename here can't silently orphan the selector. */
 export const NAV_ITEM_ID_ATTR = 'data-nav-item-id'
 
-/** Collapsed-sidebar nav strip FLIP — the strip's tab/chip slots
+/** Header nav strip FLIP — the strip's tab/chip slots
  *  (NAV_ITEM_ID_ATTR on the SortableNode wrapper), the horizontal row. Same
- *  contract as `prepareFlip`. No-op while the strip is unmounted (the
- *  selector matches nothing). */
-export function prepareStripFlip(): () => void {
+ *  contract as `prepareFlip`. Internal to this module (compose via
+ *  prepareSessionMoveFlip / prepareGroupFlip). No-op while the strip is
+ *  unmounted (the selector matches nothing). */
+function prepareStripFlip(): () => void {
   // Cancel any in-flight focus-pull glide first: prepareFlip reads the
   // before/after rects a frame apart, and a gliding scroller would smear
   // every slot's settle delta with scroll drift. The no-op scrollTo (with
@@ -70,10 +71,27 @@ export function prepareStripFlip(): () => void {
   return prepareFlip(`[${NAV_ITEM_ID_ATTR}]`, NAV_ITEM_ID_ATTR)
 }
 
+/** Session-move FLIP — animates BOTH nav surfaces in one pass: the sidebar's
+ *  session cards (vertical list) and the header nav strip's tab/chip slots
+ *  (horizontal row). The strip is a permanent header surface now (see
+ *  utils/nav-strip-mount), so a reorder shows on both surfaces at once —
+ *  animating only one leaves the other snapping. Each half no-ops when its
+ *  elements aren't mounted (strip on mobile / custom-titlebar hosts; cards
+ *  when the sidebar isn't rendered). Same contract as `prepareFlip`: call
+ *  before mutating the order, run the returned function right after. */
+export function prepareSessionMoveFlip(): () => void {
+  const animateCards = prepareFlip('[data-session-card-id]', 'data-session-card-id')
+  const animateStrip = prepareStripFlip()
+  return () => {
+    animateCards()
+    animateStrip()
+  }
+}
+
 /** Group reorder FLIP — animates the sidebar's top pill row (horizontal
- *  slide), the grouped section list (vertical slide), and the collapsed-
- *  sidebar nav strip's chips+tabs (a group move transposes its whole section
- *  across the strip row) in one pass. Same contract as `prepareFlip`: call
+ *  slide), the grouped section list (vertical slide), and the header nav
+ *  strip's chips+tabs (a group move transposes its whole section across the
+ *  strip row) in one pass. Same contract as `prepareFlip`: call
  *  before mutating `groups`, run the returned function right after. */
 export function prepareGroupFlip(): () => void {
   const animatePills = prepareFlip('[data-group-pill-id]', 'data-group-pill-id')

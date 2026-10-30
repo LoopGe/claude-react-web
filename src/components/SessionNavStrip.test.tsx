@@ -323,8 +323,8 @@ describe('SessionNavStrip', () => {
   })
 
   it('still offers + when there are no sessions', () => {
-    // Collapsed sidebar + zero sessions must keep a visible create
-    // entry point — the strip renders the + alone.
+    // Zero sessions must keep a visible create entry point — the strip
+    // renders the + alone.
     const { container, onNewSession } = renderStrip([])
     const plus = screen.getByLabelText('Create')
     expect(plus).toBeTruthy()
@@ -868,10 +868,10 @@ describe('first-sight mount pop', () => {
     expect(popped[1].closest('[data-nav-item-id]')!.getAttribute('data-nav-item-id')).toBe('s2')
   })
 
-  it('a shared first-sight set keeps a re-collapse from re-popping known tabs', () => {
+  it('a shared first-sight set keeps a remount from re-popping known tabs', () => {
     // App owns one set for the session's lifetime; the per-instance default
-    // would treat every strip remount (each sidebar re-collapse) as first
-    // sight and pop the whole row again.
+    // would treat every strip remount (e.g. a viewport flip to mobile and
+    // back) as first sight and pop the whole row again.
     const poppedIdsRef = { current: new Set<string>() }
     const { unmount } = renderStrip(baseSections(), { poppedIdsRef })
     expect(popped).toHaveLength(4) // g1 chip + three tabs

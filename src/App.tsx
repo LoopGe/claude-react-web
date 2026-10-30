@@ -9,6 +9,7 @@ import { SessionNavStrip, SessionNavTabGhost, SessionNavChipGhost } from './comp
 import { SessionContextMenu } from './components/session-list/SessionContextMenu'
 import { buildGroupContextMenuItems, type GroupMenuDialogs } from './components/session-list/groupMenuItems'
 import { ContextMenu } from './components/ContextMenu'
+import { closeAllContextMenus } from './components/context-menu-registry'
 import { DialogHosts } from './components/DialogHosts'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
@@ -81,6 +82,8 @@ import { AnimatePresence } from 'motion/react'
 import { createCallbackRegistry, type CallbackRegistry } from './utils/callbackRegistry'
 import { shouldAutoResumeOnSelect } from './utils/select-resume'
 import { openTargetForSession } from './utils/open-target'
+import { navStripMounted } from './utils/nav-strip-mount'
+import { navSurfaceEls } from './utils/nav-surfaces'
 
 // How long the evicted session X fades out (WAAPI, opacity only) before the
 // atomic X→Y swap commits. The replacement Y then fades in over X's empty
@@ -139,7 +142,7 @@ import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
 import { groupNameIssue } from './utils/group-name'
 import { escapeAction } from './utils/escape-action'
-import { prepareGroupFlip, prepareStripFlip } from './utils/flip'
+import { prepareGroupFlip, prepareSessionMoveFlip } from './utils/flip'
 import { clamp } from './utils/clamp'
 
 /** Shallow-compare two SessionInfo objects across every own property.
@@ -216,7 +219,7 @@ function MainGridDropZone({ bodyRef, className, style, panelCount, children }: {
   )
 }
 
-/** Group context menu behind the collapsed-sidebar nav strip's group chips.
+/** Group context menu behind the header nav strip's group chips.
  *  Its own component (not inline JSX in App) so the ref-reading App handlers
  *  (move/delete group) arrive as opaque JSX props — passing them straight
  *  into a render-time buildGroupContextMenuItems call trips react-hooks/refs
@@ -578,6 +581,9 @@ export function App() {
   // Keyboard resize for the sidebar separator. ArrowLeft shrinks, ArrowRight
   // grows, by a 24px step clamped to [sidebarMinPx, sidebarMaxPx]. Mirrors the
   // mouse drag so keyboard-only users can rebalance the workspace (Interact C2).
+  // Dismisses open menus first: like the sidebar toggle, the width change
+  // shifts the strip (and sidebar) under every pinned anchor. The mouse drag
+  // gets this for free — its initiating mousedown is an outside press.
   const KEYBOARD_RESIZE_STEP = 24
   const onSidebarResizerKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -586,6 +592,7 @@ export function App() {
       else if (e.key === 'ArrowRight') delta = KEYBOARD_RESIZE_STEP
       else return
       e.preventDefault()
+      closeAllContextMenus()
       const next = clamp(effectiveSidebarWidth + delta, sidebarMinPx, sidebarMaxPx)
       setSidebarWidth(next)
     },
@@ -1502,17 +1509,22 @@ export function App() {
       // pops out in the same frame Y appears, which reads as "remove then add".
       // Opacity only: no translateY (Y inherits X's slot, so there's no motion
       // for a slide to add — a positional nudge would read as jitter).
-      const xEl = document.querySelector<HTMLElement>(`[data-session-card-id="${oldId}"]`)
-      if (xEl && !prefersReducedMotion()) {
+      // BOTH nav rows fade (sidebar card + header strip slot — navSurfaceEls):
+      // the two surfaces show the same list at once, so the swap must not snap
+      // one and fade the other.
+      const xEls = navSurfaceEls(oldId)
+      if (xEls.length > 0 && !prefersReducedMotion()) {
         try {
-          const anim = xEl.animate(
-            [
-              { opacity: 1 },
-              { opacity: 0 },
-            ],
-            { duration: SWAP_EXIT_MS, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' },
+          const anims = xEls.map((el) =>
+            el.animate(
+              [
+                { opacity: 1 },
+                { opacity: 0 },
+              ],
+              { duration: SWAP_EXIT_MS, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' },
+            ),
           )
-          await anim.finished
+          await anims[0].finished
         } catch {
           /* element removed mid-fade (e.g. cross-tab) — proceed with the swap */
         }
@@ -1522,6 +1534,11 @@ export function App() {
       // (oldId ∈ openIds), so the swap always changes openIds and exit-detection
       // runs to consume this marker — no stale-entry risk.
       justSwappedInRef.current.add(newId)
+      // Y's strip tab is a genuinely-new row, so it would mount-pop (fade+rise)
+      // while its sidebar card fades in — two entrance animations for one
+      // swap. Pre-seed the first-sight set so the swap fade below is Y's only
+      // entrance on both surfaces.
+      stripPoppedIdsRef.current.add(newId)
       // Commit the swap synchronously so Y's card is in the DOM before we look
       // it up for the fade-in below. In async contexts (this POST continuation)
       // React 19's scheduler would otherwise defer the commit to a
@@ -1581,19 +1598,14 @@ export function App() {
       // the X-out/Y-in swap. batch1 no longer appends Y for evicting clears
       // (it stays pending/hidden), so Y mounts here for the first time;
       // `fill: 'backwards'` applies the transparent start keyframe in the same
-      // frame the card mounts (before the browser paints), so there's no
-      // opacity-1 flash.
+      // frame the row mounts (before the browser paints), so there's no
+      // opacity-1 flash. Both nav rows fade, matching the X fade-out above.
       if (!prefersReducedMotion()) {
-        const yEl = document.querySelector<HTMLElement>(`[data-session-card-id="${newId}"]`)
-        if (yEl) {
-          try {
-            yEl.animate(
-              [{ opacity: 0 }, { opacity: 1 }],
-              { duration: 160, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' },
-            )
-          } catch {
-            /* element removed (e.g. cross-tab) — skip */
-          }
+        for (const yEl of navSurfaceEls(newId)) {
+          yEl.animate(
+            [{ opacity: 0 }, { opacity: 1 }],
+            { duration: 160, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' },
+          )
         }
       }
     },
@@ -3067,17 +3079,18 @@ export function App() {
   //   - Esc closes whatever overlay is open, highest-priority last (so
   //     the dialog covers the drawer, etc.).
 
-  // ── Collapsed-sidebar nav strip context menus ────────────────────
-  // While the sidebar is hidden (desktop, no custom titlebar) the header's
-  // SessionNavStrip is the only surface listing every session/group. Right-
-  // clicks there forward raw events (the strip stays presentational) into
-  // the menu state below, which mirrors the sidebar's per-card / per-group
-  // menus: same SessionContextMenu component, same group-menu builder, same
-  // App-level handlers. Right-click does NOT select — same as the sidebar.
+  // ── Header nav strip context menus ───────────────────────────────
+  // On desktop hosts without a custom titlebar the header's SessionNavStrip
+  // lists every session/group (sidebar collapsed or not — see
+  // utils/nav-strip-mount). Right-clicks there forward raw events (the strip
+  // stays presentational) into the menu state below, which mirrors the
+  // sidebar's per-card / per-group menus: same SessionContextMenu component,
+  // same group-menu builder, same App-level handlers. Right-click does NOT
+  // select — same as the sidebar.
   // Declared BEFORE the shortcut list below: mod+b toggles the sidebar
   // through toggleSidebarCollapsed, which also drops any open strip menu
-  // (the strip unmounts on expand; a surviving menu would re-materialize on
-  // the next collapse — cleared at the source instead of an effect, which
+  // (the strip shifts as the sidebar column animates, so the pinned menu
+  // anchor goes stale — cleared at the source instead of an effect, which
   // the compiler rejects for sync setState).
   const [stripMenu, setStripMenu] = useState<{ x: number; y: number; id: string } | null>(null)
   const [stripGroupMenu, setStripGroupMenu] = useState<{ x: number; y: number; id: string } | null>(null)
@@ -3098,29 +3111,34 @@ export function App() {
     setStripGroupMenu({ x: e.clientX, y: e.clientY, id })
   }, [setStripGroupMenu, setStripMenu])
 
-  // Menus outlive their surface if left alone: the strip unmounts on sidebar
-  // expand, and a surviving menu would re-materialize on the next collapse.
-  // Cleared at the toggle source (both entries — button + shortcut — route
-  // through here) instead of an effect, which the compiler rejects for sync
-  // setState. Known narrow gap: a viewport flip across the isMobile boundary
-  // unmounts the strip without this toggle — the JSX gates on stripMounted so
-  // the menu vanishes; its state lingers until the next toggle, which is a
-  // self-healing cosmetic edge.
+  // Toggling the sidebar shifts the strip horizontally (the header absorbs
+  // or yields the freed grid-column width), so pinned menus would detach from
+  // their anchors. Dismiss ALL open menus at the toggle source (both entries
+  // — button + shortcut — route through here) instead of an effect, which the
+  // compiler rejects for sync setState. The global dismiss is required, not
+  // just the strip menus below: the strip's + create menu owns its state
+  // inside CreateMenuButton and is unreachable from here (closeAllContextMenus
+  // walks the ContextMenu registry instead).
   const toggleSidebarCollapsed = useCallback(() => {
+    closeAllContextMenus()
     setStripMenu(null)
     setStripGroupMenu(null)
     setSidebarCollapsed((v) => !v)
   }, [setSidebarCollapsed, setStripMenu, setStripGroupMenu])
 
-  /** The strip's mount condition (single source for the JSX below). */
-  const stripMounted = !isMobile && sidebarCollapsed && !hostCaps.customTitlebar
+  /** The strip's mount condition (single source for the JSX below). The
+   *  sidebar's collapsed state is deliberately NOT consulted — the strip is
+   *  a permanent header surface (see utils/nav-strip-mount). */
+  const stripMounted = navStripMounted({ isMobile, sidebarCollapsed, customTitlebar: hostCaps.customTitlebar })
   // The strip outlives its mount condition by one exit window so its
-  // slide-out (session-nav-strip-out) can play while the sidebar's grid
-  // column expands — the mirror of the mount entrance. useExitRetention
+  // slide-out (session-nav-strip-out) can play before the unmount lands
+  // (viewport flips across the isMobile boundary are the only runtime
+  // unmount — the sidebar no longer mounts/unmounts it). useExitRetention
   // skips the hold under reduced motion.
   const stripExit = useExitRetention(stripMounted ? true : null, STRIP_EXIT_WINDOW_MS)
   // First-sight ids for the strip's mount pop — one set for the session's
-  // lifetime so a sidebar re-collapse doesn't re-pop every already-open tab.
+  // lifetime so a remount (viewport flip to mobile and back) doesn't re-pop
+  // every already-open tab.
   const stripPoppedIdsRef = useRef(new Set<string>())
 
   const shortcuts = useMemo(
@@ -3943,7 +3961,7 @@ export function App() {
     [setCollapsedGroups],
   )
 
-  // ── Collapsed-sidebar nav strip menus: move/rename ────────────────
+  // ── Header nav strip menus: move/rename ──────────────────────────
   // (Menu/dialog STATE lives above the keyboard-shortcut list, which toggles
   // the sidebar through toggleSidebarCollapsed to clear the menus; this half
   // only holds the handlers that need the reorder/section definitions below.)
@@ -3952,14 +3970,15 @@ export function App() {
    *  the session's own section (pure helper, same semantics as the sidebar's
    *  keyboard reorder) and delegate to the same App handlers drag-and-drop
    *  uses. Direction→position mapping matches SessionList.handleMove.
-   *  FLIP-wrapped like SessionList.handleMove (prepareStripFlip animates the
-   *  strip's slots; the hidden sidebar's cards are unmeasured). */
+   *  FLIP-wrapped like SessionList.handleMove (prepareSessionMoveFlip glides
+   *  both nav surfaces — the strip's slots and the sidebar's cards show the
+   *  same list at once). */
   const handleStripMove = useCallback(
     (id: string, direction: 'up' | 'down') => {
       const target = sidebarMoveTarget(sidebarSections, id, direction)
       if (!target) return
       const position = direction === 'up' ? 'before' : 'after'
-      const animateMove = prepareStripFlip()
+      const animateMove = prepareSessionMoveFlip()
       if (target.groupId) handleReorderInGroup(id, target.targetId, position, target.groupId)
       else handleReorderSidebar(id, target.targetId, position)
       animateMove()
@@ -3967,8 +3986,9 @@ export function App() {
     [sidebarSections, handleReorderInGroup, handleReorderSidebar],
   )
 
-  /** Strip rename goes through a prompt (the sidebar's inline editor is
-   *  invisible while the sidebar is collapsed); commits via the same PATCH. */
+  /** Strip rename goes through a prompt (the strip has no inline editor —
+   *  the sidebar card's inline editor is card-local); commits via the same
+   *  PATCH. */
   const handleStripRename = useCallback((s: SessionInfo) => {
     stripDialogs.askPrompt({
       title: 'Rename session',
@@ -4380,10 +4400,9 @@ export function App() {
     if (!a || !o) return
     if (a.kind === 'sidebar-card' && o.kind === 'group-card') {
       // Card dropped on a group header (sortable node) or group body
-      // droppable → move into that group. FLIP so the strip's row slides to
-      // the new slots (no-op for sidebar drags — the strip is unmounted
-      // whenever the sidebar is visible).
-      const animateMove = prepareStripFlip()
+      // droppable → move into that group. FLIP so both nav surfaces slide to
+      // the new slots (the strip's row and the sidebar's cards).
+      const animateMove = prepareSessionMoveFlip()
       handleAddToGroup(a.id, o.id)
       animateMove()
       return
@@ -4404,11 +4423,11 @@ export function App() {
           toast.error(capError)
           return
         }
-        const animateMove = prepareStripFlip()
+        const animateMove = prepareSessionMoveFlip()
         handleReorderInGroup(a.id, o.id, positionFromOver(e), overGroup)
         animateMove()
       } else {
-        const animateMove = prepareStripFlip()
+        const animateMove = prepareSessionMoveFlip()
         handleReorderSidebar(a.id, o.id, positionFromOver(e))
         animateMove()
       }
@@ -4495,8 +4514,8 @@ export function App() {
       const s = orderedSessions.find((x) => x.id === dndActive.id)
       if (!s) return null
       // Strip-originated drags lift the compact tab, not the sidebar card —
-      // the sidebar is hidden while the strip is up, so its ghost geometry
-      // (live sidebar width) would be meaningless.
+      // the user grabbed a header tab, so its ghost geometry (live sidebar
+      // card width) would not match what was picked up.
       if (dndOrigin === 'strip') {
         return (
           <DragGhost>
@@ -5133,12 +5152,12 @@ export function App() {
           )}
           <ProfileSwitcher onManageProfiles={() => setGlobalSettingsOpen(true)} />
           {/* Full-session nav strip (hosts without a custom titlebar:
-              browser, Linux desktop): while the desktop sidebar is collapsed,
-              every session stays reachable from the header — groups as
-              clickable name chips, sessions as tabs in sidebar order.
-              Clicking routes through the same handler as a sidebar card
-              click. Win/darwin Electron titlebars keep their own
-              always-visible open-panel tabs instead (no double strip). */}
+              browser, Linux desktop): every session stays reachable from the
+              header — sidebar collapsed or expanded — as groups-as-chips +
+              sessions-as-tabs in sidebar order. Clicking routes through the
+              same handler as a sidebar card click. Win/darwin Electron
+              titlebars keep their own always-visible open-panel tabs instead
+              (no double strip). */}
           {stripExit.shown !== null && (
             <SessionNavStrip
               exiting={stripExit.exiting}
@@ -5185,8 +5204,9 @@ export function App() {
                 onAddToGroup={(sessionId, groupId) => {
                   // FLIP like the drag and Move up/down paths — the same
                   // mutation through one surface must not snap in one menu
-                  // and slide in another.
-                  const animateMove = prepareStripFlip()
+                  // and slide in another. Both nav surfaces glide (the
+                  // sidebar's cards show the same list at once).
+                  const animateMove = prepareSessionMoveFlip()
                   handleAddToGroup(sessionId, groupId)
                   animateMove()
                 }}
@@ -5644,7 +5664,7 @@ export function App() {
         )}
       </AnimatePresence>
 
-      {/* Collapsed-sidebar strip menu dialogs (delete/restart confirm,
+      {/* Header strip menu dialogs (delete/restart confirm,
           session & group rename prompt). Shared busy-wrapping hosts. */}
       <DialogHosts hosts={stripDialogs} />
 

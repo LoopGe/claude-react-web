@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { AnimatePresence } from 'motion/react'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { closeAllContextMenus } from './context-menu-registry'
 import { expectPortaledToBody } from './portal-test-utils'
 
 afterEach(() => {
@@ -130,5 +131,61 @@ describe('ContextMenu', () => {
 
     fireEvent.mouseDown(document.documentElement)
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('opening a second menu closes the first (no stacked portals across owners)', () => {
+    // Owners only know their own visibility state (App's strip menus vs
+    // SessionList's card/group menus), and outside right-clicks deliberately
+    // don't dismiss (a right-click must REPLACE its own menu). Mounting a
+    // second menu must therefore close the first itself — otherwise the
+    // buried portal's items stay clickable at its peeking edges.
+    const onCloseFirst = vi.fn()
+    const items: ContextMenuItem[] = [{ label: 'Run', onClick: () => {} }]
+    function Harness({ second }: { second: boolean }) {
+      return (
+        <>
+          <ContextMenu x={0} y={0} items={items} onClose={onCloseFirst} />
+          {second && <ContextMenu x={10} y={10} items={items} onClose={() => {}} />}
+        </>
+      )
+    }
+    const { rerender } = render(<Harness second={false} />)
+    expect(onCloseFirst).not.toHaveBeenCalled()
+
+    rerender(<Harness second={true} />)
+    expect(onCloseFirst).toHaveBeenCalledOnce()
+  })
+
+  it('repositioning an open menu (owner replace flow) does not close it', () => {
+    // Right-clicking another row of the same surface swaps the anchor on the
+    // SAME mounted menu (no remount) — the registry must not treat that as a
+    // second menu and close the very menu being repositioned.
+    const onClose = vi.fn()
+    const items: ContextMenuItem[] = [{ label: 'Run', onClick: () => {} }]
+    const { rerender } = render(<ContextMenu x={0} y={0} items={items} onClose={onClose} />)
+    rerender(<ContextMenu x={50} y={50} items={items} onClose={onClose} />)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('closeAllContextMenus dismisses every open menu across owners', () => {
+    // Layout shifts (sidebar toggle / keyboard sidebar resize) detach every
+    // pinned anchor at once; owners can't each be reached from the shift
+    // source (the + create menu's state lives inside CreateMenuButton), so
+    // the registry exposes a global dismiss.
+    const onCloseA = vi.fn()
+    const onCloseB = vi.fn()
+    const items: ContextMenuItem[] = [{ label: 'Run', onClick: () => {} }]
+    render(
+      <>
+        <ContextMenu x={0} y={0} items={items} onClose={onCloseA} />
+        <ContextMenu x={10} y={10} items={items} onClose={onCloseB} />
+      </>,
+    )
+    // Two menus mounting in one commit: the second's registry effect already
+    // closed the first, leaving only B live. closeAll must dismiss whatever
+    // is still open regardless of owner.
+    expect(onCloseA).toHaveBeenCalledOnce()
+    closeAllContextMenus()
+    expect(onCloseB).toHaveBeenCalledOnce()
   })
 })

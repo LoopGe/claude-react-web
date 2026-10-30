@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent, screen } from '@testing-library/react'
+import { render, fireEvent, screen, act } from '@testing-library/react'
 import { CreateMenuButton } from './CreateMenuButton'
+import { closeAllContextMenus } from './context-menu-registry'
 
 function setup(overrides: Partial<React.ComponentProps<typeof CreateMenuButton>> = {}) {
   const onNewSession = overrides.onNewSession ?? vi.fn()
@@ -90,5 +91,22 @@ describe('CreateMenuButton', () => {
     expect(screen.getByRole('menu')).toBeTruthy()
     fireEvent.mouseDown(document.body, { button: 2 })
     expect(screen.queryByRole('menu')).toBeNull()
+  })
+
+  it('a programmatic dismiss (closeAllContextMenus) does not steal focus', () => {
+    // Layout shifts (sidebar toggle / keyboard sidebar resize) dismiss every
+    // menu via the registry while the user is on ANOTHER control (e.g. the
+    // resizer mid keyboard-resize) — returning focus to the + would kill that
+    // control's continued interaction. Only user dismissals from within the
+    // menu flow return focus.
+    setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    expect(screen.getByRole('menu')).toBeTruthy()
+    const other = document.createElement('button')
+    document.body.appendChild(other)
+    other.focus()
+    act(() => closeAllContextMenus())
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).toBe(other)
   })
 })

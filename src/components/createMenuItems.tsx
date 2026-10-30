@@ -1,5 +1,5 @@
 // Header "+" create-menu item definitions, shared by the two new-session
-// entry points: the collapsed-sidebar nav strip (SessionNavStrip) and the
+// entry points: the header nav strip (SessionNavStrip) and the
 // desktop titlebar tabs (DesktopTitlebarTabs). Same contract as
 // groupMenuItems — the builder owns the item rows AND the create-group
 // prompt copy so the two surfaces cannot drift; the caller injects the

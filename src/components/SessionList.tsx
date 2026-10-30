@@ -7,7 +7,7 @@ import { useDndContext, useDroppable } from '@dnd-kit/core'
 import { SortableContext, horizontalListSortingStrategy, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { dndData, dndPayloadOf } from '../dnd/payload'
 import { SortableNode } from '../dnd/SortableNode'
-import { prepareFlip } from '../utils/flip'
+import { prepareSessionMoveFlip } from '../utils/flip'
 import { isWaiting } from '../utils/session-status'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
@@ -342,15 +342,14 @@ export const SessionList = memo(function SessionList({
     return result
   }, [sidebarSections, filter])
 
-  /** Capture the current sidebar card positions and return a function that
-   *  animates any moved cards after React applies a reorder — the classic
-   *  FLIP pattern (see `src/utils/flip.ts`). Used by both drag/drop reorder
-   *  and keyboard/context-menu moves; the shared util keeps the curve and
-   *  reduced-motion gate identical to the group reorder. */
-  const prepareMoveAnimation = useCallback(
-    () => prepareFlip('[data-session-card-id]', 'data-session-card-id'),
-    [],
-  )
+  /** Capture the current nav positions (sidebar cards + header strip slots)
+   *  and return a function that animates any moved rows after React applies a
+   *  reorder — the classic FLIP pattern (see `src/utils/flip.ts`). Used by
+   *  both drag/drop reorder and keyboard/context-menu moves; the shared util
+   *  keeps the curve and reduced-motion gate identical to the group reorder.
+   *  Both surfaces animate because both show the same list at once (see
+   *  utils/nav-strip-mount). */
+  const prepareMoveAnimation = useCallback(() => prepareSessionMoveFlip(), [])
 
   // Auto-focus the new-group name input when it appears.
   useEffect(() => {

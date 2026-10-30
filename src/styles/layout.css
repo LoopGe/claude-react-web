@@ -113,16 +113,16 @@ body.resizing-col .app {
   margin-left: auto;
 }
 
-/* Full-session nav strip in the top header (desktop, sidebar collapsed —
-   see App.tsx render condition). Shell: [+ button][scrollable tab region].
+/* Full-session nav strip in the top header (desktop hosts without a custom
+   titlebar — see utils/nav-strip-mount; mounted whether the sidebar is
+   collapsed or expanded). Shell: [+ button][scrollable tab region].
    The + sits OUTSIDE the scroll region so the edge-fade mask can never ghost
    the primary new-session affordance. Groups render as a clickable name chip
    before their member tabs. The strip absorbs the free width between the
    left chrome cluster and the toolbar.
-   Entrance: fades/slides in when the sidebar collapses (mount = each
-   collapse, since the strip is conditionally rendered), timed to the
-   sidebar's own 240ms grid transition. Exit: the parent holds the unmount
-   one exit window (useExitRetention) and drops `.exiting` when it closes,
+   Entrance: fades/slides in on mount (app start; the sidebar no longer
+   mounts/unmounts it). Exit: the parent holds the unmount one exit window
+   (useExitRetention) and drops `.exiting` when it closes,
    mirroring the entrance. */
 .session-nav-strip {
   display: flex;
@@ -201,14 +201,14 @@ body.resizing-col .app {
     transform: translateY(0);
   }
 }
-/* Exit mirror of session-nav-strip-in — same moderate cadence, so the
-   slide-out spans the whole sidebar-grid expansion instead of finishing at
-   its half-time (the parent holds the unmount STRIP_EXIT_WINDOW_MS to
-   match). `both` holds the end state until that window closes. A quick
-   toggle that revives the strip mid-exit replays session-nav-strip-in with
-   no JS: dropping `.exiting` takes this name out of the computed
-   animation-name list and puts the entrance back in, and a newly-named CSS
-   animation restarts (the class-toggle replay idiom). */
+/* Exit mirror of session-nav-strip-in — same moderate cadence (the parent
+   holds the unmount STRIP_EXIT_WINDOW_MS to match). `both` holds the end
+   state until that window closes. The strip no longer unmounts on sidebar
+   toggles (see utils/nav-strip-mount) — exits ride only a viewport flip
+   across the isMobile boundary. A flip back mid-exit replays
+   session-nav-strip-in with no JS: dropping `.exiting` takes this name out
+   of the computed animation-name list and puts the entrance back in, and a
+   newly-named CSS animation restarts (the class-toggle replay idiom). */
 .session-nav-strip.exiting {
   animation: session-nav-strip-out var(--motion-duration-moderate) var(--motion-ease-exit) both;
   pointer-events: none;
@@ -429,7 +429,7 @@ body.resizing-col .app {
    rhythm (the sidebar renders them at 7px). One shared rule for BOTH compact
    tab surfaces — the nav strip (this file's home) and the desktop titlebar
    (styles/titlebar.css); keep them in lockstep by editing only here. The
-   dormant ring is the visible "slept" state while the sidebar is collapsed. */
+   dormant ring is the visible "slept" state on the tab surfaces. */
 .session-nav-tab .session-status-dot,
 .titlebar-tab .session-status-dot {
   width: 6px;

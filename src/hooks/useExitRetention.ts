@@ -3,7 +3,7 @@
 // animation can play before the element unmounts. That "value outlives its
 // state by 120ms" is what the nav strip's exits ride: the working dot and
 // the working wash fade instead of being cut, and the strip shell plays its
-// slide-out before the collapse unmounts it.
+// slide-out before the unmount lands.
 //
 // A new non-null value cancels the hold immediately — two live values never
 // get an exit beat between them (working -> dormant is a swap, not a fade).

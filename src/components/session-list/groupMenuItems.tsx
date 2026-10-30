@@ -1,6 +1,6 @@
 // Group context-menu item definitions, shared by the two surfaces that offer
 // group management: the sidebar's group pills (SessionList) and the
-// collapsed-sidebar nav strip's group chips (App-level menu).
+// header nav strip's group chips (App-level menu).
 //
 // The builder owns the item rows AND the confirm/prompt dialog copy (single
 // source — the text must not drift between surfaces); the caller injects the

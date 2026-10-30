@@ -45,9 +45,16 @@ export function CreateMenuButton({
   )
   const close = useCallback(() => {
     setAnchor(null)
-    // WAI-ARIA menu button: dismiss returns focus to the trigger so the next
-    // Tab continues from the +, not from the top of the document.
-    triggerRef.current?.focus({ preventScroll: true })
+    // WAI-ARIA menu button: a USER dismissal returns focus to the trigger so
+    // the next Tab continues from the +, not from the top of the document.
+    // Only when the menu (or trigger) holds focus — a programmatic dismiss
+    // (closeAllContextMenus from a sidebar layout shift) must not steal focus
+    // from whatever control the user is on (e.g. the resizer mid
+    // keyboard-resize).
+    const active = document.activeElement
+    const inMenuFlow =
+      triggerRef.current?.contains(active) || (active instanceof Element && active.closest('[role="menu"]'))
+    if (inMenuFlow) triggerRef.current?.focus({ preventScroll: true })
   }, [])
 
   return (

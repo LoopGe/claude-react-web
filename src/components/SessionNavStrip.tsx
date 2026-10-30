@@ -1,9 +1,10 @@
-// Full-session navigation strip for the top header, shown while the desktop
-// sidebar is collapsed (hosts without a custom titlebar — browser and Linux
-// desktop; win/darwin Electron titlebars keep their own always-visible
-// open-panel tabs instead).
+// Full-session navigation strip for the top header (hosts without a custom
+// titlebar — browser and Linux desktop; win/darwin Electron titlebars keep
+// their own always-visible open-panel tabs instead). A permanent header
+// surface: mounted whether the sidebar is collapsed or expanded (see
+// utils/nav-strip-mount).
 //
-// A compact stand-in for the sidebar's navigation: every session in sidebar
+// A compact sibling of the sidebar's navigation: every session in sidebar
 // order as a horizontally-scrollable tab row. Groups render as a clickable
 // name chip (activates the group's panel view) followed by their member
 // tabs; ungrouped sessions render as plain tabs. Clicking a tab routes
@@ -11,11 +12,10 @@
 // activation + auto-resume + unread clear) — App owns that handler, this
 // component is purely presentational.
 //
-// The strip renders even with zero sessions: the leading + is the only
-// create entry point the header offers while the sidebar is hidden
-// (same reasoning as the titlebar tabs' empty state). The + opens a small
-// create menu (New session… / New group…) rather than immediately creating
-// a session — see CreateMenuButton.
+// The strip renders even with zero sessions: the leading + keeps a create
+// entry point in the header (same reasoning as the titlebar tabs' empty
+// state). The + opens a small create menu (New session… / New group…)
+// rather than immediately creating a session — see CreateMenuButton.
 //
 // Structure: [+][scroller]. The + lives OUTSIDE the scroll region so the
 // edge-fade mask can never ghost the primary create affordance.
@@ -59,13 +59,14 @@ interface Props {
    *  same guards the sidebar cards apply before enabling their sortables. */
   resumingIds?: ReadonlySet<string>
   deletingIds?: ReadonlySet<string>
-  /** The strip shell is playing its exit (sidebar expanding) — the parent
+  /** The strip shell is playing its exit (unmounting) — the parent
    *  holds the unmount for one exit window via useExitRetention and drops
    *  this class when the window closes. */
   exiting?: boolean
   /** First-sight ids for the mount pop. The default is per-instance (fresh
-   *  set each strip mount); App passes one session-lifetime set so a sidebar
-   *  re-collapse doesn't re-pop every already-open tab. */
+   *  set each strip mount); App passes one session-lifetime set so a remount
+   *  (e.g. a viewport flip to mobile and back) doesn't re-pop every
+   *  already-open tab. */
   poppedIdsRef?: { current: Set<string> }
 }
 
@@ -275,9 +276,10 @@ function SessionNavTab({
 }
 
 /** Compact drag ghosts for strip-originated drags — the lifted item IS the
- *  tab / chip (the sidebar is hidden while the strip is up, so its wide card
- *  ghost's geometry would be meaningless). Rendered by App's renderDndGhost
- *  inside DragGhost; spans (not buttons) because the ghost is inert. */
+ *  tab / chip (the user grabbed a header tab, so the sidebar card ghost's
+ *  wide geometry would not match what was picked up). Rendered by App's
+ *  renderDndGhost inside DragGhost; spans (not buttons) because the ghost is
+ *  inert. */
 export function SessionNavTabGhost({ session, unread }: { session: SessionInfo; unread?: boolean }) {
   const label = sessionTitleOrFallback(session)
   const status = tabDotStatus(session)
