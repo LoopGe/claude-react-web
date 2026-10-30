@@ -6,12 +6,38 @@
    (NOT inside .chat — see ChatPanel.tsx), so without its own copy, every
    `padding: Xpx var(--chat-reading-inset)` shorthand inside the drawer would
    hit IACVT and collapse to padding:0 — losing vertical padding too, not just
-   the horizontal inset. Add any new reading-area host to this selector list. */
+   the horizontal inset.
+
+   Adding a host: add its selector to the two `--chat-reading-inset` lists
+   below (the base formula here and the round() enhancement after :root), and
+   give it its OWN --chat-reading-min-inset block. One floor declaration per
+   host means no equal-specificity override — source order can never silently
+   swap a floor.
+
+   .subagent-transcript (SubagentTranscriptDialog) is such a host: it renders
+   MessageList through an Overlay PORTALED to <body> — outside .chat and
+   .side-chat-drawer — so it needs its own declaration here. Missing
+   --chat-reading-max-width is what truncated the thinking preview with no
+   "…": `.msg.assistant`'s `max-width: min(var(--chat-reading-max-width), 100%)`
+   went IACVT → `none`, the (deliberately unbounded) nowrap `.thinking-preview`
+   inflated the fit-content bubble to the full reasoning width, and
+   `.chat-messages`' `overflow-x: hidden` hard-clipped it at the dialog edge —
+   the preview never overflowed its own box, so its ellipsis never fired. */
+.chat,
+.side-chat-drawer,
+.subagent-transcript {
+  --chat-reading-max-width: 900px;
+  --chat-reading-inset: max(var(--chat-reading-min-inset), calc((100% - var(--chat-reading-max-width)) / 2));
+}
 .chat,
 .side-chat-drawer {
-  --chat-reading-max-width: 900px;
   --chat-reading-min-inset: 12px;
-  --chat-reading-inset: max(var(--chat-reading-min-inset), calc((100% - var(--chat-reading-max-width)) / 2));
+}
+.subagent-transcript {
+  /* The dialog body's own --space-3-5 padding is its gutter (message rows
+     align with the dialog header): a 12px floor would stack on that padding
+     and indent every row past the header. */
+  --chat-reading-min-inset: 0px;
 }
 
 /* Vertical rhythm for the whole transcript — the gap between two adjacent
@@ -39,16 +65,18 @@
 }
 @supports (width: round(1px, 1px)) {
   .chat,
-  .side-chat-drawer {
+  .side-chat-drawer,
+  .subagent-transcript {
     /* round() to a whole CSS pixel: the centered column is rendered through two
-       different boxes — message rows live inside .chat-virtuoso-scroller (whose
-       content box is inset by the scrollbar gutter, then shifted back by it) while
+       different boxes — message rows live inside .chat-virtuoso-scroller while
        .chat-bottom-stack (which holds .chat-streaming-region) is an
-       absolutely-positioned full-width overlay. A
-       fractional inset like 137.5px snaps in two steps on the row path
-       (round(gutter)+round(inset-gutter)) vs one step on the streaming path
-       (round(inset)), landing ~1px apart on non-integer-DPR displays. Quantizing
-       to an integer px makes both paths snap to the same column edge. */
+       absolutely-positioned full-width overlay — and a fractional inset like
+       137.5px snaps differently on the two paths on non-integer-DPR displays,
+       landing them ~1px apart. Quantizing to an integer px makes both paths
+       snap to the same column edge. (Pre-94e53a4a the row path was also inset
+       by the scrollbar gutter and shifted back by it, which doubled the drift;
+       the overlay scrollbar removed the gutter — see the note near
+       .chat-virtuoso-scroller.) */
     --chat-reading-inset: max(var(--chat-reading-min-inset), round((100% - var(--chat-reading-max-width)) / 2, 1px));
   }
 }
