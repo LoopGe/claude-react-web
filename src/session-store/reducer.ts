@@ -1,9 +1,7 @@
-import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import type { PermissionRequest, SdkMessage } from '../types'
 import {
   createInitialClientIntent,
   createInitialServerMirror,
-  type ActiveSubagent,
   type ClientIntent,
   type ServerMirror,
   type SessionAction,
@@ -14,22 +12,13 @@ import {
 } from './types'
 import {
   foldActiveWorktree,
-  getPlanToolUseIds,
-  getSkillStarts,
-  getSubagentStarts,
-  getToolResultIds,
-  getToolUseStarts,
-  getWorkflowStarts,
   isTrimBoundary,
   messageTouchesWorktree,
   msgTime,
-  parseTaskNotification,
   recomputeActiveWorktree,
   toTranscriptItem,
   topLevelUserPromptSignature,
 } from './normalize'
-import { getQuestionToolUseIds } from '../utils/question-answers'
-import { toolDebug, toolDebugEnabled } from './debug'
 import { supersedeDraft } from './draft-state'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 import {
@@ -49,18 +38,32 @@ import {
   applyTasksSnapshot,
   dismissSubagent,
   reapplyDismissed,
-  sweepRunningChildCalls,
-  updateSidechainIndexMirror,
 } from './sidechain-index'
 import {
   applyPermissionRequest,
   applyPermissionResolved,
-  updateToolIndexMirror,
 } from './tool-index'
+import {
+  sweepAtTurnEnd,
+} from './turn-status'
+import {
+  updateIndexesMirror,
+  drainPendingResults,
+  rebuildIndexesFromMessages,
+  pruneIndexesToLive,
+  collectLiveToolUseIds,
+} from './index-pipeline'
 // Re-export reapplyDismissed so the existing importer (`reducer.test.ts`)
 // keeps resolving without a 4th-file edit. The canonical definition lives in
 // sidechain-index.ts.
 export { reapplyDismissed } from './sidechain-index'
+// Re-export rebuildIndexesFromMessages (index-pipeline owner) and
+// settleStaleLiveSubagents (turn-status owner) so the existing importers
+// (`reducer.test.ts`, `sidechain-index.test.ts`, `skill-index.test.ts`,
+// `tool-status.test.ts`) keep resolving without per-file edits.
+export { rebuildIndexesFromMessages } from './index-pipeline'
+export { settleStaleLiveSubagents } from './turn-status'
+
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
@@ -1479,70 +1482,6 @@ function rememberPendingConsumed(
   return next
 }
 
-/** Union of every tool_use_id referenced by `items` — both the tool_use
- *  (assistant) and tool_result (user) sides. Used to prune the toolUseId-keyed
- *  lifecycle maps to live keys after a front-trim. */
-function collectLiveToolUseIds(items: ServerMirror['items']): Set<string> {
-  const live = new Set<string>()
-  for (const it of items) {
-    const m = it.msg
-    for (const id of getToolUseStarts(m)) live.add(id)
-    // Subagent/Workflow tool_uses are excluded from getToolUseStarts
-    // (TOOL_STATUS_EXCLUDE — they own their lifecycle maps). Their ids must
-    // still join the live set so those maps can be pruned alongside the rest.
-    // Skill is NOT in TOOL_STATUS_EXCLUDE (its generic tool_result suppression
-    // is load-bearing — see the ReportFindings note in normalize.ts), but
-    // getSkillStarts is listed explicitly so a future exclusion can't silently
-    // drop activeSkills keys from this set.
-    for (const sub of getSubagentStarts(m)) live.add(sub.toolUseId)
-    for (const wf of getWorkflowStarts(m)) live.add(wf.toolUseId)
-    for (const sk of getSkillStarts(m)) live.add(sk.toolUseId)
-    for (const id of getPlanToolUseIds(m)) live.add(id)
-    for (const id of getQuestionToolUseIds(m)) live.add(id)
-    for (const id of getToolResultIds(m)) live.add(id)
-  }
-  return live
-}
-
-/** Return a Map filtered to keys present in `live`, reusing the original
- *  reference when nothing is dropped (keeps selector identity stable). */
-function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<string, V> {
-  let dropped = false
-  for (const key of map.keys()) {
-    if (!live.has(key)) { dropped = true; break }
-  }
-  if (!dropped) return map
-  const next = new Map<string, V>()
-  for (const [key, value] of map) {
-    if (live.has(key)) next.set(key, value)
-  }
-  return next
-}
-
-/** Like pruneMapToLive, but NEVER drops a record whose lifecycle status is
- *  still in-flight (`running`/`background`/`pending`) — even when its owner
- *  tool_use frame has been front-trimmed out of `items`. Dropping those would
- *  hide live work from the WorkingBubble pill / Waiting gate mid-flight
- *  (a busy tab can trim past an Agent's tool_use while the subagent is still
- *  running). Settled rows (done/interrupted/dismissed/…) are pruned normally. */
-function pruneSettledToLive<V extends { status: string }>(
-  map: Map<string, V>,
-  live: Set<string>,
-): Map<string, V> {
-  const isInFlight = (s: string) =>
-    s === 'running' || s === 'background' || s === 'pending'
-  let dropped = false
-  for (const [key, value] of map) {
-    if (!live.has(key) && !isInFlight(value.status)) { dropped = true; break }
-  }
-  if (!dropped) return map
-  const next = new Map<string, V>()
-  for (const [key, value] of map) {
-    if (live.has(key) || isInFlight(value.status)) next.set(key, value)
-  }
-  return next
-}
-
 /** Drop the oldest items/messages once the in-memory transcript exceeds
  *  MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK, bringing it back down to ~CAP.
  *
@@ -1601,23 +1540,17 @@ function trimFront(state: SessionState): SessionState {
     trimmedSeqs.length > 0
       ? evictSeqs(mirror.window, trimmedSeqs, { tombstone: false })
       : mirror.window
+  // Unified index-map pruning (index-pipeline.ts): soft-prune the sidechain
+  // maps so in-flight records survive a front-trim.
+  const pruned = pruneIndexesToLive(mirror, live, retained)
   return withMirror(state, {
-    ...mirror,
+    ...pruned,
     items,
     messages,
     window,
     // Rescan the retained window (once per MEMORY_TRIM_SLACK appends): the
     // Enter that set the current value may be among the dropped frames.
     activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
-    toolStatus: pruneMapToLive(mirror.toolStatus, live),
-    toolResults: pruneMapToLive(mirror.toolResults, live),
-    pendingResults: prunePendingResults(mirror.pendingResults, retained),
-    planStatus: pruneMapToLive(mirror.planStatus, live),
-    planContent: pruneMapToLive(mirror.planContent, live),
-    questionAnswers: pruneMapToLive(mirror.questionAnswers, live),
-    activeSubagents: pruneSettledToLive(mirror.activeSubagents, live),
-    activeWorkflows: pruneSettledToLive(mirror.activeWorkflows, live),
-    activeSkills: pruneSettledToLive(mirror.activeSkills, live),
   })
 }
 
@@ -1671,237 +1604,19 @@ function evictMessages(state: SessionState, uuids: string[]): SessionState {
   }
   const live = collectLiveToolUseIds(items)
   const retained = new Set(items.map((it) => it.id))
+  // Unified index-map pruning (index-pipeline.ts) with HARD sidechain prune:
+  // a retracted leg's records must go even if they were still in-flight — the
+  // frames that owned them no longer exist (unlike trimFront's soft sidechain
+  // prune, which preserves in-flight records).
+  const pruned = pruneIndexesToLive(mirror, live, retained, { hardSidechain: true })
   return withMirror(state, {
-    ...mirror,
+    ...pruned,
     items,
     messages,
     window,
     activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
     pendingConsumedMessages,
-    toolStatus: pruneMapToLive(mirror.toolStatus, live),
-    toolResults: pruneMapToLive(mirror.toolResults, live),
-    pendingResults: prunePendingResults(mirror.pendingResults, retained),
-    planStatus: pruneMapToLive(mirror.planStatus, live),
-    planContent: pruneMapToLive(mirror.planContent, live),
-    questionAnswers: pruneMapToLive(mirror.questionAnswers, live),
-    // Hard prune (unlike trimFront): a retracted leg's records must go even if
-    // they were still in-flight — the frames that owned them no longer exist.
-    activeSubagents: pruneMapToLive(mirror.activeSubagents, live),
-    activeWorkflows: pruneMapToLive(mirror.activeWorkflows, live),
-    activeSkills: pruneMapToLive(mirror.activeSkills, live),
   })
-}
-
-/** Turn-end sweep: flip still-running tools to 'error', still-running
- *  subagents to 'interrupted', still-background subagents to 'pending',
- *  and still-running workflows to 'interrupted'. Called from applyMessage
- *  (on each `result` frame — the live path) and from replayReplace (once
- *  after replay — because the CLI transcript has no `result` frames, so the
- *  per-turn sweep never fires during disk-loaded replay; this one call
- *  catches all unswept records at once).
- *
- *  Identity-stable: returns the same mirror reference when nothing needed
- *  sweeping (clone-on-write per Map). */
-/** Client-side safety-net timeout for stranded live subagent records.
- *
- *  Covers `running` / `background` / `pending` — every status that keeps a row
- *  in the WorkingBubble's subagent pill. A live record is normally cleared by
- *  its completion signal (the Agent tool_result for sync agents; launch-ack is
- *  skipped and task_notification / terminal TASKS_SNAPSHOT settle async ones).
- *  When that signal is lost (server restart cleared the watcher map, WS gap
- *  plus the 50-cap terminal-task eviction, a refresh that rebuilt the record
- *  from a cached launch-ack whose task is already gone) the record strands and
- *  SubagentSwarm.oldestStart paints a multi-dozen-hour timer off its historical
- *  `startedAt`.
- *
- *  Generous (30 min) and RECOVERABLE: a late real completion still overrides
- *  (the task_notification completion branch accepts 'interrupted'). Fires only
- *  when `endedAt ?? startedAt` is older than the threshold — a still-working
- *  subagent advances `endedAt` via its child frames, so it is never
- *  false-stopped. The one residual risk (mid-inference with no child frames
- *  for >30 min) is rare and recoverable.
- *
- *  `liveBgToolUseIds` (a non-terminal `isBackgrounded` task still tracking the
- *  id) suppresses the net: the server watcher is provably still polling, so a
- *  legitimately long background subagent must not flap interrupted↔done. */
-const PENDING_TIMEOUT_MS = 30 * 60 * 1000
-
-/** Plausibility floor: a real server-stamped receivedAt is always post-2001
- *  epoch ms (> 1e12). A value below that is a non-epoch sentinel (corrupt
- *  stamp / test fixture) — the safety net must not treat 1970-era values as
- *  "30 min stale". */
-const EPOCH_PLAUSIBILITY_FLOOR = 1_000_000_000_000
-
-function isStaleLiveSubagent(
-  sub: ActiveSubagent,
-  now: number,
-  includeRunning: boolean,
-): boolean {
-  if (sub.status === 'background' || sub.status === 'pending') {
-    // fall through to the staleness check
-  } else if (includeRunning && sub.status === 'running') {
-    // fall through
-  } else {
-    return false
-  }
-  const lastActivity = sub.endedAt ?? sub.startedAt
-  if (typeof lastActivity !== 'number' || lastActivity < EPOCH_PLAUSIBILITY_FLOOR) return false
-  return now - lastActivity > PENDING_TIMEOUT_MS
-}
-
-/** Flip stale live subagent records to `interrupted`.
- *
- *  Defaults to `background`/`pending` only. `running` is excluded because a
- *  SYNC subagent's real output arrives as the Agent tool_result and that merge
- *  branch requires `status === 'running'` — settling first would swallow the
- *  report (the same guard TASKS_SNAPSHOT's settleStranded carries via
- *  `nextIsAsync === true`). Async `running` rows are settled by TASKS_SNAPSHOT
- *  (now that it reads `nextIsAsync`) and by the turn-end sweep's
- *  running→interrupted transition.
- *
- *  Used by the LS/IDB hydrate path (`SessionStore.hydrateFromCache` /
- *  `initIdb`) and by `sweepAtTurnEnd` — rebuild re-seeds every cached async
- *  `tool_use` as `running` with its historical `startedAt` and the launch-ack
- *  is skipped, so without a follow-up settle a refresh mid-turn resurrects a
- *  stranded `background`/`pending` row with a 38h-old `startedAt`.
- *
- *  `liveBgToolUseIds` suppresses the flip for ids a live backgrounded task
- *  still tracks. Identity-stable: same Map reference when nothing was stale. */
-export function settleStaleLiveSubagents(
-  mirror: ServerMirror,
-  opts?: { now?: number; liveBgToolUseIds?: ReadonlySet<string>; includeRunning?: boolean },
-): ServerMirror {
-  const now = opts?.now ?? Date.now()
-  const liveBg = opts?.liveBgToolUseIds
-  const includeRunning = opts?.includeRunning === true
-  let activeSubagents = mirror.activeSubagents
-  for (const [id, sub] of mirror.activeSubagents) {
-    if (!isStaleLiveSubagent(sub, now, includeRunning)) continue
-    if (liveBg?.has(id)) continue
-    if (activeSubagents === mirror.activeSubagents) {
-      activeSubagents = new Map(activeSubagents)
-    }
-    activeSubagents.set(id, {
-      ...sub,
-      status: 'interrupted',
-      childToolCalls: sweepRunningChildCalls(sub.childToolCalls),
-    })
-  }
-  if (activeSubagents === mirror.activeSubagents) return mirror
-  return { ...mirror, activeSubagents }
-}
-
-function sweepAtTurnEnd(mirror: ServerMirror): ServerMirror {
-  let toolStatus = mirror.toolStatus
-  let activeSubagents = mirror.activeSubagents
-  let activeWorkflows = mirror.activeWorkflows
-  let activeSkills = mirror.activeSkills
-
-  // toolStatus: running → error
-  const swept = toolDebugEnabled() ? [] as string[] : null
-  for (const [id, status] of toolStatus) {
-    if (status !== 'running') continue
-    if (toolStatus === mirror.toolStatus) toolStatus = new Map(toolStatus)
-    toolStatus.set(id, 'error')
-    if (swept) swept.push(id)
-  }
-  if (swept && swept.length > 0) {
-    toolDebug('SWEEP running→error at turn end', { ids: swept })
-  }
-
-  // D2-B 保险:ack 不再翻 background,a snapshot 先到/seed 后到的 live 后台
-  // 任务记录仍可能是 'running';turn-end 不得把它当 sync 孤儿 interrupt。
-  const liveBgToolUseIds = new Set<string>()
-  for (const t of mirror.tasks) {
-    if (!t.toolUseId) continue
-    const term = isTerminalTaskStatus(t.status)
-    if (!term && t.isBackgrounded === true) liveBgToolUseIds.add(t.toolUseId)
-  }
-
-  // subagents: first drop stranded background/pending records (see
-  // PENDING_TIMEOUT_MS / settleStaleLiveSubagents), then running (sync orphan)
-  // → interrupted; background (async, still working) → pending. Completed
-  // records survive.
-  //
-  // Stale-settle runs FIRST so a `background` record that went quiet 38h ago
-  // (launch-ack skipped, task evicted from the 50-cap terminal list, watcher
-  // gone) is interrupted immediately instead of being parked at `pending` and
-  // relying on a later sweep. `liveBgToolUseIds` still suppresses it for ids a
-  // live backgrounded task tracks — see the helper. `running` is left to the
-  // transitions below (and TASKS_SNAPSHOT's nextIsAsync settle) so a sync
-  // subagent's tool_result can still merge.
-  const staleSettled = settleStaleLiveSubagents(
-    { ...mirror, activeSubagents },
-    { liveBgToolUseIds },
-  )
-  activeSubagents = staleSettled.activeSubagents
-
-  // Child-call sweep: a subagent record that SETTLES this turn (running →
-  // interrupted, the sync-orphan case) may still carry `running` child tool
-  // calls whose tool_result never landed — flip those to `error` so the
-  // card doesn't show a perpetual spinner on a dead subagent. A record that
-  // moves to `pending`/`background` is still live (its async work continues),
-  // so its running children are left alone — a later child tool_result still
-  // flips them. Mirrors the Workflow sweep flipping still-running children.
-  const sweepChildCalls = (sub: ActiveSubagent): ActiveSubagent['childToolCalls'] =>
-    sweepRunningChildCalls(sub.childToolCalls)
-  for (const [id, sub] of activeSubagents) {
-    if (sub.status === 'running') {
-      if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-      const next = liveBgToolUseIds.has(id)
-        ? { ...sub, status: 'pending' as const, endedAt: sub.endedAt ?? sub.startedAt }
-        // Sync orphan settles → sweep its still-running child calls to error.
-        : { ...sub, status: 'interrupted' as const, endedAt: sub.endedAt ?? sub.startedAt, childToolCalls: sweepChildCalls(sub) }
-      activeSubagents.set(id, next)
-    } else if (sub.status === 'background') {
-      if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-      activeSubagents.set(id, { ...sub, status: 'pending', endedAt: sub.endedAt ?? sub.startedAt })
-    }
-  }
-
-  // workflows: running → interrupted; flip still-running children too.
-  for (const [id, wf] of activeWorkflows) {
-    const runningChildren = wf.childAgents.some((c) => c.status === 'running')
-    if (wf.status === 'running' || runningChildren) {
-      if (activeWorkflows === mirror.activeWorkflows) activeWorkflows = new Map(activeWorkflows)
-      activeWorkflows.set(id, {
-        ...wf,
-        status: wf.status === 'running' ? 'interrupted' : wf.status,
-        endedAt: wf.endedAt ?? wf.startedAt,
-        childAgents: wf.childAgents.map((c) =>
-          c.status === 'running'
-            ? { ...c, status: 'interrupted' as const, endedAt: c.endedAt ?? c.startedAt }
-            : c,
-        ),
-      })
-    }
-  }
-
-  // skills: running → interrupted; flip still-running child calls too. Only a
-  // safety net — a skill's tool_result lands on the calling thread and settles
-  // the record through the normal path. This catches the turn that ends without
-  // one (interrupt, crash, evicted frame) so the card can't spin forever.
-  for (const [id, sk] of activeSkills) {
-    const sweptCalls = sweepRunningChildCalls(sk.childCalls)
-    if (sk.status !== 'running' && sweptCalls === sk.childCalls) continue
-    if (activeSkills === mirror.activeSkills) activeSkills = new Map(activeSkills)
-    activeSkills.set(id, {
-      ...sk,
-      status: sk.status === 'running' ? 'interrupted' : sk.status,
-      endedAt: sk.endedAt ?? sk.startedAt,
-      childCalls: sweptCalls ?? sk.childCalls,
-    })
-  }
-
-  if (
-    toolStatus === mirror.toolStatus &&
-    activeSubagents === mirror.activeSubagents &&
-    activeWorkflows === mirror.activeWorkflows &&
-    activeSkills === mirror.activeSkills
-  ) {
-    return mirror
-  }
-  return { ...mirror, toolStatus, activeSubagents, activeWorkflows, activeSkills }
 }
 
 function applyMessage(state: SessionState, message: SdkMessage): SessionState {
@@ -2130,213 +1845,11 @@ function updateTranscriptMirror(mirror: ServerMirror, message: SdkMessage): Serv
   }
 }
 
-/** Replay a list of cached messages through `updateIndexes()` to
- *  reconstruct the lifecycle index maps (`toolStatus`, `planStatus`,
- *  `planContent`, `questionAnswers`, `activeSubagents`).
- *
- *  Used by `SessionStore` on hydration: only `messages`/`items` are
- *  persisted to localStorage (the indexes are derived state). Without
- *  this rebuild, every cached tool_use card would render the default
- *  "running" badge forever — `useToolStatus` falls back to 'running'
- *  for any toolUseId not in the map, and the seeding step that puts it
- *  there only runs on live `MESSAGE` actions, not on hydrate. The
- *  symptom we hit was older Read/Grep/Bash cards stuck on the spinner
- *  after a page reload even though the conversation had moved on.
- *
- *  We deliberately bypass `updateTranscript` — the items array is
- *  already populated from the cache; we only need the index side
- *  effects. Calling `applyMessage` here would double-append items.
- *
- *  Note: skips `liveTurn` and `pendingUserMessageIds` work too, which is
- *  fine — those are ephemeral and re-derived from the live stream. */
-export function rebuildIndexesFromMessages(
-  state: SessionState,
-  messages: readonly SdkMessage[],
-): SessionState {
-  let mirror = state.mirror
-  for (const message of messages) {
-    mirror = updateIndexesMirror(mirror, message)
-  }
-  let next = withMirror(state, mirror)
-  // Re-apply client-side dismissals BEFORE drainPendingResults: the rebuild
-  // re-seeds dismissed records as 'running' (the stream has no record of the
-  // dismiss), and a parked task-notification for a trimmed-then-re-seeded id
-  // would be re-applied by drainPendingResults (flipping running→done) before
-  // reapplyDismissed could flip it to 'dismissed'. The task-notification
-  // branch excludes 'dismissed', so applying first means drain sees
-  // 'dismissed' and skips the flip. Covers the trim→page-back dismissal
-  // regression: trimFront prunes a dismissed record (not in-flight), then a
-  // head page re-seeds it as 'running'; reapplyDismissed flips it back.
-  // Idempotent.
-  next = reapplyDismissed(next)
-  // After the whole batch: settle any result whose tool_use arrived in it
-  // (out-of-order parking — see ServerMirror.pendingResults). Deferring to the
-  // batch boundary lets a sidechain's child frames merge into the record
-  // BEFORE its result settles it, so the drill-in detail isn't lost.
-  next = withMirror(next, drainPendingResults(next.mirror))
-  return next
-}
-
-/** Hard cap on `pendingResults`. A genuinely orphaned id (the tool_use was
- *  evicted, or never existed — e.g. an EnterPlanMode result whose id owns no
- *  lifecycle map) can never be paired, so without a bound it would linger for
- *  the life of the session. Real orphan bursts are tiny (one per ring-boundary
- *  tool call); this is pure insurance. Maps keep insertion order, so eviction
- *  drops the oldest. */
-const PENDING_RESULTS_CAP = 256
-
-/** Stable key for a parked completion-signal message. The uuid is the natural
- *  key (and what a replay re-delivers); a uuid-less frame is rare, so fall back
- *  to a content-derived key that still dedups repeated re-applications. */
-function pendingResultKey(message: SdkMessage, ownerIds: readonly string[]): string {
-  if (typeof message.uuid === 'string' && message.uuid.length > 0) return message.uuid
-  const at = typeof message.receivedAt === 'number' ? message.receivedAt : ''
-  return `ids:${ownerIds.join(',')}:${at}`
-}
-
-/** The tool_use_ids a message can SETTLE. Two carriers:
- *   - a tool_result's owner ids (`getToolResultIds`);
- *   - the Agent tool_use_id a task-notification targets (SDK `system` frame or
- *     harness `<task-notification>` user injection).
- *  Empty for anything that settles no indexed record (a plain prompt, an
- *  unrelated system frame) — those are never parked. This is the "who does
- *  this message belong to" set the park logic keys on. */
-function completionOwnerIds(message: SdkMessage): string[] {
-  const resultIds = getToolResultIds(message)
-  if (resultIds.length > 0) return resultIds
-  if (message.type !== 'system' && message.type !== 'user') return []
-  const target = parseTaskNotification(message)?.toolUseId
-  return target ? [target] : []
-}
-
-/** Does some lifecycle map already own this tool_use id? If so, a tool_result
- *  for it is paired (or its completion branch will handle it) and must NOT be
- *  parked. Covers every map a tool_result can settle: generic tools
- *  (`toolStatus`), plans (`planStatus`), questions (`questionAnswers`), and the
- *  three sidechain owners (`activeSubagents` / `activeWorkflows` /
- *  `activeSkills`). */
-function resultOwnerKnown(mirror: ServerMirror, id: string): boolean {
-  return (
-    mirror.toolStatus.has(id) ||
-    mirror.planStatus.has(id) ||
-    mirror.questionAnswers.has(id) ||
-    mirror.activeSubagents.has(id) ||
-    mirror.activeWorkflows.has(id) ||
-    mirror.activeSkills.has(id)
-  )
-}
-
-/** Re-apply every parked completion-signal message through the index branches.
- *  Called at the end of a batch fold (and after each live message) — by then
- *  any tool_use the batch carried has been seeded, so a parked signal whose
- *  owner just arrived settles here. `updateIndexesMirror` also drops a parked
- *  entry once every id it carries is known, so this loop both settles and
- *  unparks. Identity-stable when nothing is parked (the common case) or nothing
- *  changed. */
-function drainPendingResults(mirror: ServerMirror): ServerMirror {
-  if (mirror.pendingResults.size === 0) return mirror
-  let next = mirror
-  // Snapshot the keys: a re-application may add or remove parked entries.
-  for (const key of Array.from(mirror.pendingResults.keys())) {
-    const parked = next.pendingResults.get(key)
-    if (!parked) continue
-    next = updateIndexesMirror(next, parked)
-  }
-  return next
-}
-
-/** Drop parked results whose result message is no longer in the transcript
- *  (front-trim / refusal-fallback eviction). Without this an evicted result
- *  could still be re-applied by a later drain and wrongly settle a tool_use
- *  that was NOT evicted. Keeps uuid-less entries (nothing to correlate). */
-function prunePendingResults(
-  pending: Map<string, SdkMessage>,
-  retainedUuids: ReadonlySet<string>,
-): Map<string, SdkMessage> {
-  if (pending.size === 0) return pending
-  let next: Map<string, SdkMessage> | null = null
-  for (const [key, msg] of pending) {
-    const uuid = typeof msg.uuid === 'string' ? msg.uuid : null
-    if (uuid == null || retainedUuids.has(uuid)) continue
-    if (!next) next = new Map(pending)
-    next.delete(key)
-  }
-  return next ?? pending
-}
-
-/** Is this completion signal aimed at a sidechain CHILD row — a nested row of
- *  an Agent/Workflow/Skill record rather than one of the six top-level
- *  lifecycle maps? Main-thread results carry `parent_tool_use_id: null`
- *  (verified in server/session-pump.ts); only subagent-internal hops carry a
- *  non-null parent. Child ids never enter those maps, so parking one would
- *  leak forever (and evict real orphans via the cap). Its own branch already
- *  settles it in-order, and `sweepRunningChildCalls` covers a stranded one.
- *  Returns false when the parent record (or the child row) isn't seeded yet —
- *  then it IS parked, and a later drain re-checks once the row exists. */
-function resultIsSidechainChild(
-  mirror: ServerMirror,
-  message: SdkMessage,
-  ownerIds: readonly string[],
-): boolean {
-  const parentId = typeof message.parent_tool_use_id === 'string' ? message.parent_tool_use_id : ''
-  if (!parentId) return false
-  const hasChild = (children: ReadonlyArray<{ toolUseId: string }> | undefined): boolean =>
-    children != null && children.some((c) => ownerIds.includes(c.toolUseId))
-  if (hasChild(mirror.activeSubagents.get(parentId)?.childToolCalls)) return true
-  if (hasChild(mirror.activeWorkflows.get(parentId)?.childAgents)) return true
-  if (hasChild(mirror.activeSkills.get(parentId)?.childCalls)) return true
-  return false
-}
-
-function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
-  // ── Tool / plan / question folds (delegated) ───────────────────────────
-  // Delegated to tool-index.ts: the generic tool status seed/flip, the
-  // toolResults payload capture, the planStatus seed/flip, the planContent
-  // extraction, and the questionAnswers seed/parse. Runs FIRST so the
-  // sidechain fold below sees the updated tool/plan/question maps
-  // (resultOwnerKnown reads them when deciding whether to park).
-  const afterTool = updateToolIndexMirror(mirror, message)
-
-  // ── Sidechain folds (Subagent / Workflow / Skill) ──────────────────────
-  // Delegated to sidechain-index.ts: the subagent / workflow / skill seed /
-  // result / child folds, plus the task-notification completion signal.
-  // Runs AFTER the tool/plan/question work so the order-insensitivity
-  // parking below sees the updated sidechain maps (resultOwnerKnown and
-  // resultIsSidechainChild read all six lifecycle maps).
-  const nextMirror = updateSidechainIndexMirror(afterTool, message)
-
-  // ── Order-insensitivity: park orphan completion signals ────────────────
-  // The branches above are a fold over ARRIVAL order: a tool_result (or a
-  // task-notification) can only settle a tool_use that was applied before it.
-  // Out-of-order ingress (tail-first replay, disk paging, a replay merge that
-  // drops the overlap) can land the signal first, so the later tool_use would
-  // seed 'running' with nothing left to flip it. Park every completion signal
-  // whose owning tool_use is not yet known; drainPendingResults re-applies it
-  // through these same branches once the tool_use lands.
-  const ownerIds = completionOwnerIds(message)
-  if (ownerIds.length === 0) return nextMirror
-  const parked = nextMirror.pendingResults
-  const key = pendingResultKey(message, ownerIds)
-  // A signal must NOT be parked once it is "settled": either a sidechain
-  // child's result (owned by its parent record's child list) or every id it
-  // carries is owned by a top-level lifecycle map (the common in-order case).
-  const settled =
-    resultIsSidechainChild(nextMirror, message, ownerIds) ||
-    ownerIds.every((id) => resultOwnerKnown(nextMirror, id))
-  if (settled) {
-    // If an earlier out-of-order pass parked this same message, unpark it now.
-    if (!parked.has(key)) return nextMirror
-    const pendingResults = new Map(parked)
-    pendingResults.delete(key)
-    return { ...nextMirror, pendingResults }
-  }
-  if (parked.has(key)) return nextMirror
-  const pendingResults = new Map(parked)
-  pendingResults.set(key, message)
-  while (pendingResults.size > PENDING_RESULTS_CAP) {
-    const oldest = pendingResults.keys().next().value
-    if (oldest === undefined) break
-    pendingResults.delete(oldest)
-  }
-  return { ...nextMirror, pendingResults }
-}
+// `rebuildIndexesFromMessages`, `updateIndexesMirror`, `drainPendingResults`,
+// `prunePendingResults`, `pruneMapToLive`, `pruneSettledToLive`,
+// `collectLiveToolUseIds`, and the parking helpers (`pendingResultKey`,
+// `completionOwnerIds`, `resultOwnerKnown`, `resultIsSidechainChild`,
+// `PENDING_RESULTS_CAP`) moved to index-pipeline.ts (the index-pipeline owner).
+// `sweepAtTurnEnd` and `settleStaleLiveSubagents` (plus `isStaleLiveSubagent`,
+// `PENDING_TIMEOUT_MS`, `EPOCH_PLAUSIBILITY_FLOOR`) moved to turn-status.ts.
+// Imported at the top and re-exported for existing importers.

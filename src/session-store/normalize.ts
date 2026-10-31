@@ -1,4 +1,4 @@
-import type { Block, SdkMessage, TaskRecordUi } from '../types'
+import type { Block, SdkMessage } from '../types'
 import type {
   ActiveSubagent,
   ActiveWorktree,
@@ -15,7 +15,6 @@ import { randomId } from '../utils/uuid'
 import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
-import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import {
   isTaskNotificationUserMessage,
   normalizeTaskStatus,
@@ -508,71 +507,11 @@ export function autoTitleDescription(text: string, full: string): string {
   return src.trim().slice(0, 300)
 }
 
-/** True when the WorkingBubble should stay mounted in its "Waiting..." state:
- *  the parent turn has ended but work is still in flight. `runningCount` is the
- *  authoritative task-store count of running background tasks (already filtered
- *  to non-terminal, non-ambient, non-skipTranscript — see Chat.tsx);
- *  `hasTranscriptBackground` covers the transcript-derived pending/background
- *  subagent chips. Either one keeps the bubble alive. Gated on `!terminated`: a
- *  dead session will never receive a completion signal, so an eternal Waiting
- *  would be a dead state. */
-export function computeWaiting(args: {
-  turnActive: boolean
-  terminated: boolean
-  runningCount: number
-  hasTranscriptBackground: boolean
-}): boolean {
-  return !args.turnActive && !args.terminated && (args.runningCount > 0 || args.hasTranscriptBackground)
-}
-
-/** Whether a turn is live for layout purposes: the server reports it working,
- *  the optimistic send bridge is still armed, or the SDK is mid-stream (an
- *  auto-continuation turn — e.g. the model processing a background subagent's
- *  task-notification after the parent turn ended).
- *
- *  Gated as a WHOLE on `!terminated`. `activePhase` is only cleared by a result
- *  frame, so a crashed/killed subprocess that never emits one would otherwise
- *  leave it non-null and stick the WorkingBubble on a dead session; and the
- *  bridge outlives termination by up to its 30s safety net, which would keep
- *  `turnActive` true — and the bubble in its ACTIVE state — on a dead session.
- *  Gating the whole predicate makes "no turnActive on a terminated session"
- *  true BY CONSTRUCTION, rather than depending on the bridge's own clearing
- *  effect landing first. */
-export function computeTurnActive(args: {
-  working: boolean
-  pendingTurnSince: number | null
-  hasActivePhase: boolean
-  terminated: boolean
-}): boolean {
-  return !args.terminated
-    && (args.working || args.pendingTurnSince != null || args.hasActivePhase)
-}
-
-/** Count a task map into the two activity numbers `useSessionTaskCounts`
- *  publishes: `all` = every non-terminal task (ambient housekeeping included),
- *  `indicator` = the subset that counts as activity (not skipTranscript /
- *  ambient). Both come from ONE pass, with `indicator++` gated on a subset of
- *  the iterations that bump `all` — which is what makes `indicator <= all`
- *  STRUCTURAL rather than merely intended, so `indicator > 0` implies
- *  `all > 0`. That implication is load-bearing: the WorkingBubble mount gate
- *  (shouldMountWorkingBubble) carries no separate `computeWaiting` disjunct
- *  precisely because of it.
- *
- *  Terminal statuses come from the canonical shared list (shared/tasks.ts)
- *  rather than a local literal, so this count cannot drift from the server's.
- *  Every client-side terminal check now reads that same list (TasksPanel, the
- *  reducer and this counting rule) — the copies these notes used to warn about
- *  are gone, so a new terminal status is a one-place change. */
-export function countTaskActivity(tasks: Iterable<TaskRecordUi>): { all: number; indicator: number } {
-  let all = 0
-  let indicator = 0
-  for (const t of tasks) {
-    if (isTerminalTaskStatus(t.status)) continue
-    all++
-    if (!t.skipTranscript && !t.ambient) indicator++
-  }
-  return { all, indicator }
-}
+// `computeWaiting` / `computeTurnActive` / `countTaskActivity` moved to
+// turn-status.ts (the turn-status owner — see the reducer-state-owners
+// design). Re-exported here so existing importers (`./normalize`) keep
+// resolving without a per-file edit.
+export { computeWaiting, computeTurnActive, countTaskActivity } from './turn-status'
 
 // `hasTranscriptBackground` lives in sidechain-index.ts (it is a sidechain-
 // lifecycle predicate reading Subagent status). Importers bring it directly
