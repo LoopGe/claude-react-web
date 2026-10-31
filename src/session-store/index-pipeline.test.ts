@@ -75,6 +75,24 @@ function toolResult(toolUseId: string, opts: { isError?: boolean; content?: unkn
   }
 }
 
+/** SDK system frame carrying a task-notification completion signal. */
+function taskNotification(
+  toolUseId: string,
+  uuid: string,
+  status: string = 'completed',
+  receivedAt = 3_000,
+): SdkMessage {
+  return {
+    type: 'system',
+    subtype: 'task_notification',
+    uuid,
+    receivedAt,
+    tool_use_id: toolUseId,
+    status,
+    summary: 'task done',
+  } as unknown as SdkMessage
+}
+
 const fresh = (): ServerMirror => createInitialServerMirror()
 const freshState = (): SessionState => createInitialSessionState('s1')
 
@@ -410,5 +428,43 @@ describe('rebuildIndexesFromMessages', () => {
   it('is identity-stable when rebuilding over an empty batch', () => {
     const s = freshState()
     expect(rebuildIndexesFromMessages(s, [])).toBe(s)
+  })
+
+  it('reapplyDismissed runs BEFORE drain: a parked task-notification cannot flip a dismissed record to done', () => {
+    // The ordering regression: rebuildIndexesFromMessages folds a batch that
+    // re-seeds a dismissed subagent as 'running' (the stream has no record of
+    // the dismiss) AND carries a parked task-notification for the same id
+    // (out-of-order: notification arrived before the tool_use was seeded).
+    // reapplyDismissed MUST run before drainPendingResults so the record is
+    // 'dismissed' by the time the drain re-applies the notification — the
+    // task-notification completion branch excludes 'dismissed', so the
+    // notification is a no-op and the record stays dismissed. If drain ran
+    // first, the notification would flip 'running' → 'done', and
+    // reapplyDismissed cannot rescue a 'done' record (its flip set is only
+    // running/background/pending).
+    const agentToolUse = assistant([toolUse('Agent', 'tu_dis', { description: 'work' })], 'a-dis')
+    const notify = taskNotification('tu_dis', 'u-notify', 'completed')
+
+    // Seed the dismissed id on intent (simulating a prior dismiss that
+    // survived a refresh).
+    const f = freshState()
+    const seeded: SessionState = {
+      sessionId: 's1',
+      mirror: { ...f.mirror, replayReady: true },
+      intent: { ...f.intent, dismissedSubagents: new Set(['tu_dis']) },
+    }
+
+    // Messages in out-of-order: notification first (parks), tool_use second
+    // (seeds 'running'). The post-batch drain would settle the parked
+    // notification — but reapplyDismissed runs first.
+    const rebuilt = rebuildIndexesFromMessages(seeded, [notify, agentToolUse])
+
+    // The record is 'dismissed', NOT 'done' — the notification was blocked.
+    expect(rebuilt.mirror.activeSubagents.get('tu_dis')?.status).toBe('dismissed')
+    // The parked notification was drained (unparked) — the drain ran, it just
+    // couldn't flip the record.
+    expect(rebuilt.mirror.pendingResults.size).toBe(0)
+    // The dismissed id survived on intent.
+    expect(rebuilt.intent.dismissedSubagents.has('tu_dis')).toBe(true)
   })
 })

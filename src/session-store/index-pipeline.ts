@@ -259,13 +259,14 @@ export function pruneIndexesToLive(
 }
 
 // ── Pruning helpers ─────────────────────────────────────────────────────────
-// Moved from reducer.ts. Shared by pruneIndexesToLive (this module) and by
-// evictMessages (reducer.ts) which overrides the sidechain maps with a hard
-// prune after calling pruneIndexesToLive.
+// Moved from reducer.ts. Module-private: the only caller is
+// pruneIndexesToLive (this module). evictMessages (reducer.ts) selects the
+// hard-prune path via pruneIndexesToLive's `hardSidechain` option rather than
+// calling these directly.
 
 /** Return a Map filtered to keys present in `live`, reusing the original
  *  reference when nothing is dropped (keeps selector identity stable). */
-export function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<string, V> {
+function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<string, V> {
   let dropped = false
   for (const key of map.keys()) {
     if (!live.has(key)) { dropped = true; break }
@@ -284,7 +285,7 @@ export function pruneMapToLive<V>(map: Map<string, V>, live: Set<string>): Map<s
  *  hide live work from the WorkingBubble pill / Waiting gate mid-flight
  *  (a busy tab can trim past an Agent's tool_use while the subagent is still
  *  running). Settled rows (done/interrupted/dismissed/…) are pruned normally. */
-export function pruneSettledToLive<V extends { status: string }>(
+function pruneSettledToLive<V extends { status: string }>(
   map: Map<string, V>,
   live: Set<string>,
 ): Map<string, V> {
@@ -306,7 +307,7 @@ export function pruneSettledToLive<V extends { status: string }>(
  *  (front-trim / refusal-fallback eviction). Without this an evicted result
  *  could still be re-applied by a later drain and wrongly settle a tool_use
  *  that was NOT evicted. Keeps uuid-less entries (nothing to correlate). */
-export function prunePendingResults(
+function prunePendingResults(
   pending: Map<string, SdkMessage>,
   retainedUuids: ReadonlySet<string>,
 ): Map<string, SdkMessage> {
