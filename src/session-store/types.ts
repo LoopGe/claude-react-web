@@ -3,7 +3,6 @@ import type { ContextUsage } from '../types/context-usage'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { emptyWindow, type WindowState } from './seq-window'
 import type { DraftState } from './draft-state'
-import type { ActiveWorktree } from './normalize'
 
 export interface TranscriptItem {
   id: string
@@ -402,6 +401,24 @@ export interface LiveTurnState {
    *  char-estimate path off, and the FIRST real sample resets the window so
    *  the estimate→real switch cannot produce a level jump. */
   hasRealTokens: boolean
+}
+
+/** The agent is currently isolating work in a worktree opened by
+ *  EnterWorktree and not yet closed by ExitWorktree. `name` is the
+ *  worktree's name (from input.name, or the input.path basename when the
+ *  agent switched to an existing one); `enterMsgId` is the message uuid
+ *  that carried the Enter, so callers can anchor on the transition.
+ *
+ *  Owned by `types.ts` (moved here from `normalize.ts` to break the
+ *  type-only `types ↔ normalize` import cycle — `types.ts` no longer
+ *  imports from `normalize.ts`). The fold functions that PRODUCE this
+ *  value (`getActiveWorktree` / `foldActiveWorktree` /
+ *  `recomputeActiveWorktree` / `sameActiveWorktree`) still live in
+ *  `normalize.ts`; `normalize.ts` re-exports the type so existing
+ *  importers (`selectors.ts`) keep resolving. */
+export interface ActiveWorktree {
+  name: string
+  enterMsgId: string
 }
 
 /** Server-authored fields. Everything here is derived purely from WS frames

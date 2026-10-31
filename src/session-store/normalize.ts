@@ -1,6 +1,7 @@
 import type { Block, SdkMessage, TaskRecordUi } from '../types'
 import type {
   ActiveSubagent,
+  ActiveWorktree,
   PlanStatus,
   SkillRecord,
   SubagentChildCall,
@@ -134,7 +135,6 @@ export function isTrimBoundary(msg: SdkMessage): boolean {
 export function toTranscriptItem(
   msg: SdkMessage,
   prev: TranscriptItem | undefined,
-  cachedPlainText?: string | null,
 ): TranscriptItem | null {
   if (msg.type === 'stream_event') return null
   // `api_retry` is a TRANSIENT rate-limit-retry indicator routed to
@@ -194,15 +194,6 @@ export function toTranscriptItem(
   // either drop the spread (assign the fields explicitly) or re-run the
   // extraction for the new `msg`. countPromptOverlap additionally gates on
   // message type BEFORE reading this getter, for the same reason.
-  //
-  // `cachedPlainText` (string | null) short-circuits the pipeline when a
-  // caller already knows the answer. NOTE: no production caller passes it
-  // today — the v3 localStorage/IndexedDB transcript cache it was written for
-  // is gone (see legacy-transcript-cache.ts), and every reducer call site
-  // passes only (msg, prev). It is retained because a null still means "no
-  // extractable text" and must skip the pipeline, and because the tests pin
-  // that contract; `undefined` is the only value that falls through to a live
-  // recompute. Wire a real cache before relying on it being populated.
   let plainTextMemo: string | null | undefined
 
   const item: TranscriptItem = {
@@ -210,8 +201,7 @@ export function toTranscriptItem(
     msg,
     get plainText(): string | null {
       if (plainTextMemo === undefined) {
-        plainTextMemo =
-          cachedPlainText !== undefined ? cachedPlainText : extractMessagePlainText(msg)
+        plainTextMemo = extractMessagePlainText(msg)
       }
       return plainTextMemo
     },
@@ -301,13 +291,15 @@ export function topLevelUserPromptSignature(
 ): string | null {
   if (msg.type !== 'user') return null
   if (msg.parent_tool_use_id != null) return null
-  // A cached TranscriptItem already carries the exact value
-  // extractMessagePlainText would produce (toTranscriptItem computed it at
-  // ingest / hydrate). Reusing it skips the full unified markdown pipeline —
-  // splitReplayAgainstCache scans EVERY cached item on every replay, so this
-  // was O(items) markdown re-derivations per group switch (~300-400ms on a
-  // 700-message transcript). The value is byte-identical, so dedup semantics
-  // are unchanged.
+  // `cachedPlainText` is a LIVE parameter here (unlike the legacy shim removed
+  // from `toTranscriptItem`): the reducer's splitReplayAgainstCache path
+  // passes the cached TranscriptItem's already-computed `plainText` for every
+  // item it scans (reducer.ts), so the full unified markdown pipeline isn't
+  // re-run O(items) times per group switch (~300-400ms on a 700-message
+  // transcript). The value is byte-identical to what extractMessagePlainText
+  // would produce, so dedup semantics are unchanged. `undefined` is the only
+  // value that falls through to a live recompute; `null` means "no
+  // extractable text" and maps to the empty-string signature.
   if (cachedPlainText !== undefined) return cachedPlainText ?? ''
   // Empty string (image-only prompt with no text) is a valid signature: the
   // on-disk copy of the same prompt also extracts to '', so they still match.
@@ -741,15 +733,12 @@ export function getSubagentChildStarts(
   return { parentId, children }
 }
 
-/** The agent is currently isolating work in a worktree opened by
- *  EnterWorktree and not yet closed by ExitWorktree. `name` is the
- *  worktree's name (from input.name, or the input.path basename when the
- *  agent switched to an existing one); `enterMsgId` is the message uuid
- *  that carried the Enter, so callers can anchor on the transition. */
-export interface ActiveWorktree {
-  name: string
-  enterMsgId: string
-}
+// `ActiveWorktree` is now DEFINED in `types.ts` (moved to break the type-only
+// `types ↔ normalize` import cycle — `types.ts` no longer imports from this
+// module). Re-exported here so existing importers (`selectors.ts` imports
+// `type ActiveWorktree` from `./normalize`) keep resolving without a churn-
+// inducing extra-file edit; the canonical definition lives in `./types`.
+export type { ActiveWorktree }
 
 /** Fold a transcript's EnterWorktree/ExitWorktree tool_use calls into the
  *  "currently isolated in a worktree" state. Enter sets the active worktree,
