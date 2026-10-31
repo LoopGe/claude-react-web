@@ -26,9 +26,9 @@
  *  imports `message-pipeline`, and `message-pipeline` continues to import
  *  only the primitives it needs from here.
  *
- *  `prependMessages` is exported for the replay-merge path (Task 8) and
- *  for the reducer's `replayReplace` (until Task 8 extracts it), and for
- *  `window-bridge.windowPage`'s head-page path. It supports two dedup modes:
+ *  `prependMessages` is exported for the replay-merge path (`replay-merge.ts`,
+ *  Task 8) and for `window-bridge.windowPage`'s head-page path. It supports
+ *  two dedup modes:
  *    - `trustUuidDedup: true` — uuid-exact dedup for same-seq-space batches
  *      (tail-first replay backfill, WINDOW_PAGE at:'head'). The signature
  *      overlap check is skipped because the live stream and the REST page
@@ -402,7 +402,7 @@ function seqsForUuids(w: WindowState, uuids: ReadonlySet<string>): number[] {
 // `splitReplayAgainstCache`, `replayReplace`, `replaceStaleCachedMessages`,
 // `applyMidSlice`, `repairChronology`, `overlapAnchorUuid`,
 // `partitionNoOverlapByTime`, `promptSequencesEqual`, and the shape-compare
-// helpers stay in reducer.ts — they belong to the replay-merge owner (Task 8).
+// helpers live in replay-merge.ts (Task 8) — the replay-merge owner.
 
 // ── stampMessageConsumed / stampMessageSteered ──────────────────────────────
 //

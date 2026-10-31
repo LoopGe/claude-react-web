@@ -27,10 +27,17 @@
  *  consistent view. drain (step 7) only replays index-pipeline; it never
  *  calls full applyMessage (the design contract).
  *
- *  The reducer delegates `MESSAGE` here; the WINDOW_* handlers in
- *  transcript-log also call this function via the live ESM binding (the
- *  message-pipeline ↔ transcript-log cycle resolves at runtime — call sites
- *  never fire at module-init). replay-merge (Task 8) will call this directly.
+ *  Call sites (the actual DAG, acyclic at the value level):
+ *    - the reducer delegates `MESSAGE` here;
+ *    - `window-bridge` owns the WINDOW_* handlers and calls this for
+ *      freshly-windowed messages;
+ *    - `replay-merge` calls this directly for the newer slice and mid-slice
+ *      holes of a replay payload.
+ *  message-pipeline owns `applyMessage`; transcript-log owns the transcript
+ *  writes (prepend/trim/evict/stamp); window-bridge owns the WINDOW handlers
+ *  — the seam that breaks what would otherwise be a message-pipeline ↔
+ *  transcript-log value-import cycle (window-bridge imports both, neither
+ *  imports the other back).
  */
 
 import type { SdkMessage } from '../types'
@@ -59,9 +66,9 @@ import { clearSendingPlaceholders } from './user-message-lifecycle'
 /** Apply one streamed or replayed message to a session's state.
  *
  *  Order-pinned per the design spec (see module doc). The reducer's MESSAGE
- *  action delegates here; the WINDOW_* handlers in transcript-log call this
- *  via the live ESM binding for freshly-windowed messages; replay-merge
- *  (Task 8) will call this for the newer slice of a replay payload. */
+ *  action delegates here; `window-bridge`'s WINDOW_* handlers call this for
+ *  freshly-windowed messages; and `replay-merge` calls this for the newer
+ *  slice and mid-slice holes of a replay payload. */
 export function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   const mirror = state.mirror
   const messageUuid = typeof message.uuid === 'string' ? message.uuid : null
