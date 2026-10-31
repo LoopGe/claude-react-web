@@ -574,12 +574,10 @@ export function countTaskActivity(tasks: Iterable<TaskRecordUi>): { all: number;
   return { all, indicator }
 }
 
-// `hasTranscriptBackground` moved to sidechain-index.ts (it is a sidechain-
-// lifecycle predicate and belongs with the subagent record owner). Re-exported
-// here so existing importers (`SideChatDrawer.tsx` imports it from
-// `../session-store/normalize`) keep resolving without a churn-inducing
-// extra-file edit; the canonical definition lives in `./sidechain-index`.
-export { hasTranscriptBackground } from './sidechain-index'
+// `hasTranscriptBackground` lives in sidechain-index.ts (it is a sidechain-
+// lifecycle predicate reading Subagent status). Importers bring it directly
+// from `./sidechain-index` — there is no re-export here, so the
+// normalize ↔ sidechain-index dependency stays one-directional.
 
 export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
   if (msg.type !== 'assistant') return []
