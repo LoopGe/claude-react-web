@@ -11,23 +11,16 @@ import {
   withMirror,
 } from './types'
 import {
-  foldActiveWorktree,
-  isTrimBoundary,
   messageTouchesWorktree,
   msgTime,
   recomputeActiveWorktree,
   toTranscriptItem,
-  topLevelUserPromptSignature,
 } from './normalize'
 import { supersedeDraft } from './draft-state'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 import {
   bumpGeneration,
   emptyWindow,
-  evictSeqs,
-  liveAppend,
-  pageLoaded,
-  type WindowState,
 } from './seq-window'
 import {
   flushLiveTurn,
@@ -49,10 +42,16 @@ import {
 import {
   updateIndexesMirror,
   drainPendingResults,
-  rebuildIndexesFromMessages,
-  pruneIndexesToLive,
-  collectLiveToolUseIds,
 } from './index-pipeline'
+import {
+  evictMessages,
+  prependMessages,
+  trimFront,
+  updateTranscriptMirror,
+  windowEvict,
+  windowLive,
+  windowPage,
+} from './transcript-log'
 // Re-export reapplyDismissed so the existing importer (`reducer.test.ts`)
 // keeps resolving without a 4th-file edit. The canonical definition lives in
 // sidechain-index.ts.
@@ -63,6 +62,9 @@ export { reapplyDismissed } from './sidechain-index'
 // `tool-status.test.ts`) keep resolving without per-file edits.
 export { rebuildIndexesFromMessages } from './index-pipeline'
 export { settleStaleLiveSubagents } from './turn-status'
+// Re-export MEMORY_ITEM_CAP (transcript-log owner) so the existing importer
+// (`active-worktree.test.ts`) keeps resolving without a per-file edit.
+export { MEMORY_ITEM_CAP } from './transcript-log'
 
 
 export function reduceSessionState(state: SessionState, action: SessionAction): SessionState {
@@ -212,126 +214,6 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     default:
       return state
   }
-}
-
-// ── Seq window handlers (transcript-seq refactor, Task 7) ────────────────
-//
-// Every WINDOW_* action runs its pure seq-window operator first, then applies
-// the messages that are NEW to the window (freshly inserted seqs + pending
-// runs that just drained) to the ordered render log through the existing
-// applyMessage / prependMessages machinery. This keeps `mirror.messages` /
-// `mirror.items` in lockstep with the window by construction — the UI reducer
-// branches (subagent pairing, task folding, plan cards, permission state)
-// consume only the ordered log and stay seq-agnostic.
-
-/** Messages now held by `nw` but not by `prev`, ordered by seq. These are
- *  exactly the frames the transcript hasn't applied yet: a prev-window seq
- *  means applyMessage already ran for it; prev-pending seqs drained into
- *  `nw` are fresh (they were parked, never applied). */
-function freshWindowMessages(
-  prev: WindowState,
-  nw: WindowState,
-): Array<[number, SdkMessage]> {
-  const out: Array<[number, SdkMessage]> = []
-  for (const [seq, msg] of nw.window) {
-    if (!prev.window.has(seq)) out.push([seq, msg])
-  }
-  out.sort((a, b) => a[0] - b[0])
-  return out
-}
-
-/** WINDOW_LIVE: a seq-carrying live message frame. Contiguous seqs append
- *  at the tail; gapped seqs park in the window (hole exposed via snapshot)
- *  and are applied — in seq order — when the hole fills. The new window is
- *  attached BEFORE the fresh messages run so trimFront/eviction inside
- *  applyMessage sync the window they'll actually survive into. */
-function windowLive(
-  state: SessionState,
-  seq: number,
-  generation: number,
-  message: SdkMessage,
-): SessionState {
-  const prev = state.mirror.window
-  const nw = liveAppend(prev, seq, message, generation)
-  if (nw === prev) return state
-  let next = withMirror(state, { ...state.mirror, window: nw })
-  for (const [, msg] of freshWindowMessages(prev, nw)) {
-    next = applyMessage(next, msg)
-  }
-  return next
-}
-
-/** WINDOW_PAGE: a REST page from GET /sessions/:id/messages. Tail pages
- *  (the newest page, a reconnect catch-up, or a hole fill) append in seq
- *  order and flip replayReady — the tail page IS the transcript's initial
- *  paint in the seq protocol. Head pages prepend below oldestSeq via
- *  prependMessages (uuid dedup is exact: the REST page and the live stream
- *  share one seq space, so the prompt-signature overlap check is skipped —
- *  the same reasoning as tail-first backfill chunks' trustUuidDedup). */
-function windowPage(
-  state: SessionState,
-  action: Extract<SessionAction, { type: 'WINDOW_PAGE' }>,
-): SessionState {
-  const prev = state.mirror.window
-  const nw = pageLoaded(prev, {
-    at: action.at,
-    messages: action.messages,
-    hasMore: action.hasMore,
-    generation: action.generation,
-    headSeq: action.headSeq,
-    tombstones: action.tombstones,
-  })
-  if (nw === prev) return state
-  const fresh = freshWindowMessages(prev, nw)
-  let next = withMirror(state, { ...state.mirror, window: nw })
-  if (action.at === 'head') {
-    if (fresh.length === 0) return next
-    return prependMessages(
-      next,
-      fresh.map(([, msg]) => msg),
-      { trustUuidDedup: true },
-    )
-  }
-  for (const [, msg] of fresh) {
-    next = applyMessage(next, msg)
-  }
-  return withMirror(next, { ...next.mirror, replayReady: true })
-}
-
-/** WINDOW_EVICT: server tombstones by seq. Maps the seqs to their uuids
- *  (from the PRE-eviction window) and reuses evictMessages — which also
- *  syncs the window — so the ordered log and lifecycle-map pruning stay
- *  identical to the uuid-based path. */
-function windowEvict(state: SessionState, seqs: number[]): SessionState {
-  const prev = state.mirror.window
-  const nw = evictSeqs(prev, seqs)
-  if (nw === prev) return state
-  const uuids = new Set<string>()
-  for (const seq of seqs) {
-    const msg = prev.window.get(seq) ?? prev.pending.get(seq)
-    const u = msg ? (msg as { uuid?: unknown }).uuid : undefined
-    if (typeof u === 'string' && u.length > 0) uuids.add(u)
-  }
-  // Attach the evicted window FIRST: evictMessages' internal window sync
-  // (seqsForUuids + evictSeqs) then finds the seqs already deleted and
-  // no-ops, instead of computing a second window from `prev` that the
-  // overwrite below would discard. Its uuid pruning (items/messages,
-  // toolUseId lifecycle maps) still runs on the attached state.
-  let next = withMirror(state, { ...state.mirror, window: nw })
-  if (uuids.size > 0) next = evictMessages(next, Array.from(uuids))
-  // Recording tombstones can DRAIN parked frames: the interrupt/withdraw
-  // race lands the result (seq N+1) while the steer (seq N) is still
-  // missing — it parks — and the late messages-evicted [N] then tombstones
-  // the hole and moves the parked result into the window. Those drained
-  // frames are fresh (never applied — see freshWindowMessages) and MUST
-  // reach the ordered log, or a stranded `result` never clears liveTurn
-  // (the stuck WorkingBubble). Same attach-before-apply ordering as
-  // windowLive: applyMessage's internal trim/eviction must sync the
-  // window the frames actually survive into.
-  for (const [, msg] of freshWindowMessages(prev, nw)) {
-    next = applyMessage(next, msg)
-  }
-  return next
 }
 
 /** Keep-first uuid dedup over a REPLAY_REPLACE payload. A single
@@ -1091,134 +973,6 @@ function promptSequencesEqual(
   }
 }
 
-/** Prepend a chronological batch of older messages (loaded from disk on
- *  scroll-up) ahead of the current transcript.
- *
- *  Correctness notes:
- *   - Dedup by uuid: a message already present (e.g. the boundary message
- *     the frontend used as its paging cursor, or overlap after a reconnect)
- *     is skipped so we never render it twice.
- *   - Content dedup for TOP-LEVEL USER PROMPTS: these can't be deduped by
- *     uuid because the server mints a fresh uuid for the in-memory copy
- *     while the pump drops the SDK's echo, so the on-disk copy carries a
- *     different (SDK) uuid (see topLevelUserPromptSignature). Paging anchors
- *     on the first disk-stable item (assistant/system) and reads strictly
- *     before it, so the disk page's TRAILING prompt run is exactly the
- *     on-screen LEADING prompt run — the same logical messages. We match
- *     those two runs element-wise from the boundary inward and drop the
- *     overlap, so a genuinely-older but textually-identical prompt further
- *     back is still preserved.
- *   - We build TranscriptItems for the older batch in order, threading the
- *     `prev` item so compact-summary detection (which looks at the previous
- *     item) works within the batch. The last older item becomes `prev` for
- *     the FIRST existing item — but we deliberately do NOT recompute the
- *     existing items: their isCompactSummary was already settled when they
- *     first arrived, and the only cross-boundary case (an existing first
- *     item that is a user message immediately after a compact_boundary we
- *     just prepended) is vanishingly rare and self-heals on next replay.
- *   - Indexes (toolStatus/planStatus/…) are updated by running ONLY the
- *     older batch through updateIndexes — NOT a full rebuild. A full rebuild
- *     would clobber statuses that were set out-of-band (e.g. an ExitPlanMode
- *     plan flipped to 'approved' via PERMISSION_RESOLVED without a
- *     tool_result). The older batch's ids are disjoint from the live tail,
- *     so additive indexing is both sufficient and non-destructive. */
-function prependMessages(
-  state: SessionState,
-  older: SdkMessage[],
-  opts?: { trustUuidDedup?: boolean },
-): SessionState {
-  if (older.length === 0) return state
-  const mirror = state.mirror
-
-  const existingIds = new Set<string>()
-  for (const it of mirror.items) existingIds.add(it.id)
-
-  // How many trailing prompts of the incoming disk batch are the SAME
-  // logical messages as the leading prompts already on screen (the uuid
-  // boundary that uuid-dedup can't bridge — see the doc comment). Match the
-  // batch's trailing prompt run against the on-screen leading prompt run
-  // element-wise, from the boundary inward, by content signature.
-  // Skipped entirely for same-uuid-space batches (tail-first replay
-  // backfill / WINDOW_PAGE at:'head'): uuid dedup is exact there, and the
-  // signature check would false-drop a distinct older prompt whose text
-  // repeats across the chunk boundary.
-  const overlap = opts?.trustUuidDedup ? 0 : countPromptOverlap(older, mirror.items)
-  const batch = overlap > 0 ? older.slice(0, older.length - overlap) : older
-
-  const newItems: TranscriptItem[] = []
-  const newMessages: SdkMessage[] = []
-  let prev: TranscriptItem | undefined = undefined
-  for (const msg of batch) {
-    const uuid = typeof msg.uuid === 'string' ? msg.uuid : null
-    if (uuid && existingIds.has(uuid)) continue
-    const item = toTranscriptItem(msg, prev)
-    if (!item) continue
-    newItems.push(item)
-    newMessages.push(item.msg)
-    existingIds.add(item.id)
-    prev = item
-  }
-
-  if (newItems.length === 0) return state
-
-  const messages = [...newMessages, ...mirror.messages]
-  let next: SessionState = withMirror(state, {
-    ...mirror,
-    items: [...newItems, ...mirror.items],
-    messages,
-    // Older frames only decide the state when nothing after them touches a
-    // worktree — not knowable from the current value alone, so rescan.
-    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
-  })
-  // Additive index update over just the prepended batch.
-  next = rebuildIndexesFromMessages(next, newMessages)
-  return next
-}
-
-/** Count how many trailing top-level user prompts of an incoming disk page
- *  (`older`) are the same logical messages as the leading top-level prompts
- *  already on screen (`items`).
- *
- *  Paging anchors on the first disk-stable message (assistant/system) and
- *  reads strictly before it, so the user prompts shown ABOVE that anchor are
- *  re-returned at the END of the disk page — the prompt closest to the
- *  anchor is `older[last]` on disk and the last item of the on-screen
- *  leading run in memory. Those prompts carry different uuids on disk vs in
- *  memory (server-minted vs SDK), so we compare by content signature.
- *
- *  Both runs are anchored at the boundary and grow AWAY from it in opposite
- *  array directions, so we must align them boundary-first: find the length
- *  of the on-screen leading prompt run, then walk inward from the anchor —
- *  `older[last-n]` against `items[K-1-n]`. Stop at the first mismatch (or a
- *  non-prompt on the batch side), so an older but textually-identical prompt
- *  further back in history is never falsely dropped. */
-function countPromptOverlap(older: SdkMessage[], items: ServerMirror['items']): number {
-  // Length of the contiguous top-level-prompt run at the START of the
-  // on-screen transcript (i.e. the prompts sitting above the paging anchor).
-  //
-  // The type gate is checked BEFORE touching `.plainText`: plainText is a lazy
-  // getter (see toTranscriptItem) and reading it forces the markdown
-  // extraction. This loop's exit condition is precisely the first item that is
-  // NOT a top-level prompt — the one item we must never pay for — and passing
-  // `items[leadRun].plainText` as a plain argument would evaluate it first.
-  const isTopLevelPrompt = (m: SdkMessage) => m.type === 'user' && m.parent_tool_use_id == null
-  let leadRun = 0
-  while (leadRun < items.length && isTopLevelPrompt(items[leadRun]!.msg)) {
-    leadRun++
-  }
-  let n = 0
-  while (n < older.length && n < leadRun) {
-    const batchSig = topLevelUserPromptSignature(older[older.length - 1 - n])
-    if (batchSig == null) break // batch tail is no longer a top-level prompt
-    // items[leadRun - 1 - n] is within the leading run, so its signature is
-    // guaranteed non-null — only the content needs to match. Pass the cached
-    // plainText to skip re-extraction through the markdown pipeline.
-    if (batchSig !== topLevelUserPromptSignature(items[leadRun - 1 - n].msg, items[leadRun - 1 - n].plainText)) break
-    n++
-  }
-  return n
-}
-
 function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): SessionState {
   const mirror = state.mirror
   // Build the placeholder TranscriptItem. `prev` is the last RENDERED item —
@@ -1454,17 +1208,9 @@ function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: num
   })
 }
 
-// --- Memory bound: front-trim the in-memory transcript -----------------
-// The server's history ring is capped (historyCap = 500), but the client's
-// items/messages arrays grow unbounded as long as the WS keeps pushing — a
-// long autonomous-agent session can accumulate tens of thousands of frames.
-// We keep at most MEMORY_ITEM_CAP items in memory; trimmed messages remain
-// recoverable by scrolling up (loadOlder re-reads them from disk).
-export const MEMORY_ITEM_CAP = 1000
-// Hysteresis: only trim once we exceed CAP + SLACK, then drop back to CAP. So
-// trimming runs once every SLACK appends (not every message), keeping the
-// common append path allocation-free.
-const MEMORY_TRIM_SLACK = 256
+// `MEMORY_ITEM_CAP` and `MEMORY_TRIM_SLACK` moved to transcript-log.ts (the
+// transcript-log owner). The reducer re-exports MEMORY_ITEM_CAP from there so
+// existing importers (`active-worktree.test.ts`) keep resolving.
 const PENDING_CONSUMED_CAP = 64
 
 function rememberPendingConsumed(
@@ -1482,144 +1228,15 @@ function rememberPendingConsumed(
   return next
 }
 
-/** Drop the oldest items/messages once the in-memory transcript exceeds
- *  MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK, bringing it back down to ~CAP.
- *
- *  The cut point is snapped FORWARD to the first isTrimBoundary message so the
- *  new items[0] is both on-disk AND not a plain top-level user prompt. This
- *  matters for two downstream consumers:
- *    - loadOlder()'s first page anchors `beforeUuid` on items[0]. That uuid
- *      MUST exist on disk, or the server falls back to the newest page and
- *      reverse-paging silently stalls. isTrimBoundary guarantees a persisted
- *      frame — see its doc comment in normalize.ts.
- *    - countPromptOverlap() dedups the leading user-prompt run against an
- *      incoming disk page by content signature (uuids differ disk vs memory).
- *      A non-empty leading prompt run after a trim could resurface as
- *      duplicates on the next loadOlder; an empty run (overlap 0) cannot.
- *
- *  Snapping past a long sidechain (subagent) run can keep somewhat fewer than
- *  CAP — acceptable, and bounded because every real turn ends with a
- *  main-thread assistant frame.
- *
- *  The toolUseId-keyed lifecycle maps (toolStatus, toolResults, planStatus,
- *  planContent, questionAnswers, activeSubagents, activeWorkflows,
- *  activeSkills) are pruned to ids still referenced by the retained items so
- *  they don't leak. `activeSubagents` used to be skipped here on the belief
- *  that "it clears each result frame" — false: sweepAtTurnEnd only flips
- *  status, never deletes, so a long-lived tab accumulated every Agent launch
- *  it had ever seen and one stranded `running`/`pending` record made
- *  SubagentSwarm.oldestStart paint a multi-dozen-hour timer. */
-function trimFront(state: SessionState): SessionState {
-  const mirror = state.mirror
-  if (mirror.items.length <= MEMORY_ITEM_CAP + MEMORY_TRIM_SLACK) return state
-  const beforeLen = mirror.items.length
-  let cut = mirror.items.length - MEMORY_ITEM_CAP
-  // Snap forward to the first disk-persisted boundary at or after `cut`.
-  while (cut < mirror.items.length && !isTrimBoundary(mirror.items[cut].msg)) cut++
-  // No safe boundary in the trim zone (pathological — e.g. an unbroken run of
-  // plain prompts / sidechain frames). Skip this round rather than cut at an
-  // unsafe point that would break reverse-paging.
-  if (cut >= mirror.items.length) return state
-
-  const items = mirror.items.slice(cut)
-  const messages = mirror.messages.slice(cut)
-  console.warn(`[trimFront] Trimmed ${cut} items (${beforeLen} → ${items.length})`)
-  const live = collectLiveToolUseIds(items)
-  const retained = new Set(items.map((it) => it.id))
-  // Front-trimmed rows leave the seq window too — the window is the seq
-  // view of what the ordered log holds, so oldestSeq must track items[0].
-  const trimmedUuids = new Set<string>()
-  for (const m of mirror.messages.slice(0, cut)) {
-    if (typeof m.uuid === 'string') trimmedUuids.add(m.uuid)
-  }
-  const trimmedSeqs = seqsForUuids(mirror.window, trimmedUuids)
-  // `tombstone: false` — trimFront is a client-side memory trim of OLD rows
-  // the server still holds (loadOlder can refetch them); recording them
-  // would poison the tombstone set with live seqs.
-  const window =
-    trimmedSeqs.length > 0
-      ? evictSeqs(mirror.window, trimmedSeqs, { tombstone: false })
-      : mirror.window
-  // Unified index-map pruning (index-pipeline.ts): soft-prune the sidechain
-  // maps so in-flight records survive a front-trim.
-  const pruned = pruneIndexesToLive(mirror, live, retained)
-  return withMirror(state, {
-    ...pruned,
-    items,
-    messages,
-    window,
-    // Rescan the retained window (once per MEMORY_TRIM_SLACK appends): the
-    // Enter that set the current value may be among the dropped frames.
-    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
-  })
-}
-
-/** Seqs currently held by the window (window or pending) for any of the
- *  given message uuids. Used to keep the seq window in sync with uuid-based
- *  evictions and front-trims — the window must never hold a seq whose
- *  message the ordered log no longer does, or oldestSeq/newestSeq would
- *  describe content the transcript doesn't render (and Task 9's
- *  firstItemIndex anchor would drift off items[0]). The one sanctioned
- *  exception is slot-routed frames (api_retry slot, empty results), which
- *  sit in the window for dedup but are skipped by oldestSeq's derivation —
- *  see seq-window.ts isSlotRouted. */
-function seqsForUuids(w: WindowState, uuids: ReadonlySet<string>): number[] {
-  const out: number[] = []
-  for (const [seq, msg] of w.window) {
-    const u = (msg as { uuid?: unknown }).uuid
-    if (typeof u === 'string' && uuids.has(u)) out.push(seq)
-  }
-  for (const [seq, msg] of w.pending) {
-    const u = (msg as { uuid?: unknown }).uuid
-    if (typeof u === 'string' && uuids.has(u)) out.push(seq)
-  }
-  return out
-}
-
-/** Remove the given uuids from the transcript (refusal-fallback retraction:
- *  the CLI already-streamed partial messages of the refused leg). Mirrors
- *  trimFront's index pruning — after items/messages shrink, every
- *  toolUseId-keyed map entry whose owner frame was evicted is dropped so no
- *  orphan tool/plan/question card lingers.
- *
- *  Identity-stable when no listed uuid is present (late/duplicate
- *  dialog-resolved frames are a no-op). */
-function evictMessages(state: SessionState, uuids: string[]): SessionState {
-  if (!uuids?.length) return state
-  const mirror = state.mirror
-  const uuidSet = new Set(uuids)
-  const items = mirror.items.filter((it) => !uuidSet.has(it.id))
-  if (items.length === mirror.items.length) return state
-  const messages = mirror.messages.filter(
-    (m) => !uuidSet.has((m as { uuid?: string }).uuid ?? ''),
-  )
-  // Keep the seq window in lockstep: drop every seq the evicted uuids map
-  // to (window + pending) so the boundaries stay honest.
-  const evictedSeqs = seqsForUuids(mirror.window, uuidSet)
-  const window = evictedSeqs.length > 0 ? evictSeqs(mirror.window, evictedSeqs) : mirror.window
-  // Clear the consumed-timestamp cache for evicted user turns too.
-  const pendingConsumedMessages = new Map(mirror.pendingConsumedMessages)
-  for (const [uuid] of pendingConsumedMessages) {
-    if (uuidSet.has(uuid)) pendingConsumedMessages.delete(uuid)
-  }
-  const live = collectLiveToolUseIds(items)
-  const retained = new Set(items.map((it) => it.id))
-  // Unified index-map pruning (index-pipeline.ts) with HARD sidechain prune:
-  // a retracted leg's records must go even if they were still in-flight — the
-  // frames that owned them no longer exist (unlike trimFront's soft sidechain
-  // prune, which preserves in-flight records).
-  const pruned = pruneIndexesToLive(mirror, live, retained, { hardSidechain: true })
-  return withMirror(state, {
-    ...pruned,
-    items,
-    messages,
-    window,
-    activeWorktree: recomputeActiveWorktree(mirror.activeWorktree, messages),
-    pendingConsumedMessages,
-  })
-}
-
-function applyMessage(state: SessionState, message: SdkMessage): SessionState {
+// Exported for transcript-log.ts: the WINDOW_* handlers call applyMessage at
+// runtime to apply freshly-windowed messages to the ordered log. The import
+// is a live ESM binding; applyMessage is a hoisted function declaration, so
+// the circular reference (reducer ↔ transcript-log) resolves at runtime —
+// the call sites never fire at module-init. Task 7 moves applyMessage to
+// message-pipeline.ts, which breaks the cycle (message-pipeline imports
+// transcript-log; transcript-log imports message-pipeline; neither imports
+// reducer.ts — the "no business module imports reducer.ts" end state).
+export function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   const mirror = state.mirror
   const messageUuid = typeof message.uuid === 'string' ? message.uuid : null
   const existingConsumedAt = messageUuid
@@ -1830,21 +1447,6 @@ function applyMessage(state: SessionState, message: SdkMessage): SessionState {
   return working
 }
 
-function updateTranscriptMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
-  const prev = mirror.items[mirror.items.length - 1]
-  const item = toTranscriptItem(message, prev)
-  if (!item) return mirror
-
-  return {
-    ...mirror,
-    items: [...mirror.items, item],
-    messages: [...mirror.messages, item.msg],
-    // The one append site: fold just the new message (O(its blocks)) — see
-    // ServerMirror.activeWorktree for the invariant every other path keeps.
-    activeWorktree: foldActiveWorktree(mirror.activeWorktree, item.msg),
-  }
-}
-
 // `rebuildIndexesFromMessages`, `updateIndexesMirror`, `drainPendingResults`,
 // `prunePendingResults`, `pruneMapToLive`, `pruneSettledToLive`,
 // `collectLiveToolUseIds`, and the parking helpers (`pendingResultKey`,
@@ -1852,4 +1454,10 @@ function updateTranscriptMirror(mirror: ServerMirror, message: SdkMessage): Serv
 // `PENDING_RESULTS_CAP`) moved to index-pipeline.ts (the index-pipeline owner).
 // `sweepAtTurnEnd` and `settleStaleLiveSubagents` (plus `isStaleLiveSubagent`,
 // `PENDING_TIMEOUT_MS`, `EPOCH_PLAUSIBILITY_FLOOR`) moved to turn-status.ts.
-// Imported at the top and re-exported for existing importers.
+// `windowLive` / `windowPage` / `windowEvict` (plus the private
+// `freshWindowMessages` helper), `prependMessages` (plus the private
+// `countPromptOverlap` helper), `trimFront`, `evictMessages`,
+// `updateTranscriptMirror`, the private `seqsForUuids` helper, and
+// `MEMORY_ITEM_CAP` moved to transcript-log.ts (the transcript-log owner).
+// The public ones are imported at the top; `MEMORY_ITEM_CAP` is re-exported
+// for existing importers.
