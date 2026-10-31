@@ -13,6 +13,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Nothing reads the value until in-session search runs or a prompt-signature
 // dedup scans a user prompt, so ingest must stay free and the value must be
 // derived on first read instead.
+//
+// `toTranscriptItem` no longer takes a `cachedPlainText` parameter — that
+// compatibility shim (written for the removed v3 localStorage/IndexedDB
+// transcript cache) had no production caller. The lazy memo contract it
+// expressed is now proven directly: a memoized `null` skips extraction and
+// an `undefined` memo recomputes. `topLevelUserPromptSignature` BELOW keeps
+// its own cached-plaintext parameter (it has a live two-argument caller in
+// the reducer that passes a TranscriptItem's already-computed `plainText`).
 
 vi.mock('../search', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../search')>()
@@ -23,7 +31,12 @@ vi.mock('../search', async (importOriginal) => {
 })
 
 import { extractMessagePlainText } from '../search'
-import { toTranscriptItem } from './normalize'
+import { toTranscriptItem, topLevelUserPromptSignature } from './normalize'
+// Compile-time type-ownership check: `ActiveWorktree` is now DEFINED and
+// exported from `types.ts` (moved out of `normalize.ts` to break the
+// type-only `types ↔ normalize` import cycle). If the interface is still
+// only in `normalize.ts`, this import fails typecheck.
+import type { ActiveWorktree } from './types'
 import type { SdkMessage } from '../types'
 
 const mockedExtract = vi.mocked(extractMessagePlainText)
@@ -35,6 +48,37 @@ function assistant(text: string): SdkMessage {
     message: { content: [{ type: 'text', text }] },
   } as unknown as SdkMessage
 }
+
+/** A top-level user prompt (parent_tool_use_id null, string content). */
+function userPrompt(text: string): SdkMessage {
+  return {
+    type: 'user',
+    uuid: 'u-' + Math.random().toString(36).slice(2),
+    message: { content: text },
+  } as unknown as SdkMessage
+}
+
+/** An image-only user message — `extractMessagePlainText` returns null for it
+ *  (no text / tool_result block), which is what proves the memoized-null leg. */
+function imageOnlyUser(): SdkMessage {
+  return {
+    type: 'user',
+    uuid: 'u-' + Math.random().toString(36).slice(2),
+    message: { content: [{ type: 'image', source: { type: 'base64' } }] },
+  } as unknown as SdkMessage
+}
+
+describe('ActiveWorktree type ownership', () => {
+  it('is defined and exported from types.ts (not normalize.ts)', () => {
+    // Compile-time check: `ActiveWorktree` must be importable from `./types`.
+    // If the interface is still only defined in `normalize.ts` (not moved
+    // here), the import at the top of this file fails typecheck. The
+    // annotation below additionally pins the two-field shape so an accidental
+    // field change surfaces here too.
+    const aw: ActiveWorktree = { name: 'owner-check', enterMsgId: 'm1' }
+    expect(aw).toEqual({ name: 'owner-check', enterMsgId: 'm1' })
+  })
+})
 
 describe('toTranscriptItem keeps plainText lazy', () => {
   beforeEach(() => {
@@ -50,7 +94,7 @@ describe('toTranscriptItem keeps plainText lazy', () => {
     ).not.toHaveBeenCalled()
   })
 
-  it('derives plainText on first read, and only once', () => {
+  it('derives plainText on first read, and only once (undefined memo recomputes)', () => {
     const msg = assistant('Hello **world**')
     const item = toTranscriptItem(msg, undefined)!
     expect(mockedExtract).not.toHaveBeenCalled()
@@ -65,16 +109,23 @@ describe('toTranscriptItem keeps plainText lazy', () => {
     expect(second).toBe(first)
   })
 
-  it('still honours cachedPlainText instead of re-parsing', () => {
-    const item = toTranscriptItem(assistant('ignored'), undefined, 'from-cache')!
-    expect(item.plainText).toBe('from-cache')
+  it('memoizes a null extraction and skips the pipeline on later reads', () => {
+    // An image-only user message has no extractable text, so the pipeline
+    // returns null. A memoized null must short-circuit subsequent reads the
+    // same way a memoized string does — this is the contract the deleted
+    // `cachedPlainText: null` parameter used to express at the call site.
+    const msg = imageOnlyUser()
+    const item = toTranscriptItem(msg, undefined)!
     expect(mockedExtract).not.toHaveBeenCalled()
-  })
 
-  it('treats a stored null as "no extractable text" and skips the pipeline', () => {
-    const item = toTranscriptItem(assistant('ignored'), undefined, null)!
-    expect(item.plainText).toBeNull()
-    expect(mockedExtract).not.toHaveBeenCalled()
+    const first = item.plainText
+    expect(first).toBeNull()
+    expect(mockedExtract).toHaveBeenCalledTimes(1)
+
+    // The memoized null skips re-extraction on the next read.
+    const second = item.plainText
+    expect(second).toBeNull()
+    expect(mockedExtract).toHaveBeenCalledTimes(1)
   })
 
   it('a page of messages costs no parse work at build time', () => {
@@ -83,5 +134,44 @@ describe('toTranscriptItem keeps plainText lazy', () => {
     )
     expect(built).toHaveLength(200)
     expect(mockedExtract).not.toHaveBeenCalled()
+  })
+
+  it('accepts exactly two arguments (the third cachedPlainText parameter was deleted)', () => {
+    // Compile-time assertion. The legacy `cachedPlainText` parameter was
+    // removed from `toTranscriptItem`, so passing a third argument is now a
+    // type error. `@ts-expect-error` suppresses it; if the parameter still
+    // existed the directive itself would error ("Unused '@ts-expect-error'
+    // directive"), failing typecheck — which is exactly how this locks the
+    // two-argument signature in.
+    // @ts-expect-error toTranscriptItem accepts exactly two arguments now
+    const item = toTranscriptItem(assistant('x'), undefined, 'legacy-cache')
+    expect(item).not.toBeNull()
+  })
+})
+
+describe('topLevelUserPromptSignature keeps its cached plaintext parameter', () => {
+  beforeEach(() => {
+    mockedExtract.mockClear()
+  })
+
+  it('honours a cached plaintext string and skips extraction', () => {
+    const msg = userPrompt('Hello **world**')
+    const sig = topLevelUserPromptSignature(msg, 'from-cache')
+    expect(sig).toBe('from-cache')
+    expect(mockedExtract).not.toHaveBeenCalled()
+  })
+
+  it('treats a cached null as an empty signature and skips extraction', () => {
+    const msg = userPrompt('ignored')
+    const sig = topLevelUserPromptSignature(msg, null)
+    expect(sig).toBe('')
+    expect(mockedExtract).not.toHaveBeenCalled()
+  })
+
+  it('recomputes via the pipeline when no cache is supplied (undefined)', () => {
+    const msg = userPrompt('Hello **world**')
+    const sig = topLevelUserPromptSignature(msg)
+    expect(sig).toBe('Hello world')
+    expect(mockedExtract).toHaveBeenCalledTimes(1)
   })
 })

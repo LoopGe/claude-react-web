@@ -46,7 +46,8 @@ import { shouldMountWorkingBubble } from '../utils/task-actions'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { buildOutgoingBody } from '../utils/message-body'
 import { prefersReducedMotion } from '../utils/reduced-motion'
-import { computeWaiting, hasTranscriptBackground } from '../session-store/normalize'
+import { computeWaiting } from '../session-store/normalize'
+import { hasTranscriptBackground } from '../session-store/sidechain-index'
 
 interface SendMessageResponse {
   ok: boolean

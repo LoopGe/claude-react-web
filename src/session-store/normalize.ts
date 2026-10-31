@@ -1,6 +1,7 @@
-import type { Block, SdkMessage, TaskRecordUi } from '../types'
+import type { Block, SdkMessage } from '../types'
 import type {
   ActiveSubagent,
+  ActiveWorktree,
   PlanStatus,
   SkillRecord,
   SubagentChildCall,
@@ -14,7 +15,6 @@ import { randomId } from '../utils/uuid'
 import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
-import { isTerminalTaskStatus } from '../../shared/tasks.js'
 import {
   isTaskNotificationUserMessage,
   normalizeTaskStatus,
@@ -134,7 +134,6 @@ export function isTrimBoundary(msg: SdkMessage): boolean {
 export function toTranscriptItem(
   msg: SdkMessage,
   prev: TranscriptItem | undefined,
-  cachedPlainText?: string | null,
 ): TranscriptItem | null {
   if (msg.type === 'stream_event') return null
   // `api_retry` is a TRANSIENT rate-limit-retry indicator routed to
@@ -194,15 +193,6 @@ export function toTranscriptItem(
   // either drop the spread (assign the fields explicitly) or re-run the
   // extraction for the new `msg`. countPromptOverlap additionally gates on
   // message type BEFORE reading this getter, for the same reason.
-  //
-  // `cachedPlainText` (string | null) short-circuits the pipeline when a
-  // caller already knows the answer. NOTE: no production caller passes it
-  // today — the v3 localStorage/IndexedDB transcript cache it was written for
-  // is gone (see legacy-transcript-cache.ts), and every reducer call site
-  // passes only (msg, prev). It is retained because a null still means "no
-  // extractable text" and must skip the pipeline, and because the tests pin
-  // that contract; `undefined` is the only value that falls through to a live
-  // recompute. Wire a real cache before relying on it being populated.
   let plainTextMemo: string | null | undefined
 
   const item: TranscriptItem = {
@@ -210,8 +200,7 @@ export function toTranscriptItem(
     msg,
     get plainText(): string | null {
       if (plainTextMemo === undefined) {
-        plainTextMemo =
-          cachedPlainText !== undefined ? cachedPlainText : extractMessagePlainText(msg)
+        plainTextMemo = extractMessagePlainText(msg)
       }
       return plainTextMemo
     },
@@ -301,13 +290,15 @@ export function topLevelUserPromptSignature(
 ): string | null {
   if (msg.type !== 'user') return null
   if (msg.parent_tool_use_id != null) return null
-  // A cached TranscriptItem already carries the exact value
-  // extractMessagePlainText would produce (toTranscriptItem computed it at
-  // ingest / hydrate). Reusing it skips the full unified markdown pipeline —
-  // splitReplayAgainstCache scans EVERY cached item on every replay, so this
-  // was O(items) markdown re-derivations per group switch (~300-400ms on a
-  // 700-message transcript). The value is byte-identical, so dedup semantics
-  // are unchanged.
+  // `cachedPlainText` is a LIVE parameter here (unlike the legacy shim removed
+  // from `toTranscriptItem`): the reducer's splitReplayAgainstCache path
+  // passes the cached TranscriptItem's already-computed `plainText` for every
+  // item it scans (reducer.ts), so the full unified markdown pipeline isn't
+  // re-run O(items) times per group switch (~300-400ms on a 700-message
+  // transcript). The value is byte-identical to what extractMessagePlainText
+  // would produce, so dedup semantics are unchanged. `undefined` is the only
+  // value that falls through to a live recompute; `null` means "no
+  // extractable text" and maps to the empty-string signature.
   if (cachedPlainText !== undefined) return cachedPlainText ?? ''
   // Empty string (image-only prompt with no text) is a valid signature: the
   // on-disk copy of the same prompt also extracts to '', so they still match.
@@ -516,85 +507,16 @@ export function autoTitleDescription(text: string, full: string): string {
   return src.trim().slice(0, 300)
 }
 
-/** True when the WorkingBubble should stay mounted in its "Waiting..." state:
- *  the parent turn has ended but work is still in flight. `runningCount` is the
- *  authoritative task-store count of running background tasks (already filtered
- *  to non-terminal, non-ambient, non-skipTranscript — see Chat.tsx);
- *  `hasTranscriptBackground` covers the transcript-derived pending/background
- *  subagent chips. Either one keeps the bubble alive. Gated on `!terminated`: a
- *  dead session will never receive a completion signal, so an eternal Waiting
- *  would be a dead state. */
-export function computeWaiting(args: {
-  turnActive: boolean
-  terminated: boolean
-  runningCount: number
-  hasTranscriptBackground: boolean
-}): boolean {
-  return !args.turnActive && !args.terminated && (args.runningCount > 0 || args.hasTranscriptBackground)
-}
+// `computeWaiting` / `computeTurnActive` / `countTaskActivity` moved to
+// turn-status.ts (the turn-status owner — see the reducer-state-owners
+// design). Re-exported here so existing importers (`./normalize`) keep
+// resolving without a per-file edit.
+export { computeWaiting, computeTurnActive, countTaskActivity } from './turn-status'
 
-/** Whether a turn is live for layout purposes: the server reports it working,
- *  the optimistic send bridge is still armed, or the SDK is mid-stream (an
- *  auto-continuation turn — e.g. the model processing a background subagent's
- *  task-notification after the parent turn ended).
- *
- *  Gated as a WHOLE on `!terminated`. `activePhase` is only cleared by a result
- *  frame, so a crashed/killed subprocess that never emits one would otherwise
- *  leave it non-null and stick the WorkingBubble on a dead session; and the
- *  bridge outlives termination by up to its 30s safety net, which would keep
- *  `turnActive` true — and the bubble in its ACTIVE state — on a dead session.
- *  Gating the whole predicate makes "no turnActive on a terminated session"
- *  true BY CONSTRUCTION, rather than depending on the bridge's own clearing
- *  effect landing first. */
-export function computeTurnActive(args: {
-  working: boolean
-  pendingTurnSince: number | null
-  hasActivePhase: boolean
-  terminated: boolean
-}): boolean {
-  return !args.terminated
-    && (args.working || args.pendingTurnSince != null || args.hasActivePhase)
-}
-
-/** Count a task map into the two activity numbers `useSessionTaskCounts`
- *  publishes: `all` = every non-terminal task (ambient housekeeping included),
- *  `indicator` = the subset that counts as activity (not skipTranscript /
- *  ambient). Both come from ONE pass, with `indicator++` gated on a subset of
- *  the iterations that bump `all` — which is what makes `indicator <= all`
- *  STRUCTURAL rather than merely intended, so `indicator > 0` implies
- *  `all > 0`. That implication is load-bearing: the WorkingBubble mount gate
- *  (shouldMountWorkingBubble) carries no separate `computeWaiting` disjunct
- *  precisely because of it.
- *
- *  Terminal statuses come from the canonical shared list (shared/tasks.ts)
- *  rather than a local literal, so this count cannot drift from the server's.
- *  Every client-side terminal check now reads that same list (TasksPanel, the
- *  reducer and this counting rule) — the copies these notes used to warn about
- *  are gone, so a new terminal status is a one-place change. */
-export function countTaskActivity(tasks: Iterable<TaskRecordUi>): { all: number; indicator: number } {
-  let all = 0
-  let indicator = 0
-  for (const t of tasks) {
-    if (isTerminalTaskStatus(t.status)) continue
-    all++
-    if (!t.skipTranscript && !t.ambient) indicator++
-  }
-  return { all, indicator }
-}
-
-/** Whether the mirrored transcript still holds a subagent in flight — the
- *  transcript-side liveness leg of both the Waiting state (computeWaiting) and
- *  the WorkingBubble mount gate (shouldMountWorkingBubble). Shared so the main
- *  panel and the side drawer cannot disagree about which statuses count.
- *
- *  Accepts both `pending` (the normal post-turn-end form: the sweep ran) AND
- *  `background` (the form after a server-restart replay, where the CLI
- *  transcript carries no `result` frame for the sweep to fire on, so the record
- *  would otherwise stay `background` and the Waiting state would be lost on a
- *  page refresh). */
-export function hasTranscriptBackground(activeSubagents: readonly ActiveSubagent[] | undefined): boolean {
-  return activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false
-}
+// `hasTranscriptBackground` lives in sidechain-index.ts (it is a sidechain-
+// lifecycle predicate reading Subagent status). Importers bring it directly
+// from `./sidechain-index` — there is no re-export here, so the
+// normalize ↔ sidechain-index dependency stays one-directional.
 
 export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
   if (msg.type !== 'assistant') return []
@@ -741,15 +663,12 @@ export function getSubagentChildStarts(
   return { parentId, children }
 }
 
-/** The agent is currently isolating work in a worktree opened by
- *  EnterWorktree and not yet closed by ExitWorktree. `name` is the
- *  worktree's name (from input.name, or the input.path basename when the
- *  agent switched to an existing one); `enterMsgId` is the message uuid
- *  that carried the Enter, so callers can anchor on the transition. */
-export interface ActiveWorktree {
-  name: string
-  enterMsgId: string
-}
+// `ActiveWorktree` is now DEFINED in `types.ts` (moved to break the type-only
+// `types ↔ normalize` import cycle — `types.ts` no longer imports from this
+// module). Re-exported here so existing importers (`selectors.ts` imports
+// `type ActiveWorktree` from `./normalize`) keep resolving without a churn-
+// inducing extra-file edit; the canonical definition lives in `./types`.
+export type { ActiveWorktree }
 
 /** Fold a transcript's EnterWorktree/ExitWorktree tool_use calls into the
  *  "currently isolated in a worktree" state. Enter sets the active worktree,

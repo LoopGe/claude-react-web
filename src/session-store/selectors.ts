@@ -28,10 +28,11 @@ export const selectHasActivePhase = (snapshot: SessionSnapshot): boolean =>
 /** True when the transcript mirror lists at least one `pending` or
  *  `background` subagent — the post-turn-end forms that keep the
  *  WorkingBubble mounted in its `Waiting` state. Mirrors the
- *  `hasTranscriptBackground` predicate in `normalize.ts` so the main
- *  panel and the side drawer cannot disagree about which statuses count;
- *  read here as a primitive over `activeSubagents`, so a change in any
- *  OTHER subagent field (lastToolName, progressSummary, …) does not
+ *  `hasTranscriptBackground` predicate in `sidechain-index.ts` (its final
+ *  owner — a sidechain-lifecycle predicate reading Subagent status) so the
+ *  main panel and the side drawer cannot disagree about which statuses
+ *  count; read here as a primitive over `activeSubagents`, so a change in
+ *  any OTHER subagent field (lastToolName, progressSummary, …) does not
  *  re-render the gate consumer. */
 export const selectHasTranscriptBackground = (snapshot: SessionSnapshot): boolean =>
   snapshot.activeSubagents.some(
