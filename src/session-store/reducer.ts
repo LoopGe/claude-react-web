@@ -13,15 +13,11 @@ import {
   withMirror,
 } from './types'
 import {
-  extractPlanContent,
   foldActiveWorktree,
-  getPlanResultDecisions,
   getPlanToolUseIds,
   getSkillStarts,
   getSubagentStarts,
-  getToolResultEntries,
   getToolResultIds,
-  getToolResultOutcomes,
   getToolUseStarts,
   getWorkflowStarts,
   isTrimBoundary,
@@ -32,11 +28,7 @@ import {
   toTranscriptItem,
   topLevelUserPromptSignature,
 } from './normalize'
-import {
-  extractQuestionAnswers,
-  getQuestionToolUseIds,
-  parseQuestionAnswersMessage,
-} from '../utils/question-answers'
+import { getQuestionToolUseIds } from '../utils/question-answers'
 import { toolDebug, toolDebugEnabled } from './debug'
 import { supersedeDraft } from './draft-state'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
@@ -60,6 +52,11 @@ import {
   sweepRunningChildCalls,
   updateSidechainIndexMirror,
 } from './sidechain-index'
+import {
+  applyPermissionRequest,
+  applyPermissionResolved,
+  updateToolIndexMirror,
+} from './tool-index'
 // Re-export reapplyDismissed so the existing importer (`reducer.test.ts`)
 // keeps resolving without a 4th-file edit. The canonical definition lives in
 // sidechain-index.ts.
@@ -85,66 +82,20 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
       nextPlaceholders.delete(action.pendingId)
       return withIntent(state, { ...state.intent, pendingPlaceholders: nextPlaceholders })
     }
-    case 'PERMISSION_REQUEST': {
-      if (!action.request.toolUseID) return state
-      const pidToToolUseId = new Map(state.mirror.pidToToolUseId)
-      pidToToolUseId.set(action.request.id, action.request.toolUseID)
-      return withMirror(state, { ...state.mirror, pidToToolUseId })
-    }
-    case 'PERMISSION_RESOLVED': {
-      // Allocate fresh Maps lazily — most PERMISSION_RESOLVED frames
-      // arrive for permissions we already cleaned up locally (the user
-      // optimistically decided), so cloning Maps unconditionally burns
-      // CPU and breaks reference equality for selectors that depend on
-      // stable Map identity (e.g. PlanCard memoization).
-      let pidToToolUseId = state.mirror.pidToToolUseId
-      let planStatus = state.mirror.planStatus
-      let questionAnswers = state.mirror.questionAnswers
-      let changed = false
-      const toolUseId = pidToToolUseId.get(action.id)
-      if (toolUseId) {
-        if (planStatus.has(toolUseId)) {
-          planStatus = new Map(planStatus)
-          planStatus.set(toolUseId, action.decision.behavior === 'allow' ? 'approved' : 'rejected')
-        }
-        // AskUserQuestion answers ride on the resolution `message` field
-        // (built by server/permission-helpers.ts:formatQuestionAnswers).
-        // Normally the JSON answers payload also lands as a tool_result
-        // block on a follow-up user message — extractQuestionAnswers in
-        // updateIndexes() parses that and replaces the pending entry.
-        // But the SDK does not always echo a corresponding tool_result
-        // through the Query stream after a canUseTool deny+message
-        // short-circuit, which leaves the inline QuestionCard rendering
-        // 'pending' forever even though the user already answered.
-        // Decoding the same JSON here closes that gap — questionAnswers
-        // flips from [] to the parsed entries the moment the resolution
-        // frame lands, independent of whether tool_result follows.
-        // Scope: only when we previously seeded a pending entry for
-        // this toolUseId (i.e. it really was an AskUserQuestion call).
-        if (questionAnswers.has(toolUseId) && action.decision.questionResolution === 'clarified') {
-          questionAnswers = new Map(questionAnswers)
-          questionAnswers.set(toolUseId, [{ question: '', answer: null, clarified: true }])
-        } else if (questionAnswers.has(toolUseId) && action.decision.message) {
-          const parsed = parseQuestionAnswersMessage(action.decision.message)
-          if (parsed.length > 0) {
-            questionAnswers = new Map(questionAnswers)
-            questionAnswers.set(toolUseId, parsed)
-          }
-        }
-      }
-      if (pidToToolUseId.has(action.id)) {
-        pidToToolUseId = new Map(pidToToolUseId)
-        pidToToolUseId.delete(action.id)
-        changed = true
-      }
-      if (!changed) return state
-      return withMirror(state, {
-        ...state.mirror,
-        pidToToolUseId,
-        planStatus,
-        questionAnswers,
-      })
-    }
+    case 'PERMISSION_REQUEST':
+      // Delegated to tool-index.ts: seeds `pidToToolUseId` from the
+      // request's `toolUseID`. No-op (identity-stable) when the request
+      // carries no `toolUseID`.
+      return applyPermissionRequest(state, action.request)
+    case 'PERMISSION_RESOLVED':
+      // Delegated to tool-index.ts: clears the `pidToToolUseId` entry for
+      // the resolved pid, flips `planStatus` to approved/rejected when the
+      // pid maps to a plan, and parses the JSON answers payload from
+      // `decision.message` into `questionAnswers` when the pid maps to a
+      // question (closing the gap where the SDK does not always echo a
+      // follow-up tool_result after a canUseTool deny+message
+      // short-circuit). Identity-stable when nothing changed.
+      return applyPermissionResolved(state, action.id, action.decision)
     case 'CONTEXT_USAGE':
       return withMirror(state, { ...state.mirror, contextUsage: action.usage })
     case 'PROMPT_SUGGESTION':
@@ -2338,162 +2289,21 @@ function resultIsSidechainChild(
 }
 
 function updateIndexesMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
-  let changed = false
-  let planStatus = mirror.planStatus
-  let planContent = mirror.planContent
-  let questionAnswers = mirror.questionAnswers
-  let toolStatus = mirror.toolStatus
-  let toolResults = mirror.toolResults
-
-  // Generic tool status — seed 'running' for every tool_use the assistant
-  // emits (excluding ones with their own status map: Plan/Subagent/Question).
-  const toolStarts = getToolUseStarts(message)
-  if (toolStarts.length > 0) {
-    toolStatus = new Map(toolStatus)
-    for (const id of toolStarts) {
-      // Don't clobber a status that's already terminal — could happen in
-      // theory if a duplicate tool_use lands during replay.
-      if (!toolStatus.has(id)) toolStatus.set(id, 'running')
-    }
-    toolDebug('seed running', { ids: toolStarts, total: toolStatus.size })
-    changed = true
-  }
-
-  // Flip to 'success' or 'error' when the matching tool_result lands.
-  // Most user messages don't carry tool_results, so defer the Map clone
-  // until we actually have a status to update — same trick as the
-  // subagent branch below.
-  if (message.type === 'user' && toolStatus.size > 0) {
-    const outcomes = getToolResultOutcomes(message)
-    if (outcomes.length > 0) {
-      let touched = false
-      // Only allocated when diagnostics are on — keeps the hot path free.
-      const orphans = toolDebugEnabled() ? [] as string[] : null
-      for (const { toolUseId, outcome } of outcomes) {
-        const prev = toolStatus.get(toolUseId)
-        // No seeded entry for this result's tool_use_id. Either the
-        // result is for an excluded tool (Plan/Subagent/Question — fine),
-        // or the id genuinely doesn't match any tool_use we seeded — the
-        // latter is the "id-mismatch" failure mode that strands a card on
-        // 'running' forever. We can't tell the two apart here, so log it
-        // for offline diagnosis rather than guessing.
-        if (!prev) {
-          if (orphans) orphans.push(toolUseId)
-          continue
-        }
-        if (prev === outcome) continue
-        if (!touched) {
-          if (toolStatus === mirror.toolStatus) toolStatus = new Map(toolStatus)
-          touched = true
-        }
-        toolStatus.set(toolUseId, outcome)
-        toolDebug('flip', { id: toolUseId, from: prev, to: outcome })
-      }
-      if (orphans && orphans.length > 0) {
-        toolDebug('ORPHAN result (no matching seeded tool_use)', {
-          ids: orphans,
-          seededIds: Array.from(toolStatus.keys()),
-        })
-      }
-      if (touched) changed = true
-    }
-  }
-
-  // Capture tool_result payloads so the originating tool_use card can
-  // render the result inline (instead of a separate bubble). Only store
-  // results whose tool_use_id was seeded into `toolStatus` — that set is
-  // exactly the generic tool cards (Plan/Question/Subagent are excluded by
-  // getToolUseStarts' TOOL_STATUS_EXCLUDE and own their result rendering).
-  // Same lazy-clone discipline as the status flip above.
-  if (message.type === 'user' && toolStatus.size > 0) {
-    const entries = getToolResultEntries(message)
-    if (entries.length > 0) {
-      let touched = false
-      for (const { toolUseId, content, isError } of entries) {
-        if (!toolStatus.has(toolUseId)) continue
-        if (toolResults.has(toolUseId)) continue
-        if (!touched) {
-          if (toolResults === mirror.toolResults) toolResults = new Map(toolResults)
-          touched = true
-        }
-        toolResults.set(toolUseId, { content, isError })
-      }
-      if (touched) changed = true
-    }
-  }
-
-  const planIds = getPlanToolUseIds(message)
-  if (planIds.length > 0) {
-    planStatus = new Map(planStatus)
-    for (const id of planIds) planStatus.set(id, 'pending')
-    changed = true
-  }
-
-  const planResults = getPlanResultDecisions(message, planStatus)
-  if (planResults.length > 0) {
-    if (planStatus === mirror.planStatus) planStatus = new Map(planStatus)
-    for (const result of planResults) planStatus.set(result.toolUseId, result.status)
-    changed = true
-  }
-
-  // Extract plan body from ExitPlanMode tool_result outputs.  The CLI
-  // injects plan content from disk into the output (not the input), so
-  // we capture it here for the PermissionDialog and inline PlanCard.
-  // tool_result blocks only ever land on user messages — gating on
-  // msg.type avoids allocating the Set for every assistant/system/result.
-  if (message.type === 'user' && planStatus.size > 0) {
-    const knownPlanIds = new Set(planStatus.keys())
-    const extracted = extractPlanContent(message, knownPlanIds)
-    if (extracted.length > 0) {
-      if (planContent === mirror.planContent) planContent = new Map(planContent)
-      for (const { toolUseId, plan } of extracted) planContent.set(toolUseId, plan)
-      changed = true
-    }
-  }
-
-  // Track AskUserQuestion tool_use ids so the inline QuestionCard can
-  // render a "pending" state immediately (before the user answers).
-  // We seed with an empty answers array; the tool_result handler below
-  // replaces it when the JSON answers payload lands.
-  const questionIds = getQuestionToolUseIds(message)
-  if (questionIds.length > 0) {
-    let touched = false
-    for (const id of questionIds) {
-      if (questionAnswers.has(id)) continue
-      if (!touched) {
-        questionAnswers = new Map(questionAnswers)
-        touched = true
-      }
-      questionAnswers.set(id, [])
-    }
-    if (touched) changed = true
-  }
-
-  // Parse JSON answers from AskUserQuestion tool_results (built by
-  // server/permission-helpers.ts:formatQuestionAnswers).  Same gating
-  // pattern as the plan-content branch above — only user messages
-  // carry tool_results, and we only care if we've seen the matching
-  // tool_use first.
-  if (message.type === 'user' && questionAnswers.size > 0) {
-    const knownQuestionIds = new Set(questionAnswers.keys())
-    const extracted = extractQuestionAnswers(message, knownQuestionIds)
-    if (extracted.length > 0) {
-      if (questionAnswers === mirror.questionAnswers) questionAnswers = new Map(questionAnswers)
-      for (const { toolUseId, answers } of extracted) questionAnswers.set(toolUseId, answers)
-      changed = true
-    }
-  }
+  // ── Tool / plan / question folds (delegated) ───────────────────────────
+  // Delegated to tool-index.ts: the generic tool status seed/flip, the
+  // toolResults payload capture, the planStatus seed/flip, the planContent
+  // extraction, and the questionAnswers seed/parse. Runs FIRST so the
+  // sidechain fold below sees the updated tool/plan/question maps
+  // (resultOwnerKnown reads them when deciding whether to park).
+  const afterTool = updateToolIndexMirror(mirror, message)
 
   // ── Sidechain folds (Subagent / Workflow / Skill) ──────────────────────
   // Delegated to sidechain-index.ts: the subagent / workflow / skill seed /
   // result / child folds, plus the task-notification completion signal.
-  // Runs AFTER the non-sidechain work so the order-insensitivity parking
-  // below sees the updated sidechain maps (resultOwnerKnown and
+  // Runs AFTER the tool/plan/question work so the order-insensitivity
+  // parking below sees the updated sidechain maps (resultOwnerKnown and
   // resultIsSidechainChild read all six lifecycle maps).
-  const afterNonSidechain = changed
-    ? { ...mirror, planStatus, planContent, questionAnswers, toolStatus, toolResults }
-    : mirror
-  const nextMirror = updateSidechainIndexMirror(afterNonSidechain, message)
+  const nextMirror = updateSidechainIndexMirror(afterTool, message)
 
   // ── Order-insensitivity: park orphan completion signals ────────────────
   // The branches above are a fold over ARRIVAL order: a tool_result (or a
