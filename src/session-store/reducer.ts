@@ -36,15 +36,23 @@ import {
 import {
   evictMessages,
   prependMessages,
+} from './transcript-log'
+// WINDOW_* handlers live in window-bridge.ts (Task 7 fix round 1). The seam
+// breaks the message-pipeline ↔ transcript-log value-import cycle: window-bridge
+// imports applyMessage from message-pipeline and prependMessages/evictMessages
+// from transcript-log, so neither message-pipeline nor transcript-log needs to
+// import the other for the WINDOW path.
+import {
   windowEvict,
   windowLive,
   windowPage,
-} from './transcript-log'
+} from './window-bridge'
 // applyMessage moved to message-pipeline.ts (Task 7). The reducer's MESSAGE
 // action delegates here; replayReplace (still in reducer.ts until Task 8)
-// also calls it. The WINDOW_* handlers in transcript-log import this same
-// binding — the live ESM binding keeps the message-pipeline ↔ transcript-log
-// cycle resolving at runtime (call sites never fire at module-init).
+// also calls it. The WINDOW_* handlers in window-bridge.ts import this same
+// binding — window-bridge is the seam that breaks the would-be
+// message-pipeline ↔ transcript-log value-import cycle (transcript-log no
+// longer imports message-pipeline).
 import { applyMessage } from './message-pipeline'
 // Optimistic/ack/consumed/steered intent handlers and clearSendingPlaceholders
 // moved to user-message-lifecycle.ts (Task 7). The reducer delegates the four
@@ -993,9 +1001,10 @@ function promptSequencesEqual(
 // `sweepAtTurnEnd` and `settleStaleLiveSubagents` (plus `isStaleLiveSubagent`,
 // `PENDING_TIMEOUT_MS`, `EPOCH_PLAUSIBILITY_FLOOR`) moved to turn-status.ts.
 // `windowLive` / `windowPage` / `windowEvict` (plus the private
-// `freshWindowMessages` helper), `prependMessages` (plus the private
-// `countPromptOverlap` helper), `trimFront`, `evictMessages`,
-// `updateTranscriptMirror`, the private `seqsForUuids` helper, and
-// `MEMORY_ITEM_CAP` moved to transcript-log.ts (the transcript-log owner).
-// The public ones are imported at the top; `MEMORY_ITEM_CAP` is re-exported
-// for existing importers.
+// `freshWindowMessages` helper) moved to window-bridge.ts (Task 7 fix round 1
+// — the seam that breaks the message-pipeline ↔ transcript-log value-import
+// cycle). `prependMessages` (plus the private `countPromptOverlap` helper),
+// `trimFront`, `evictMessages`, `updateTranscriptMirror`, the private
+// `seqsForUuids` helper, and `MEMORY_ITEM_CAP` moved to transcript-log.ts
+// (the transcript-log owner). The public ones are imported at the top;
+// `MEMORY_ITEM_CAP` is re-exported for existing importers.

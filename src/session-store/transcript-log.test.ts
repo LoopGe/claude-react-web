@@ -1,9 +1,16 @@
-// Transcript log — the ordered render log (items/messages/activeWorktree) and
-// the seq-window handlers that drive fresh messages into it.
+// Transcript log — the ordered render log (items/messages/activeWorktree),
+// the prepend/trim/evict/stamp operations, and the WINDOW_* handlers.
+//
+// The WINDOW_* handlers (`windowLive` / `windowPage` / `windowEvict`) moved
+// to `window-bridge.ts` in Task 7 fix round 1 — the seam that breaks the
+// message-pipeline ↔ transcript-log value-import cycle. The WINDOW tests
+// below still live in this file (they predate the seam) but exercise the
+// window-bridge handlers via `reduceSessionState`, not direct imports.
 //
 // The tests below cover the behaviors the brief names:
-//   - WINDOW tail/head/live/evict: fresh messages reach the ordered log; the
-//     window and transcript stay in lockstep.
+//   - WINDOW tail/head/live/evict (window-bridge, exercised via the reducer):
+//     fresh messages reach the ordered log; the window and transcript stay
+//     in lockstep.
 //   - uuid dedup vs REPLAY_REPLACE signature overlap: prependMessages' two
 //     dedup modes (uuid-exact for same-seq-space head pages, content-signature
 //     for cross-uuid-space disk pages).

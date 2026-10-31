@@ -49,7 +49,8 @@
 
 | 模块 | 拥有字段/职责 | 主要 action / 接口 |
 |---|---|---|
-| `transcript-log` | `items`、`messages`、`window`、`activeWorktree`、prepend、trim/evict、seq 边界 | `windowLive/Page/Evict`、`prependMessages`、`trimFront`、`evictMessages`、`MEMORY_ITEM_CAP` |
+| `transcript-log` | `items`、`messages`、`window`、`activeWorktree`、prepend、trim/evict、seq 边界、consumed/steered mirror stamp | `prependMessages`、`trimFront`、`evictMessages`、`updateTranscriptMirror`、`stampMessageConsumed`、`stampMessageSteered`、`MEMORY_ITEM_CAP` |
+| `window-bridge` | WINDOW_* action 的 seq-window operator + applyMessage 组合（断环 seam） | `windowLive`、`windowPage`、`windowEvict` |
 | `replay-merge` | `REPLAY_REPLACE` 的 fresh/cache merge、overlap、stale copy、mid-slice、chronology | `replayReplace`、`dedupeReplayPayload`、`splitReplayAgainstCache` |
 | `live-turn` | `liveTurn`、`draft/frozenDrafts/draftRowKeys/draftSeq`、token rate、apiRetry/thinkingTokens 的瞬态行为 | `updateLiveTurnMirror`、`flushLiveTurn`、`pruneFinalizedLiveTurnText` |
 | `tool-index` | `pidToToolUseId`、`planStatus`、`planContent`、`questionAnswers`、`toolStatus`、`toolResults` | `updateToolIndexMirror`、permission handlers |
@@ -61,8 +62,9 @@
 以下模块不是额外业务层，而是避免循环依赖所需的内部 seam：
 
 - `index-pipeline`：按固定顺序组合 tool-index 与 sidechain-index，统一 `updateIndexesMirror`、owner-known 判断和 `pendingResults` 的 park/drain/prune；导出 `rebuildIndexesFromMessages` 与统一的 `pruneIndexesToLive(live, retained)`，供 transcript-log 在 trim/evict 时裁剪全部索引而不直接改写其他模块字段。
-- `message-pipeline`：组合 transcript-log、live-turn、index-pipeline 和 turn-status，保留完整 `applyMessage` 的处理顺序与 intent 交互。
+- `message-pipeline`：组合 transcript-log、live-turn、index-pipeline 和 turn-status，保留完整 `applyMessage` 的处理顺序与 intent 交互。单向依赖 transcript-log（不再被 transcript-log 反向 import）。
 - `user-message-lifecycle`：拥有 `pendingPlaceholders`、optimistic/ack 和 `clearSendingPlaceholders`；consumed/steered 的 intent 部分由它处理，transcript 的 items/messages/activeWorktree 重写则通过 `transcript-log` 的 stamp 接口完成。
+- `window-bridge`：拥有 `windowLive` / `windowPage` / `windowEvict`，组合 seq-window operator 与 `message-pipeline.applyMessage` / `transcript-log.prependMessages` / `transcript-log.evictMessages`。该 seam 用于打破 message-pipeline ↔ transcript-log 的值级 import 环：message-pipeline 在 result/trim/evict 路径需要 transcript-log 的原语，而 WINDOW_* handler 需要 `applyMessage` 来驱动新进入 window 的消息——若 handler 留在 transcript-log 就会闭合成环。把它们抽到 window-bridge 后，transcript-log 不再 import message-pipeline，依赖图在值级无环。
 
 ## 6. 依赖方向
 
@@ -74,14 +76,19 @@ types / normalize / seq-window / draft-state（叶子）
         │                     ▼
         │               index-pipeline
         │                     │
-        ├─ transcript-log ────┤
+        ├─ transcript-log ◀───┤
         │                     │
         ├─ live-turn          │
         ├─ turn-status        │
         │                     ▼
         │               message-pipeline ◀── user-message-lifecycle
-        │                     │
-        └─ replay-merge ──────┘
+        │                     ▲
+        └─ replay-merge ──────┤
+                              │
+        window-bridge ────────┘  (imports message-pipeline + transcript-log;
+                                  owns WINDOW_* handlers — the seam that
+                                  breaks the would-be message-pipeline ↔
+                                  transcript-log value cycle)
                               │
                          reducer.ts 入口
 ```
@@ -89,6 +96,7 @@ types / normalize / seq-window / draft-state（叶子）
 约束：
 
 - `transcript-log` 可以调用 `index-pipeline.rebuildIndexesFromMessages` 和 `pruneIndexesToLive`，但 `index-pipeline` 不得调用 transcript-log。
+- `transcript-log` 不得 import `message-pipeline`。WINDOW_* handler 由 `window-bridge` 拥有，后者同时 import `message-pipeline.applyMessage` 和 `transcript-log.prependMessages` / `evictMessages`，从而打破原本会形成的值级 import 环。
 - `user-message-lifecycle` 可以调用 transcript-log 的 consumed/steered stamp 接口完成 mirror 更新；transcript-log 不得反向调用 user-message-lifecycle。
 - `replay-merge` 可以调用 `message-pipeline.applyMessage` 和 `transcript-log.prependMessages`，两者不得调用 replay-merge。
 - `reducer.ts` 可以调用所有模块；任何业务模块不得反向 import reducer 入口。

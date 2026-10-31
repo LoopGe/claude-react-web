@@ -1,5 +1,5 @@
 /** Transcript log owner: the ordered render log (items / messages /
- *  activeWorktree) and the seq-window handlers that drive fresh messages into
+ *  activeWorktree) plus the prepend/trim/evict/stamp operations that mutate
  *  it.
  *
  *  The mirror fields this module owns (per the reducer-state-owners design):
@@ -11,20 +11,24 @@
  *      chronology repair / stale-copy replace).
  *    - `pendingConsumedMessages` — the message-consumed signals that arrived
  *      before their matching user-message broadcast. Co-owned with the
- *      message-pipeline (Task 7); this module prunes the entries on evict.
+ *      user-message-lifecycle (Task 7); this module prunes the entries on
+ *      evict and parks them via `stampMessageConsumed`.
  *
- *  The WINDOW_* handlers (`windowLive` / `windowPage` / `windowEvict`) run
- *  their pure seq-window operator first, then apply the messages that are NEW
- *  to the window (freshly inserted seqs + pending runs that just drained) to
- *  the ordered log through the message-pipeline's `applyMessage` /
- *  `prependMessages` machinery. This keeps `mirror.messages` / `mirror.items`
- *  in lockstep with the window by construction — the UI reducer branches
- *  (subagent pairing, task folding, plan cards, permission state) consume
- *  only the ordered log and stay seq-agnostic.
+ *  The WINDOW_* handlers (`windowLive` / `windowPage` / `windowEvict`) used
+ *  to live here but have moved to `window-bridge.ts` (Task 7 fix round 1).
+ *  The move breaks what would otherwise be a runtime value-import cycle:
+ *  `message-pipeline.applyMessage` imports `updateTranscriptMirror` /
+ *  `evictMessages` / `trimFront` from here, and the WINDOW_* handlers need
+ *  to call `applyMessage` to drive freshly-windowed messages into the log.
+ *  Housing the handlers in `window-bridge` (which imports both
+ *  `message-pipeline.applyMessage` and the transcript-log primitives) makes
+ *  the dependency graph acyclic at the value level: this module no longer
+ *  imports `message-pipeline`, and `message-pipeline` continues to import
+ *  only the primitives it needs from here.
  *
- *  `prependMessages` is also exported for the replay-merge path (Task 8) and
- *  for the reducer's `replayReplace` (until Task 8 extracts it). It supports
- *  two dedup modes:
+ *  `prependMessages` is exported for the replay-merge path (Task 8) and
+ *  for the reducer's `replayReplace` (until Task 8 extracts it), and for
+ *  `window-bridge.windowPage`'s head-page path. It supports two dedup modes:
  *    - `trustUuidDedup: true` — uuid-exact dedup for same-seq-space batches
  *      (tail-first replay backfill, WINDOW_PAGE at:'head'). The signature
  *      overlap check is skipped because the live stream and the REST page
@@ -44,12 +48,16 @@
  *  `updateTranscriptMirror` is the single append site for the ordered log.
  *  It folds just the new message into `activeWorktree` (O(its blocks));
  *  every other path that rewrites `messages` rescans with
- *  `recomputeActiveWorktree`. */
+ *  `recomputeActiveWorktree`.
+ *
+ *  `stampMessageConsumed` / `stampMessageSteered` are the mirror-only stamp
+ *  entry points the user-message-lifecycle delegates to (Task 7). They keep
+ *  the dependency direction one-way: user-message-lifecycle → transcript-log
+ *  (transcript-log never calls back into lifecycle). */
 
 import type { SdkMessage } from '../types'
 import {
   type ServerMirror,
-  type SessionAction,
   type SessionState,
   type TranscriptItem,
   withMirror,
@@ -64,8 +72,6 @@ import {
 } from './normalize'
 import {
   evictSeqs,
-  liveAppend,
-  pageLoaded,
   type WindowState,
 } from './seq-window'
 import {
@@ -73,15 +79,6 @@ import {
   pruneIndexesToLive,
   rebuildIndexesFromMessages,
 } from './index-pipeline'
-// applyMessage lives in message-pipeline.ts (Task 7 extracted it from the
-// reducer). The WINDOW_* handlers call it at runtime to apply freshly-windowed
-// messages to the ordered log. The import is a live ESM binding; applyMessage
-// is a hoisted function declaration, so the circular reference
-// (message-pipeline ↔ transcript-log) resolves at runtime — the call sites
-// never fire at module-init. This is the cycle Task 7 deliberately moved off
-// reducer.ts: neither module imports reducer.ts (the "no business module
-// imports reducer.ts" end state).
-import { applyMessage } from './message-pipeline'
 
 // MEMORY_ITEM_CAP — the in-memory transcript bound. Re-exported by the
 // reducer so existing importers (`active-worktree.test.ts`) keep resolving.
@@ -90,126 +87,6 @@ export const MEMORY_ITEM_CAP = 1000
 // trimming runs once every SLACK appends (not every message), keeping the
 // common append path allocation-free.
 const MEMORY_TRIM_SLACK = 256
-
-// ── WINDOW handlers ─────────────────────────────────────────────────────────
-//
-// Every WINDOW_* action runs its pure seq-window operator first, then applies
-// the messages that are NEW to the window (freshly inserted seqs + pending
-// runs that just drained) to the ordered render log through the existing
-// applyMessage / prependMessages machinery. This keeps `mirror.messages` /
-// `mirror.items` in lockstep with the window by construction — the UI reducer
-// branches (subagent pairing, task folding, plan cards, permission state)
-// consume only the ordered log and stay seq-agnostic.
-
-/** Messages now held by `nw` but not by `prev`, ordered by seq. These are
- *  exactly the frames the transcript hasn't applied yet: a prev-window seq
- *  means applyMessage already ran for it; prev-pending seqs drained into
- *  `nw` are fresh (they were parked, never applied). */
-function freshWindowMessages(
-  prev: WindowState,
-  nw: WindowState,
-): Array<[number, SdkMessage]> {
-  const out: Array<[number, SdkMessage]> = []
-  for (const [seq, msg] of nw.window) {
-    if (!prev.window.has(seq)) out.push([seq, msg])
-  }
-  out.sort((a, b) => a[0] - b[0])
-  return out
-}
-
-/** WINDOW_LIVE: a seq-carrying live message frame. Contiguous seqs append
- *  at the tail; gapped seqs park in the window (hole exposed via snapshot)
- *  and are applied — in seq order — when the hole fills. The new window is
- *  attached BEFORE the fresh messages run so trimFront/eviction inside
- *  applyMessage sync the window they'll actually survive into. */
-export function windowLive(
-  state: SessionState,
-  seq: number,
-  generation: number,
-  message: SdkMessage,
-): SessionState {
-  const prev = state.mirror.window
-  const nw = liveAppend(prev, seq, message, generation)
-  if (nw === prev) return state
-  let next = withMirror(state, { ...state.mirror, window: nw })
-  for (const [, msg] of freshWindowMessages(prev, nw)) {
-    next = applyMessage(next, msg)
-  }
-  return next
-}
-
-/** WINDOW_PAGE: a REST page from GET /sessions/:id/messages. Tail pages
- *  (the newest page, a reconnect catch-up, or a hole fill) append in seq
- *  order and flip replayReady — the tail page IS the transcript's initial
- *  paint in the seq protocol. Head pages prepend below oldestSeq via
- *  prependMessages (uuid dedup is exact: the REST page and the live stream
- *  share one seq space, so the prompt-signature overlap check is skipped —
- *  the same reasoning as tail-first backfill chunks' trustUuidDedup). */
-export function windowPage(
-  state: SessionState,
-  action: Extract<SessionAction, { type: 'WINDOW_PAGE' }>,
-): SessionState {
-  const prev = state.mirror.window
-  const nw = pageLoaded(prev, {
-    at: action.at,
-    messages: action.messages,
-    hasMore: action.hasMore,
-    generation: action.generation,
-    headSeq: action.headSeq,
-    tombstones: action.tombstones,
-  })
-  if (nw === prev) return state
-  const fresh = freshWindowMessages(prev, nw)
-  let next = withMirror(state, { ...state.mirror, window: nw })
-  if (action.at === 'head') {
-    if (fresh.length === 0) return next
-    return prependMessages(
-      next,
-      fresh.map(([, msg]) => msg),
-      { trustUuidDedup: true },
-    )
-  }
-  for (const [, msg] of fresh) {
-    next = applyMessage(next, msg)
-  }
-  return withMirror(next, { ...next.mirror, replayReady: true })
-}
-
-/** WINDOW_EVICT: server tombstones by seq. Maps the seqs to their uuids
- *  (from the PRE-eviction window) and reuses evictMessages — which also
- *  syncs the window — so the ordered log and lifecycle-map pruning stay
- *  identical to the uuid-based path. */
-export function windowEvict(state: SessionState, seqs: number[]): SessionState {
-  const prev = state.mirror.window
-  const nw = evictSeqs(prev, seqs)
-  if (nw === prev) return state
-  const uuids = new Set<string>()
-  for (const seq of seqs) {
-    const msg = prev.window.get(seq) ?? prev.pending.get(seq)
-    const u = msg ? (msg as { uuid?: unknown }).uuid : undefined
-    if (typeof u === 'string' && u.length > 0) uuids.add(u)
-  }
-  // Attach the evicted window FIRST: evictMessages' internal window sync
-  // (seqsForUuids + evictSeqs) then finds the seqs already deleted and
-  // no-ops, instead of computing a second window from `prev` that the
-  // overwrite below would discard. Its uuid pruning (items/messages,
-  // toolUseId lifecycle maps) still runs on the attached state.
-  let next = withMirror(state, { ...state.mirror, window: nw })
-  if (uuids.size > 0) next = evictMessages(next, Array.from(uuids))
-  // Recording tombstones can DRAIN parked frames: the interrupt/withdraw
-  // race lands the result (seq N+1) while the steer (seq N) is still
-  // missing — it parks — and the late messages-evicted [N] then tombstones
-  // the hole and moves the parked result into the window. Those drained
-  // frames are fresh (never applied — see freshWindowMessages) and MUST
-  // reach the ordered log, or a stranded `result` never clears liveTurn
-  // (the stuck WorkingBubble). Same attach-before-apply ordering as
-  // windowLive: applyMessage's internal trim/eviction must sync the
-  // window the frames actually survive into.
-  for (const [, msg] of freshWindowMessages(prev, nw)) {
-    next = applyMessage(next, msg)
-  }
-  return next
-}
 
 // ── prependMessages ─────────────────────────────────────────────────────────
 //
@@ -518,7 +395,10 @@ function seqsForUuids(w: WindowState, uuids: ReadonlySet<string>): number[] {
   return out
 }
 
-// `applyMessage` lives in message-pipeline.ts (Task 7); `dedupeReplayPayload`,
+// `applyMessage` lives in message-pipeline.ts (Task 7); the WINDOW_* handlers
+// (`windowLive` / `windowPage` / `windowEvict`) live in window-bridge.ts
+// (Task 7 fix round 1 — the seam that breaks the message-pipeline ↔
+// transcript-log value-import cycle). `dedupeReplayPayload`,
 // `splitReplayAgainstCache`, `replayReplace`, `replaceStaleCachedMessages`,
 // `applyMidSlice`, `repairChronology`, `overlapAnchorUuid`,
 // `partitionNoOverlapByTime`, `promptSequencesEqual`, and the shape-compare
