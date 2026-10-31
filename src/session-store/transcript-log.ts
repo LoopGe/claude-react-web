@@ -57,6 +57,7 @@ import {
 import {
   foldActiveWorktree,
   isTrimBoundary,
+  messageTouchesWorktree,
   recomputeActiveWorktree,
   toTranscriptItem,
   topLevelUserPromptSignature,
@@ -72,13 +73,15 @@ import {
   pruneIndexesToLive,
   rebuildIndexesFromMessages,
 } from './index-pipeline'
-// applyMessage stays in the reducer (Task 7 extracts it to message-pipeline).
-// The WINDOW_* handlers call it at runtime to apply freshly-windowed messages
-// to the ordered log. The import is a live ESM binding; applyMessage is a
-// hoisted function declaration, so the circular reference resolves at runtime
-// (the call sites never fire at module-init). Task 7 moves applyMessage to
-// message-pipeline.ts and switches this import.
-import { applyMessage } from './reducer'
+// applyMessage lives in message-pipeline.ts (Task 7 extracted it from the
+// reducer). The WINDOW_* handlers call it at runtime to apply freshly-windowed
+// messages to the ordered log. The import is a live ESM binding; applyMessage
+// is a hoisted function declaration, so the circular reference
+// (message-pipeline ↔ transcript-log) resolves at runtime — the call sites
+// never fire at module-init. This is the cycle Task 7 deliberately moved off
+// reducer.ts: neither module imports reducer.ts (the "no business module
+// imports reducer.ts" end state).
+import { applyMessage } from './message-pipeline'
 
 // MEMORY_ITEM_CAP — the in-memory transcript bound. Re-exported by the
 // reducer so existing importers (`active-worktree.test.ts`) keep resolving.
@@ -515,9 +518,160 @@ function seqsForUuids(w: WindowState, uuids: ReadonlySet<string>): number[] {
   return out
 }
 
-// `applyMessage`, `dedupeReplayPayload`, `splitReplayAgainstCache`,
-// `replayReplace`, `replaceStaleCachedMessages`, `applyMidSlice`,
-// `repairChronology`, `overlapAnchorUuid`, `partitionNoOverlapByTime`,
-// `promptSequencesEqual`, the shape-compare helpers, and the optimistic/
-// ack/consumed/steered intent handlers stay in reducer.ts — they belong to
-// the message-pipeline (Task 7) and replay-merge (Task 8) owners.
+// `applyMessage` lives in message-pipeline.ts (Task 7); `dedupeReplayPayload`,
+// `splitReplayAgainstCache`, `replayReplace`, `replaceStaleCachedMessages`,
+// `applyMidSlice`, `repairChronology`, `overlapAnchorUuid`,
+// `partitionNoOverlapByTime`, `promptSequencesEqual`, and the shape-compare
+// helpers stay in reducer.ts — they belong to the replay-merge owner (Task 8).
+
+// ── stampMessageConsumed / stampMessageSteered ──────────────────────────────
+//
+// Mirror-only consumed/steered stamps extracted from the reducer's
+// applyMessageConsumed / applyMessageSteered (Task 7). The intent-side
+// concerns (placeholder re-derivation, ack re-keying) live in
+// user-message-lifecycle.ts, which delegates the mirror writes here. This
+// keeps the dependency direction one-way: user-message-lifecycle →
+// transcript-log (transcript-log never calls back into lifecycle).
+
+/** Cap on the pendingConsumedMessages map. Matches the historical reducer
+ *  constant — a transient parking lot for consumed signals that arrived
+ *  before their matching user-message broadcast. The map is FIFO-evicted
+ *  past this cap so a runaway producer can't grow it unboundedly. */
+const PENDING_CONSUMED_CAP = 64
+
+/** Bounded insert into the pendingConsumedMessages map: keeps the oldest
+ *  entries and drops the oldest once the cap is exceeded. */
+function rememberPendingConsumed(
+  pending: ReadonlyMap<string, number>,
+  uuid: string,
+  consumedAt: number,
+): Map<string, number> {
+  const next = new Map(pending)
+  next.set(uuid, consumedAt)
+  while (next.size > PENDING_CONSUMED_CAP) {
+    const oldest = next.keys().next().value
+    if (typeof oldest !== 'string') break
+    next.delete(oldest)
+  }
+  return next
+}
+
+/** Mirror-only consumed stamp: flips the matching item's deliveryStatus to
+ *  'consumed', stamps msg.consumedAt, syncs the parallel `messages` array,
+ *  prunes the pendingConsumedMessages entry for this uuid, and rescans
+ *  activeWorktree when either side touches a worktree.
+ *
+ *  When the uuid is NOT in mirror.items (the message broadcast hasn't landed
+ *  yet), the consumed signal parks in `pendingConsumedMessages` instead —
+ *  the later broadcast's `effectiveConsumedAt` (message-pipeline) forwards
+ *  it onto the appended item. Identity-stable when the signal is already
+ *  parked with the same value, or when the on-screen item is already
+ *  consumed.
+ *
+ *  The intent placeholder path (consumed signal for a placeholder that
+ *  hasn't been acked yet) is owned by user-message-lifecycle.applyMessageConsumed
+ *  — it must NOT call this function while the placeholder still lives in
+ *  intent. This function only handles the mirror side. */
+export function stampMessageConsumed(
+  mirror: ServerMirror,
+  uuid: string,
+  consumedAt: number,
+): ServerMirror {
+  const idx = mirror.items.findIndex((it) => it.id === uuid)
+  if (idx < 0) {
+    // Item not yet on screen. Park the signal; the broadcast will pick it up.
+    if (mirror.pendingConsumedMessages.get(uuid) === consumedAt) return mirror
+    const pendingConsumedMessages = rememberPendingConsumed(
+      mirror.pendingConsumedMessages,
+      uuid,
+      consumedAt,
+    )
+    return { ...mirror, pendingConsumedMessages }
+  }
+  const item = mirror.items[idx]
+  if (item.deliveryStatus === 'consumed') return mirror
+  // Stamp the underlying message so a later re-derivation (and any code
+  // reading msg.consumedAt directly) agrees. Build a new msg object rather
+  // than mutating the cached one, keeping the store's items immutable.
+  const nextMsg: SdkMessage = { ...item.msg, consumedAt }
+  const items = mirror.items.slice()
+  items[idx] = { ...item, msg: nextMsg, deliveryStatus: 'consumed' }
+  // Keep the parallel `messages` array's object reference in sync so a
+  // later REPLAY/PREPEND that reads msg.consumedAt is consistent.
+  const mIdx = mirror.messages.findIndex(
+    (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
+  )
+  const messages = mIdx >= 0 ? mirror.messages.slice() : mirror.messages
+  // The swapped-in copy only differs by `consumedAt`, but it is built from the
+  // ITEM's msg, which need not be the very object `messages[mIdx]` held — so
+  // rescan whenever either side touches a worktree (O(1) otherwise).
+  const worktreeTouched = mIdx >= 0 &&
+    (messageTouchesWorktree(mirror.messages[mIdx]) || messageTouchesWorktree(nextMsg))
+  if (mIdx >= 0) messages[mIdx] = nextMsg
+  let pendingConsumedMessages: ReadonlyMap<string, number> = mirror.pendingConsumedMessages
+  if (pendingConsumedMessages.has(uuid)) {
+    const nextConsumedMessages = new Map(pendingConsumedMessages)
+    nextConsumedMessages.delete(uuid)
+    pendingConsumedMessages = nextConsumedMessages
+  }
+  return {
+    ...mirror,
+    items,
+    messages,
+    pendingConsumedMessages,
+    activeWorktree: worktreeTouched
+      ? recomputeActiveWorktree(mirror.activeWorktree, messages)
+      : mirror.activeWorktree,
+  }
+}
+
+/** Mirror-only steered stamp: stamps `injectedAt` (state='injected') or
+ *  `requeuedAt` (state='requeued') on the matching item's msg, flips
+ *  deliveryStatus accordingly, syncs the parallel `messages` array, and
+ *  rescans activeWorktree when either side touches a worktree.
+ *
+ *  Simpler than stampMessageConsumed: the initial broadcast carries
+ *  steeredAt (the 'injecting' state never arrives via this action), and the
+ *  injected / requeued frames are pushed strictly after the broadcast, so the
+ *  item is always present — a miss is a harmless no-op (replay's ring stamps
+ *  are the durable truth). 'requeued' falls through to the queued→consumed
+ *  flow: the msg keeps its stamps and deriveDeliveryStatus skips the steered
+ *  branch once requeuedAt is present. */
+export function stampMessageSteered(
+  mirror: ServerMirror,
+  uuid: string,
+  steerState: 'injected' | 'requeued',
+): ServerMirror {
+  const idx = mirror.items.findIndex((it) => it.id === uuid)
+  if (idx < 0) return mirror
+  const item = mirror.items[idx]
+  const stamp = steerState === 'injected' ? { injectedAt: Date.now() } : { requeuedAt: Date.now() }
+  if (steerState === 'injected' && item.deliveryStatus === 'injected') return mirror
+  const nextMsg: SdkMessage = { ...item.msg, ...stamp }
+  const items = mirror.items.slice()
+  items[idx] = {
+    ...item,
+    msg: nextMsg,
+    deliveryStatus: steerState === 'injected' ? 'injected' : 'queued',
+  }
+  const mIdx = mirror.messages.findIndex(
+    (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
+  )
+  // Same rule as stampMessageConsumed: only slice when we'll actually swap an
+  // entry (mIdx >= 0); otherwise preserve the original reference so a
+  // messages/items invariant violation doesn't trigger spurious store emits.
+  const messages = mIdx >= 0 ? mirror.messages.slice() : mirror.messages
+  // Same rule as stampMessageConsumed: the swapped-in copy is built from the
+  // ITEM's msg, so rescan only if either side touches a worktree.
+  const worktreeTouched = mIdx >= 0 &&
+    (messageTouchesWorktree(mirror.messages[mIdx]) || messageTouchesWorktree(nextMsg))
+  if (mIdx >= 0) messages[mIdx] = nextMsg
+  return {
+    ...mirror,
+    items,
+    messages,
+    activeWorktree: worktreeTouched
+      ? recomputeActiveWorktree(mirror.activeWorktree, messages)
+      : mirror.activeWorktree,
+  }
+}

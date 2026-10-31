@@ -2,21 +2,17 @@ import type { PermissionRequest, SdkMessage } from '../types'
 import {
   createInitialClientIntent,
   createInitialServerMirror,
-  type ClientIntent,
   type ServerMirror,
   type SessionAction,
   type SessionState,
-  type TranscriptItem,
   withIntent,
   withMirror,
 } from './types'
 import {
-  messageTouchesWorktree,
   msgTime,
   recomputeActiveWorktree,
   toTranscriptItem,
 } from './normalize'
-import { supersedeDraft } from './draft-state'
 import { promptContentFingerprint } from '../../shared/prompt-fingerprint.js'
 import {
   bumpGeneration,
@@ -24,8 +20,6 @@ import {
 } from './seq-window'
 import {
   flushLiveTurn,
-  pruneFinalizedLiveTurnText,
-  updateLiveTurnMirror,
 } from './live-turn'
 import {
   applyTasksSnapshot,
@@ -40,18 +34,28 @@ import {
   sweepAtTurnEnd,
 } from './turn-status'
 import {
-  updateIndexesMirror,
-  drainPendingResults,
-} from './index-pipeline'
-import {
   evictMessages,
   prependMessages,
-  trimFront,
-  updateTranscriptMirror,
   windowEvict,
   windowLive,
   windowPage,
 } from './transcript-log'
+// applyMessage moved to message-pipeline.ts (Task 7). The reducer's MESSAGE
+// action delegates here; replayReplace (still in reducer.ts until Task 8)
+// also calls it. The WINDOW_* handlers in transcript-log import this same
+// binding — the live ESM binding keeps the message-pipeline ↔ transcript-log
+// cycle resolving at runtime (call sites never fire at module-init).
+import { applyMessage } from './message-pipeline'
+// Optimistic/ack/consumed/steered intent handlers and clearSendingPlaceholders
+// moved to user-message-lifecycle.ts (Task 7). The reducer delegates the four
+// user-message actions here; SESSION_TERMINATED uses clearSendingPlaceholders.
+import {
+  applyOptimisticUserMessage,
+  ackUserMessage,
+  applyMessageConsumed,
+  applyMessageSteered,
+  clearSendingPlaceholders,
+} from './user-message-lifecycle'
 // Re-export reapplyDismissed so the existing importer (`reducer.test.ts`)
 // keeps resolving without a 4th-file edit. The canonical definition lives in
 // sidechain-index.ts.
@@ -973,479 +977,13 @@ function promptSequencesEqual(
   }
 }
 
-function applyOptimisticUserMessage(state: SessionState, message: SdkMessage): SessionState {
-  const mirror = state.mirror
-  // Build the placeholder TranscriptItem. `prev` is the last RENDERED item —
-  // which, post-refactor, is whichever placeholder is queued last (insertion
-  // order) or, if none, the tail of mirror.items. We pass mirror tail as the
-  // prev because compact-summary detection only fires on assistant/system
-  // frames, and an optimistic user prompt's predecessor is always a server
-  // frame in practice.
-  const item = toTranscriptItem(message, mirror.items[mirror.items.length - 1])
-  if (!item) return state
-
-  // If the server's WS echo already arrived and was appended to mirror.items
-  // before this optimistic insert ran, don't add a duplicate placeholder.
-  // We mark that server item as a known-pending id so applyMessage's echo
-  // path is a no-op on its NEXT arrival (the echo can land twice in some
-  // reconnect paths).
-  //
-  // NOTE: This uses shallow === on `content`. For plain text strings this
-  // works correctly. For multimodal messages (arrays), the ref comparison
-  // always returns false — the safe direction (no false dedup).
-  const last = mirror.items[mirror.items.length - 1]
-  if (last && last.msg.type === 'user' && last.msg.message?.content === message.message?.content) {
-    // Server echo landed first; nothing to do for the intent layer. The
-    // placeholder is moot.
-    return state
-  }
-
-  // Mark the placeholder as 'sending' so the user bubble renders a spinner.
-  // The flag is implicitly cleared by the echo-merge in applyMessage, which
-  // drops the placeholder from intent and appends the server's clean item to
-  // mirror.items (which has no `sending` field). Stamp receivedAt locally so
-  // the timestamp shows immediately.
-  const placeholder: TranscriptItem = {
-    ...item,
-    sending: true,
-    receivedAt: item.receivedAt ?? Date.now(),
-  }
-  const next = new Map(state.intent.pendingPlaceholders)
-  next.set(placeholder.id, placeholder)
-  return withIntent(state, { ...state.intent, pendingPlaceholders: next })
-}
-
-function ackUserMessage(
-  state: SessionState,
-  pendingId: string,
-  serverUuid: string,
-  receivedAt?: number,
-): SessionState {
-  // ACK flow: the REST POST returned the server-side uuid for an optimistic
-  // placeholder. Two outcomes are possible — both must be idempotent against
-  // the WS echo arriving before or after the ACK:
-  //
-  //   1. The WS echo has NOT landed yet. The placeholder still lives in
-  //      intent.pendingPlaceholders. Re-key it to the server uuid, strip
-  //      `sending`, and stamp receivedAt/consumedAt from what we know.
-  //      The next echo for this uuid is a no-op (placeholder gone).
-  //   2. The WS echo HAS landed. The placeholder was removed from intent
-  //      by applyMessage. There's nothing to ack — return unchanged.
-  const placeholder = state.intent.pendingPlaceholders.get(pendingId)
-  if (!placeholder) return state
-
-  const consumedAt = state.mirror.pendingConsumedMessages.get(serverUuid)
-  const msg: SdkMessage = {
-    ...placeholder.msg,
-    uuid: serverUuid,
-    ...(typeof receivedAt === 'number' ? { receivedAt } : {}),
-    ...(typeof consumedAt === 'number' ? { consumedAt } : {}),
-  }
-  // Re-derive the TranscriptItem with the new uuid so its id matches the
-  // server's. `prev` is unknown at this point — we pass undefined; compact-
-  // summary detection on a user prompt is always false, so it's harmless.
-  const updated = toTranscriptItem(msg, undefined)
-  if (!updated) {
-    // Couldn't rebuild — drop the placeholder anyway so the spinner clears.
-    const next = new Map(state.intent.pendingPlaceholders)
-    next.delete(pendingId)
-    return withIntent(state, { ...state.intent, pendingPlaceholders: next })
-  }
-  // Carry sending=false implicitly (toTranscriptItem doesn't set it). Re-key
-  // the map to the server uuid so the next echo (if any) can match.
-  //
-  // The re-key must PRESERVE the entry's position in the Map. A delete+set
-  // moves the ack'd entry to the end, which (with another send still pending)
-  // transiently renders the acked bubble BELOW the newer un-acked one — and
-  // worse, breaks applyMessage's echo-merge, which consumes the OLDEST
-  // placeholder on each top-level user echo in FIFO send order: after the
-  // reorder the oldest entry is the WRONG one, so the echo eats the newer
-  // placeholder and the acked one lingers as a duplicate bubble until the
-  // turn-end sweep. Map preserves insertion order, so rebuilding the map
-  // entry-by-entry (replacing the value at the ack'd entry's original slot)
-  // keeps order === send order across ack/echo interleavings. This closes
-  // the wrong-eat class ONLY for placeholders that eventually echo: a
-  // placeholder removed without its echo (rollbackUserMessage after the
-  // server nonetheless accepted, or a turn-end sweep racing a late echo)
-  // still shifts the FIFO — a pre-existing edge accepted here, since
-  // signature-based matching was explicitly deferred in applyMessage.
-  const next = new Map<string, TranscriptItem>()
-  for (const [key, value] of state.intent.pendingPlaceholders) {
-    if (key === pendingId) next.set(updated.id, updated)
-    else next.set(key, value)
-  }
-
-  // If the consumed signal already arrived, drop it from the mirror cache
-  // since we've folded it into the placeholder's msg.
-  let nextMirror = state.mirror
-  if (typeof consumedAt === 'number' && state.mirror.pendingConsumedMessages.has(serverUuid)) {
-    const pendingConsumedMessages = new Map(state.mirror.pendingConsumedMessages)
-    pendingConsumedMessages.delete(serverUuid)
-    nextMirror = { ...state.mirror, pendingConsumedMessages }
-  }
-  return {
-    sessionId: state.sessionId,
-    mirror: nextMirror,
-    intent: { ...state.intent, pendingPlaceholders: next },
-  }
-}
-
-function clearSendingPlaceholders(intent: ClientIntent): ClientIntent {
-  // After a `result` frame the SDK has finished processing — any lingering
-  // placeholders are abandoned. Drop them entirely (they'd otherwise spin
-  // forever). The matching server messages are already in mirror.items by
-  // this point (the result frame lands AFTER the user echo).
-  if (intent.pendingPlaceholders.size === 0) return intent
-  return { ...intent, pendingPlaceholders: new Map<string, TranscriptItem>() }
-}
-
-/** Flip a queued user message to 'consumed' when the live message-consumed
- *  frame arrives. Matches by uuid. No-op when the message isn't present yet
- *  (the frame raced ahead of the message broadcast) or is already consumed —
- *  in the race case the message will carry consumedAt on its own broadcast /
- *  the next replay, so we self-heal without tracking pending uuids. Mutates
- *  the message object's consumedAt in place (consistent with the server,
- *  where history and the live frame share one reference) and rebuilds just
- *  the affected TranscriptItem so deliveryStatus re-derives. */
-/** MESSAGE_STEERED: stamp injectedAt / requeuedAt on the matching steered
- *  message and re-derive its deliveryStatus. Simpler than
- *  applyMessageConsumed: the initial broadcast carries steeredAt (the
- *  'injecting' state never arrives via this action), and the injected /
- *  requeued frames are pushed strictly after the broadcast, so the item is
- *  always present — a miss is a harmless no-op (replay's ring stamps are the
- *  durable truth). 'requeued' falls through to the queued→consumed flow:
- *  the msg keeps its stamps and deriveDeliveryStatus skips the steered
- *  branch once requeuedAt is present. */
-function applyMessageSteered(state: SessionState, uuid: string, steerState: 'injected' | 'requeued'): SessionState {
-  const mirror = state.mirror
-  const idx = mirror.items.findIndex((it) => it.id === uuid)
-  if (idx < 0) return state
-  const item = mirror.items[idx]
-  const stamp = steerState === 'injected' ? { injectedAt: Date.now() } : { requeuedAt: Date.now() }
-  if (steerState === 'injected' && item.deliveryStatus === 'injected') return state
-  const nextMsg: SdkMessage = { ...item.msg, ...stamp }
-  const items = mirror.items.slice()
-  items[idx] = { ...item, msg: nextMsg, deliveryStatus: steerState === 'injected' ? 'injected' : 'queued' }
-  const mIdx = mirror.messages.findIndex(
-    (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
-  )
-  const messages = mirror.messages.slice()
-  // Same rule as applyMessageConsumed: the swapped-in copy is built from the
-  // ITEM's msg, so rescan only if either side touches a worktree.
-  const worktreeTouched = mIdx >= 0 &&
-    (messageTouchesWorktree(mirror.messages[mIdx]) || messageTouchesWorktree(nextMsg))
-  if (mIdx >= 0) messages[mIdx] = nextMsg
-  return withMirror(state, {
-    ...mirror,
-    items,
-    messages,
-    activeWorktree: worktreeTouched
-      ? recomputeActiveWorktree(mirror.activeWorktree, messages)
-      : mirror.activeWorktree,
-  })
-}
-
-function applyMessageConsumed(state: SessionState, uuid: string, consumedAt: number): SessionState {
-  const mirror = state.mirror
-  // Also stamp a placeholder living in intent: the user message hasn't been
-  // echoed by the server yet, so it isn't in mirror.items, but its bubble is
-  // already rendered (via the buildSnapshot merge) and must flip from queued/
-  // sending to consumed when the signal lands first. Without this branch the
-  // post-refactor intent layer swallows the consumed signal until the echo —
-  // a regression the pre-refactor code didn't have because placeholders lived
-  // in items. We re-derive the placeholder so deliveryStatus is recomputed.
-  const placeholder = state.intent.pendingPlaceholders.get(uuid)
-  if (placeholder) {
-    const nextMsg: SdkMessage = { ...placeholder.msg, consumedAt }
-    const rebuilt = toTranscriptItem(nextMsg, undefined)
-    const updated: TranscriptItem = rebuilt
-      ? { ...rebuilt, sending: placeholder.sending }
-      : { ...placeholder, msg: nextMsg, deliveryStatus: 'consumed' }
-    const nextPlaceholders = new Map(state.intent.pendingPlaceholders)
-    nextPlaceholders.set(uuid, updated)
-    return withIntent(state, { ...state.intent, pendingPlaceholders: nextPlaceholders })
-  }
-  const idx = mirror.items.findIndex((it) => it.id === uuid)
-  if (idx < 0) {
-    if (mirror.pendingConsumedMessages.get(uuid) === consumedAt) return state
-    const pendingConsumedMessages = rememberPendingConsumed(mirror.pendingConsumedMessages, uuid, consumedAt)
-    return withMirror(state, { ...mirror, pendingConsumedMessages })
-  }
-  const item = mirror.items[idx]
-  if (item.deliveryStatus === 'consumed') return state
-  // Stamp the underlying message so a later re-derivation (and any code
-  // reading msg.consumedAt directly) agrees. Build a new msg object rather
-  // than mutating the cached one, keeping the store's items immutable.
-  const nextMsg: SdkMessage = { ...item.msg, consumedAt }
-  const items = mirror.items.slice()
-  items[idx] = { ...item, msg: nextMsg, deliveryStatus: 'consumed' }
-  // Keep the parallel `messages` array's object reference in sync so a
-  // later REPLAY/PREPEND that reads msg.consumedAt is consistent.
-  const mIdx = mirror.messages.findIndex(
-    (m) => (typeof m.uuid === 'string' ? m.uuid : null) === uuid,
-  )
-  const messages = mIdx >= 0 ? mirror.messages.slice() : mirror.messages
-  // The swapped-in copy only differs by `consumedAt`, but it is built from the
-  // ITEM's msg, which need not be the very object `messages[mIdx]` held — so
-  // rescan whenever either side touches a worktree (O(1) otherwise).
-  const worktreeTouched = mIdx >= 0 &&
-    (messageTouchesWorktree(mirror.messages[mIdx]) || messageTouchesWorktree(nextMsg))
-  if (mIdx >= 0) messages[mIdx] = nextMsg
-  let pendingConsumedMessages: ReadonlyMap<string, number> = mirror.pendingConsumedMessages
-  if (pendingConsumedMessages.has(uuid)) {
-    const nextConsumedMessages = new Map(pendingConsumedMessages)
-    nextConsumedMessages.delete(uuid)
-    pendingConsumedMessages = nextConsumedMessages
-  }
-  return withMirror(state, {
-    ...mirror,
-    items,
-    messages,
-    pendingConsumedMessages,
-    activeWorktree: worktreeTouched
-      ? recomputeActiveWorktree(mirror.activeWorktree, messages)
-      : mirror.activeWorktree,
-  })
-}
-
-// `MEMORY_ITEM_CAP` and `MEMORY_TRIM_SLACK` moved to transcript-log.ts (the
-// transcript-log owner). The reducer re-exports MEMORY_ITEM_CAP from there so
-// existing importers (`active-worktree.test.ts`) keep resolving.
-const PENDING_CONSUMED_CAP = 64
-
-function rememberPendingConsumed(
-  pending: ReadonlyMap<string, number>,
-  uuid: string,
-  consumedAt: number,
-): Map<string, number> {
-  const next = new Map(pending)
-  next.set(uuid, consumedAt)
-  while (next.size > PENDING_CONSUMED_CAP) {
-    const oldest = next.keys().next().value
-    if (typeof oldest !== 'string') break
-    next.delete(oldest)
-  }
-  return next
-}
-
-// Exported for transcript-log.ts: the WINDOW_* handlers call applyMessage at
-// runtime to apply freshly-windowed messages to the ordered log. The import
-// is a live ESM binding; applyMessage is a hoisted function declaration, so
-// the circular reference (reducer ↔ transcript-log) resolves at runtime —
-// the call sites never fire at module-init. Task 7 moves applyMessage to
-// message-pipeline.ts, which breaks the cycle (message-pipeline imports
-// transcript-log; transcript-log imports message-pipeline; neither imports
-// reducer.ts — the "no business module imports reducer.ts" end state).
-export function applyMessage(state: SessionState, message: SdkMessage): SessionState {
-  const mirror = state.mirror
-  const messageUuid = typeof message.uuid === 'string' ? message.uuid : null
-  const existingConsumedAt = messageUuid
-    ? mirror.items.find((it) => it.id === messageUuid)?.msg.consumedAt
-    : undefined
-  const pendingConsumedAt = messageUuid ? mirror.pendingConsumedMessages.get(messageUuid) : undefined
-  // Echo-merge: when the server's broadcast lands for a user message we sent
-  // optimistically, drop the matching placeholder from intent. The server's
-  // clean item then appends to mirror.items normally via updateTranscript
-  // below — no in-place swap necessary now that placeholders don't live in
-  // mirror.items.
-  //
-  // Guard: only match when the incoming message is a top-level user
-  // message (parent_tool_use_id === null/undefined). Subagent tool_result
-  // frames are also `type: 'user'` but should never consume a placeholder.
-  const incomingParent = message.parent_tool_use_id
-  let workingIntent = state.intent
-  let placeholderConsumedAt: number | undefined
-  if (
-    message.type === 'user' &&
-    workingIntent.pendingPlaceholders.size > 0 &&
-    incomingParent == null
-  ) {
-    // Find the oldest placeholder — Maps preserve insertion order, so the
-    // first key is the oldest send. Echoes arrive in send order, so this is
-    // the correct match. If a multi-content match (e.g. by signature) is
-    // ever needed, this is the place to add it; for now, order-based
-    // matching mirrors the pre-refactor behaviour without the brittleness
-    // of looking up by id in mirror.items.
-    const oldestKey = workingIntent.pendingPlaceholders.keys().next().value
-    if (typeof oldestKey === 'string') {
-      // Forward any consumedAt previously stamped on the placeholder (via a
-      // MESSAGE_CONSUMED frame that landed before this echo). The placeholder
-      // is the only carrier of that state when it's been ack'd before the
-      // server echo — pendingConsumedMessages was already cleared on ack.
-      const placeholder = workingIntent.pendingPlaceholders.get(oldestKey)
-      if (placeholder && typeof placeholder.msg.consumedAt === 'number') {
-        placeholderConsumedAt = placeholder.msg.consumedAt
-      }
-      const nextPlaceholders = new Map(workingIntent.pendingPlaceholders)
-      nextPlaceholders.delete(oldestKey)
-      workingIntent = { ...workingIntent, pendingPlaceholders: nextPlaceholders }
-    }
-  }
-  const effectiveConsumedAt = typeof pendingConsumedAt === 'number'
-    ? pendingConsumedAt
-    : (typeof placeholderConsumedAt === 'number' ? placeholderConsumedAt : existingConsumedAt)
-  const incomingMessage: SdkMessage = typeof effectiveConsumedAt === 'number'
-    ? { ...message, consumedAt: effectiveConsumedAt }
-    : message
-
-  // `api_retry` is a TRANSIENT rate-limit-retry indicator: it never enters
-  // items/messages/IDB (keeping the transcript append-only). It is routed to
-  // a dedicated slot here, and cleared by the next non-retry message.
-  // updateTranscriptMirror is a no-op for api_retry (toTranscriptItem
-  // returns null), so it neither appends nor needs the old in-place
-  // replace/strip logic.
-  //
-  // No parent_tool_use_id check is needed (verified against the CLI binary's
-  // own emitter, 2.1.x): the host loop converts an internal `api_error` into
-  // `{type:'system', subtype:'api_retry', attempt, max_retries, …}` with NO
-  // parent field, and the subagent-stream forwarding loop explicitly SKIPS
-  // the child's api_retry frames — a subagent's retry instead rides a
-  // `tool_progress` frame (data.type 'agent_api_retry', subagent_retry
-  // payload), which our pump drops with every other tool_progress. So every
-  // `system/api_retry` that reaches this reducer is a MAIN-thread retry.
-  const isApiRetry = message.type === 'system' && message.subtype === 'api_retry'
-  // `thinking_tokens` is a transient live estimate of the current thinking
-  // block's token count (see toTranscriptItem — never a TranscriptItem). It
-  // routes to `mirror.thinkingTokens` for the WorkingBubble, exactly like
-  // api_retry routes to its slot. Unlike api_retry it is NOT cleared by every
-  // other message: stream_event deltas interleave with thinking_tokens frames
-  // during the same thinking phase, and clearing on them would flicker the
-  // display off between estimates. It clears when the thinking block it
-  // describes ends (any main-thread block-boundary frame — content_block_start
-  // or the per-block `assistant` finalize) and on `result` (turn end).
-  const isThinkingTokens = message.type === 'system' && message.subtype === 'thinking_tokens'
-  // `stream_event` is a live-streaming delta (one per content chunk — hundreds
-  // per heavy turn). It never enters items/messages (toTranscriptItem returns
-  // null), but it drives the live-turn accumulator and the WorkingBubble phase.
-  const isStreamEvent = message.type === 'stream_event'
-
-  let thinkingTokens: number | null = mirror.thinkingTokens
-  if (isThinkingTokens) {
-    // NOTE: SDKThinkingTokensMessage carries no parent_tool_use_id — the
-    // estimate is origin-blind at this layer (and the pump forwards every
-    // frame). There is nothing to gate on; see the lifecycle note above.
-    const estimate = (incomingMessage as { estimated_tokens?: unknown }).estimated_tokens
-    thinkingTokens = typeof estimate === 'number' && Number.isFinite(estimate) ? estimate : null
-  } else if (incomingMessage.type === 'result') {
-    thinkingTokens = null
-  } else if (incomingParent == null && incomingMessage.type === 'assistant') {
-    // Durable per-block finalize ("one assistant message per completed content
-    // block" — SDKAssistantMessage). Clears the estimate when its thinking
-    // block completes, and — unlike the stream_event boundary below — this
-    // frame is ring-persisted, so it also runs on a reconnect replay (missed
-    // stream_events are never re-served) and in includePartialMessages:false
-    // sessions. Without it a stale "~N tok" could ride a whole tool call.
-    thinkingTokens = null
-  } else if (incomingParent == null && isStreamEvent) {
-    // Live block boundary: ANY content_block_start means the thinking block
-    // the estimate described ("running total for the current thinking block"
-    // — SDKThinkingTokensMessage) is over. Any block type clears, including
-    // another thinking/redacted_thinking start — that is a NEW block whose own
-    // estimates repaint within ms, while keeping the old count would let one
-    // block's total ride the next (and never be overwritten if the new block
-    // streams no estimates at all). Deliberately NO `user` clear: steer echoes,
-    // queued-input echoes and <task-notification> injections are parentless
-    // `user` frames that arrive mid-block and would wipe a live estimate, and
-    // real turn changes are already covered by `result` (turn end) plus these
-    // block boundaries (the new turn's first block).
-    const ev = (incomingMessage as { event?: { type?: string } }).event
-    if (ev?.type === 'content_block_start') thinkingTokens = null
-  }
-
-  const workingMirror: ServerMirror = {
-    ...mirror,
-    eventCount: mirror.eventCount + 1,
-    apiRetry: isApiRetry ? incomingMessage : null,
-    thinkingTokens,
-  }
-
-  let working: SessionState = {
-    sessionId: state.sessionId,
-    mirror: workingMirror,
-    intent: workingIntent,
-  }
-
-  working = withMirror(working, updateLiveTurnMirror(working.mirror, incomingMessage))
-  working = withMirror(working, updateTranscriptMirror(working.mirror, incomingMessage))
-  working = withMirror(working, updateIndexesMirror(working.mirror, incomingMessage))
-  // Live path: a tool_use that just seeded may have an orphan result parked
-  // from an earlier out-of-order ingress — settle it now (see pendingResults).
-  working = withMirror(working, drainPendingResults(working.mirror))
-  // A finalized main-thread assistant message means its text now lives in the
-  // transcript above — drop the duplicate from the live accumulator (see
-  // pruneFinalizedLiveTurnText for the serial-response invariant this leans on).
-  working = withMirror(working, pruneFinalizedLiveTurnText(working.mirror, incomingMessage))
-
-  // A finalized main-thread assistant takes over the in-place draft row: the
-  // row keeps its draft key (alias) so the hand-off updates in place instead
-  // of remounting a fresh row.
-  if (
-    incomingMessage.type === 'assistant'
-    && incomingMessage.parent_tool_use_id == null
-    && working.mirror.draft
-    && messageUuid
-  ) {
-    const { cleared, aliasEntry } = supersedeDraft(working.mirror.draft, messageUuid)
-    working = withMirror(working, {
-      ...working.mirror,
-      draft: cleared,
-      draftRowKeys: { ...working.mirror.draftRowKeys, [aliasEntry[0]]: aliasEntry[1] },
-    })
-  }
-
-  if (messageUuid && working.mirror.pendingConsumedMessages.has(messageUuid)) {
-    const pendingConsumedMessages = new Map(working.mirror.pendingConsumedMessages)
-    pendingConsumedMessages.delete(messageUuid)
-    working = withMirror(working, { ...working.mirror, pendingConsumedMessages })
-  }
-
-  if (incomingMessage.type === 'result') {
-    // A draft still live at the turn's end is an interrupted half-card ("no
-    // roll back"): freeze it as a session-memory partial row. A salvaged
-    // partial response would have superseded the draft already (the MESSAGE
-    // above), so this fires exactly when nothing salvaged it.
-    const m = working.mirror
-    const frozen = m.draft
-      ? { ...m, frozenDrafts: [...m.frozenDrafts, m.draft], draft: null }
-      : m
-    // Turn-end sweep via the shared helper. The live-only concerns
-    // (liveTurn=null, clearSendingPlaceholders) are applied on top.
-    working = {
-      sessionId: working.sessionId,
-      mirror: { ...sweepAtTurnEnd(frozen), liveTurn: null },
-      // Clear any lingering optimistic placeholders — the result frame means
-      // the SDK has finished processing, so no server echo is expected anymore.
-      intent: clearSendingPlaceholders(working.intent),
-    }
-  }
-
-  // Bound in-memory growth. No-op until the transcript exceeds CAP + SLACK,
-  // so the common append path stays allocation-free.
-  working = trimFront(working)
-
-  // Refusal-fallback retraction: evict the refused leg's already-streamed
-  // partial messages. Two carriers, both idempotent (evictMessages no-ops on
-  // unknown uuids):
-  //   - assistant `supersedes` — evict-on-arrival for the replacement frame
-  //     the CLI streams mid-turn;
-  //   - system `model_refusal_fallback.retracted_message_uuids` — the
-  //     end-of-turn audit record (this frame itself stays: it renders as the
-  //     fallback notice and is the canonical replacement).
-  // Runs through applyMessage so replay/disk-loaded transcripts evict too.
-  const supersedes = incomingMessage.type === 'assistant'
-    ? (incomingMessage as { supersedes?: unknown }).supersedes
-    : undefined
-  const retracted = incomingMessage.type === 'system' && incomingMessage.subtype === 'model_refusal_fallback'
-    ? (incomingMessage as { retracted_message_uuids?: unknown }).retracted_message_uuids
-    : undefined
-  const evictUuids = [...(Array.isArray(supersedes) ? supersedes : []), ...(Array.isArray(retracted) ? retracted : [])]
-    .filter((u): u is string => typeof u === 'string' && u.length > 0)
-  if (evictUuids.length > 0) {
-    working = evictMessages(working, evictUuids)
-  }
-
-  return working
-}
+// applyMessage moved to message-pipeline.ts (Task 7). The reducer imports it
+// from there and delegates the MESSAGE action. applyOptimisticUserMessage,
+// ackUserMessage, applyMessageConsumed, applyMessageSteered, and
+// clearSendingPlaceholders moved to user-message-lifecycle.ts; the reducer
+// delegates the four user-message actions and uses clearSendingPlaceholders in
+// the SESSION_TERMINATED branch. rememberPendingConsumed / PENDING_CONSUMED_CAP
+// moved to transcript-log.ts (alongside stampMessageConsumed / stampMessageSteered).
 
 // `rebuildIndexesFromMessages`, `updateIndexesMirror`, `drainPendingResults`,
 // `prunePendingResults`, `pruneMapToLive`, `pruneSettledToLive`,
