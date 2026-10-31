@@ -574,19 +574,12 @@ export function countTaskActivity(tasks: Iterable<TaskRecordUi>): { all: number;
   return { all, indicator }
 }
 
-/** Whether the mirrored transcript still holds a subagent in flight — the
- *  transcript-side liveness leg of both the Waiting state (computeWaiting) and
- *  the WorkingBubble mount gate (shouldMountWorkingBubble). Shared so the main
- *  panel and the side drawer cannot disagree about which statuses count.
- *
- *  Accepts both `pending` (the normal post-turn-end form: the sweep ran) AND
- *  `background` (the form after a server-restart replay, where the CLI
- *  transcript carries no `result` frame for the sweep to fire on, so the record
- *  would otherwise stay `background` and the Waiting state would be lost on a
- *  page refresh). */
-export function hasTranscriptBackground(activeSubagents: readonly ActiveSubagent[] | undefined): boolean {
-  return activeSubagents?.some((a) => a.status === 'pending' || a.status === 'background') ?? false
-}
+// `hasTranscriptBackground` moved to sidechain-index.ts (it is a sidechain-
+// lifecycle predicate and belongs with the subagent record owner). Re-exported
+// here so existing importers (`SideChatDrawer.tsx` imports it from
+// `../session-store/normalize`) keep resolving without a churn-inducing
+// extra-file edit; the canonical definition lives in `./sidechain-index`.
+export { hasTranscriptBackground } from './sidechain-index'
 
 export function getSubagentStarts(msg: SdkMessage): ActiveSubagent[] {
   if (msg.type !== 'assistant') return []
