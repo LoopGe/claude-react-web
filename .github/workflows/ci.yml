@@ -35,6 +35,36 @@ jobs:
       - name: Build
         run: npm run build
 
+  windows-platform:
+    # Ubuntu stays the full-suite gate; this job pins the filesystem, process,
+    # and git-worktree semantics that regressed only on Windows before.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test Windows platform behavior
+        run: >-
+          npx vitest run
+          server/git.worktree.test.ts
+          server/session-worktree.test.ts
+          server/session-manager.test.ts
+          server/tasklist-state.test.ts
+          server/subagent-transcripts.test.ts
+          server/snapshot/shadow-git.test.ts
+          server/app-plugins/plugin-runtime.test.ts
+
   commitlint:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

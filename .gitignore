@@ -25,3 +25,11 @@ codesclaude-react-web.*/
 
 # Visual brainstorming mockups
 .superpowers/
+
+# Locally installed Python runtimes — not project source.
+/Python/
+/src/Python/
+
+# Throwaway probes and investigation artifacts.
+/.scratch/
+/.tmp-investigate/

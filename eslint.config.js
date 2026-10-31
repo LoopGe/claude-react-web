@@ -12,7 +12,21 @@ import prettier from 'eslint-config-prettier'
 export default [
   // `.claude` holds git-ignored worktrees (`.claude/worktrees/*`) — full repo
   // checkouts that must not be linted as part of the main tree.
-  { ignores: ['dist', 'node_modules', 'coverage', 'fixtures', 'plugins', 'packages', '.claude'] },
+  {
+    ignores: [
+      'dist',
+      'node_modules',
+      'coverage',
+      'fixtures',
+      'plugins',
+      'packages',
+      '.claude',
+      '.scratch/**',
+      '.tmp-investigate/**',
+      'Python/**',
+      'src/Python/**',
+    ],
+  },
 
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -68,7 +82,15 @@ export default [
 
   // Node (server + tests + build scripts)
   {
-    files: ['server/**/*.ts', 'desktop/**/*.ts', 'desktop/**/*.mjs', 'vitest.config.ts', 'vite.config.ts', 'build.mjs', 'scripts/**/*.mjs'],
+    files: [
+      'server/**/*.ts',
+      'desktop/**/*.ts',
+      'desktop/**/*.mjs',
+      'vitest.config.ts',
+      'vite.config.ts',
+      'build.mjs',
+      'scripts/**/*.mjs',
+    ],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
