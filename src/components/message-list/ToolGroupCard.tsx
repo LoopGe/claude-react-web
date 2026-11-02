@@ -203,7 +203,7 @@ function ToolGroupMember({
   searchQuery?: string
   activeMatchInItem?: number
 }) {
-  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'tool-group-member-enter')
+  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'item-enter')
 
   return (
     <div

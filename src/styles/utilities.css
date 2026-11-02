@@ -196,21 +196,11 @@
    src/utils/grid-track-tween.ts, so the content below slides open without a
    fractional layout step re-phasing its glyphs. */
 .tool-card-result.tool-card-result-enter {
-  animation: tool-result-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
+  animation: item-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 /* Opacity + rise only: the section's height is driven from rAF in whole CSS px
    (`src/utils/grid-track-tween.ts`) so a fractional grid track can't re-phase
    the glyphs below it every frame. */
-@keyframes tool-result-enter {
-  from {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-sm));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .tool-card-result.tool-card-result-enter {
     animation: none;
@@ -237,7 +227,7 @@
   grid-template-rows: 1fr;
 }
 .grid-clip-enter.grid-clip-entering {
-  animation: grid-clip-reveal var(--motion-duration-moderate) var(--motion-ease-enter);
+  animation: fade-in var(--motion-duration-moderate) var(--motion-ease-enter);
 }
 .grid-clip-enter-inner {
   min-height: 0;
@@ -261,14 +251,6 @@
    `grid-template-rows` tween re-phases every glyph below the row on every
    frame. The base track stays `1fr` — the tween writes an inline px value and
    clears it again, so nothing constrains later content growth. */
-@keyframes grid-clip-reveal {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .grid-clip-enter.grid-clip-entering {
     animation: none;
@@ -1207,17 +1189,7 @@ button.tool-group-failed-jump:focus-visible {
    layout-agnostic so the two can't fight. Same duration/easing family as the
    `.tool-card-result` reveal it sits next to. */
 .tool-group-member.tool-group-member-enter {
-  animation: tool-group-member-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
-}
-@keyframes tool-group-member-enter {
-  from {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-sm));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  animation: item-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 @media (prefers-reduced-motion: reduce) {
   .tool-group-member.tool-group-member-enter {

@@ -11,7 +11,7 @@ const FALLBACK_MS = 160
 
 /**
  * One-shot reveal class latch, shared by the entrance animations that grow a
- * parent box (see `.grid-clip-reveal` / `.tool-group-member-enter` in
+ * parent box (see `fade-in` / `.tool-group-member-enter` in
  * utilities.css): seeds from `entering` (so a row that mounts AFTER the
  * parent's arrival gate armed shows the reveal from its very first frame),
  * re-arms on a genuine false→true transition, and keeps the class applied

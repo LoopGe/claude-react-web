@@ -26,7 +26,7 @@ import { tweenGridTrack } from '../utils/grid-track-tween'
  * useRevealClass.
  */
 export function GridClipEnter({ entering, children }: { entering: boolean; children: ReactNode }) {
-  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'grid-clip-reveal')
+  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'fade-in')
   const outerRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
 

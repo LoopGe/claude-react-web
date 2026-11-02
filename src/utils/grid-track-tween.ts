@@ -6,8 +6,8 @@ import { revealDurationMs } from './reveal-duration'
 /** Drive a collapsing/expanding grid track from rAF, writing WHOLE-PIXEL
  *  heights every frame.
  *
- *  A CSS `grid-template-rows: 0fr→1fr` animation (what `.grid-clip-reveal` and
- *  `tool-result-enter` used) resolves to a FRACTIONAL height every frame, so
+ *  The former CSS `grid-template-rows: 0fr→1fr` reveal animation resolved to
+ *  a FRACTIONAL height every frame, so
  *  every glyph below the growing row is re-rasterized at a new sub-pixel phase
  *  — visible shimmer even though the layout positions themselves measure stable
  *  (a SubagentCard child row: clip slack ±0.5px, pin monotone, while the

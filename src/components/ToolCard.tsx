@@ -482,7 +482,7 @@ export const ToolCard = memo(function ToolCard({
  *  the status badge flips, `animationend` strip, reduced-motion fallback —
  *  is the shared useRevealClass latch. */
 export const ToolResultSection = memo(function ToolResultSection({ result, entering = false, searchQuery, activeMatchIdx }: { result: ToolResultEntry; entering?: boolean; searchQuery?: string; activeMatchIdx?: number }) {
-  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'tool-result-enter')
+  const { revealing, handleAnimationEnd } = useRevealClass(entering, 'item-enter')
   const wrapperRef = useRef<HTMLDivElement>(null)
   const innerRef = useRef<HTMLDivElement>(null)
 

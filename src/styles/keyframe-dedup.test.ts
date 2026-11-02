@@ -1,7 +1,7 @@
 // @vitest-environment node
-// The A-group and CSS-only B-group keyframes are exact duplicates. Keep one
-// canonical definition per group and make every former consumer point at it,
-// without touching the JS-coupled B names or navigation-coupled C group.
+// The A-group and B-group keyframes are exact duplicates. Keep one canonical
+// definition per group, make every CSS consumer point at it, and keep the
+// useRevealClass animationName arguments in sync. The C group stays untouched.
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -58,12 +58,12 @@ const GROUPS = [
   },
   {
     canonical: 'item-enter',
-    retired: ['phase-label-in', 'git-file-row-in', 'marketplace-card-in', 'session-item-enter', 'setup-status-in'],
-    references: { 'chat.css': 2, 'git-panel.css': 1, 'marketplace.css': 1, 'session-list.css': 1, 'setup-page.css': 1 },
+    retired: ['phase-label-in', 'git-file-row-in', 'marketplace-card-in', 'session-item-enter', 'setup-status-in', 'tool-result-enter', 'tool-group-member-enter'],
+    references: { 'chat.css': 2, 'git-panel.css': 1, 'marketplace.css': 1, 'session-list.css': 1, 'setup-page.css': 1, 'utilities.css': 2 },
   },
   {
     canonical: 'fade-in',
-    retired: ['overlay-backdrop-in', 'recap-body-in'],
+    retired: ['overlay-backdrop-in', 'recap-body-in', 'grid-clip-reveal'],
     references: {
       'chat.css': 3,
       'git-panel.css': 1,
@@ -72,9 +72,24 @@ const GROUPS = [
       'overlays.css': 3,
       'session-list.css': 1,
       'tasks-panel.css': 1,
+      'utilities.css': 1,
     },
   },
 ] as const
+
+const REVEAL_CONSUMERS = [
+  { file: 'src/components/ToolCard.tsx', canonical: 'item-enter', retired: 'tool-result-enter' },
+  { file: 'src/components/message-list/ToolGroupCard.tsx', canonical: 'item-enter', retired: 'tool-group-member-enter' },
+  { file: 'src/components/GridClipEnter.tsx', canonical: 'fade-in', retired: 'grid-clip-reveal' },
+] as const
+
+describe.each(REVEAL_CONSUMERS)('$file animationName sync', ({ file, canonical, retired }) => {
+  it(`uses ${canonical} instead of ${retired}`, () => {
+    const source = readFileSync(join(process.cwd(), file), 'utf8')
+    expect(source).toContain(`useRevealClass(entering, '${canonical}')`)
+    expect(source).not.toContain(`useRevealClass(entering, '${retired}')`)
+  })
+})
 
 function namePattern(name: string) {
   return new RegExp(`(^|[^a-zA-Z0-9_-])${name}(?=$|[^a-zA-Z0-9_-])`, 'g')
