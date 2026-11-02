@@ -14,17 +14,11 @@ import { EmptyState } from './EmptyState'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Skeleton } from './Skeleton'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
-import type { FullServerConfig } from '../types/config'
-import type { RowGapPreset } from '../../shared/row-gap'
-import { DEFAULT_ROW_GAP, ROW_GAP_LABELS, ROW_GAP_PRESETS } from '../../shared/row-gap'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
-import { DEFAULT_STREAMING_RENDER_MODE } from '../../shared/streaming-render-mode'
-import type { TextSpacingPreset } from '../../shared/text-spacing'
-import { DEFAULT_TEXT_SPACING, TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spacing'
-import type { FontSizePreset } from '../../shared/font-size'
-import { DEFAULT_FONT_SIZE, FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../shared/font-size'
-import type { AnimationSpeedPreset } from '../../shared/animation-speed'
-import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
+import { DEFAULT_GLOBAL_PREFS, appearanceFromFullConfig, type AppearancePrefs, type FullServerConfig } from '../types/config'
+import { ROW_GAP_LABELS, ROW_GAP_PRESETS } from '../../shared/row-gap'
+import { TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spacing'
+import { FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../shared/font-size'
+import { ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import { AddSkillCard } from './settings/AddSkillCard'
 import { SkillPreviewModal } from './settings/SkillPreviewModal'
@@ -162,19 +156,17 @@ export function GlobalSettingsModal({
   const [steering, setSteering] = useState(true)
 
   // — Appearance tab state ?
-  // Display / behaviour defaults for every session. Sessions without an
-  // explicit per-session override inherit these. Sent as literal booleans —
-  // never `|| null`, which PUT /config would treat as "delete key".
-  const [showPinnedUserMessage, setShowPinnedUserMessage] = useState(true)
-  const [autoRecap, setAutoRecap] = useState(true)
-  const [toolGroupCards, setToolGroupCards] = useState(true)
-  const [autoExpandRunningGroups, setAutoExpandRunningGroups] = useState(true)
-  const [showMessageHeaders, setShowMessageHeaders] = useState(true)
-  const [rowGap, setRowGap] = useState<RowGapPreset>(DEFAULT_ROW_GAP)
-  const [textSpacing, setTextSpacing] = useState<TextSpacingPreset>(DEFAULT_TEXT_SPACING)
-  const [fontSize, setFontSize] = useState<FontSizePreset>(DEFAULT_FONT_SIZE)
-  const [animationSpeed, setAnimationSpeed] = useState<AnimationSpeedPreset>(DEFAULT_ANIMATION_SPEED)
-  const [streamingRenderMode, setStreamingRenderMode] = useState<StreamingRenderMode>(DEFAULT_STREAMING_RENDER_MODE)
+  // Display / behaviour defaults for every session, staged as one object.
+  // Sessions without an explicit per-session override inherit these. Sent as
+  // literal booleans — never `|| null`, which PUT /config would treat as
+  // "delete key". Initialized from /config/full via `appearanceFromFullConfig`
+  // (which preserves explicit `false`); patched field-by-field through
+  // `patchAppearance`, which merges a Partial so an edit to one field never
+  // clobbers the others.
+  const [appearance, setAppearance] = useState<AppearancePrefs>(DEFAULT_GLOBAL_PREFS)
+  const patchAppearance = (patch: Partial<AppearancePrefs>) => {
+    setAppearance((prev) => ({ ...prev, ...patch }))
+  }
 
   // Skills tab state
   const [skillLoadMode, setSkillLoadMode] = useState<SkillLoadMode>('default')
@@ -218,16 +210,7 @@ export function GlobalSettingsModal({
         setDefaultCwd(cfg.defaults?.cwd ?? '')
         setSkillLoadMode(cfg.skillLoadMode ?? 'default')
         setEnabledSkills(cfg.enabledSkills ?? [])
-        setShowPinnedUserMessage(cfg.showPinnedUserMessage ?? true)
-        setAutoRecap(cfg.autoRecap ?? true)
-        setToolGroupCards(cfg.toolGroupCards ?? true)
-        setAutoExpandRunningGroups(cfg.autoExpandRunningGroups ?? true)
-        setShowMessageHeaders(cfg.showMessageHeaders ?? true)
-        setRowGap(cfg.rowGap ?? DEFAULT_ROW_GAP)
-        setTextSpacing(cfg.textSpacing ?? DEFAULT_TEXT_SPACING)
-        setFontSize(cfg.fontSize ?? DEFAULT_FONT_SIZE)
-        setAnimationSpeed(cfg.animationSpeed ?? DEFAULT_ANIMATION_SPEED)
-        setStreamingRenderMode(cfg.streamingRenderMode ?? DEFAULT_STREAMING_RENDER_MODE)
+        setAppearance(appearanceFromFullConfig(cfg))
         setAllowSensitivePathEdits(cfg.allowSensitivePathEdits ?? false)
         setSteering(cfg.steering ?? true)
         setFirstPartyTools(cfg.firstPartyTools ?? {})
@@ -303,18 +286,10 @@ export function GlobalSettingsModal({
         updateCheckRegistry: updateCheckRegistry.trim() || null,
         skillLoadMode,
         enabledSkills: enabledSkills.length > 0 ? enabledSkills : null,
-        // Literal booleans — PUT /config treats null/'' as "delete key",
-        // so `false` must be sent explicitly to persist a real OFF default.
-        showPinnedUserMessage,
-        autoRecap,
-        toolGroupCards,
-        autoExpandRunningGroups,
-        showMessageHeaders,
-        rowGap,
-        textSpacing,
-        fontSize,
-        animationSpeed,
-        streamingRenderMode,
+        // The staged appearance object — spread so every field is sent
+        // explicitly, including literal `false` (PUT /config treats null/''
+        // as "delete key", so `false` must persist a real OFF default).
+        ...appearance,
         allowSensitivePathEdits,
         steering,
       }
@@ -476,26 +451,8 @@ export function GlobalSettingsModal({
               )}
               {tab === 'appearance' && (
                 <AppearanceTab
-                  showPinnedUserMessage={showPinnedUserMessage}
-                  autoRecap={autoRecap}
-                  toolGroupCards={toolGroupCards}
-                  autoExpandRunningGroups={autoExpandRunningGroups}
-                  showMessageHeaders={showMessageHeaders}
-                  rowGap={rowGap}
-                  textSpacing={textSpacing}
-                  fontSize={fontSize}
-                  animationSpeed={animationSpeed}
-                  streamingRenderMode={streamingRenderMode}
-                  onShowPinnedUserMessageChange={setShowPinnedUserMessage}
-                  onAutoRecapChange={setAutoRecap}
-                  onToolGroupCardsChange={setToolGroupCards}
-                  onAutoExpandRunningGroupsChange={setAutoExpandRunningGroups}
-                  onShowMessageHeadersChange={setShowMessageHeaders}
-                  onRowGapChange={setRowGap}
-                  onTextSpacingChange={setTextSpacing}
-                  onFontSizeChange={setFontSize}
-                  onAnimationSpeedChange={setAnimationSpeed}
-                  onStreamingRenderModeChange={setStreamingRenderMode}
+                  values={appearance}
+                  onPatch={patchAppearance}
                 />
               )}
               {tab === 'skills' && (
@@ -770,36 +727,16 @@ function ServerTab({
 
 /** Display / behaviour defaults applied to every session, overridable per
  *  session from the session Settings panel's own Appearance tab. Split out of
- *  the Server tab, which now holds only server-wide Limits + Permissions. */
+ *  the Server tab, which now holds only server-wide Limits + Permissions.
+ *  Receives the staged `AppearancePrefs` object and a single `onPatch` callback
+ *  that merges a Partial — each control patches only its own key, so an edit to
+ *  one field never clobbers the others. */
 function AppearanceTab({
-  showPinnedUserMessage, autoRecap, toolGroupCards, autoExpandRunningGroups,
-  showMessageHeaders, rowGap, textSpacing, fontSize, animationSpeed,
-  streamingRenderMode,
-  onShowPinnedUserMessageChange, onAutoRecapChange, onToolGroupCardsChange,
-  onAutoExpandRunningGroupsChange,
-  onShowMessageHeadersChange, onRowGapChange, onTextSpacingChange, onFontSizeChange,
-  onAnimationSpeedChange, onStreamingRenderModeChange,
+  values,
+  onPatch,
 }: {
-  showPinnedUserMessage: boolean
-  autoRecap: boolean
-  toolGroupCards: boolean
-  autoExpandRunningGroups: boolean
-  showMessageHeaders: boolean
-  rowGap: RowGapPreset
-  textSpacing: TextSpacingPreset
-  fontSize: FontSizePreset
-  animationSpeed: AnimationSpeedPreset
-  streamingRenderMode: StreamingRenderMode
-  onShowPinnedUserMessageChange: (v: boolean) => void
-  onAutoRecapChange: (v: boolean) => void
-  onToolGroupCardsChange: (v: boolean) => void
-  onAutoExpandRunningGroupsChange: (v: boolean) => void
-  onShowMessageHeadersChange: (v: boolean) => void
-  onRowGapChange: (v: RowGapPreset) => void
-  onTextSpacingChange: (v: TextSpacingPreset) => void
-  onFontSizeChange: (v: FontSizePreset) => void
-  onAnimationSpeedChange: (v: AnimationSpeedPreset) => void
-  onStreamingRenderModeChange: (v: StreamingRenderMode) => void
+  values: AppearancePrefs
+  onPatch: (patch: Partial<AppearancePrefs>) => void
 }) {
   return (
     <div className="settings-stack">
@@ -819,8 +756,8 @@ function AppearanceTab({
         >
           <Switch
             label="Show pinned “current question” header"
-            checked={showPinnedUserMessage}
-            onChange={onShowPinnedUserMessageChange}
+            checked={values.showPinnedUserMessage}
+            onChange={(on) => onPatch({ showPinnedUserMessage: on })}
           />
         </SettingsRow>
         <SettingsRow
@@ -829,8 +766,8 @@ function AppearanceTab({
         >
           <Switch
             label="Auto-generate session recap"
-            checked={autoRecap}
-            onChange={onAutoRecapChange}
+            checked={values.autoRecap}
+            onChange={(on) => onPatch({ autoRecap: on })}
           />
         </SettingsRow>
         <SettingsRow
@@ -839,13 +776,13 @@ function AppearanceTab({
         >
           <Switch
             label="Use collapsible transcript cards"
-            checked={toolGroupCards}
-            onChange={onToolGroupCardsChange}
+            checked={values.toolGroupCards}
+            onChange={(on) => onPatch({ toolGroupCards: on })}
           />
         </SettingsRow>
         {/* Sub-setting of the row above. Hidden while the parent is off —
             the preference's value is kept and reappears with the parent. */}
-        {toolGroupCards && (
+        {values.toolGroupCards && (
           <SettingsRow
             rowClassName="settings-row-sub"
             title="Auto-expand running groups"
@@ -853,8 +790,8 @@ function AppearanceTab({
           >
             <Switch
               label="Auto-expand running groups"
-              checked={autoExpandRunningGroups}
-              onChange={onAutoExpandRunningGroupsChange}
+              checked={values.autoExpandRunningGroups}
+              onChange={(on) => onPatch({ autoExpandRunningGroups: on })}
             />
           </SettingsRow>
         )}
@@ -864,8 +801,8 @@ function AppearanceTab({
         >
           <Switch
             label="Show message card headers"
-            checked={showMessageHeaders}
-            onChange={onShowMessageHeadersChange}
+            checked={values.showMessageHeaders}
+            onChange={(on) => onPatch({ showMessageHeaders: on })}
           />
         </SettingsRow>
         <SettingsRow
@@ -874,8 +811,8 @@ function AppearanceTab({
         >
           <Switch
             label="Render live text inline in the transcript"
-            checked={streamingRenderMode === 'inline'}
-            onChange={(on) => onStreamingRenderModeChange(on ? 'inline' : 'overlay')}
+            checked={values.streamingRenderMode === 'inline'}
+            onChange={(on) => onPatch({ streamingRenderMode: on ? 'inline' : 'overlay' })}
           />
         </SettingsRow>
         <SettingsRow
@@ -884,9 +821,9 @@ function AppearanceTab({
         >
           <Segmented
             ariaLabel="Transcript spacing"
-            value={rowGap}
+            value={values.rowGap}
             options={ROW_GAP_PRESETS}
-            onChange={onRowGapChange}
+            onChange={(p) => onPatch({ rowGap: p })}
             labelFor={(p) => ROW_GAP_LABELS[p]}
           />
         </SettingsRow>
@@ -896,9 +833,9 @@ function AppearanceTab({
         >
           <Segmented
             ariaLabel="Message text density"
-            value={textSpacing}
+            value={values.textSpacing}
             options={TEXT_SPACING_PRESETS}
-            onChange={onTextSpacingChange}
+            onChange={(p) => onPatch({ textSpacing: p })}
             labelFor={(p) => TEXT_SPACING_LABELS[p]}
           />
         </SettingsRow>
@@ -908,9 +845,9 @@ function AppearanceTab({
         >
           <Segmented
             ariaLabel="Font size"
-            value={fontSize}
+            value={values.fontSize}
             options={FONT_SIZE_PRESETS}
-            onChange={onFontSizeChange}
+            onChange={(p) => onPatch({ fontSize: p })}
             labelFor={(p) => FONT_SIZE_LABELS[p]}
           />
         </SettingsRow>
@@ -920,9 +857,9 @@ function AppearanceTab({
         >
           <Segmented
             ariaLabel="Animation speed"
-            value={animationSpeed}
+            value={values.animationSpeed}
             options={ANIMATION_SPEED_PRESETS}
-            onChange={onAnimationSpeedChange}
+            onChange={(p) => onPatch({ animationSpeed: p })}
             labelFor={(p) => ANIMATION_SPEED_LABELS[p]}
           />
         </SettingsRow>
