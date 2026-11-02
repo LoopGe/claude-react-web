@@ -4,14 +4,19 @@
 // covers this column. ESC or backdrop click closes; the breadcrumb
 // supports nested drill-down (a Task spawned inside an Agent etc.).
 
-import { memo, useEffect, useRef } from 'react'
+import { memo, useEffect } from 'react'
 import { MessageList } from './MessageList'
 import { McpAppsProvider } from '../hooks/useMcpApps'
-import { useEscapeStack } from '../hooks/useEscapeStack'
-import { useFocusTrap } from '../hooks/useFocusTrap'
+import { TranscriptDrawerShell } from './TranscriptDrawerShell'
 import { ElapsedTimer } from './ElapsedTimer'
 import { IconX, IconArrowLeft } from './icons/ToolIcons'
-import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
+import type {
+  ActiveSubagent,
+  PlanStatus,
+  ToolResultEntry,
+  ToolStatus,
+  TranscriptItem,
+} from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { cx } from '../utils/cx'
@@ -72,7 +77,6 @@ interface Props {
   streamingMode?: StreamingRenderMode
 }
 
-
 export const SubagentOverlay = memo(function SubagentOverlay({
   stack,
   items,
@@ -97,47 +101,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
-  // The synthetic prompt / result rows the parent filter can't reach are
-  // derived inside MessageList from the `subagent` prop — see
-  // message-list/useSubagentSyntheticRows.ts for why they must be built
-  // there (referential stability) rather than assembled here.
-
-  // ESC closes (or pops one level if nested). Registered in the escape stack
-  // (window CAPTURE + stopPropagation) so the keypress is consumed here and
-  // CANNOT fall through to App's bubble-phase interrupt branch. The old bubble
-  // listener had no stopPropagation, so Esc while a subagent overlay was open
-  // closed it AND interrupted the running session — the exact bug this fixes.
-  // canClose gates the exit window: while the overlay is animating out the
-  // keypress is still swallowed, just not acted on. The container is the root
-  // (.subagent-overlay), so the stack's containment scan resolves nesting with
-  // any other overlay regardless of which element holds focus.
-  const overlayRef = useRef<HTMLDivElement>(null)
-  useEscapeStack({
-    active: true,
-    onEscape: () => {
-      if (stack.length > 1) onPop()
-      else onClose()
-    },
-    canClose: () => !isExiting,
-    getContainer: () => overlayRef.current,
-  })
-
-  // Focus trap + restore, mirroring the Settings/Git overlays' Overlay
-  // configuration (trapRefTarget="backdrop", focusEscapeSelector=".chat-panel").
-  // Before this, closing the overlay left keyboard focus on <body>: every
-  // other overlay in the app restores focus to its trigger on close. The
-  // escapeSelector lets focus move to a sibling chat panel while this column's
-  // overlay is open (same semantics as Settings/Git), and the trap stays
-  // engaged through the exit animation — focus is restored on unmount.
-  //
-  // `active: !!current` (not constant true): this component renders null when
-  // the index entry is missing, and useFocusTrap's effect binds the ref-based
-  // listeners once per `active` flip. With a constant true, a first commit
-  // where the entry isn't in the index yet (stack persisted across resume,
-  // index still rebuilding from replay) would leave the trap bound to a null
-  // ref forever — open overlay, unmanaged keyboard focus. Gating on `current`
-  // re-arms the trap when content actually appears.
-  useFocusTrap(overlayRef, { active: !!current, restoreFocus: true, escapeSelector: '.chat-panel' })
+  // Synthetic prompt/result rows are derived by MessageList from the record.
 
   // If the referenced subagent vanishes from the index (session reset,
   // fork, etc.) the overlay would render null and the stack would be
@@ -164,50 +128,32 @@ export const SubagentOverlay = memo(function SubagentOverlay({
     current.status === 'running' || current.status === 'background' || current.status === 'pending'
 
   const statusText =
-    current.status === 'running' ? 'running'
-    : current.status === 'background' ? 'background'
-    : current.status === 'pending' ? 'pending'
-    : current.status === 'dismissed' ? 'dismissed'
-    : current.status === 'done' ? 'done'
-    : current.status === 'rejected' ? 'rejected'
-    : 'interrupted'
+    current.status === 'running'
+      ? 'running'
+      : current.status === 'background'
+        ? 'background'
+        : current.status === 'pending'
+          ? 'pending'
+          : current.status === 'dismissed'
+            ? 'dismissed'
+            : current.status === 'done'
+              ? 'done'
+              : current.status === 'rejected'
+                ? 'rejected'
+                : 'interrupted'
 
   return (
-    <div
-      ref={overlayRef}
-      className="subagent-overlay"
-      role="dialog"
-      aria-modal="false"
-      aria-label="Subagent details"
-      onMouseDown={(e) => {
-        if (isExiting) return
-        // Click-outside-to-close. The scrim is what actually covers the region
-        // outside the panel now (see the compositing contract in chat.css), so
-        // accept it as well as the container itself.
-        const target = e.target as HTMLElement
-        if (target === e.currentTarget || target.classList.contains('subagent-overlay-scrim')) {
-          onClose()
-        }
+    <TranscriptDrawerShell
+      variant="subagent"
+      ariaLabel="Subagent details"
+      isExiting={isExiting}
+      onClose={onClose}
+      onEscape={() => {
+        if (stack.length > 1) onPop()
+        else onClose()
       }}
-      data-state={isExiting ? 'closing' : 'open'}
-      onAnimationEnd={(e) => {
-        // The exit fade runs on the scrim, so this arrives via bubbling rather
-        // than on the container itself. Match on BOTH the source element and
-        // the animation name: `overlay-backdrop-out` is shared by every overlay
-        // in the app, so a name-only check would let a nested overlay's exit
-        // fade close this one.
-        if (!isExiting) return
-        const target = e.target as HTMLElement
-        if (target.classList.contains('subagent-overlay-scrim') && e.animationName === 'overlay-backdrop-out') {
-          onExited?.()
-        }
-      }}
-    >
-      {/* Scrim: background + backdrop-filter live here, NOT on the container,
-          so the panel's virtualised transcript isn't inside a
-          backdrop-filtered render surface. See chat.css. */}
-      <div className="subagent-overlay-scrim" aria-hidden />
-      <div className="subagent-overlay-panel">
+      onExited={onExited}
+      header={
         <div className="subagent-overlay-header">
           <button
             type="button"
@@ -236,11 +182,14 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             </span>
             {/* Live progress summary (agentProgressSummaries) — shown only
                 while the subagent is in flight; cleared on terminal. */}
-            {current.progressSummary && (current.status === 'running' || current.status === 'background' || current.status === 'pending') && (
-              <span className="subagent-overlay-progress" title={current.progressSummary}>
-                {current.progressSummary}
-              </span>
-            )}
+            {current.progressSummary &&
+              (current.status === 'running' ||
+                current.status === 'background' ||
+                current.status === 'pending') && (
+                <span className="subagent-overlay-progress" title={current.progressSummary}>
+                  {current.progressSummary}
+                </span>
+              )}
           </div>
           <button
             type="button"
@@ -253,24 +202,42 @@ export const SubagentOverlay = memo(function SubagentOverlay({
               onClose()
             }}
             disabled={isExiting}
-            title={current && (current.status === 'running' || current.status === 'background' || current.status === 'pending') && onDismiss ? 'Dismiss and close' : 'Close (Esc)'}
-            aria-label={current && (current.status === 'running' || current.status === 'background' || current.status === 'pending') && onDismiss ? 'Dismiss and close' : 'Close'}
+            title={
+              current &&
+              (current.status === 'running' ||
+                current.status === 'background' ||
+                current.status === 'pending') &&
+              onDismiss
+                ? 'Dismiss and close'
+                : 'Close (Esc)'
+            }
+            aria-label={
+              current &&
+              (current.status === 'running' ||
+                current.status === 'background' ||
+                current.status === 'pending') &&
+              onDismiss
+                ? 'Dismiss and close'
+                : 'Close'
+            }
           >
             <IconX size={14} />
           </button>
         </div>
-        <div
-          key={currentId}
-          className={cx(
-            'subagent-overlay-body',
-            transitionDirection ? `subagent-overlay-body-${transitionDirection}` : '',
-          )}
-        >
-          {/* Same-session MCP Apps context: a subagent can call the session's
+      }
+    >
+      <div
+        key={currentId}
+        className={cx(
+          'subagent-overlay-body',
+          transitionDirection ? `subagent-overlay-body-${transitionDirection}` : '',
+        )}
+      >
+        {/* Same-session MCP Apps context: a subagent can call the session's
               mcp tools too, and its transcript renders through the same
               ToolUseBlock. Lazy-demand keyed on mcp__ tool names — an
               mcp-free subagent transcript costs nothing. */}
-          <McpAppsProvider sessionId={sessionId}>
+        <McpAppsProvider sessionId={sessionId}>
           <MessageList
             items={items}
             parentToolUseIdFilter={currentId}
@@ -292,20 +259,24 @@ export const SubagentOverlay = memo(function SubagentOverlay({
             // an image to begin") would be misleading here, so override
             // with copy that explains why the body is empty. Reuses the
             // Side Chat two-line empty-state shape (.chat-messages-empty-side).
-            emptyStateContent={(
+            emptyStateContent={
               <div className="chat-messages-empty-side">
                 <div className="chat-messages-empty-title">
-                  {current.status === 'running' || current.status === 'background' || current.status === 'pending' ? 'This subagent is working' : 'No subagent output'}
+                  {current.status === 'running' ||
+                  current.status === 'background' ||
+                  current.status === 'pending'
+                    ? 'This subagent is working'
+                    : 'No subagent output'}
                 </div>
                 <div className="chat-messages-empty-hint">
-                  Subagents run autonomously — you can follow its progress here, but can't send messages to it.
+                  Subagents run autonomously — you can follow its progress here, but can't send messages to
+                  it.
                 </div>
               </div>
-            )}
+            }
           />
-          </McpAppsProvider>
-        </div>
+        </McpAppsProvider>
       </div>
-    </div>
+    </TranscriptDrawerShell>
   )
 })

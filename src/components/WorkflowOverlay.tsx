@@ -18,10 +18,9 @@
 //   the primary view; the right column shows the work for whichever branch
 //   the user selects (defaulting to the Workflow's own direct children).
 
-import { memo, useMemo, useRef, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { MessageList } from './MessageList'
-import { useEscapeStack } from '../hooks/useEscapeStack'
-import { useFocusTrap } from '../hooks/useFocusTrap'
+import { TranscriptDrawerShell } from './TranscriptDrawerShell'
 import { ElapsedTimer } from './ElapsedTimer'
 import { IconX, IconWorkflow, IconChevronRight } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
@@ -104,21 +103,7 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
   // session. canClose gates the exit window (swallowed but not acted on during
   // the closing animation). focusedChild is read from the latest render via the
   // hook's opts-ref, so no rebinding is needed as the drill state changes.
-  const overlayRef = useRef<HTMLDivElement>(null)
-  useEscapeStack({
-    active: true,
-    onEscape: () => {
-      if (focusedChild) setFocusedChild(null)
-      else onClose()
-    },
-    canClose: () => !isExiting,
-    getContainer: () => overlayRef.current,
-  })
-
-  // Focus trap + restore, mirroring SubagentOverlay and the Settings/Git
-  // overlays (focusEscapeSelector=".chat-panel"): closes the gap where
-  // dismissing the overlay left keyboard focus on <body>.
-  useFocusTrap(overlayRef, { restoreFocus: true, escapeSelector: '.chat-panel' })
+  // Escape behavior is supplied to TranscriptDrawerShell below.
 
   const startedAt = record.startedAt
   const endedAt = record.endedAt
@@ -126,10 +111,13 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
   // per render, freezing the elapsed while the workflow was still running.
   const elapsedLive = record.status === 'running'
   const statusText =
-    record.status === 'running' ? 'running'
-    : record.status === 'done' ? 'done'
-    : record.status === 'rejected' ? 'rejected'
-    : 'interrupted'
+    record.status === 'running'
+      ? 'running'
+      : record.status === 'done'
+        ? 'done'
+        : record.status === 'rejected'
+          ? 'rejected'
+          : 'interrupted'
 
   // Group children by phase. Declared phases come first (in script order);
   // any child whose phase didn't match a declared phase, or has phase ===
@@ -164,138 +152,115 @@ export const WorkflowOverlay = memo(function WorkflowOverlay({
     : null
 
   return (
-    <div
-      ref={overlayRef}
-      className="workflow-overlay"
-      role="dialog"
-      aria-modal="false"
-      aria-label="Workflow details"
-      onMouseDown={(e) => {
-        if (isExiting) return
-        // Click-outside-to-close. The scrim covers the region outside the panel
-        // now (see the compositing contract in chat.css), so accept it too.
-        const target = e.target as HTMLElement
-        if (target === e.currentTarget || target.classList.contains('workflow-overlay-scrim')) {
-          onClose()
-        }
+    <TranscriptDrawerShell
+      variant="workflow"
+      ariaLabel="Workflow details"
+      isExiting={isExiting}
+      onClose={onClose}
+      onEscape={() => {
+        if (focusedChild) setFocusedChild(null)
+        else onClose()
       }}
-      data-state={isExiting ? 'closing' : 'open'}
-      onAnimationEnd={(e) => {
-        // The exit fade runs on the scrim, so this arrives via bubbling. Match
-        // on BOTH the source element and the animation name —
-        // `overlay-backdrop-out` is shared by every overlay in the app.
-        if (!isExiting) return
-        const target = e.target as HTMLElement
-        if (target.classList.contains('workflow-overlay-scrim') && e.animationName === 'overlay-backdrop-out') {
-          onExited?.()
-        }
-      }}
-    >
-      {/* Scrim: background + backdrop-filter live here, NOT on the container,
-          so the right column's virtualised transcript isn't inside a
-          backdrop-filtered render surface. See chat.css. */}
-      <div className="workflow-overlay-scrim" aria-hidden />
-      <div className="workflow-overlay-panel">
-        <div className="workflow-overlay-header">
-          <span className="workflow-overlay-icon" aria-hidden><IconWorkflow size={15} /></span>
-          <div className="workflow-overlay-title">
-            <span className="workflow-overlay-current-label">{record.label}</span>
-            <span className={`workflow-overlay-status status-${record.status}`}>
-              {statusText}
-              {startedAt != null && ' · '}
-              <ElapsedTimer startedAt={startedAt} endedAt={endedAt} live={elapsedLive} />
+      onExited={onExited}
+      header={
+        <>
+          <div className="workflow-overlay-header">
+            <span className="workflow-overlay-icon" aria-hidden>
+              <IconWorkflow size={15} />
             </span>
-          </div>
-          <button
-            type="button"
-            className="workflow-overlay-close"
-            onClick={onClose}
-            disabled={isExiting}
-            title="Close (Esc)"
-            aria-label="Close"
-          >
-            <IconX size={14} />
-          </button>
-        </div>
-
-        {/* Breadcrumb when drilled into a child. Clicking the crumb returns
-            to the Workflow-level view (focus = null). */}
-        {focusedChildRecord && (
-          <div className="workflow-overlay-breadcrumb">
+            <div className="workflow-overlay-title">
+              <span className="workflow-overlay-current-label">{record.label}</span>
+              <span className={`workflow-overlay-status status-${record.status}`}>
+                {statusText}
+                {startedAt != null && ' · '}
+                <ElapsedTimer startedAt={startedAt} endedAt={endedAt} live={elapsedLive} />
+              </span>
+            </div>
             <button
               type="button"
-              className="workflow-overlay-crumb"
-              onClick={() => setFocusedChild(null)}
+              className="workflow-overlay-close"
+              onClick={onClose}
+              disabled={isExiting}
+              title="Close (Esc)"
+              aria-label="Close"
             >
-              {record.label}
+              <IconX size={14} />
             </button>
-            <IconChevronRight size={12} aria-hidden />
-            <span className="workflow-overlay-crumb workflow-overlay-crumb-current">
-              {focusedChildRecord.label}
-            </span>
           </div>
-        )}
 
-        <div className="workflow-overlay-body">
-          {/* Left column: phase tree. */}
-          <aside className="workflow-phase-tree">
-            {phaseGroups.length === 0 ? (
-              <div className="workflow-phase-empty">
-                No phases declared yet.
-              </div>
-            ) : (
-              phaseGroups.map(([phaseTitle, children]) => (
-                <PhaseGroup
-                  key={phaseTitle}
-                  title={phaseTitle}
-                  phaseMeta={record.phases.find((p) => p.title === phaseTitle)}
-                  children_={children}
-                  focusedChild={focusedChild}
-                  onFocus={setFocusedChild}
-                />
-              ))
-            )}
-          </aside>
+          {/* Breadcrumb when drilled into a child. Clicking the crumb returns
+            to the Workflow-level view (focus = null). */}
+          {focusedChildRecord && (
+            <div className="workflow-overlay-breadcrumb">
+              <button type="button" className="workflow-overlay-crumb" onClick={() => setFocusedChild(null)}>
+                {record.label}
+              </button>
+              <IconChevronRight size={12} aria-hidden />
+              <span className="workflow-overlay-crumb workflow-overlay-crumb-current">
+                {focusedChildRecord.label}
+              </span>
+            </div>
+          )}
+        </>
+      }
+    >
+      <div className="workflow-overlay-body">
+        {/* Left column: phase tree. */}
+        <aside className="workflow-phase-tree">
+          {phaseGroups.length === 0 ? (
+            <div className="workflow-phase-empty">No phases declared yet.</div>
+          ) : (
+            phaseGroups.map(([phaseTitle, children]) => (
+              <PhaseGroup
+                key={phaseTitle}
+                title={phaseTitle}
+                phaseMeta={record.phases.find((p) => p.title === phaseTitle)}
+                children_={children}
+                focusedChild={focusedChild}
+                onFocus={setFocusedChild}
+              />
+            ))
+          )}
+        </aside>
 
-          {/* Right column: messages for the focused frame. */}
-          <div className="workflow-message-column">
-            <MessageList
-              items={items}
-              parentToolUseIdFilter={filterId}
-              transcriptRevealKey={`workflow:${filterId}`}
-              toolStatus={toolStatus}
-              toolResults={toolResults}
-              planStatus={planStatus}
-              planContent={planContent}
-              questionAnswers={questionAnswers}
-              toolGroupCards={toolGroupCards}
-              autoExpandRunningGroups={autoExpandRunningGroups}
-              showMessageHeaders={showMessageHeaders}
-              streamingMode={streamingMode}
-              replayReady
-              // Like SubagentOverlay: the default ChatEmptyState ("Start a
-              // conversation") is for a NEW CHAT, and `items` here is the FULL
-              // session transcript — MessageList's `items.length` empty-state
-              // gate would never fire for this nested view, and the copy would
-              // be wrong even if it did. The right column has no rows when the
-              // focused step hasn't produced (visible) output yet.
-              emptyStateContent={(
-                <div className="chat-messages-empty-side">
-                  <div className="chat-messages-empty-title">
-                    {focusedChild ? 'No output for this step yet' : 'No workflow output yet'}
-                  </div>
-                  <div className="chat-messages-empty-hint">
-                    {focusedChild
-                      ? 'This step has not produced visible output yet.'
-                      : 'Select a step on the left to inspect its conversation.'}
-                  </div>
+        {/* Right column: messages for the focused frame. */}
+        <div className="workflow-message-column">
+          <MessageList
+            items={items}
+            parentToolUseIdFilter={filterId}
+            transcriptRevealKey={`workflow:${filterId}`}
+            toolStatus={toolStatus}
+            toolResults={toolResults}
+            planStatus={planStatus}
+            planContent={planContent}
+            questionAnswers={questionAnswers}
+            toolGroupCards={toolGroupCards}
+            autoExpandRunningGroups={autoExpandRunningGroups}
+            showMessageHeaders={showMessageHeaders}
+            streamingMode={streamingMode}
+            replayReady
+            // Like SubagentOverlay: the default ChatEmptyState ("Start a
+            // conversation") is for a NEW CHAT, and `items` here is the FULL
+            // session transcript — MessageList's `items.length` empty-state
+            // gate would never fire for this nested view, and the copy would
+            // be wrong even if it did. The right column has no rows when the
+            // focused step hasn't produced (visible) output yet.
+            emptyStateContent={
+              <div className="chat-messages-empty-side">
+                <div className="chat-messages-empty-title">
+                  {focusedChild ? 'No output for this step yet' : 'No workflow output yet'}
                 </div>
-              )}
-            />
-          </div>
+                <div className="chat-messages-empty-hint">
+                  {focusedChild
+                    ? 'This step has not produced visible output yet.'
+                    : 'Select a step on the left to inspect its conversation.'}
+                </div>
+              </div>
+            }
+          />
         </div>
       </div>
-    </div>
+    </TranscriptDrawerShell>
   )
 })
 
@@ -324,7 +289,9 @@ const PhaseGroup = memo(function PhaseGroup({
     <span className="workflow-phase-summary">
       <span className="workflow-phase-title">{title}</span>
       <span className="workflow-phase-count">
-        {done}/{total}{running > 0 ? ` · ${running} active` : ''}{errored > 0 ? ` · ${errored} failed` : ''}
+        {done}/{total}
+        {running > 0 ? ` · ${running} active` : ''}
+        {errored > 0 ? ` · ${errored} failed` : ''}
       </span>
     </span>
   )
@@ -352,18 +319,14 @@ const PhaseGroup = memo(function PhaseGroup({
                 <span className={`workflow-child-status workflow-child-status-${child.status}`} aria-hidden />
                 <span className="workflow-child-toolname">{child.toolName}</span>
                 <span className="workflow-child-label">{child.label}</span>
-                {child.toolCount > 0 && (
-                  <span className="workflow-child-tools">{child.toolCount}</span>
-                )}
+                {child.toolCount > 0 && <span className="workflow-child-tools">{child.toolCount}</span>}
                 <IconChevronRight size={11} className="workflow-child-chevron" aria-hidden />
               </button>
             </li>
           ))}
         </ul>
       )}
-      {phaseMeta?.detail && (
-        <div className="workflow-phase-detail">{phaseMeta.detail}</div>
-      )}
+      {phaseMeta?.detail && <div className="workflow-phase-detail">{phaseMeta.detail}</div>}
     </AnimatedDetails>
   )
 })
