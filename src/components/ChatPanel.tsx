@@ -49,7 +49,8 @@ import type { SettingsTabName } from '../local-commands'
 import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
 import type { GitStatus } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
+import type { GlobalPrefs } from '../types/config'
+import { resolveSessionPrefs } from '../types/config'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 
 /** Chip tooltip — verbose form for users who hover before clicking.
@@ -139,15 +140,7 @@ export interface ChatPanelProps {
   /** Global UI-pref defaults (server-backed). Sessions without an explicit
    *  per-session override inherit these. Forwarded to <Chat> (effective-value
    *  resolution) and <SettingsPanel> (override UI hints). */
-  globalPrefs: {
-    showPinnedUserMessage: boolean
-    autoRecap: boolean
-    toolGroupCards: boolean
-    autoExpandRunningGroups: boolean
-    showMessageHeaders: boolean
-    streamingRenderMode: StreamingRenderMode
-    firstPartyTools?: Record<string, { enabled: boolean }>
-  }
+  globalPrefs: GlobalPrefs
   /** True when a turn has completed on this session since the user last
    *  looked at it. Rendered as a small dot next to the slot pill on
    *  non-focused open panels — so in a 2-up/3-up layout the user notices
@@ -827,6 +820,11 @@ export const ChatPanel = memo(function ChatPanel({
   const fastCooldown = fastState === 'cooldown'
   const fastOn = !fastCooldown && (session.fastMode ?? false)
 
+  // Side Chat effective prefs — resolved once via the shared resolver so the
+  // three props forwarded to <SideChatDrawer> share one computation.
+  // `streamingRenderMode` is global-only and read directly off globalPrefs.
+  const sideChatPrefs = sideChatSession ? resolveSessionPrefs(sideChatSession, globalPrefs) : null
+
   return (
     <section
       ref={panelNodeRef}
@@ -1458,11 +1456,9 @@ export const ChatPanel = memo(function ChatPanel({
           parentSession={session}
           paging={sideChatPaging}
           permissions={sideChatPermissions}
-          toolGroupCards={sideChatSession.toolGroupCards ?? globalPrefs.toolGroupCards}
-          autoExpandRunningGroups={
-            sideChatSession.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups
-          }
-          showMessageHeaders={sideChatSession.showMessageHeaders ?? globalPrefs.showMessageHeaders}
+          toolGroupCards={sideChatPrefs!.toolGroupCards}
+          autoExpandRunningGroups={sideChatPrefs!.autoExpandRunningGroups}
+          showMessageHeaders={sideChatPrefs!.showMessageHeaders}
           streamingMode={globalPrefs.streamingRenderMode}
           onClose={onCloseSideChat}
           onCollapse={onToggleCollapseSideChat}

@@ -119,19 +119,14 @@ import {
   LAST_SEEN_TURN_KEY,
   clampMaxOpen,
 } from './constants/storageKeys'
-import type { Defaults, ConfigResponse, ModelGroupConfig } from './types/config'
+import type { Defaults, ConfigResponse, ModelGroupConfig, GlobalPrefs } from './types/config'
+import { DEFAULT_GLOBAL_PREFS, globalPrefsFromConfig, sameGlobalPrefs } from './types/config'
 import { onProfilesChanged } from './utils/profiles-events'
 import { fetchConfig, markConfigStale, peekConfig, subscribeModelOptions } from './state/modelOptionsStore'
-import type { RowGapPreset } from '../shared/row-gap'
-import { DEFAULT_ROW_GAP, ROW_GAP_PX } from '../shared/row-gap'
-import type { StreamingRenderMode } from '../shared/streaming-render-mode'
-import { DEFAULT_STREAMING_RENDER_MODE } from '../shared/streaming-render-mode'
-import type { TextSpacingPreset } from '../shared/text-spacing'
-import { DEFAULT_TEXT_SPACING, TEXT_SPACING_CSS } from '../shared/text-spacing'
-import type { FontSizePreset } from '../shared/font-size'
-import { DEFAULT_FONT_SIZE, FONT_SIZE_SCALE } from '../shared/font-size'
-import type { AnimationSpeedPreset } from '../shared/animation-speed'
-import { DEFAULT_ANIMATION_SPEED, ANIMATION_SPEED_SCALE, MOTION_DURATION_TOKENS } from '../shared/animation-speed'
+import { ROW_GAP_PX } from '../shared/row-gap'
+import { TEXT_SPACING_CSS } from '../shared/text-spacing'
+import { FONT_SIZE_SCALE } from '../shared/font-size'
+import { ANIMATION_SPEED_SCALE, MOTION_DURATION_TOKENS } from '../shared/animation-speed'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { evictFromGroups, inheritGroupId, inheritSidebarOrderId, joinGroupOfSource, placeInGroupId } from './utils/session-slot'
@@ -347,19 +342,7 @@ export function App() {
    *  it at load, so the map is always authoritative). Defaults to undefined
    *  so the first-party UI falls back to live tool status until the first
    *  /config fetch lands. */
-  const [globalPrefs, setGlobalPrefs] = useState<{
-    showPinnedUserMessage: boolean
-    autoRecap: boolean
-    toolGroupCards: boolean
-    autoExpandRunningGroups: boolean
-    showMessageHeaders: boolean
-    rowGap: RowGapPreset
-    textSpacing: TextSpacingPreset
-    fontSize: FontSizePreset
-    animationSpeed: AnimationSpeedPreset
-    streamingRenderMode: StreamingRenderMode
-    firstPartyTools?: Record<string, { enabled: boolean }>
-  }>({ showPinnedUserMessage: true, autoRecap: true, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true, rowGap: DEFAULT_ROW_GAP, textSpacing: DEFAULT_TEXT_SPACING, fontSize: DEFAULT_FONT_SIZE, animationSpeed: DEFAULT_ANIMATION_SPEED, streamingRenderMode: DEFAULT_STREAMING_RENDER_MODE })
+  const [globalPrefs, setGlobalPrefs] = useState<GlobalPrefs>(() => ({ ...DEFAULT_GLOBAL_PREFS }))
 
   // Apply the global transcript spacing to a CSS variable. Set on
   // documentElement, it overrides the `.chat`-scoped default, so message rows,
@@ -663,37 +646,10 @@ export function App() {
     if (r.maxGroupPanels != null) setServerMaxOpen(r.maxGroupPanels)
     if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
     if (r.maxPastedImageBytes != null) setMaxPastedImageBytes(r.maxPastedImageBytes)
-    const nextPrefs = {
-      showPinnedUserMessage: r.showPinnedUserMessage ?? true,
-      autoRecap: r.autoRecap ?? true,
-      toolGroupCards: r.toolGroupCards ?? true,
-      autoExpandRunningGroups: r.autoExpandRunningGroups ?? true,
-      showMessageHeaders: r.showMessageHeaders ?? true,
-      rowGap: r.rowGap ?? DEFAULT_ROW_GAP,
-      textSpacing: r.textSpacing ?? DEFAULT_TEXT_SPACING,
-      fontSize: r.fontSize ?? DEFAULT_FONT_SIZE,
-      animationSpeed: r.animationSpeed ?? DEFAULT_ANIMATION_SPEED,
-      streamingRenderMode: r.streamingRenderMode ?? DEFAULT_STREAMING_RENDER_MODE,
-      firstPartyTools: r.firstPartyTools,
-    }
+    const nextPrefs = globalPrefsFromConfig(r)
     // Keep object identity when nothing changed — every store notify runs
     // this, and a fresh literal would re-render App + all panels for nothing.
-    setGlobalPrefs((prev) =>
-      prev &&
-      prev.showPinnedUserMessage === nextPrefs.showPinnedUserMessage &&
-      prev.autoRecap === nextPrefs.autoRecap &&
-      prev.toolGroupCards === nextPrefs.toolGroupCards &&
-      prev.autoExpandRunningGroups === nextPrefs.autoExpandRunningGroups &&
-      prev.showMessageHeaders === nextPrefs.showMessageHeaders &&
-      prev.rowGap === nextPrefs.rowGap &&
-      prev.textSpacing === nextPrefs.textSpacing &&
-      prev.fontSize === nextPrefs.fontSize &&
-      prev.animationSpeed === nextPrefs.animationSpeed &&
-      prev.streamingRenderMode === nextPrefs.streamingRenderMode &&
-      prev.firstPartyTools === nextPrefs.firstPartyTools
-        ? prev
-        : nextPrefs,
-    )
+    setGlobalPrefs((prev) => (prev && sameGlobalPrefs(prev, nextPrefs) ? prev : nextPrefs))
   }, [])
 
   useEffect(() => {

@@ -5,6 +5,7 @@ import { ToastHost } from './ToastHost'
 import { ToastProvider } from './ToastProvider'
 import { SettingsPanel } from './SettingsPanel'
 import type { SessionInfo, SlashCommand } from '../types'
+import { DEFAULT_GLOBAL_PREFS } from '../types/config'
 import { mkSkillRecord } from '../test-utils/skill-fixtures'
 
 vi.mock('../hooks/useApi', () => ({
@@ -58,11 +59,7 @@ function renderPanel(opts: {
           commands={opts.commands}
           globalPrefs={
             {
-              showPinnedUserMessage: true,
-              autoRecap: true,
-              toolGroupCards: true,
-              autoExpandRunningGroups: true,
-              showMessageHeaders: true,
+              ...DEFAULT_GLOBAL_PREFS,
               ...opts.globalPrefs,
             } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
           }
@@ -207,10 +204,7 @@ describe('SettingsPanel MCP reconnect feedback', () => {
   }
 
   const globalPrefs = {
-    showPinnedUserMessage: true,
-    autoRecap: true,
-    toolGroupCards: true,
-    autoExpandRunningGroups: true,
+    ...DEFAULT_GLOBAL_PREFS,
   } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
 
   /** Render the session panel on its MCP tab with a ToastHost mounted under
@@ -485,10 +479,7 @@ describe('SettingsPanel Appearance tab', () => {
 
 describe('SettingsPanel MCP source grouping', () => {
   const globalPrefs = {
-    showPinnedUserMessage: true,
-    autoRecap: true,
-    toolGroupCards: true,
-    autoExpandRunningGroups: true,
+    ...DEFAULT_GLOBAL_PREFS,
   } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
 
   const mkServer = (over: Record<string, unknown>) =>
@@ -1039,11 +1030,7 @@ describe('SettingsPanel grouped tab nav', () => {
             session={mkSession()}
             globalPrefs={
               {
-                showPinnedUserMessage: true,
-                autoRecap: true,
-                toolGroupCards: true,
-                autoExpandRunningGroups: true,
-                showMessageHeaders: true,
+                ...DEFAULT_GLOBAL_PREFS,
               } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
             }
             onClose={() => {}}
@@ -1071,11 +1058,7 @@ describe('SettingsPanel grouped tab nav', () => {
             session={mkSession()}
             globalPrefs={
               {
-                showPinnedUserMessage: true,
-                autoRecap: true,
-                toolGroupCards: true,
-                autoExpandRunningGroups: true,
-                showMessageHeaders: true,
+                ...DEFAULT_GLOBAL_PREFS,
               } as Parameters<typeof SettingsPanel>[0]['globalPrefs']
             }
             onClose={() => {}}

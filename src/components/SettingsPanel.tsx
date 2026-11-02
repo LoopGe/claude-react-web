@@ -16,6 +16,8 @@ import { useSyncedCommitDraft } from '../hooks/useSyncedCommitDraft'
 import { useModelOptions } from '../hooks/useModelOptions'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillFrontmatter, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
+import type { GlobalPrefs } from '../types/config'
+import { resolveSessionPrefs } from '../types/config'
 import type { SkillRecord } from '../../shared/skills'
 import type { SandboxSetting } from '../../shared/sandbox'
 import type { FirstPartyToolDef } from '../../shared/first-party'
@@ -115,14 +117,7 @@ interface Props {
    *  label the "Inheriting global (ON/OFF)" hint when no override is set.
    *  `firstPartyTools` is the structured global-default map (from GET
    *  /config) consulted when a session has no per-server override. */
-  globalPrefs: {
-    showPinnedUserMessage: boolean
-    autoRecap: boolean
-    toolGroupCards: boolean
-    autoExpandRunningGroups: boolean
-    showMessageHeaders: boolean
-    firstPartyTools?: Record<string, { enabled: boolean }>
-  }
+  globalPrefs: GlobalPrefs
   onClose: () => void
   onSessionUpdate: (s: SessionInfo) => void
   commands?: SlashCommand[]
@@ -262,11 +257,15 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   const [tab, setTab] = useState<SettingsTab>('general')
 
   // Effective UI prefs: a per-session override wins, else the global default.
-  const effShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
-  const effAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
-  const effToolGroupCards = session.toolGroupCards ?? globalPrefs.toolGroupCards
-  const effAutoExpandRunningGroups = session.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups
-  const effShowMessageHeaders = session.showMessageHeaders ?? globalPrefs.showMessageHeaders
+  // Resolved via the shared resolver so the override UI hints stay in sync
+  // with Chat/ChatPanel. `firstPartyTools` is read directly off globalPrefs
+  // in the first-party display chain (no per-session session-prefs field).
+  const sessionPrefs = resolveSessionPrefs(session, globalPrefs)
+  const effShowPinned = sessionPrefs.showPinnedUserMessage
+  const effAutoRecap = sessionPrefs.autoRecap
+  const effToolGroupCards = sessionPrefs.toolGroupCards
+  const effAutoExpandRunningGroups = sessionPrefs.autoExpandRunningGroups
+  const effShowMessageHeaders = sessionPrefs.showMessageHeaders
   /** POST a per-session pref override. A boolean pins it; `null` clears the
    *  override so the session re-inherits the global default. No success toast
    *  — checkbox toggles are too frequent to toast on every change; only

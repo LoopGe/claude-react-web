@@ -1,9 +1,156 @@
 import type { SkillLoadMode } from '../../shared/skills'
-import type { RowGapPreset } from '../../shared/row-gap'
-import type { TextSpacingPreset } from '../../shared/text-spacing'
-import type { FontSizePreset } from '../../shared/font-size'
-import type { AnimationSpeedPreset } from '../../shared/animation-speed'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
+import { DEFAULT_ROW_GAP, type RowGapPreset } from '../../shared/row-gap'
+import { DEFAULT_TEXT_SPACING, type TextSpacingPreset } from '../../shared/text-spacing'
+import { DEFAULT_FONT_SIZE, type FontSizePreset } from '../../shared/font-size'
+import { DEFAULT_ANIMATION_SPEED, type AnimationSpeedPreset } from '../../shared/animation-speed'
+import { DEFAULT_STREAMING_RENDER_MODE, type StreamingRenderMode } from '../../shared/streaming-render-mode'
+import type { SessionInfo } from '../types'
+
+// ---------------------------------------------------------------------------
+// Canonical preference contract
+//
+// One shape for the server-backed global UI preferences. ConfigResponse and
+// FullServerConfig inherit from it so the wire types and the UI consumers
+// never drift. `firstPartyTools` stays optional on every shape: its presence
+// (and reference identity) is meaningful — `undefined` means "no structured
+// default yet, fall back to live tool status", while an empty object means
+// "every first-party server defaults to disabled".
+// ---------------------------------------------------------------------------
+
+/** The complete set of server-backed global UI preferences. Every field is
+ *  required on the full config (`FullServerConfig extends GlobalPrefs`); the
+ *  lightweight `ConfigResponse` makes them all optional via
+ *  `Partial<GlobalPrefs>`. `firstPartyTools` is the only optional field on
+ *  `GlobalPrefs` itself. */
+export interface GlobalPrefs {
+  showPinnedUserMessage: boolean
+  autoRecap: boolean
+  toolGroupCards: boolean
+  autoExpandRunningGroups: boolean
+  showMessageHeaders: boolean
+  rowGap: RowGapPreset
+  textSpacing: TextSpacingPreset
+  fontSize: FontSizePreset
+  animationSpeed: AnimationSpeedPreset
+  streamingRenderMode: StreamingRenderMode
+  firstPartyTools?: Record<string, { enabled: boolean }>
+}
+
+/** The subset of GlobalPrefs that a session can override. Presets
+ *  (rowGap/textSpacing/fontSize/animationSpeed) and streamingRenderMode are
+ *  global-only — they never enter SessionPrefs. */
+export type SessionPrefs = Pick<
+  GlobalPrefs,
+  'showPinnedUserMessage' | 'autoRecap' | 'toolGroupCards' |
+  'autoExpandRunningGroups' | 'showMessageHeaders'
+>
+
+/** The appearance slice of GlobalPrefs, used by the GlobalSettingsModal's
+ *  staged appearance state. Excludes `firstPartyTools` (which has its own
+ *  independent save path). */
+export type AppearancePrefs = Omit<GlobalPrefs, 'firstPartyTools'>
+
+/** Shipped defaults for every appearance field. Typed as `AppearancePrefs`
+ *  (no `firstPartyTools`) so it doubles as the initial state for the
+ *  GlobalSettingsModal's staged appearance object. Also assignable to
+ *  `GlobalPrefs` since `firstPartyTools` is optional. */
+export const DEFAULT_GLOBAL_PREFS: AppearancePrefs = {
+  showPinnedUserMessage: true,
+  autoRecap: true,
+  toolGroupCards: true,
+  autoExpandRunningGroups: true,
+  showMessageHeaders: true,
+  rowGap: DEFAULT_ROW_GAP,
+  textSpacing: DEFAULT_TEXT_SPACING,
+  fontSize: DEFAULT_FONT_SIZE,
+  animationSpeed: DEFAULT_ANIMATION_SPEED,
+  streamingRenderMode: DEFAULT_STREAMING_RENDER_MODE,
+}
+
+/** Resolve a full `GlobalPrefs` from a partial config body. Each field uses
+ *  `?? DEFAULT_GLOBAL_PREFS.<field>` so an explicit `false` is preserved
+ *  (nullish coalescing only falls through on `null`/`undefined`) while an
+ *  absent field inherits the default. `firstPartyTools` is passed through
+ *  as-is — `undefined` stays `undefined`. */
+export function globalPrefsFromConfig(config: Partial<GlobalPrefs>): GlobalPrefs {
+  return {
+    showPinnedUserMessage: config.showPinnedUserMessage ?? DEFAULT_GLOBAL_PREFS.showPinnedUserMessage,
+    autoRecap: config.autoRecap ?? DEFAULT_GLOBAL_PREFS.autoRecap,
+    toolGroupCards: config.toolGroupCards ?? DEFAULT_GLOBAL_PREFS.toolGroupCards,
+    autoExpandRunningGroups: config.autoExpandRunningGroups ?? DEFAULT_GLOBAL_PREFS.autoExpandRunningGroups,
+    showMessageHeaders: config.showMessageHeaders ?? DEFAULT_GLOBAL_PREFS.showMessageHeaders,
+    rowGap: config.rowGap ?? DEFAULT_GLOBAL_PREFS.rowGap,
+    textSpacing: config.textSpacing ?? DEFAULT_GLOBAL_PREFS.textSpacing,
+    fontSize: config.fontSize ?? DEFAULT_GLOBAL_PREFS.fontSize,
+    animationSpeed: config.animationSpeed ?? DEFAULT_GLOBAL_PREFS.animationSpeed,
+    streamingRenderMode: config.streamingRenderMode ?? DEFAULT_GLOBAL_PREFS.streamingRenderMode,
+    firstPartyTools: config.firstPartyTools,
+  }
+}
+
+/** Extract the `AppearancePrefs` slice from a full config. Reuses the same
+ *  field mapping as `globalPrefsFromConfig` — the `??` defaults never trigger
+ *  for the appearance fields because `FullServerConfig` (which extends
+ *  `GlobalPrefs`) has them all required; `firstPartyTools` is the one optional
+ *  field and is dropped by this function. */
+export function appearanceFromFullConfig(config: FullServerConfig): AppearancePrefs {
+  const g = globalPrefsFromConfig(config)
+  // Destructure to drop firstPartyTools without a rest binding (which would
+  // create an unused-variable lint).
+  return {
+    showPinnedUserMessage: g.showPinnedUserMessage,
+    autoRecap: g.autoRecap,
+    toolGroupCards: g.toolGroupCards,
+    autoExpandRunningGroups: g.autoExpandRunningGroups,
+    showMessageHeaders: g.showMessageHeaders,
+    rowGap: g.rowGap,
+    textSpacing: g.textSpacing,
+    fontSize: g.fontSize,
+    animationSpeed: g.animationSpeed,
+    streamingRenderMode: g.streamingRenderMode,
+  }
+}
+
+/** Shallow scalar equality plus reference identity for `firstPartyTools`.
+ *  Used by App's `setGlobalPrefs` guard so an unchanged /config refresh
+ *  preserves object identity and avoids re-rendering every panel. */
+export function sameGlobalPrefs(a: GlobalPrefs, b: GlobalPrefs): boolean {
+  return (
+    a.showPinnedUserMessage === b.showPinnedUserMessage &&
+    a.autoRecap === b.autoRecap &&
+    a.toolGroupCards === b.toolGroupCards &&
+    a.autoExpandRunningGroups === b.autoExpandRunningGroups &&
+    a.showMessageHeaders === b.showMessageHeaders &&
+    a.rowGap === b.rowGap &&
+    a.textSpacing === b.textSpacing &&
+    a.fontSize === b.fontSize &&
+    a.animationSpeed === b.animationSpeed &&
+    a.streamingRenderMode === b.streamingRenderMode &&
+    a.firstPartyTools === b.firstPartyTools
+  )
+}
+
+/** Resolve the effective per-session preferences. A session-level boolean
+ *  override (including explicit `false`) wins; `undefined` inherits the
+ *  global value. Only the 5 `SessionPrefs` fields are resolved — presets and
+ *  `streamingRenderMode` are global-only and read directly off `GlobalPrefs`
+ *  where needed. */
+export function resolveSessionPrefs(
+  session: SessionInfo,
+  globalPrefs: GlobalPrefs,
+): SessionPrefs {
+  return {
+    showPinnedUserMessage: session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage,
+    autoRecap: session.autoRecap ?? globalPrefs.autoRecap,
+    toolGroupCards: session.toolGroupCards ?? globalPrefs.toolGroupCards,
+    autoExpandRunningGroups: session.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups,
+    showMessageHeaders: session.showMessageHeaders ?? globalPrefs.showMessageHeaders,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wire types (config responses)
+// ---------------------------------------------------------------------------
 
 /** Client-side mirror of a provider profile. */
 export interface ProviderProfile {
@@ -33,8 +180,12 @@ export interface Defaults {
   model?: string
 }
 
-/** Lightweight config returned by GET /api/config (startup). */
-export interface ConfigResponse {
+/** Lightweight config returned by GET /api/config (startup). Inherits every
+ *  pref field as optional from `Partial<GlobalPrefs>`; the non-pref fields
+ *  (configured, defaults, models, …) stay declared here. `appToolsGit` is
+ *  the legacy boolean form kept alongside the structured `firstPartyTools`
+ *  map — GET /config folds it in at load. */
+export interface ConfigResponse extends Partial<GlobalPrefs> {
   configured?: boolean
   defaults: Defaults
   models?: string[]
@@ -44,53 +195,19 @@ export interface ConfigResponse {
   /** Internal cap on the total size of pasted images in one message (bytes).
    *  NOT a user setting — these bytes ride the buffered JSON message body. */
   maxPastedImageBytes?: number
-  /** Global default for the pinned "current question" header. Sessions
-   *  without an explicit override inherit this. */
-  showPinnedUserMessage?: boolean
-  /** Global default for idle auto-recap. Sessions without an explicit
-   *  override inherit this. */
-  autoRecap?: boolean
-  /** Global default for the transcript's collapsible group cards — the
-   *  tool-group fold. When off, every tool row renders on its own. Sessions
-   *  without an explicit override inherit this. */
-  toolGroupCards?: boolean
-  /** Global default for auto-expanding a group that holds a running tool.
-   *  Sessions without an explicit override inherit this. Only meaningful
-   *  while `toolGroupCards` is on. */
-  autoExpandRunningGroups?: boolean
-  /** Global default for message-card header rows (assistant/you label +
-   *  timestamp + sending status). Sessions without an explicit override
-   *  inherit this. */
-  showMessageHeaders?: boolean
-  /** Global transcript spacing (`--chat-row-gap`) density preset.
-   *  Undefined = inherit the server default (spacious). */
-  rowGap?: RowGapPreset
-  /** Global message text density (`--md-*` / `--msg-pad-*`) preset.
-   *  Undefined = inherit the server default (spacious). */
-  textSpacing?: TextSpacingPreset
-  /** Global font size (`--fs-scale`) preset. Undefined = inherit the server
-   *  default (standard, scale 1). */
-  fontSize?: FontSizePreset
-  /** Global animation speed (scales every `--motion-duration-*` token).
-   *  Undefined = inherit the server default (standard, scale 1). */
-  animationSpeed?: AnimationSpeedPreset
-  /** Where the live turn's text renders while a reply streams ('overlay' |
-   *  'inline'). Global only — never per-session. */
-  streamingRenderMode?: StreamingRenderMode
-  /** Global default for the first-party `git-tools` git MCP server. Sessions
-   *  without an explicit override inherit this. */
+  /** Global default for the first-party `git-tools` git MCP server (legacy
+   *  single-entry form; `firstPartyTools` is the structured map). */
   appToolsGit?: boolean
-  /** Per-first-party-server global defaults (keyed by server name, e.g.
-   *  `git-tools`). `appToolsGit` is the legacy single-entry form. */
-  firstPartyTools?: Record<string, { enabled: boolean }>
   /** Currently active profile id (multi-profile mode). */
   activeProfileId?: string
   /** Currently active profile name (display only). */
   activeProfileName?: string
 }
 
-/** Full config returned by GET /api/config/full (settings modal). */
-export interface FullServerConfig {
+/** Full config returned by GET /api/config/full (settings modal). Inherits
+ *  every pref field (required, except `firstPartyTools` which is optional)
+ *  from `GlobalPrefs`; the non-pref fields stay declared here. */
+export interface FullServerConfig extends GlobalPrefs {
   configured?: boolean
   authTokenMasked?: string
   baseUrl: string
@@ -109,33 +226,9 @@ export interface FullServerConfig {
   updateCheckRegistry: string
   skillLoadMode: SkillLoadMode
   enabledSkills: string[]
-  /** Global default for the pinned "current question" header. */
-  showPinnedUserMessage: boolean
-  /** Global default for idle auto-recap. */
-  autoRecap: boolean
-  /** Global default for the transcript's collapsible group cards (the
-   *  tool-group fold). */
-  toolGroupCards: boolean
-  /** Global default for auto-expanding a group that holds a running tool.
-   *  Only meaningful while `toolGroupCards` is on. */
-  autoExpandRunningGroups: boolean
-  /** Global default for message-card header rows. */
-  showMessageHeaders: boolean
-  /** Global transcript spacing (`--chat-row-gap`) density preset. */
-  rowGap: RowGapPreset
-  /** Global message text density (`--md-*` / `--msg-pad-*`) preset. */
-  textSpacing: TextSpacingPreset
-  /** Global font size (`--fs-scale`) preset. */
-  fontSize: FontSizePreset
-  /** Global animation speed (scales every `--motion-duration-*` token). */
-  animationSpeed: AnimationSpeedPreset
-  /** Where the live turn's text renders while a reply streams ('overlay' |
-   *  'inline'). Global only — never per-session. */
-  streamingRenderMode: StreamingRenderMode
-  /** Global default for the first-party `git-tools` git MCP server. */
+  /** Global default for the first-party `git-tools` git MCP server (legacy
+   *  single-entry form). */
   appToolsGit: boolean
-  /** Per-first-party-server global defaults. */
-  firstPartyTools?: Record<string, { enabled: boolean }>
   /** When true, acceptEdits/bypassPermissions also auto-approve edits/commands
    *  targeting sensitive config paths (.git/, .claude/, shell configs, …). */
   allowSensitivePathEdits: boolean
