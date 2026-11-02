@@ -15,7 +15,7 @@ import { clamp } from '../utils/clamp'
 import type { ScrollNavigator } from './MessageList'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
-import { ConfirmDialog } from './ConfirmDialog'
+import { DialogHosts } from './DialogHosts'
 import { WorktreeIsolationBadge } from './WorktreeIsolationBadge'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
@@ -29,6 +29,7 @@ import { usePermissionChannel } from '../hooks/usePermissionChannel'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useDiagnostics } from '../hooks/useDiagnostics'
 import { useDelayedFlag } from '../hooks/useDelayedFlag'
+import { useDialogHosts } from '../hooks/useDialogHosts'
 import { shortenModel } from '../utils/session-status'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { cx } from '../utils/cx'
@@ -483,40 +484,10 @@ export const ChatPanel = memo(function ChatPanel({
   const [thinkingMenu, setThinkingMenu] = useState<{ x: number; y: number } | null>(null)
   /** Anchor for the persona (main-thread agent) menu. Non-null = visible. */
   const [personaMenu, setPersonaMenu] = useState<{ x: number; y: number } | null>(null)
-  // Confirmation dialog for destructive panel-menu actions (Delete session).
-  // Mirrors SessionList's confirm plumbing so the panel menu's Delete uses
-  // the same ConfirmDialog + busy state as the sidebar's.
-  const [confirmState, setConfirmState] = useState<{
-    title: string
-    message: ReactNode
-    confirmLabel: string
-    destructive?: boolean
-    onConfirm: () => void | Promise<void>
-  } | null>(null)
-  const [confirmBusy, setConfirmBusy] = useState(false)
-  const handleAskConfirm = useCallback((config: {
-    title: string
-    message: ReactNode
-    confirmLabel: string
-    destructive?: boolean
-    onConfirm: () => void | Promise<void>
-  }) => {
-    setConfirmState({
-      title: config.title,
-      message: config.message,
-      confirmLabel: config.confirmLabel,
-      destructive: config.destructive,
-      onConfirm: async () => {
-        setConfirmBusy(true)
-        try {
-          await config.onConfirm()
-        } finally {
-          setConfirmBusy(false)
-          setConfirmState(null)
-        }
-      },
-    })
-  }, [])
+  // Shared confirmation host for destructive panel-menu actions (Delete session).
+  // Keep DialogHosts at this panel-scoped DOM position so its perm overlay and
+  // focus restoration behave exactly like the previous local ConfirmDialog.
+  const dialogs = useDialogHosts()
   /** Global toast hub. Model/permission failures used to render an
    *  inline panel banner; they now surface as right-bottom toasts. */
   const toast = useToast()
@@ -1273,20 +1244,7 @@ export const ChatPanel = memo(function ChatPanel({
             />
           )}
         </AnimatePresence>
-        <AnimatePresence>
-          {confirmState && (
-            <ConfirmDialog
-              key="confirm"
-              title={confirmState.title}
-              message={confirmState.message}
-              confirmLabel={confirmState.confirmLabel}
-              destructive={confirmState.destructive}
-              busy={confirmBusy}
-              onConfirm={confirmState.onConfirm}
-              onCancel={() => { if (!confirmBusy) setConfirmState(null) }}
-            />
-          )}
-        </AnimatePresence>
+        <DialogHosts hosts={dialogs} />
         <AnimatePresence>
           {projectOpen && session.cwd && (
             <ProjectPopover
@@ -1464,7 +1422,7 @@ export const ChatPanel = memo(function ChatPanel({
             onSaveCurrentAsSnippet={onSaveCurrentAsSnippet}
             onClosePanel={onClose}
             onDelete={onDelete}
-            onAskConfirm={onDelete ? handleAskConfirm : undefined}
+            onAskConfirm={onDelete ? dialogs.askConfirm : undefined}
             groupLabel={groupLabel}
             onCloseGroupPanels={onCloseGroupPanels}
             onSideChat={onSideChat}

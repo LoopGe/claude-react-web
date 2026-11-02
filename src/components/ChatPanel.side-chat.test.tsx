@@ -12,7 +12,7 @@
 // would have torn down and re-subscribed).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, render } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 // ── Deferred-tail fake hub ──────────────────────────────────────────
 type L = (frame: Record<string, unknown>) => void
@@ -88,6 +88,7 @@ vi.mock('./Chat', () => ({
 import { ChatPanel } from './ChatPanel'
 import { ToastProvider } from './ToastProvider'
 import { sessionStoreRegistry } from '../session-store/registry'
+import type { ConfirmRequest } from '../hooks/useDialogHosts'
 import type { SessionInfo } from '../types'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -338,5 +339,63 @@ describe('ChatPanel Side Chat collapsed working indication', () => {
     )
     // Runtime: the unknown prop is ignored — ChatPanel renders fine.
     expect(container.querySelector('[data-testid="chat-stub"]')).not.toBeNull()
+  })
+})
+
+describe('ChatPanel Delete confirmation', () => {
+  beforeEach(() => {
+    lastChatProps = {}
+  })
+
+  it('renders the requested confirmation inside the panel and wires its busy lifecycle', async () => {
+    const pending = makeDeferred<void>()
+    const onDelete = vi.fn()
+    const mainSession = makeSession('main-delete')
+    const { container } = render(
+      <ToastProvider>
+        <ChatPanel {...basePanelProps} session={mainSession} onDelete={onDelete} />
+      </ToastProvider>,
+    )
+    const askConfirm = lastChatProps.onAskConfirm as ((config: ConfirmRequest) => void) | undefined
+    expect(askConfirm).toBeTypeOf('function')
+
+    act(() =>
+      askConfirm!({
+        title: 'Delete session?',
+        message: 'Delete this session?',
+        confirmLabel: 'Delete',
+        destructive: true,
+        onConfirm: () => {
+          onDelete(mainSession.id)
+          return pending.promise
+        },
+      }),
+    )
+
+    const dialog = screen.getByRole('dialog', { name: 'Delete session?' })
+    expect(screen.getByText('Delete this session?')).toBeTruthy()
+    expect(container.querySelector('.chat-panel .perm-overlay')).not.toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(onDelete).toHaveBeenCalledWith(mainSession.id)
+    expect((screen.getByRole('button', { name: 'Working...' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(dialog.isConnected).toBe(true)
+
+    await act(async () => {
+      pending.resolve()
+      await pending.promise
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('does not expose a confirmation opener without a Delete action', () => {
+    render(
+      <ToastProvider>
+        <ChatPanel {...basePanelProps} session={makeSession('main-no-delete')} />
+      </ToastProvider>,
+    )
+
+    expect(lastChatProps.onAskConfirm).toBeUndefined()
   })
 })

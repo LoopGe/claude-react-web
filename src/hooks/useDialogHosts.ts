@@ -1,7 +1,6 @@
 // Shared confirm/prompt dialog state hosts — ONE busy-wrapping implementation
-// for every surface that renders SessionContextMenu / buildGroupContextMenuItems
-// dialogs (the sidebar's SessionList and App's header strip menus;
-// ChatPanel's panel menus wire their own).
+// for the sidebar's SessionContextMenu / group menus, the App header strip,
+// and ChatPanel's Delete confirmation.
 //
 // The onConfirm stored in state wraps the caller's: busy flips on for the
 // await and the dialog closes in `finally`, so double-clicking the confirm
