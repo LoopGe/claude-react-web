@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent, screen } from '@testing-library/react'
+import { act, render, fireEvent, screen } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { FieldPicker } from './FieldPicker'
 
@@ -144,5 +144,108 @@ describe('FieldPicker', () => {
     const headings = Array.from(document.querySelectorAll('.field-picker-heading'))
     expect(headings).toHaveLength(1)
     expect(headings[0].textContent).toBe('Model Groups')
+  })
+
+  it('restores trigger focus when Escape closes the menu', () => {
+    setup()
+    fireEvent.click(trigger())
+    const input = searchBox() as HTMLInputElement
+    expect(document.activeElement).toBe(input)
+
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(menu()).toBeNull()
+    expect(document.activeElement).toBe(trigger())
+  })
+
+  it('keeps the menu open on Safari blur but closes when focus leaves', () => {
+    setup()
+    fireEvent.click(trigger())
+    const input = searchBox()
+    fireEvent.focusOut(input, { relatedTarget: null })
+    expect(menu()).toBeTruthy()
+
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    fireEvent.focusOut(input, { relatedTarget: outside })
+    expect(menu()).toBeNull()
+    outside.remove()
+  })
+
+  it('ignores arrow navigation while composing with an IME', () => {
+    setup()
+    fireEvent.click(trigger())
+    const input = searchBox()
+    const before = input.getAttribute('aria-activedescendant')
+    fireEvent.keyDown(
+      input,
+      new KeyboardEvent('keydown', { key: 'ArrowDown', isComposing: true, bubbles: true }),
+    )
+    expect(input.getAttribute('aria-activedescendant')).toBe(before)
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(input.getAttribute('aria-activedescendant')).not.toBe(before)
+  })
+
+  it('chooses the active row for Enter on a menu button', () => {
+    const { onSelectB } = setup()
+    fireEvent.click(trigger())
+    fireEvent.change(searchBox(), { target: { value: 'opus' } })
+    const clear = screen.getByRole('button', { name: 'Clear search' })
+    act(() => {
+      clear.focus()
+    })
+
+    fireEvent.keyDown(clear, { key: 'Enter' })
+    expect(onSelectB).toHaveBeenCalled()
+  })
+
+  it('focuses the list instead of a search box when searchable is false', () => {
+    setup({ searchable: false })
+    fireEvent.click(trigger())
+    expect(document.activeElement).toBe(document.querySelector('.field-picker-list'))
+  })
+
+  it('positions the portaled menu above and caps its list when space below is tight', () => {
+    const previousHeight = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { value: 180, configurable: true })
+    try {
+      setup()
+      const element = trigger()
+      element.getBoundingClientRect = () =>
+        ({
+          left: 0,
+          top: 100,
+          right: 100,
+          bottom: 116,
+          width: 100,
+          height: 16,
+          x: 0,
+          y: 100,
+          toJSON: () => ({}),
+        }) as DOMRect
+      fireEvent.click(element)
+      const menuElement = menu() as HTMLElement
+      const list = document.querySelector('.field-picker-list') as HTMLElement
+      Object.defineProperty(menuElement, 'offsetHeight', { value: 100, configurable: true })
+      Object.defineProperty(list, 'offsetHeight', { value: 60, configurable: true })
+      Object.defineProperty(list, 'scrollHeight', { value: 200, configurable: true })
+
+      act(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+
+      expect(menuElement.style.width).toBe('264px')
+      expect(menuElement.style.left).toBe('8px')
+      expect(menuElement.style.top).toBe('8px')
+      expect(menuElement.style.getPropertyValue('--field-picker-list-max')).toBe('96px')
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { value: previousHeight, configurable: true })
+    }
+  })
+
+  it('keeps the field-picker id namespace when no id is provided', () => {
+    setup({ id: undefined })
+    fireEvent.click(trigger())
+    expect(menu()?.id).toBe('field-picker-menu')
   })
 })

@@ -438,4 +438,10 @@ describe('ProjectPicker', () => {
     fireEvent.click(screen.getByRole('button', { name: /proj/ }))
     expect(screen.queryByText('Directory not found')).toBeNull()
   })
+
+  it('keeps the project-picker id namespace when no id is provided', () => {
+    setup({ id: undefined })
+    fireEvent.click(trigger())
+    expect(menu()?.id).toBe('project-picker-menu')
+  })
 })

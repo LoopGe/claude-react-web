@@ -5,28 +5,18 @@
 // menu lists the current value first, then the recent list in MRU order, and
 // accepts a pasted absolute path via the search box's "Use this path" row.
 //
-// The menu portals to <body> with viewport coordinates. Load-bearing, not
-// cosmetic: the dialog card is `.modal` (overflow:hidden, animated) and its
-// `.modal-section` is `overflow-y:auto`, so an in-flow dropdown is clipped by
-// the scroll container the moment the visible section is shorter than the
-// list — the same containing-block hazard documented for .model-picker /
-// .cmd-picker. Because the menu is not a DOM descendant of the dialog, it
-// registers in the shared Escape stack and outside-mousedown hook so Esc
-// closes only the dropdown and the dialog's focus trap lets the search box
-// keep focus (see isFocusInsideOtherOverlay).
+// Shared open/search/keyboard/positioning behavior lives in
+// useSearchablePicker. Directory validation, preflight, recents, the footer
+// action and the overlay-scrollbar adapter remain ProjectPicker concerns.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { FocusEvent as ReactFocusEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { IconCheck, IconChevronDown, IconChevronUp, IconFolder, IconSearch, IconX } from '../icons/ToolIcons'
-import { useEscapeStack } from '../../hooks/useEscapeStack'
-import { useOutsideMouseDown } from '../../hooks/useOutsideMouseDown'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
+import { useSearchablePicker } from '../../hooks/useSearchablePicker'
 import { useMergedRef } from '../../utils/mergedRef'
 import { directoryMissing } from '../../utils/fs-validation'
-import { markPortaledSurface } from '../../theme'
 import { isAbsolutePath, shortenPath, basenameOf, parentOf, initialOf } from '../../utils/paths'
-import { clamp } from '../../utils/clamp'
 
 export interface ProjectPickerProps {
   /** Trigger element id, so the field's <label htmlFor> can point at it
@@ -48,24 +38,21 @@ export interface ProjectPickerProps {
   onBrowse: () => void
 }
 
-// basenameOf / parentOf / initialOf live in utils/paths.ts, hoisted there so
-// the session-header project chip renders project names with the exact same
-// derivation.
-
-/** Design maximum for the list, mirrored by the CSS default of
- *  `--project-picker-list-max`. The flip/height math below never grows the
- *  list past it. */
-const MAX_LIST_H = 240
-
 interface Row {
   kind: 'path' | 'project'
   path: string
 }
 
-export function ProjectPicker({ id, ariaLabel, disabled, value, recents, onSelect, onForget, onBrowse }: ProjectPickerProps) {
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const [activeIndex, setActiveIndex] = useState(0)
+export function ProjectPicker({
+  id,
+  ariaLabel,
+  disabled,
+  value,
+  recents,
+  onSelect,
+  onForget,
+  onBrowse,
+}: ProjectPickerProps) {
   // Directories confirmed gone by /fs/resolve-cwd (404). Recents can point at
   // folders that were moved or deleted since they were remembered.
   const [missingPaths, setMissingPaths] = useState<ReadonlySet<string>>(() => new Set())
@@ -74,49 +61,62 @@ export function ProjectPicker({ id, ariaLabel, disabled, value, recents, onSelec
   // overwrite a newer verdict.
   const knownGoodRef = useRef<Set<string>>(new Set())
   const validationGenRef = useRef(new Map<string, number>())
-  const triggerRef = useRef<HTMLButtonElement | null>(null)
-  const menuRef = useRef<HTMLDivElement | null>(null)
-  const listRef = useRef<HTMLDivElement | null>(null)
-  const searchRef = useRef<HTMLInputElement | null>(null)
   // The project's unified overlay scrollbar (same attach as ModelPicker).
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
-  const listRefMerged = useMergedRef(listRef, setListOs)
 
-  const close = useCallback((restoreFocus = false) => {
-    // Keyboard-driven closes (Escape / select) unmount the focused menu, which
-    // would drop focus on <body>; hand it back to the trigger. Pointer-driven
-    // closes (outside press, blur) must NOT steal focus from wherever the user
-    // is headed, so they pass false (the default).
-    const hadFocus = menuRef.current?.contains(document.activeElement) ?? false
-    setOpen(false)
-    setSearch('')
-    setActiveIndex(0)
-    // Verdicts are per-open-session: closing drops them so a directory
-    // recreated between opens never shows a stale "not found" on reopen.
+  const resetValidation = useCallback(() => {
     setMissingPaths(new Set())
     knownGoodRef.current.clear()
-    if (restoreFocus && hadFocus) triggerRef.current?.focus()
   }, [])
 
-  // Disabling the picker must also retire an already-open menu — otherwise a
-  // mid-install flip (busy) would leave the menu able to change the target
-  // while the install is writing to the old one. Render-time prev-state
-  // adjustment (not an effect, and not close() — that reads refs) so the
-  // menu never paints once more while disabled.
-  const [wasDisabled, setWasDisabled] = useState(disabled)
-  if (wasDisabled !== disabled) {
-    setWasDisabled(disabled)
-    if (disabled) {
-      setOpen(false)
-      setSearch('')
-      setActiveIndex(0)
-      setMissingPaths(new Set())
-    }
-  }
+  const getRows = useCallback(
+    (typed: string): Row[] => {
+      const showUsePath = isAbsolutePath(typed) && typed !== value
+      // Current value first (drag-and-drop can prefill a path that isn't in the
+      // recent list yet), then the MRU recents, de-duped.
+      const all: string[] = []
+      if (value) all.push(value)
+      for (const path of recents) if (!all.includes(path)) all.push(path)
+      const q = typed.toLowerCase()
+      const filtered = q
+        ? all.filter((path) => path.toLowerCase().includes(q) || basenameOf(path).toLowerCase().includes(q))
+        : all
+      const list: Row[] = filtered.map((path) => ({ kind: 'project', path }))
+      // A pasted absolute path gets its own first row, preserving the old
+      // free-text input's paste-a-path workflow without a text field.
+      if (showUsePath) list.unshift({ kind: 'path', path: typed })
+      return list
+    },
+    [value, recents],
+  )
 
-  const typed = search.trim()
-  // A pasted absolute path gets its own first row, preserving the old
-  // free-text input's paste-a-path workflow without a text field.
+  const {
+    open,
+    search,
+    typed,
+    rows,
+    active,
+    setActiveIndex,
+    listRef,
+    listId,
+    optionId,
+    close,
+    activate,
+    clearSearch,
+    triggerProps,
+    menuProps,
+    searchProps,
+  } = useSearchablePicker<Row>({
+    id: id ?? 'project-picker',
+    rows: getRows,
+    disabled,
+    menuLabel: 'Choose a project',
+    listMaxVar: '--project-picker-list-max',
+    enterOnButtons: 'native',
+    onReset: resetValidation,
+    onActivate: choose,
+  })
+  const listRefMerged = useMergedRef(listRef, setListOs)
   const showUsePath = isAbsolutePath(typed) && typed !== value
 
   /** Check one directory against /fs/resolve-cwd. Only a definite "gone"
@@ -182,120 +182,8 @@ export function ProjectPicker({ id, ariaLabel, disabled, value, recents, onSelec
     }
   }, [open, showUsePath, typed])
 
-  const rows = useMemo<Row[]>(() => {
-    // Current value first (drag-and-drop can prefill a path that isn't in the
-    // recent list yet), then the MRU recents, de-duped.
-    const all: string[] = []
-    if (value) all.push(value)
-    for (const p of recents) if (!all.includes(p)) all.push(p)
-    const q = typed.toLowerCase()
-    const filtered = q
-      ? all.filter((p) => p.toLowerCase().includes(q) || basenameOf(p).toLowerCase().includes(q))
-      : all
-    const list: Row[] = filtered.map((path) => ({ kind: 'project', path }))
-    if (showUsePath) list.unshift({ kind: 'path', path: typed })
-    return list
-  }, [value, recents, typed, showUsePath])
-
-  const active = rows.length > 0 ? Math.min(activeIndex, rows.length - 1) : -1
-
-  // Escape closes only the menu: the shared stack dispatches by containment,
-  // and this entry is on top while open, so the New session dialog beneath it
-  // stays put. Must be declared BEFORE the autofocus effect below — the stack
-  // entry has to exist before focus moves into the portaled menu, or the
-  // dialog's focus trap re-guards and steals it back.
-  useEscapeStack({
-    active: open,
-    onEscape: () => close(true),
-    getContainer: () => menuRef.current,
-  })
-
-  // Outside-click dismissal. The trigger is exempt (it toggles the menu), and
-  // capture phase makes the menu collapse before any other mousedown handler.
-  useOutsideMouseDown({ ref: menuRef, onClose: close, triggerRef, capture: true, active: open })
-
-  // Focus the search box on open (layout phase, after the stack registration).
-  useLayoutEffect(() => {
-    if (open) searchRef.current?.focus()
-  }, [open])
-
-  // Anchor the portaled menu to the trigger and keep it in sync while the
-  // dialog's scroll container (or the window) moves. Flips above the trigger
-  // when the space below is too tight, and caps the list height through a CSS
-  // variable so header/footer never get clipped.
-  useLayoutEffect(() => {
-    if (!open) return
-    const menu = menuRef.current
-    const trigger = triggerRef.current
-    if (!menu || !trigger) return
-    markPortaledSurface(menu)
-    const update = () => {
-      const rect = trigger.getBoundingClientRect()
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      const gap = 6
-      const margin = 8
-      const listEl = listRef.current
-      // Chrome height (search + footer + borders) is independent of the list's
-      // max-height, so it stays stable while the cap below changes. The list's
-      // natural height is its scrollHeight, capped at the design maximum —
-      // measuring the rendered offsetHeight instead would read whatever cap a
-      // previous update left behind and could pick the wrong side.
-      const chromeH = Math.max(0, menu.offsetHeight - (listEl?.offsetHeight ?? 0))
-      const naturalList = Math.min(listEl?.scrollHeight ?? 0, MAX_LIST_H)
-      const menuH = chromeH + naturalList
-      const width = clamp(rect.width, 264, vw - margin * 2)
-      const left = clamp(rect.left, margin, vw - width - margin)
-      const spaceBelow = vh - rect.bottom - margin
-      const spaceAbove = rect.top - margin
-      const openUp = spaceBelow < menuH && spaceAbove > spaceBelow
-      const available = openUp ? spaceAbove : spaceBelow
-      const listMax = clamp(available - chromeH - 8, 96, MAX_LIST_H)
-      // Position against the height we will actually render (`listMax` may be
-      // smaller than `naturalList`). Using the uncapped `menuH` here left the
-      // up-flipped menu floating well above its trigger. Same fix as
-      // FieldPicker's update().
-      const posH = chromeH + Math.min(naturalList, listMax)
-      menu.style.width = `${width}px`
-      menu.style.left = `${left}px`
-      menu.style.top = `${openUp ? Math.max(margin, rect.top - gap - posH) : rect.bottom + gap}px`
-      menu.style.setProperty('--project-picker-list-max', `${listMax}px`)
-    }
-    update()
-    window.addEventListener('resize', update)
-    document.addEventListener('scroll', update, true)
-    return () => {
-      window.removeEventListener('resize', update)
-      document.removeEventListener('scroll', update, true)
-    }
-  }, [open, rows.length])
-
-  // Keep the keyboard-highlighted row in view — the list scrolls under the
-  // viewport-derived cap set by the positioning effect.
-  useEffect(() => {
-    if (!open || active < 0) return
-    listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: 'nearest' })
-  }, [active, open])
-
-  // Tab-ing out of the menu closes it, so Escape can never land in the odd
-  // state "menu visible but focus in the dialog" (where the stack's
-  // containment scan would hand Esc to the dialog). Focus moving to the
-  // trigger is exempt: the click that follows closes the menu anyway.
-  //
-  // A null `relatedTarget` is NOT an exit. Safari/WebKit blurs the focused
-  // search box when a button is pressed (buttons don't take focus there), so a
-  // plain click on a row or the footer would otherwise unmount the menu on
-  // mousedown and swallow the ensuing click — the "nothing happens" bug. Real
-  // pointer exits are owned by useOutsideMouseDown; this handler only needs to
-  // catch keyboard focus moving to another control.
-  const handleMenuBlur = (e: ReactFocusEvent<HTMLDivElement>) => {
-    const next = e.relatedTarget as Node | null
-    if (!next) return
-    if (e.currentTarget.contains(next) || triggerRef.current?.contains(next)) return
-    close()
-  }
-
-  const choose = async (path: string) => {
+  async function choose(row: Row): Promise<void> {
+    const path = row.path
     if (missingPaths.has(path)) return
     // A path whose verdict isn't known yet gets preflighted before it can be
     // selected — clicking fast must not slip a deleted project through.
@@ -311,46 +199,16 @@ export function ProjectPicker({ id, ariaLabel, disabled, value, recents, onSelec
     close(true)
   }
 
-  const handleMenuKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    // IME candidate navigation must win over the project list.
-    if (e.nativeEvent.isComposing) return
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (rows.length) setActiveIndex((i) => (Math.min(i, rows.length - 1) + 1) % rows.length)
-      return
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      if (rows.length) setActiveIndex((i) => (Math.min(i, rows.length - 1) - 1 + rows.length) % rows.length)
-      return
-    }
-    if (e.key === 'Enter') {
-      // Buttons (Clear / Forget / Open project…) keep their native Enter
-      // activation; only the search input's Enter chooses the active row.
-      if ((e.target as HTMLElement).closest('button')) return
-      e.preventDefault()
-      const row = rows[active]
-      if (row) choose(row.path)
-    }
-  }
-
-  const menuId = `${id ?? 'project-picker'}-menu`
-  const listId = `${menuId}-list`
-
   return (
     <>
       <button
-        ref={triggerRef}
         id={id}
         type="button"
         className="project-picker-trigger"
         aria-label={ariaLabel ? (value ? `${ariaLabel}: ${value}` : ariaLabel) : undefined}
         disabled={disabled}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
         title={value || 'Choose a project'}
-        onClick={() => (open ? close() : setOpen(true))}
+        {...triggerProps}
       >
         <span className={`project-picker-avatar${value ? '' : ' empty'}`} aria-hidden>
           {value ? initialOf(value) : '?'}
@@ -366,49 +224,29 @@ export function ProjectPicker({ id, ariaLabel, disabled, value, recents, onSelec
 
       {open &&
         createPortal(
-          <div
-            ref={menuRef}
-            id={menuId}
-            className="project-picker-menu"
-            role="dialog"
-            aria-label="Choose a project"
-            onKeyDown={handleMenuKeyDown}
-            onBlur={handleMenuBlur}
-          >
+          <div className="project-picker-menu" {...menuProps}>
             <div className="project-picker-search">
               <IconSearch size={13} aria-hidden />
-              <input
-                ref={searchRef}
-                type="text"
-                value={search}
-                placeholder="Search projects…"
-                aria-label="Search projects"
-                aria-controls={listId}
-                aria-activedescendant={active >= 0 ? `${menuId}-opt-${active}` : undefined}
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(e) => {
-                  setSearch(e.target.value)
-                  setActiveIndex(0)
-                }}
-              />
+              <input placeholder="Search projects…" aria-label="Search projects" {...searchProps} />
               {search && (
                 <button
                   type="button"
                   className="project-picker-clear"
                   aria-label="Clear search"
-                  onClick={() => {
-                    setSearch('')
-                    setActiveIndex(0)
-                    searchRef.current?.focus()
-                  }}
+                  onClick={clearSearch}
                 >
                   <IconX size={12} />
                 </button>
               )}
             </div>
 
-            <div ref={listRefMerged} id={listId} className="project-picker-list" role="listbox" aria-label="Projects">
+            <div
+              ref={listRefMerged}
+              id={listId}
+              className="project-picker-list"
+              role="listbox"
+              aria-label="Projects"
+            >
               {rows.length === 0 && <div className="project-picker-empty">No matching projects</div>}
               {rows.map((row, i) => (
                 <div
@@ -418,18 +256,20 @@ export function ProjectPicker({ id, ariaLabel, disabled, value, recents, onSelec
                 >
                   <button
                     type="button"
-                    id={`${menuId}-opt-${i}`}
+                    id={optionId(i)}
                     data-index={i}
                     className="project-picker-item"
                     role="option"
                     aria-selected={row.kind === 'project' && row.path === value}
                     disabled={missingPaths.has(row.path)}
                     tabIndex={-1}
-                    onClick={() => choose(row.path)}
+                    onClick={() => activate(row)}
                   >
                     {row.kind === 'path' ? (
                       <>
-                        <span className="project-picker-use-icon" aria-hidden>↵</span>
+                        <span className="project-picker-use-icon" aria-hidden>
+                          ↵
+                        </span>
                         <span className="project-picker-item-main">
                           <span className="project-picker-item-name">Use this path</span>
                           <code className="project-picker-item-path">{row.path}</code>
@@ -437,16 +277,22 @@ export function ProjectPicker({ id, ariaLabel, disabled, value, recents, onSelec
                       </>
                     ) : (
                       <>
-                        <span className="project-picker-avatar" aria-hidden>{initialOf(row.path)}</span>
+                        <span className="project-picker-avatar" aria-hidden>
+                          {initialOf(row.path)}
+                        </span>
                         <span className="project-picker-item-main">
                           <span className="project-picker-item-name">{basenameOf(row.path)}</span>
                           <span className="project-picker-item-path">{shortenPath(parentOf(row.path))}</span>
                         </span>
                         <span className="project-picker-item-spacer" />
-                        {row.path === value && <IconCheck size={13} className="project-picker-check" aria-hidden />}
+                        {row.path === value && (
+                          <IconCheck size={13} className="project-picker-check" aria-hidden />
+                        )}
                       </>
                     )}
-                    {missingPaths.has(row.path) && <span className="project-picker-missing">Directory not found</span>}
+                    {missingPaths.has(row.path) && (
+                      <span className="project-picker-missing">Directory not found</span>
+                    )}
                   </button>
                   {row.kind === 'project' && recents.includes(row.path) && (
                     <button
