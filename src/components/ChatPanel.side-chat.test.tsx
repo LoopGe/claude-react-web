@@ -88,6 +88,7 @@ vi.mock('./Chat', () => ({
 import { ChatPanel } from './ChatPanel'
 import { ToastProvider } from './ToastProvider'
 import { sessionStoreRegistry } from '../session-store/registry'
+import { DEFAULT_GLOBAL_PREFS } from '../types/config'
 import type { SessionInfo } from '../types'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -115,11 +116,8 @@ const basePanelProps = {
   focused: true,
   slot: 1,
   globalPrefs: {
-    showPinnedUserMessage: true,
+    ...DEFAULT_GLOBAL_PREFS,
     autoRecap: false,
-    toolGroupCards: true,
-    autoExpandRunningGroups: true,
-    showMessageHeaders: true,
     streamingRenderMode: 'overlay' as const,
   },
   onFocus: noop,

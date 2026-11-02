@@ -138,6 +138,7 @@ import { ToastProvider } from './ToastProvider'
 import { getSessionStore } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'
 import type { SessionInfo } from '../types'
+import { DEFAULT_GLOBAL_PREFS } from '../types/config'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -160,7 +161,7 @@ const streamEvent = (uuid: string, event: Record<string, unknown>) => ({
 })
 
 const noop = () => {}
-const globalPrefs = { showPinnedUserMessage: true, autoRecap: false, toolGroupCards: true, autoExpandRunningGroups: true, showMessageHeaders: true, streamingRenderMode: 'overlay' as const }
+const globalPrefs = { ...DEFAULT_GLOBAL_PREFS, autoRecap: false, streamingRenderMode: 'overlay' as const }
 const snippets = { snippets: [], add: noop, update: noop, remove: noop, reorder: noop } as never
 
 afterEach(async () => {

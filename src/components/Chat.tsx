@@ -103,9 +103,10 @@ import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
 import type { AgentInfo, PastedImage, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
+import type { GlobalPrefs } from '../types/config'
+import { resolveSessionPrefs } from '../types/config'
 import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
-import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import type { ScheduledSendBody } from '../../shared/scheduled-send'
 import { buildOutgoingBody } from '../utils/message-body'
 import type { MessageJumpTarget } from '../../shared/message-jump'
@@ -318,15 +319,7 @@ interface Props {
    *  <SettingsPanel> for the override UI. `streamingRenderMode` is
    *  global-only (no per-session override) and feeds MessageList's
    *  `streamingMode` seam verbatim. */
-  globalPrefs: {
-    showPinnedUserMessage: boolean
-    autoRecap: boolean
-    toolGroupCards: boolean
-    autoExpandRunningGroups: boolean
-    showMessageHeaders: boolean
-    streamingRenderMode: StreamingRenderMode
-    firstPartyTools?: Record<string, { enabled: boolean }>
-  }
+  globalPrefs: GlobalPrefs
   /** True while App is playing the /clear fade-in on this panel. Combined
    *  with the local `clearing` state (which serves the SDK in-band cleared
    *  path) via `effectiveClearing = clearingProp || localClearing`. */
@@ -491,14 +484,17 @@ export const Chat = memo(function Chat({
   const [searchOpen, setSearchOpen] = useState(false)
   // Effective UI prefs: a per-session override (session.<field>) wins,
   // otherwise the global default (globalPrefs.<field>, server-backed) applies.
-  // Computed inline so a SettingsPanel override or a global-settings save
-  // re-renders this panel with the new effective value immediately.
-  const effectiveShowPinned = session.showPinnedUserMessage ?? globalPrefs.showPinnedUserMessage
-  const effectiveAutoRecap = session.autoRecap ?? globalPrefs.autoRecap
-  const effectiveToolGroupCards = session.toolGroupCards ?? globalPrefs.toolGroupCards
-  const effectiveAutoExpandRunningGroups =
-    session.autoExpandRunningGroups ?? globalPrefs.autoExpandRunningGroups
-  const effectiveShowMessageHeaders = session.showMessageHeaders ?? globalPrefs.showMessageHeaders
+  // Computed via the shared resolver so a SettingsPanel override or a
+  // global-settings save re-renders this panel with the new effective value
+  // immediately. `streamingRenderMode` is global-only and read directly off
+  // `globalPrefs` (no per-session override). `firstPartyTools` is forwarded
+  // to <SettingsPanel> unchanged — Chat itself never consults it.
+  const sessionPrefs = resolveSessionPrefs(session, globalPrefs)
+  const effectiveShowPinned = sessionPrefs.showPinnedUserMessage
+  const effectiveAutoRecap = sessionPrefs.autoRecap
+  const effectiveToolGroupCards = sessionPrefs.toolGroupCards
+  const effectiveAutoExpandRunningGroups = sessionPrefs.autoExpandRunningGroups
+  const effectiveShowMessageHeaders = sessionPrefs.showMessageHeaders
   // Pinned "current question" header — the user message of the turn in view,
   // shown when it has scrolled above the viewport. `pinnedUserMsg` drives
   // presence (open/exit); `pinnedText` retains the last text through the exit
