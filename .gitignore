@@ -18,6 +18,8 @@ coverage/
 .idea/
 # Temp artifacts from the Playwright MCP dev harness.
 .playwright-mcp/
+/test-results/
+/playwright-report/
 # Local probe/worktree directories created during development.
 codesclaude-react-web.*/
 # Local Claude Code session state (plans, worktrees, settings).

@@ -88,7 +88,9 @@ export default [
       'desktop/**/*.mjs',
       'vitest.config.ts',
       'vite.config.ts',
+      'playwright.config.ts',
       'build.mjs',
+      'tests/browser/**/*.ts',
       'scripts/**/*.mjs',
     ],
     languageOptions: {
@@ -110,6 +112,16 @@ export default [
         ReadableStream: 'readonly',
         Response: 'readonly',
         fetch: 'readonly',
+        // Browser-fixture code runs in Chromium through Playwright; the
+        // page.evaluate callbacks in the specs share those browser globals.
+        window: 'readonly',
+        document: 'readonly',
+        performance: 'readonly',
+        requestAnimationFrame: 'readonly',
+        getComputedStyle: 'readonly',
+        HTMLButtonElement: 'readonly',
+        HTMLDivElement: 'readonly',
+        HTMLElement: 'readonly',
       },
     },
     rules: {

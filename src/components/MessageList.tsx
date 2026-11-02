@@ -1009,22 +1009,105 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const readHeight = (node: HTMLElement) =>
       Math.ceil(Math.max(node.getBoundingClientRect().height, node.scrollHeight))
 
+    let committedHeight = 0
+    let exitSnapshot: {
+      cards: HTMLElement[]
+      startCardFlow: number
+      cardReserve: number
+    } | null = null
+    let wasExiting = false
     const updateHeight = () => {
-      const stack = readHeight(el)
-      setBottomStackHeight((prev) => {
-        if (prev === stack) return prev
-        if (Math.abs(stack - prev) < BOTTOM_STACK_COMMIT_HYSTERESIS_PX) return prev
-        return stack
-      })
+      const exitingCards = Array.from(el.querySelectorAll<HTMLElement>('.bottom-card-motion-exiting'))
+      const previous = exitSnapshot
+      // A reentered card keeps its connected wrapper while Motion regrows it to
+      // auto. Keep it in the transition set EVEN when another card is still
+      // exiting; folding it into static content would freeze its recovery.
+      const recoveringCards = previous?.cards.filter(
+        (card) => card.isConnected && card.style.height !== 'auto' && !exitingCards.includes(card),
+      ) ?? []
+      const cards = [...exitingCards, ...recoveringCards]
+      const transitioning = cards.length > 0
+      const settlingExit = wasExiting && !transitioning
+      let stack: number
+      if (transitioning) {
+        const cardFlow = cards.reduce((sum, card) => sum + card.getBoundingClientRect().height, 0)
+        const sameCards =
+          exitSnapshot?.cards.length === cards.length && exitSnapshot.cards.every((card, i) => card === cards[i])
+        // Measure the static reserve in the same uncapped coordinate that
+        // readHeight will use after the cards are gone. Both the stack and its
+        // wrappers may be flex-clamped, so subtracting their USED heights is
+        // not enough. Re-read on every frame so streaming/composer changes are
+        // not frozen in the exit snapshot. The override restores before paint.
+        const maxHeight = el.style.maxHeight
+        el.style.maxHeight = 'none'
+        const staticReserve =
+          el.scrollHeight - cards.reduce((sum, card) => sum + card.getBoundingClientRect().height, 0)
+        el.style.maxHeight = maxHeight
+        if (!sameCards) {
+          exitSnapshot = { cards, startCardFlow: cardFlow, cardReserve: committedHeight - staticReserve }
+        }
+        const snapshot = exitSnapshot
+        if (!snapshot) return
+        stack =
+          staticReserve + snapshot.cardReserve * (snapshot.startCardFlow > 0 ? cardFlow / snapshot.startCardFlow : 0)
+      } else {
+        exitSnapshot = null
+        stack = readHeight(el)
+      }
+      wasExiting = transitioning
+      // A bottom-card exit clips overflow and translates the visual card:
+      // scrollHeight then describes paint overflow, not the space the transcript
+      // must reserve. Follow the snapshot-driven flow every frame instead, with
+      // no hysteresis. On the first settled frame restore the normal reading and
+      // commit it immediately so no residual reserve snaps away later.
+      const next =
+        !transitioning && !settlingExit && Math.abs(stack - committedHeight) < BOTTOM_STACK_COMMIT_HYSTERESIS_PX
+          ? committedHeight
+          : stack
+      committedHeight = next
+      if (transitioning || settlingExit) {
+        // Motion can write several heights before React/Virtuoso commits. Keep
+        // the already-mounted spacer on the same frame as the measured card;
+        // bottomStackHeight still drives the existing pre-paint scroll re-pin.
+        const spacer = el.closest('.chat-messages-wrap')?.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+        if (spacer) spacer.style.height = `${next}px`
+      }
+      setBottomStackHeight((prev) => (prev === next ? prev : next))
     }
 
     updateHeight()
-    if (typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(updateHeight)
-    ro.observe(el)
-    if (dock) ro.observe(dock)
-    if (overlay) ro.observe(overlay)
-    return () => ro.disconnect()
+    // Class changes precede the height tween (the fade leads by 90ms), while
+    // inline style writes still drive the collapse under the 45% cap (where the
+    // observed stack boxes may not resize). Read every Motion write immediately:
+    // the spacer fast path below keeps the latest inline height and reservation
+    // in the same frame, without waiting for React/Virtuoso.
+    const mo = new MutationObserver((mutations) => {
+      const relevant = mutations.some((mutation) => {
+        if (mutation.attributeName === 'class') {
+          return mutation.target instanceof HTMLElement && mutation.target.classList.contains('bottom-card-motion')
+        }
+        // During an exit, any style/childList change can be the streaming region,
+        // composer, or a wrapper unmount. At rest these are not geometry signals
+        // for this controller, and the RO below remains the only measurement path.
+        return wasExiting || exitSnapshot !== null
+      })
+      if (relevant) updateHeight()
+    })
+    if (overlay)
+      mo.observe(overlay, {
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+        childList: true,
+        subtree: true,
+      })
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateHeight)
+    ro?.observe(el)
+    if (dock) ro?.observe(dock)
+    if (overlay) ro?.observe(overlay)
+    return () => {
+      mo.disconnect()
+      ro?.disconnect()
+    }
   }, [])
 
   // --- Scroll to previous / next user message / turn-final reply ----------
