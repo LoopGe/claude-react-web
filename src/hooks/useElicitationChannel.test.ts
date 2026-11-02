@@ -257,4 +257,13 @@ describe('useElicitationChannel', () => {
     expect(result.current.pending.map((p) => p.id)).toEqual(['e1', 'e2', 'e3', 'e4'])
     expect(result.current.pending[1].serverName).toBe('linear') // Updated
   })
+
+  // The wrapper's job is to hide the core's generic `submit` behind the
+  // domain-specific `decide`. If `submit` leaks onto the public surface,
+  // callers could bypass the `Elicitation decision failed` error prefix
+  // and the `/elicitations/:id/decide` action — a contract regression.
+  it('does not expose the core submit on the wrapper', () => {
+    const { result } = renderHook(() => useElicitationChannel('s1'))
+    expect(result.current).not.toHaveProperty('submit')
+  })
 })

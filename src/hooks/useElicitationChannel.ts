@@ -7,12 +7,19 @@
 // (via the SessionSynchronizer's frame switch) into `onRequest()` / `onResolved()`.
 // A one-shot REST call seeds the initial pending list, covering the race
 // where a request was broadcast before the WebSocket subscription opened.
-// Reconnects are covered by the server's replay snapshot (the `replay` /
-// `replay-done` frames carry `elicitations`), not by a REST re-seed.
+//
+// On reconnect the server re-broadcasts still-pending requests as ordinary
+// request frames, which the local merge folds in by id — there is no
+// separate replay/replay-done envelope for elicitations.
+//
+// Session isolation and recovery-race protection are handled by the
+// shared core (usePendingRequestChannel). This file is a thin wrapper
+// that maps the domain-specific decide method onto the core's generic
+// `submit`.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 
-import { api } from './useApi'
+import { usePendingRequestChannel } from './usePendingRequestChannel'
 import type { ElicitationDecision, ElicitationRequestUi, ElicitationResolved } from '../types'
 
 export interface UseElicitationChannel {
@@ -28,100 +35,40 @@ export interface UseElicitationChannel {
 }
 
 export function useElicitationChannel(sessionId: string): UseElicitationChannel {
-  const [pending, setPending] = useState<ElicitationRequestUi[]>([])
-  const [error, setError] = useState<string | null>(null)
-
-  // Mirrors `pending` so async control flows (decide) can capture the
-  // just-removed request synchronously — see usePermissionChannel for the
-  // React batching rationale.
-  const pendingRef = useRef<ElicitationRequestUi[]>(pending)
-  useEffect(() => {
-    pendingRef.current = pending
-  }, [pending])
-
-  // Initial snapshot — same rationale as usePermissionChannel: the WS
-  // subscription re-broadcasts still-open requests on connect, but the REST
-  // snapshot makes the dialog appear immediately after a hard refresh.
-  useEffect(() => {
-    if (!sessionId) return
-    let cancelled = false
-    api
-      .get<{ pending: ElicitationRequestUi[] }>(`/sessions/${sessionId}/elicitations`)
-      .then((res) => {
-        if (cancelled) return
-        setPending((prev) => mergePending(prev, res.pending))
-      })
-      .catch(() => {
-        /* non-fatal: the WebSocket subscription will catch subsequent events */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [sessionId])
-
-  const onRequest = useCallback((req: ElicitationRequestUi) => {
-    if (!req?.id) return
-    setPending((prev) => mergePending(prev, [req]))
-  }, [])
-
-  const onResolved = useCallback((res: ElicitationResolved) => {
-    if (!res?.id) return
-    setPending((prev) => prev.filter((p) => p.id !== res.id))
-  }, [])
-
-  /** Optimistic-update-with-rollback, mirroring usePermissionChannel:
-   *  drop the request locally so the dialog closes immediately; on POST
-   *  failure, re-fetch pending to reconcile, and re-insert the removed
-   *  request if even the re-fetch fails. */
-  const decide = useCallback(
-    async (eid: string, decision: ElicitationDecision) => {
-      const removed = pendingRef.current.find((p) => p.id === eid)
-      setPending((prev) => prev.filter((p) => p.id !== eid))
-      try {
-        await api.post(`/sessions/${sessionId}/elicitations/${eid}/decide`, decision)
-      } catch (e) {
-        setError(`Elicitation decision failed: ${(e as Error).message}`)
-        try {
-          const r = await api.get<{ pending: ElicitationRequestUi[] }>(
-            `/sessions/${sessionId}/elicitations`,
-          )
-          setPending((prev) => mergePending(prev, r.pending))
-        } catch {
-          if (removed) setPending((prev) => mergePending(prev, [removed]))
-        }
-      }
-    },
-    [sessionId],
+  const channel = usePendingRequestChannel<ElicitationRequestUi, ElicitationResolved>(
+    sessionId,
+    'elicitations',
   )
+  // `submit` is stable across pending/error changes (it only depends on
+  // sessionId/resource inside the core), so `decide` preserves the same
+  // identity semantics as the old optimisticPost-based implementation:
+  // it changes only when sessionId changes.
+  const { submit } = channel
 
-  const reset = useCallback(() => {
-    setPending([])
-    setError(null)
-  }, [])
-
-  const clearError = useCallback(() => setError(null), [])
+  const decide = useCallback(
+    (eid: string, decision: ElicitationDecision) =>
+      submit(eid, 'decide', decision, 'Elicitation decision failed'),
+    [submit],
+  )
 
   return useMemo(
-    () => ({ pending, error, decide, onRequest, onResolved, reset, clearError }),
-    [pending, error, decide, onRequest, onResolved, reset, clearError],
+    () => ({
+      pending: channel.pending,
+      error: channel.error,
+      decide,
+      onRequest: channel.onRequest,
+      onResolved: channel.onResolved,
+      reset: channel.reset,
+      clearError: channel.clearError,
+    }),
+    [
+      channel.pending,
+      channel.error,
+      decide,
+      channel.onRequest,
+      channel.onResolved,
+      channel.reset,
+      channel.clearError,
+    ],
   )
-}
-
-/** Merge a fresh pending array into an existing one.
- *  - Existing entries are updated-in-place when `incoming` has the same id.
- *  - New entries are appended at the end.
- *  - Ordering of existing entries is preserved. */
-function mergePending(
-  prev: ElicitationRequestUi[],
-  incoming: ElicitationRequestUi[],
-): ElicitationRequestUi[] {
-  if (!incoming?.length) return prev
-  const incomingById = new Map(incoming.map((p) => [p.id, p]))
-  const merged = prev.map((p) => incomingById.get(p.id) ?? p)
-  for (const p of incoming) {
-    if (!prev.some((p2) => p2.id === p.id)) {
-      merged.push(p)
-    }
-  }
-  return merged
 }
