@@ -17,7 +17,7 @@
      (#1) Entrance — mounts conditionally, so the animation fires on mount.
      Reuses the same keyframes as the settings overlay for one motion. */
 }
-.git-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.git-overlay[data-state="open"] { animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .git-overlay[data-state="closing"] {
   pointer-events: none;
   animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
@@ -252,7 +252,7 @@
 .git-file-row {
   display: flex;
   flex-direction: column;
-  animation: git-file-row-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation: item-enter var(--motion-duration-base) var(--motion-ease-enter) both;
   transition: opacity var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .git-file-row.untracked {
@@ -277,10 +277,6 @@
   font-family: var(--mono);
   font-size: var(--fs-sm);
   text-align: left;
-}
-@keyframes git-file-row-in {
-  from { opacity: 0; transform: translateY(var(--motion-distance-sm)); }
-  to   { opacity: 1; transform: translateY(0); }
 }
 @media (prefers-reduced-motion: reduce) {
   .git-file-row {

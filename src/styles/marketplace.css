@@ -233,7 +233,7 @@
 }
 
 .marketplace-card-shell {
-  animation: marketplace-card-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation: item-enter var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 
 .marketplace-card-shell > * {
@@ -243,10 +243,6 @@
     border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 
-@keyframes marketplace-card-in {
-  from { opacity: 0; transform: translateY(var(--motion-distance-sm)); }
-  to   { opacity: 1; transform: translateY(0); }
-}
 @media (prefers-reduced-motion: reduce) {
   .marketplace-card-shell {
     animation: none;

@@ -21,7 +21,7 @@
 }
 
 .tasks-overlay[data-state='open'] {
-  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
+  animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both;
 }
 .tasks-overlay[data-state='closing'] {
   pointer-events: none;

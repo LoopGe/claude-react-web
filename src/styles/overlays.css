@@ -13,7 +13,7 @@
   justify-content: center;
   padding-top: min(20vh, 160px);
 }
-.palette-backdrop[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.palette-backdrop[data-state="open"] { animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .palette-backdrop[data-state="closing"] {
   pointer-events: none;
   animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
@@ -155,7 +155,7 @@
      scrollbar. Canonical comment: src/utils/overlay-scrollbar.ts; pinned by
      overlay-backdrop-scroll.test.ts. */
 }
-.panel-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.panel-overlay[data-state="open"] { animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .panel-overlay[data-state="closing"] {
   pointer-events: none;
   animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
@@ -548,11 +548,7 @@
    .recap-window-body-ready — its reveal is per-block (see .recap-reveal
    below), and the two fades would multiply into mush. */
 .recap-window-body-inner:not(.recap-window-body-ready) {
-  animation: recap-body-in var(--motion-duration-base) var(--motion-ease-enter) both;
-}
-@keyframes recap-body-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  animation: fade-in var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 /* Per-block reveal of a freshly generated recap summary: each top-level
    markdown block fades in and rises 6px, staggered by the --i index that

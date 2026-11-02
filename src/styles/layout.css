@@ -329,7 +329,7 @@ body.resizing-col .app {
   border-radius: var(--radius-circle);
   background: var(--accent);
   flex-shrink: 0;
-  /* Same 1.8s period as the whole-tab wash (session-nav-working-pulse), and
+  /* Same 1.8s period as the whole-tab wash (accent-wash-pulse), and
      phase-locked to it: both animations start on the same frame (both begin
      when .working lands), and the keyframes are inverted so the dot is
      BRIGHTEST when the wash peaks and dims as it recedes — one shared breath
@@ -339,15 +339,11 @@ body.resizing-col .app {
      fighting the breath. */
   animation:
     session-nav-dot-in var(--motion-duration-fast) var(--motion-ease-enter) backwards,
-    session-nav-pulse 1.8s ease-in-out infinite;
-}
-@keyframes session-nav-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
+    status-pulse 1.8s ease-in-out infinite;
 }
 /* Whole-tab breathing for the working state, mirroring the chat WorkingBubble
    (working-bubble-pulse in chat.css) and the titlebar tab's
-   titlebar-tab-working-pulse: the same accent-wash colour recipe
+   accent-wash-pulse: the same accent-wash colour recipe
    (color-mix ... 18%) and the same 1.8s ease-in-out rhythm. Carried by an
    INSET box-shadow wash rather than the bubble's outer halo or a
    background-colour animation, for two reasons: the strip is an
@@ -361,11 +357,7 @@ body.resizing-col .app {
    in phase with this wash (see .session-nav-dot) so the two read as one
    breath. */
 .session-nav-tab.working {
-  animation: session-nav-working-pulse 1.8s ease-in-out infinite;
-}
-@keyframes session-nav-working-pulse {
-  0%, 100% { box-shadow: inset 0 0 0 999px transparent; }
-  50% { box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--accent) 18%, transparent); }
+  animation: accent-wash-pulse 1.8s ease-in-out infinite;
 }
 /* Working wash fade-out (turn ended): the wash hook keeps `.working` one
    exit window and adds `.exiting`, which swaps the breathing pulse for a
@@ -875,10 +867,6 @@ body.resizing-col .app {
     transform: scale(1);
   }
 }
-@keyframes panel-exit {
-  from { opacity: 1; }
-  to   { opacity: 0; }
-}
 /* Entering animation is applied directly on .chat-panel (no wrapper
    needed — the panel is always a real grid cell). */
 .chat-panel.entering {
@@ -888,7 +876,7 @@ body.resizing-col .app {
   animation: panel-enter-replay var(--motion-duration-panel-enter) var(--motion-ease-standard) both;
 }
 .chat-panel-slot.exiting {
-  animation: panel-exit var(--motion-duration-fast) var(--motion-ease-exit) forwards;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) forwards;
 }
 /* Mode badge slide transition. On switch the old badge slides out to the
    left while the new one slides in from the right, producing a lateral
@@ -1871,7 +1859,7 @@ body.resizing-col .app {
    The overlay is always mounted and toggled via `.hidden` (display:none),
    so the animation replays each time it's revealed. Shared by the git
    overlay (mounted conditionally) below via .overlay-enter-* keyframes. */
-.settings-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.settings-overlay[data-state="open"] { animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .settings-overlay[data-state="open"] > .settings-panel { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
 .settings-overlay[data-state="closing"] {
   pointer-events: none;
@@ -1885,10 +1873,6 @@ body.resizing-col .app {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--overlay-shadow);
-}
-@keyframes overlay-backdrop-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
 }
 @keyframes overlay-backdrop-out {
   from { opacity: 1; }
@@ -2009,7 +1993,7 @@ body.resizing-col .app {
   border: 1px solid var(--border-subtle, var(--border));
   border-radius: var(--radius-3xl);
   box-shadow: var(--card-shadow);
-  animation: app-empty-state-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
+  animation: empty-state-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 .app-empty-state h2 {
   margin: 0;
@@ -2089,7 +2073,7 @@ body.resizing-col .app {
   border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
   border-radius: var(--radius-2xl);
   box-shadow: var(--card-shadow);
-  animation: app-loading-card-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
+  animation: content-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 .app-loading-dot {
   width: var(--size-12px);
@@ -2116,14 +2100,6 @@ body.resizing-col .app {
   /* Re-affirmed: the border shorthand above would otherwise stomp the
      shared rule's accent top arc (zero-specificity :where group). */
   border-top-color: var(--accent);
-}
-@keyframes app-loading-card-in {
-  from { opacity: 0; transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-enter)); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes app-empty-state-in {
-  from { opacity: 0; transform: translateY(var(--motion-distance-lg)) scale(var(--motion-scale-enter)); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 @media (prefers-reduced-motion: reduce) {
   .app-loading-card,

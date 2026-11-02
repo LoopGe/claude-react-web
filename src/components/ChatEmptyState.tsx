@@ -12,7 +12,7 @@ import { useRef, type ReactNode } from 'react'
 //
 // The bounce is driven through the Web Animations API (`el.animate`), NOT a
 // toggled CSS class. The icon already runs a CSS `animation` (the
-// `chat-empty-item-in` entrance). An earlier version bounced by toggling a
+// `content-enter` entrance). An earlier version bounced by toggling a
 // `chat-empty-icon--bounce` class that reused the same `animation` shorthand;
 // clearing that class on `animationend` reverted the shorthand to the entrance
 // keyframes, which the browser then *restarted* (the entrance name had left

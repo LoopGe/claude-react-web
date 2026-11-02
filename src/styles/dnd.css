@@ -91,7 +91,7 @@ body.has-bg .chat-panel.chat-panel-ghost {
 
 /* The clone is a FROZEN snapshot — animations are transient state. Every
    element inside the cloned panel that carries an entrance animation (the
-   empty-state stack's chat-empty-item-in stagger, message-reveal staggers,
+   empty-state stack's content-enter stagger, message-reveal staggers,
    working/queued pulses, …) would restart from 0% the moment the fresh
    clone mounts — visibly replaying inside the ghost. (The de-identify step
    in App strips the panel-level `entering` class, but staggered entrances

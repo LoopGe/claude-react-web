@@ -202,7 +202,7 @@ export const RecapWindow = memo(function RecapWindow({ recap, clearing, onClose,
             reveal. Remount semantics are owned by the status component of
             the key alone — the stamp's job is the dismissal identity, not
             mounting. The -ready class opts the mounted summary out of the
-            whole-body recap-body-in fade — the reveal is per-block there,
+            whole-body `fade-in` animation — the reveal is per-block there,
             and the two fades would multiply into mush. */}
         <div
           key={`${recap.status}:${recap.generatedAt ?? ''}`}

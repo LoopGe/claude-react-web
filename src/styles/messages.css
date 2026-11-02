@@ -1558,9 +1558,9 @@
   justify-content: center;
   z-index: var(--z-modal);
   /* (#2) Backdrop fades, the modal lifts in — same motion language as the
-     per-panel overlays, reusing overlay-backdrop-in. */
+     per-panel overlays, reusing fade-in. */
 }
-.modal-backdrop[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.modal-backdrop[data-state="open"] { animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .modal-backdrop[data-state="closing"] {
   pointer-events: none;
   animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;

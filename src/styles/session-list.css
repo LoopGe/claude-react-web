@@ -439,18 +439,8 @@
    with a small delay. Once the class drops, scroll re-mounts (Virtuoso) and
    later re-renders replay nothing. */
 .session-entering .session-item-shell {
-  animation: session-item-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
+  animation: item-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
   animation-delay: var(--stagger, 0ms);
-}
-@keyframes session-item-enter {
-  from {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-sm));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .session-entering .session-item-shell {
@@ -550,7 +540,7 @@
      z-index 4), the git overlay (5) and the settings overlay (6). */
   z-index: 7;
 }
-.perm-overlay[data-state="open"] { animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both; }
+.perm-overlay[data-state="open"] { animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both; }
 .perm-overlay[data-state="closing"] {
   pointer-events: none;
   animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
@@ -1104,7 +1094,7 @@
   background: var(--warn);
   border-color: var(--warn);
   color: var(--bg);
-  animation: session-await-pulse 1.2s ease-in-out infinite;
+  animation: opacity-pulse-40 1.2s ease-in-out infinite;
 }
 /* Slot pill open/close: the leading numeric badge is the title row's in-flow
    reservation. Opening expands it (width 0→18px + margin), so the mode
@@ -1179,11 +1169,7 @@
      with the scale-based pulse. Opacity changes no geometry, so the badge
      stays inside its box and can never be clipped. Same 0.4↔1 opacity language
      as .session-status-dot.status-working, minus its (clipping) scale. */
-  animation: session-await-pulse 1.2s ease-in-out infinite;
-}
-@keyframes session-await-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  animation: opacity-pulse-40 1.2s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .session-item-perm-badge,

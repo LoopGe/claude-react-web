@@ -51,7 +51,8 @@ export function useMotionTransition<T extends { duration: number; ease: readonly
 /**
  * Motion variants for the two-layer overlay pattern (backdrop + card), used by
  * ConfirmDialog / PromptDialog and reusable by the rest of the overlay family.
- * Mirrors the `overlay-backdrop-in/out` + `overlay-panel-in/out` keyframes:
+ * Mirrors the `fade-in` / `overlay-backdrop-out` backdrop pair and the
+ * `overlay-panel-in/out` card pair:
  *   backdrop: opacity 0->1 (enter 180ms), 1->0 (exit 120ms)
  *   card:     opacity + scale 0.98 + y 8->0 (enter), 0->4 (exit); exit 180ms
  * `pointerEvents:'none'` on exit disables the backdrop/card while fading.

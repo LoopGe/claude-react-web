@@ -34,7 +34,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   box-shadow: var(--card-shadow);
-  animation: setup-card-in var(--motion-duration-moderate) var(--motion-ease-enter) both;
+  animation: empty-state-enter var(--motion-duration-moderate) var(--motion-ease-enter) both;
 }
 
 .setup-title {
@@ -167,7 +167,7 @@
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  animation: setup-status-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation: item-enter var(--motion-duration-base) var(--motion-ease-enter) both;
   transition:
     border-color var(--motion-duration-fast) var(--motion-ease-standard),
     background var(--motion-duration-fast) var(--motion-ease-standard),
@@ -218,17 +218,6 @@
   white-space: pre;
 }
 
-@keyframes setup-card-in {
-  from {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-lg)) scale(var(--motion-scale-enter));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
 @keyframes setup-step-forward-in {
   from {
     opacity: 0;
@@ -248,17 +237,6 @@
   to {
     opacity: 1;
     transform: translateX(0);
-  }
-}
-
-@keyframes setup-status-in {
-  from {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-sm));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 

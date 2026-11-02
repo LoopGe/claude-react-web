@@ -49,7 +49,7 @@ describe('ChatEmptyState easter-egg trigger', () => {
   it('drives the bounce via the Web Animations API on each click', () => {
     // The bounce is played through `el.animate` (WAAPI) rather than a toggled
     // CSS class, so it lives outside the CSS `animation` cascade and cannot
-    // restart the `chat-empty-item-in` entrance (the old class-toggle approach
+    // restart the `content-enter` entrance (the old class-toggle approach
     // played two animations per click: the bounce, then a spurious entrance
     // replay). jsdom doesn't run animations, so we assert the call itself: each
     // click invokes animate once, and a rapid re-click cancels the prior run

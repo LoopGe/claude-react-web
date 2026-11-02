@@ -321,12 +321,7 @@
   border-radius: var(--radius-circle);
   border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-top-color: var(--accent);
-  animation: handoff-spin 0.9s linear infinite;
-}
-@keyframes handoff-spin {
-  to {
-    transform: rotate(360deg);
-  }
+  animation: spin 0.9s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .handoff-veil-spinner {
@@ -545,7 +540,7 @@
 .chat-empty-title,
 .chat-empty-subtitle,
 .chat-empty-env {
-  animation: chat-empty-item-in var(--motion-duration-slow) var(--motion-ease-enter) both;
+  animation: content-enter var(--motion-duration-slow) var(--motion-ease-enter) both;
 }
 .chat-empty-icon {
   animation-delay: 40ms;
@@ -558,16 +553,6 @@
 }
 .chat-empty-env {
   animation-delay: 280ms;
-}
-@keyframes chat-empty-item-in {
-  from {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-md)) scale(var(--motion-scale-enter));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-empty-icon,
@@ -607,7 +592,7 @@
    clicked twice (a subtle "something is happening" cue that is reversible if
    the chain resets). The per-click bounce is driven imperatively via the Web
    Animations API in ChatEmptyState.tsx — deliberately NOT a CSS class, so it
-   can't collide with the `chat-empty-item-in` entrance on the `animation`
+   can't collide with the `content-enter` entrance on the `animation`
    shorthand (see the component header for why). */
 .chat-empty-icon--armed {
   color: var(--accent-text);
@@ -701,20 +686,11 @@ button.chat-empty-env-chip:hover {
 }
 /* While the async mcp-status lookup is in flight the dot pulses as a loading
    placeholder, then hands over to the resolved color. Same opacity-pulse
-   shape as the other dot pulses (msg-queued-pulse / subagent-child-pulse),
+   shape as the other dot pulses (status-pulse / opacity-pulse-30),
    gated by reduced-motion. */
 .chat-empty-env-dot[data-status='loading'] {
   background: var(--fg-muted);
-  animation: chat-empty-env-dot-pulse 1.4s var(--motion-ease-standard) infinite;
-}
-@keyframes chat-empty-env-dot-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.3;
-  }
+  animation: opacity-pulse-30 1.4s var(--motion-ease-standard) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-empty-env-dot[data-status='loading'] {
@@ -2116,20 +2092,11 @@ button.chat-empty-env-chip:hover {
   height: 7px;
   border-radius: var(--radius-circle);
   background: var(--accent);
-  animation: msg-queued-pulse 1.4s ease-in-out infinite;
+  animation: status-pulse 1.4s ease-in-out infinite;
 }
 .msg-queued-label {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-}
-@keyframes msg-queued-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
 }
 /* Slightly dim a queued bubble so it reads as "not yet being worked on",
    distinct from both the in-flight (sending) and acknowledged states. */
@@ -2156,20 +2123,11 @@ button.chat-empty-env-chip:hover {
   height: 7px;
   border-radius: var(--radius-circle);
   background: var(--accent);
-  animation: msg-processing-pulse 1s ease-in-out infinite;
+  animation: status-pulse 1s ease-in-out infinite;
 }
 .msg-processing-label {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-}
-@keyframes msg-processing-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-  }
-  50% {
-    opacity: 1;
-  }
 }
 /* User message ?right-aligned chat bubble. We shrink the bubble below
    the column width and pin it to the right edge with align-self, which
@@ -2794,17 +2752,7 @@ button.chat-empty-env-chip:hover {
      SDK crosses thinking/writing/tool_use — a tiny rise + fade instead of a
      hard text snap. `both` fill keeps it hidden for the stagger delay only
      if a caller sets it; idles at the final state otherwise. */
-  animation: phase-label-in var(--motion-duration-base) var(--motion-ease-enter) both;
-}
-@keyframes phase-label-in {
-  from {
-    opacity: 0;
-    transform: translateY(var(--motion-distance-sm));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  animation: item-enter var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 /* Elapsed-time label and retry pill share one chip anatomy (mono digits,
    pill radius, tight padding). Font-variant-numeric: tabular-nums keeps
@@ -2914,7 +2862,7 @@ button.chat-empty-env-chip:hover {
   white-space: nowrap;
   /* Same entrance crossfade as the phase label (keyed remounts in the bar
      replay it) — without this the pill pops in with a hard snap. */
-  animation: phase-label-in var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation: item-enter var(--motion-duration-base) var(--motion-ease-enter) both;
 }
 /* While a retry backoff runs, nothing streams — the phase label is stale.
    Dim (don't hide) it: it keeps the "what was in flight" context, but the
@@ -3468,16 +3416,7 @@ button.chat-empty-env-chip:hover {
 /* Pulse only while the parent subagent is live — a stranded running row on a
    settled record gets the class without this modifier, so it stays static. */
 .subagent-child-dot-pulse {
-  animation: subagent-child-pulse 1.4s var(--motion-ease-standard) infinite;
-}
-@keyframes subagent-child-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.3;
-  }
+  animation: opacity-pulse-30 1.4s var(--motion-ease-standard) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .subagent-child-dot-pulse {
@@ -3555,7 +3494,7 @@ button.chat-empty-env-chip:hover {
   /* Deeper than the old 55% so the fill carries the dimming the (now removed)
      blur used to add. NO backdrop-filter — see the compositing contract above. */
   background: color-mix(in srgb, var(--bg) 62%, transparent);
-  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
+  animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
 }
 .subagent-overlay[data-state='closing'] .subagent-overlay-scrim {
   /* `forwards` on the way out: the scrim must stay faded once the animation
@@ -3879,7 +3818,7 @@ button.chat-empty-env-chip:hover {
   z-index: 0;
   /* NO backdrop-filter — see the compositing contract on .subagent-overlay. */
   background: color-mix(in srgb, var(--bg) 62%, transparent);
-  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
+  animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) backwards;
 }
 .workflow-overlay[data-state='closing'] .workflow-overlay-scrim {
   animation: overlay-backdrop-out var(--motion-duration-base) var(--motion-ease-exit) forwards;
@@ -4111,7 +4050,7 @@ button.chat-empty-env-chip:hover {
 }
 .workflow-child-status-running {
   background: var(--accent);
-  animation: workflow-pulse 1.4s var(--motion-ease-standard) infinite;
+  animation: opacity-pulse-40 1.4s var(--motion-ease-standard) infinite;
 }
 .workflow-child-status-done {
   background: var(--ok);
@@ -4119,15 +4058,6 @@ button.chat-empty-env-chip:hover {
 .workflow-child-status-interrupted,
 .workflow-child-status-rejected {
   background: var(--warn);
-}
-@keyframes workflow-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.4;
-  }
 }
 .workflow-child-toolname {
   font-family: var(--mono);
@@ -4418,7 +4348,7 @@ button.chat-empty-env-chip:hover {
   z-index: var(--z-modal);
 }
 .lightbox-overlay[data-state='open'] {
-  animation: overlay-backdrop-in var(--motion-duration-base) var(--motion-ease-standard) both;
+  animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both;
 }
 .lightbox-overlay[data-state='closing'] {
   pointer-events: none;
