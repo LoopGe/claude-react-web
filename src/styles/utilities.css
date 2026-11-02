@@ -2814,12 +2814,14 @@ button.tool-group-failed-jump:focus-visible {
   }
   /* Let the tab row scroll horizontally instead of overflowing; the tabs must
      not shrink below their label width or they become unreadable. */
-  .global-settings-tabs {
+  .global-settings-tabs,
+  .settings-tab-leaves {
     overflow-x: auto;
     flex-wrap: nowrap;
     scrollbar-width: none; /* Firefox: hide the scrollbar, swipe still works */
   }
-  .global-settings-tabs::-webkit-scrollbar {
+  .global-settings-tabs::-webkit-scrollbar,
+  .settings-tab-leaves::-webkit-scrollbar {
     display: none; /* WebKit: same */
   }
   .global-settings-tab {
@@ -2833,14 +2835,6 @@ button.tool-group-failed-jump:focus-visible {
   }
   .settings-tab-groups {
     flex-wrap: wrap;
-  }
-  .settings-tab-leaves {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    scrollbar-width: none; /* Firefox: hide the scrollbar, swipe still works */
-  }
-  .settings-tab-leaves::-webkit-scrollbar {
-    display: none; /* WebKit: same */
   }
 
   /* Command palette: sit higher on small screens so the keyboard doesn't

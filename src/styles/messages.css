@@ -2088,10 +2088,11 @@
   align-items: center;
   gap: var(--space-2);
 }
-/* Collapse toggle — reuses the pinned-user-message history-chevron style
-   (borderless, fg-muted → hover bg, chevron rotates 180° when open) but at a
-   compact 20×20 so the chevron doesn't inflate the sticky bar's header. */
-.todo-panel-collapse {
+/* Collapse toggle shared by both docked cards — borderless, fg-muted →
+   hover bg, chevron rotates 180° when open, at a compact 20×20 so it doesn't
+   inflate the sticky bars' headers. */
+.todo-panel-collapse,
+.monitor-bar-collapse {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -2107,17 +2108,21 @@
   transition: background var(--motion-duration-fast) var(--motion-ease-standard),
               color var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.todo-panel-collapse:hover {
+.todo-panel-collapse:hover,
+.monitor-bar-collapse:hover {
   background: var(--btn-hover-bg);
   color: var(--fg);
 }
-.todo-panel-collapse.open svg {
+.todo-panel-collapse.open svg,
+.monitor-bar-collapse.open svg {
   transform: rotate(180deg);
 }
-.todo-panel-collapse svg {
+.todo-panel-collapse svg,
+.monitor-bar-collapse svg {
   transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
 }
-.todo-panel-collapse:focus-visible {
+.todo-panel-collapse:focus-visible,
+.monitor-bar-collapse:focus-visible {
   outline: var(--focus-ring);
   outline-offset: 1px;
 }
@@ -2472,39 +2477,6 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-}
-/* Collapse toggle — mirrors .todo-panel-collapse (borderless, fg-muted →
-   hover bg, chevron rotates 180° when open) at the same compact 20×20, so
-   the two sticky cards' headers read as one system. */
-.monitor-bar-collapse {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--size-20px);
-  height: var(--size-20px);
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: background var(--motion-duration-fast) var(--motion-ease-standard),
-              color var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.monitor-bar-collapse:hover {
-  background: var(--btn-hover-bg);
-  color: var(--fg);
-}
-.monitor-bar-collapse.open svg {
-  transform: rotate(180deg);
-}
-.monitor-bar-collapse svg {
-  transition: transform var(--motion-duration-fast) var(--motion-ease-standard);
-}
-.monitor-bar-collapse:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 1px;
 }
 /* Collapsed: the header doubles as the whole bar — drop its bottom gap. */
 .monitor-bar.monitor-bar-collapsed .monitor-bar-header {

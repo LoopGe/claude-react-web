@@ -65,29 +65,21 @@
   background: var(--fg-muted);
 }
 
-/* Accent-tinted custom scrollbar inside the chat panel: --accent cascades
-   from :root (the global accent), so all descendants pick it up. Native
-   counterparts live in tokens.css (scrollbar-color block). */
-.chat-panel .os-thumb {
+/* Accent-tinted custom scrollbar in chat, sidebar, and portaled surfaces.
+   Native counterparts live in tokens.css (scrollbar-color block). */
+.chat-panel .os-thumb,
+.sidebar .os-thumb,
+[data-portaled] .os-thumb {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
-.chat-panel .os-thumb:hover {
+.chat-panel .os-thumb:hover,
+.sidebar .os-thumb:hover,
+[data-portaled] .os-thumb:hover {
   background: color-mix(in srgb, var(--accent) 70%, transparent);
 }
-.chat-panel .os-thumb:active {
-  background: var(--accent);
-}
-
-/* Sidebar: session-agnostic, so it doesn't carry any one session's accent,
-   but uses the global default --accent (defined on :root) so its scrollbar
-   still reads as part of the accent system rather than neutral grey. */
-.sidebar .os-thumb {
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-.sidebar .os-thumb:hover {
-  background: color-mix(in srgb, var(--accent) 70%, transparent);
-}
-.sidebar .os-thumb:active {
+.chat-panel .os-thumb:active,
+.sidebar .os-thumb:active,
+[data-portaled] .os-thumb:active {
   background: var(--accent);
 }
 
@@ -110,15 +102,6 @@
        (an overflow-y: auto root hidden by the .os-hidden recipe below), and
        .ctx-menu does not scroll at all. So don't add `.cmd-picker .os-thumb` as
        "insurance"; it can never fire. */
-[data-portaled] .os-thumb {
-  background: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-[data-portaled] .os-thumb:hover {
-  background: color-mix(in srgb, var(--accent) 70%, transparent);
-}
-[data-portaled] .os-thumb:active {
-  background: var(--accent);
-}
 
 /* glow skin: faint accent halo on the thumb. Mirrors tokens.css:725-728. */
 [data-skin="glow"] .chat-panel .os-thumb,
