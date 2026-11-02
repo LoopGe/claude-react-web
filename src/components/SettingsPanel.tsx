@@ -12,6 +12,7 @@ import { measureSettingsPanelBodyHeight } from '../utils/settings-panel-measure'
 import { useToast, apiErrorToastOpts } from '../hooks/useToast'
 import { parseTaskBudgetInput } from '../../shared/session-info'
 import { useSessionUsage } from '../hooks/useSessionUsage'
+import { useSyncedCommitDraft } from '../hooks/useSyncedCommitDraft'
 import { useModelOptions } from '../hooks/useModelOptions'
 import type { AgentInfo, McpServerConfigMeta, McpServerStatus, PermissionMode, Plugin, SessionInfo, SessionSkillOverride, SkillFrontmatter, SlashCommand } from '../types'
 import { PERMISSION_MODES } from '../types'
@@ -655,27 +656,15 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   ) =>
     runAndRefresh(() => api.post<{ session: SessionInfo }>(`/sessions/${session.id}/memory`, partial))
 
-  // Editable memory directory — same draft pattern as the title input:
-  // seeded from the server value, re-synced while unfocused, commits on
-  // Enter / blur, Escape cancels. Clearing the input commits null (back
-  // to the default directory).
-  const [memoryDirDraft, setMemoryDirDraft] = useState(session.memory?.autoMemoryDirectory ?? '')
-  const memoryDirInputRef = useRef<HTMLInputElement>(null)
-  const memoryDirSkipCommitRef = useRef(false)
-  useEffect(() => {
-    if (memoryDirInputRef.current && document.activeElement === memoryDirInputRef.current) return
-    setMemoryDirDraft(session.memory?.autoMemoryDirectory ?? '')
-  }, [session.memory?.autoMemoryDirectory])
+  // Editable memory directory — seeded from the server value and synced while
+  // unfocused by the shared draft hook. Clearing commits null (the default).
+  const memoryDirSource = session.memory?.autoMemoryDirectory ?? ''
+  const memoryDir = useSyncedCommitDraft({ source: memoryDirSource, onCommit: commitMemoryDir })
 
-  const commitMemoryDir = async () => {
-    if (memoryDirSkipCommitRef.current) {
-      memoryDirSkipCommitRef.current = false
-      setMemoryDirDraft(session.memory?.autoMemoryDirectory ?? '')
-      return
-    }
-    const dir = memoryDirDraft.trim()
-    if (dir === (session.memory?.autoMemoryDirectory ?? '')) {
-      setMemoryDirDraft(session.memory?.autoMemoryDirectory ?? '')
+  async function commitMemoryDir(draft: string): Promise<void> {
+    const dir = draft.trim()
+    if (dir === memoryDirSource) {
+      memoryDir.reset()
       return
     }
     await runAndRefresh(() =>
@@ -705,48 +694,28 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   const toggleSandboxBool = (key: 'autoAllowBashIfSandboxed' | 'allowUnsandboxedCommands' | 'failIfUnavailable') =>
     setSandboxField({ [key]: !(session.sandbox?.[key] ?? false) })
 
-  // Network domain allowlist — comma-separated plain text, committed on
-  // blur/Enter (same draft pattern as the memory directory above).
-  const [sandboxDomainsDraft, setSandboxDomainsDraft] = useState(
-    (session.sandbox?.network?.allowedDomains ?? []).join(', '),
-  )
-  const sandboxDomainsInputRef = useRef<HTMLInputElement>(null)
-  const sandboxDomainsSkipCommitRef = useRef(false)
-  useEffect(() => {
-    if (sandboxDomainsInputRef.current && document.activeElement === sandboxDomainsInputRef.current) return
-    setSandboxDomainsDraft((session.sandbox?.network?.allowedDomains ?? []).join(', '))
-  }, [session.sandbox?.network?.allowedDomains])
-  const commitSandboxDomains = async () => {
-    if (sandboxDomainsSkipCommitRef.current) {
-      sandboxDomainsSkipCommitRef.current = false
-      setSandboxDomainsDraft((session.sandbox?.network?.allowedDomains ?? []).join(', '))
-      return
-    }
-    const domains = sandboxDomainsDraft.split(',').map((d) => d.trim()).filter(Boolean)
-    if (domains.join(', ') === (session.sandbox?.network?.allowedDomains ?? []).join(', ')) return
-    await setSandboxField({ network: { ...(session.sandbox?.network ?? {}), allowedDomains: domains } })
-  }
+  // Network domain allowlist — comma-separated plain text. Parsing and the
+  // sibling-preserving write stay here; the draft lifecycle is shared.
+  const sandboxDomainsSource = (session.sandbox?.network?.allowedDomains ?? []).join(', ')
+  const sandboxDomains = useSyncedCommitDraft({
+    source: sandboxDomainsSource,
+    onCommit: async (draft) => {
+      const domains = draft.split(',').map((d) => d.trim()).filter(Boolean)
+      if (domains.join(', ') === sandboxDomainsSource) return
+      await setSandboxField({ network: { ...(session.sandbox?.network ?? {}), allowedDomains: domains } })
+    },
+  })
 
-  // Allow-write paths — comma-separated plain text, same draft pattern.
-  const [sandboxWriteDraft, setSandboxWriteDraft] = useState(
-    (session.sandbox?.filesystem?.allowWrite ?? []).join(', '),
-  )
-  const sandboxWriteInputRef = useRef<HTMLInputElement>(null)
-  const sandboxWriteSkipCommitRef = useRef(false)
-  useEffect(() => {
-    if (sandboxWriteInputRef.current && document.activeElement === sandboxWriteInputRef.current) return
-    setSandboxWriteDraft((session.sandbox?.filesystem?.allowWrite ?? []).join(', '))
-  }, [session.sandbox?.filesystem?.allowWrite])
-  const commitSandboxWrite = async () => {
-    if (sandboxWriteSkipCommitRef.current) {
-      sandboxWriteSkipCommitRef.current = false
-      setSandboxWriteDraft((session.sandbox?.filesystem?.allowWrite ?? []).join(', '))
-      return
-    }
-    const paths = sandboxWriteDraft.split(',').map((p) => p.trim()).filter(Boolean)
-    if (paths.join(', ') === (session.sandbox?.filesystem?.allowWrite ?? []).join(', ')) return
-    await setSandboxField({ filesystem: { ...(session.sandbox?.filesystem ?? {}), allowWrite: paths } })
-  }
+  // Allow-write paths — comma-separated plain text, same draft lifecycle.
+  const sandboxWriteSource = (session.sandbox?.filesystem?.allowWrite ?? []).join(', ')
+  const sandboxWrite = useSyncedCommitDraft({
+    source: sandboxWriteSource,
+    onCommit: async (draft) => {
+      const paths = draft.split(',').map((p) => p.trim()).filter(Boolean)
+      if (paths.join(', ') === sandboxWriteSource) return
+      await setSandboxField({ filesystem: { ...(session.sandbox?.filesystem ?? {}), allowWrite: paths } })
+    },
+  })
 
   const refreshMcp = async (timeoutMs?: number): Promise<McpServerStatus[] | undefined> => {
     try {
@@ -1377,23 +1346,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         >
           <input
             id={panelUid + '-memory-dir'}
-            ref={memoryDirInputRef}
             type="text"
             className="input"
-            value={memoryDirDraft}
             placeholder="<projects dir>/<this project>/memory/ (default)"
             disabled={memoryDisabled}
-            onChange={(e) => setMemoryDirDraft(e.target.value)}
-            onBlur={() => void commitMemoryDir()}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                memoryDirInputRef.current?.blur()
-              } else if (e.key === 'Escape') {
-                memoryDirSkipCommitRef.current = true
-                memoryDirInputRef.current?.blur()
-              }
-            }}
+            {...memoryDir.inputProps}
           />
         </SettingsRow>
 
@@ -1497,23 +1454,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                 >
                   <input
                     id={panelUid + '-sandbox-domains'}
-                    ref={sandboxDomainsInputRef}
                     type="text"
                     className="input"
-                    value={sandboxDomainsDraft}
                     placeholder="e.g. api.github.com, *.npmjs.org (comma-separated)"
                     disabled={sandboxDisabled}
-                    onChange={(e) => setSandboxDomainsDraft(e.target.value)}
-                    onBlur={() => void commitSandboxDomains()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        sandboxDomainsInputRef.current?.blur()
-                      } else if (e.key === 'Escape') {
-                        sandboxDomainsSkipCommitRef.current = true
-                        sandboxDomainsInputRef.current?.blur()
-                      }
-                    }}
+                    {...sandboxDomains.inputProps}
                   />
                 </SettingsRow>
                 <SettingsRow
@@ -1523,23 +1468,11 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
                 >
                   <input
                     id={panelUid + '-sandbox-write'}
-                    ref={sandboxWriteInputRef}
                     type="text"
                     className="input"
-                    value={sandboxWriteDraft}
                     placeholder="e.g. /tmp/build (comma-separated)"
                     disabled={sandboxDisabled}
-                    onChange={(e) => setSandboxWriteDraft(e.target.value)}
-                    onBlur={() => void commitSandboxWrite()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        sandboxWriteInputRef.current?.blur()
-                      } else if (e.key === 'Escape') {
-                        sandboxWriteSkipCommitRef.current = true
-                        sandboxWriteInputRef.current?.blur()
-                      }
-                    }}
+                    {...sandboxWrite.inputProps}
                   />
                 </SettingsRow>
               </details>
