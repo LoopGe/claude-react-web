@@ -10,9 +10,9 @@
 // — see ContextMenu.tsx's canonical note). CSS owns the shape via the caller's
 // `className`; this component owns coordinates and dismissal only.
 //
-// Consumers: TodoDetailPopover (TaskList rows) and MonitorDetailPopover
-// (MonitorBar rows). The two cards' rows deliberately share this shell so a
-// click means the same thing in both.
+// Consumers: TodoDetailPopover (TaskList rows), MonitorDetailPopover
+// (MonitorBar rows), and ProjectPopover (the ChatPanel project chip). They
+// share this shell so portal, measurement and dismissal stay consistent.
 
 import { memo, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
@@ -30,16 +30,20 @@ export interface AnchorRect {
   height: number
 }
 
+export type AnchoredPopoverPlacement = 'above' | 'below'
+
 interface Props {
   /** Shape class owned by the consumer's CSS (e.g. `todo-detail-pop`). */
   className: string
   ariaLabel: string
-  /** The clicked row's rect at open time — fallback anchor; the live anchor
+  /** Optional rect captured at open time — fallback anchor; the live anchor
    *  is re-read from triggerRef on every measure pass. */
-  anchor: AnchorRect
+  anchor?: AnchorRect
   /** The open row element — the useOutsideMouseDown trigger exemption, and
    *  the live anchor source while the popover stays open. */
   triggerRef: RefObject<HTMLElement | null>
+  /** Preferred direction; insufficient space still flips to the other side. */
+  placement?: AnchoredPopoverPlacement
   onClose: () => void
   children: ReactNode
 }
@@ -49,6 +53,7 @@ export const AnchoredPopover = memo(function AnchoredPopover({
   ariaLabel,
   anchor,
   triggerRef,
+  placement = 'above',
   onClose,
   children,
 }: Props) {
@@ -72,6 +77,12 @@ export const AnchoredPopover = memo(function AnchoredPopover({
     // frozen at the open-time coordinates.
     const measure = () => {
       const r = triggerRef.current?.getBoundingClientRect() ?? anchor
+      // Without either anchor there is no meaningful coordinate to place
+      // against. Keep the surface hidden rather than inventing a zero rect.
+      if (!r) {
+        setAnchorHidden(true)
+        return
+      }
       // A zero-size trigger means the row is display:none (its panel went
       // into the keep-alive cache) or detached — there is nothing to anchor
       // to, so hide instead of clamping to viewport bottom-left. (A visible
@@ -81,9 +92,9 @@ export const AnchoredPopover = memo(function AnchoredPopover({
       if (detached) return
       // offsetWidth/Height, not getBoundingClientRect: the latter includes
       // Motion's in-flight enter transform, so the onAnimationComplete
-      // re-measure would move the popover mid-settle. Same device-pixel snap
-      // as ProjectPopover — `transform: none` re-rasterizes SVG children on
-      // the device grid.
+      // re-measure would move the popover mid-settle. Shared device-pixel
+      // snapping also re-rasterizes SVG children on the device grid when
+      // `transform: none` tears down the entrance compositing layer.
       const rectW = el.offsetWidth
       const rectH = el.offsetHeight
       const vw = window.innerWidth
@@ -92,11 +103,16 @@ export const AnchoredPopover = memo(function AnchoredPopover({
       const snap = (v: number) => Math.round(v * dpr) / dpr
       // Horizontal: align to the row's left edge, clamped inside the viewport.
       const x = snap(Math.min(Math.max(8, r.left), vw - rectW - 8))
-      // Vertical: above the row; flip below when there's no headroom; last
-      // resort clamp against the top edge (bottom-overlay card ⇒ rare).
-      let y = snap(r.top - rectH - 6)
-      if (y < 8) y = snap(r.bottom + 6)
-      if (y + rectH > vh - 8) y = snap(Math.max(8, vh - rectH - 8))
+      // Vertical: honor the preferred side and flip when that side cannot fit.
+      // The above path retains its final viewport clamp; below→above keeps
+      // ProjectPopover's legacy flip coordinates (see the offscreen test).
+      let y = placement === 'below' ? snap(r.bottom + 6) : snap(r.top - rectH - 6)
+      if (placement === 'below') {
+        if (y + rectH > vh - 8) y = snap(Math.max(8, r.top - rectH - 6))
+      } else {
+        if (y < 8) y = snap(r.bottom + 6)
+        if (y + rectH > vh - 8) y = snap(Math.max(8, vh - rectH - 8))
+      }
       // Same coordinates → keep the previous object: the capture-phase scroll
       // listener fires per frame during transcript autoscroll, and a fresh
       // object per event would re-render the popover every frame.
@@ -115,7 +131,7 @@ export const AnchoredPopover = memo(function AnchoredPopover({
       window.removeEventListener('scroll', measure, true)
       ro.disconnect()
     }
-  }, [anchor, triggerRef])
+  }, [anchor, triggerRef, placement])
 
   useOutsideMouseDown({ ref, onClose, triggerRef })
 

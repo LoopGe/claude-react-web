@@ -7,24 +7,15 @@
 // gated on the per-request loopback probe (useOpenPathCapability); Copy path
 // is client-side and always shown.
 //
-// Follows the TodoDetailPopover pattern: `position: fixed`, portaled to
-// <body> (an ancestor carrying filter/transform/backdrop-filter would
-// otherwise become the containing block), measured after layout and re-
-// measured while open, Esc via the shared escape stack, outside-mousedown
-// via the shared hook with the chip as triggerRef so its own toggle click
-// closes cleanly. Anchors BELOW the chip (it sits in the panel header, so
-// there is normally room under it) and flips above when there isn't.
+// Positioning, portal, animation and dismissal live in AnchoredPopover.
+// This file owns only the project identity and server/client actions. The
+// shared shell anchors BELOW the chip and flips above when space runs out.
 
-import { memo, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { motion } from 'motion/react'
-import { usePopoverMotion } from '../utils/transitions'
-import { useEscapeStack } from '../hooks/useEscapeStack'
-import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import { memo, useState } from 'react'
 import { useOpenPathCapability } from '../hooks/useOpenPathCapability'
 import { useCopy } from '../hooks/useCopy'
 import { api } from '../hooks/useApi'
-import { markPortaledSurface } from '../theme'
+import { AnchoredPopover } from './AnchoredPopover'
 import { basenameOf, initialOf } from '../utils/paths'
 import type { OpenPathTarget } from '../../shared/open-path'
 import { IconCheck, IconCopy, IconTerminal } from './icons/ToolIcons'
@@ -52,9 +43,6 @@ export const ProjectPopover = memo(function ProjectPopover({
   triggerRef,
   onClose,
 }: ProjectPopoverProps) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
-  const [anchorHidden, setAnchorHidden] = useState(false)
   const local = useOpenPathCapability()
   const { copied, copy } = useCopy()
   // Which server action is in flight (if any) — disables the buttons so a
@@ -62,66 +50,6 @@ export const ProjectPopover = memo(function ProjectPopover({
   // working. The spawn is fast (~ms) but `open` can take ~100ms+.
   const [pendingTarget, setPendingTarget] = useState<OpenPathTarget | null>(null)
   const [openError, setOpenError] = useState<string | null>(null)
-  const { popover } = usePopoverMotion()
-
-  const measureRef = useRef<() => void>(() => {})
-
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    markPortaledSurface(el)
-    // Measure-and-place, re-run while open (resize / scroll / content churn),
-    // same contract as TodoDetailPopover. Anchors below the chip; flips above
-    // when the space under it can't fit the popover.
-    const measure = () => {
-      const chip = triggerRef.current
-      if (!chip) return
-      const r = chip.getBoundingClientRect()
-      // A zero-size chip means the panel went into the keep-alive cache
-      // (display:none) or detached — there is nothing to anchor to, so hide
-      // instead of clamping to the viewport top-left. (A visible chip never
-      // measures 0×0.) Same guard as TodoDetailPopover's anchorHidden.
-      const detached = r.width === 0 && r.height === 0
-      setAnchorHidden(detached)
-      if (detached) return
-      // offsetWidth/Height, not getBoundingClientRect: the latter includes
-      // Motion's in-flight enter transform (scale 0.98 ⇒ ~2% short), so the
-      // onAnimationComplete re-measure would move the popover at the exact
-      // moment we're trying to hold it still.
-      const rectW = el.offsetWidth
-      const rectH = el.offsetHeight
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      // Snap to the DEVICE pixel grid (not just integer CSS px): at Windows
-      // display scaling an integer CSS px is a fractional device px, and the
-      // `transform: none` teardown re-rasterizes the SVG icons on that grid.
-      const dpr = window.devicePixelRatio || 1
-      const snap = (v: number) => Math.round(v * dpr) / dpr
-      const x = snap(Math.min(Math.max(8, r.left), vw - rectW - 8))
-      let y = snap(r.bottom + 6)
-      if (y + rectH > vh - 8) y = snap(Math.max(8, r.top - rectH - 6))
-      setPos((prev) => (prev !== null && prev.x === x && prev.y === y ? prev : { x, y }))
-    }
-    measureRef.current = measure
-    measure()
-    window.addEventListener('resize', measure)
-    window.addEventListener('scroll', measure, true)
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => {
-      window.removeEventListener('resize', measure)
-      window.removeEventListener('scroll', measure, true)
-      ro.disconnect()
-    }
-  }, [triggerRef])
-
-  useOutsideMouseDown({ ref, onClose, triggerRef })
-
-  useEscapeStack({
-    active: true,
-    onEscape: onClose,
-    getContainer: () => ref.current,
-  })
 
   const openOnServer = (target: OpenPathTarget) => {
     if (pendingTarget) return
@@ -139,22 +67,13 @@ export const ProjectPopover = memo(function ProjectPopover({
       .finally(() => setPendingTarget(null))
   }
 
-  return createPortal(
-    <motion.div
-      ref={ref}
+  return (
+    <AnchoredPopover
       className="project-pop"
-      style={{
-        left: pos?.x,
-        top: pos?.y,
-        visibility: pos === null || anchorHidden ? 'hidden' : undefined,
-      }}
-      role="dialog"
-      aria-label={`Project: ${basenameOf(path)}`}
-      initial={popover.initial}
-      animate={popover.animate}
-      exit={popover.exit}
-      onAnimationComplete={() => measureRef.current()}
-      onMouseDown={(e) => e.stopPropagation()}
+      ariaLabel={`Project: ${basenameOf(path)}`}
+      triggerRef={triggerRef}
+      placement="below"
+      onClose={onClose}
     >
       <div className="project-pop-head">
         <span className="project-pop-avatar" aria-hidden>
@@ -166,11 +85,7 @@ export const ProjectPopover = memo(function ProjectPopover({
         {path}
       </code>
       <div className="project-pop-actions">
-        <button
-          type="button"
-          className="project-pop-action"
-          onClick={() => void copy(() => path)}
-        >
+        <button type="button" className="project-pop-action" onClick={() => void copy(() => path)}>
           {copied ? <IconCheck /> : <IconCopy aria-hidden />}
           {copied ? 'Copied' : 'Copy path'}
         </button>
@@ -197,7 +112,6 @@ export const ProjectPopover = memo(function ProjectPopover({
         )}
       </div>
       {openError && <div className="project-pop-error">{openError}</div>}
-    </motion.div>,
-    document.body,
+    </AnchoredPopover>
   )
 })
