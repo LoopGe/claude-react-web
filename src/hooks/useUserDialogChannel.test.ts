@@ -240,6 +240,13 @@ describe('useUserDialogChannel', () => {
     expect(result.current.error).toBeNull()
   })
 
+  // ── API surface ──────────────────────────────────────────────
+
+  it('does not expose the core submit on the wrapper', () => {
+    const { result } = renderHook(() => useUserDialogChannel('s1'))
+    expect(result.current).not.toHaveProperty('submit')
+  })
+
   // ── mergePending behavior ─────────────────────────────────────
 
   it('preserves order of existing entries when merging new ones', () => {
