@@ -2740,32 +2740,16 @@ button.tool-group-failed-jump:focus-visible {
     touch-action: manipulation;
   }
 
-  /* The subagent inspector is a right-edge drawer on desktop
-     (width: min(50%,640px); min-width: 320px). On a phone that min-width
-     leaves only a sliver of scrim and overflows below 320px — make it a
-     full-width sheet instead. */
-  .subagent-overlay-panel {
-    width: 100%;
-    min-width: 0;
-    border-left: none;
-    animation-name: subagent-sheet-in;
-  }
-  .subagent-overlay[data-state="closing"] .subagent-overlay-panel {
-    animation-name: subagent-sheet-out;
-  }
-
-  /* The Workflow drill-in is a right-edge drawer on desktop
-     (width: min(75%,900px); min-width: 480px) — that min-width is wider
-     than every phone viewport, so the panel punches past the right edge.
-     Give it the same full-width-sheet treatment as the subagent overlay;
-     the sheet keyframes are shared (named for the subagent sheet, the
-     first surface to need them). */
+  /* Both transcript drawers use full-width sheets on phones; their desktop
+     min-widths would otherwise overflow narrow viewports. */
+  .subagent-overlay-panel,
   .workflow-overlay-panel {
     width: 100%;
     min-width: 0;
     border-left: none;
     animation-name: subagent-sheet-in;
   }
+  .subagent-overlay[data-state="closing"] .subagent-overlay-panel,
   .workflow-overlay[data-state="closing"] .workflow-overlay-panel {
     animation-name: subagent-sheet-out;
   }

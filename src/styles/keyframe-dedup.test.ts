@@ -49,7 +49,7 @@ const GROUPS = [
   {
     canonical: 'overlay-backdrop-out',
     retired: ['panel-exit'],
-    references: { 'chat.css': 3, 'git-panel.css': 1, 'layout.css': 2, 'messages.css': 1, 'overlays.css': 2, 'session-list.css': 1, 'tasks-panel.css': 1 },
+    references: { 'chat.css': 2, 'git-panel.css': 1, 'layout.css': 2, 'messages.css': 1, 'overlays.css': 2, 'session-list.css': 1, 'tasks-panel.css': 1 },
   },
   {
     canonical: 'empty-state-enter',
@@ -65,7 +65,7 @@ const GROUPS = [
     canonical: 'fade-in',
     retired: ['overlay-backdrop-in', 'recap-body-in', 'grid-clip-reveal'],
     references: {
-      'chat.css': 3,
+      'chat.css': 2,
       'git-panel.css': 1,
       'layout.css': 1,
       'messages.css': 1,
