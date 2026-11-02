@@ -30,6 +30,18 @@ function makePermissionRequest(id: string, toolName = 'Bash'): PermissionRequest
   }
 }
 
+// ── Deferred helper for race-condition tests ──────────────────────
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 describe('usePermissionChannel', () => {
@@ -376,5 +388,172 @@ describe('usePermissionChannel', () => {
     })
     expect(result.current.pending.map((p) => p.id)).toEqual(['p1', 'p2', 'p3', 'p4'])
     expect(result.current.pending[1].toolName).toBe('Write') // Updated
+  })
+
+  // ── Session-switch & recovery race regressions ─────────────────
+
+  it('clears immediately and ignores a late seed after session change', async () => {
+    const seedDeferred = deferred<{ pending: PermissionRequest[] }>()
+    mockGet.mockReturnValueOnce(seedDeferred.promise)
+
+    const { result, rerender } = renderHook(
+      ({ sessionId }) => usePermissionChannel(sessionId),
+      { initialProps: { sessionId: 's1' } },
+    )
+
+    // While s1's seed is still pending, locally add a request.
+    act(() => {
+      result.current.onRequest(makePermissionRequest('p-local'))
+    })
+    expect(result.current.pending).toHaveLength(1)
+
+    // Switch to s2 — visible state must be empty immediately.
+    rerender({ sessionId: 's2' })
+    expect(result.current.pending).toEqual([])
+    expect(result.current.error).toBeNull()
+
+    // s1's late seed resolves with [p-old] — must not write into s2.
+    await act(async () => {
+      seedDeferred.resolve({ pending: [makePermissionRequest('p-old')] })
+      await Promise.resolve()
+    })
+    expect(result.current.pending).toEqual([])
+  })
+
+  it('ignores POST failure and recovery from the previous session', async () => {
+    const postDeferred = deferred<void>()
+    mockPost.mockReturnValueOnce(postDeferred.promise)
+    // Call order: s1 seed, s2 seed (on rerender), s1 recovery (after POST reject).
+    mockGet
+      .mockResolvedValueOnce({ pending: [] })
+      .mockResolvedValueOnce({ pending: [] })
+      .mockResolvedValueOnce({ pending: [makePermissionRequest('p1')] })
+
+    const { result, rerender } = renderHook(
+      ({ sessionId }) => usePermissionChannel(sessionId),
+      { initialProps: { sessionId: 's1' } },
+    )
+
+    act(() => {
+      result.current.onRequest(makePermissionRequest('p1'))
+    })
+
+    let decidePromise!: Promise<void>
+    act(() => {
+      decidePromise = result.current.decide('p1', { behavior: 'allow', persistForSession: false })
+    })
+    // Optimistic remove.
+    await waitFor(() => expect(result.current.pending).toEqual([]))
+
+    // Switch to s2 before POST settles.
+    rerender({ sessionId: 's2' })
+    expect(result.current.pending).toEqual([])
+
+    // Reject the POST; recovery fires for s1 and returns [p1].
+    // Neither the error nor the recovered pending must touch s2.
+    await act(async () => {
+      postDeferred.reject(new Error('server down'))
+      await decidePromise.catch(() => {})
+    })
+
+    expect(result.current.error).toBeNull()
+    expect(result.current.pending).toEqual([])
+  })
+
+  it('does not overwrite a newer request when stale recovery succeeds', async () => {
+    const postDeferred = deferred<void>()
+    const recoveryDeferred = deferred<{ pending: PermissionRequest[] }>()
+    mockPost.mockReturnValueOnce(postDeferred.promise)
+    mockGet
+      .mockResolvedValueOnce({ pending: [] }) // seed
+      .mockReturnValueOnce(recoveryDeferred.promise) // recovery
+
+    const { result } = renderHook(() => usePermissionChannel('s1'))
+
+    act(() => {
+      result.current.onRequest(makePermissionRequest('p1', 'Bash'))
+    })
+
+    let decidePromise!: Promise<void>
+    act(() => {
+      decidePromise = result.current.decide('p1', { behavior: 'allow', persistForSession: false })
+    })
+    // Optimistic remove.
+    await waitFor(() => expect(result.current.pending).toEqual([]))
+
+    // Reject POST → recovery GET fires (deferred, still pending).
+    await act(async () => {
+      postDeferred.reject(new Error('server down'))
+      await Promise.resolve() // let the catch block start + fire recovery GET
+    })
+
+    // A newer live request arrives for the same id before recovery resolves.
+    act(() => {
+      result.current.onRequest(makePermissionRequest('p1', 'Write'))
+    })
+    expect(result.current.pending).toHaveLength(1)
+    expect(result.current.pending[0].toolName).toBe('Write')
+
+    // Stale recovery returns the old version (Bash) — must not overwrite.
+    await act(async () => {
+      recoveryDeferred.resolve({ pending: [makePermissionRequest('p1', 'Bash')] })
+      await decidePromise.catch(() => {})
+    })
+
+    expect(result.current.pending).toHaveLength(1)
+    expect(result.current.pending[0].toolName).toBe('Write')
+  })
+
+  it('does not resurrect a resolved request when stale recovery fails', async () => {
+    const postDeferred = deferred<void>()
+    const recoveryDeferred = deferred<{ pending: PermissionRequest[] }>()
+    mockPost.mockReturnValueOnce(postDeferred.promise)
+    mockGet
+      .mockResolvedValueOnce({ pending: [] }) // seed
+      .mockReturnValueOnce(recoveryDeferred.promise) // recovery
+
+    const { result } = renderHook(() => usePermissionChannel('s1'))
+
+    act(() => {
+      result.current.onRequest(makePermissionRequest('p1', 'Bash'))
+    })
+
+    let decidePromise!: Promise<void>
+    act(() => {
+      decidePromise = result.current.decide('p1', { behavior: 'allow', persistForSession: false })
+    })
+    // Optimistic remove.
+    await waitFor(() => expect(result.current.pending).toEqual([]))
+
+    // Reject POST → recovery GET fires (deferred, still pending).
+    await act(async () => {
+      postDeferred.reject(new Error('server down'))
+      await Promise.resolve()
+    })
+
+    // A newer live request, then a resolution, arrive for the same id.
+    act(() => {
+      result.current.onRequest(makePermissionRequest('p1', 'Write'))
+    })
+    act(() => {
+      result.current.onResolved({ id: 'p1', behavior: 'allow', persisted: false })
+    })
+    expect(result.current.pending).toEqual([])
+
+    // Stale recovery fails — must not re-insert the captured old request.
+    await act(async () => {
+      recoveryDeferred.reject(new Error('also down'))
+      await decidePromise.catch(() => {})
+    })
+
+    expect(result.current.pending).toEqual([])
+  })
+
+  // ── Wrapper does not leak core internals ────────────────────────
+
+  it('does not expose submit or other core internals', () => {
+    const { result } = renderHook(() => usePermissionChannel('s1'))
+    expect(result.current).not.toHaveProperty('submit')
+    expect(result.current).not.toHaveProperty('recoveryTokens')
   })
 })
