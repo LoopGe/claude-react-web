@@ -6,10 +6,15 @@
 // `onRequest()` / `onResolved()`. A one-shot REST call seeds the initial
 // pending list, covering the race where a request was broadcast before
 // the WebSocket subscription opened.
+//
+// Session isolation and recovery-race protection are handled by the
+// shared core (usePendingRequestChannel). This file is a thin wrapper
+// that maps domain-specific decide / answerQuestion / clarifyQuestion
+// methods onto the core's generic `submit`.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo } from 'react'
 
-import { api } from './useApi'
+import { usePendingRequestChannel } from './usePendingRequestChannel'
 import type { PermissionRequest, PermissionResolved } from '../types'
 
 export type PermissionDecision =
@@ -42,124 +47,56 @@ export interface UsePermissionChannel {
 }
 
 export function usePermissionChannel(sessionId: string): UsePermissionChannel {
-  const [pending, setPending] = useState<PermissionRequest[]>([])
-  const [error, setError] = useState<string | null>(null)
-
-  // Mirrors `pending` so async control flows (decide, answerQuestion) can
-  // capture the just-removed request synchronously. Reading from the
-  // setPending updater is too late — React batches updaters until the
-  // next render, by which time the catch block has already executed.
-  // The effect-based sync lags by one render, but decide/answerQuestion
-  // are always invoked from a user click that follows a committed render,
-  // so the ref is current when read.
-  const pendingRef = useRef<PermissionRequest[]>(pending)
-  useEffect(() => {
-    pendingRef.current = pending
-  }, [pending])
-
-  // Initial snapshot — the WebSocket connection will re-broadcast any still-open
-  // request on connect, but grabbing the REST snapshot makes the modal
-  // appear immediately after a hard refresh even before the stream opens.
-  useEffect(() => {
-    // No session (e.g. ChatPanel's side-chat slot when no side chat exists)
-    // → skip the snapshot. The WebSocket subscription is itself a no-op on
-    // an empty id (see useSessionSynchronizer), so there is nothing to seed, and
-    // firing `/sessions//permissions` would just 404 on every panel mount.
-    if (!sessionId) return
-    let cancelled = false
-    api
-      .get<{ pending: PermissionRequest[] }>(`/sessions/${sessionId}/permissions`)
-      .then((res) => {
-        if (cancelled) return
-        setPending((prev) => mergePending(prev, res.pending))
-      })
-      .catch(() => {
-        /* non-fatal: the WebSocket subscription will catch subsequent events */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [sessionId])
-
-  const onRequest = useCallback((req: PermissionRequest) => {
-    if (!req?.id) return
-    setPending((prev) => mergePending(prev, [req]))
-  }, [])
-
-  const onResolved = useCallback((res: PermissionResolved) => {
-    if (!res?.id) return
-    setPending((prev) => prev.filter((p) => p.id !== res.id))
-  }, [])
-
-  /** Shared optimistic-update-with-rollback pattern: drop the request
-   *  locally so the dialog closes immediately; on POST failure, re-fetch
-   *  pending to reconcile, and re-insert the removed request if even
-   *  the re-fetch fails. */
-  const optimisticPost = useCallback(
-    async (pid: string, endpoint: string, body: unknown, errorPrefix: string) => {
-      const removed = pendingRef.current.find((p) => p.id === pid)
-      setPending((prev) => prev.filter((p) => p.id !== pid))
-      try {
-        await api.post(`/sessions/${sessionId}/permissions/${pid}/${endpoint}`, body)
-      } catch (e) {
-        setError(`${errorPrefix}: ${(e as Error).message}`)
-        try {
-          const r = await api.get<{ pending: PermissionRequest[] }>(
-            `/sessions/${sessionId}/permissions`,
-          )
-          setPending((prev) => mergePending(prev, r.pending))
-        } catch {
-          if (removed) setPending((prev) => mergePending(prev, [removed]))
-        }
-      }
-    },
-    [sessionId],
+  const channel = usePendingRequestChannel<PermissionRequest, PermissionResolved>(
+    sessionId,
+    'permissions',
   )
+  // `submit` is stable across pending/error changes (it only depends on
+  // sessionId/resource inside the core), so the three action callbacks below
+  // preserve the same identity semantics as the old optimisticPost-based
+  // implementation: they change only when sessionId changes.
+  const { submit } = channel
 
   const decide = useCallback(
     (pid: string, decision: PermissionDecision) =>
-      optimisticPost(pid, 'decide', decision, 'Permission decision failed'),
-    [optimisticPost],
+      submit(pid, 'decide', decision, 'Permission decision failed'),
+    [submit],
   )
 
   const answerQuestion = useCallback(
     (pid: string, answers: QuestionAnswer[]) =>
-      optimisticPost(pid, 'answer-question', { answers }, 'Answer submission failed'),
-    [optimisticPost],
+      submit(pid, 'answer-question', { answers }, 'Answer submission failed'),
+    [submit],
   )
 
   const clarifyQuestion = useCallback(
-    (pid: string, feedback: string) => optimisticPost(pid, 'clarify-question', { feedback }, 'Clarification submission failed'),
-    [optimisticPost],
+    (pid: string, feedback: string) =>
+      submit(pid, 'clarify-question', { feedback }, 'Clarification submission failed'),
+    [submit],
   )
-
-  const reset = useCallback(() => {
-    setPending([])
-    setError(null)
-  }, [])
-
-  const clearError = useCallback(() => setError(null), [])
 
   return useMemo(
-    () => ({ pending, error, decide, answerQuestion, clarifyQuestion, onRequest, onResolved, reset, clearError }),
-    [pending, error, decide, answerQuestion, clarifyQuestion, onRequest, onResolved, reset, clearError],
+    () => ({
+      pending: channel.pending,
+      error: channel.error,
+      decide,
+      answerQuestion,
+      clarifyQuestion,
+      onRequest: channel.onRequest,
+      onResolved: channel.onResolved,
+      reset: channel.reset,
+      clearError: channel.clearError,
+    }),
+    [
+      channel.pending,
+      channel.error,
+      decide,
+      answerQuestion,
+      clarifyQuestion,
+      channel.onRequest,
+      channel.onResolved,
+      channel.reset,
+      channel.clearError,
+    ],
   )
-}
-
-/** Merge a fresh pending array into an existing one.
- *  - Existing entries are updated-in-place when `incoming` has the same id.
- *  - New entries are appended at the end.
- *  - Ordering of existing entries is preserved. */
-function mergePending(prev: PermissionRequest[], incoming: PermissionRequest[]): PermissionRequest[] {
-  if (!incoming?.length) return prev
-  const incomingById = new Map(incoming.map((p) => [p.id, p]))
-  // Walk prev: swap to incoming version if present, else keep original.
-  const merged = prev.map((p) => incomingById.get(p.id) ?? p)
-  // Append any entries in incoming that weren't in prev.
-  for (const p of incoming) {
-    if (!prev.some((p2) => p2.id === p.id)) {
-      merged.push(p)
-    }
-  }
-  return merged
 }
