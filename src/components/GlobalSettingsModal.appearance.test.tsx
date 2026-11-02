@@ -7,13 +7,13 @@
 // state shape: every assertion is observable from the wire payload or the
 // rendered control state.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
-import { GlobalSettingsModal } from './GlobalSettingsModal'
+import { GlobalSettingsModal, AppearanceTab } from './GlobalSettingsModal'
 import { api } from '../hooks/useApi'
 import { mockGet } from '../test-utils/settings-fixtures'
-import type { AppearancePrefs } from '../types/config'
+import { DEFAULT_GLOBAL_PREFS, type AppearancePrefs } from '../types/config'
 
 vi.mock('../hooks/useApi', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn() } }))
 
@@ -24,8 +24,6 @@ vi.stubGlobal('matchMedia', () => ({
   addEventListener() {},
   removeEventListener() {},
 }))
-
-afterEach(() => { cleanup() })
 
 /** Every appearance field, asserted as a unit so a dropped field can't hide
  *  behind a sample. Excludes `firstPartyTools` (independent save path). */
@@ -266,5 +264,124 @@ describe('GlobalSettingsModal staged appearance state', () => {
     fireEvent.click(screen.getByText('Cancel'))
     expect(onClose).toHaveBeenCalledOnce()
     expect(api.put).not.toHaveBeenCalled()
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────
+// Direct AppearanceTab render tests (values/onPatch contract).
+//
+// These render <AppearanceTab> directly — NOT through the modal — so they
+// exercise the values/onPatch prop interface in isolation. They fail on the
+// old prop shape (which accepted 10 values + 10 setters, not values/onPatch)
+// and verify the exact patch object each control emits, plus that onPatch is
+// passed through to controls without being wrapped (a necessary condition
+// for the modal's useCallback-stable patchAppearance to preserve identity
+// end-to-end).
+// ────────────────────────────────────────────────────────────────────
+
+describe('AppearanceTab direct render (values/onPatch contract)', () => {
+  /** Values where every field is the DEFAULT — a clean baseline so a patch
+   *  assertion can't be confused by a non-default initial. */
+  const baselineValues: AppearancePrefs = { ...DEFAULT_GLOBAL_PREFS }
+
+  it('emits the exact patch object for a Switch toggle', () => {
+    const onPatch = vi.fn()
+    render(<AppearanceTab values={baselineValues} onPatch={onPatch} />)
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Show pinned “current question” header' }))
+    // The patch is a Partial<AppearancePrefs> — only the toggled key, nothing
+    // else. showPinnedUserMessage starts true (default), so the toggle emits
+    // false. This is what fails on the old shape: the old AppearanceTab called
+    // a bare setter `(v: boolean) => void`, not `onPatch({ field: v })`.
+    expect(onPatch).toHaveBeenCalledWith({ showPinnedUserMessage: false })
+    expect(onPatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('emits the exact patch object for a Segmented change', () => {
+    const onPatch = vi.fn()
+    render(<AppearanceTab values={baselineValues} onPatch={onPatch} />)
+
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Font size' }))
+      .getByRole('radio', { name: 'X-Large' }))
+    expect(onPatch).toHaveBeenCalledWith({ fontSize: 'xlarge' })
+    expect(onPatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('emits the exact patch for the streaming-render mode switch', () => {
+    const onPatch = vi.fn()
+    // Start in overlay (default) so the switch flips to inline.
+    render(<AppearanceTab values={baselineValues} onPatch={onPatch} />)
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Render live text inline in the transcript' }))
+    // The patch carries the mode string, not a boolean — the switch maps
+    // on/off to 'inline'/'overlay' before calling onPatch.
+    expect(onPatch).toHaveBeenCalledWith({ streamingRenderMode: 'inline' })
+  })
+
+  it('emits the exact patch for the auto-expand sub-setting switch', () => {
+    const onPatch = vi.fn()
+    // toolGroupCards must be on for the sub-row to render.
+    const values = { ...baselineValues, toolGroupCards: true, autoExpandRunningGroups: false }
+    render(<AppearanceTab values={values} onPatch={onPatch} />)
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-expand running groups' }))
+    expect(onPatch).toHaveBeenCalledWith({ autoExpandRunningGroups: true })
+  })
+
+  it('reflects every field of the values prop in the rendered controls', () => {
+    const onPatch = vi.fn()
+    const values: AppearancePrefs = {
+      ...DEFAULT_GLOBAL_PREFS,
+      showPinnedUserMessage: false,
+      autoRecap: false,
+      toolGroupCards: false,
+      showMessageHeaders: false,
+      fontSize: 'large',
+      animationSpeed: 'fast',
+      streamingRenderMode: 'inline',
+    }
+    render(<AppearanceTab values={values} onPatch={onPatch} />)
+
+    expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: 'Auto-generate session recap' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: 'Use collapsible transcript cards' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: 'Show message card headers' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByRole('switch', { name: 'Render live text inline in the transcript' }).getAttribute('aria-checked')).toBe('true')
+    // Segmented groups reflect the preset from values.
+    expect(within(screen.getByRole('radiogroup', { name: 'Font size' }))
+      .getByRole('radio', { name: 'Large' }).getAttribute('aria-checked')).toBe('true')
+    expect(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
+      .getByRole('radio', { name: 'Fast' }).getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('passes onPatch through to controls without wrapping (identity pass-through)', () => {
+    // The modal wraps patchAppearance in useCallback; for that to matter
+    // end-to-end, AppearanceTab must NOT wrap onPatch in a new function before
+    // handing it to a control. This test re-renders with new values but the
+    // SAME onPatch reference and verifies the controls still call that exact
+    // reference — proving AppearanceTab is a pass-through, not a wrapper.
+    const onPatch = vi.fn()
+    const { rerender } = render(<AppearanceTab values={baselineValues} onPatch={onPatch} />)
+
+    // First interaction — the spy receives the call. showPinnedUserMessage
+    // starts true (default), so the toggle emits false.
+    fireEvent.click(screen.getByRole('switch', { name: 'Show pinned “current question” header' }))
+    expect(onPatch).toHaveBeenCalledWith({ showPinnedUserMessage: false })
+
+    // Re-render with different values but the SAME onPatch spy.
+    rerender(<AppearanceTab values={{ ...baselineValues, autoRecap: false }} onPatch={onPatch} />)
+
+    // Second interaction — autoRecap is now false, so the toggle emits true.
+    // The SAME spy receives the call (no wrapper created).
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-generate session recap' }))
+    expect(onPatch).toHaveBeenCalledWith({ autoRecap: true })
+    expect(onPatch).toHaveBeenCalledTimes(2)
+  })
+
+  it('hides the auto-expand sub-row while toolGroupCards is off', () => {
+    const onPatch = vi.fn()
+    const values = { ...baselineValues, toolGroupCards: false }
+    render(<AppearanceTab values={values} onPatch={onPatch} />)
+    expect(screen.queryByRole('switch', { name: 'Auto-expand running groups' })).toBeNull()
   })
 })

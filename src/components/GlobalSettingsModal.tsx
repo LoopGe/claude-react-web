@@ -164,9 +164,12 @@ export function GlobalSettingsModal({
   // `patchAppearance`, which merges a Partial so an edit to one field never
   // clobbers the others.
   const [appearance, setAppearance] = useState<AppearancePrefs>(DEFAULT_GLOBAL_PREFS)
-  const patchAppearance = (patch: Partial<AppearancePrefs>) => {
+  // useCallback so onPatch has stable identity across re-renders — a future
+  // React.memo on AppearanceTab would then skip re-renders driven by unrelated
+  // modal state changes. The merge preserves every non-patched field.
+  const patchAppearance = useCallback((patch: Partial<AppearancePrefs>) => {
     setAppearance((prev) => ({ ...prev, ...patch }))
-  }
+  }, [])
 
   // Skills tab state
   const [skillLoadMode, setSkillLoadMode] = useState<SkillLoadMode>('default')
@@ -730,8 +733,9 @@ function ServerTab({
  *  the Server tab, which now holds only server-wide Limits + Permissions.
  *  Receives the staged `AppearancePrefs` object and a single `onPatch` callback
  *  that merges a Partial — each control patches only its own key, so an edit to
- *  one field never clobbers the others. */
-function AppearanceTab({
+ *  one field never clobbers the others. Exported for direct unit testing of the
+ *  values/onPatch contract. */
+export function AppearanceTab({
   values,
   onPatch,
 }: {
