@@ -3677,14 +3677,6 @@ button.chat-empty-env-chip:hover {
     transform: translateX(0);
   }
 }
-.subagent-overlay-empty {
-  margin: auto;
-  padding: 32px 24px;
-  text-align: center;
-  color: var(--fg-muted);
-  max-width: 360px;
-  font-size: var(--fs-base);
-}
 
 /* ─── Workflow card ─────────────────────────────────────────────── */
 /* Mirrors .subagent-card visually (icon + title + label + meta row) but with

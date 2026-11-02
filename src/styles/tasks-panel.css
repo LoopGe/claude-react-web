@@ -379,10 +379,6 @@
   flex-direction: column;
   gap: var(--space-2);
 }
-.subagent-transcript-empty-state {
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-}
 /* .subagent-transcript-spin animation comes from the shared loading-indicator
    group in utilities.css. */
 .subagent-transcript-error {
