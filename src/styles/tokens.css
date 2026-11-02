@@ -1577,6 +1577,26 @@ button { cursor: pointer; }
 /* Shared entrances and pulses. These frame bodies were moved verbatim from
    exact per-surface duplicates; the neutral names reflect their cross-feature
    consumers rather than any one card, dot, or navigation surface. */
+@keyframes slide-down-enter {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--motion-distance-sm)));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes slide-up-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(calc(-1 * var(--motion-distance-sm)));
+  }
+}
 @keyframes fade-in {
   from {
     opacity: 0;

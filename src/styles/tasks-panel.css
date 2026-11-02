@@ -142,17 +142,7 @@
      replay on a Virtuoso-style scroll-back — it plays once per row insert
      and stays put on status updates. Upward (negative Y) so the row slides
      into place without growing the panel's scrollHeight. */
-  animation: tasks-row-in var(--motion-duration-moderate) var(--motion-ease-enter);
-}
-@keyframes tasks-row-in {
-  from {
-    opacity: 0;
-    transform: translateY(calc(-1 * var(--motion-distance-sm)));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  animation: slide-down-enter var(--motion-duration-moderate) var(--motion-ease-enter);
 }
 @media (prefers-reduced-motion: reduce) {
   .tasks-row {

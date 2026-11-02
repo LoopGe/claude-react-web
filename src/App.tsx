@@ -3087,7 +3087,7 @@ export function App() {
    *  a permanent header surface (see utils/nav-strip-mount). */
   const stripMounted = navStripMounted({ isMobile, sidebarCollapsed, customTitlebar: hostCaps.customTitlebar })
   // The strip outlives its mount condition by one exit window so its
-  // slide-out (session-nav-strip-out) can play before the unmount lands
+  // slide-out (slide-up-exit) can play before the unmount lands
   // (viewport flips across the isMobile boundary are the only runtime
   // unmount — the sidebar no longer mounts/unmounts it). useExitRetention
   // skips the hold under reduced motion.

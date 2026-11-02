@@ -1,7 +1,7 @@
 // @vitest-environment node
-// The A-group and B-group keyframes are exact duplicates. Keep one canonical
+// The deduplicated keyframes are exact duplicates. Keep one canonical
 // definition per group, make every CSS consumer point at it, and keep the
-// useRevealClass animationName arguments in sync. The C group stays untouched.
+// useRevealClass animationName arguments in sync.
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -19,7 +19,7 @@ const GROUPS = [
   {
     canonical: 'spin',
     retired: ['handoff-spin'],
-    references: { 'chat.css': 2 },
+    references: { 'chat.css': 2, 'utilities.css': 1 },
   },
   {
     canonical: 'content-enter',
@@ -49,7 +49,7 @@ const GROUPS = [
   {
     canonical: 'overlay-backdrop-out',
     retired: ['panel-exit'],
-    references: { 'layout.css': 2 },
+    references: { 'chat.css': 3, 'git-panel.css': 1, 'layout.css': 2, 'messages.css': 1, 'overlays.css': 2, 'session-list.css': 1, 'tasks-panel.css': 1 },
   },
   {
     canonical: 'empty-state-enter',
@@ -74,6 +74,16 @@ const GROUPS = [
       'tasks-panel.css': 1,
       'utilities.css': 1,
     },
+  },
+  {
+    canonical: 'slide-down-enter',
+    retired: ['session-nav-strip-in', 'message-search-in', 'tasks-row-in'],
+    references: { 'layout.css': 1, 'overlays.css': 1, 'tasks-panel.css': 1 },
+  },
+  {
+    canonical: 'slide-up-exit',
+    retired: ['session-nav-strip-out', 'message-search-out'],
+    references: { 'layout.css': 1, 'overlays.css': 1 },
   },
 ] as const
 
@@ -103,6 +113,54 @@ function animationReferenceCount(css: string, name: string) {
   return count
 }
 
+function keyframeBodies() {
+  return [...cssByFile.values()].flatMap((css) => {
+    const bodies: Array<{ name: string; body: string }> = []
+    const start = /@keyframes\s+([a-zA-Z0-9_-]+)\s*\{/g
+    let match: RegExpExecArray | null
+    while ((match = start.exec(css)) !== null) {
+      const bodyStart = start.lastIndex
+      let depth = 1
+      let index = bodyStart
+      while (depth > 0 && index < css.length) {
+        if (css[index] === '{') depth++
+        else if (css[index] === '}') depth--
+        index++
+      }
+      if (depth !== 0) throw new Error(`Unclosed @keyframes ${match[1]}`)
+      bodies.push({ name: match[1], body: css.slice(bodyStart, index - 1).replace(/\s+/g, '') })
+      start.lastIndex = index
+    }
+    return bodies
+  })
+}
+
+describe('global keyframe uniqueness', () => {
+  it('has no duplicate frame bodies under any names', () => {
+    const definitions = keyframeBodies()
+    expect(definitions.length).toBeGreaterThan(0)
+    const namesByBody = new Map<string, string[]>()
+    for (const { name, body } of definitions) {
+      namesByBody.set(body, [...(namesByBody.get(body) ?? []), name])
+    }
+    const duplicates = [...namesByBody.values()].filter((names) => names.length > 1)
+    expect(duplicates).toEqual([])
+  })
+})
+
+describe('keyframe/class prefix isolation', () => {
+  it('keeps message-search-input selectors intact', () => {
+    const css = cssByFile.get('overlays.css')!
+    expect(css).toMatch(/\.message-search-input\s*\{/)
+    expect(css).toMatch(/\.message-search-input:focus\s*\{/)
+    expect(css).not.toContain('.slide-down-enterput')
+
+    const component = readFileSync(join(process.cwd(), 'src/components/MessageSearch.tsx'), 'utf8')
+    expect(component).toContain('className="message-search-input"')
+    expect(component).not.toContain('slide-down-enterput')
+  })
+})
+
 describe.each(GROUPS)('$canonical keyframe dedup', ({ canonical, retired, references }) => {
   it('has one canonical definition and the expected consumer references', () => {
     const allCss = [...cssByFile.values()].join('\n')
@@ -112,6 +170,8 @@ describe.each(GROUPS)('$canonical keyframe dedup', ({ canonical, retired, refere
     for (const [file, expected] of Object.entries(references)) {
       expect(animationReferenceCount(cssByFile.get(file)!, canonical), file).toBe(expected)
     }
+    const expectedTotal = Object.values(references).reduce((sum, count) => sum + count, 0)
+    expect(animationReferenceCount(allCss, canonical), 'all stylesheets').toBe(expectedTotal)
   })
 
   it('has no retired keyframe definitions or animation references', () => {

@@ -429,8 +429,8 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   }, [slotIdsKey, poppedIds])
 
   // Quick-toggle revive needs no JS: dropping `.exiting` switches the
-  // computed animation-name from session-nav-strip-out back to
-  // session-nav-strip-in, and a newly-named CSS animation restarts — the
+  // computed animation-name from slide-up-exit back to
+  // slide-down-enter, and a newly-named CSS animation restarts — the
   // entrance replays by itself (verified in-browser: the name leaving and
   // re-entering the list is what replays, the same mechanism as the
   // toggle-a-class replay idiom).

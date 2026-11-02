@@ -131,7 +131,7 @@ body.resizing-col .app {
   flex: 1 1 auto;
   min-width: 0;
   --fade-width: 24px;
-  animation: session-nav-strip-in var(--motion-duration-moderate) var(--motion-ease-enter);
+  animation: slide-down-enter var(--motion-duration-moderate) var(--motion-ease-enter);
   /* Edge-fade widths are registered <length>s (tokens.css) — transitioned
      HERE, where the component's inline style sets them; the scroller
      inherits the interpolated values, so the mask eases an edge in/out
@@ -191,37 +191,17 @@ body.resizing-col .app {
   display: none;
 }
 
-@keyframes session-nav-strip-in {
-  from {
-    opacity: 0;
-    transform: translateY(calc(-1 * var(--motion-distance-sm)));
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-/* Exit mirror of session-nav-strip-in — same moderate cadence (the parent
+/* Exit mirror of slide-down-enter — same moderate cadence (the parent
    holds the unmount STRIP_EXIT_WINDOW_MS to match). `both` holds the end
    state until that window closes. The strip no longer unmounts on sidebar
    toggles (see utils/nav-strip-mount) — exits ride only a viewport flip
    across the isMobile boundary. A flip back mid-exit replays
-   session-nav-strip-in with no JS: dropping `.exiting` takes this name out
+   slide-down-enter with no JS: dropping `.exiting` takes this name out
    of the computed animation-name list and puts the entrance back in, and a
    newly-named CSS animation restarts (the class-toggle replay idiom). */
 .session-nav-strip.exiting {
-  animation: session-nav-strip-out var(--motion-duration-moderate) var(--motion-ease-exit) both;
+  animation: slide-up-exit var(--motion-duration-moderate) var(--motion-ease-exit) both;
   pointer-events: none;
-}
-@keyframes session-nav-strip-out {
-  from {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  to {
-    opacity: 0;
-    transform: translateY(calc(-1 * var(--motion-distance-sm)));
-  }
 }
 /* One group's chip + member tabs, separated from the next section by a
    hairline so group boundaries read at a glance. Padding matches the shell's
