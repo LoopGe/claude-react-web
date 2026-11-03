@@ -38,6 +38,22 @@ interface Options<T> {
    *  value that fails it collapses to `initial`) and the WRITE boundary
    *  (`update` drops a value that fails it and keeps the current one). */
   validate?: (value: unknown) => value is T
+  /** Optional normalizer applied at three boundaries — the initial read, a
+   *  cross-tab storage event, and a local `update` — BEFORE `validate`. Lets a
+   *  caller salvage a mixed-shape persisted value (e.g. filter non-strings out
+   *  of an array) instead of discarding the whole thing. The same-tab echo path
+   *  does NOT re-normalize: the writer already normalized, and re-filtering
+   *  would mint fresh array references on every echo, looping
+   *  setValue → effect → notify → setValue. */
+  normalize?: (value: unknown) => T
+  /** How an EXTERNAL storage event (cross-tab) that cannot be adopted is
+   *  handled. `'ignore'` (default) keeps the current value and leaves the key
+   *  untouched, preserving the long-standing behaviour for every existing
+   *  caller. `'reset'` collapses every mounted instance on that key to its own
+   *  `initial` and suppresses the persistence echo so a deleted or corrupt key
+   *  is not immediately written back. Suppression is module-level and per-key:
+   *  only a valid external write or a real user `update` clears it. */
+  externalFailure?: 'ignore' | 'reset'
 }
 
 // Module-level set of subscribers per storage key — populated by each
@@ -55,6 +71,39 @@ function notifyListeners(key: string, value: unknown): void {
   for (const cb of [...set]) cb(value)
 }
 
+// Module-level suppression, keyed by storage key. When an external delete,
+// corrupt-JSON, or validator-reject reset lands on a key, the key is added
+// here so NO instance's persistence effect writes `setItem` for it until a
+// valid external write or a real user `update` clears it. This MUST be shared
+// across instances on the same key: if each instance cleared its own echo in
+// its own effect, the first instance to run would clear the guard and the next
+// instance's echo would write the deleted key straight back to disk.
+const suppressPersistenceByKey = new Set<string>()
+
+// Private sentinel dispatched through the same listener channel as a value.
+// `removeLocalStorageKey` emits it so every reset-opted instance on the key
+// adopts its own `initial` immediately — the writing tab does not receive a
+// browser storage event for its own removeItem, so same-tab listeners must be
+// notified directly. Default-opted instances ignore it. The sentinel carries
+// no value: each instance supplies its own `initial` from its closure, so the
+// module-level listener never needs to know per-instance state.
+const DELETION_SENTINEL = Symbol('useLocalStorage:deletion')
+
+/** Remove a storage key AND notify same-tab listeners that it was deleted.
+ *  Reset-opted mounted instances collapse to their `initial` immediately; the
+ *  key is added to the suppression set so the reset echo does not write it
+ *  back. Default-opted instances are unaffected. */
+export function removeLocalStorageKey(key: string): void {
+  if (typeof window === 'undefined') return
+  suppressPersistenceByKey.add(key)
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    /* ignore — disabled storage, private mode, etc. */
+  }
+  notifyListeners(key, DELETION_SENTINEL)
+}
+
 export function useLocalStorage<T>(
   key: string | null,
   initial: T,
@@ -67,6 +116,10 @@ export function useLocalStorage<T>(
   // the first call's argument. Callers passing a different validator across
   // renders should not expect the hook to track that change.
   const validateRef = useRef(options?.validate)
+  // normalize and externalFailure follow the same first-render ref semantics,
+  // for the same reason (the storage listener identity must stay stable).
+  const normalizeRef = useRef(options?.normalize)
+  const externalFailureRef = useRef(options?.externalFailure ?? 'ignore')
 
   const [value, setValue] = useState<T>(() => {
     // null key → pure in-memory state: no read from localStorage.
@@ -75,9 +128,12 @@ export function useLocalStorage<T>(
       const raw = window.localStorage.getItem(key)
       if (raw == null) return initial
       const parsed: unknown = JSON.parse(raw)
-      const validate = options?.validate
-      if (validate && !validate(parsed)) return initial
-      return parsed as T
+      // Initial READ boundary: normalize → validate.
+      const normalize = normalizeRef.current
+      const normalized = normalize ? normalize(parsed) : parsed
+      const validate = validateRef.current
+      if (validate && !validate(normalized)) return initial
+      return normalized as T
     } catch {
       return initial
     }
@@ -96,7 +152,22 @@ export function useLocalStorage<T>(
     // not validate) — the point here is that instances agree, not that they
     // police each other. Re-validating at this boundary is what used to undo
     // the writer's own click; see the write gate in `update`.
-    const onSync: Listener<unknown> = (next) => setValue(next as T)
+    const onSync: Listener<unknown> = (next) => {
+      if (next === DELETION_SENTINEL) {
+        // Same-tab deletion notification (removeLocalStorageKey). The
+        // writing tab does not get a browser storage event for its own
+        // removeItem, so the sentinel is the only same-tab signal. Only
+        // reset-opted instances react; default instances keep their value.
+        if (externalFailureRef.current === 'reset') {
+          setValue(initial)
+        }
+        return
+      }
+      // Same-tab value echo: the writer already normalized before persisting,
+      // so do NOT re-normalize here. Re-filtering would mint fresh array
+      // references on every echo and loop setValue → effect → notify → setValue.
+      setValue(next as T)
+    }
     let set = listenersByKey.get(key)
     if (!set) {
       set = new Set()
@@ -108,22 +179,50 @@ export function useLocalStorage<T>(
       // Only react to writes against our key (and skip 'clear all'
       // events whose key is null — those would force every instance
       // back to initial which is rarely what callers want).
-      if (e.key !== key || e.newValue == null) return
+      if (e.key !== key) return
+      if (e.newValue == null) {
+        // Cross-tab deletion of our key. Default 'ignore' keeps the current
+        // value (the long-standing behaviour); 'reset' collapses to initial
+        // and suppresses the echo so the deleted key stays deleted.
+        if (externalFailureRef.current === 'reset') {
+          suppressPersistenceByKey.add(key)
+          setValue(initial)
+        }
+        return
+      }
       try {
         const parsed: unknown = JSON.parse(e.newValue)
+        // Cross-tab WRITE boundary: normalize → validate.
+        const normalize = normalizeRef.current
+        const normalized = normalize ? normalize(parsed) : parsed
         const validate = validateRef.current
-        if (validate && !validate(parsed)) {
+        if (validate && !validate(normalized)) {
           // Another tab (often an older build) put something we can't use on
-          // disk. Ignore it: adopting it, or "recovering" to `initial`, would
-          // both destroy this tab's good value and re-persist the loss.
-          console.warn(
-            `[useLocalStorage] ignoring invalid "${key}" written by another tab; keeping current value`,
-          )
+          // disk. 'ignore' keeps this tab's good value and warns; 'reset'
+          // collapses to initial and suppresses the echo so the bad key is
+          // not overwritten by the fallback.
+          if (externalFailureRef.current === 'reset') {
+            suppressPersistenceByKey.add(key)
+            setValue(initial)
+          } else {
+            console.warn(
+              `[useLocalStorage] ignoring invalid "${key}" written by another tab; keeping current value`,
+            )
+          }
           return
         }
-        setValue(parsed as T)
+        // A valid external write clears any active suppression and is adopted.
+        suppressPersistenceByKey.delete(key)
+        setValue(normalized as T)
       } catch {
-        /* ignore — corrupt incoming write */
+        // Corrupt incoming JSON. 'ignore' drops it silently; 'reset'
+        // collapses to initial and suppresses the echo so the corrupt key
+        // is not overwritten.
+        if (externalFailureRef.current === 'reset') {
+          suppressPersistenceByKey.add(key)
+          setValue(initial)
+        }
+        /* default ignore — corrupt incoming write */
       }
     }
     window.addEventListener('storage', onStorage)
@@ -142,27 +241,36 @@ export function useLocalStorage<T>(
   useEffect(() => {
     // null key → pure in-memory state: no write to localStorage.
     if (typeof window === 'undefined' || key == null) return
-    try {
-      window.localStorage.setItem(key, JSON.stringify(value))
-    } catch (err) {
-      // Quota exhausted (or SecurityError in private mode): the write is
-      // dropped but in-memory state still updates and notifies. Warn —
-      // never swallow silently. A full quota here means the value the user
-      // sees won't survive reload, and a silent failure makes that class
-      // of bug (e.g. a group losing a member after refresh) near-impossible
-      // to diagnose.
-      const quota =
-        err instanceof DOMException &&
-        (err.code === 22 ||
-          err.code === 1014 ||
-          err.name === 'QuotaExceededError' ||
-          err.name === 'NS_ERROR_DOM_QUOTA_REACHED')
-      console.warn(
-        `[useLocalStorage] failed to persist "${key}"` +
-          (quota ? ' — localStorage quota is full; this key was NOT saved' : '') +
-          ':',
-        err,
-      )
+    // Suppressed: an external delete / corrupt-JSON / validator reset added
+    // this key to the suppression set. Skip setItem so the deleted/corrupt
+    // key is not revived, but STILL notify same-tab listeners — every
+    // instance must converge on the reset value. Never clear the suppression
+    // here: clearing it in one instance's effect would let the next instance's
+    // echo write the key back. Only a valid external write or a real user
+    // `update` clears it.
+    if (!suppressPersistenceByKey.has(key)) {
+      try {
+        window.localStorage.setItem(key, JSON.stringify(value))
+      } catch (err) {
+        // Quota exhausted (or SecurityError in private mode): the write is
+        // dropped but in-memory state still updates and notifies. Warn —
+        // never swallow silently. A full quota here means the value the user
+        // sees won't survive reload, and a silent failure makes that class
+        // of bug (e.g. a group losing a member after refresh) near-impossible
+        // to diagnose.
+        const quota =
+          err instanceof DOMException &&
+          (err.code === 22 ||
+            err.code === 1014 ||
+            err.name === 'QuotaExceededError' ||
+            err.name === 'NS_ERROR_DOM_QUOTA_REACHED')
+        console.warn(
+          `[useLocalStorage] failed to persist "${key}"` +
+            (quota ? ' — localStorage quota is full; this key was NOT saved' : '') +
+            ':',
+          err,
+        )
+      }
     }
     notifyListeners(key, value)
   }, [key, value])
@@ -171,14 +279,23 @@ export function useLocalStorage<T>(
     (next: T | ((prev: T) => T)) => {
       setValue((prev) => {
         const resolved = typeof next === 'function' ? (next as (p: T) => T)(prev) : next
+        // Local WRITE boundary: normalize → validate.
+        const normalize = normalizeRef.current
+        const normalized = normalize ? normalize(resolved) : resolved
         const validate = validateRef.current
-        if (validate && !validate(resolved)) {
+        if (validate && !validate(normalized)) {
           // Drop the write, keep the value: the caller's state and the stored
           // copy stay untouched, and the reason says so out loud.
           console.warn(`[useLocalStorage] rejected write to "${key}" — it failed validation; keeping the current value`)
           return prev
         }
-        return resolved
+        // A real user update that passes validation releases any active
+        // suppression so the persistence effect writes it through. This is
+        // the only place suppression is cleared from the update path — a
+        // rejected write does NOT clear it (the key stays suppressed until a
+        // valid write lands).
+        if (key != null) suppressPersistenceByKey.delete(key)
+        return normalized
       })
     },
     [key],

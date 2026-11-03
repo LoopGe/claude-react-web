@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useLocalStorage } from './useLocalStorage'
+import { useLocalStorage, removeLocalStorageKey } from './useLocalStorage'
+
+// Test-only normalizer: filters non-string entries from an array, preserving
+// order; non-arrays collapse to []. Mirrors the MRU normalize policy the hook
+// will be asked to apply at its three boundaries.
+function normalizeStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((x): x is string => typeof x === 'string')
+}
 
 beforeEach(() => {
   localStorage.clear()
@@ -203,5 +211,216 @@ describe('useLocalStorage', () => {
     // shared key for every other tab.
     expect(localStorage.getItem('xtab-gate')).toBe('["local","good"]')
     warn.mockRestore()
+  })
+
+  // ── normalize ───────────────────────────────────────────────────
+
+  it('normalizes initial reads, local updates, and cross-tab writes', () => {
+    // Pre-seed a mixed array; normalize must filter at the read boundary.
+    localStorage.setItem('norm', JSON.stringify(['keep', 42, 'also-keep']))
+    const { result } = renderHook(() =>
+      useLocalStorage<string[]>('norm', [], { normalize: normalizeStrings }),
+    )
+    expect(result.current[0]).toEqual(['keep', 'also-keep'])
+
+    // Local update with a mixed array: normalize before persist.
+    act(() => result.current[1](['x', 7, 'y'] as unknown as string[]))
+    expect(result.current[0]).toEqual(['x', 'y'])
+    expect(JSON.parse(localStorage.getItem('norm')!)).toEqual(['x', 'y'])
+
+    // Cross-tab write with a mixed array: normalize on adoption.
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'norm',
+          newValue: JSON.stringify(['a', 99, 'b']),
+        }),
+      )
+    })
+    expect(result.current[0]).toEqual(['a', 'b'])
+  })
+
+  // ── externalFailure: default 'ignore' on delete ─────────────────
+
+  it('keeps the current value on delete by default', () => {
+    localStorage.setItem('del-def', JSON.stringify(['a', 'b']))
+    const { result } = renderHook(() =>
+      useLocalStorage<string[]>('del-def', []),
+    )
+    expect(result.current[0]).toEqual(['a', 'b'])
+
+    // Simulate another tab deleting the key: remove from our localStorage
+    // (a real browser propagates the delete) and fire the storage event.
+    localStorage.removeItem('del-def')
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'del-def',
+          newValue: null,
+        }),
+      )
+    })
+
+    // Default ignore: the mounted instance keeps its good value.
+    expect(result.current[0]).toEqual(['a', 'b'])
+  })
+
+  // ── externalFailure: 'reset' on delete ──────────────────────────
+
+  it('resets every instance on delete without re-persisting through echo', () => {
+    localStorage.setItem('del-reset', JSON.stringify(['a', 'b']))
+    const a = renderHook(() =>
+      useLocalStorage<string[]>('del-reset', [], {
+        normalize: normalizeStrings,
+        externalFailure: 'reset',
+      }),
+    )
+    const b = renderHook(() =>
+      useLocalStorage<string[]>('del-reset', [], {
+        normalize: normalizeStrings,
+        externalFailure: 'reset',
+      }),
+    )
+
+    // Spy AFTER mount so initial persist echoes are not counted.
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
+
+    // Other tab deletes the key → propagates to our localStorage + event.
+    localStorage.removeItem('del-reset')
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'del-reset',
+          newValue: null,
+        }),
+      )
+    })
+
+    expect(a.result.current[0]).toEqual([])
+    expect(b.result.current[0]).toEqual([])
+    // The deleted key must stay deleted: no instance echoes '[]' back.
+    expect(localStorage.getItem('del-reset')).toBeNull()
+    expect(setItemSpy).not.toHaveBeenCalled()
+    setItemSpy.mockRestore()
+  })
+
+  it('resets on corrupt external JSON without overwriting the corrupt key', () => {
+    localStorage.setItem('corrupt-ext', JSON.stringify(['good']))
+    const { result } = renderHook(() =>
+      useLocalStorage<string[]>('corrupt-ext', [], {
+        normalize: normalizeStrings,
+        externalFailure: 'reset',
+      }),
+    )
+    expect(result.current[0]).toEqual(['good'])
+
+    // Other tab writes corrupt JSON → lands in our localStorage + event.
+    localStorage.setItem('corrupt-ext', '{bad json')
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'corrupt-ext',
+          newValue: '{bad json',
+        }),
+      )
+    })
+
+    expect(result.current[0]).toEqual([])
+    // The corrupt value written by the other tab must remain; our reset
+    // must not echo '[]' back over it.
+    expect(localStorage.getItem('corrupt-ext')).toBe('{bad json')
+    expect(setItemSpy).not.toHaveBeenCalled()
+    setItemSpy.mockRestore()
+  })
+
+  it('persists a real update after an external reset even if an instance bailed out', () => {
+    localStorage.setItem('reset-then-update', JSON.stringify(['old']))
+    const { result } = renderHook(() =>
+      useLocalStorage<string[]>('reset-then-update', [], {
+        normalize: normalizeStrings,
+        externalFailure: 'reset',
+      }),
+    )
+    expect(result.current[0]).toEqual(['old'])
+
+    localStorage.removeItem('reset-then-update')
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'reset-then-update',
+          newValue: null,
+        }),
+      )
+    })
+    expect(result.current[0]).toEqual([])
+
+    // A real user update must release suppression and persist normally.
+    act(() => result.current[1](['fresh']))
+    expect(result.current[0]).toEqual(['fresh'])
+    expect(JSON.parse(localStorage.getItem('reset-then-update')!)).toEqual(['fresh'])
+  })
+
+  // ── removeLocalStorageKey: same-tab deletion notification ───────
+
+  it('removeLocalStorageKey resets opted-in mounted instances immediately', () => {
+    localStorage.setItem('rmkey', JSON.stringify(['data']))
+    const a = renderHook(() =>
+      useLocalStorage<string[]>('rmkey', [], {
+        normalize: normalizeStrings,
+        externalFailure: 'reset',
+      }),
+    )
+    const b = renderHook(() =>
+      useLocalStorage<string[]>('rmkey', [], {
+        normalize: normalizeStrings,
+        externalFailure: 'reset',
+      }),
+    )
+
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem')
+
+    // No StorageEvent is dispatched for the current tab — the helper must
+    // notify same-tab listeners directly via the deletion sentinel.
+    act(() => {
+      removeLocalStorageKey('rmkey')
+    })
+
+    expect(a.result.current[0]).toEqual([])
+    expect(b.result.current[0]).toEqual([])
+    expect(localStorage.getItem('rmkey')).toBeNull()
+    expect(setItemSpy).not.toHaveBeenCalled()
+    setItemSpy.mockRestore()
+
+    // A subsequent real update writes only the new value.
+    act(() => a.result.current[1](['after-reset']))
+    expect(a.result.current[0]).toEqual(['after-reset'])
+    expect(b.result.current[0]).toEqual(['after-reset'])
+    expect(JSON.parse(localStorage.getItem('rmkey')!)).toEqual(['after-reset'])
+  })
+
+  // ── normalize + multi-instance: no notification loop ────────────
+
+  it('synchronizes normalized arrays between same-tab instances without a notification loop', () => {
+    const a = renderHook(() =>
+      useLocalStorage<string[]>('sync-norm', [], {
+        normalize: normalizeStrings,
+      }),
+    )
+    const b = renderHook(() =>
+      useLocalStorage<string[]>('sync-norm', [], {
+        normalize: normalizeStrings,
+      }),
+    )
+
+    // Mixed-array update: A normalizes before persist, B receives the
+    // already-normalized value via same-tab echo (no re-normalize on echo,
+    // which would loop setValue→notify→setValue with fresh array refs).
+    act(() => a.result.current[1](['x', 9, 'y'] as unknown as string[]))
+
+    expect(a.result.current[0]).toEqual(['x', 'y'])
+    expect(b.result.current[0]).toEqual(['x', 'y'])
+    // The test reaching this assertion at all is the loop check: a
+    // normalize-on-echo path would hit React's maximum update depth.
   })
 })
