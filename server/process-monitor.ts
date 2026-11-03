@@ -31,6 +31,9 @@ export interface ProcessExitInfo {
   code: number | null
   signal: NodeJS.Signals | null
   killed: boolean
+  /** True only when the destroy-time safety timer synthesized completion
+   *  without a real process 'exit'. Permanent deletion must reject this. */
+  exitSafetyTimeout?: true
   /** Populated when ProcessMonitor receives a 'error' event from the
    *  child (typically a synchronous spawn failure: ENOENT, EACCES, etc.)
    *  rather than a real exit. Lets the SessionManager produce a useful
@@ -64,6 +67,10 @@ export interface MonitoredSpawn {
    *  `unregister()` resolves it immediately so awaiters don't hang. Never
    *  rejects. */
   readonly exited: Promise<ProcessExitInfo>
+  /** Resolves ONLY for a real process exit/error (or no spawned process),
+   *  never for the destroy-time safety timeout. Permanent deletion uses this
+   *  stronger gate so a later real exit can still unblock a retry. */
+  readonly realExited: Promise<ProcessExitInfo>
 }
 
 interface Entry {
@@ -71,6 +78,7 @@ interface Entry {
   process: ChildProcess | null
   hasSpawned: boolean
   resolveExit: (info: ProcessExitInfo) => void
+  resolveRealExit: (info: ProcessExitInfo) => void
   exitHandler: ((code: number | null, signal: NodeJS.Signals | null) => void) | null
   errorHandler: ((err: Error) => void) | null
   /** Diagnostic stderr listeners attached in spawnFor. Detached in
@@ -134,12 +142,17 @@ export class ProcessMonitor {
     const exited = new Promise<ProcessExitInfo>((resolve) => {
       resolveExit = resolve
     })
-    const reg: MonitoredSpawn = { sessionId, spawned: false, intentional: false, exited }
+    let resolveRealExit!: (info: ProcessExitInfo) => void
+    const realExited = new Promise<ProcessExitInfo>((resolve) => {
+      resolveRealExit = resolve
+    })
+    const reg: MonitoredSpawn = { sessionId, spawned: false, intentional: false, exited, realExited }
     this.entries.set(reg, {
       sessionId,
       process: null,
       hasSpawned: false,
       resolveExit,
+      resolveRealExit,
       exitHandler: null,
       errorHandler: null,
       stderrDataHandler: null,
@@ -158,15 +171,21 @@ export class ProcessMonitor {
   spawnFor(reg: MonitoredSpawn, opts: SpawnOptions): SpawnedProcess {
     const entry = this.entries.get(reg)
     const sid = entry?.sessionId ?? reg.sessionId
-    if (entry) reg.spawned = true
-
+    if (!entry || reg.intentional) {
+      // Deferred SDK initialization may arrive after destroy(). Refuse before
+      // creating a process: even an immediately-killed child gets a write window.
+      throw new Error(`cannot spawn CLI for unregistered session ${sid}`)
+    }
     log.warn(
       `[process-monitor] spawn fired sid=${sid} ` +
       `intentional=${reg.intentional} cmd=${opts.command}`,
     )
 
     const process = defaultSpawnFn(opts)
-    if (entry) entry.process = process as unknown as ChildProcess
+    if (entry) {
+      reg.spawned = true
+      entry.process = process as unknown as ChildProcess
+    }
 
     // DIAGNOSTIC: capture the CLI subprocess's stderr. The SDK surfaces a
     // generic "Claude Code process exited with code N" but discards the
@@ -234,34 +253,6 @@ export class ProcessMonitor {
       }
       child.stdout.on('error', stdoutErrorHandler)
       if (entry) entry.stdoutErrorHandler = stdoutErrorHandler
-    }
-
-    if (!entry) {
-      // No registered entry (e.g. a stray spawn after unregister). Fall
-      // through to default spawn so we don't break the SDK; we just won't
-      // track its exit or fire onExit for it. We still attached stderr
-      // listeners above so the diagnostic survives this stray spawn — but
-      // finalizeEntry never runs for unregistered entries, so detach them
-      // ourselves on child exit/close. Otherwise the `buf` closure (which may
-      // hold a large captured stderr body) stays pinned to the ChildProcess
-      // until it's GC'd — exactly the leak finalizeEntry guards against for
-      // registered entries.
-      if (stderrDataHandler && stderrEndHandler) {
-        const data = stderrDataHandler
-        const end = stderrEndHandler
-        const detachStderr = () => {
-          if (child.stderr) {
-            child.stderr.off('data', data)
-            child.stderr.off('end', end)
-          }
-          child.off('exit', detachStderr)
-          child.off('close', detachStderr)
-        }
-        child.on('exit', detachStderr)
-        child.on('close', detachStderr)
-      }
-      log.warn(`[process-monitor] spawn for unregistered session ${sid} — not tracking exit`)
-      return process
     }
 
     // Track whether the child has actually started. Node emits 'spawn'
@@ -355,6 +346,7 @@ export class ProcessMonitor {
     if (entry.process?.stdout && entry.stdoutErrorHandler) {
       entry.process.stdout.off('error', entry.stdoutErrorHandler)
     }
+    entry.resolveRealExit(info)
     entry.resolveExit(info)
     this.entries.delete(reg)
     // Only surface to SessionManager when the exit was NOT an intentional
@@ -393,6 +385,7 @@ export class ProcessMonitor {
           clearTimeout(entry.safetyTimer)
           entry.safetyTimer = null
         }
+        entry.resolveRealExit({ sessionId: reg.sessionId, code: null, signal: null, killed: false })
         entry.resolveExit({ sessionId: reg.sessionId, code: null, signal: null, killed: false })
       }
       this.entries.delete(reg)
@@ -409,15 +402,33 @@ export class ProcessMonitor {
     // path is ~7s (stdin EOF -> 2s grace -> SIGTERM/SIGKILL); 15s is margin.
     entry.safetyTimer = setTimeout(() => {
       if (entry.resolved) return
+      entry.safetyTimer = null
       log.warn(
         `[process-monitor] exit safety timer fired for session ${reg.sessionId} ` +
         `after ${this.safetyMs}ms with no 'exit' event`,
       )
-      this.finalizeEntry(reg, entry, {
+      // Preserve only the process exit/error listeners needed by realExited.
+      // Diagnostic stream listeners and their stderr buffer must not stay
+      // pinned for the lifetime of a wedged child.
+      if (entry.process?.stderr) {
+        if (entry.stderrDataHandler) entry.process.stderr.off('data', entry.stderrDataHandler)
+        if (entry.stderrEndHandler) entry.process.stderr.off('end', entry.stderrEndHandler)
+      }
+      if (entry.process?.stdin && entry.stdinErrorHandler) {
+        entry.process.stdin.off('error', entry.stdinErrorHandler)
+      }
+      if (entry.process?.stdout && entry.stdoutErrorHandler) {
+        entry.process.stdout.off('error', entry.stdoutErrorHandler)
+      }
+      // Preserve the legacy `exited` backstop for clear()/respawn, but do NOT
+      // delete the entry: realExited must still settle if the wedged child
+      // eventually dies, allowing a safe permanent-delete retry.
+      entry.resolveExit({
         sessionId: reg.sessionId,
         code: null,
         signal: null,
         killed: entry.process?.killed ?? false,
+        exitSafetyTimeout: true,
       })
     }, this.safetyMs)
     ;(entry.safetyTimer as { unref?: () => void }).unref?.()

@@ -5,6 +5,7 @@ import { ToastShowContext } from '../../hooks/toastContext'
 import type { SessionGroup, SessionInfo } from '../../types'
 import { sessionTitleOrFallback } from '../../utils/session-title'
 import { worktreeDeleteWarning } from './worktree-delete-warning'
+import { permanentDeleteMenuItem, type SessionDeleteHandler } from '../session-delete-menu'
 import {
   IconPencil,
   IconTrash,
@@ -26,7 +27,7 @@ export interface SessionContextMenuProps {
   onClose: () => void
   onRename: (s: SessionInfo) => void
   onClosePanel: (id: string) => void
-  onDelete: (id: string) => void
+  onDelete: SessionDeleteHandler
   /** Put a live, idle session into dormant state (release the SDK
    *  subprocess) without deleting it. Reversible via resume. */
   onSleep: (id: string) => void
@@ -290,6 +291,8 @@ export function SessionContextMenu({
         onDelete(anchor.id)
       },
     },
+    { label: '' },
+    permanentDeleteMenuItem(session, onDelete, onAskConfirm),
   ]
 
   return <ContextMenu x={anchor.x} y={anchor.y} items={items} onClose={onClose} />

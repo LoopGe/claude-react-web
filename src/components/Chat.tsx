@@ -88,6 +88,7 @@ import { composeOutgoing } from '../utils/outgoing-text'
 import { planSubmission } from '../utils/submission'
 import { parseReferences, type PastedTextMap } from '../utils/pastedText'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { permanentDeleteMenuItem, type SessionDeleteHandler } from './session-delete-menu'
 import { ConfirmDialog } from './ConfirmDialog'
 import { exportConversation, exportConversationJson } from '../utils/exportConversation'
 import { useAllContributions } from '../app-plugins/usePluginRegistry'
@@ -372,7 +373,7 @@ interface Props {
   /** Delete the session entirely (App.handleDelete — exit animation then
    *  immediate server delete). Offered as a "Delete session" item in the
    *  panel context menu, mirroring the sidebar's. */
-  onDelete?: (sessionId: string) => void
+  onDelete?: SessionDeleteHandler
   /** Request a confirmation dialog (rendered by ChatPanel) before a
    *  destructive action. Mirrors SessionList's onAskConfirm so the panel
    *  menu's Delete uses the same confirm UX as the sidebar's. The optional
@@ -2298,6 +2299,8 @@ export const Chat = memo(function Chat({
                       onDelete(session.id)
                     },
                   },
+                  { label: '' },
+                  permanentDeleteMenuItem(session, onDelete, onAskConfirm),
                 ]
               : []),
           ]}

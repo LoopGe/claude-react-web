@@ -9,11 +9,13 @@ import { SessionNavStrip, SessionNavTabGhost, SessionNavChipGhost } from './comp
 import { SessionContextMenu } from './components/session-list/SessionContextMenu'
 import { buildGroupContextMenuItems, type GroupMenuDialogs } from './components/session-list/groupMenuItems'
 import { ContextMenu } from './components/ContextMenu'
+import type { SessionDeleteHandler, SessionDeleteOptions } from './components/session-delete-menu'
 import { closeAllContextMenus } from './components/context-menu-registry'
 import { DialogHosts } from './components/DialogHosts'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
 import { PANEL_CACHE_EXTRA, evictFromCache, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshotTop } from './utils/panel-cache'
+import { SessionDeleteQueue } from './utils/session-delete-queue'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -270,7 +272,7 @@ export function App() {
   /** Synchronous re-entrancy gate for handleDelete (deletingSessionIds is
    *  state, so it can't gate the same-tick double-fire). Mirrors
    *  deletingSessionIds; entries are removed when the delete settles. */
-  const deletingIdsRef = useRef<Set<string>>(new Set())
+  const deletingIdsRef = useRef<SessionDeleteQueue>(new SessionDeleteQueue())
   /** Ordered list of open session ids (oldest first). Length <= maxOpen. */
   const [openIds, setOpenIds] = useState<string[]>([])
   /** Side Chat drawer state. Only one Side Chat can be open at a time.
@@ -2143,9 +2145,9 @@ export function App() {
    *  Used directly by Restart (create-then-delete) and by handleDelete once
    *  the user confirms the delete dialog. */
   const performDelete = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string, opts?: SessionDeleteOptions): Promise<boolean> => {
       try {
-        await api.delete(`/sessions/${id}`)
+        await api.delete(`/sessions/${id}${opts?.deleteTranscript ? '?deleteTranscript=true' : ''}`)
         closeSession(id)
         // Purge the session's transcript cache from localStorage. Without
         // this, deleted sessions leave orphan `claude-web-session:*` keys
@@ -2185,19 +2187,16 @@ export function App() {
    *  There's no Undo grace window. A short local exit animation plays while
    *  the server DELETE is in flight; the card is removed once the
    *  `session-removed` broadcast lands. */
-  const handleDelete = useCallback(
-    (id: string) => {
-      // Re-entrancy guard: a delete for this id is already in flight (e.g. a
-      // fast double-click on a confirm button before the dialog unmounts).
-      // Without this, the second call would race a second DELETE → 404 toast.
-      if (deletingIdsRef.current.has(id)) return
-      deletingIdsRef.current.add(id)
+  const handleDelete = useCallback<SessionDeleteHandler>(
+    (id, opts) => {
+      // Per-id queue: duplicate ordinary deletes coalesce, while a permanent
+      // confirmation behind an ordinary delete upgrades and runs next instead
+      // of being silently dropped.
       setDeletingSessionIds((prev) => new Set(prev).add(id))
-      void performDelete(id).then((deleted) => {
-        // Clear the gate either way — a failed delete must be retryable.
-        deletingIdsRef.current.delete(id)
-        if (deleted) return
-        // Delete failed — restore the card by dropping the exit-animation flag.
+      deletingIdsRef.current.run(id, opts, performDelete, () => {
+        if (deletingIdsRef.current.hasPending(id)) return
+        // Only the queue's last operation controls the exit-animation flag;
+        // an earlier ordinary failure must not clear a pending permanent one.
         setDeletingSessionIds((prev) => {
           if (!prev.has(id)) return prev
           const next = new Set(prev)

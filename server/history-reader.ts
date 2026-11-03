@@ -36,7 +36,7 @@
 //             'queued'. tool_result-bearing user frames are never queued
 //             (parent != null), so they only get receivedAt.
 
-import { open, readFile, readdir, stat, unlink } from 'node:fs/promises'
+import { open, readFile, readdir, stat, unlink, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { claudeConfigDir } from './claude-config-dir.js'
 import { isRenderableSdkMessage, trimLargeToolResults } from './history-utils.js'
@@ -84,19 +84,12 @@ export interface TranscriptFile {
   size: number
 }
 
-/** Locate the transcript file for a session id. Session ids are globally
- *  unique UUIDs, so we scan every project dir rather than recreating the SDK's
- *  cwd→dirname encoding ourselves. Returns null if no file exists.
- *
- *  A flat readdir rather than a glob: the config dir is an arbitrary
- *  user-chosen path (CLAUDE_CONFIG_DIR), so metacharacters in it — "cfg[1]",
- *  "a*b" — would change a pattern's meaning and silently match nothing. */
-export async function findTranscriptFile(sessionId: string): Promise<TranscriptFile | null> {
+/** Locate a transcript artifact by scanning every project dir rather than
+ *  recreating the SDK's cwd→dirname encoding. A flat readdir rather than a
+ *  glob keeps CLAUDE_CONFIG_DIR metacharacters literal. */
+async function findTranscriptArtifacts(sessionId: string, artifactName: string, strict: boolean, all = false): Promise<TranscriptFile[]> {
   const projectsDir = path.join(claudeConfigDir(), 'projects')
-  // basename() so a caller-supplied id can never traverse out of the projects
-  // tree — the id lands in a join() that is both read and unlinked. Session ids
-  // are UUIDs, so this is a no-op for every real caller.
-  const fileName = `${path.basename(sessionId)}.jsonl`
+  const matches: TranscriptFile[] = []
   try {
     // withFileTypes so a stray FILE dropped in projects/ (a .DS_Store, a
     // README) is skipped rather than stats'd: on POSIX that stat fails with
@@ -107,18 +100,20 @@ export async function findTranscriptFile(sessionId: string): Promise<TranscriptF
       // another volume is a normal way to move bulk data — so follow those
       // too, or the transcript silently stops being found.
       if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
-      const candidate = path.join(projectsDir, entry.name, fileName)
+      const candidate = path.join(projectsDir, entry.name, artifactName)
       try {
         const s = await stat(candidate)
-        return { path: candidate, mtimeMs: s.mtimeMs, size: s.size } // first hit — ids are unique
+        matches.push({ path: candidate, mtimeMs: s.mtimeMs, size: s.size })
+        if (!all) return matches // first hit for ordinary history reads
       } catch (err) {
         const e = err as NodeJS.ErrnoException
         // Not in this project dir is the normal case (ENOENT), as is a
         // symlink that points at a file (ENOTDIR). Anything else
         // (permissions, a looping symlink) means a transcript may exist but be
-        // unreadable — silently returning null would present that as "no
-        // history" with nothing in the logs.
+        // unreadable. Strict callers need that failure; history reads retain
+        // the original log-and-miss behavior.
         if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') {
+          if (strict) throw err
           log.warn(`findTranscriptFile stat failed for ${candidate}: ${e.message ?? err}`)
         }
       }
@@ -129,10 +124,19 @@ export async function findTranscriptFile(sessionId: string): Promise<TranscriptF
     // error: the CLI only creates it once it has written something, so a
     // fresh install (or any unknown session id) hits this on every lazy-load.
     if (e.code !== 'ENOENT') {
+      if (strict) throw err
       log.warn(`findTranscriptFile scan error session=${sessionId}: ${e.message ?? err}`)
     }
   }
-  return null
+  return matches
+}
+
+/** Locate the transcript file for a session id. Session ids are globally
+ *  unique UUIDs. Returns null if no file exists. Strict mode is reserved for
+ *  permanent deletion: lookup errors must not be mistaken for missing files. */
+export async function findTranscriptFile(sessionId: string, opts?: { strict?: boolean }): Promise<TranscriptFile | null> {
+  // basename() prevents a caller-supplied id from traversing out of projects.
+  return (await findTranscriptArtifacts(sessionId, `${path.basename(sessionId)}.jsonl`, opts?.strict === true))[0] ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +402,39 @@ export async function deleteTranscriptFile(sessionId: string): Promise<boolean> 
     log.warn(`deleteTranscriptFile: unlink failed for ${file.path} (code=${code ?? 'unknown'}): ${(err as Error).message ?? err}`)
     return false
   }
+}
+
+export function isSafeSessionId(sessionId: string): boolean {
+  const safeSessionId = path.basename(sessionId)
+  return Boolean(safeSessionId) && safeSessionId === sessionId && safeSessionId !== '.' && safeSessionId !== '..'
+}
+
+/** Strictly delete a session's main transcript and its companion directory
+ *  (including subagent transcripts). Unlike deleteTranscriptFile(), failures
+ *  propagate so a permanent-delete caller cannot report a partial cleanup as
+ *  successful. The companion directory goes first: if its removal fails, the
+ *  main file remains available to locate the artifacts on a later retry. */
+export async function deleteTranscriptFiles(sessionId: string): Promise<boolean> {
+  if (!isSafeSessionId(sessionId)) {
+    throw new Error(`Invalid session id for transcript deletion: ${sessionId}`)
+  }
+  const files = await findTranscriptArtifacts(sessionId, `${sessionId}.jsonl`, true, true)
+  const sessionDirs = await findTranscriptArtifacts(sessionId, sessionId, true, true)
+  if (files.length === 0 && sessionDirs.length === 0) return false
+  // Companion directories go first: if any removal fails, every main file
+  // remains available to locate remaining artifacts on a later retry.
+  for (const dir of sessionDirs) await rm(dir.path, { recursive: true, force: true })
+  for (const file of files) {
+    try {
+      await unlink(file.path)
+    } catch (err) {
+      // External cleanup between lookup and unlink is already the requested
+      // end state. Other filesystem failures remain loud.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+    }
+  }
+  log.info(`deleteTranscriptFiles: removed ${files.length} main transcript(s) and ${sessionDirs.length} companion directorie(s)`)
+  return true
 }
 
 /** Extract the tool_use_id from a user message whose content carries a

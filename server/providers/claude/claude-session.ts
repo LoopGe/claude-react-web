@@ -22,6 +22,8 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
      *  process ever spawned (mocked SDK / deferred spawn). Never rejects. */
     private readonly processExitedPromise: Promise<ProcessExitInfo>,
     private readonly cleanupMonitor: () => void,
+    /** Resolves only on a real process exit, never the safety timeout. */
+    private readonly processRealExitPromise?: Promise<ProcessExitInfo>,
     /** The SDK session id this handle is attached to — the on-disk transcript
      *  dir key. The app-level id (opts.id) doubles as the SDK session id on
      *  fresh/fork spawns and equals the resumed id on resume, so it always
@@ -47,6 +49,10 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
 
   get processExited(): Promise<ProcessExitInfo> {
     return this.processExitedPromise
+  }
+
+  get processRealExit(): Promise<ProcessExitInfo> {
+    return this.processRealExitPromise ?? this.processExitedPromise
   }
 
   get queueDepth(): number {

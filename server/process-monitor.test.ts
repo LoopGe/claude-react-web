@@ -115,22 +115,16 @@ describe('ProcessMonitor', () => {
     void proc
   })
 
-  it('spawn for an unregistered handle still spawns (no throw) and is not tracked', async () => {
+  it('refuses a stray spawn after a real exit removed the registration', async () => {
     const onExit = vi.fn()
     const mon = new ProcessMonitor(onExit)
     const reg = mon.register('s-unregistered')
 
-    // Simulate the destroy() path: unregister marks intentional and (since
-    // nothing spawned yet) resolves exited + deletes the entry.
-    mon.unregister(reg)
+    mon.spawnFor(reg, spawnOpts(0))
     await expectExitSoon(reg, 1000)
 
-    // A stray spawn AFTER unregister must not throw and must not fire onExit.
-    const proc = mon.spawnFor(reg, spawnOpts(0))
-    await new Promise((r) => asChild(proc).on('exit', r))
-    // Give the exit handler a tick to run.
-    await new Promise((r) => setTimeout(r, 20))
-    expect(onExit).not.toHaveBeenCalled()
+    expect(() => mon.spawnFor(reg, spawnOpts(0))).toThrow(/unregistered/i)
+    expect(onExit).toHaveBeenCalledTimes(1)
   })
 
   // Regression: the EXIT_SAFETY_MS backstop timer must NOT be armed at spawn.
@@ -200,6 +194,8 @@ describe('ProcessMonitor', () => {
 
     // A child that will not exit on its own during the test (long sleeper).
     const proc = mon.spawnFor(reg, spawnOpts(0, 100_000))
+    const stderr = (proc as unknown as { stderr: NodeJS.EventEmitter }).stderr
+    const endBefore = stderr.listenerCount('end')
     mon.unregister(reg) // intentional close — must NOT surface via onExit
 
     // No real 'exit' arrives, so the unregister-armed timer must resolve
@@ -207,10 +203,54 @@ describe('ProcessMonitor', () => {
     const info = await expectExitSoon(reg, 500)
     expect(info.code).toBeNull()
     expect(onExit).not.toHaveBeenCalled()
+    expect(stderr.listenerCount('data')).toBe(0)
+    expect(stderr.listenerCount('end')).toBe(endBefore - 1)
 
     // Tear down the still-alive child so the test process can exit cleanly.
     ;(proc as unknown as { kill: () => boolean }).kill()
     await new Promise((r) => setTimeout(r, 30))
+  })
+
+  it('realExited stays pending past the safety timer and resolves on the later real exit', async () => {
+    const mon = new ProcessMonitor(() => {}, { safetyMs: 50 })
+    const reg = mon.register('s-late-exit')
+    const proc = mon.spawnFor(reg, spawnOpts(0, 100_000))
+    try {
+      mon.unregister(reg)
+      const safety = await expectExitSoon(reg, 500)
+      expect(safety.exitSafetyTimeout).toBe(true)
+
+      let realSettled = false
+      void reg.realExited.then(() => { realSettled = true })
+      await new Promise((r) => setTimeout(r, 25))
+      expect(realSettled).toBe(false)
+
+      ;(proc as unknown as { kill: () => boolean }).kill()
+      await reg.realExited
+      expect(realSettled).toBe(true)
+    } finally {
+      ;(proc as unknown as { kill: () => boolean }).kill()
+    }
+  })
+
+  it('refuses a deferred process that arrives after intentional unregister', async () => {
+    const mon = new ProcessMonitor(() => {})
+    const reg = mon.register('s-deferred-spawn')
+    mon.unregister(reg)
+
+    expect(() => mon.spawnFor(reg, spawnOpts(0, 100_000))).toThrow(/unregister|closed|intentional/i)
+  })
+
+  it('refuses another spawn while an intentional entry is still closing', async () => {
+    const mon = new ProcessMonitor(() => {})
+    const reg = mon.register('s-still-closing')
+    const proc = mon.spawnFor(reg, spawnOpts(0, 100_000))
+    try {
+      mon.unregister(reg)
+      expect(() => mon.spawnFor(reg, spawnOpts(0, 100_000))).toThrow(/unregister|closed|intentional/i)
+    } finally {
+      ;(proc as unknown as { kill: () => boolean }).kill()
+    }
   })
 
   it('calls stderrSink with session id and each captured stderr line', async () => {

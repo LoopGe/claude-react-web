@@ -79,8 +79,8 @@ export class SteeredStore {
     return this.sidecar.load(sessionId)
   }
 
-  remove(sessionId: string): Promise<void> {
-    return this.sidecar.remove(sessionId)
+  remove(sessionId: string, opts?: { strict?: boolean }): Promise<void> {
+    return this.sidecar.remove(sessionId, opts)
   }
 
   revive(sessionId: string): void {

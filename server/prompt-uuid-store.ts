@@ -82,8 +82,8 @@ export class PromptUuidStore {
 
   /** Delete the sidecar. Tombstones the id first, so a save still in
    *  flight (or fired after this) can't recreate the file. */
-  remove(sessionId: string): Promise<void> {
-    return this.sidecar.remove(sessionId)
+  remove(sessionId: string, opts?: { strict?: boolean }): Promise<void> {
+    return this.sidecar.remove(sessionId, opts)
   }
 
   /** Clear the remove() tombstone for a new session reusing `sessionId`. */

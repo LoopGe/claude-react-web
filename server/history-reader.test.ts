@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt } from './history-reader.js'
+import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt, deleteTranscriptFiles } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 
 // Creating a symlink needs no privileges on POSIX but does on Windows unless a
@@ -835,6 +835,127 @@ describe('readLastUserPrompt — transcript file tail read', () => {
     process.env.CLAUDE_CONFIG_DIR = root
     try {
       expect(await readLastUserPrompt('no-such-session')).toBeUndefined()
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+})
+
+describe('deleteTranscriptFiles', () => {
+  it('removes the main transcript and session directory without touching other sessions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-delete-transcripts-'))
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      const projectDir = join(root, 'projects', 'D--codes-demo')
+      const subagentsDir = join(projectDir, 'sess-delete', 'subagents')
+      await mkdir(subagentsDir, { recursive: true })
+      await mkdir(join(projectDir, 'sess-other'), { recursive: true })
+      const mainPath = join(projectDir, 'sess-delete.jsonl')
+      const subagentPath = join(subagentsDir, 'agent-one.jsonl')
+      const otherMainPath = join(projectDir, 'sess-other.jsonl')
+      await writeFile(mainPath, '{}\n')
+      await writeFile(subagentPath, '{}\n')
+      await writeFile(otherMainPath, '{}\n')
+
+      expect(await deleteTranscriptFiles('sess-delete')).toBe(true)
+      expect(existsSync(mainPath)).toBe(false)
+      expect(existsSync(join(projectDir, 'sess-delete'))).toBe(false)
+      expect(existsSync(otherMainPath)).toBe(true)
+      expect(existsSync(join(projectDir, 'sess-other'))).toBe(true)
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+
+  it('returns false when the session has no main transcript', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-delete-transcripts-'))
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      expect(await deleteTranscriptFiles('no-such-session')).toBe(false)
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+
+  it('removes duplicate transcript artifacts from every project directory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-delete-transcripts-'))
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      const firstProject = join(root, 'projects', 'D--first')
+      const secondProject = join(root, 'projects', 'D--second')
+      for (const project of [firstProject, secondProject]) {
+        await mkdir(join(project, 'sess-delete', 'subagents'), { recursive: true })
+        await writeFile(join(project, 'sess-delete.jsonl'), '{}\n')
+        await writeFile(join(project, 'sess-delete', 'subagents', 'agent-one.jsonl'), '{}\n')
+      }
+
+      expect(await deleteTranscriptFiles('sess-delete')).toBe(true)
+      expect(existsSync(join(firstProject, 'sess-delete.jsonl'))).toBe(false)
+      expect(existsSync(join(firstProject, 'sess-delete'))).toBe(false)
+      expect(existsSync(join(secondProject, 'sess-delete.jsonl'))).toBe(false)
+      expect(existsSync(join(secondProject, 'sess-delete'))).toBe(false)
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+
+  it('propagates transcript lookup failures instead of reporting a successful delete', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-delete-transcripts-'))
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      // A file where projects/ must be a directory makes readdir fail on every
+      // platform; strict permanent deletion must not turn that into "missing".
+      await writeFile(join(root, 'projects'), 'not a directory')
+      await expect(deleteTranscriptFiles('sess-delete')).rejects.toThrow()
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+
+  it('removes a companion session directory even when the main JSONL is already missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-delete-transcripts-'))
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      const sessionDir = join(root, 'projects', 'D--codes-demo', 'sess-delete')
+      await mkdir(join(sessionDir, 'subagents'), { recursive: true })
+      await writeFile(join(sessionDir, 'subagents', 'agent-one.jsonl'), '{}\n')
+
+      expect(await deleteTranscriptFiles('sess-delete')).toBe(true)
+      expect(existsSync(sessionDir)).toBe(false)
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = prev
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+
+  it('rejects traversal-like session ids before touching the projects tree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-delete-transcripts-'))
+    const prev = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = root
+    try {
+      const projectDir = join(root, 'projects', 'D--codes-demo')
+      await mkdir(projectDir, { recursive: true })
+      const otherPath = join(projectDir, 'sess-other.jsonl')
+      await writeFile(otherPath, '{}\n')
+
+      await expect(deleteTranscriptFiles('..')).rejects.toThrow(/invalid session id/i)
+      expect(existsSync(otherPath)).toBe(true)
     } finally {
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR
       else process.env.CLAUDE_CONFIG_DIR = prev

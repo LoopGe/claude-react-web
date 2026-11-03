@@ -113,6 +113,7 @@ export class SnapshotService {
   private readonly fileSnapshots: boolean
   private readonly maxUntrackedBytes: number
   private readonly locks = new Map<string, Promise<void>>()
+  private readonly deleted = new Set<string>()
 
   constructor(opts: SnapshotServiceOptions) {
     this.stateDir = opts.stateDir
@@ -127,8 +128,22 @@ export class SnapshotService {
     return !this.fileSnapshots
   }
 
+  /** Block future captures and drain the current one before ODB removal. */
+  async delete(sessionId: string): Promise<void> {
+    this.deleted.add(sessionId)
+    await this.lock(sessionId, async () => {}, { allowDeleted: true })
+  }
+
+  /** Allow a same-id fresh session to capture into a new shadow repo. */
+  revive(sessionId: string): void {
+    this.deleted.delete(sessionId)
+  }
+
   /** In-process mutex per sessionId; serializes capture/rewind. */
-  private async lock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  private async lock<T>(sessionId: string, fn: () => Promise<T>, opts?: { allowDeleted?: boolean }): Promise<T> {
+    if (!opts?.allowDeleted && this.deleted.has(sessionId)) {
+      throw new Error(`session ${sessionId} was deleted; snapshot operation refused`)
+    }
     const prev = this.locks.get(sessionId) ?? Promise.resolve()
     let resolve!: () => void
     const gate = new Promise<void>((r) => { resolve = r })
@@ -206,6 +221,7 @@ export class SnapshotService {
     if (!this.fileSnapshots) return null
     try {
       return await this.lock(sessionId, async () => {
+        if (this.deleted.has(sessionId)) return null
         const info = await this.resolveRepo(sessionId, cwd)
         if (!info) return null
         // Read prev BEFORE capture overwrites meta.last.tree
@@ -246,9 +262,10 @@ export class SnapshotService {
    * Never throws to callers.
    */
   async capture(input: { sessionId: string; cwd: string }): Promise<string | null> {
-    if (!this.fileSnapshots) return null
+    if (!this.fileSnapshots || this.deleted.has(input.sessionId)) return null
     try {
       return await this.lock(input.sessionId, async () => {
+        if (this.deleted.has(input.sessionId)) return null
         const info = await this.resolveRepo(input.sessionId, input.cwd)
         if (!info) return null
         const tree = await captureTree(info.repo, {

@@ -52,6 +52,8 @@ export interface TranscriptHolder {
 export class TranscriptSidecar {
   private readonly file: string | null
   private handle: FileHandle | null = null
+  private removed = false
+  private closed = false
   /** Serial queue: every append (and remove's fd close) chains onto the tail
    *  so concurrent appends land in call order without interleaved writes. */
   private queue: Promise<void> = Promise.resolve()
@@ -98,39 +100,65 @@ export class TranscriptSidecar {
    *  when THIS row's write has landed, but callers on the pump path don't
    *  need to await it — the internal queue still orders the writes. */
   async appendRow(row: object): Promise<void> {
-    if (!this.file) return
+    if (!this.file || this.removed || this.closed) return
     this.queue = this.queue
       .then(async () => {
+        if (this.removed) return
         const handle = await this.ensureHandle()
         await handle.writeFile(JSON.stringify(row) + '\n')
       })
-      .catch((err) => {
-        // Swallow so one failed write doesn't poison the chain; drop the
-        // handle so a later append can reopen (e.g. after EBADF/EBUSY).
+      .catch(async (err) => {
+        // Swallow so one failed write doesn't poison the chain. Release the
+        // failed descriptor before dropping it so a later close/remove cannot
+        // inherit an untracked open handle (especially fatal on Windows).
+        const failedHandle = this.handle
         this.handle = null
+        if (failedHandle) {
+          try {
+            await failedHandle.close()
+          } catch (closeErr) {
+            log.warn(`[session ${this.sessionId}] sidecar failed-handle close failed: ${(closeErr as Error).message ?? closeErr}`)
+          }
+        }
         log.warn(`[session ${this.sessionId}] sidecar append failed: ${(err as Error).message ?? err}`)
       })
     await this.queue
   }
 
-  /** Remove the sidecar file: drain pending appends, close the fd, then
-   *  unlink. ENOENT counts as success (nothing to remove). */
-  async remove(): Promise<void> {
+  /** Prevent any later append from reopening the file after deletion. */
+  tombstone(): void {
+    this.removed = true
+  }
+
+  /** Stop appends, drain the queue, and close the fd while preserving the
+   *  file for a later resume. */
+  async close(opts?: { strict?: boolean }): Promise<void> {
     if (!this.file) return
-    // Drain the append queue first so no queued write lands after the
-    // unlink and resurrects the file.
+    this.closed = true
     await this.queue.catch(() => {})
     if (this.handle) {
       try {
         await this.handle.close()
-      } catch { /* already closed */ }
+      } catch (err) {
+        if (opts?.strict) throw err
+        log.warn(`[session ${this.sessionId}] sidecar close failed: ${(err as Error).message ?? err}`)
+      }
       this.handle = null
     }
+  }
+
+  /** Remove the sidecar file: drain pending appends, close the fd, then
+   *  unlink. ENOENT counts as success (nothing to remove). */
+  async remove(opts?: { strict?: boolean }): Promise<void> {
+    if (!this.file) return
+    this.tombstone()
+    await this.close(opts)
     try {
       await unlink(this.file)
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
       if (code !== 'ENOENT') {
+        if (opts?.strict) throw err
         log.warn(`[session ${this.sessionId}] sidecar remove failed: ${(err as Error).message ?? err}`)
       }
     }

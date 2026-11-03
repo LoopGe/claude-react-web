@@ -405,9 +405,10 @@ export function buildSessionRouter(
     return c.json({ session: sm.get(id) })
   })
 
-  // Delete session
+  // Delete session. Opt-in transcript deletion keeps the ordinary route's
+  // recoverable-CLI-log behavior for existing callers.
   app.delete('/sessions/:id', async (c) => {
-    await sm.delete(c.req.param('id'))
+    await sm.delete(c.req.param('id'), { deleteTranscript: c.req.query('deleteTranscript') === 'true' })
     return c.json({ ok: true })
   })
 

@@ -12,6 +12,8 @@ import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rmRf } from './__test-utils__/index.js'
 import { encodeCwd, subagentTranscriptPath } from './subagent-watcher.js'
+import type { ProcessExitInfo } from './process-monitor.js'
+import type { ProviderSessionHandle } from './providers/types.js'
 
 // Wrap node:fs/promises so `stat` is a controllable mock that defaults to the
 // real implementation (preexisting stat users keep working) but individual
@@ -370,6 +372,7 @@ import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
+import { TranscriptSidecar } from './transcript-sidecar.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -412,6 +415,17 @@ function writeSidecar(cwd: string, sessionId: string, agentId: string, stopReaso
     p,
     JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }], stop_reason: stopReason } }) + '\n',
   )
+}
+
+/** Create real CLI transcript artifacts for permanent-delete tests. */
+function writeTranscriptArtifacts(configDir: string, sessionId: string): { mainPath: string; sessionDir: string } {
+  const projectDir = join(configDir, 'projects', 'D--test')
+  const sessionDir = join(projectDir, sessionId)
+  mkdirSync(join(sessionDir, 'subagents'), { recursive: true })
+  const mainPath = join(projectDir, `${sessionId}.jsonl`)
+  writeFileSync(mainPath, '{}\n')
+  writeFileSync(join(sessionDir, 'subagents', 'agent-one.jsonl'), '{}\n')
+  return { mainPath, sessionDir }
 }
 
 describe('SessionManager', () => {
@@ -2414,6 +2428,1061 @@ describe('SessionManager', () => {
     // CLI subprocess / MCP transports / pending control requests are released.
     const handle = mockHandles.find((h) => h.options.sessionId === info.id || h.options.resume === info.id)
     expect(handle?.close).toHaveBeenCalled()
+  })
+
+  it('delete() keeps the SDK transcript artifacts by default', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      const { mainPath, sessionDir } = writeTranscriptArtifacts(dir, info.id)
+      await sm.delete(info.id)
+      expect(existsSync(mainPath)).toBe(true)
+      expect(existsSync(sessionDir)).toBe(true)
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('ordinary re-adoption waits for the old CLI to exit before respawning', async () => {
+    const info = await sm.create({})
+    let releaseExit!: (info: ProcessExitInfo) => void
+    const exit = new Promise<ProcessExitInfo>((resolve) => { releaseExit = resolve })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(exit)
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await sm.delete(info.id)
+      const resumed = sm.resume(info.id, { allowAdopt: true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const handlesBeforeExit = mockHandles.length
+      releaseExit({ sessionId: info.id, code: null, signal: null, killed: false })
+      await resumed
+      expect(handlesBeforeExit).toBe(1)
+      expect(mockHandles).toHaveLength(2)
+    } finally {
+      releaseExit({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      exitSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('retains completed ordinary-delete tombstones without evicting old ids', () => {
+    const smPrivate = sm as unknown as {
+      finishOrdinaryDelete: (id: string) => void
+      ordinaryDeletedSessionIds: Set<string>
+      deletedSessionIds: Set<string>
+      permanentDeleteCounts: Map<string, number>
+    }
+    for (let i = 0; i < 1025; i++) {
+      const id = `deleted-${i}`
+      smPrivate.deletedSessionIds.add(id)
+      smPrivate.permanentDeleteCounts.set(id, 1)
+      smPrivate.finishOrdinaryDelete(id)
+    }
+    expect(smPrivate.ordinaryDeletedSessionIds.size).toBe(1025)
+    expect(smPrivate.ordinaryDeletedSessionIds.has('deleted-0')).toBe(true)
+    expect(smPrivate.ordinaryDeletedSessionIds.has('deleted-1024')).toBe(true)
+    expect(smPrivate.deletedSessionIds.size).toBe(0)
+  })
+
+  it('ordinary delete still allows re-adopting the preserved transcript', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await sm.delete(info.id)
+      const resumed = await sm.resume(info.id, { allowAdopt: true })
+      expect(resumed.running).toBe(true)
+      expect(store.get(info.id)).toBeDefined()
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('rejects traversal-like session ids before removing any artifacts', async () => {
+    const neighborDir = join(dir, 'snapshots', 'odb', 'neighbor')
+    mkdirSync(neighborDir, { recursive: true })
+    const rmSpy = vi.spyOn(nodeFs, 'rm')
+    try {
+      await expect(sm.delete('..', { deleteTranscript: true })).rejects.toThrow(/invalid session id/i)
+      expect(existsSync(neighborDir)).toBe(true)
+      expect(rmSpy).not.toHaveBeenCalled()
+    } finally {
+      rmSpy.mockRestore()
+    }
+  })
+
+  it('delete({ deleteTranscript: true }) removes the SDK transcript artifacts', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      const { mainPath, sessionDir } = writeTranscriptArtifacts(dir, info.id)
+      await sm.delete(info.id, { deleteTranscript: true })
+      expect(existsSync(mainPath)).toBe(false)
+      expect(existsSync(sessionDir)).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('does not write a transcript title after deletion starts', async () => {
+    const info = await sm.create({})
+    const smPrivate = sm as unknown as { deletedSessionIds: Set<string> }
+    smPrivate.deletedSessionIds.add(info.id)
+    mockRenameSession.mockClear()
+    await sm.rename(info.id, 'Too late')
+    expect(mockRenameSession).not.toHaveBeenCalled()
+  })
+
+  it('permanent delete drains an in-flight transcript title write first', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    let releaseRename!: () => void
+    const renameGate = new Promise<void>((resolve) => { releaseRename = resolve })
+    mockRenameSession.mockImplementationOnce(() => renameGate)
+    try {
+      const { mainPath } = writeTranscriptArtifacts(dir, info.id)
+      await sm.rename(info.id, 'New title')
+      let settled = false
+      const deletion = sm.delete(info.id, { deleteTranscript: true }).then(() => { settled = true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const settledBeforeRename = settled
+      releaseRename()
+      await deletion
+      expect(settledBeforeRename).toBe(false)
+      expect(existsSync(mainPath)).toBe(false)
+    } finally {
+      releaseRename()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent delete aborts when a transcript title write never settles', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    let releaseRename!: () => void
+    const renameGate = new Promise<void>((resolve) => { releaseRename = resolve })
+    mockRenameSession.mockImplementationOnce(() => renameGate)
+    let deletion: Promise<void> | undefined
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await sm.rename(info.id, 'Stalled title')
+      deletion = sm.delete(info.id, { deleteTranscript: true })
+      await expect(deletion).rejects.toThrow(/timed out/i)
+    } finally {
+      releaseRename()
+      if (deletion) await deletion.catch(() => {})
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent delete accepts ENOENT when the main transcript vanished after lookup', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const unlinkSpy = vi.spyOn(nodeFs, 'unlink').mockRejectedValueOnce(
+      Object.assign(new Error('already removed'), { code: 'ENOENT' }),
+    )
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.delete(info.id, { deleteTranscript: true })).resolves.toBeUndefined()
+      expect(unlinkSpy).toHaveBeenCalled()
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      unlinkSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent delete awaits an asynchronous provider destroy', async () => {
+    let releaseDestroy!: () => void
+    const teardown = new Promise<void>((resolve) => { releaseDestroy = resolve })
+    const originalDestroy = ClaudeSessionHandle.prototype.destroy
+    const destroySpy = vi.spyOn(ClaudeSessionHandle.prototype, 'destroy').mockImplementation(function (this: ClaudeSessionHandle) {
+      originalDestroy.call(this)
+      return teardown
+    })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(
+      Promise.resolve({ sessionId: 'done', code: null, signal: null, killed: false }),
+    )
+    try {
+      const info = await sm.create({})
+      let settled = false
+      const deletion = sm.delete(info.id, { deleteTranscript: true }).then(() => { settled = true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const settledBeforeTeardown = settled
+      releaseDestroy()
+      await deletion
+      expect(settledBeforeTeardown).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      releaseDestroy()
+      destroySpy.mockRestore()
+      exitSpy.mockRestore()
+    }
+  })
+
+  it('permanent delete tolerates an undefined provider exit payload', async () => {
+    const handle = {
+      processExited: Promise.resolve(),
+      destroy: vi.fn(),
+    } as unknown as ProviderSessionHandle
+    const smPrivate = sm as unknown as {
+      destroyProviderHandle: (id: string, handle: ProviderSessionHandle) => Promise<void>
+    }
+    await smPrivate.destroyProviderHandle('missing', handle)
+
+    await expect(sm.delete('missing', { deleteTranscript: true })).resolves.toBeUndefined()
+  })
+
+  it('a failed concurrent permanent delete keeps the other request tombstoned', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const rmSpy = vi.spyOn(nodeFs, 'rm')
+      .mockImplementationOnce(() => firstGate)
+      .mockImplementationOnce(async () => { throw new Error('second delete failed') })
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      const first = sm.delete(info.id, { deleteTranscript: true })
+      await waitFor(() => rmSpy.mock.calls.length > 0)
+      await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow('second delete failed')
+
+      const smPrivate = sm as unknown as {
+        spawn: (id: string, opts: Options) => unknown
+        snapshots: { dryRun: (id: string, messageId: string) => Promise<unknown> }
+      }
+      expect(() => smPrivate.spawn(info.id, { resume: info.id })).toThrow(/deleted/i)
+      releaseFirst()
+      await first
+      await expect(smPrivate.snapshots.dryRun(info.id, 'missing')).rejects.toThrow(/deleted/i)
+    } finally {
+      releaseFirst()
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('a failed delete cannot roll back another request completed permanent deletion', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    let rejectFirst!: (err: Error) => void
+    const firstGate = new Promise<void>((_resolve, reject) => { rejectFirst = reject })
+    const rmSpy = vi.spyOn(nodeFs, 'rm')
+      .mockImplementationOnce(() => firstGate)
+      .mockResolvedValue(undefined)
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      const first = sm.delete(info.id, { deleteTranscript: true })
+      await waitFor(() => rmSpy.mock.calls.length > 0)
+      await sm.delete(info.id, { deleteTranscript: true })
+      expect(store.get(info.id)).toBeUndefined()
+
+      rejectFirst(new Error('late failure'))
+      await expect(first).rejects.toThrow('late failure')
+      expect(store.get(info.id)).toBeUndefined()
+      const smPrivate = sm as unknown as { spawn: (id: string, opts: Options) => unknown }
+      expect(() => smPrivate.spawn(info.id, { resume: info.id })).toThrow(/deleted/i)
+    } finally {
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('an ordinary delete does not release other in-flight permanent deletes', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      spawn: (id: string, opts: Options) => unknown
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    let releaseFirst!: () => void
+    let rejectSecond!: (err: Error) => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const secondGate = new Promise<void>((_resolve, reject) => { rejectSecond = reject })
+    const originalRm = nodeFs.rm
+    const rmSpy = vi.spyOn(nodeFs, 'rm')
+      .mockImplementation(originalRm)
+      .mockImplementationOnce(() => firstGate)
+      .mockImplementationOnce(() => secondGate)
+    let first: Promise<void> | undefined
+    let second: Promise<void> | undefined
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      first = sm.delete(info.id, { deleteTranscript: true })
+      await waitFor(() => rmSpy.mock.calls.length === 1)
+      second = sm.delete(info.id, { deleteTranscript: true })
+      await waitFor(() => rmSpy.mock.calls.length === 2)
+      await sm.delete(info.id)
+
+      rejectSecond(new Error('second permanent delete failed'))
+      await expect(second).rejects.toThrow('second permanent delete failed')
+      expect(() => smPrivate.spawn(info.id, { resume: info.id })).toThrow(/deleted/i)
+
+      releaseFirst()
+      await first
+    } finally {
+      releaseFirst()
+      rejectSecond(new Error('cleanup'))
+      if (second) await second.catch(() => {})
+      if (first) await first.catch(() => {})
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('a late disk adoption cannot reinsert permanently deleted metadata', async () => {
+    const info = await sm.create({})
+    await sm.sleep(info.id)
+    store.remove(info.id)
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    let releaseInfo!: (value: unknown) => void
+    const infoGate = new Promise<unknown>((resolve) => { releaseInfo = resolve })
+    let probeStarted = false
+    mockGetSessionInfo.mockImplementationOnce(() => {
+      probeStarted = true
+      return infoGate
+    })
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      const resume = sm.resume(info.id, { allowAdopt: true })
+      await waitFor(() => probeStarted)
+      expect(probeStarted).toBe(true)
+      await sm.delete(info.id, { deleteTranscript: true })
+      releaseInfo({ sessionId: info.id, createdAt: 1, lastModified: 2, cwd: '/tmp/project' })
+      await expect(resume).rejects.toThrow(/deleted|not found|ended/i)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+
+  it('an ordinary delete releases its tombstone when unload fails', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const destroySpy = vi.spyOn(ClaudeSessionHandle.prototype, 'destroy').mockImplementationOnce(() => {
+      throw new Error('destroy failed')
+    })
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.delete(info.id)).rejects.toThrow('destroy failed')
+      await sm.delete(info.id)
+      const resumed = await sm.resume(info.id, { allowAdopt: true })
+      expect(resumed.running).toBe(true)
+    } finally {
+      destroySpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent delete clears its tombstone when unload throws', async () => {
+    const info = await sm.create({})
+    const destroySpy = vi.spyOn(ClaudeSessionHandle.prototype, 'destroy').mockImplementationOnce(() => {
+      throw new Error('destroy failed')
+    })
+    try {
+      await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow('destroy failed')
+      const smPrivate = sm as unknown as { spawn: (id: string, opts: Options) => unknown }
+      expect(smPrivate.spawn(info.id, { resume: info.id })).toMatchObject({ id: info.id, running: true })
+    } finally {
+      destroySpy.mockRestore()
+    }
+  })
+
+  it('permanent delete waits for the real CLI process exit before removing transcripts', async () => {
+    let releaseExit!: (info: ProcessExitInfo) => void
+    const exited = new Promise<ProcessExitInfo>((resolve) => { releaseExit = resolve })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(exited)
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      const info = await sm.create({})
+      const { mainPath, sessionDir } = writeTranscriptArtifacts(dir, info.id)
+      let settled = false
+      const deletion = sm.delete(info.id, { deleteTranscript: true }).then(() => { settled = true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const settledBeforeExit = settled
+      const mainExistedBeforeExit = existsSync(mainPath)
+      const storeExistedBeforeExit = store.get(info.id) !== undefined
+      releaseExit({ sessionId: info.id, code: null, signal: null, killed: false })
+      await deletion
+
+      expect(settledBeforeExit).toBe(false)
+      expect(mainExistedBeforeExit).toBe(true)
+      expect(storeExistedBeforeExit).toBe(true)
+      expect(existsSync(mainPath)).toBe(false)
+      expect(existsSync(sessionDir)).toBe(false)
+    } finally {
+      releaseExit({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      exitSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('sleep propagates a synchronous provider destroy failure', async () => {
+    const info = await sm.create({})
+    const destroySpy = vi.spyOn(ClaudeSessionHandle.prototype, 'destroy').mockImplementationOnce(() => {
+      throw new Error('destroy failed')
+    })
+    try {
+      await expect(sm.sleep(info.id)).rejects.toThrow('destroy failed')
+    } finally {
+      destroySpy.mockRestore()
+    }
+  })
+
+  it('sleep closes the old transcript sidecar without deleting its durable rows', async () => {
+    const info = await sm.create({})
+    sm.send(info.id, 'persist me')
+    mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+    await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
+    const closeSpy = vi.spyOn(TranscriptSidecar.prototype, 'close')
+    try {
+      await sm.sleep(info.id)
+      expect(closeSpy).toHaveBeenCalledTimes(1)
+      expect(existsSync(join(dir, 'transcripts', `${info.id}.ndjson`))).toBe(true)
+    } finally {
+      closeSpy.mockRestore()
+    }
+  })
+
+  it('permanent delete still waits for process exit after the session was slept', async () => {
+    let releaseExit!: (info: ProcessExitInfo) => void
+    const exited = new Promise<ProcessExitInfo>((resolve) => { releaseExit = resolve })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(exited)
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      const info = await sm.create({})
+      const { mainPath } = writeTranscriptArtifacts(dir, info.id)
+      await sm.sleep(info.id)
+
+      let settled = false
+      const deletion = sm.delete(info.id, { deleteTranscript: true }).then(() => { settled = true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const settledBeforeExit = settled
+      releaseExit({ sessionId: info.id, code: null, signal: null, killed: false })
+      await deletion
+
+      expect(settledBeforeExit).toBe(false)
+      expect(existsSync(mainPath)).toBe(false)
+    } finally {
+      releaseExit({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      exitSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent delete waits for both the old and replacement CLI after a same-id resume', async () => {
+    const exitPromises = new Map<ClaudeSessionHandle, Promise<ProcessExitInfo>>()
+    const releases: Array<(info: ProcessExitInfo) => void> = []
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockImplementation(function (this: ClaudeSessionHandle) {
+      let promise = exitPromises.get(this)
+      if (!promise) {
+        promise = new Promise<ProcessExitInfo>((resolve) => { releases.push(resolve) })
+        exitPromises.set(this, promise)
+      }
+      return promise
+    })
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      const info = await sm.create({})
+      const { mainPath } = writeTranscriptArtifacts(dir, info.id)
+      await sm.sleep(info.id)
+      await sm.resume(info.id)
+
+      let settled = false
+      const deletion = sm.delete(info.id, { deleteTranscript: true }).then(() => { settled = true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const settledBeforeEitherExit = settled
+      releases[1]({ sessionId: info.id, code: null, signal: null, killed: false })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      const settledAfterReplacementExit = settled
+      releases[0]({ sessionId: info.id, code: null, signal: null, killed: false })
+      await deletion
+
+      expect(settledBeforeEitherExit).toBe(false)
+      expect(settledAfterReplacementExit).toBe(false)
+      expect(existsSync(mainPath)).toBe(false)
+    } finally {
+      for (const release of releases) release({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      exitSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent delete reports a real CLI wait timeout explicitly', async () => {
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(
+      new Promise<ProcessExitInfo>(() => {}),
+    )
+    try {
+      const info = await sm.create({})
+      await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow(/CLI process.*did not exit/i)
+    } finally {
+      exitSpy.mockRestore()
+    }
+  })
+
+  it('permanent delete rejects the process monitor safety-timeout completion', async () => {
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(
+      Promise.resolve({ sessionId: 'wedged', code: null, signal: null, killed: false, exitSafetyTimeout: true } as ProcessExitInfo),
+    )
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      const info = await sm.create({})
+      const { mainPath } = writeTranscriptArtifacts(dir, info.id)
+      const sub = sm.subscribeGlobal()
+      const iter = sub.iterable[Symbol.asyncIterator]()
+      try {
+        await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow(/did not exit/i)
+        const event = await Promise.race([
+          iter.next().then((result) => result.done ? null : result.value),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 25)),
+        ])
+        expect(event).toMatchObject({ kind: 'update', session: { id: info.id, running: false, terminated: true } })
+      } finally {
+        sub.unsubscribe()
+      }
+      expect(existsSync(mainPath)).toBe(true)
+      expect(store.get(info.id)).toBeDefined()
+    } finally {
+      exitSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('a real process exit after a wait failure restores resumable metadata', async () => {
+    const info = await sm.create({})
+    let releaseExit!: (info: ProcessExitInfo) => void
+    const exit = new Promise<ProcessExitInfo>((resolve) => { releaseExit = resolve })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(exit)
+    const smPrivate = sm as unknown as {
+      resumeAfterProcessExit: Set<string>
+      deletedSessionIds: Set<string>
+      closingHandles: Map<string, Set<Promise<unknown>>>
+    }
+    try {
+      await sm.unload(info.id, { terminated: true, reason: 'deleted' })
+      smPrivate.resumeAfterProcessExit.add(info.id)
+      smPrivate.deletedSessionIds.add(info.id)
+      expect(store.get(info.id)?.terminated).toBe(true)
+
+      // An early retry failure must preserve the original wait-for-exit marker.
+      const readdirSpy = vi.spyOn(nodeFs, 'readdir').mockRejectedValueOnce(
+        Object.assign(new Error('transcript lookup denied'), { code: 'EACCES' }),
+      )
+      await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow('transcript lookup denied')
+      readdirSpy.mockRestore()
+      expect(smPrivate.resumeAfterProcessExit.has(info.id)).toBe(true)
+
+      releaseExit({ sessionId: info.id, code: null, signal: null, killed: false })
+      await waitFor(() => !smPrivate.closingHandles.has(info.id))
+      const resumed = await sm.resume(info.id)
+      expect(resumed.running).toBe(true)
+      expect(store.get(info.id)?.terminated).toBe(false)
+      expect(store.get(info.id)?.terminatedReason).toBeUndefined()
+    } finally {
+      releaseExit({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      exitSpy.mockRestore()
+    }
+  })
+
+  it('a slow resume cannot respawn after permanent delete overtakes it', async () => {
+    const info = await sm.create({})
+    await sm.sleep(info.id)
+    let releaseResume!: () => void
+    const gate = new Promise<void>((resolve) => { releaseResume = resolve })
+    let resumeReachedFinalStep = false
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      ensureTranscriptReconciled: (id: string) => Promise<void>
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    const resumeSpy = vi.spyOn(smPrivate, 'ensureTranscriptReconciled').mockImplementation(() => {
+      resumeReachedFinalStep = true
+      return gate
+    })
+    try {
+      const resume = sm.resume(info.id)
+      await waitFor(() => resumeReachedFinalStep)
+      expect(resumeReachedFinalStep).toBe(true)
+      await sm.delete(info.id, { deleteTranscript: true })
+      releaseResume()
+      await expect(resume).rejects.toThrow(/deleted|ended/i)
+      expect(mockHandles).toHaveLength(1)
+      expect(store.get(info.id)).toBeUndefined()
+      expect(existsSync(join(dir, 'transcripts', `${info.id}.ndjson`))).toBe(false)
+    } finally {
+      releaseResume()
+      resumeSpy.mockRestore()
+    }
+  })
+
+  it('a slow resume cannot respawn after an ordinary delete and real process exit', async () => {
+    const info = await sm.create({})
+    let releaseResume!: () => void
+    const resumeGate = new Promise<void>((resolve) => { releaseResume = resolve })
+    let releaseExit!: (info: ProcessExitInfo) => void
+    const exit = new Promise<ProcessExitInfo>((resolve) => { releaseExit = resolve })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(exit)
+    await sm.sleep(info.id)
+    let reachedFinalStep = false
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      ensureTranscriptReconciled: (id: string) => Promise<void>
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    const resumeSpy = vi.spyOn(smPrivate, 'ensureTranscriptReconciled').mockImplementation(() => {
+      reachedFinalStep = true
+      return resumeGate
+    })
+    try {
+      const resume = sm.resume(info.id)
+      await waitFor(() => reachedFinalStep)
+      await sm.delete(info.id)
+      releaseExit({ sessionId: info.id, code: null, signal: null, killed: false })
+      releaseResume()
+      await expect(resume).rejects.toThrow(/deleted|ended/i)
+      expect(mockHandles).toHaveLength(1)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      releaseResume()
+      releaseExit({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      resumeSpy.mockRestore()
+      exitSpy.mockRestore()
+    }
+  })
+
+  it('an ordinary delete supersedes an earlier resume-after-process-exit failure', async () => {
+    const info = await sm.create({})
+    let releaseExit!: (info: ProcessExitInfo) => void
+    const exit = new Promise<ProcessExitInfo>((resolve) => { releaseExit = resolve })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(exit)
+    const smPrivate = sm as unknown as {
+      resumeAfterProcessExit: Set<string>
+      closingHandles: Map<string, Set<Promise<unknown>>>
+      spawn: (id: string, opts: Options) => unknown
+    }
+    smPrivate.resumeAfterProcessExit.add(info.id)
+    try {
+      await sm.delete(info.id)
+      releaseExit({ sessionId: info.id, code: null, signal: null, killed: false })
+      await waitFor(() => !smPrivate.closingHandles.has(info.id))
+      expect(() => smPrivate.spawn(info.id, { resume: info.id })).toThrow(/deleted/i)
+    } finally {
+      releaseExit({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      exitSpy.mockRestore()
+    }
+  })
+
+  it('a slow restart cannot respawn after permanent delete overtakes it', async () => {
+    const info = await sm.create({})
+    let releaseRestart!: () => void
+    const gate = new Promise<Options>((resolve) => { releaseRestart = () => resolve({} as Options) })
+    let restartReachedOptions = false
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      buildResumeOpts: (session: Session) => Promise<Options>
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    const restartSpy = vi.spyOn(smPrivate, 'buildResumeOpts').mockImplementation(() => {
+      restartReachedOptions = true
+      return gate
+    })
+    try {
+      const restart = sm.restart(info.id)
+      await waitFor(() => restartReachedOptions)
+      expect(restartReachedOptions).toBe(true)
+      await sm.delete(info.id, { deleteTranscript: true })
+      releaseRestart()
+      await expect(restart).rejects.toThrow(/deleted|ended/i)
+      expect(mockHandles).toHaveLength(1)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      releaseRestart()
+      restartSpy.mockRestore()
+    }
+  })
+
+  it('restart cannot respawn when delete lands during async destroy', async () => {
+    const info = await sm.create({})
+    let releaseDestroy!: () => void
+    const gate = new Promise<void>((resolve) => { releaseDestroy = resolve })
+    let destroyStarted = false
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      destroyProviderHandle: (id: string, handle: ProviderSessionHandle, reason?: string) => Promise<void>
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    const originalDestroy = smPrivate.destroyProviderHandle.bind(sm)
+    let call = 0
+    const destroySpy = vi.spyOn(smPrivate, 'destroyProviderHandle').mockImplementation((id, handle, reason) => {
+      if (call++ === 0) {
+        destroyStarted = true
+        return gate
+      }
+      return originalDestroy(id, handle, reason)
+    })
+    try {
+      const restart = sm.restart(info.id)
+      await waitFor(() => destroyStarted)
+      expect(destroyStarted).toBe(true)
+      await sm.delete(info.id, { deleteTranscript: true })
+      releaseDestroy()
+      await expect(restart).rejects.toThrow(/deleted|ended/i)
+      expect(mockHandles).toHaveLength(1)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      releaseDestroy()
+      destroySpy.mockRestore()
+    }
+  })
+
+  it('restart cannot respawn after an ordinary delete during async destroy', async () => {
+    const info = await sm.create({})
+    let releaseDestroy!: () => void
+    const gate = new Promise<void>((resolve) => { releaseDestroy = resolve })
+    let destroyStarted = false
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      destroyProviderHandle: (id: string, handle: ProviderSessionHandle, reason?: string) => Promise<void>
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    const originalDestroy = smPrivate.destroyProviderHandle.bind(sm)
+    let call = 0
+    const destroySpy = vi.spyOn(smPrivate, 'destroyProviderHandle').mockImplementation((id, handle, reason) => {
+      if (call++ === 0) {
+        destroyStarted = true
+        return gate
+      }
+      return originalDestroy(id, handle, reason)
+    })
+    try {
+      const restart = sm.restart(info.id)
+      await waitFor(() => destroyStarted)
+      expect(destroyStarted).toBe(true)
+      await sm.delete(info.id)
+      releaseDestroy()
+      await expect(restart).rejects.toThrow(/deleted|ended/i)
+      expect(mockHandles).toHaveLength(1)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      releaseDestroy()
+      destroySpy.mockRestore()
+    }
+  })
+
+  it('a resume cannot spawn while permanent delete is still awaiting the old CLI', async () => {
+    const info = await sm.create({})
+    let releaseResume!: () => void
+    const resumeGate = new Promise<void>((resolve) => { releaseResume = resolve })
+    let releaseExit!: (info: ProcessExitInfo) => void
+    const exit = new Promise<ProcessExitInfo>((resolve) => { releaseExit = resolve })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(exit)
+    await sm.sleep(info.id)
+    let reachedFinalStep = false
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      ensureTranscriptReconciled: (id: string) => Promise<void>
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    const resumeSpy = vi.spyOn(smPrivate, 'ensureTranscriptReconciled').mockImplementation(() => {
+      reachedFinalStep = true
+      return resumeGate
+    })
+    try {
+      const resume = sm.resume(info.id)
+      await waitFor(() => reachedFinalStep)
+      let deleted = false
+      const deletion = sm.delete(info.id, { deleteTranscript: true }).then(() => { deleted = true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(deleted).toBe(false)
+      releaseResume()
+      await expect(resume).rejects.toThrow(/deleted|ended/i)
+      expect(mockHandles).toHaveLength(1)
+      releaseExit({ sessionId: info.id, code: null, signal: null, killed: false })
+      await deletion
+    } finally {
+      releaseResume()
+      releaseExit({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      resumeSpy.mockRestore()
+      exitSpy.mockRestore()
+    }
+  })
+
+  it('a turn-less resume cannot fresh-respawn after permanent delete', async () => {
+    const info = await sm.create({})
+    await sm.sleep(info.id)
+    let releaseOptions!: () => void
+    const optionsGate = new Promise<void>((resolve) => { releaseOptions = resolve })
+    let reachedFreshOptions = false
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      respawnFresh: (id: string, meta: unknown) => Promise<unknown>
+      hasSdkTranscript: (meta: unknown) => Promise<boolean>
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    const originalRespawnFresh = smPrivate.respawnFresh.bind(sm)
+    const freshSpy = vi.spyOn(smPrivate, 'respawnFresh').mockImplementation((id, meta) => {
+      reachedFreshOptions = true
+      return optionsGate.then(() => originalRespawnFresh(id, meta))
+    })
+    const transcriptSpy = vi.spyOn(smPrivate, 'hasSdkTranscript').mockResolvedValue(false)
+    try {
+      const resume = sm.resume(info.id)
+      await waitFor(() => reachedFreshOptions)
+      expect(reachedFreshOptions).toBe(true)
+      await sm.delete(info.id, { deleteTranscript: true })
+      releaseOptions()
+      await expect(resume).rejects.toThrow(/deleted|ended/i)
+      expect(mockHandles).toHaveLength(1)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      releaseOptions()
+      freshSpy.mockRestore()
+      transcriptSpy.mockRestore()
+    }
+  })
+
+  it('a late missing-transcript probe cannot reinsert deleted metadata', async () => {
+    const info = await sm.create({})
+    await sm.sleep(info.id)
+    store.patch(info.id, { lastTurnAt: Date.now() })
+    let releaseProbe!: () => void
+    const probeGate = new Promise<boolean>((resolve) => { releaseProbe = () => resolve(false) })
+    let probeStarted = false
+    const smPrivate = sm as unknown as {
+      deleteLockMaxWaitMs: number
+      hasSdkTranscript: (meta: unknown) => Promise<boolean>
+    }
+    smPrivate.deleteLockMaxWaitMs = 0
+    const transcriptSpy = vi.spyOn(smPrivate, 'hasSdkTranscript').mockImplementation(() => {
+      probeStarted = true
+      return probeGate
+    })
+    try {
+      const resume = sm.resume(info.id)
+      await waitFor(() => probeStarted)
+      expect(probeStarted).toBe(true)
+      await sm.delete(info.id, { deleteTranscript: true })
+      releaseProbe()
+      await expect(resume).rejects.toThrow(/transcript|deleted|ended/i)
+      expect(store.get(info.id)).toBeUndefined()
+      expect(mockHandles).toHaveLength(1)
+    } finally {
+      releaseProbe()
+      transcriptSpy.mockRestore()
+    }
+  })
+
+  it('a failed permanent delete preserves app sidecars and restores snapshot operations', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const rmSpy = vi.spyOn(nodeFs, 'rm').mockRejectedValueOnce(new Error('transcript removal failed'))
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      const promptUuidFile = join(dir, 'prompt-uuids', `${info.id}.json`)
+      mkdirSync(join(dir, 'prompt-uuids'), { recursive: true })
+      writeFileSync(promptUuidFile, '[]')
+      await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow('transcript removal failed')
+      expect(existsSync(promptUuidFile)).toBe(true)
+      await expect(sm.rewindFiles(info.id, 'missing', { dryRun: true })).resolves.toMatchObject({ canRewind: false })
+
+      const smPrivate = sm as unknown as { snapshotStore: SnapshotStore }
+      await smPrivate.snapshotStore.save(info.id, {
+        version: 1,
+        gitDir: 'shadow',
+        worktree: dir,
+        scope: '',
+        byMessage: {},
+        patches: [],
+      })
+      expect(await smPrivate.snapshotStore.load(info.id)).toMatchObject({ version: 1, gitDir: 'shadow' })
+    } finally {
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('a sidecar failure after transcript deletion broadcasts the terminated state', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const originalUnlink = nodeFs.unlink
+    const unlinkSpy = vi.spyOn(nodeFs, 'unlink')
+      .mockImplementation(originalUnlink)
+      .mockImplementationOnce(originalUnlink)
+      .mockRejectedValueOnce(new Error('sidecar unlink failed'))
+    const sub = sm.subscribeGlobal()
+    const iter = sub.iterable[Symbol.asyncIterator]()
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow('sidecar unlink failed')
+      const event = await Promise.race([
+        iter.next().then((result) => result.done ? null : result.value),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+      ])
+      expect(event).toMatchObject({ kind: 'update', session: { id: info.id, terminated: true } })
+      expect(event).not.toMatchObject({ kind: 'removed' })
+    } finally {
+      sub.unsubscribe()
+      unlinkSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent-delete failure updates clients and a retry still waits for process exit', async () => {
+    let releaseRetryExit!: (info: ProcessExitInfo) => void
+    const retryExited = new Promise<ProcessExitInfo>((resolve) => { releaseRetryExit = resolve })
+    let retryMode = false
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get')
+      .mockImplementation(() => retryMode
+        ? retryExited
+        : Promise.resolve({ sessionId: 'first', code: null, signal: null, killed: false }))
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const rmSpy = vi.spyOn(nodeFs, 'rm').mockRejectedValueOnce(new Error('transcript directory locked'))
+    const sub = sm.subscribeGlobal()
+    const iter = sub.iterable[Symbol.asyncIterator]()
+    try {
+      const { mainPath, sessionDir } = writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow('transcript directory locked')
+      expect(store.get(info.id)).toBeDefined()
+      expect(store.get(info.id)?.terminated).toBe(false)
+      let restoredEvent: { kind: string; session: { terminated?: boolean } } | null = null
+      for (let i = 0; i < 3 && !restoredEvent; i++) {
+        const candidate = await Promise.race([
+          iter.next().then((result) => result.done ? null : result.value),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 25)),
+        ])
+        if (candidate?.kind === 'update' && candidate.session.terminated === false) restoredEvent = candidate
+      }
+      expect(restoredEvent).toMatchObject({ kind: 'update', session: { id: info.id, running: false, terminated: false } })
+
+      retryMode = true
+      const retry = sm.delete(info.id, { deleteTranscript: true })
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      releaseRetryExit({ sessionId: info.id, code: null, signal: null, killed: false })
+      await retry
+
+      expect(existsSync(mainPath)).toBe(false)
+      expect(existsSync(sessionDir)).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      releaseRetryExit({ sessionId: 'cleanup', code: null, signal: null, killed: false })
+      sub.unsubscribe()
+      exitSpy.mockRestore()
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('a failed permanent upgrade after ordinary delete re-adopts the retained transcript', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const rmSpy = vi.spyOn(nodeFs, 'rm')
+    try {
+      const { mainPath } = writeTranscriptArtifacts(dir, info.id)
+      // Complete the real ordinary-delete path first; the permanent upgrade's
+      // rollback must be able to re-adopt past its bounded tombstone.
+      await sm.delete(info.id)
+      await (sm as unknown as { snapshotStore: SnapshotStore }).snapshotStore.remove(info.id)
+      rmSpy.mockClear()
+      expect(store.get(info.id)).toBeUndefined()
+      expect(existsSync(mainPath)).toBe(true)
+      rmSpy.mockImplementationOnce(async () => { throw new Error('transcript directory locked') })
+
+      const sub = sm.subscribeGlobal()
+      const iter = sub.iterable[Symbol.asyncIterator]()
+      try {
+        await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow('transcript directory locked')
+        expect(store.get(info.id)).toBeDefined()
+        expect(store.get(info.id)?.terminated).toBe(false)
+        const event = await Promise.race([
+          iter.next().then((result) => result.done ? null : result.value),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 25)),
+        ])
+        expect(event).toMatchObject({ kind: 'created', session: { id: info.id, terminated: false } })
+      } finally {
+        sub.unsubscribe()
+      }
+      const resumed = await sm.resume(info.id)
+      expect(resumed.running).toBe(true)
+    } finally {
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('rollback emits created when the index entry vanished during deletion', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const rmSpy = vi.spyOn(nodeFs, 'rm').mockImplementationOnce(async () => {
+      store.remove(info.id)
+      throw new Error('transcript directory locked')
+    })
+    const sub = sm.subscribeGlobal()
+    const iter = sub.iterable[Symbol.asyncIterator]()
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.delete(info.id, { deleteTranscript: true })).rejects.toThrow('transcript directory locked')
+      let restoredEvent: { kind: string; session: { terminated?: boolean } } | null = null
+      for (let i = 0; i < 3 && !restoredEvent; i++) {
+        const candidate = await Promise.race([
+          iter.next().then((result) => result.done ? null : result.value),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 25)),
+        ])
+        if (candidate?.kind === 'created' && candidate.session.terminated === false) restoredEvent = candidate
+      }
+      expect(restoredEvent).toMatchObject({ kind: 'created', session: { id: info.id, terminated: false } })
+    } finally {
+      sub.unsubscribe()
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
   })
 
   it('delete() resolves pending permissions as deny so SDK awaiters never hang', async () => {
@@ -6845,7 +7914,7 @@ describe('MCP re-spawn semantics', () => {
     const internals = sm as unknown as {
       sessions: Map<string, unknown>
       buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
-      respawnInPlace: (session: unknown, opts: Record<string, unknown>, reason: string) => void
+      respawnInPlace: (session: unknown, opts: Record<string, unknown>, reason: string) => Promise<void>
     }
     const session = internals.sessions.get(info.id)!
     const resumeOpts = await internals.buildResumeOpts(session)
@@ -6853,7 +7922,7 @@ describe('MCP re-spawn semantics', () => {
     // buildResumeOpts (snapshotMeta is NOT called on this path, so the stamp
     // is dead weight here — but must not reach the SDK either way).
     expect((resumeOpts as { enabledMcpServers?: string[] }).enabledMcpServers).toEqual(['global-a'])
-    internals.respawnInPlace(session, resumeOpts as Record<string, unknown>, 'test')
+    await internals.respawnInPlace(session, resumeOpts as Record<string, unknown>, 'test')
     expect(mockHandles).toHaveLength(2)
     const opts = mockHandles[1].options as {
       mcpServers?: Record<string, { type?: string }>
@@ -6883,11 +7952,11 @@ describe('MCP re-spawn semantics', () => {
     const internals = sm as unknown as {
       sessions: Map<string, unknown>
       buildResumeOpts: (session: unknown) => Promise<Record<string, unknown>>
-      respawnInPlace: (session: unknown, opts: Record<string, unknown>, reason: string) => void
+      respawnInPlace: (session: unknown, opts: Record<string, unknown>, reason: string) => Promise<void>
     }
     const session = internals.sessions.get(info.id)!
     const resumeOpts = await internals.buildResumeOpts(session)
-    internals.respawnInPlace(session, resumeOpts as Record<string, unknown>, 'test')
+    await internals.respawnInPlace(session, resumeOpts as Record<string, unknown>, 'test')
     const opts = mockHandles[1].options as { disallowedTools?: string[] }
     expect(opts.disallowedTools).toEqual(['WebSearch'])
   })
@@ -7135,6 +8204,50 @@ describe('provider control-op error wrapping', () => {
       (e) => e,
     )
   }
+
+  it('setMcpServers rejects instead of writing stale state over a same-id replacement', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    let releaseSdk!: () => void
+    const sdkGate = new Promise<void>((resolve) => { releaseSdk = resolve })
+    mockHandles[0].setMcpServers.mockImplementationOnce(() => sdkGate)
+    const smPrivate = sm as unknown as { deleteLockMaxWaitMs: number }
+    smPrivate.deleteLockMaxWaitMs = 0
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      const operation = sm.setMcpServers(info.id, { old: { type: 'stdio', command: 'node' } })
+      await waitFor(() => mockHandles[0].setMcpServers.mock.calls.length === 1)
+      await sm.delete(info.id)
+      await sm.resume(info.id, { allowAdopt: true })
+      releaseSdk()
+      await expect(operation).rejects.toThrow(/changed|deleted|ended/i)
+      expect(sm.get(info.id).mcpServerNames).not.toContain('old')
+    } finally {
+      releaseSdk()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('setMcpServers rejects a stale response after an in-place handle replacement', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    const session = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    const originalHandle = session.handle
+    let releaseSdk!: () => void
+    const sdkGate = new Promise<void>((resolve) => { releaseSdk = resolve })
+    mockHandles[0].setMcpServers.mockImplementationOnce(() => sdkGate)
+    try {
+      const operation = sm.setMcpServers(info.id, { old: { type: 'stdio', command: 'node' } })
+      await waitFor(() => mockHandles[0].setMcpServers.mock.calls.length === 1)
+      session.handle = {} as ProviderSessionHandle
+      releaseSdk()
+      await expect(operation).rejects.toThrow(/changed|deleted|ended/i)
+    } finally {
+      releaseSdk()
+      session.handle = originalHandle
+    }
+  })
 
   it('wraps a plain SDK error from a handle method as HttpError 502 naming the action', async () => {
     const info = await sm.create({ cwd: TEST_CWD })
@@ -7708,7 +8821,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       )
       await waitFor(() => gatedBuild.mock.calls.length > 0)
       releaseResumeOpts({ resume: info.id, cwd: dir })
-      await waitFor(() => sm.get(info.id).running === true)
+      await waitFor(() => mockHandles.length >= 2)
       expect((mockHandles.at(-1)!.options as { cwd?: string }).cwd).toBe(next)
       // The respawn success tail clears the crash error.
       expect(sm.get(info.id).error).toBeUndefined()

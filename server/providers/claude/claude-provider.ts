@@ -515,6 +515,7 @@ export class ClaudeProvider implements AgentProvider {
       abortController,
       reg.exited,
       () => this.processMonitor.unregister(reg),
+      reg.realExited,
       // opts.id is the app-level session id, which doubles as the SDK on-disk
       // session id on fresh/fork spawns and equals the resumed id on resume —
       // so it locates this session's own `subagents/` transcript dir. cwd
