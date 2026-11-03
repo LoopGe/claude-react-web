@@ -92,20 +92,23 @@
 .btn-icon.btn-danger:hover:not(:disabled) {
   background-color: color-mix(in srgb, var(--danger) 12%, transparent);
 }
-.notification-icon .notification-icon-slash {
-  stroke-dasharray: 1;
-  stroke-dashoffset: 0;
-  transition:
-    stroke-dashoffset var(--motion-duration-base) var(--motion-ease-standard),
-    opacity var(--motion-duration-fast) var(--motion-ease-standard);
+/* Bell ⇄ bell-off crossfade: two lucide glyphs stacked in one grid slot,
+   opacity flipped by the enabled/disabled state class. Transition timing
+   comes from the shared .slot-morph class on the svgs (utilities.css). */
+.notification-icon {
+  display: inline-grid;
+  /* Same reason as .composer-action-toggle: definite-size glyphs must
+     center in the stacking cell, not start-align. */
+  place-items: center;
 }
-.notification-icon.enabled .notification-icon-slash {
+.notification-icon > svg {
+  grid-area: 1 / 1;
+}
+.notification-icon.enabled .notification-icon-bell-off {
   opacity: 0;
-  stroke-dashoffset: 1;
 }
-.notification-icon.disabled .notification-icon-slash {
-  opacity: 1;
-  stroke-dashoffset: 0;
+.notification-icon.disabled .notification-icon-bell {
+  opacity: 0;
 }
 /* Accent colour picker — swatch grid embedded by the AppearancePanel
    (see the .appearance-section layout override below). */

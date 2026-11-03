@@ -1579,38 +1579,31 @@ button.chat-empty-env-chip:hover {
    progress indicator, so it deliberately keeps animating under
    prefers-reduced-motion — see that block's note). Generic glyph spinners
    outside this button use the shared `.glyph-spin` class instead. */
-/* (#5) Send ?Interrupt swap. The two buttons occupy one slot and are
-   mutually exclusive, so React remounts the glyph whenever canInterrupt
-   flips ?the icon fades + scales in (no rotate) so the change reads as a
-   smooth crossfade rather than a hard cut. */
-.composer-action-toggle .composer-toggle-send-line,
-.composer-action-toggle .composer-toggle-send-head,
-.composer-action-toggle .composer-toggle-stop {
-  transform-box: fill-box;
-  transform-origin: center;
-  /* Crossfade timing lives in the shared .slot-morph utility class
-     (utilities.css) — same recipe as the tasks icon⇄digit swap. */
+/* (#5) Send ⇄ Interrupt swap. Two lucide glyphs (arrow / square) occupy one
+   grid slot and are crossfaded by the .composer-action-toggle state class —
+   timing lives in the shared .slot-morph utility class (utilities.css), same
+   recipe as the tasks icon⇄digit swap, so the change reads as a smooth
+   crossfade rather than a hard cut. */
+.composer-action-toggle {
+  display: inline-grid;
+  /* The stacked glyphs have definite (icon) sizes — stretch would fall
+     back to start and leave the smaller one off-center in the cell. */
+  place-items: center;
 }
-.composer-action-toggle .composer-toggle-send-line,
-.composer-action-toggle .composer-toggle-send-head {
-  stroke-dasharray: 1;
-  stroke-dashoffset: 0;
+.composer-action-toggle > svg {
+  grid-area: 1 / 1;
+  transform-origin: center;
 }
 .composer-action-toggle .composer-toggle-stop {
   opacity: 0;
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
   transform: scale(0.72);
 }
-.composer-action-toggle.interrupt .composer-toggle-send-line,
-.composer-action-toggle.interrupt .composer-toggle-send-head {
+.composer-action-toggle.interrupt .composer-toggle-send {
   opacity: 0;
-  stroke-dashoffset: 1;
   transform: translateY(calc(-1 * var(--motion-distance-xs))) scale(0.9);
 }
 .composer-action-toggle.interrupt .composer-toggle-stop {
   opacity: 1;
-  stroke-dashoffset: 0;
   transform: scale(1);
 }
 
