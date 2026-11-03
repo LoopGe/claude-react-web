@@ -3,6 +3,8 @@ import { renderHook, act, waitFor } from '@testing-library/react'
 import { useModelOptions } from './useModelOptions'
 import { api } from './useApi'
 import { resetModelOptionsStoreForTest } from '../state/modelOptionsStore'
+import { removeLocalStorageKey } from './useLocalStorage'
+import { RECENT_MODELS_KEY } from '../constants/recentKeys'
 
 vi.mock('./useApi', () => ({ api: { get: vi.fn() } }))
 
@@ -143,5 +145,38 @@ describe('useModelOptions', () => {
     await waitFor(() => expect(a.result.current.models.length).toBe(1))
     await waitFor(() => expect(b.result.current.models.length).toBe(1))
     expect(api.get).toHaveBeenCalledTimes(1)
+  })
+
+  it('updates mounted recents on external writes and deletion', async () => {
+    // Seed so the deletion assertion has a non-empty starting state.
+    // readRecentModels() polled localStorage every render but never
+    // subscribed, so a same-tab removeLocalStorageKey would leave
+    // ['seed-model'] as the last-returned value until a forced re-render,
+    // and a cross-tab storage event would never trigger a re-render at all.
+    window.localStorage.setItem(RECENT_MODELS_KEY, JSON.stringify(['seed-model']))
+    vi.mocked(api.get).mockResolvedValue({ models: ['m1'], modelGroups: [] })
+    const { result } = renderHook(() => useModelOptions('s1', true))
+    await waitFor(() => expect(result.current.models.length).toBe(1))
+    expect(result.current.recents).toEqual(['seed-model'])
+
+    // External write (cross-tab storage event, or the New Session dialog's
+    // rememberNow echoing through useLocalStorage's same-tab channel).
+    // The mounted hook must reflect it without a remount.
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: RECENT_MODELS_KEY,
+          newValue: JSON.stringify(['model-x']),
+        }),
+      )
+    })
+    expect(result.current.recents).toEqual(['model-x'])
+
+    // External deletion via removeLocalStorageKey (the reset path). The
+    // mounted hook must collapse to [] immediately — readRecentModels()
+    // had no listener, so it would have kept returning ['model-x'].
+    act(() => removeLocalStorageKey(RECENT_MODELS_KEY))
+    expect(result.current.recents).toEqual([])
+    expect(localStorage.getItem(RECENT_MODELS_KEY)).toBeNull()
   })
 })

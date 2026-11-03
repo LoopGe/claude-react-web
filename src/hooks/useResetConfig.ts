@@ -3,6 +3,7 @@ import { api } from './useApi'
 import { inputHistoryStore } from '../state/inputHistoryStore'
 import { clearImageDecodeCache } from '../utils/imageDecodeCache'
 import { sessionStoreRegistry } from '../session-store/registry'
+import { removeLocalStorageKey } from './useLocalStorage'
 import { DRAFT_KEY_PREFIX, SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_KEY, SIDEBAR_MAX_KEY, PANEL_RATIOS_KEY, PANEL_MIN_RATIO_KEY, LAST_SEEN_TURN_KEY } from '../constants/storageKeys'
 import { RECENT_MODELS_KEY, RECENT_CWDS_KEY } from '../constants/recentKeys'
 import { THEME_KEY, SKIN_KEY } from '../utils/theme'
@@ -12,18 +13,30 @@ import type { ServerResetItem, BrowserDataItem, ResetResponse } from '../../shar
 
 /** Every appearance-related localStorage key, built from the SAME exported
  *  key constants their owners read/write — a new key must be added at its
- *  owner module, which keeps this list from silently drifting. */
+ *  owner module, which keeps this list from silently drifting.
+ *
+ *  The two recent-LIST keys (`RECENT_MODELS_KEY`, `RECENT_CWDS_KEY`) are
+ *  routed through `removeLocalStorageKey` in `clearBrowserItem` so a mounted
+ *  `useRecentModels` / `useRecentCwds` adapter collapses to [] immediately
+ *  (the deletion sentinel notifies same-tab listeners) and the suppression
+ *  set blocks the reset echo from writing [] back. Every other key here has
+ *  no reactive mounted reader, so a plain `removeItem` is sufficient. */
 const APPEARANCE_KEYS = [
   THEME_KEY, SKIN_KEY, ACCENT_COLOR_KEY, RECENT_COLORS_KEY,
   SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_KEY, SIDEBAR_MAX_KEY,
   PANEL_RATIOS_KEY, PANEL_MIN_RATIO_KEY,
-  RECENT_MODELS_KEY, RECENT_CWDS_KEY,
   NAG_DISMISS_STORAGE_KEY, LAST_SEEN_TURN_KEY,
   // Removed feature (per-session accent, key constant deleted from
   // theme.ts). Kept here as a literal so "reset appearance data" still
   // clears the orphaned entries older builds left behind.
   'claude-react-web:session-colors',
 ]
+
+/** Keys whose removal must also notify same-tab listeners (mounted MRU
+ *  adapters would otherwise keep stale React state and re-persist it on the
+ *  next render). Cap keys are NOT here — they are not list keys and are
+ *  intentionally preserved across an appearance reset. */
+const RECENT_LIST_KEYS_TO_NOTIFY = [RECENT_MODELS_KEY, RECENT_CWDS_KEY]
 
 function clearBrowserItem(item: BrowserDataItem): void {
   if (item === 'input-history') {
@@ -41,6 +54,9 @@ function clearBrowserItem(item: BrowserDataItem): void {
     }
   } else if (item === 'appearance') {
     for (const k of APPEARANCE_KEYS) localStorage.removeItem(k)
+    // Route the reactive list keys through removeLocalStorageKey so
+    // mounted adapters reset and the suppression set blocks the echo.
+    for (const k of RECENT_LIST_KEYS_TO_NOTIFY) removeLocalStorageKey(k)
   }
 }
 

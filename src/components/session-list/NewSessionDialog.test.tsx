@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, fireEvent, waitFor, screen } from '@testing-library/react'
+import { render, fireEvent, waitFor, screen, act } from '@testing-library/react'
 import { NewSessionDialog } from './NewSessionDialog'
 import type { NewSessionForm } from '../../types'
 
@@ -963,5 +963,62 @@ describe('NewSessionDialog auto-compact window', () => {
 
     const third = render(<NewSessionDialog {...baseProps} onSubmit={vi.fn()} />)
     expect(windowInput(third.baseElement).value).toBe('')
+  })
+})
+
+describe('NewSessionDialog synchronous Create double-write', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  })
+  afterEach(() => window.localStorage.clear())
+
+  it('writes both model and cwd to localStorage before the dialog unmounts on the same tick', () => {
+    // Pre-seed existing entries so the test proves the second write (cwd)
+    // stacks on the latest disk and does not lose the first (model).
+    window.localStorage.setItem(
+      'claude-react-web:recent-models',
+      JSON.stringify(['existing-model']),
+    )
+    window.localStorage.setItem(
+      'claude-react-web:recent-cwds',
+      JSON.stringify(['/existing/project']),
+    )
+
+    const onSubmit = vi.fn()
+    // defaults.model seeds the model field; initialCwd seeds the cwd field.
+    const { unmount } = render(
+      <NewSessionDialog
+        {...baseProps}
+        defaults={{ cwd: '/tmp', model: 'new-model' }}
+        initialCwd="/new/project"
+        onSubmit={onSubmit}
+      />,
+    )
+
+    const createBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    )!
+    // The parent unmounts this dialog on the same tick as submit (it flips
+    // showDialog=false in onSubmit). rememberModel/rememberCwd must write
+    // to localStorage BEFORE that unmount — an effect-based persist would
+    // race the unmount and lose the write.
+    act(() => {
+      fireEvent.click(createBtn)
+      unmount()
+    })
+
+    expect(onSubmit).toHaveBeenCalled()
+    expect(
+      JSON.parse(localStorage.getItem('claude-react-web:recent-models')!),
+    ).toEqual(['new-model', 'existing-model'])
+    expect(
+      JSON.parse(localStorage.getItem('claude-react-web:recent-cwds')!),
+    ).toEqual(['/new/project', '/existing/project'])
   })
 })
