@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { ConfirmDialog } from './ConfirmDialog'
+import { UploadPreview } from './UploadPreview'
 import { useToast } from '../hooks/useToast'
 import { writeClipboard } from '../hooks/useCopy'
 import { useUploads } from '../hooks/useUploads'
@@ -21,6 +22,7 @@ import { formatBytes, formatRelativeTime } from '../utils/format'
 import type { UploadListItem } from '../../shared/uploads'
 import {
   IconCopy,
+  IconEye,
   IconFolderSearch,
   IconLoader,
   IconPaperclip,
@@ -46,6 +48,7 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
 
   const [filter, setFilter] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<UploadListItem | null>(null)
+  const [previewTarget, setPreviewTarget] = useState<UploadListItem | null>(null)
   const [cleanMissingOpen, setCleanMissingOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -323,6 +326,16 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
                   <button
                     type="button"
                     className="btn btn-icon"
+                    title="View file"
+                    aria-label="View file"
+                    disabled={!u.exists}
+                    onClick={() => setPreviewTarget(u)}
+                  >
+                    <IconEye size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-icon"
                     title="Copy absolute path"
                     aria-label="Copy path"
                     onClick={() => void copyPath(u)}
@@ -344,6 +357,10 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
             </div>
           )}
         </>
+      )}
+
+      {previewTarget && (
+        <UploadPreview key={previewTarget.id} target={previewTarget} onClose={() => setPreviewTarget(null)} />
       )}
 
       {deleteTarget && (

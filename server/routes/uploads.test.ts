@@ -288,4 +288,100 @@ describe('uploads routes', () => {
       expect(store.getById('bad')).toBeDefined()
     })
   })
+
+  describe('GET /uploads/:id/content', () => {
+    it('serves a text file inline with the derived content type', async () => {
+      const updir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(updir, { recursive: true })
+      const path = join(updir, '1-a.txt')
+      writeFileSync(path, 'hello')
+      store.record([{ id: 'a', path, cwd: stateDir, name: 'a.txt', size: 5, uploadedAt: 1, sessionTitle: '' }])
+
+      const res = await app.request('/uploads/a/content')
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+      expect(res.headers.get('content-disposition')).toContain('inline')
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff')
+      expect(await res.text()).toBe('hello')
+    })
+
+    it('serves an image with its image/* content type', async () => {
+      const updir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(updir, { recursive: true })
+      const path = join(updir, '1-a.png')
+      writeFileSync(path, Buffer.from([1, 2, 3]))
+      store.record([{ id: 'img', path, cwd: stateDir, name: 'a.png', size: 3, uploadedAt: 1, sessionTitle: '' }])
+
+      const res = await app.request('/uploads/img/content')
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-type')).toBe('image/png')
+    })
+
+    it('attachment disposition with ?download=1', async () => {
+      const updir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(updir, { recursive: true })
+      const path = join(updir, '1-a.bin')
+      writeFileSync(path, 'x')
+      store.record([{ id: 'b', path, cwd: stateDir, name: 'a.bin', size: 1, uploadedAt: 1, sessionTitle: '' }])
+
+      const res = await app.request('/uploads/b/content?download=1')
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-disposition')).toContain('attachment')
+    })
+
+    it('preserves a non-ASCII name via RFC 5987 filename*', async () => {
+      const updir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(updir, { recursive: true })
+      const path = join(updir, '1-shot.png')
+      writeFileSync(path, 'x')
+      store.record([{ id: 'c', path, cwd: stateDir, name: '截图.png', size: 1, uploadedAt: 1, sessionTitle: '' }])
+
+      const res = await app.request('/uploads/c/content')
+      const disp = res.headers.get('content-disposition')!
+      expect(disp).toContain(`filename*=UTF-8''${encodeURIComponent('截图.png')}`)
+      expect(disp).toContain('filename="__.png"')
+    })
+
+    it("escapes the RFC 5987 ' delimiter in the encoded name", async () => {
+      const updir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(updir, { recursive: true })
+      const path = join(updir, "1-it's.png")
+      writeFileSync(path, 'x')
+      store.record([{ id: 'apos', path, cwd: stateDir, name: "it's.png", size: 1, uploadedAt: 1, sessionTitle: '' }])
+
+      const res = await app.request('/uploads/apos/content')
+      const disp = res.headers.get('content-disposition')!
+      // Only the final two delimiters before the value may remain.
+      expect(disp).toContain(`filename*=UTF-8''${encodeURIComponent("it's.png").replace(/'/g, '%27')}`)
+    })
+
+    it("400s a hand-edited entry whose path escapes both upload dirs", async () => {
+      store.record([{ id: 'evil', path: join(sessionCwd, 'secret.txt'), cwd: sessionCwd, name: 'secret.txt', size: 1, uploadedAt: 1, sessionTitle: 'S' }])
+      const res = await app.request('/uploads/evil/content')
+      expect(res.status).toBe(400)
+    })
+
+    it('serves unknown binary types as octet-stream', async () => {
+      const updir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(updir, { recursive: true })
+      const path = join(updir, '1-a.zzz')
+      writeFileSync(path, 'x')
+      store.record([{ id: 'd', path, cwd: stateDir, name: 'a.zzz', size: 1, uploadedAt: 1, sessionTitle: '' }])
+
+      const res = await app.request('/uploads/d/content')
+      expect(res.headers.get('content-type')).toBe('application/octet-stream')
+    })
+
+    it('404s for unknown id and for a file deleted out-of-band', async () => {
+      expect((await app.request('/uploads/nope/content')).status).toBe(404)
+
+      const updir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(updir, { recursive: true })
+      const path = join(updir, '9-gone.txt')
+      writeFileSync(path, 'x')
+      store.record([{ id: 'g', path, cwd: stateDir, name: 'gone.txt', size: 1, uploadedAt: 1, sessionTitle: '' }])
+      rmSync(path)
+      expect((await app.request('/uploads/g/content')).status).toBe(404)
+    })
+  })
 })

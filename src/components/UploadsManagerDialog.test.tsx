@@ -33,6 +33,11 @@ beforeEach(() => {
   })
 })
 afterEach(cleanup)
+// UploadPreview stubs global fetch inside one test — always tear it down,
+// assertion failure or not, so the stub can't poison later tests.
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('UploadsManagerDialog', () => {
   it('renders rows, stats, and the missing badge', async () => {
@@ -98,5 +103,37 @@ describe('UploadsManagerDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: /clean missing entries/i }))
     fireEvent.click(screen.getByRole('button', { name: /clean 1 entry/i }))
     await waitFor(() => expect(mockDelete).toHaveBeenCalledWith('/uploads/b'))
+  })
+
+  it('view opens the preview; missing rows have the view button disabled', async () => {
+    // UploadPreview streams text content via global fetch — stub it with a
+    // Response-like carrying a body reader.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: () => Promise.resolve({ done: true, value: undefined }),
+          }),
+          cancel: () => {},
+        },
+      }),
+    )
+    render(<UploadsManagerDialog open onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByText('a.txt')).toBeTruthy())
+
+    const viewButtons = screen.getAllByRole('button', { name: /view file/i })
+    expect(viewButtons).toHaveLength(2)
+    expect((viewButtons[1] as HTMLButtonElement).disabled).toBe(true) // b.txt missing
+
+    fireEvent.click(viewButtons[0])
+    const preview = await screen.findByRole('dialog', { name: /file preview/i })
+    expect(preview).toBeTruthy()
+    expect(screen.getByRole('link', { name: /download file/i }).getAttribute('href')).toBe(
+      '/api/uploads/a/content?download=1',
+    )
+    fireEvent.click(screen.getByRole('button', { name: /close preview/i }))
+    expect(screen.queryByRole('dialog', { name: /file preview/i })).toBeNull()
   })
 })

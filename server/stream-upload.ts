@@ -77,6 +77,9 @@ export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload
 
   const bb = Busboy({
     headers: { 'content-type': o.contentType },
+    // Browsers send raw UTF-8 filenames in multipart Content-Disposition;
+    // busboy's default latin1 charset turns them into mojibake.
+    defParamCharset: 'utf8',
     limits: { fileSize: o.maxFileBytes, files: maxFiles },
   })
 

@@ -6,6 +6,8 @@
 
 import { Hono } from 'hono'
 import { mkdir, unlink, stat } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { Readable } from 'node:stream'
 import { resolve as resolvePath, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { SessionManager } from '../session-manager.js'
@@ -13,9 +15,24 @@ import { config as serverConfig } from '../config.js'
 import { createLogger } from '../log.js'
 import { UploadStore, UPLOAD_SUBDIR } from '../upload-store.js'
 import { streamUploads, UploadError, type SavedUpload } from '../stream-upload.js'
+import { uploadMimeType, type UploadEntry } from '../../shared/uploads.js'
 import { safeJson } from './index.js'
 
 const log = createLogger('uploads')
+
+/** True when the entry's recorded path lives under the entry's own upload
+ *  dir OR the shared stateDir upload dir. The registry tolerates hand edits
+ *  / version drift (coerceStoredUpload), so both the content-serving and
+ *  delete routes require this containment before touching entry.path. */
+function entryPathContained(entry: UploadEntry, stateDir: string): boolean {
+  const entryUploadDirNorm = resolvePath(entry.cwd, UPLOAD_SUBDIR).replaceAll('\\', '/')
+  const sharedUploadDirNorm = resolvePath(stateDir, UPLOAD_SUBDIR).replaceAll('\\', '/')
+  const targetNorm = resolvePath(entry.path).replaceAll('\\', '/')
+  return (
+    targetNorm.startsWith(entryUploadDirNorm + '/') ||
+    targetNorm.startsWith(sharedUploadDirNorm + '/')
+  )
+}
 
 /** Live on-disk existence check for a registry entry. Only a clean ENOENT
  *  reports missing — any other stat error reports present (and logs), so a
@@ -123,6 +140,47 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
       return c.json({ uploads })
     })
 
+    // Serve a recorded upload's content (manager dialog preview/download).
+    // The id resolves through the registry — the client never supplies a
+    // path — so the served path is whatever the upload routes recorded.
+    app.get('/uploads/:id/content', async (c) => {
+      const entry = uploadStore.getById(c.req.param('id'))
+      if (!entry) {
+        return c.json({ error: 'upload entry not found' }, 404)
+      }
+      if (!entryPathContained(entry, stateDir)) {
+        return c.json({ error: 'invalid upload path' }, 400)
+      }
+      // Existence check only — no Content-Length: a concurrent rewrite of
+      // the file between this stat and the stream below would otherwise
+      // declare a length the body no longer matches. Chunked transfer is
+      // always correct.
+      try {
+        await stat(entry.path)
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+          return c.json({ error: 'file missing' }, 404)
+        }
+        throw e
+      }
+      const download = c.req.query('download') === '1'
+      // RFC 6266: an ASCII fallback for old clients + RFC 5987 for the
+      // real (possibly non-ASCII) name. encodeURIComponent leaves the '
+      // delimiter unescaped, which would end the ext-value early — encode
+      // it explicitly.
+      const asciiName = entry.name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+      const encodedName = encodeURIComponent(entry.name).replace(/'/g, '%27')
+      const body = Readable.toWeb(createReadStream(entry.path)) as ReadableStream<Uint8Array>
+      return new Response(body, {
+        headers: {
+          'Content-Type': uploadMimeType(entry.name),
+          'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': 'no-store',
+        },
+      })
+    })
+
     // Delete by path key — unlinks the file and drops the entry.
     // REGISTERED BEFORE DELETE /uploads/:id so Hono matches it first.
     app.delete('/uploads/by-path', async (c) => {
@@ -159,20 +217,11 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
       }
       // Dual-branch validation: path must be under the entry's cwd upload dir
       // OR under the shared stateDir upload dir.
-      const entryUploadDir = resolvePath(entry.cwd, UPLOAD_SUBDIR)
-      const sharedUploadDir = resolvePath(stateDir, UPLOAD_SUBDIR)
-      const target = resolvePath(entry.path)
-      const targetNorm = target.replaceAll('\\', '/')
-      const entryUploadDirNorm = entryUploadDir.replaceAll('\\', '/')
-      const sharedUploadDirNorm = sharedUploadDir.replaceAll('\\', '/')
-      if (
-        !targetNorm.startsWith(entryUploadDirNorm + '/') &&
-        !targetNorm.startsWith(sharedUploadDirNorm + '/')
-      ) {
+      if (!entryPathContained(entry, stateDir)) {
         return c.json({ error: 'invalid upload path' }, 400)
       }
       try {
-        await unlink(target)
+        await unlink(entry.path)
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
           log.error(`delete upload id=${id} error=${(e as Error).message}`)

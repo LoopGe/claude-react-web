@@ -119,4 +119,30 @@ describe('streamUploads', () => {
     expect(isStreamingUploadPath('/api/sessions/abc/messages')).toBe(false)
     expect(isStreamingUploadPath('/api/background/files/x.png')).toBe(false)
   })
+
+  it('decodes raw UTF-8 filenames as UTF-8, not latin1', async () => {
+    // Browsers send raw UTF-8 bytes in multipart Content-Disposition. Busboy's
+    // latin1 default would surface them as mojibake ("ææå¾…").
+    const name = '截图 2026-10-26 22.47.58.png'
+    const boundary = '----t'
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(
+          new TextEncoder().encode(
+            `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: image/png\r\n\r\n`,
+          ),
+        )
+        c.enqueue(new Uint8Array([1, 2, 3]))
+        c.enqueue(new TextEncoder().encode(`\r\n--${boundary}--\r\n`))
+        c.close()
+      },
+    })
+    const saved = await streamUploads({
+      body,
+      contentType: `multipart/form-data; boundary=${boundary}`,
+      maxFileBytes: 1024,
+      place,
+    })
+    expect(saved[0].name).toBe(name)
+  })
 })
