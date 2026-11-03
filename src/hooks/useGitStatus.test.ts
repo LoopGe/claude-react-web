@@ -2,12 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, waitFor } from '@testing-library/react'
 import type { WsGitSnapshot } from '../../shared/ws-protocol.js'
 import type {
+  GitBranch,
   GitDiff,
   GitCommit,
   GitCommitResponse,
   GitRangeDiffResponse,
   GitStatus,
   GitStatusResponse,
+  GitStashEntry,
 } from '../../shared/git-types.js'
 
 const mockGet = vi.fn()
@@ -114,6 +116,109 @@ describe('useGitStatus', () => {
     await new Promise((r) => setTimeout(r, 10))
     expect(mockGet).not.toHaveBeenCalled()
   })
+
+  // ── Behavior change: disabled mid-flight must clear loading ──────
+  //
+  // The old hand-rolled effect's disabled path set data/error to null but
+  // did NOT call setLoading(false), so loading lingered after a mid-flight
+  // disable. The unified core contract requires loading=false.
+
+  it('disabled mid-flight: loading clears, data null, late response no-op', async () => {
+    let resolveGet!: (v: GitStatusResponse) => void
+    mockGet.mockReturnValue(new Promise<GitStatusResponse>((r) => { resolveGet = r }))
+    const { result, rerender } = renderHook(
+      ({ e }) => useGitStatus('/repo', 's1', { enabled: e }),
+      { initialProps: { e: true } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    rerender({ e: false })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).toBeNull()
+    await act(async () => { resolveGet(makeStatus()); await Promise.resolve() })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+  })
+
+  // ── Characterization: HTTP + WS sameStatus reference retention ───
+  //
+  // sameStatus (JSON.stringify compare) is applied on both the HTTP success
+  // path (equalOnLoad) and the WS accept path (equal) so a structurally
+  // identical snapshot doesn't cascade a render through GitPanel + DiffView.
+
+  it('HTTP refresh with same content retains data reference (sameStatus)', async () => {
+    mockGet.mockResolvedValue(makeStatus())
+    const { result } = renderHook(() => useGitStatus('/repo', 's1'))
+    await waitFor(() => expect(result.current.data?.isRepo).toBe(true))
+    const firstRef = result.current.data
+    act(() => result.current.refresh())
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.data).toBe(firstRef))
+  })
+
+  it('WS frame with same status content retains data reference', async () => {
+    mockGet.mockResolvedValue(makeStatus())
+    const { result } = renderHook(() => useGitStatus('/repo', 's1'))
+    await waitFor(() => expect(result.current.data?.isRepo).toBe(true))
+    const firstRef = result.current.data
+    act(() => { sessionListener?.(makeFrame('/repo', '/repo')) })
+    expect(result.current.data).toBe(firstRef)
+  })
+
+  // ── Behavior change: rejected frame is a full no-op ──────────────
+  //
+  // On the old impl the WS listener unconditionally called setLoading(false)
+  // and setError(null) AFTER the setData guard — so a rejected frame still
+  // cleared loading/error (a "half no-op"). The unified core's accept guard
+  // makes the entire event a no-op: data/loading/error/token all unchanged,
+  // the in-flight HTTP is NOT aborted, and it can still complete normally.
+
+  it('rejected pre-authoritative frame: data/loading/error unchanged, HTTP completes', async () => {
+    let resolveGet!: (v: GitStatusResponse) => void
+    mockGet.mockReturnValue(new Promise<GitStatusResponse>((r) => { resolveGet = r }))
+    const { result } = renderHook(() => useGitStatus('/repo', 's1'))
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    // Mismatched frame while pre-authoritative (prev is null): both cwd and
+    // repoRoot differ from the hook's cwd '/repo' → accept guard rejects.
+    act(() => { sessionListener?.(makeFrame('/other', '/other')) })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(true)
+    expect(result.current.error).toBeNull()
+    // HTTP completes normally after a rejected external update.
+    await act(async () => { resolveGet(makeStatus()); await Promise.resolve() })
+    expect(result.current.data?.isRepo).toBe(true)
+    expect(result.current.loading).toBe(false)
+  })
+
+  // ── Behavior change: accepted snapshot survives stale HTTP ───────
+  //
+  // On the old impl the WS listener did not abort the in-flight HTTP, so a
+  // late HTTP response could overwrite the accepted snapshot. The core's
+  // external token invalidates the old HTTP before the abort effect runs,
+  // so even if the response lands between commit and abort it's discarded.
+
+  it('accepted snapshot: stale HTTP cannot overwrite, zero extra GET', async () => {
+    let resolveGet!: (v: GitStatusResponse) => void
+    mockGet.mockReturnValue(new Promise<GitStatusResponse>((r) => { resolveGet = r }))
+    const { result } = renderHook(() => useGitStatus('/repo', 's1'))
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    expect(mockGet).toHaveBeenCalledTimes(1)
+    // Frame arrives and is accepted (cwd matches) → snapshot adopted.
+    const snap = makeFrame('/repo', '/repo')
+    ;(snap.status as { branch: string }).branch = 'dev'
+    act(() => { sessionListener?.(snap) })
+    expect((result.current.data as GitStatus).branch).toBe('dev')
+    expect(result.current.loading).toBe(false)
+    // Stale HTTP resolves → must not overwrite the snapshot.
+    await act(async () => { resolveGet(makeStatus()); await Promise.resolve() })
+    expect((result.current.data as GitStatus).branch).toBe('dev')
+    expect(mockGet).toHaveBeenCalledTimes(1) // zero extra GET
+  })
+
+  it('does not expose applyExternal', () => {
+    const { result } = renderHook(() => useGitStatus('/repo', 's1'))
+    expect('applyExternal' in result.current).toBe(false)
+  })
 })
 
 describe('useGitBranches / useGitStashes', () => {
@@ -137,6 +242,145 @@ describe('useGitBranches / useGitStashes', () => {
     renderHook(() => useGitBranches('/repo', 's1', false))
     await new Promise((r) => setTimeout(r, 10))
     expect(mockGet).not.toHaveBeenCalled()
+  })
+
+  // ── Behavior change: disabled mid-flight must clear loading ──────
+
+  it('branches: disabled mid-flight: loading clears, data null, late response no-op', async () => {
+    let resolveGet!: (v: { branches: GitBranch[] }) => void
+    mockGet.mockReturnValue(new Promise<{ branches: GitBranch[] }>((r) => { resolveGet = r }))
+    const { result, rerender } = renderHook(
+      ({ e }) => useGitBranches('/repo', 's1', e),
+      { initialProps: { e: true } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    rerender({ e: false })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).toBeNull()
+    await act(async () => { resolveGet({ branches: [] }); await Promise.resolve() })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+  })
+
+  it('stashes: disabled mid-flight: loading clears, data null, late response no-op', async () => {
+    let resolveGet!: (v: { stashes: GitStashEntry[] }) => void
+    mockGet.mockReturnValue(new Promise<{ stashes: GitStashEntry[] }>((r) => { resolveGet = r }))
+    const { result, rerender } = renderHook(
+      ({ e }) => useGitStashes('/repo', 's1', e),
+      { initialProps: { e: true } },
+    )
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    rerender({ e: false })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+    expect(result.current.error).toBeNull()
+    await act(async () => { resolveGet({ stashes: [] }); await Promise.resolve() })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+  })
+
+  // ── Behavior change: accepted snapshot survives stale HTTP ───────
+
+  it('branches: accepted snapshot: stale HTTP cannot overwrite, zero extra GET', async () => {
+    let resolveGet!: (v: { branches: GitBranch[] }) => void
+    mockGet.mockReturnValue(new Promise<{ branches: GitBranch[] }>((r) => { resolveGet = r }))
+    const { result } = renderHook(() => useGitBranches('/repo', 's1', true))
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    expect(mockGet).toHaveBeenCalledTimes(1)
+    act(() => { sessionListener?.(makeFrame('/repo', '/repo')) })
+    expect(result.current.data).toHaveLength(1)
+    expect(result.current.loading).toBe(false)
+    // Stale HTTP resolves with empty branches → must not overwrite snapshot.
+    await act(async () => { resolveGet({ branches: [] }); await Promise.resolve() })
+    expect(result.current.data).toHaveLength(1)
+    expect(mockGet).toHaveBeenCalledTimes(1)
+  })
+
+  it('stashes: accepted snapshot: stale HTTP cannot overwrite, zero extra GET', async () => {
+    let resolveGet!: (v: { stashes: GitStashEntry[] }) => void
+    mockGet.mockReturnValue(new Promise<{ stashes: GitStashEntry[] }>((r) => { resolveGet = r }))
+    const { result } = renderHook(() => useGitStashes('/repo', 's1', true))
+    await waitFor(() => expect(result.current.loading).toBe(true))
+    expect(mockGet).toHaveBeenCalledTimes(1)
+    // Frame with one stash entry → accepted (no repo guard).
+    const snap = makeFrame('/repo', '/repo')
+    snap.stashes = [{ index: 0, ref: 'stash@{0}', message: 'WIP on main', date: 1 }]
+    act(() => { sessionListener?.(snap) })
+    expect(result.current.data).toHaveLength(1)
+    expect(result.current.loading).toBe(false)
+    // Stale HTTP resolves with empty stashes → must not overwrite snapshot.
+    await act(async () => { resolveGet({ stashes: [] }); await Promise.resolve() })
+    expect(result.current.data).toHaveLength(1)
+    expect(mockGet).toHaveBeenCalledTimes(1)
+  })
+
+  // ── Characterization: HTTP no deep compare; WS same-content ref ──
+  //
+  // branches/stashes do NOT pass equalOnLoad — HTTP always adopts the new
+  // reference even when structurally identical. WS frames DO use JSON
+  // equality so a structurally identical snapshot retains the reference.
+  // No repo guard: frames from any repoRoot are applied directly.
+
+  it('branches: HTTP refresh adopts new reference even when structurally equal', async () => {
+    const branchesPayload: GitBranch[] = [{ name: 'main', current: true, upstream: null }]
+    mockGet.mockResolvedValue({ branches: branchesPayload })
+    const { result } = renderHook(() => useGitBranches('/repo', 's1', true))
+    await waitFor(() => expect(result.current.data).toEqual(branchesPayload))
+    const firstRef = result.current.data
+    // Refresh with structurally equal content but a new array reference.
+    mockGet.mockResolvedValue({ branches: [{ name: 'main', current: true, upstream: null }] })
+    act(() => result.current.refresh())
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(result.current.data).not.toBe(firstRef))
+  })
+
+  it('branches: WS frame with same content retains data reference', async () => {
+    const branchesPayload: GitBranch[] = [{ name: 'main', current: true, upstream: null }]
+    mockGet.mockResolvedValue({ branches: branchesPayload })
+    const { result } = renderHook(() => useGitBranches('/repo', 's1', true))
+    await waitFor(() => expect(result.current.data).toHaveLength(1))
+    const firstRef = result.current.data
+    // makeFrame's branches is [{ name:'main', current:true, upstream:null }] — same JSON.
+    act(() => { sessionListener?.(makeFrame('/repo', '/repo')) })
+    expect(result.current.data).toBe(firstRef)
+  })
+
+  it('stashes: WS frame with same content retains data reference', async () => {
+    mockGet.mockResolvedValue({ stashes: [] })
+    const { result } = renderHook(() => useGitStashes('/repo', 's1', true))
+    await waitFor(() => expect(result.current.data).toEqual([]))
+    const firstRef = result.current.data
+    // makeFrame's stashes is [] — same JSON.
+    act(() => { sessionListener?.(makeFrame('/repo', '/repo')) })
+    expect(result.current.data).toBe(firstRef)
+  })
+
+  // ── Characterization: public surface + open/close request counts ──
+
+  it('branches: does not expose applyExternal', () => {
+    const { result } = renderHook(() => useGitBranches('/repo', 's1', true))
+    expect('applyExternal' in result.current).toBe(false)
+  })
+
+  it('stashes: does not expose applyExternal', () => {
+    const { result } = renderHook(() => useGitStashes('/repo', 's1', true))
+    expect('applyExternal' in result.current).toBe(false)
+  })
+
+  it('branches: open/close cycle fetches on enable, none on disable', async () => {
+    mockGet.mockResolvedValue({ branches: [] })
+    const { rerender } = renderHook(
+      ({ e }) => useGitBranches('/repo', 's1', e),
+      { initialProps: { e: false } },
+    )
+    expect(mockGet).not.toHaveBeenCalled()
+    rerender({ e: true })
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(1))
+    rerender({ e: false })
+    expect(mockGet).toHaveBeenCalledTimes(1) // no extra fetch on disable
+    rerender({ e: true })
+    await waitFor(() => expect(mockGet).toHaveBeenCalledTimes(2)) // re-fetch on re-enable
   })
 })
 

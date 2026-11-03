@@ -16,7 +16,7 @@
 // doesn't leave a stale response in flight that resolves into an
 // unmounted setter.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { api } from './useApi'
 import { useGitQuery } from './useGitQuery'
 import { useWsHub } from './useWsHub'
@@ -102,59 +102,24 @@ export function useGitStatus(
   opts?: { enabled?: boolean },
 ): UseGitStatusReturn {
   const enabled = opts?.enabled !== false
-  const [data, setData] = useState<GitStatusResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd) {
-      // Reset state when disabled or no cwd, so the chip falls back to
-      // a hidden state instead of showing stale data from a prior repo.
-      // The set-state-in-effect rule flags this as a cascading-render
-      // hazard, but here it's the *correct* way to invalidate a cache
-      // keyed on a changing input — the standard reset-on-input-change
-      // pattern used by the other input-keyed hooks (e.g. useReadFile).
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    api
-      .get<GitStatusResponse>(`/git/status?cwd=${encodeURIComponent(cwd)}`, { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        // Skip the setData when the response is identical to the current
-        // state — most WS-triggered refetches see no change (Claude edited
-        // a file outside the repo, the watcher coalesced bursts, etc.) and
-        // we don't want to cascade a render through the panel + every
-        // open DiffView for nothing. A JSON-string compare is cheaper than
-        // the avoided React work.
-        setData((prev) => (sameStatus(prev, res) ? prev : res))
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        // 503 (git missing) and 5xx surface the message; 4xx shouldn't
-        // happen for status (we just need a valid cwd) but pass through.
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => {
-      ctrl.abort()
-    }
-  }, [cwd, enabled, tick])
-
-  const refresh = useCallback(() => {
-    setTick((n) => n + 1)
-  }, [])
+  const queryKey = cwd ?? ''
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      api.get<GitStatusResponse>(`/git/status?cwd=${encodeURIComponent(cwd!)}`, { signal }),
+    [cwd],
+  )
+  const q = useGitQuery<GitStatusResponse>({
+    enabled: enabled && !!cwd,
+    queryKey,
+    load,
+    // Skip a setData when the HTTP response is structurally identical to
+    // the current state — most WS-triggered refetches see no change (Claude
+    // edited a file outside the repo, the watcher coalesced bursts, etc.)
+    // and we don't want to cascade a render through the panel + every open
+    // DiffView for nothing. A JSON-string compare is cheaper than the
+    // avoided React work.
+    equalOnLoad: sameStatus,
+  })
 
   // Sink: apply pushed snapshots directly — zero refetch. Guard once the
   // data is authoritative (isRepo with repoRoot, from mount fetch): only
@@ -162,21 +127,21 @@ export function useGitStatus(
   // worktree path, subscribed to the main session's channel) never
   // receives main-repo state. Pre-authoritative (first frame beats the
   // mount fetch, or isRepo:false): match on cwd/repoRoot equality; a
-  // mismatched frame is dropped in favor of the in-flight HTTP truth.
+  // mismatched frame is a full no-op (data/loading/error/token unchanged,
+  // in-flight HTTP not aborted). The accept guard and data commit run in
+  // a single pure setState updater via applyExternal, so a rejected frame
+  // never half-clears loading/error the way the old listener did.
   useGitSnapshotListener(sessionId, enabled, (frame) => {
-    setData((prev) => {
-      if (prev && prev.isRepo) {
-        if (prev.repoRoot !== frame.repoRoot) return prev
-        return sameStatus(prev, frame.status) ? prev : frame.status
-      }
-      if (frame.cwd !== cwd && frame.repoRoot !== cwd) return prev
-      return sameStatus(prev, frame.status) ? prev : frame.status
+    q.applyExternal(frame.status, {
+      accept: (prev) => {
+        if (prev && prev.isRepo) return prev.repoRoot === frame.repoRoot
+        return frame.cwd === cwd || frame.repoRoot === cwd
+      },
+      equal: (prev, next) => sameStatus(prev, next),
     })
-    setLoading(false)
-    setError(null)
   })
 
-  return { data, loading, error, refresh }
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
 // ── useGitDiff ────────────────────────────────────────────────────────
@@ -463,54 +428,32 @@ export function useGitBranches(
   sessionId: string | undefined,
   enabled: boolean,
 ): UseGitBranchesReturn {
-  const [data, setData] = useState<GitBranch[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    api
-      .get<{ branches: GitBranch[] }>(`/git/branches?cwd=${encodeURIComponent(cwd)}`, { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res.branches)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => { ctrl.abort() }
-  }, [cwd, enabled, tick])
-
-  const refresh = useCallback(() => { setTick((n) => n + 1) }, [])
-
-  // No guard: branches/stashes only run inside GitPanel where hook cwd ==
-  // session cwd, and the server only fans out same-group frames.
-  useGitSnapshotListener(sessionId, enabled, (frame) => {
-    setData((prev) => {
-      const next = frame.branches
-      return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
-    })
-    setLoading(false)
-    setError(null)
+  const queryKey = cwd ?? ''
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      api
+        .get<{ branches: GitBranch[] }>(`/git/branches?cwd=${encodeURIComponent(cwd!)}`, { signal })
+        .then((res) => res.branches),
+    [cwd],
+  )
+  const q = useGitQuery<GitBranch[]>({
+    enabled: enabled && !!cwd,
+    queryKey,
+    load,
   })
 
-  return { data, loading, error, refresh }
+  // No guard: branches/stashes only run inside GitPanel where hook cwd ==
+  // session cwd, and the server only fans out same-group frames. HTTP
+  // success adopts the new reference unconditionally (no equalOnLoad); WS
+  // frames use JSON equality so a structurally identical snapshot retains
+  // the reference and avoids a render cascade.
+  useGitSnapshotListener(sessionId, enabled, (frame) => {
+    q.applyExternal(frame.branches, {
+      equal: (prev, next) => JSON.stringify(prev) === JSON.stringify(next),
+    })
+  })
+
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
 export interface UseGitStashesReturn extends BaseFetchState<GitStashEntry[]> {
@@ -522,53 +465,31 @@ export function useGitStashes(
   sessionId: string | undefined,
   enabled: boolean,
 ): UseGitStashesReturn {
-  const [data, setData] = useState<GitStashEntry[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    api
-      .get<{ stashes: GitStashEntry[] }>(`/git/stashes?cwd=${encodeURIComponent(cwd)}`, { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res.stashes)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => { ctrl.abort() }
-  }, [cwd, enabled, tick])
-
-  const refresh = useCallback(() => { setTick((n) => n + 1) }, [])
-
-  // No guard: branches/stashes only run inside GitPanel where hook cwd ==
-  // session cwd, and the server only fans out same-group frames.
-  useGitSnapshotListener(sessionId, enabled, (frame) => {
-    setData((prev) => {
-      const next = frame.stashes
-      return JSON.stringify(prev) === JSON.stringify(next) ? prev : next
-    })
-    setLoading(false)
-    setError(null)
+  const queryKey = cwd ?? ''
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      api
+        .get<{ stashes: GitStashEntry[] }>(`/git/stashes?cwd=${encodeURIComponent(cwd!)}`, { signal })
+        .then((res) => res.stashes),
+    [cwd],
+  )
+  const q = useGitQuery<GitStashEntry[]>({
+    enabled: enabled && !!cwd,
+    queryKey,
+    load,
   })
 
-  return { data, loading, error, refresh }
+  // No guard: branches/stashes only run inside GitPanel where hook cwd ==
+  // session cwd, and the server only fans out same-group frames. HTTP
+  // success adopts the new reference unconditionally (no equalOnLoad); WS
+  // frames use JSON equality so a structurally identical snapshot retains
+  // the reference and avoids a render cascade.
+  useGitSnapshotListener(sessionId, enabled, (frame) => {
+    q.applyExternal(frame.stashes, {
+      equal: (prev, next) => JSON.stringify(prev) === JSON.stringify(next),
+    })
+  })
+
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
