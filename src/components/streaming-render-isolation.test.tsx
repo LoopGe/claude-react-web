@@ -29,6 +29,11 @@ const counts = vi.hoisted(() => ({
 }))
 type CountKey = keyof typeof counts
 
+// Hoisted `get` spy so the useApi mock factory (also hoisted) and the
+// per-endpoint call-count assertions share one reference. vi.hoisted runs
+// before vi.mock factories, so apiGet exists when the factory closes over it.
+const apiGet = vi.hoisted(() => vi.fn())
+
 type MemoLike = { type: (p: unknown) => unknown; compare?: ((a: unknown, b: unknown) => boolean) | null }
 function counted(key: CountKey, real: unknown) {
   const m = real as MemoLike
@@ -124,11 +129,11 @@ vi.mock('../hooks/useWsHub', () => ({
   useWsHubStatus: () => 'online' as const,
 }))
 vi.mock('../hooks/useApi', () => {
-  const get = vi.fn(async (path: string) => {
+  apiGet.mockImplementation(async (path: string) => {
     if (path.includes('/messages')) return { generation: 0, headSeq: 0, totalCount: 0, startIndex: 0, hasMore: false, messages: [], tombstones: [] }
     return { schedules: [], commands: [], agents: [], models: [], anchors: [], tasks: [], items: [], entries: [] }
   })
-  return { api: { get, post: vi.fn(async () => ({})), put: vi.fn(async () => ({})), patch: vi.fn(async () => ({})), del: vi.fn(async () => ({})), delete: vi.fn(async () => ({})) } }
+  return { api: { get: apiGet, post: vi.fn(async () => ({})), put: vi.fn(async () => ({})), patch: vi.fn(async () => ({})), del: vi.fn(async () => ({})), delete: vi.fn(async () => ({})) } }
 })
 
 import { Chat } from './Chat'
@@ -159,6 +164,10 @@ const streamEvent = (uuid: string, event: Record<string, unknown>) => ({
   kind: 'message',
   message: { type: 'stream_event', uuid, parent_tool_use_id: null, event },
 })
+
+/** Filter the useApi `get` spy's calls by URL substring. */
+const callsFor = (sub: string) =>
+  apiGet.mock.calls.filter((c) => String(c[0]).includes(sub))
 
 const noop = () => {}
 const globalPrefs = { ...DEFAULT_GLOBAL_PREFS, autoRecap: false, streamingRenderMode: 'overlay' as const }
@@ -261,6 +270,11 @@ describe('live-turn streaming re-renders only the leaves', () => {
     expect(bubble?.textContent).toContain(`word${DELTAS - 1}`)
     // The working bar shows the leaf-subscribed phase label.
     expect(container.querySelector('.working-bar-label')?.textContent).toBe('Writing...')
+    // Catalog initial GETs are the only ones: the token-rate / items / cache
+    // churn of the flush window must not retrigger an initial /commands or
+    // /agents fetch (the hook's effect deps exclude token/items/cache).
+    expect(callsFor('/commands')).toHaveLength(1)
+    expect(callsFor('/agents')).toHaveLength(1)
   }, 30_000)
 
   it('inline mode keeps MessageList at 0 renders per flush (the draft body leaf owns the subscription)', async () => {

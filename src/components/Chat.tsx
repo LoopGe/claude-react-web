@@ -99,11 +99,11 @@ import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { useToast } from '../hooks/useToast'
 import { Overlay } from './Overlay'
 import { ErrorBoundary } from './ErrorBoundary'
-import { useWsHub } from '../hooks/useWsHub'
+import { useSessionCatalog } from '../hooks/useSessionCatalog'
 import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { AnimatePresence } from 'motion/react'
 import { BottomCardMotion } from './BottomCardMotion'
-import type { AgentInfo, PastedImage, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
+import type { PastedImage, PermissionRequest, RewindFilesResult, SessionInfo, SlashCommand } from '../types'
 import type { GlobalPrefs } from '../types/config'
 import { resolveSessionPrefs } from '../types/config'
 import type { Skin } from '../utils/theme'
@@ -717,43 +717,11 @@ export const Chat = memo(function Chat({
    *  monotonic, so the sum is a valid signal. */
   const effectiveComposerFocusSignal = composerFocusSignal + (externalComposerFocusSignal ?? 0)
 
-  // Slash commands ?cached per session so switching away and back
-  // doesn't re-fetch. The SDK subprocess returns the list via a
-  // control request; 410 on dormant sessions is expected and ignored.
-  const hub = useWsHub()
-  const [commands, setCommands] = useState<SlashCommand[]>([])
-  const commandsCacheRef = useRef<Map<string, SlashCommand[]>>(new Map())
-  useEffect(() => {
-    if (!session.running) return
-    const cached = commandsCacheRef.current.get(session.id)
-    if (cached) {
-      setCommands(cached)
-      return
-    }
-    let cancelled = false
-    api
-      .get<{ commands: SlashCommand[] }>(`/sessions/${session.id}/commands`)
-      .then((res) => {
-        if (cancelled) return
-        const cmds = res.commands ?? []
-        commandsCacheRef.current.set(session.id, cmds)
-        setCommands(cmds)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [session.id, session.running])
-
-
-  useEffect(() => {
-    return hub.addSessionListener(session.id, (frame) => {
-      if (frame.kind !== 'commands-changed') return
-      const next = frame.commands ?? []
-      commandsCacheRef.current.set(session.id, next)
-      setCommands(next)
-    })
-  }, [hub, session.id])
+  // Slash commands + agents are fetched per session and cached by the shared
+  // catalog hook (race-guarded initial fetch, manual refresh, and
+  // commands-changed WS updates; see useSessionCatalog). Plugin reload
+  // invalidates the cache via refreshCommands/refreshAgents.
+  const { commands, agents, refreshCommands, refreshAgents } = useSessionCatalog(session.id, session.running)
   // Local commands (e.g. /resume, /mcp) merged in ONLY for the Composer's "/"
   // picker, so they're discoverable. They're handled in-app by send()'s
   // matchLocalCommand check. The SDK may ALSO advertise a same-name command
@@ -774,62 +742,6 @@ export const Chat = memo(function Chat({
       ...commands.filter((c) => !localNames.has(c.name)),
     ]
   }, [commands])
-
-  // Agents ?fetched once per session, refreshed after plugin reload.
-  // Cached per session (like commands) so switching away and back ?or a
-  // session.running flip from auto-resume ?doesn't re-issue the blocking
-  // /agents control request (it's gated on the SDK init handshake, which
-  // can stall on proxy backends and hang the UI). The agents list is
-  // static for a given session, so the cache is safe until plugin reload.
-  const [agents, setAgents] = useState<AgentInfo[]>([])
-  const agentsCacheRef = useRef<Map<string, AgentInfo[]>>(new Map())
-  useEffect(() => {
-    if (!session.running) return
-    const cached = agentsCacheRef.current.get(session.id)
-    if (cached) {
-      setAgents(cached)
-      return
-    }
-    let cancelled = false
-    api
-      .get<{ agents: AgentInfo[] }>(`/sessions/${session.id}/agents`)
-      .then((res) => {
-        if (cancelled) return
-        const ag = res.agents ?? []
-        agentsCacheRef.current.set(session.id, ag)
-        setAgents(ag)
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [session.id, session.running])
-
-  /** Invalidate command cache and re-fetch (called after plugin reload). */
-  const refreshCommands = useCallback(() => {
-    commandsCacheRef.current.delete(session.id)
-    if (!session.running) return
-    api
-      .get<{ commands: SlashCommand[] }>(`/sessions/${session.id}/commands`)
-      .then((res) => {
-        const cmds = res.commands ?? []
-        commandsCacheRef.current.set(session.id, cmds)
-        setCommands(cmds)
-      })
-      .catch(() => {})
-  }, [session.id, session.running])
-
-  /** Invalidate agents cache and re-fetch (called after plugin reload). */
-  const refreshAgents = useCallback(() => {
-    agentsCacheRef.current.delete(session.id)
-    if (!session.running) return
-    api
-      .get<{ agents: AgentInfo[] }>(`/sessions/${session.id}/agents`)
-      .then((res) => {
-        const ag = res.agents ?? []
-        agentsCacheRef.current.set(session.id, ag)
-        setAgents(ag)
-      })
-      .catch(() => {})
-  }, [session.id, session.running])
 
   // A paste too large to sit in the textarea collapses to a `[Pasted text #N]`
   // reference; its body is held here and spliced back in on send — and
