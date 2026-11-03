@@ -20,6 +20,12 @@
 // 4. applyExternal reject (accept=false) → the entire event is a no-op;
 //    data/loading/error/token are unchanged and the in-flight HTTP is NOT
 //    aborted.
+// 5. disabled → enabled transition: the HTTP effect's disabled path aborts
+//    the controller directly and the enabled path creates a fresh one. The
+//    separate abort effect must NOT fire here — it would see the stale
+//    'external' tokenKind from the disabled path (in the same or batched
+//    render) and abort the new controller. Only applyExternal signals the
+//    abort effect via needsAbortRef; the disabled path handles its own abort.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -107,6 +113,14 @@ export function useGitQuery<T>(options: GitQueryOptions<T>): GitQueryReturn<T> {
   }))
   const [tick, setTick] = useState(0)
   const ctrlRef = useRef<AbortController | null>(null)
+  // Set to true by applyExternal's setState updater when an external snapshot
+  // is accepted. The dedicated abort effect reads and resets it. This ensures
+  // the abort effect ONLY fires for applyExternal — not for the disabled
+  // path (which aborts directly in the HTTP effect) or the enabled path
+  // (which creates a fresh controller). Without this gate, a disabled→enabled
+  // transition would have the abort effect see the stale 'external' tokenKind
+  // from the disabled path and abort the new controller. See invariant 5.
+  const needsAbortRef = useRef(false)
 
   // ── HTTP effect ────────────────────────────────────────────────────
   //
@@ -171,17 +185,24 @@ export function useGitQuery<T>(options: GitQueryOptions<T>): GitQueryReturn<T> {
     }
   }, [enabled, queryKey, tick, load])
 
-  // ── External-token abort effect ────────────────────────────────────
+  // ── applyExternal abort effect ─────────────────────────────────────
   //
-  // When applyExternal (or the disabled path) sets an external token, abort
-  // the current HTTP controller. This is a SEPARATE effect so that:
+  // When applyExternal accepts an external snapshot, it sets needsAbortRef
+  // in the (pure) setState updater. This effect reads and resets the ref,
+  // aborting the in-flight HTTP. This is a SEPARATE effect so that:
   //   - the applyExternal setState updater stays pure (no side effects —
   //     React may double-invoke updaters in concurrent/strict mode);
   //   - the token is already invalidated in the updater, so even if a stale
   //     HTTP response resolves between the commit and this effect firing,
   //     the token check in `.then` discards it.
+  //
+  // The disabled path does NOT set needsAbortRef — it aborts directly in the
+  // HTTP effect. This prevents the abort effect from firing on a
+  // disabled→enabled transition, where the stale 'external' tokenKind from
+  // the disabled path would otherwise cause it to abort the new controller.
   useEffect(() => {
-    if (state.tokenKind === 'external') {
+    if (needsAbortRef.current) {
+      needsAbortRef.current = false
       ctrlRef.current?.abort()
     }
   }, [state.tokenKind, state.token])
@@ -195,11 +216,17 @@ export function useGitQuery<T>(options: GitQueryOptions<T>): GitQueryReturn<T> {
       setState((prev) => {
         // Accept guard: a rejected external update is a full no-op. The
         // data/loading/error/token all stay unchanged and the in-flight HTTP
-        // is NOT aborted (the external-token effect doesn't fire because the
-        // state reference is the same — React bails out).
+        // is NOT aborted (needsAbortRef is not set, so the abort effect
+        // doesn't fire; React also bails out because the state reference is
+        // the same).
         if (update?.accept && !update.accept(prev.data)) {
           return prev
         }
+        // Signal the abort effect to abort the in-flight HTTP. Setting a ref
+        // in a setState updater is a side effect, but it is idempotent (React
+        // may double-invoke updaters in StrictMode) and the actual abort
+        // runs in the dedicated effect below — never in the updater itself.
+        needsAbortRef.current = true
         const token = Symbol('external')
         const equal = update?.equal
         const data = equal && equal(prev.data, next) ? prev.data : next

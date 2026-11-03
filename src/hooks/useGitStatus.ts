@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from './useApi'
+import { useGitQuery } from './useGitQuery'
 import { useWsHub } from './useWsHub'
 import type {
   GitBranch,
@@ -209,47 +210,18 @@ export function useGitDiff(
   staged: boolean,
   enabled: boolean,
 ): UseGitDiffReturn {
-  const [data, setData] = useState<GitDiff | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd || !path) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    api
-      .get<GitDiff>(gitDiffQuery(cwd, path, staged), { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => {
-      ctrl.abort()
-    }
-  }, [cwd, path, staged, enabled, tick])
-
-  const refresh = useCallback(() => {
-    setTick((n) => n + 1)
-  }, [])
-
-  return { data, loading, error, refresh }
+  const queryKey = `${cwd ?? ''}|${path ?? ''}|${staged}`
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      api.get<GitDiff>(gitDiffQuery(cwd!, path!, staged), { signal }),
+    [cwd, path, staged],
+  )
+  const q = useGitQuery<GitDiff>({
+    enabled: enabled && !!cwd && !!path,
+    queryKey,
+    load,
+  })
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
 // ── useGitRangeDiff ───────────────────────────────────────────────────
@@ -269,49 +241,23 @@ export function useGitRangeDiff(
   mergeBase: boolean,
   enabled: boolean,
 ): UseGitRangeDiffReturn {
-  const [data, setData] = useState<GitRangeDiffResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd || !from || !to) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    const qs = new URLSearchParams({ cwd, from, to, ...(mergeBase ? { mode: 'mergeBase' } : {}) })
-    api
-      .get<GitRangeDiffResponse>(`/git/diff-range?${qs.toString()}`, { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res)
-        setLoading(false)
+  const queryKey = `${cwd ?? ''}|${from ?? ''}|${to ?? ''}|${mergeBase}`
+  const load = useCallback(
+    (signal: AbortSignal) => {
+      const qs = new URLSearchParams({
+        cwd: cwd!, from: from!, to: to!,
+        ...(mergeBase ? { mode: 'mergeBase' } : {}),
       })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => {
-      ctrl.abort()
-    }
-  }, [cwd, from, to, mergeBase, enabled, tick])
-
-  const refresh = useCallback(() => {
-    setTick((n) => n + 1)
-  }, [])
-
-  return { data, loading, error, refresh }
+      return api.get<GitRangeDiffResponse>(`/git/diff-range?${qs.toString()}`, { signal })
+    },
+    [cwd, from, to, mergeBase],
+  )
+  const q = useGitQuery<GitRangeDiffResponse>({
+    enabled: enabled && !!cwd && !!from && !!to,
+    queryKey,
+    load,
+  })
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
 export interface UseGitRangeDiffFileReturn extends BaseFetchState<GitDiff> {
@@ -343,48 +289,18 @@ export function useGitRangeDiffFile(
   path: string | undefined,
   enabled: boolean,
 ): UseGitRangeDiffFileReturn {
-  const [data, setData] = useState<GitDiff | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd || !from || !to || !path) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    api
-      .get<GitDiff>(gitRangeDiffFileQuery(cwd, from, to, mergeBase, path), { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => {
-      ctrl.abort()
-    }
-  }, [cwd, from, to, mergeBase, path, enabled, tick])
-
-  const refresh = useCallback(() => {
-    setTick((n) => n + 1)
-  }, [])
-
-  return { data, loading, error, refresh }
+  const queryKey = `${cwd ?? ''}|${from ?? ''}|${to ?? ''}|${mergeBase}|${path ?? ''}`
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      api.get<GitDiff>(gitRangeDiffFileQuery(cwd!, from!, to!, mergeBase, path!), { signal }),
+    [cwd, from, to, mergeBase, path],
+  )
+  const q = useGitQuery<GitDiff>({
+    enabled: enabled && !!cwd && !!from && !!to && !!path,
+    queryKey,
+    load,
+  })
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
 // ── useGitLog ─────────────────────────────────────────────────────────
@@ -401,47 +317,23 @@ export function useGitLog(
   limit: number,
   enabled: boolean,
 ): UseGitLogReturn {
-  const [data, setData] = useState<GitCommit[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    api
-      .get<{ commits: GitCommit[] }>(`/git/log?cwd=${encodeURIComponent(cwd)}&limit=${limit}`, { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res.commits)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => {
-      ctrl.abort()
-    }
-  }, [cwd, limit, enabled, tick])
-
-  const refresh = useCallback(() => {
-    setTick((n) => n + 1)
-  }, [])
-
-  return { data, loading, error, refresh }
+  const queryKey = `${cwd ?? ''}|${limit}`
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      api
+        .get<{ commits: GitCommit[] }>(
+          `/git/log?cwd=${encodeURIComponent(cwd!)}&limit=${limit}`,
+          { signal },
+        )
+        .then((res) => res.commits),
+    [cwd, limit],
+  )
+  const q = useGitQuery<GitCommit[]>({
+    enabled: enabled && !!cwd,
+    queryKey,
+    load,
+  })
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
 // ── Commit detail (per-commit file list + per-file diff) ─────────────
@@ -458,49 +350,20 @@ export function useGitCommitFiles(
   hash: string | undefined,
   enabled: boolean,
 ): UseGitCommitFilesReturn {
-  const [data, setData] = useState<GitCommitResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd || !hash) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    const qs = new URLSearchParams({ cwd, hash })
-    api
-      .get<GitCommitResponse>(`/git/commit?${qs.toString()}`, { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => {
-      ctrl.abort()
-    }
-  }, [cwd, hash, enabled, tick])
-
-  const refresh = useCallback(() => {
-    setTick((n) => n + 1)
-  }, [])
-
-  return { data, loading, error, refresh }
+  const queryKey = `${cwd ?? ''}|${hash ?? ''}`
+  const load = useCallback(
+    (signal: AbortSignal) => {
+      const qs = new URLSearchParams({ cwd: cwd!, hash: hash! })
+      return api.get<GitCommitResponse>(`/git/commit?${qs.toString()}`, { signal })
+    },
+    [cwd, hash],
+  )
+  const q = useGitQuery<GitCommitResponse>({
+    enabled: enabled && !!cwd && !!hash,
+    queryKey,
+    load,
+  })
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
 export interface UseGitCommitDiffFileReturn extends BaseFetchState<GitDiff> {
@@ -529,48 +392,18 @@ export function useGitCommitDiffFile(
   path: string | undefined,
   enabled: boolean,
 ): UseGitCommitDiffFileReturn {
-  const [data, setData] = useState<GitDiff | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [tick, setTick] = useState(0)
-  const abortRef = useRef<AbortController | null>(null)
-
-  useEffect(() => {
-    if (!enabled || !cwd || !hash || !path) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on input change
-      setData(null)
-      setError(null)
-      setLoading(false)
-      return
-    }
-    const ctrl = new AbortController()
-    abortRef.current?.abort()
-    abortRef.current = ctrl
-    setLoading(true)
-    setError(null)
-    api
-      .get<GitDiff>(gitCommitDiffFileQuery(cwd, hash, path), { signal: ctrl.signal })
-      .then((res) => {
-        if (ctrl.signal.aborted) return
-        setData(res)
-        setLoading(false)
-      })
-      .catch((err: Error) => {
-        if (ctrl.signal.aborted) return
-        setError(err.message)
-        setData(null)
-        setLoading(false)
-      })
-    return () => {
-      ctrl.abort()
-    }
-  }, [cwd, hash, path, enabled, tick])
-
-  const refresh = useCallback(() => {
-    setTick((n) => n + 1)
-  }, [])
-
-  return { data, loading, error, refresh }
+  const queryKey = `${cwd ?? ''}|${hash ?? ''}|${path ?? ''}`
+  const load = useCallback(
+    (signal: AbortSignal) =>
+      api.get<GitDiff>(gitCommitDiffFileQuery(cwd!, hash!, path!), { signal }),
+    [cwd, hash, path],
+  )
+  const q = useGitQuery<GitDiff>({
+    enabled: enabled && !!cwd && !!hash && !!path,
+    queryKey,
+    load,
+  })
+  return { data: q.data, loading: q.loading, error: q.error, refresh: q.refresh }
 }
 
 /** `useGitCommitFiles` with a caller-owned cache. `cache` maps hash →
