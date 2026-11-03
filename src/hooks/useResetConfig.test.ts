@@ -3,6 +3,13 @@ import { renderHook, act } from '@testing-library/react'
 import { useResetConfig } from './useResetConfig'
 import { inputHistoryStore } from '../state/inputHistoryStore'
 import { sessionStoreRegistry } from '../session-store/registry'
+import { useRecentModels, useRecentCwds } from './useRecentItems'
+import {
+  RECENT_MODELS_KEY,
+  RECENT_CWDS_KEY,
+  RECENT_MODELS_CAP_KEY,
+  RECENT_CWDS_CAP_KEY,
+} from '../constants/recentKeys'
 
 beforeEach(() => {
   localStorage.clear()
@@ -45,5 +52,55 @@ describe('useResetConfig', () => {
     })
     expect(registryDelete).toHaveBeenCalledWith('a')
     expect(registryDelete).toHaveBeenCalledWith('b')
+  })
+
+  it('resets recent model/cwd list keys via removeLocalStorageKey and preserves cap keys', async () => {
+    // Pre-seed list + cap keys, and mount the recent adapters so the reset
+    // must propagate to mounted React state, not just localStorage. The old
+    // impl used localStorage.removeItem for every appearance key, which:
+    //   - never notified same-tab listeners, so mounted adapters kept
+    //     ['old-model'] / ['/old/cwd'] in React state;
+    //   - left the persist effect free to write those stale values back on
+    //     the next render, so the key didn't even stay null;
+    //   - let a post-reset remember('fresh') stack onto ['old-model'],
+    //     resurrecting a value the user just erased.
+    localStorage.setItem(RECENT_MODELS_KEY, JSON.stringify(['old-model']))
+    localStorage.setItem(RECENT_CWDS_KEY, JSON.stringify(['/old/cwd']))
+    localStorage.setItem(RECENT_MODELS_CAP_KEY, JSON.stringify(7))
+    localStorage.setItem(RECENT_CWDS_CAP_KEY, JSON.stringify(8))
+
+    const models = renderHook(() => useRecentModels())
+    const cwds = renderHook(() => useRecentCwds())
+    expect(models.result.current.recents).toEqual(['old-model'])
+    expect(cwds.result.current.recents).toEqual(['/old/cwd'])
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ results: {}, deletedSessionIds: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const { result } = renderHook(() => useResetConfig())
+    await act(async () => {
+      await result.current.reset({ browser: ['appearance'], server: [] })
+    })
+
+    // List keys are null: removeLocalStorageKey removed them AND suppressed
+    // the reset echo so mounted adapters don't write [] back over the gap.
+    expect(localStorage.getItem(RECENT_MODELS_KEY)).toBeNull()
+    expect(localStorage.getItem(RECENT_CWDS_KEY)).toBeNull()
+    // Cap keys are NOT in the reset set — they survive.
+    expect(JSON.parse(localStorage.getItem(RECENT_MODELS_CAP_KEY)!)).toBe(7)
+    expect(JSON.parse(localStorage.getItem(RECENT_CWDS_CAP_KEY)!)).toBe(8)
+    // Mounted adapters collapsed to [] immediately via the deletion sentinel.
+    expect(models.result.current.recents).toEqual([])
+    expect(cwds.result.current.recents).toEqual([])
+
+    // A subsequent remember must NOT resurrect old entries — the adapter's
+    // prev is [] (not the pre-reset ['old-model']), so nextMru produces
+    // only ['fresh'].
+    act(() => models.result.current.remember('fresh'))
+    expect(models.result.current.recents).toEqual(['fresh'])
+    expect(JSON.parse(localStorage.getItem(RECENT_MODELS_KEY)!)).toEqual(['fresh'])
   })
 })

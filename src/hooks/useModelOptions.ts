@@ -31,7 +31,7 @@
 // store keys by `profileId` ('' = active profile).
 
 import { useEffect, useState } from 'react'
-import { readRecentModels } from '../utils/recent-models'
+import { useRecentModels } from './useRecentItems'
 import {
   fetchModelOptions,
   peekModelOptions,
@@ -113,10 +113,11 @@ export function useModelOptions(_sessionId: string, enabled: boolean, profileId?
   const defaultModel = snap?.defaultModel
   const modelGroups = snap?.modelGroups ?? []
 
-  // Reading localStorage every render is fine — it's synchronous and
-  // microsecond-scale, and the picker only re-renders a handful of times
-  // per second.
-  const recents = readRecentModels()
+  // Recents come from the shared MRU adapter so a write in the New Session
+  // dialog (rememberNow) or an external deletion (removeLocalStorageKey
+  // from the reset path) propagates to a mounted picker without a remount.
+  // The adapter owns normalization, cap enforcement, and same-tab sync.
+  const { recents } = useRecentModels()
 
   return { models, recents, defaultModel, modelGroups }
 }
