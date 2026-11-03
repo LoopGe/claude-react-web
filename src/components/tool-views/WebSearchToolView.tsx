@@ -3,7 +3,7 @@
 // Extracted from ToolUseBlock.tsx for modularity.
 
 import { ToolCard } from '../ToolCard'
-import { IconWebSearch } from '../icons/ToolIcons'
+import { IconSearch } from '../icons/ToolIcons'
 import { formatJson } from '../../utils/format'
 import type { ToolViewProps } from './shared'
 
@@ -43,7 +43,7 @@ export function WebSearchToolView({ input, toolUseId, searchQuery, activeMatchId
 
   return (
     <ToolCard
-      icon={<IconWebSearch />}
+      icon={<IconSearch />}
       title={<code className="grep-tool-pattern">&ldquo;{query}&rdquo;</code>}
       chips={chips}
       searchQuery={searchQuery}

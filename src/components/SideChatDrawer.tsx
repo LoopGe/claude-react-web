@@ -28,7 +28,7 @@ import { OlderHistoryFloat } from './message-list/transcript-chrome'
 import { PermissionDialog } from './PermissionDialog'
 import { RichPromptInput } from './RichPromptInput'
 import { pasteAtCaret } from './richPromptApi'
-import { IconX, IconArrowLeft, IconSendInterruptToggle, IconLoader, IconPaperclip } from './icons/ToolIcons'
+import { IconX, IconArrowLeft, IconArrowUp, IconSquare, IconLoader, IconPaperclip } from './icons/ToolIcons'
 import { ComposerImagePreviews } from './ComposerImagePreviews'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
@@ -412,10 +412,10 @@ export const SideChatDrawer = memo(function SideChatDrawer({
               {sending && !session.working ? (
                 <IconLoader size={16} className="glyph-spin" />
               ) : (
-                <IconSendInterruptToggle
-                  size={session.working ? 14 : 16}
-                  className={`composer-action-toggle ${session.working ? 'interrupt' : 'send'}`}
-                />
+                <span className={`composer-action-toggle ${session.working ? 'interrupt' : 'send'}`}>
+                  <IconArrowUp size={16} className="slot-morph composer-toggle-send" />
+                  <IconSquare size={14} className="slot-morph composer-toggle-stop" />
+                </span>
               )}
             </button>
           </div>

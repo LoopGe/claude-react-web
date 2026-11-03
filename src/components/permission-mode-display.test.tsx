@@ -45,9 +45,10 @@ describe('permission-mode-display', () => {
     const bypass = svgHtml(<PermissionModeIcon mode="bypassPermissions" />)
     // Distinct glyphs — they used to both be IconZap.
     expect(dontAsk).not.toBe(bypass)
-    // Lock body (rect) vs lightning bolt path.
+    // Lock body (rect) vs lightning bolt (lucide-zap class — the glyph is
+    // lucide-backed, so path data is upstream's, not ours to pin).
     expect(dontAsk).toContain('<rect')
-    expect(bypass).toContain('M13 2')
+    expect(bypass).toContain('lucide-zap')
   })
 
   it('permissionModeLabel falls back to Default (ask) for missing/unknown', () => {

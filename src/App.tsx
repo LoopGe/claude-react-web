@@ -64,7 +64,7 @@ import { AppearancePanel } from './components/AppearancePanel'
 import { ProfileSwitcher } from './components/ProfileSwitcher'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { BackgroundVideo } from './components/BackgroundVideo'
-import { IconSettings, IconBellToggle, IconMenu, IconSidebar, IconFolderSearch, IconChevronDown, IconChevronRight } from './components/icons/ToolIcons'
+import { IconSettings, IconBell, IconBellOff, IconMenu, IconSidebar, IconFolderSearch, IconChevronDown, IconChevronRight } from './components/icons/ToolIcons'
 import { useUpdateInfo } from './hooks/useUpdateInfo'
 import { useUpdateNag, nagDismissValueFor, writeNagDismiss } from './hooks/useUpdateNag'
 import type { UpdateDialogMode } from './components/UpdateDialog'
@@ -5224,10 +5224,10 @@ export function App() {
               disabled={notifications.permission === 'unsupported'}
               aria-label="Toggle desktop notifications"
             >
-              <IconBellToggle
-                size={16}
-                className={`notification-icon ${notifications.enabled ? 'enabled' : 'disabled'}`}
-              />
+              <span className={`notification-icon ${notifications.enabled ? 'enabled' : 'disabled'}`}>
+                <IconBell size={16} className="slot-morph notification-icon-bell" />
+                <IconBellOff size={16} className="slot-morph notification-icon-bell-off" />
+              </span>
             </button>
             <AppearancePanel
               skin={skin}

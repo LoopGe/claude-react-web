@@ -24,7 +24,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useCountUp } from '../hooks/useCountUp'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconSendInterruptToggle, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
 import { SchedulePicker } from './SchedulePicker'
 
@@ -1059,10 +1059,10 @@ export const Composer = memo(function Composer({
           {sending && !canInterrupt ? (
             <IconLoader size={18} className="composer-send-spinner" />
           ) : (
-            <IconSendInterruptToggle
-              size={canInterrupt ? 16 : 18}
-              className={'composer-action-toggle ' + (canInterrupt ? 'interrupt' : 'send')}
-            />
+            <span className={'composer-action-toggle ' + (canInterrupt ? 'interrupt' : 'send')}>
+              <IconArrowUp size={18} className="slot-morph composer-toggle-send" />
+              <IconSquare size={16} className="slot-morph composer-toggle-stop" />
+            </span>
           )}
         </button>
       </div>
