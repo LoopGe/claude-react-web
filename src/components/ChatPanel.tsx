@@ -163,6 +163,9 @@ export interface ChatPanelProps {
   /** False while this panel is in the keep-alive cache — forwarded to
    *  <Chat> → <MessageList> for the row-entrance replay on re-show. */
   panelVisible?: boolean
+  /** App-owned show sequence for this mounted panel. Forwarded unchanged to
+   *  the entrance and scroll controllers; visible reorder never increments it. */
+  showEpoch?: number
   /** External composer-focus signal from App — bumped by the mod+1/2/3
    *  slot shortcuts. Forwarded to <Chat> → <Composer> so switching panels
    *  also refocuses the target panel's composer. */
@@ -324,6 +327,7 @@ export const ChatPanel = memo(function ChatPanel({
   showSlotHints,
   onFocus,
   panelVisible,
+  showEpoch,
   onClose,
   onResume,
   onForkFromLastCompleted,
@@ -821,6 +825,7 @@ export const ChatPanel = memo(function ChatPanel({
     <section
       ref={panelNodeRef}
       data-panel-id={session.id}
+      data-panel-show-epoch={showEpoch}
       className={cx(
         'chat-panel',
         focused ? 'focused' : '',
@@ -1364,6 +1369,7 @@ export const ChatPanel = memo(function ChatPanel({
             session={session}
             focused={focused}
             panelVisible={panelVisible}
+            showEpoch={showEpoch}
             composerFocusSignal={composerFocusSignal}
             globalPrefs={globalPrefs}
             clearing={clearing}

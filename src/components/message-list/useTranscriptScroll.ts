@@ -47,6 +47,7 @@ import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { scrollDebug as dbg } from './scroll-debug'
 import { clamp } from '../../utils/clamp'
 import { snapToDevicePx } from '../../utils/pixel-grid'
+import { PANEL_RESHOW_SETTLE_MS, TRANSCRIPT_SEEK_EVENT, keyboardTargetsScroller, middleClickTargetsScroller, touchTargetsScroller, wheelChainsToScroller } from '../panel-transition'
 
 /** Pixel tolerance for direct bottom checks. Keep this tiny to cover
  *  fractional scroll values without treating a visibly offset viewport as
@@ -106,11 +107,11 @@ export const TRAILING_MICRO_PIN_MS = 250
  *  after paint) shifts the content under the parked viewport. */
 const SEEK_HOLD_FRAMES = 8
 
-/** Keys that scroll a focused scroll container UPWARD — the only ones that can
- *  produce a leave. PageDown / Space / End can't, so they deliberately don't
- *  mark intent: a keypress that can't scroll up is no evidence that a later
- *  upward move was the user's. */
+/** Keys that scroll a focused scroll container UPWARD and can therefore
+ *  produce a leave. Downward keys don't leave, but still stamp intent so a
+ *  genuine post-show scroll back to the bottom can end re-show suppression. */
 const SCROLL_UP_KEYS = new Set(['PageUp', 'ArrowUp', 'Home'])
+const SCROLL_DOWN_KEYS = new Set(['PageDown', 'ArrowDown', 'End'])
 
 /**
  * Height of the bottom-overlay spacer currently rendered in Virtuoso's Footer
@@ -178,10 +179,7 @@ type BottomSyncMode = FollowMode | 'confirm-away'
 
 /** How long after a keep-alive re-show the scroll machinery treats scroll
  *  events as mechanical artifacts of the row remount rather than user intent.
- *  Consumed by the justReshowed() suppression in this hook AND by App's
- *  scroll-memory re-assert loop (src/App.tsx), whose deadline must stay
- *  within this window — tune them together. */
-export const PANEL_RESHOW_SETTLE_MS = 750
+ *  Shared with App's scroll-memory re-assert loop via panel-transition.ts. */
 
 export interface UseTranscriptScrollOptions {
   /** Shared handle so seeks can fall back to Virtuoso's index API before the
@@ -216,6 +214,8 @@ export interface UseTranscriptScrollOptions {
    *  re-show (mechanical scroll events only in that window — the user hasn't
    *  scrolled yet). */
   panelVisible?: boolean
+  /** App-owned show sequence. Undefined keeps standalone false→true behavior. */
+  showEpoch?: number
   /**
    * The top-most VISIBLE row changed, reported in Virtuoso's offset space
    * (dataIndex + firstItemIndex) — same space as `rangeChanged`.
@@ -282,6 +282,7 @@ export function useTranscriptScroll({
   onVisibleTopChange,
   onUserScrollIntent,
   panelVisible,
+  showEpoch,
 }: UseTranscriptScrollOptions): TranscriptScrollApi {
   // Boolean form of rowCount for effect deps: the scroll/gesture listeners
   // only need to (re-)attach when the scroller comes into existence, not on
@@ -305,15 +306,42 @@ export function useTranscriptScroll({
   // scroll key — userScrollIntentRef, stamped AFTER lastShowAt) ends the
   // suppression early: past that point scroll events are the user's again.
   const lastShowAtRef = useRef(0)
+  const lastShowGestureSeqRef = useRef(0)
+  const lastScrollEpochRef = useRef<number | undefined>(undefined)
   // useLayoutEffect: the stamp must land BEFORE the remount-clamp scroll
   // events of the show commit — App's restore layout effect writes scrollTop
   // pre-paint and Virtuoso's rebuild can emit clamps in the same frame, both
   // ahead of a passive effect's delivery. Date.now() on purpose: it must be
   // comparable with userScrollIntentRef (stamped with Date.now() by the
-  // gesture listeners).
+  // gesture listeners). App-provided epochs replace the visibility inference;
+  // mount still stamps once so fresh Virtuoso clamps are suppressed too.
   useLayoutEffect(() => {
-    if (panelVisible !== false) lastShowAtRef.current = Date.now()
-  }, [panelVisible])
+    const stampShow = () => {
+      lastShowAtRef.current = Date.now()
+      lastShowGestureSeqRef.current = userGestureSeqRef.current
+      // Visibility is a gesture boundary: anything stamped before it must stay
+      // retired even after the 750ms mechanical window, not reactivate while
+      // the older 1200ms intent window is still running.
+      userScrollIntentRef.current = 0
+    }
+    if (panelVisible === false || (showEpoch !== undefined && lastScrollEpochRef.current !== showEpoch)) {
+      // A seek from the previous visibility/epoch must never write into the
+      // collapsed panel or compete with App's restored offset.
+      seekSeqRef.current += 1
+      if (seekAnimRafRef.current != null) cancelAnimationFrame(seekAnimRafRef.current)
+      seekAnimRafRef.current = null
+      seekActiveRef.current = false
+      if (scrollerRef.current) delete scrollerRef.current.dataset.crwSeekActive
+    }
+    if (showEpoch !== undefined) {
+      if (lastScrollEpochRef.current !== showEpoch) {
+        lastScrollEpochRef.current = showEpoch
+        if (panelVisible !== false) stampShow()
+      }
+      return
+    }
+    if (panelVisible !== false) stampShow()
+  }, [panelVisible, showEpoch])
   // At-bottom mirror, read by callbacks (notably the viewport-shrink backstop)
   // without a stale-closure dance. Written by setBottomState.
   const atBottomRef = useRef(true)
@@ -335,18 +363,17 @@ export function useTranscriptScroll({
   // to be fresh. Set by the wheel / touch / overlay-thumb-drag listeners in the
   // scroll-intent effect below.
   const userScrollIntentRef = useRef(0)
+  // Monotonic input sequence for seek takeover. Unlike Date.now(), this also
+  // distinguishes a seek started and a gesture delivered in the same tick.
+  const userGestureSeqRef = useRef(0)
   // True within the re-show settle window (see lastShowAtRef above), unless
-  // the user has gestured since the re-show — their wheel/touch/scroll key
-  // stamps userScrollIntentRef with a LATER timestamp than lastShowAt, which
-  // ends the suppression on the spot (a genuine scroll-down-to-bottom right
-  // after switching back must still re-latch follow).
+  // the user has gestured since the re-show — an upward or downward input with
+  // a LATER timestamp than lastShowAt ends suppression on the spot (a genuine
+  // scroll-down-to-bottom right after switching back must still re-latch follow).
   const justReshowed = useCallback(() => {
     // Same clock as the gesture stamps (Date.now()).
     if (Date.now() - lastShowAtRef.current >= PANEL_RESHOW_SETTLE_MS) return false
-    // User gesture stamped after the re-show → the scroll events are the
-    // user's again; end the suppression (a genuine scroll-down-to-bottom
-    // right after switching back must still re-latch follow).
-    if (userScrollIntentRef.current > lastShowAtRef.current) return false
+    if (userGestureSeqRef.current > lastShowGestureSeqRef.current) return false
     return true
   }, [])
   // Held TRUE for the whole of a programmatic scroll-to-bottom animation. See
@@ -435,6 +462,7 @@ export function useTranscriptScroll({
     if (!shouldFollowRef.current) { dbg('pin skip', () => ({ reason, why: 'away' })); return }
     if (scrollAnimatingRef.current && !allowDuringAnimation) { dbg('pin skip', () => ({ reason, why: 'animating' })); return }
     dbg('pin', () => ({ reason, before: Math.round(el.scrollTop) }))
+    // eslint-disable-next-line react-hooks/immutability -- imperative bottom-pin writes are the scroll controller's event-time contract
     el.scrollTop = el.scrollHeight
     // Every correction is provisional: the layout can keep moving after this
     // write, so verify the invariant across the next frames (see
@@ -844,6 +872,7 @@ export function useTranscriptScroll({
     lastResetKeyRef.current = transcriptRevealKey
     clearFollowTimer()
     atBottomRef.current = true
+    // eslint-disable-next-line react-hooks/immutability -- intentional one-shot reset on transcript identity change
     userScrollIntentRef.current = 0
     // Intentional one-shot re-init on a rare event (transcript switch): the
     // cascading-render cost the set-state rule guards against is irrelevant
@@ -1286,6 +1315,9 @@ export function useTranscriptScroll({
     onUserScrollIntentRef.current = onUserScrollIntent
   }, [onUserScrollIntent])
   const lastVisibleTopRef = useRef<number | null>(null)
+  const thumbDraggingRef = useRef(false)
+  const focusNavigationRef = useRef(false)
+  const focusResetRafRef = useRef<number | null>(null)
   const emitVisibleTop = useCallback(() => {
     const notify = onVisibleTopChangeRef.current
     if (!notify) return
@@ -1306,6 +1338,7 @@ export function useTranscriptScroll({
     const el = scrollerRef.current
     if (!el) return
     lastScrollTopRef.current = el.scrollTop
+    let listenersActive = true
     const handler = () => {
       const prevScrollTop = lastScrollTopRef.current
       lastScrollTopRef.current = el.scrollTop
@@ -1315,8 +1348,23 @@ export function useTranscriptScroll({
       // stand down mid-animation.
       emitVisibleTop()
       const isScrollingUp = el.scrollTop < prevScrollTop
+      // Overlay-scrollbar recentering can move scrollTop opposite to the
+      // pointer delta (an off-center grab). Attribute from the ACTUAL movement.
+      if (thumbDraggingRef.current && el.scrollTop !== prevScrollTop) {
+        if (isScrollingUp) markUserScrollIntent()
+        else markScrollDownIntent()
+      }
+      if (focusNavigationRef.current && el.scrollTop !== prevScrollTop) {
+        if (isScrollingUp) markUserScrollIntent()
+        else markScrollDownIntent()
+        focusNavigationRef.current = false
+      }
       const distTrue = getDistanceFromTrueBottom(el)
-      const userDriven = Date.now() - userScrollIntentRef.current <= USER_SCROLL_INTENT_MS
+      // During mechanical re-show settling, a PRE-show gesture cannot make
+      // this scroll user-driven. A genuine post-show gesture stamps a newer
+      // intent and justReshowed() becomes false, preserving normal chaining
+      // and user-leave behavior.
+      const userDriven = Date.now() - userScrollIntentRef.current <= USER_SCROLL_INTENT_MS && !justReshowed()
       // Chain the gesture: an animated wheel pan (or a thumb drag) emits scroll
       // events for hundreds of ms, and each upward one re-arms the window so the
       // whole gesture stays attributable to the user. Only upward events
@@ -1345,8 +1393,8 @@ export function useTranscriptScroll({
       // re-pins it.
       //
       // Residual gap, deliberately accepted: a scroll the browser performs with
-      // no gesture AND no key we can see — native find-in-page jumping to a
-      // match, middle-click/selection edge autoscroll — reads as a displacement
+      // no gesture AND no key/pointer sequence we can see — native find-in-page
+      // jumping to a match, selection edge autoscroll — reads as a displacement
       // and is re-pinned. Those are the only inputs that can't leave; the app's
       // own search uses `seekToIndex` (which drops follow explicitly), and the
       // alternative (treating every upward move as a leave) is the bug above.
@@ -1358,7 +1406,7 @@ export function useTranscriptScroll({
       // that same move, and (with the follow invariant now enforcing the
       // bottom) dropping it would erase the user's nudge instead of leaving.
       if (scrollAnimatingRef.current && !(userDriven && isScrollingUp)) return
-      dbg('scroll-handler', () => ({ isScrollingUp, userDriven, isUserLeave, following: shouldFollowRef.current }))
+      dbg('scroll-handler', () => ({ isScrollingUp, userDriven, isUserLeave, following: shouldFollowRef.current, prevScrollTop, scrollTop: el.scrollTop, distTrue }))
       if (isUserLeave) {
         syncBottomGeometry(el, 'disable-now')
       } else if (!isScrollingUp && distTrue <= BOTTOM_EPSILON_PX && !justReshowed()) {
@@ -1379,7 +1427,15 @@ export function useTranscriptScroll({
     // the parent), so its drag never reaches them and has to be caught at the
     // document — pointer events retarget to the captured thumb mid-drag, which
     // is what keeps the intent fresh for the whole drag.
-    const markUserScrollIntent = () => { userScrollIntentRef.current = Date.now(); onUserScrollIntentRef.current?.() }
+    const markUserScrollIntent = () => { userGestureSeqRef.current += 1; userScrollIntentRef.current = Date.now(); onUserScrollIntentRef.current?.() }
+    const markScrollDownIntent = () => {
+      userGestureSeqRef.current += 1
+      onUserScrollIntentRef.current?.()
+      // A direction change retires the old upward gesture. Otherwise a fresh
+      // downward input ends re-show suppression and immediately re-activates
+      // stale pre-show upward intent for the mechanical-leave test.
+      userScrollIntentRef.current = 0
+    }
     // A gesture that asks the viewport to move UP, seen while FOLLOWING (i.e.
     // parked at the bottom), IS the leave — and it has to be latched here rather
     // than from the scroll event the gesture produces. Mid-turn the append pin
@@ -1409,23 +1465,11 @@ export function useTranscriptScroll({
     // only when EVERY scrollable between `node` and the scroller is itself at
     // that boundary — a mid-scroll ancestor swallows the chain and the
     // transcript never moves.
-    const wheelChainsToTranscript = (node: EventTarget | null, deltaY: number): boolean => {
-      let cur = node instanceof HTMLElement ? node : null
-      while (cur && cur !== el) {
-        const overflowY = getComputedStyle(cur).overflowY
-        if ((overflowY === 'auto' || overflowY === 'scroll') && cur.scrollHeight > cur.clientHeight + 1) {
-          const consumesDown = cur.scrollTop < cur.scrollHeight - cur.clientHeight - BOTTOM_EPSILON_PX
-          const consumesUp = cur.scrollTop > BOTTOM_EPSILON_PX
-          if (deltaY < 0 ? consumesUp : consumesDown) return false
-        }
-        cur = cur.parentElement
-      }
-      return true
-    }
-    // Only UPWARD-capable inputs (see SCROLL_UP_KEYS): a wheel-down, a touch
-    // drag toward the bottom or a PageDown can't produce a leave, and treating
-    // them as intent would let a programmatic displacement landing in the window
-    // latch one.
+    const wheelChainsToTranscript = (node: EventTarget | null, deltaY: number): boolean =>
+      wheelChainsToScroller(el, node, deltaY)
+    // Direction gates separate leave-capable inputs from downward inputs that
+    // may only end re-show suppression; neither path attributes later mechanical
+    // movement to a stale gesture while justReshowed() is true.
     const onWheel = (e: WheelEvent) => {
       // ctrl+wheel is zoom (trackpad pinch), not scrolling.
       if (e.ctrlKey || e.metaKey) return
@@ -1441,42 +1485,88 @@ export function useTranscriptScroll({
       // 滚不动"). Classify first — a wheel that will chain IS a transcript
       // wheel, and takes the exact transcript path below.
       if (!wheelChainsToTranscript(e.target, e.deltaY)) return
-      // ANY transcript wheel invalidates a pending user-message navigation
-      // target; the direction gate below is purely for the follow leave.
-      onUserScrollIntentRef.current?.()
-      if (e.deltaY >= 0) {
+      if (e.deltaY > 0) {
         // Downward wheels are user intent too — stamp so justReshowed()'s
         // gesture-escape lets a genuine scroll-down-to-bottom right after a
         // keep-alive re-show re-latch follow — without the upward leave.
-        userScrollIntentRef.current = Date.now()
+        markScrollDownIntent()
         return
       }
+      if (e.deltaY === 0) return
       markUserScrollIntent()
       leaveOnUpwardGesture()
     }
-    // Scroll keys only reach the scroller when IT holds focus (Virtuoso renders
-    // its scroller with tabIndex 0, so clicking a message focuses it) — and
-    // requiring the scroller itself as the target is what keeps ArrowUp/Home
-    // pressed inside a nested block (or a message's own control) from being
-    // read as a transcript leave. Shift+Space is Chromium's other page-up.
+    // Scroll keys may target the scroller itself or a focused non-control
+    // descendant (a Markdown link). Native scroll ownership keeps ArrowUp/Home
+    // inside a nested block or text control from being read as a transcript
+    // leave. Shift+Space is Chromium's other page-up.
     // Modifier-held arrows are NOT plain scroll keys: Alt+↑/↓ is the app-level
     // prev/next user-message shortcut (whose window-level dispatcher runs
     // AFTER this element handler) and Alt+Shift+↑/↓ moves sidebar groups —
     // classifying either as scroll intent drops follow and resets the
     // navigation cursor right before the shortcut's own seek.
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.target !== el) return
-      if (e.altKey || e.ctrlKey || e.metaKey) return
-      if (!SCROLL_UP_KEYS.has(e.key) && !(e.key === ' ' && e.shiftKey)) return
-      markUserScrollIntent()
-      leaveOnUpwardGesture()
+      if (e.defaultPrevented) return
+      if (e.key === 'Tab') {
+        // The window-level Shift+Tab permission shortcut runs after this
+        // listener. Arm only if it did not consume the chord.
+        queueMicrotask(() => {
+          if (!listenersActive || e.defaultPrevented) return
+          focusNavigationRef.current = true
+          if (focusResetRafRef.current != null) cancelAnimationFrame(focusResetRafRef.current)
+          focusResetRafRef.current = requestAnimationFrame(() => {
+            focusNavigationRef.current = false
+            focusResetRafRef.current = null
+          })
+        })
+        return
+      }
+      if (!keyboardTargetsScroller(el, e.target, e.key)) return
+      if (e.ctrlKey || e.metaKey) {
+        // Native Ctrl+End / Ctrl+Home are document-boundary scrolls, not the
+        // app's Alt+Arrow navigation shortcuts.
+        if (e.key === 'End') {
+          markScrollDownIntent()
+        } else if (e.key === 'Home') {
+          markUserScrollIntent()
+          leaveOnUpwardGesture()
+        }
+        return
+      }
+      if (e.altKey) return
+      if (SCROLL_UP_KEYS.has(e.key) || (e.key === ' ' && e.shiftKey)) {
+        markUserScrollIntent()
+        leaveOnUpwardGesture()
+        return
+      }
+      if (SCROLL_DOWN_KEYS.has(e.key) || e.key === ' ') {
+        markScrollDownIntent()
+      }
     }
     // Middle-click starts the browser's autoscroll on the nearest scrollable
     // ancestor — scoped to `el` so a middle-click on the sidebar can't mark
     // THIS transcript's intent. Its direction isn't known until it scrolls, so
-    // this one keeps the intent+scroll-event path.
+    // this one keeps the intent+scroll-event path. Native autoscroll continues
+    // after pointerup, so the origin is retained until another pointerdown.
+    let middleOriginY: number | null = null
     const onMiddleDown = (e: PointerEvent) => {
-      if (e.button === 1) markUserScrollIntent()
+      if (e.button !== 1) return
+      // A second middle click toggles native autoscroll off.
+      if (middleOriginY !== null) { middleOriginY = null; return }
+      middleOriginY = middleClickTargetsScroller(el, e.target) ? e.clientY : null
+    }
+    const onMiddleMove = (e: PointerEvent) => {
+      if (middleOriginY === null || ((e.buttons & 4) === 0 && e.buttons !== 0)) return
+      // Native autoscroll direction is displacement FROM THE ORIGIN, not the
+      // direction of the latest pointer move.
+      if (e.clientY > middleOriginY) markScrollDownIntent()
+      else if (e.clientY < middleOriginY) markUserScrollIntent()
+    }
+    const onMiddleCancel = (e: PointerEvent) => {
+      if (e.button !== 1 || !(e.target instanceof Node && el.contains(e.target))) middleOriginY = null
+    }
+    const onMiddleKeyCancel = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') middleOriginY = null
     }
     // The overlay scrollbar's thumb is a SIBLING of the scroller (it floats over
     // the scroller's parent), so its drag never reaches the listeners above and
@@ -1486,46 +1576,90 @@ export function useTranscriptScroll({
     // `.os-thumb` would let an unrelated drag re-open the false-leave this gate
     // exists to close. Pointer events retarget to the captured thumb mid-drag,
     // which is what keeps the intent fresh for the whole drag.
+    let thumbClearRaf: number | null = null
     const onPointerOnThumb = (e: PointerEvent) => {
-      if (!e.buttons) return // only a held button can be dragging the thumb
+      if ((e.buttons & 1) === 0) { // only the primary button can drag the thumb
+        // The final movement's scroll event can arrive after pointerup. Keep
+        // ownership through that event, then release on the next frame.
+        if (thumbDraggingRef.current && thumbClearRaf == null) {
+          thumbClearRaf = requestAnimationFrame(() => {
+            thumbDraggingRef.current = false
+            thumbClearRaf = null
+          })
+        }
+        return
+      }
+      if (thumbClearRaf != null) {
+        cancelAnimationFrame(thumbClearRaf)
+        thumbClearRaf = null
+      }
       const target = e.target as HTMLElement | null
       const track = target?.closest?.('.os-track')
-      if (track && track.parentElement === el.parentElement) markUserScrollIntent()
+      thumbDraggingRef.current = Boolean(track && track.parentElement === el.parentElement)
+    }
+    const onThumbCaptureLost = () => {
+      // pointerup's grace frame must survive the ensuing capture-loss event so
+      // the final asynchronous scroll is still attributed.
+      if (thumbClearRaf == null) thumbDraggingRef.current = false
     }
     // Touch is direction-gated like the wheel: dragging the finger DOWN moves the
     // content up (revealing older messages), which is the leave-capable
-    // direction; a drag the other way can't drop follow and must not mark
-    // intent, or a programmatic displacement inside the window would.
+    // direction; the other direction moves toward the bottom and may end
+    // re-show suppression without triggering a leave.
     let lastTouchY: number | null = null
+    let touchOwnedByTranscript = false
     const onTouchStart = (e: TouchEvent) => {
       lastTouchY = e.touches[0]?.clientY ?? null
+      touchOwnedByTranscript = touchTargetsScroller(el, e.target)
     }
     const onTouchMove = (e: TouchEvent) => {
       const y = e.touches[0]?.clientY ?? null
       if (y == null || lastTouchY == null) { lastTouchY = y; return }
       const draggedDown = y > lastTouchY
+      const draggedUp = y < lastTouchY
       lastTouchY = y
       // A drag in EITHER direction invalidates a pending navigation target;
-      // only the leave-capable direction marks follow intent.
-      onUserScrollIntentRef.current?.()
+      // only the leave-capable direction can drop follow. A horizontal move
+      // with no vertical delta is not a scroll-down gesture.
+      if (!draggedDown && !draggedUp) return
+      if (!touchOwnedByTranscript) return
       if (draggedDown) markUserScrollIntent()
+      else if (draggedUp) markScrollDownIntent()
     }
     el.addEventListener('wheel', onWheel, { passive: true })
     el.addEventListener('touchstart', onTouchStart, { passive: true })
     el.addEventListener('touchmove', onTouchMove, { passive: true })
     el.addEventListener('keydown', onKeyDown)
     el.addEventListener('pointerdown', onMiddleDown, true)
+    document.addEventListener('pointermove', onMiddleMove, true)
+    document.addEventListener('pointerdown', onMiddleCancel, true)
+    document.addEventListener('keydown', onMiddleKeyCancel, true)
     document.addEventListener('pointerdown', onPointerOnThumb, true)
     document.addEventListener('pointermove', onPointerOnThumb, true)
+    document.addEventListener('pointerup', onPointerOnThumb, true)
+    document.addEventListener('pointercancel', onThumbCaptureLost, true)
+    document.addEventListener('lostpointercapture', onThumbCaptureLost, true)
     return () => {
+      listenersActive = false
+      if (thumbClearRaf != null) cancelAnimationFrame(thumbClearRaf)
+      if (focusResetRafRef.current != null) cancelAnimationFrame(focusResetRafRef.current)
+      focusResetRafRef.current = null
+      thumbDraggingRef.current = false
+      focusNavigationRef.current = false
       el.removeEventListener('scroll', handler)
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('touchstart', onTouchStart)
       el.removeEventListener('touchmove', onTouchMove)
       el.removeEventListener('keydown', onKeyDown)
       el.removeEventListener('pointerdown', onMiddleDown, true)
+      document.removeEventListener('pointermove', onMiddleMove, true)
+      document.removeEventListener('pointerdown', onMiddleCancel, true)
+      document.removeEventListener('keydown', onMiddleKeyCancel, true)
       document.removeEventListener('pointerdown', onPointerOnThumb, true)
       document.removeEventListener('pointermove', onPointerOnThumb, true)
+      document.removeEventListener('pointerup', onPointerOnThumb, true)
+      document.removeEventListener('pointercancel', onThumbCaptureLost, true)
+      document.removeEventListener('lostpointercapture', onThumbCaptureLost, true)
     }
     // NO `bottomStackHeight` here. It used to be a dep so this effect re-ran —
     // and re-synced the spacer-aware geometry — whenever the spacer resized.
@@ -1572,6 +1706,7 @@ export function useTranscriptScroll({
     }
     seekActiveRef.current = false
     scrollAnimatingRef.current = false
+    if (scrollerRef.current) delete scrollerRef.current.dataset.crwSeekActive
   }, [])
 
   // --- Virtuoso wiring ----------------------------------------------------
@@ -1643,9 +1778,25 @@ export function useTranscriptScroll({
     //   - clearFollowTimer()   -> cancel any pending disable-debounced timer
     //                             from the prior scroll-up so it cannot flip
     //                             follow back off mid-jump
+    focusNavigationRef.current = false
+    if (focusResetRafRef.current != null) cancelAnimationFrame(focusResetRafRef.current)
+    focusResetRafRef.current = null
+    thumbDraggingRef.current = false
+    // eslint-disable-next-line react-hooks/immutability -- invalidates the previous seek's imperative rAF token
+    seekSeqRef.current += 1
+    if (seekAnimRafRef.current != null) {
+      cancelAnimationFrame(seekAnimRafRef.current)
+      // eslint-disable-next-line react-hooks/immutability -- jump-to-bottom takes imperative rAF ownership
+      seekAnimRafRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/immutability -- clears the previous seek's gesture-attribution slot
+    seekActiveRef.current = false
+    if (scrollerRef.current) delete scrollerRef.current.dataset.crwSeekActive
     setFollowing(true)
     setBottomState(true)
     clearFollowTimer()
+    onUserScrollIntentRef.current?.()
+    scrollerRef.current?.dispatchEvent(new CustomEvent(TRANSCRIPT_SEEK_EVENT, { bubbles: true }))
     animateScrollToBottom()
   }, [animateScrollToBottom, clearFollowTimer, setBottomState, setFollowing])
 
@@ -1653,6 +1804,10 @@ export function useTranscriptScroll({
     // Leave FOLLOWING so the programmatic scroll isn't yanked back by the
     // bottom pin. Returning to FOLLOWING is the user's call — scrolling back to
     // the bottom, or invoking jump-to-bottom.
+    focusNavigationRef.current = false
+    if (focusResetRafRef.current != null) cancelAnimationFrame(focusResetRafRef.current)
+    focusResetRafRef.current = null
+    thumbDraggingRef.current = false
     setFollowing(false)
     // Drive the seek with our OWN rAF easing loop instead of Virtuoso's
     // `scrollToIndex({ behavior: 'smooth' })`. Why not the native smooth scroll:
@@ -1675,9 +1830,13 @@ export function useTranscriptScroll({
       virtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align })
       return
     }
+    // App's re-show offset hold must yield to EVERY programmatic seek, whether
+    // it came from the scroller, composer shortcut, search, or a header button.
+    el.dispatchEvent(new CustomEvent(TRANSCRIPT_SEEK_EVENT, { bubbles: true }))
     // One animation writer at a time: cancel any in-flight seek/jump loop.
     if (seekAnimRafRef.current != null) {
       cancelAnimationFrame(seekAnimRafRef.current)
+      // eslint-disable-next-line react-hooks/immutability -- imperative rAF ownership is event-time state, not render state
       seekAnimRafRef.current = null
     }
     if (scrollAnimRafRef.current != null) {
@@ -1685,6 +1844,7 @@ export function useTranscriptScroll({
       scrollAnimRafRef.current = null
       scrollAnimatingRef.current = false
     }
+    // eslint-disable-next-line react-hooks/immutability -- monotonically identifies the imperative seek started by this event
     const token = ++seekSeqRef.current
     // The seek owns the viewport only until the USER takes it back. A gesture
     // (wheel / touch / scroll key / overlay-thumb drag) stamped AFTER the seek
@@ -1694,13 +1854,14 @@ export function useTranscriptScroll({
     // forever), and the ease fights the wheel for its remaining frames — the
     // "点完 Scroll to next user message 后鼠标滚不动" report. Gestures stamped
     // BEFORE the seek (the leave-wheel that parked the viewport, a click's own
-    // pointer events) don't abort: the comparison is strictly later-than.
+    // pointer events) don't abort: the comparison is strictly later-than in
+    // input-sequence order, so a gesture in the same Date.now() tick still counts.
     // The seek's own scroll events can't trip this — the scroll handler's
     // gesture-chaining restamp is suppressed while seekActiveRef is set (see
-    // seekActiveRef), and every real gesture stamps userScrollIntentRef
-    // directly from its own listener.
-    const seekStartedAt = Date.now()
-    const userTookOver = () => userScrollIntentRef.current > seekStartedAt
+    // seekActiveRef), and every real gesture stamps the upward or downward
+    // intent ref directly from its own listener.
+    const seekStartedGestureSeq = userGestureSeqRef.current
+    const userTookOver = () => userGestureSeqRef.current > seekStartedGestureSeq
     const offsetIndexOf = (row: HTMLElement): number => {
       const raw = row.dataset.itemIndex
       return raw == null ? Number.NaN : Number.parseInt(raw, 10)
@@ -1768,7 +1929,7 @@ export function useTranscriptScroll({
     let easeFrames = 600
     // Cleared on EVERY exit of the loop (abort, supersede, fallback, hold
     // expiry); stays set across the ease→hold hand-off. See seekActiveRef.
-    const endSeek = () => { seekActiveRef.current = false }
+    const endSeek = () => { seekActiveRef.current = false; delete el.dataset.crwSeekActive }
     const step = () => {
       seekAnimRafRef.current = null
       if (token !== seekSeqRef.current || scrollerRef.current !== el) { endSeek(); return }
@@ -1814,7 +1975,9 @@ export function useTranscriptScroll({
       el.scrollTo({ top: current + remaining * 0.25, behavior: 'auto' })
       seekAnimRafRef.current = requestAnimationFrame(step)
     }
+    // eslint-disable-next-line react-hooks/immutability -- marks event-owned rAF activity for gesture attribution
     seekActiveRef.current = true
+    el.dataset.crwSeekActive = 'true'
     seekAnimRafRef.current = requestAnimationFrame(step)
     // Ref read (firstItemIndexRef.current) is live-by-design — a ref needs no dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps

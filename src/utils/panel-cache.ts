@@ -78,10 +78,55 @@ export function ghostableIds(gone: readonly string[], cache: readonly string[]):
   return gone.filter((id) => !kept.has(id))
 }
 
-/** ScrollTop to snapshot for a panel's scroller, or null when the scroller is
- *  collapsed (display:none — clientHeight 0): scrollTop READS 0 there, and
- *  restoring onto a collapsed scroller would clamp to 0. Both the snapshot
- *  and the restore sides are visible-only operations. */
-export function scrollerSnapshotTop(el: HTMLElement): number | null {
-  return el.clientHeight > 0 ? el.scrollTop : null
+export interface PanelScrollSnapshot {
+  top: number
+  /** Stable TranscriptRow id of the first geometrically visible row. */
+  anchorId: string | null
+  /** scrollTop minus the anchor row's content-top at snapshot time. */
+  anchorOffset: number
+}
+
+function rowContentTop(el: HTMLElement, row: HTMLElement): number {
+  const viewport = el.getBoundingClientRect()
+  // getBoundingClientRect is transformed; scrollTop is not. During the 320ms
+  // panel-enter scale, normalize the relative viewport geometry back to CSS
+  // content pixels before combining it with scrollTop.
+  const scale = (viewport.bottom - viewport.top) / el.offsetHeight
+  return (row.getBoundingClientRect().top - viewport.top) / scale + el.scrollTop
+}
+
+/** Capture position relative to a stable message, not only an absolute pixel
+ * offset. Older-history prepends move every row below the anchor, so restoring
+ * the same row+offset preserves the user's reading position without knowing
+ * the inserted height. */
+export function scrollerSnapshot(el: HTMLElement): PanelScrollSnapshot | null {
+  if (el.clientHeight <= 0) return null
+  // A missing report belongs only to the previous snapshot's anchor lookup.
+  delete el.dataset.crwAnchorMissing
+  const top = el.scrollTop
+  const viewport = el.getBoundingClientRect()
+  for (const row of el.querySelectorAll<HTMLElement>('[data-crw-row-id]')) {
+    const rect = row.getBoundingClientRect()
+    if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) continue
+    const rowTop = rowContentTop(el, row)
+    return { top, anchorId: row.dataset.crwRowId ?? null, anchorOffset: top - rowTop }
+  }
+  return { top, anchorId: null, anchorOffset: 0 }
+}
+
+/** Resolve a snapshot against CURRENT geometry. Recomputed per re-assert frame
+ * so Virtuoso's own range corrections and prepends are absorbed rather than
+ * fought with a stale absolute scrollTop. */
+export function scrollSnapshotTop(el: HTMLElement, snapshot: PanelScrollSnapshot): number | null {
+  if (snapshot.anchorId) {
+    for (const row of el.querySelectorAll<HTMLElement>('[data-crw-row-id]')) {
+      if (row.dataset.crwRowId !== snapshot.anchorId && row.dataset.crwOptimisticSource !== snapshot.anchorId) continue
+      const rowTop = rowContentTop(el, row)
+      return rowTop + snapshot.anchorOffset
+    }
+    // The owner must reveal a virtualized anchor by id. If it reports that the
+    // row no longer exists (ack/settled replacement), retain the pixel fallback.
+    return el.dataset.crwAnchorMissing === snapshot.anchorId ? snapshot.top : null
+  }
+  return snapshot.top
 }

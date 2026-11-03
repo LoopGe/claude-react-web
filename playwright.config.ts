@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test'
 export default defineConfig({
   testDir: './tests/browser',
   testMatch: '**/*.spec.ts',
+  testIgnore: 'app-panel-reshow.spec.ts',
   timeout: 60_000,
   // These are layout-timing probes, not a parallel E2E suite. One worker keeps
   // Chromium and the Vite transform cache quiet enough for frame-by-frame reads.

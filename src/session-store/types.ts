@@ -22,6 +22,8 @@ export interface TranscriptItem {
    *  Undefined for history restored from disk after a server restart — the
    *  header timestamp is hidden in that case. */
   receivedAt?: number
+  /** Original optimistic id preserved across the REST ack re-key. */
+  optimisticSourceId?: string
   /** True for optimistic placeholders that haven't been replaced by the
    *  server-side broadcast yet — drives the "sending" spinner on the user
    *  bubble. Cleared automatically when the broadcast lands and the

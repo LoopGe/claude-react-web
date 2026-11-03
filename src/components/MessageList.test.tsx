@@ -288,6 +288,12 @@ function userWheel(scroller: HTMLElement) {
   scroller.dispatchEvent(event)
 }
 
+function userWheelDown(scroller: HTMLElement) {
+  const event = new Event('wheel', { bubbles: true }) as Event & { deltaY: number }
+  event.deltaY = 120
+  scroller.dispatchEvent(event)
+}
+
 function scrollUpFromBottom(container: HTMLElement) {
   const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
   act(() => {
@@ -2660,6 +2666,32 @@ describe('MessageList', () => {
     })
   })
 
+  it('attributes an off-center thumb drag by actual scroll direction', async () => {
+    virtuosoMockState.atBottomReport = true
+    virtuosoMockState.reportBeforeRef = true
+    virtuosoMockState.scrollHeight = 200
+    virtuosoMockState.clientHeight = 100
+    virtuosoMockState.scrollTop = 100
+    const items = toItems([
+      makeMsg('assistant', { message: { content: [{ type: 'text', text: 'Scrollable message' }] } }),
+    ] as SdkMessage[])
+    const { container } = render(<MessageList items={items} />)
+    await waitFor(() => expect(followingOf(container)).toBe('true'))
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    const track = document.createElement('div')
+    track.className = 'os-track'
+    scroller.parentElement?.appendChild(track)
+    act(() => {
+      fireEvent.pointerDown(track, { buttons: 1, clientY: 100 })
+      fireEvent.pointerMove(track, { buttons: 1, clientY: 200 })
+      // Recentering an off-center grab can move scrollTop UP despite the
+      // pointer moving down. The real geometry, not clientY, owns attribution.
+      virtuosoMockState.scrollTop = 50
+      fireEvent.scroll(scroller)
+    })
+    expect(followingOf(container)).toBe('false')
+  })
+
   it('prev-nav from a parked-at-bottom viewport finds a target and eases to it', () => {
     // Regression guard for the right-click menu's "Scroll to previous user
     // message" appearing to do nothing when the transcript was parked at the
@@ -2719,6 +2751,277 @@ describe('MessageList', () => {
     expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
       expect.objectContaining({ top: 800, behavior: 'auto' }),
     )
+  })
+
+  it('lets a downward wheel cancel an in-flight seek', () => {
+    vi.useFakeTimers()
+    try {
+      const msgs = [
+        makeMsg('user', { uuid: 'q-0', message: { content: [{ type: 'text', text: 'q0' }] } }),
+        makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'a0' }] } }),
+        makeMsg('user', { uuid: 'q-1', message: { content: [{ type: 'text', text: 'q1' }] } }),
+        makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'a1' }] } }),
+        makeMsg('user', { uuid: 'q-2', message: { content: [{ type: 'text', text: 'q2' }] } }),
+        makeMsg('assistant', { uuid: 'a-2', message: { content: [{ type: 'text', text: 'a2' }] } }),
+      ]
+      const nav: { current: ScrollNavigator | null } = { current: null }
+      const { container } = render(
+        <MessageList
+          items={toItems(msgs as SdkMessage[])}
+          onRegisterNavigate={(n) => { nav.current = n }}
+        />,
+      )
+      if (!nav.current) throw new Error('navigator not registered')
+      const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+      Object.defineProperty(scroller, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ top: 1000, bottom: 1600, left: 0, right: 800, height: 600, width: 800 }),
+      })
+      const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]'))
+      rows.forEach((row, i) => {
+        Object.defineProperty(row, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => {
+            const top = i * 200 - scroller.scrollTop + 1000
+            return { top, bottom: top + 200, left: 0, right: 800, height: 200, width: 800 }
+          },
+        })
+      })
+      virtuosoMockState.scrollHeight = 1600
+      virtuosoMockState.clientHeight = 600
+      virtuosoMockState.scrollTop = 1000
+      act(() => { fireEvent.scroll(scroller) })
+      act(() => { nav.current!.prev() })
+      vi.mocked(Element.prototype.scrollTo).mockClear()
+
+      act(() => {
+        userWheelDown(scroller)
+        vi.runAllTimers()
+      })
+
+      expect(Element.prototype.scrollTo).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the navigation cursor on a downward overlay-thumb drag', () => {
+    vi.useFakeTimers()
+    try {
+      const msgs = [
+        makeMsg('user', { uuid: 'q-0', message: { content: [{ type: 'text', text: 'q0' }] } }),
+        makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'a0' }] } }),
+        makeMsg('user', { uuid: 'q-1', message: { content: [{ type: 'text', text: 'q1' }] } }),
+        makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'a1' }] } }),
+        makeMsg('user', { uuid: 'q-2', message: { content: [{ type: 'text', text: 'q2' }] } }),
+        makeMsg('assistant', { uuid: 'a-2', message: { content: [{ type: 'text', text: 'a2' }] } }),
+      ]
+      const nav: { current: ScrollNavigator | null } = { current: null }
+      const { container } = render(
+        <MessageList items={toItems(msgs as SdkMessage[])} onRegisterNavigate={(n) => { nav.current = n }} />,
+      )
+      if (!nav.current) throw new Error('navigator not registered')
+      const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+      Object.defineProperty(scroller, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ top: 1000, bottom: 1600, left: 0, right: 800, height: 600, width: 800 }),
+      })
+      const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]'))
+      rows.forEach((row, i) => {
+        Object.defineProperty(row, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => {
+            const top = i * 200 - scroller.scrollTop + 1000
+            return { top, bottom: top + 200, left: 0, right: 800, height: 200, width: 800 }
+          },
+        })
+      })
+      virtuosoMockState.scrollHeight = 1600
+      virtuosoMockState.clientHeight = 600
+      virtuosoMockState.scrollTop = 1000
+      act(() => { nav.current!.to(0) })
+      // The user takes over and drags down to row 4. The next PREV navigation
+      // must re-anchor on that viewport (target q1/row 2), not the stale q0 cursor.
+      virtuosoMockState.scrollTop = 800
+      const track = document.createElement('div')
+      track.className = 'os-track'
+      scroller.parentElement?.appendChild(track)
+      act(() => {
+        fireEvent.pointerDown(track, { buttons: 1, clientY: 100 })
+        fireEvent.pointerMove(track, { buttons: 1, clientY: 200 })
+        fireEvent.scroll(scroller)
+        virtuosoMockState.rangeChanged?.({ startIndex: 4, endIndex: 5 })
+      })
+      vi.mocked(Element.prototype.scrollTo).mockClear()
+      act(() => {
+        nav.current!.prev()
+        vi.runAllTimers()
+      })
+      expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
+        expect.objectContaining({ top: 400, behavior: 'auto' }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets a genuine gesture in the show millisecond end suppression', () => {
+    vi.useFakeTimers()
+    try {
+      virtuosoMockState.scrollHeight = 3000
+      virtuosoMockState.clientHeight = 600
+      virtuosoMockState.scrollTop = 2400
+      const testItems = toItems([
+        makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'answer' }] } }),
+      ])
+      const { container, rerender } = render(<MessageList items={testItems} panelVisible />)
+      scrollUpFromBottom(container)
+      expect(followingOf(container)).toBe('false')
+      rerender(<MessageList items={testItems} panelVisible={false} />)
+      rerender(<MessageList items={testItems} panelVisible />)
+      const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+
+      act(() => {
+        userWheelDown(scroller)
+        virtuosoMockState.scrollTop = 2400
+        fireEvent.scroll(scroller)
+      })
+
+      expect(followingOf(container)).toBe('true')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels an in-flight seek when the panel hides', () => {
+    vi.useFakeTimers()
+    try {
+      const msgs = [
+        makeMsg('user', { uuid: 'q-0', message: { content: [{ type: 'text', text: 'q0' }] } }),
+        makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'a0' }] } }),
+        makeMsg('user', { uuid: 'q-1', message: { content: [{ type: 'text', text: 'q1' }] } }),
+        makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'a1' }] } }),
+        makeMsg('user', { uuid: 'q-2', message: { content: [{ type: 'text', text: 'q2' }] } }),
+        makeMsg('assistant', { uuid: 'a-2', message: { content: [{ type: 'text', text: 'a2' }] } }),
+      ]
+      const items = toItems(msgs as SdkMessage[])
+      const nav: { current: ScrollNavigator | null } = { current: null }
+      const { container, rerender } = render(
+        <MessageList
+          items={items}
+          onRegisterNavigate={(n) => { nav.current = n }}
+          panelVisible
+        />,
+      )
+      if (!nav.current) throw new Error('navigator not registered')
+      const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+      Object.defineProperty(scroller, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ top: 1000, bottom: 1600, left: 0, right: 800, height: 600, width: 800 }),
+      })
+      const rows = Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]'))
+      rows.forEach((row, i) => {
+        Object.defineProperty(row, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => {
+            const top = i * 200 - scroller.scrollTop + 1000
+            return { top, bottom: top + 200, left: 0, right: 800, height: 200, width: 800 }
+          },
+        })
+      })
+      virtuosoMockState.scrollHeight = 1600
+      virtuosoMockState.clientHeight = 600
+      virtuosoMockState.scrollTop = 1000
+      act(() => { fireEvent.scroll(scroller) })
+      act(() => { nav.current!.to(0) })
+      expect(scroller.dataset.crwSeekActive).toBe('true')
+      vi.mocked(Element.prototype.scrollTo).mockClear()
+
+      rerender(
+        <MessageList
+          items={items}
+          onRegisterNavigate={(n) => { nav.current = n }}
+          panelVisible={false}
+        />,
+      )
+      act(() => { vi.runAllTimers() })
+
+      expect(Element.prototype.scrollTo).not.toHaveBeenCalled()
+      expect(scroller.dataset.crwSeekActive).toBeUndefined()
+
+      // The aborted target must not survive as the navigation cursor. After
+      // re-show at row 4, PREV targets q1/row 2 rather than anchoring on q0.
+      rerender(
+        <MessageList
+          items={items}
+          onRegisterNavigate={(n) => { nav.current = n }}
+          panelVisible
+        />,
+      )
+      virtuosoMockState.scrollTop = 800
+      act(() => { virtuosoMockState.rangeChanged?.({ startIndex: 4, endIndex: 5 }) })
+      vi.mocked(Element.prototype.scrollTo).mockClear()
+      act(() => {
+        nav.current!.prev()
+        vi.runAllTimers()
+      })
+      expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
+        expect.objectContaining({ top: 400, behavior: 'auto' }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-anchors user-message navigation after jump-to-bottom', () => {
+    vi.useFakeTimers()
+    try {
+      const msgs = [
+        makeMsg('user', { uuid: 'q-0', message: { content: [{ type: 'text', text: 'q0' }] } }),
+        makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'a0' }] } }),
+        makeMsg('user', { uuid: 'q-1', message: { content: [{ type: 'text', text: 'q1' }] } }),
+        makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'a1' }] } }),
+        makeMsg('user', { uuid: 'q-2', message: { content: [{ type: 'text', text: 'q2' }] } }),
+        makeMsg('assistant', { uuid: 'a-2', message: { content: [{ type: 'text', text: 'a2' }] } }),
+      ]
+      const items = toItems(msgs as SdkMessage[])
+      const nav: { current: ScrollNavigator | null } = { current: null }
+      const { container } = render(<MessageList items={items} onRegisterNavigate={(n) => { nav.current = n }} />)
+      if (!nav.current) throw new Error('navigator not registered')
+      const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+      Object.defineProperty(scroller, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ top: 1000, bottom: 1600, left: 0, right: 800, height: 600, width: 800 }),
+      })
+      Array.from(container.querySelectorAll<HTMLElement>('[data-item-index]')).forEach((row, i) => {
+        Object.defineProperty(row, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => {
+            const top = i * 200 - scroller.scrollTop + 1000
+            return { top, bottom: top + 200, left: 0, right: 800, height: 200, width: 800 }
+          },
+        })
+      })
+      virtuosoMockState.scrollHeight = 1600
+      virtuosoMockState.clientHeight = 600
+      virtuosoMockState.scrollTop = 800
+      act(() => {
+        fireEvent.scroll(scroller)
+        virtuosoMockState.rangeChanged?.({ startIndex: 4, endIndex: 5 })
+      })
+      act(() => { nav.current!.to(0) })
+      act(() => { nav.current!.toBottom() })
+      vi.mocked(Element.prototype.scrollTo).mockClear()
+      act(() => {
+        nav.current!.prev()
+        vi.runAllTimers()
+      })
+      expect(Element.prototype.scrollTo).toHaveBeenCalledWith(
+        expect.objectContaining({ top: 400, behavior: 'auto' }),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('advances one user message per press when same-direction presses overlap an in-flight seek', () => {
@@ -2987,6 +3290,20 @@ describe('MessageList', () => {
     act(() => { nav.current!.prevTurn() })
     for (let f = 0; f < 200; f++) act(() => { vi.advanceTimersByTime(16) })
     expect(Math.round(virtuosoMockState.scrollTop)).toBe(200)
+  })
+
+  it('emits the programmatic seek event for jump-to-bottom', () => {
+    const nav: { current: ScrollNavigator | null } = { current: null }
+    const items = toItems([
+      makeMsg('assistant', { uuid: 'a-0', message: { content: [{ type: 'text', text: 'answer' }] } }),
+    ])
+    const { container } = render(<MessageList items={items} onRegisterNavigate={(n) => { nav.current = n }} />)
+    if (!nav.current) throw new Error('navigator not registered')
+    const scroller = container.querySelector('[data-testid="virtuoso-mock"]') as HTMLElement
+    const listener = vi.fn()
+    scroller.addEventListener('crw:transcript-seek', listener)
+    act(() => { nav.current!.toBottom() })
+    expect(listener).toHaveBeenCalledTimes(1)
   })
 
   it('animates jump-to-bottom and lands at the real bottom when content grows mid-flight', () => {
@@ -5045,6 +5362,237 @@ describe('MessageList — rangeChanged → loadOlder trigger', () => {
       virtuosoMockState.rangeChanged?.({ startIndex: OLDEST_SEQ + 50, endIndex: OLDEST_SEQ + 51 })
     })
     expect(loadOlder).not.toHaveBeenCalled()
+  })
+})
+
+describe('re-show ownership lifecycle', () => {
+  const items = () => toItems([
+    makeMsg('assistant', { uuid: 'a-1', message: { content: [{ type: 'text', text: 'answer' }] } }),
+  ])
+
+  function mockVisibleRows(container: HTMLElement) {
+    const messages = container.querySelector('.chat-messages') as HTMLElement
+    Object.defineProperty(messages, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 0, bottom: 600, left: 0, right: 600, height: 600, width: 600 }),
+    })
+    container.querySelectorAll<HTMLElement>('.virtuoso-item-wrapper').forEach((row, index) => {
+      Object.defineProperty(row, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ top: index * 100, bottom: index * 100 + 80, left: 0, right: 600, height: 80, width: 600 }),
+      })
+    })
+  }
+
+  it('defers re-show WAAPI until the initial reveal has closed', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(
+        <MessageList items={items()} transcriptRevealKey="s1" replayReady panelVisible />,
+      )
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(container.querySelector('.chat-messages-reveal')).not.toBeNull()
+      mockVisibleRows(container)
+      const animate = vi.spyOn(HTMLElement.prototype, 'animate')
+      rerender(<MessageList items={items()} transcriptRevealKey="s1" replayReady panelVisible={false} />)
+      rerender(<MessageList items={items()} transcriptRevealKey="s1" replayReady panelVisible />)
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(animate).not.toHaveBeenCalled()
+
+      act(() => { vi.advanceTimersByTime(1500) })
+      expect(container.querySelector('.chat-messages-reveal')).toBeNull()
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(animate).toHaveBeenCalled()
+      animate.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('defers re-show WAAPI while the initial reveal is still pending', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(
+        <MessageList items={items()} transcriptRevealKey="s1" replayReady panelVisible />,
+      )
+      rerender(<MessageList items={items()} transcriptRevealKey="s1" replayReady panelVisible={false} />)
+      rerender(<MessageList items={items()} transcriptRevealKey="s1" replayReady panelVisible />)
+      mockVisibleRows(container)
+      const animate = vi.spyOn(HTMLElement.prototype, 'animate')
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(animate).not.toHaveBeenCalled()
+
+      act(() => { vi.advanceTimersByTime(1500) })
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(animate).toHaveBeenCalled()
+      animate.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('records a hidden transcript-key change for the eventual show', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(
+        <MessageList items={items()} transcriptRevealKey="s1" replayReady panelVisible={false} />,
+      )
+      rerender(<MessageList items={items()} transcriptRevealKey="s2" replayReady panelVisible={false} />)
+      act(() => { vi.advanceTimersByTime(1500) })
+      const animate = vi.spyOn(HTMLElement.prototype, 'animate')
+      rerender(<MessageList items={items()} transcriptRevealKey="s2" replayReady panelVisible />)
+      act(() => { vi.advanceTimersByTime(1500) })
+      mockVisibleRows(container)
+      act(() => { vi.advanceTimersByTime(100) })
+      expect(animate).toHaveBeenCalled()
+      animate.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels already-created re-show animations on re-hide', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(<MessageList items={items()} panelVisible />)
+      rerender(<MessageList items={items()} panelVisible={false} />)
+      rerender(<MessageList items={items()} panelVisible />)
+      mockVisibleRows(container)
+      const animate = vi.spyOn(HTMLElement.prototype, 'animate')
+      act(() => { vi.advanceTimersByTime(50) })
+      expect(animate).toHaveBeenCalled()
+      const cancel = vi.spyOn(Animation.prototype, 'cancel')
+      rerender(<MessageList items={items()} panelVisible={false} />)
+      expect(cancel).toHaveBeenCalled()
+      animate.mockRestore()
+      cancel.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps an optimistic tail and its ack settled during the re-show sweep', () => {
+    vi.useFakeTimers()
+    try {
+      const optimistic: TranscriptItem = {
+        id: 'optimistic:abc',
+        msg: makeMsg('user', { uuid: 'optimistic:abc', message: { content: [{ type: 'text', text: 'hello' }] } }),
+        plainText: 'hello', isCompactSummary: false, hiddenByDefault: false, sending: true, receivedAt: Date.now(),
+      }
+      const server: TranscriptItem = {
+        ...optimistic,
+        id: 'server-uuid-1',
+        msg: makeMsg('user', { uuid: 'server-uuid-1', message: { content: [{ type: 'text', text: 'hello' }] } }),
+        sending: false,
+        optimisticSourceId: 'optimistic:abc',
+      }
+      const second: TranscriptItem = {
+        ...optimistic,
+        id: 'optimistic:def',
+        msg: makeMsg('user', { uuid: 'optimistic:def', message: { content: [{ type: 'text', text: 'second' }] } }),
+      }
+      const secondServer: TranscriptItem = { ...second, id: 'server-uuid-2', sending: false, optimisticSourceId: 'optimistic:def' }
+      const history = items()[0]
+      const { container, rerender } = render(<MessageList items={[history, optimistic, second]} panelVisible />)
+      rerender(<MessageList items={[history, optimistic, second]} panelVisible={false} />)
+      rerender(<MessageList items={[history, optimistic, second]} panelVisible />)
+      mockVisibleRows(container)
+      const animate = vi.spyOn(HTMLElement.prototype, 'animate')
+
+      rerender(<MessageList items={[history, server, second]} panelVisible />)
+      mockVisibleRows(container)
+      act(() => { vi.advanceTimersByTime(50) })
+      expect(animate).toHaveBeenCalledTimes(1)
+      expect((animate.mock.instances[0] as unknown as HTMLElement).getAttribute('data-message-id')).toBe(history.id)
+
+      rerender(<MessageList items={[history, server, secondServer]} panelVisible />)
+      mockVisibleRows(container)
+      act(() => { vi.advanceTimersByTime(50) })
+      expect(animate).toHaveBeenCalledTimes(1)
+      animate.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears previous epoch dedup markers even without a hidden commit', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(<MessageList items={items()} showEpoch={1} panelVisible />)
+      rerender(<MessageList items={items()} showEpoch={1} panelVisible={false} />)
+      rerender(<MessageList items={items()} showEpoch={2} panelVisible />)
+      mockVisibleRows(container)
+      const animate = vi.spyOn(HTMLElement.prototype, 'animate')
+      act(() => { vi.advanceTimersByTime(50) })
+      expect(animate).toHaveBeenCalledTimes(1)
+
+      rerender(<MessageList items={items()} showEpoch={3} panelVisible />)
+      mockVisibleRows(container)
+      act(() => { vi.advanceTimersByTime(50) })
+      expect(animate).toHaveBeenCalledTimes(2)
+      animate.mockRestore()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('blocks an old epoch rAF from animating new epoch DOM', () => {
+    const originalRaf = globalThis.requestAnimationFrame
+    const originalCancelRaf = globalThis.cancelAnimationFrame
+    const callbacks = new Map<number, FrameRequestCallback>()
+    let nextId = 1
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      const id = nextId++
+      callbacks.set(id, callback)
+      return id
+    })
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { callbacks.delete(id) })
+    try {
+      const { container, rerender } = render(<MessageList items={items()} showEpoch={1} panelVisible />)
+      rerender(<MessageList items={items()} showEpoch={1} panelVisible={false} />)
+      rerender(<MessageList items={items()} showEpoch={2} panelVisible />)
+      mockVisibleRows(container)
+      const oldTick = [...callbacks.values()].find((callback) => callback.toString().includes('state.animatedIds'))
+      if (!oldTick) throw new Error('Re-show tick was not scheduled')
+      rerender(<MessageList items={items()} showEpoch={3} panelVisible />)
+      mockVisibleRows(container)
+      const animate = vi.spyOn(HTMLElement.prototype, 'animate')
+
+      oldTick(performance.now())
+
+      expect(animate).not.toHaveBeenCalled()
+      animate.mockRestore()
+    } finally {
+      globalThis.requestAnimationFrame = originalRaf
+      globalThis.cancelAnimationFrame = originalCancelRaf
+    }
+  })
+
+  it('drains ready and finished before cancelling re-show animations', () => {
+    vi.useFakeTimers()
+    let animate: { mockRestore: () => void } | undefined
+    try {
+      const { container, rerender } = render(<MessageList items={items()} panelVisible />)
+      rerender(<MessageList items={items()} panelVisible={false} />)
+      rerender(<MessageList items={items()} panelVisible />)
+      mockVisibleRows(container)
+      const animation = {
+        ready: { catch: vi.fn() },
+        finished: { catch: vi.fn() },
+        cancel: vi.fn(),
+        addEventListener: vi.fn(),
+      }
+      animate = vi.spyOn(HTMLElement.prototype, 'animate').mockReturnValue(animation as unknown as Animation)
+      act(() => { vi.advanceTimersByTime(50) })
+      rerender(<MessageList items={items()} panelVisible={false} />)
+
+      expect(animation.ready.catch).toHaveBeenCalled()
+      expect(animation.finished.catch).toHaveBeenCalled()
+      expect(animation.cancel).toHaveBeenCalled()
+    } finally {
+      animate?.mockRestore()
+      vi.useRealTimers()
+    }
   })
 })
 

@@ -166,6 +166,9 @@ describe('ackUserMessage: re-key placeholder, drop sending, stamp receivedAt/con
     expect(acked?.sending).toBeUndefined()
     expect(acked?.msg.uuid).toBe('server-1')
     expect(acked?.msg.receivedAt).toBe(123)
+    expect(acked?.optimisticSourceId).toBe('optimistic:1')
+    state = applyMessageConsumed(state, 'server-1', 456)
+    expect(state.intent.pendingPlaceholders.get('server-1')?.optimisticSourceId).toBe('optimistic:1')
   })
 
   it('is a no-op when the placeholder is already gone (echo arrived first)', () => {

@@ -8,7 +8,6 @@
 // carries the complete content, so showing both just flickers).
 
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { prefersReducedMotion } from '../utils/reduced-motion'
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso'
 import { MeasuredItem } from './message-list/MeasuredItem'
 import { lookupRowHeight, ROW_HEIGHT_FALLBACK_PX } from '../utils/row-height-cache'
@@ -50,6 +49,8 @@ import {
 import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRows'
 import { TRANSCRIPT_REVEAL_ROW_CLASS, TRANSCRIPT_ROW_CLASS, useTranscriptAnimations } from './message-list/useTranscriptAnimations'
 import { useTranscriptScroll } from './message-list/useTranscriptScroll'
+import { scrollDebug as dbg } from './message-list/scroll-debug'
+import { TRANSCRIPT_ANCHOR_REVEAL_EVENT } from './panel-transition'
 /** The easter-egg game only mounts after a triple-click on the empty state's
  *  icon, so it is not shipped in the entry chunk: its chunk is fetched once
  *  the empty state is on screen (see the prefetch effect in MessageList). */
@@ -178,6 +179,9 @@ interface Props {
    *  DOM. Optional — callers without a caching parent (overlays, dialogs)
    *  omit it and only the natural mount animation plays. */
   panelVisible?: boolean
+  /** App-owned show sequence for this mounted panel. Optional so standalone
+   *  overlays keep the legacy false→true detection. */
+  showEpoch?: number
   /** Owning session id. When provided, the live streaming text is subscribed
    *  from the store (useOptionalSessionField) instead of flowing down as a
    *  prop — by the OverlayStreamingRegion leaf in overlay mode, so the
@@ -395,7 +399,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, sessionId, streamingContent, streamingMode, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, streamingContent, streamingMode, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -720,6 +724,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // from then on — which is what makes `rangeStart - firstItemIndex` the true
   // row distance to the window top (shouldLoadOlder's arithmetic).
   const nextRowAnchor = advanceRowAnchor(rowAnchorRef.current, renderableItems, oldestSeq ?? null)
+  dbg('row-anchor', () => ({ previousIndex: rowAnchorRef.current.index, nextIndex: nextRowAnchor.index, frontShift: nextRowAnchor.frontShift, rowCount: renderableItems.length, itemCount: items.length, oldestSeq }))
   rowAnchorRef.current = nextRowAnchor
   if (nextRowAnchor.frontShift != null) {
     topVisibleIdxRef.current += nextRowAnchor.frontShift
@@ -751,6 +756,8 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     rows: renderableItems,
     replayReady,
     transcriptRevealKey,
+    panelVisible,
+    showEpoch,
   })
   // Reverse map: full items[] index —Virtuoso (renderableItems) index.
   // Needed because search indices reference the full, unfiltered list.
@@ -834,126 +841,39 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     onVisibleTopChange: forwardVisibleTop,
     onUserScrollIntent: () => { navCursorRef.current = null },
     panelVisible,
+    showEpoch,
   })
 
-  // Row-entrance cascade on keep-alive re-show — ALL re-showing panels. The
-  // sweep animates every visible row wrapper once per hide/show cycle (dedup
-  // by MESSAGE id — Virtuoso's settle re-renders replace wrapper ELEMENTS, so
-  // an element flag would re-animate the same message on every replacement),
-  // with a top-down spatial stagger; rows carrying their own `msg-enter`
-  // entrance (genuinely-new live arrivals) are skipped; reduced motion skips
-  // everything. Per the user's trade-off call, the cascade applies
-  // unconditionally and bottom-pinning after a switch is best-effort.
-  //
-  // Known debt: this is a second, rAF-scanned entrance system beside
-  // useTranscriptAnimations (which owns the fresh-mount reveal). A future
-  // refactor should fold re-show replay into that hook as a container-class
-  // mode so entrance semantics have one home.
-  const rowReplayRef = useRef<{
-    raf: number | null
-    animatedIds: Set<string>
-    lastKey: string | undefined
-    /** Timestamp of the last hide; null = no hide since mount/swap. */
-    lastHiddenAt: number | null
-    emptyPasses: number
-  }>({
-    raf: null,
-    animatedIds: new Set(),
-    lastKey: undefined,
-    lastHiddenAt: null,
-    emptyPasses: 0,
-  })
+
+  // App can encounter a scroll-memory anchor that Virtuoso has virtualized
+  // out. Resolve the stable row id here, where the real index and Virtuoso
+  // handle live; never infer its new position from aggregate scrollHeight.
+  const anchorRowsRef = useRef(renderableItems)
+  useLayoutEffect(() => {
+    anchorRowsRef.current = renderableItems
+  }, [renderableItems])
   useEffect(() => {
-    const el = messagesElRef.current
+    const el = messagesElRef.current?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
     if (!el) return
-    const state = rowReplayRef.current
-    // Transcript identity change: the keyed div below remounts and its rows
-    // play the whole-transcript reveal — never cascade on top of it.
-    const keyChanged = state.lastKey !== transcriptRevealKey
-    state.lastKey = transcriptRevealKey
-    if (keyChanged) {
-      state.animatedIds.clear()
-      state.lastHiddenAt = null
-      if (state.raf != null) cancelAnimationFrame(state.raf)
-      return
-    }
-    if (panelVisible === false) {
-      state.lastHiddenAt = performance.now()
-      state.animatedIds.clear()
-      // Best-effort element-flag clear: wrappers Virtuoso REUSES across the
-      // hide must not keep a flag that would block the next sweep (the two
-      // dedup layers have to agree at the layer boundary).
-      el.querySelectorAll<HTMLElement>('.virtuoso-item-wrapper').forEach((w) => {
-        delete w.dataset.crwReplay
-      })
-      return
-    }
-    // Visible (or a caller that never passes the prop — treated as visible).
-    // Sweep only after an actual hide; the first visibility and transcript
-    // swaps own their entrances. (StrictMode's double mount run also lands
-    // here with lastHiddenAt === null and correctly does nothing.)
-    if (state.lastHiddenAt != null) {
-      state.lastHiddenAt = null
-      if (prefersReducedMotion()) return
-      if (state.raf != null) cancelAnimationFrame(state.raf)
-      const styles = getComputedStyle(document.documentElement)
-      const duration = parseFloat(styles.getPropertyValue('--motion-duration-moderate')) || 240
-      const easing = styles.getPropertyValue('--motion-ease-standard').trim() || 'cubic-bezier(0.22, 1, 0.36, 1)'
-      const deadline = performance.now() + 500
-      const tick = () => {
-        if (performance.now() > deadline) return
-        // Batch reads before writes: interleaving gBCR reads with dataset
-        // writes forces a style recalc per wrapper per tick (layout thrash
-        // on exactly the frame that should feel instant).
-        const vr = el.getBoundingClientRect()
-        const pending: { w: HTMLElement; delay: number }[] = []
-        el.querySelectorAll<HTMLElement>('.virtuoso-item-wrapper').forEach((w) => {
-          // Two dedup layers, because wrappers fall into two failure modes:
-          //  - Rows WITH a message id: Virtuoso's settle re-renders replace
-          //    wrapper ELEMENTS (an element flag dies with it), so the same
-          //    message must be deduped by id (survives element churn).
-          //  - Rows WITHOUT one (task cards, system rows): only the element
-          //    flag can dedup them — without it they would be re-animated on
-          //    every sweep tick, each restart snapping opacity back to 0
-          //    ("消息卡片抖动").
-          if (w.dataset.crwReplay === '1') return
-          const mid = w.querySelector('[data-message-id]')?.getAttribute('data-message-id') ?? ''
-          if (mid && state.animatedIds.has(mid)) return
-          // Optimistic sends: skip the transient row (its server-echo
-          // replacement renders settled by design); the echo lands after the
-          // sweep's dedup would double-animate the swap.
-          if (mid.startsWith('optimistic:')) return
-          const r = w.getBoundingClientRect()
-          if (r.bottom <= vr.top || r.top >= vr.bottom) return
-          const delay = Math.min(Math.max(0, Math.round((r.top - vr.top) / 40)) * 20, 300)
-          pending.push({ w, delay })
-          w.dataset.crwReplay = '1'
-          if (mid) state.animatedIds.add(mid)
-        })
-        // A pass that finds nothing twice in a row means the settle is done —
-        // stop burning frames instead of running out the whole deadline.
-        if (pending.length === 0 && ++state.emptyPasses >= 2) return
-        state.emptyPasses = 0
-        for (const { w, delay } of pending) {
-          // A row carrying its own msg-enter entrance (genuinely-new live
-          // arrival during the window) must not be double-animated.
-          if (w.classList.contains('msg-enter')) continue
-          w.animate(
-            [
-              { opacity: 0, transform: 'translateY(-14px)' },
-              { opacity: 1, transform: 'translateY(0px)' },
-            ],
-            { duration, delay, easing, fill: 'backwards' },
-          )
-        }
-        state.raf = requestAnimationFrame(tick)
+    const reveal = (event: Event) => {
+      const { anchorId } = (event as CustomEvent<{ anchorId: string }>).detail
+      let index = anchorRowsRef.current.findIndex((row) => row.id === anchorId)
+      if (index < 0) {
+        index = anchorRowsRef.current.findIndex((row) => row.optimisticSourceId === anchorId)
       }
-      state.raf = requestAnimationFrame(tick)
+      if (index < 0) {
+        index = anchorRowsRef.current.findIndex((row) => row.msg.uuid != null && draftRowKeys?.[row.msg.uuid] === anchorId)
+      }
+      if (index < 0) {
+        el.dataset.crwAnchorMissing = anchorId
+        return
+      }
+      delete el.dataset.crwAnchorMissing
+      virtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align: 'start' })
     }
-    return () => {
-      if (state.raf != null) cancelAnimationFrame(state.raf)
-    }
-  }, [panelVisible, transcriptRevealKey])
+    el.addEventListener(TRANSCRIPT_ANCHOR_REVEAL_EVENT, reveal)
+    return () => el.removeEventListener(TRANSCRIPT_ANCHOR_REVEAL_EVENT, reveal)
+  }, [messagesElRef, virtuosoRef, transcriptRevealKey, draftRowKeys])
 
   // Scroll to the active search result when it changes.
   const prevSearchActiveRef = useRef<number>(-1)
@@ -1304,6 +1224,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           itemCount: renderableItems.length,
         })
       ) {
+        dbg('load-older-trigger', () => ({ rangeStart: range.startIndex, firstItemIndex: firstItemIndexValRef.current, rowCount: renderableItems.length, itemCount: items.length }))
         void loadOlder?.()
       }
       // `range.startIndex` is the first RENDERED row, and
@@ -1321,6 +1242,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   useEffect(() => {
     emitPinned(topVisibleIdxRef.current)
   }, [renderableItems, emitPinned])
+  // A visibility transition can cancel an in-flight navigation seek. Its
+  // target is no longer a valid cursor once App restores the pre-hide viewport.
+  useEffect(() => {
+    navCursorRef.current = null
+  }, [panelVisible, showEpoch])
   // Reset dedup state on session switch so a coincidentally-matching id from
   // the previous session can't suppress a fresh emit.
   useEffect(() => {
@@ -1532,6 +1458,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         className={className}
         style={{ '--reveal-stagger': `${revealStagger}ms` } as CSSProperties}
         data-message-id={item.id}
+        data-crw-optimistic-source={item.optimisticSourceId}
         data-enter-id={isEntering ? item.id : undefined}
         ref={isEntering ? enterNodeRef : undefined}
         onAnimationEnd={handleRowAnimationEnd}
@@ -1733,6 +1660,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           ref={virtuosoRef}
           scrollerRef={scrollerRefCb}
           data={virtuosoData}
+          context={draftRowKeys}
           firstItemIndex={firstItemIndex}
           initialTopMostItemIndex={virtuosoData.length > 0 ? virtuosoData.length - 1 : 0}
           followOutput={followOutput}

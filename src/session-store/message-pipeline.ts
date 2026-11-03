@@ -87,6 +87,7 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
   // frames are also `type: 'user'` but should never consume a placeholder.
   const incomingParent = message.parent_tool_use_id
   let workingIntent = state.intent
+  let placeholderSourceId: string | undefined
   let placeholderConsumedAt: number | undefined
   if (
     message.type === 'user' &&
@@ -109,6 +110,7 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
       if (placeholder && typeof placeholder.msg.consumedAt === 'number') {
         placeholderConsumedAt = placeholder.msg.consumedAt
       }
+      placeholderSourceId = placeholder?.optimisticSourceId ?? oldestKey
       const nextPlaceholders = new Map(workingIntent.pendingPlaceholders)
       nextPlaceholders.delete(oldestKey)
       workingIntent = { ...workingIntent, pendingPlaceholders: nextPlaceholders }
@@ -200,6 +202,12 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
 
   working = withMirror(working, updateLiveTurnMirror(working.mirror, incomingMessage))
   working = withMirror(working, updateTranscriptMirror(working.mirror, incomingMessage))
+  if (placeholderSourceId && messageUuid) {
+    working = withMirror(working, {
+      ...working.mirror,
+      items: working.mirror.items.map((item) => item.id === messageUuid ? { ...item, optimisticSourceId: placeholderSourceId } : item),
+    })
+  }
   working = withMirror(working, updateIndexesMirror(working.mirror, incomingMessage))
   // Live path: a tool_use that just seeded may have an orphan result parked
   // from an earlier out-of-order ingress — settle it now (see pendingResults).

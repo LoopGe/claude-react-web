@@ -260,6 +260,15 @@ describe('replay-merge: stale cached copy replacement', () => {
   }
   const hasImage = (c: Array<{ type: string }> | null) => !!c && c.some((b) => b.type === 'image')
 
+  it('preserves optimisticSourceId when the full replay replaces a degraded cached row', () => {
+    const full = richPrompt('u-img')
+    let cache = createInitialSessionState('s')
+    cache = replayReplace(cache, [degradedProjection(full)], [])
+    cache.mirror.items[0].optimisticSourceId = 'optimistic:u-img'
+    const next = replayReplace(cache, [full], [])
+    expect(next.mirror.items[0].optimisticSourceId).toBe('optimistic:u-img')
+  })
+
   it('replaces a projected (image-stripped) cached copy with the full replay copy', () => {
     const full = richPrompt('u-img')
     const cached = degradedProjection(full)

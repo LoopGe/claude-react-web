@@ -29,6 +29,7 @@ import { enableDevMode, isDevRuntime } from './dev-mode.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 import { cleanupCliLogs } from './cli-diagnostics.js'
 import { join } from 'node:path'
+import type { ProviderRegistry } from './providers/registry.js'
 
 const log = createLogger('cli')
 
@@ -39,6 +40,9 @@ export interface ServerContextOptions {
   cwd?: string
   /** Default model advertised to new sessions. */
   model?: string
+  /** Optional provider registry for hosts/tests that need a different process
+   *  boundary without changing SessionManager composition. */
+  providers?: ProviderRegistry
   /** Explicit claude CLI path; falls back to env/`which claude`. */
   claudeBinary?: string
   /** Mount the App Plugins subsystem. Default true. */
@@ -136,6 +140,7 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
 
   const sessionManager = new SessionManager({
     store,
+    providers: opts.providers,
     mcpConfigStore: mcpStore,
     mpStore,
     agentStore: agentDefinitionStore,

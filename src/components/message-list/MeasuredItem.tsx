@@ -56,18 +56,21 @@ function ensureHeightRO(): ResizeObserver | null {
 export interface MeasuredItemRow {
   id?: string
   kind?: 'streaming'
+  optimisticSourceId?: string
+  msg?: { uuid?: string }
 }
 
 export interface MeasuredItemProps extends ItemProps<MeasuredItemRow> {
-  /** Injected by the bundle for component (non-string) ItemComponents; must
-   *  not reach the DOM. Destructured out of the spread with an underscore
-   *  name — the eslint unused-var allowlist pattern. */
+  /** Injected by the bundle for component (non-string) ItemComponents; kept
+   *  out of the DOM spread. Carries draft-row aliases for snapshot identity. */
   context?: unknown
 }
 
 export const MeasuredItem = memo(function MeasuredItem(props: MeasuredItemProps) {
-  const { item, context: _context, ...rest } = props
-  const rowId = typeof item.id === 'string' ? item.id : null
+  const { item, context, ...rest } = props
+  const draftRowKeys = context as Record<string, string> | undefined
+  const rowId = (item.msg?.uuid != null ? draftRowKeys?.[item.msg.uuid] : undefined)
+    ?? (typeof item.id === 'string' ? item.id : null)
   const ref = useRef<HTMLDivElement | null>(null)
   useLayoutEffect(() => {
     const el = ref.current
@@ -82,6 +85,7 @@ export const MeasuredItem = memo(function MeasuredItem(props: MeasuredItemProps)
     <div
       {...rest}
       data-crw-row-id={rowId ?? undefined}
+      data-crw-optimistic-source={item.optimisticSourceId}
       ref={ref}
     />
   )

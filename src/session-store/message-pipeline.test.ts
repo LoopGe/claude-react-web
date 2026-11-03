@@ -23,7 +23,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { applyMessage } from './message-pipeline'
-import { applyMessageConsumed } from './user-message-lifecycle'
+import { applyMessageConsumed, ackUserMessage } from './user-message-lifecycle'
 import {
   createInitialSessionState,
   type SessionState,
@@ -186,6 +186,14 @@ describe('applyMessage step 1: FIFO consume oldest optimistic placeholder', () =
     state = applyMessage(state, userMsg('server-1', 'first'))
     expect(state.intent.pendingPlaceholders.has('optimistic:1')).toBe(false)
     expect(state.intent.pendingPlaceholders.has('optimistic:2')).toBe(true)
+    expect(state.mirror.items.at(-1)?.optimisticSourceId).toBe('optimistic:1')
+  })
+
+  it('preserves the original optimistic id through an ack-first WS echo', () => {
+    let state = withPlaceholders(freshState(), [placeholderItem('optimistic:1', 'first')])
+    state = ackUserMessage(state, 'optimistic:1', 'server-1')
+    state = applyMessage(state, userMsg('server-1', 'first'))
+    expect(state.mirror.items.at(-1)?.optimisticSourceId).toBe('optimistic:1')
   })
 
   it('does NOT match a subagent tool_result against a pending placeholder (parent guard)', () => {

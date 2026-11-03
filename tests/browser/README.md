@@ -22,3 +22,27 @@ after the target card unmounts. Each failure attaches the full frame series
 under `test-results/`. Scroll-follow compensation is a separate contract; this
 suite deliberately asserts spacer geometry, not a guessed message alignment
 formula.
+
+The `panel-reshow` specs use the same production `MessageList` and real
+Virtuoso to attach frame-by-frame re-show telemetry. They cover the 320ms panel
+CSS animation and transparent hold, row-animation creation inside the 500ms
+sweep deadline, and the 750ms mechanical follow-rearm suppression. A separate
+deterministic wrapper-replacement case proves that message-id dedup survives
+element churn. The panel class is applied by the fixture host, so these specs
+validate the production CSS and MessageList/scroll contracts, not App's
+`openIds` classification or its own scroll-memory re-assert loop.
+
+The separate `app-panel-reshow` config drives the real App through its Hono
+REST/WS server and real Virtuoso. Four dormant UUID sessions and an A/B group
+are seeded with the production `SessionStore`, `TranscriptSidecar` and
+`UiStateStore`; only the provider process boundary is replaced by an
+init-yielding fake handle, so no model subprocess is involved. It covers cached
+AWAY restoration, native-wheel/keyboard/per-panel cancellation of App
+re-assert, non-scroll input controls, Alt+Arrow seek takeover, reduced-motion
+epochs, and visible panel reorder without a keep-alive re-show. The default
+Playwright config ignores this spec because it needs the app-specific API/Vite
+ports.
+
+```bash
+npm run test:browser:app
+```

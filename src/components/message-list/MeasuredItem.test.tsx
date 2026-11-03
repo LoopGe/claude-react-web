@@ -56,12 +56,12 @@ Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
  *  contract matter here; the rest are Virtuoso internals this wrapper must
  *  pass through untouched. */
 function itemProps(
-  item: { id?: string; kind?: 'streaming'; content?: string },
+  item: { id?: string; kind?: 'streaming'; content?: string; msg?: { uuid?: string }; optimisticSourceId?: string },
   children: React.ReactNode = 'row',
 ) {
   return {
     item,
-    context: { someContext: true },
+    context: undefined as unknown,
     'data-index': 0,
     'data-item-index': 0,
     'data-known-size': 0,
@@ -144,6 +144,15 @@ describe('MeasuredItem', () => {
     // `item` and `context` must NOT reach the DOM (unknown-prop warning).
     expect(el.hasAttribute('item')).toBe(false)
     expect(el.hasAttribute('context')).toBe(false)
+  })
+
+  it('uses the draft alias and exposes optimistic source on the measured wrapper', () => {
+    const props = itemProps({ id: 'server-1', msg: { uuid: 'server-1' }, optimisticSourceId: 'optimistic:1' })
+    props.context = { 'server-1': 'draft:3' }
+    const { container } = render(<MeasuredItem {...props} />)
+    const el = container.firstElementChild as HTMLElement
+    expect(el.dataset.crwRowId).toBe('draft:3')
+    expect(el.dataset.crwOptimisticSource).toBe('optimistic:1')
   })
 
   it('exports a fallback distinct from the old probe default', () => {

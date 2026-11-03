@@ -14,7 +14,7 @@ import { closeAllContextMenus } from './components/context-menu-registry'
 import { DialogHosts } from './components/DialogHosts'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
-import { PANEL_CACHE_EXTRA, evictFromCache, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshotTop } from './utils/panel-cache'
+import { PANEL_CACHE_EXTRA, evictFromCache, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshot, scrollSnapshotTop, type PanelScrollSnapshot } from './utils/panel-cache'
 import { SessionDeleteQueue } from './utils/session-delete-queue'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
@@ -37,7 +37,7 @@ import { useHeldModifiers } from './hooks/useHeldModifiers'
 import { useLocalStorage } from './hooks/useLocalStorage'
 import { useComposerSnippets } from './hooks/useComposerSnippets'
 import { usePanelColumnResize } from './hooks/usePanelColumnResize'
-import { PANEL_RESHOW_SETTLE_MS } from './components/message-list/useTranscriptScroll'
+import { nextPanelShowEpoch, PANEL_RESHOW_SETTLE_MS, TRANSCRIPT_ANCHOR_REVEAL_EVENT, TRANSCRIPT_SEEK_EVENT, keyboardTargetsScroller, middleClickTargetsScroller, touchTargetsScroller, wheelChainsToScroller } from './components/panel-transition'
 import { useSidebarResize } from './hooks/useSidebarResize'
 import { useExitRetention, STRIP_EXIT_WINDOW_MS } from './hooks/useExitRetention'
 import { useSessionNotifications } from './hooks/useSessionNotifications'
@@ -2825,7 +2825,7 @@ export function App() {
   // every openIds change, and survives the panel's hidden period; the
   // restore layout effect writes it back after commit, before paint.
   // Idempotent: if the offset survived (no DOM move), the write is a no-op.
-  const panelScrollMemoryRef = useRef<Map<string, number> | null>(null)
+  const panelScrollMemoryRef = useRef<Map<string, PanelScrollSnapshot> | null>(null)
 
   /** Merge every VISIBLE panel's scrollTop into the scroll memory. Used by
    *  the drag-reorder paths (right before their setOpenIds) — the
@@ -2842,8 +2842,8 @@ export function App() {
       // Visible scrollers only: a cached (display:none) panel's scroller is
       // collapsed — scrollTop READS 0 there (snapshotting a hidden panel
       // would clobber its remembered value).
-      const top = scroller != null ? scrollerSnapshotTop(scroller) : null
-      if (top != null) mem.set(id, top)
+      const snapshot = scroller != null ? scrollerSnapshot(scroller) : null
+      if (snapshot != null) mem.set(id, snapshot)
     }
   }, [bodyRef])
 
@@ -2864,8 +2864,8 @@ export function App() {
     // that race: by then Virtuoso's initial reposition has landed, and the
     // remembered offset is still valid (appends go to the bottom, so content
     // above the remembered position never shifts).
-    const reassert: { scroller: HTMLElement; top: number }[] = []
-    for (const [id, top] of mem) {
+    const reassert: { scroller: HTMLElement; snapshot: PanelScrollSnapshot }[] = []
+    for (const [id, snapshot] of mem) {
       const panel = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
       const scroller = panel?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
       // Restore onto a visible scroller only: writing scrollTop on a
@@ -2881,11 +2881,19 @@ export function App() {
       // `data-following` is stamped by useTranscriptScroll for exactly this
       // kind of read (the test-suite assertion surface).
       const following = panel?.querySelector('[data-following]')?.getAttribute('data-following') === 'true'
-      if (scroller && scroller.clientHeight > 0 && !following && Math.abs(scroller.scrollTop - top) > 1) {
-        scroller.scrollTop = top
-        reassert.push({ scroller, top })
+      if (scroller && scroller.clientHeight > 0 && !following && !scroller.hasAttribute('data-crw-seek-active')) {
+        const top = scrollSnapshotTop(scroller, snapshot)
+        const epoch = panelShowEpochsRef.current.get(id) ?? 1
+        // An aligned panel whose show epoch did not change is untouched by
+        // this openIds commit. Do not fight its inertial/native scrolling.
+        if (panelReassertEpochsRef.current.get(id) === epoch && top != null && Math.abs(scroller.scrollTop - top) <= 1) continue
+        reassert.push({ scroller, snapshot })
+        if (top != null && Math.abs(scroller.scrollTop - top) > 1) {
+          scroller.scrollTop = top
+        }
       }
     }
+    panelReassertEpochsRef.current = new Map(panelShowEpochsRef.current)
     if (reassert.length > 0) {
       // Re-assert for PANEL_RESHOW_SETTLE_MS: Virtuoso's post-remount
       // repositioning is GRADUAL — its range restoration adjusts the leading
@@ -2895,15 +2903,20 @@ export function App() {
       // until Virtuoso settles. The window matches the hook's follow-rearm
       // suppression (PANEL_RESHOW_SETTLE_MS) — tune them together.
       const deadline = performance.now() + PANEL_RESHOW_SETTLE_MS
-      const cancelers: { scroller: HTMLElement; events: string[] }[] = []
+      const cancelers: { target: HTMLElement; cancel: () => void }[] = []
+      const cancelledScrollers = new Set<HTMLElement>()
       let cancelled = false
       const cancel = () => {
         if (cancelled) return
         cancelled = true
-        for (const { scroller, events } of cancelers) {
-          for (const ev of events) scroller.removeEventListener(ev, cancel)
-        }
+        for (const { cancel: cancelOne } of cancelers) cancelOne()
         scrollReassertCancelRef.current = null
+      }
+      const cancelFor = (scroller: HTMLElement) => {
+        cancelledScrollers.add(scroller)
+        for (const { cancel: cancelOne } of cancelers.filter((entry) => entry.target === scroller || entry.target === scroller.parentElement)) {
+          cancelOne()
+        }
       }
       scrollReassertCancelRef.current = cancel
       const tick = () => {
@@ -2911,28 +2924,90 @@ export function App() {
           cancel()
           return
         }
-        for (const { scroller, top } of reassert) {
+        for (const { scroller, snapshot } of reassert) {
+          if (cancelledScrollers.has(scroller)) continue
           // Collapsed (re-hidden mid-window) scrollers must not be written —
           // same clobber contract as the restore pass above.
           if (scroller.clientHeight === 0) continue
-          // A jump far PAST the remembered offset (way beyond Virtuoso's
-          // gradual drift) is the user taking over — keyboard scrolling,
-          // thumb drag, middle-click autoscroll — yield immediately.
-          if (scroller.scrollTop - top > 200) {
-            cancel()
-            return
+          const top = scrollSnapshotTop(scroller, snapshot)
+          if (top == null) {
+            // The anchor is virtualized out. Let MessageList resolve its REAL
+            // row id to an index; no scrollHeight guess can distinguish a
+            // prepend from simultaneous tail growth or rewrap.
+            scroller.dispatchEvent(new CustomEvent(TRANSCRIPT_ANCHOR_REVEAL_EVENT, {
+              detail: { anchorId: snapshot.anchorId },
+            }))
+            continue
           }
           if (Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top
         }
+        if (cancelledScrollers.size === reassert.length) {
+          cancel()
+          return
+        }
         requestAnimationFrame(tick)
       }
+      const scrollKeys = new Set(['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' ', 'Tab'])
       for (const { scroller } of reassert) {
-        // Direct input ends the hold immediately — wheel/thumb is the user
-        // taking over the viewport. Keyboard and thumb drags are caught by
-        // the drift escape in tick (they move scrollTop past the threshold).
-        const events = ['wheel', 'touchstart']
-        for (const ev of events) scroller.addEventListener(ev, cancel, { passive: true })
-        cancelers.push({ scroller, events })
+        // Direct input ends the hold for this panel only. Listening on the
+        // parent also catches the overlay scrollbar's sibling track.
+        const target = scroller.parentElement ?? scroller
+        let lastTouchY: number | null = null
+        let touchOwnedByTranscript = false
+        const events = ['wheel', 'touchstart', 'touchmove', 'keydown', 'pointerdown', TRANSCRIPT_SEEK_EVENT]
+        const onInput = (event: Event) => {
+          if (event.type === 'touchstart') {
+            lastTouchY = (event as TouchEvent).touches[0]?.clientY ?? null
+            touchOwnedByTranscript = touchTargetsScroller(scroller, event.target)
+            return
+          }
+          if (event.type === 'touchmove') {
+            const touchEvent = event as TouchEvent
+            const y = touchEvent.touches[0]?.clientY ?? null
+            if (y == null || lastTouchY == null) { lastTouchY = y; return }
+            const draggedDown = y > lastTouchY
+            const draggedUp = y < lastTouchY
+            lastTouchY = y
+            if (!draggedDown && !draggedUp) return
+            if (!touchOwnedByTranscript) return
+          }
+          if (event.type === 'wheel') {
+            const wheelEvent = event as WheelEvent
+            if (wheelEvent.deltaY === 0 || wheelEvent.ctrlKey || wheelEvent.metaKey) return
+            if (!wheelChainsToScroller(scroller, wheelEvent.target, wheelEvent.deltaY)) return
+          }
+          if (event.type === 'pointerdown') {
+            const pointerEvent = event as PointerEvent
+            const targetElement = pointerEvent.target as HTMLElement | null
+            const track = targetElement?.closest('.os-track')
+            // A middle click starts native autoscroll; only the transcript's
+            // own sibling overlay track can page/drag this scroller.
+            if (pointerEvent.button === 1) {
+              if (!middleClickTargetsScroller(scroller, targetElement)) return
+            } else if (pointerEvent.button !== 0 || !track || track.parentElement !== target) return
+          }
+          if (event.type === 'keydown') {
+            const keyEvent = event as KeyboardEvent
+            // Window-level shortcuts run after this bubble listener. Classify
+            // after them so Shift+Tab / Mod+Arrow cannot cancel restoration
+            // when the app consumes the chord instead of starting a seek.
+            queueMicrotask(() => {
+              if (keyEvent.defaultPrevented) return
+              if (keyEvent.ctrlKey || keyEvent.metaKey) {
+                if (!['Home', 'End', 'ArrowUp', 'ArrowDown'].includes(keyEvent.key)) return
+              } else if (keyEvent.altKey || !scrollKeys.has(keyEvent.key)) return
+              if (!keyboardTargetsScroller(scroller, keyEvent.target, keyEvent.key)) return
+              cancelFor(scroller)
+            })
+            return
+          }
+          cancelFor(scroller)
+        }
+        const cancelOne = () => {
+          for (const ev of events) target.removeEventListener(ev, onInput)
+        }
+        for (const ev of events) target.addEventListener(ev, onInput, { passive: true })
+        cancelers.push({ target, cancel: cancelOne })
       }
       requestAnimationFrame(tick)
     }
@@ -2966,6 +3041,12 @@ export function App() {
    *  panel-enter replay — 320ms with a transparent hold masking Virtuoso's
    *  stale-position frames. Drained by the same handlePanelAnimEnd. */
   const replayEnterSetRef = useRef<Set<string>>(new Set())
+  /** Per-mounted-panel show sequence. Fresh/LRU-remounted panels start at 1;
+   *  only a cache hit entering the open view increments it. Pruned with the
+   *  same cache membership as scroll memory, so an evicted id never inherits
+   *  its previous epoch. */
+  const panelShowEpochsRef = useRef<Map<string, number>>(new Map())
+  const panelReassertEpochsRef = useRef<Map<string, number>>(new Map())
   /* eslint-disable react-hooks/refs -- intentional: render-phase diff for entering-panel detection + keep-alive cache sync */
   if (prevOpenIdsRef.current !== openIds) {
     const prevSet = new Set(prevOpenIdsRef.current)
@@ -2979,10 +3060,12 @@ export function App() {
     // handlePanelAnimEnd (CSS animationend), so an id whose animation is
     // interrupted mid-flight by another hide replays on its next show —
     // self-consistent for rapid switching.
-    if (!prefersReducedMotion()) {
-      const cachedSet = new Set(panelCache)
-      for (const id of openIds) {
-        if (!prevSet.has(id)) {
+    const cachedSet = new Set(panelCache)
+    const motionEnabled = !prefersReducedMotion()
+    for (const id of openIds) {
+      if (!prevSet.has(id)) {
+        panelShowEpochsRef.current.set(id, nextPanelShowEpoch(panelShowEpochsRef.current.get(id)))
+        if (motionEnabled) {
           if (cachedSet.has(id)) replayEnterSetRef.current.add(id)
           else enteringSetRef.current.add(id)
         }
@@ -3006,10 +3089,13 @@ export function App() {
     // panels keep their remembered value across the hidden period.
     snapshotPanelScrolls()
     const mem = panelScrollMemoryRef.current
+    const live = new Set<string>(nextCache)
     if (mem) {
       // Prune ids that left the cache (their panels unmount this commit).
-      const live = new Set<string>(nextCache)
       for (const id of mem.keys()) if (!live.has(id)) mem.delete(id)
+    }
+    for (const id of panelShowEpochsRef.current.keys()) {
+      if (!live.has(id)) panelShowEpochsRef.current.delete(id)
     }
   }
   /* eslint-enable react-hooks/refs */
@@ -5327,6 +5413,7 @@ export function App() {
                       hasUnread={!!unread[s.id]}
                       slot={visible ? openIdx + 1 : 0}
                       panelVisible={visible}
+                      showEpoch={panelShowEpochsRef.current.get(s.id)}
                       composerFocusSignal={visible ? panelFocusSignals[openIdx] : undefined}
                       showSlotHints={heldModifiers.ctrlOrMeta}
                       entering={entering}

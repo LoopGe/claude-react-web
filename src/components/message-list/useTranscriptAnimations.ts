@@ -1,7 +1,7 @@
 /**
  * Transcript entrance animations.
  *
- * Two independent one-shot animations:
+ * Three independent one-shot animations:
  *
  *   ROW ENTRANCE  `.msg-enter` on a row that genuinely just arrived live.
  *   TRANSCRIPT REVEAL  a whole-list fade for the first ready transcript of a
@@ -14,6 +14,8 @@
  *                      single writer of every class — an imperatively-added
  *                      class here was being stripped by the next className
  *                      commit before the animation ever started.
+ *   KEEP-ALIVE RE-SHOW  a rAF-scanned WAAPI cascade for visible rows after a
+ *                      real hidden→visible cycle of the same mounted panel.
  *
  * Row-entrance bookkeeping still happens DURING render (so the armed flag
  * commits in the same pass as the row it belongs to) and is cleaned up by
@@ -26,6 +28,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type AnimationEvent, type RefObject } from 'react'
 import { shouldArmEnterAnimation } from '../../utils/enter-animation'
+import { prefersReducedMotion } from '../../utils/reduced-motion'
 import type { TranscriptRow } from './transcript-rows'
 
 /** Entrance-animation gate tunables.
@@ -82,6 +85,11 @@ export interface UseTranscriptAnimationsOptions {
   replayReady: boolean
   /** Transcript identity. A new key is a new whole-list reveal. */
   transcriptRevealKey: string | undefined
+  /** False while the owning keep-alive panel is hidden. A real false→true
+   *  cycle replays the visible-row cascade without re-running initial reveal. */
+  panelVisible?: boolean
+  /** App-owned show sequence. Undefined keeps standalone false→true semantics. */
+  showEpoch?: number
 }
 
 /** Frozen reveal state: the row ids present in the DOM at the flip (the only
@@ -120,6 +128,8 @@ export function useTranscriptAnimations({
   rows,
   replayReady,
   transcriptRevealKey,
+  panelVisible,
+  showEpoch,
 }: UseTranscriptAnimationsOptions): TranscriptAnimationsApi {
   // --- Row entrance gate --------------------------------------------------
   // Goal: play a one-shot "rise + blur-in" on rows that genuinely just
@@ -471,6 +481,193 @@ export function useTranscriptAnimations({
     const timer = window.setTimeout(() => setReveal(null), REVEAL_WINDOW_FALLBACK_MS)
     return () => window.clearTimeout(timer)
   }, [reveal])
+
+  // Row-entrance cascade on keep-alive re-show — ALL re-showing panels. The
+  // sweep animates every visible row wrapper once per hide/show cycle (dedup
+  // by MESSAGE id — Virtuoso's settle re-renders replace wrapper ELEMENTS, so
+  // an element flag would re-animate the same message on every replacement),
+  // with a top-down spatial stagger; rows carrying their own `msg-enter`
+  // entrance (genuinely-new live arrivals) are skipped; reduced motion skips
+  // everything. This is the third entrance mode owned by this hook, beside
+  // initial reveal and live row arrival.
+  const rowReplayRef = useRef<{
+    raf: number | null
+    animatedIds: Set<string>
+    suppressedOptimisticIds: Set<string>
+    lastKey: string | undefined
+    lastEpoch: number | undefined
+    /** Timestamp of the last hide; null = no hide since mount/swap. */
+    lastHiddenAt: number | null
+    animations: Set<Animation>
+  }>({
+    raf: null,
+    animatedIds: new Set(),
+    suppressedOptimisticIds: new Set(),
+    lastKey: undefined,
+    lastEpoch: showEpoch,
+    lastHiddenAt: null,
+    animations: new Set(),
+  })
+  const currentTransitionRef = useRef({ key: transcriptRevealKey, epoch: showEpoch })
+  const revealOpen = reveal !== null
+  useLayoutEffect(() => {
+    // Commit the token before the browser can run rAF, but never during an
+    // aborted render: an abandoned epoch must not cancel the active sweep.
+    currentTransitionRef.current = { key: transcriptRevealKey, epoch: showEpoch }
+  }, [transcriptRevealKey, showEpoch])
+  useEffect(() => {
+    const el = messagesElRef.current
+    if (!el) return
+    const state = rowReplayRef.current
+    const effectEpoch = showEpoch
+    const effectKey = transcriptRevealKey
+    let cancelled = false
+    const cancelWork = () => {
+      cancelled = true
+      if (state.raf != null) cancelAnimationFrame(state.raf)
+      state.raf = null
+      for (const animation of state.animations) {
+        // WAAPI rejects BOTH promises on cancellation. Drain them before
+        // cancel() so rapid re-hide/key cleanup cannot surface AbortError as
+        // an unhandled rejection (the Vitest global shim is not a production fix).
+        animation.finished.catch(() => {})
+        animation.ready.catch(() => {})
+        animation.cancel()
+      }
+      state.animations.clear()
+    }
+    const epochChanged = showEpoch !== undefined && state.lastEpoch !== showEpoch
+    state.lastEpoch = showEpoch
+    if (epochChanged && panelVisible !== false) {
+      // A rapid transition can skip the hidden commit. The new epoch must also
+      // reset both dedup layers, not just cancel the old epoch's animations.
+      state.animatedIds.clear()
+      state.suppressedOptimisticIds.clear()
+      el.querySelectorAll<HTMLElement>(`.${TRANSCRIPT_ROW_CLASS}`).forEach((w) => {
+        delete w.dataset.crwReplay
+      })
+      // App already proved the keep-alive hide→show, so the local timestamp is
+      // only a cascade-start marker, not a second visibility classifier.
+      state.lastHiddenAt = performance.now()
+    }
+    // Transcript identity change: the keyed div below remounts and its rows
+    // play the whole-transcript reveal — never cascade on top of it.
+    const keyChanged = state.lastKey !== transcriptRevealKey
+    state.lastKey = transcriptRevealKey
+    if (keyChanged) {
+      state.animatedIds.clear()
+      state.suppressedOptimisticIds.clear()
+      cancelWork()
+      // A panel that is ALREADY hidden still has a future show to animate.
+      // Clearing this marker was what let its reveal expire with no re-show.
+      state.lastHiddenAt = panelVisible === false ? performance.now() : null
+      if (panelVisible !== false) return
+    }
+    if (panelVisible === false) {
+      state.lastHiddenAt = performance.now()
+      state.animatedIds.clear()
+      state.suppressedOptimisticIds.clear()
+      cancelWork()
+      // Best-effort element-flag clear: wrappers Virtuoso REUSES across the
+      // hide must not keep a flag that would block the next sweep (the two
+      // dedup layers have to agree at the layer boundary).
+      el.querySelectorAll<HTMLElement>(`.${TRANSCRIPT_ROW_CLASS}`).forEach((w) => {
+        delete w.dataset.crwReplay
+      })
+      return
+    }
+    // Visible (or a caller that never passes the prop — treated as visible).
+    // Sweep only after an actual hide; the first visibility and transcript
+    // swaps own their entrances. (StrictMode's double mount run also lands
+    // here with lastHiddenAt === null and correctly does nothing.)
+    if (state.lastHiddenAt != null) {
+      // The initial reveal owns the rows until it closes. Keep the hide marker
+      // so this effect can start the re-show cascade on the reveal's state
+      // transition instead of overlapping two opacity/transform writers.
+      if (revealOpen || isTranscriptRevealPending) return
+      state.lastHiddenAt = null
+      if (prefersReducedMotion()) return
+      if (state.raf != null) cancelAnimationFrame(state.raf)
+      const styles = getComputedStyle(document.documentElement)
+      const duration = parseFloat(styles.getPropertyValue('--motion-duration-moderate')) || 240
+      const easing = styles.getPropertyValue('--motion-ease-standard').trim() || 'cubic-bezier(0.22, 1, 0.36, 1)'
+      const deadline = performance.now() + 500
+      const noteOptimistic = (w: HTMLElement) => {
+        const mid = w.getAttribute('data-message-id') ?? ''
+        if (!mid.startsWith('optimistic:') || state.suppressedOptimisticIds.has(mid)) return
+        state.suppressedOptimisticIds.add(mid)
+      }
+      // Record before the first rAF too: an ack can replace the optimistic row
+      // before the sweep's first callback observes it.
+      el.querySelectorAll<HTMLElement>(`.${TRANSCRIPT_ROW_CLASS}`).forEach(noteOptimistic)
+      const tick = () => {
+        if (cancelled || currentTransitionRef.current.epoch !== effectEpoch || currentTransitionRef.current.key !== effectKey) return
+        if (performance.now() > deadline) return
+        // Batch reads before writes: interleaving gBCR reads with dataset
+        // writes forces a style recalc per wrapper per tick (layout thrash
+        // on exactly the frame that should feel instant).
+        const vr = el.getBoundingClientRect()
+        const pending: { w: HTMLElement; delay: number }[] = []
+        const wrappers = el.querySelectorAll<HTMLElement>(`.${TRANSCRIPT_ROW_CLASS}`)
+        wrappers.forEach((w) => {
+          // Two dedup layers, because wrappers fall into two failure modes:
+          //  - Rows WITH a message id: Virtuoso's settle re-renders replace
+          //    wrapper ELEMENTS (an element flag dies with it), so the same
+          //    message must be deduped by id (survives element churn).
+          //  - Rows WITHOUT one (task cards, system rows): only the element
+          //    flag can dedup them — without it they would be re-animated on
+          //    every sweep tick, each restart snapping opacity back to 0
+          //    ("消息卡片抖动").
+          if (w.dataset.crwReplay === '1') return
+          const mid = w.getAttribute('data-message-id') ?? ''
+          if (mid && state.animatedIds.has(mid)) return
+          // Optimistic sends: skip the transient row (its server-echo
+          // replacement renders settled by design); the echo lands after the
+          // sweep's dedup would double-animate the swap.
+          if (mid.startsWith('optimistic:')) {
+            noteOptimistic(w)
+            return
+          }
+          const r = w.getBoundingClientRect()
+          if (r.bottom <= vr.top || r.top >= vr.bottom) return
+          // An ack re-keys an optimistic row without msg-enter. Suppress that
+          // one replacement too; visibility is checked first so an offscreen
+          // overscan row cannot consume the acknowledgement's suppression.
+          const optimisticSource = w.dataset.crwOptimisticSource
+          if (mid && optimisticSource && state.suppressedOptimisticIds.has(optimisticSource) && !w.classList.contains('msg-enter')) {
+            w.dataset.crwReplay = '1'
+            state.animatedIds.add(mid)
+            return
+          }
+          const delay = Math.min(Math.max(0, Math.round((r.top - vr.top) / 40)) * 20, 300)
+          pending.push({ w, delay })
+          w.dataset.crwReplay = '1'
+          if (mid) state.animatedIds.add(mid)
+        })
+        // The scan intentionally covers the full settle window: Virtuoso can
+        // replace or reveal wrappers several frames after the show.
+        for (const { w, delay } of pending) {
+          // A row carrying its own msg-enter entrance (genuinely-new live
+          // arrival during the window) must not be double-animated.
+          if (w.classList.contains('msg-enter')) continue
+          const animation = w.animate(
+            [
+              { opacity: 0, transform: 'translateY(-14px)' },
+              { opacity: 1, transform: 'translateY(0px)' },
+            ],
+            { duration, delay, easing, fill: 'backwards' },
+          )
+          state.animations.add(animation)
+          const forget = () => { state.animations.delete(animation) }
+          animation.addEventListener('finish', forget, { once: true })
+          animation.addEventListener('cancel', forget, { once: true })
+        }
+        state.raf = requestAnimationFrame(tick)
+      }
+      state.raf = requestAnimationFrame(tick)
+    }
+    return cancelWork
+  }, [panelVisible, transcriptRevealKey, revealOpen, isTranscriptRevealPending, showEpoch])
 
   return {
     messagesElRef,

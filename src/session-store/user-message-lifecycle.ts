@@ -124,13 +124,14 @@ export function ackUserMessage(
   // Re-derive the TranscriptItem with the new uuid so its id matches the
   // server's. `prev` is unknown at this point — we pass undefined; compact-
   // summary detection on a user prompt is always false, so it's harmless.
-  const updated = toTranscriptItem(msg, undefined)
-  if (!updated) {
+  const rebuilt = toTranscriptItem(msg, undefined)
+  if (!rebuilt) {
     // Couldn't rebuild — drop the placeholder anyway so the spinner clears.
     const next = new Map(state.intent.pendingPlaceholders)
     next.delete(pendingId)
     return withIntent(state, { ...state.intent, pendingPlaceholders: next })
   }
+  const updated = { ...rebuilt, optimisticSourceId: pendingId }
   // Carry sending=false implicitly (toTranscriptItem doesn't set it). Re-key
   // the map to the server uuid so the next echo (if any) can match.
   //
@@ -210,7 +211,7 @@ export function applyMessageConsumed(
     const nextMsg: SdkMessage = { ...placeholder.msg, consumedAt }
     const rebuilt = toTranscriptItem(nextMsg, undefined)
     const updated: TranscriptItem = rebuilt
-      ? { ...rebuilt, sending: placeholder.sending }
+      ? { ...rebuilt, sending: placeholder.sending, optimisticSourceId: placeholder.optimisticSourceId }
       : { ...placeholder, msg: nextMsg, deliveryStatus: 'consumed' }
     const nextPlaceholders = new Map(state.intent.pendingPlaceholders)
     nextPlaceholders.set(uuid, updated)

@@ -76,6 +76,8 @@ export interface TranscriptRow {
    *  "sending" spinner. Cleared automatically by the reducer when the
    *  server's broadcast lands and the optimistic gets swapped out. */
   sending?: boolean
+  /** Original optimistic id preserved across the REST ack re-key. */
+  optimisticSourceId?: string
   /** Queue-delivery state of a top-level user turn ('queued' = waiting
    *  behind an in-flight turn, 'consumed' = SDK has started processing,
    *  'injecting'/'injected' = mid-run steering states, spec §10).
@@ -239,6 +241,7 @@ function pushRow(
     renderableIndex: out.length,
     itemIndex,
     sending: item.sending,
+    optimisticSourceId: item.optimisticSourceId,
     deliveryStatus: item.deliveryStatus,
     receivedAt: item.receivedAt,
   })
@@ -316,6 +319,7 @@ export function foldToolGroupRows(rows: readonly TranscriptRow[]): TranscriptRow
       renderableIndex: first.renderableIndex,
       itemIndex: first.itemIndex,
       sending: first.sending,
+      optimisticSourceId: first.optimisticSourceId,
       deliveryStatus: first.deliveryStatus,
       receivedAt: first.receivedAt,
       searchTick: first.searchTick,

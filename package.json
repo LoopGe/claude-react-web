@@ -55,6 +55,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "playwright test",
+    "test:browser:app": "playwright test --config playwright.app.config.ts",
     "verify": "npm run typecheck && npm run lint && npm test && npm run build",
     "release": "node scripts/release.mjs",
     "commitlint": "commitlint",

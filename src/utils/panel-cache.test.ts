@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-// (scrollerSnapshotTop 需要 DOM；纯函数部分在 jsdom 下同样可跑)
 import { describe, it, expect } from 'vitest'
 import {
   PANEL_CACHE_EXTRA,
@@ -7,7 +6,8 @@ import {
   evictFromCache,
   renderedPanelIds,
   ghostableIds,
-  scrollerSnapshotTop,
+  scrollerSnapshot,
+  scrollSnapshotTop,
 } from './panel-cache'
 
 describe('mergeOpenIntoCache', () => {
@@ -69,19 +69,71 @@ describe('ghostableIds', () => {
   })
 })
 
-describe('scrollerSnapshotTop', () => {
-  it('returns scrollTop for a laid-out scroller', () => {
+describe('anchored scroll snapshots', () => {
+  function scrollerWithRow(scale = 1) {
     const el = document.createElement('div')
-    Object.defineProperty(el, 'clientHeight', { configurable: true, value: 600 })
-    Object.defineProperty(el, 'scrollTop', { configurable: true, value: 1234 })
-    expect(scrollerSnapshotTop(el)).toBe(1234)
+    Object.defineProperties(el, {
+      clientHeight: { configurable: true, value: 600 },
+      offsetHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 1600, writable: true },
+      scrollTop: { configurable: true, value: 1100, writable: true },
+      getBoundingClientRect: {
+        configurable: true,
+        value: () => ({ top: 0, bottom: 600 * scale }),
+      },
+    })
+    const row = document.createElement('div')
+    row.dataset.crwRowId = 'message-a'
+    row.dataset.itemIndex = '100'
+    Object.defineProperty(row, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: -100 * scale, bottom: 1 }),
+    })
+    el.appendChild(row)
+    return { el, row }
+  }
+
+  it('restores the same message offset after older history prepends', () => {
+    const { el, row } = scrollerWithRow()
+    const snapshot = scrollerSnapshot(el)
+    expect(snapshot).toEqual({ top: 1100, anchorId: 'message-a', anchorOffset: 100 })
+
+    Object.defineProperty(row, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 900, bottom: 1000 }),
+    })
+    expect(scrollSnapshotTop(el, snapshot!)).toBe(2100)
+    row.dataset.crwRowId = 'server-uuid-1'
+    row.dataset.crwOptimisticSource = 'message-a'
+    expect(scrollSnapshotTop(el, snapshot!)).toBe(2100)
+
+    row.remove()
+    // A virtualized anchor must be revealed by its owner by id, never guessed
+    // from scrollHeight (which also includes tail growth and rewrap).
+    expect(scrollSnapshotTop(el, snapshot!)).toBeNull()
+    el.dataset.crwAnchorMissing = 'message-a'
+    expect(scrollSnapshotTop(el, snapshot!)).toBe(1100)
+    scrollerSnapshot(el)
+    expect(el.dataset.crwAnchorMissing).toBeUndefined()
   })
 
-  it('returns null for a collapsed (display:none) scroller', () => {
-    const el = document.createElement('div')
-    Object.defineProperty(el, 'clientHeight', { configurable: true, value: 0 })
-    Object.defineProperty(el, 'scrollTop', { configurable: true, value: 0 })
-    expect(scrollerSnapshotTop(el)).toBeNull()
+  it('normalizes viewport rects when the panel is scaled during entrance', () => {
+    const { el, row } = scrollerWithRow(0.5)
+    const snapshot = scrollerSnapshot(el)
+    expect(snapshot).toEqual({ top: 1100, anchorId: 'message-a', anchorOffset: 100 })
+    Object.defineProperty(row, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 450, bottom: 550 }),
+    })
+    expect(scrollSnapshotTop(el, snapshot!)).toBe(2100)
+  })
+  it('does not anchor on an overscan row below the viewport', () => {
+    const { el, row } = scrollerWithRow()
+    Object.defineProperty(row, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ top: 700, bottom: 800 }),
+    })
+    expect(scrollerSnapshot(el)).toEqual({ top: 1100, anchorId: null, anchorOffset: 0 })
   })
 })
 
