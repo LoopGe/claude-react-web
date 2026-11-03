@@ -11,7 +11,8 @@
 //   - disabled loading reset (loading must not linger when disabled mid-flight)
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { renderHook, act, waitFor } from '@testing-library/react'
+import { useState, useEffect, createElement } from 'react'
+import { render, renderHook, act, waitFor } from '@testing-library/react'
 import { useGitQuery } from './useGitQuery'
 
 // ── Controllable load function ──────────────────────────────────────
@@ -456,5 +457,101 @@ describe('useGitQuery — unmount', () => {
       load.resolveLast('late')
       await Promise.resolve()
     })
+  })
+})
+
+// ── 12. disabled → enabled transition (regression) ───────────────────
+//
+// The external-token abort effect must NOT fire when transitioning from
+// disabled (tokenKind='external') to enabled. On the pre-fix core, the
+// abort effect saw the stale 'external' tokenKind in the same batched
+// render as the HTTP effect's enabled path and aborted the freshly
+// created controller. The fix (needsAbortRef) ensures the abort effect
+// only fires for applyExternal, not for the disabled path.
+
+describe('useGitQuery — disabled→enabled transition (regression)', () => {
+  // Captures the latest hook state from the Harness component. Updated on
+  // every render so the test can assert after async resolution.
+  let harnessState: { data: string | null; loading: boolean; error: string | null } = {
+    data: null, loading: false, error: null,
+  }
+
+  /** Renders useGitQuery starting disabled, then flips enabled=true in a
+   *  mount effect. This batches the disabled path's setState({tokenKind:
+   *  'external'}) with the enabled prop change in the same React update
+   *  cycle — reproducing the CommitFileRow scenario where fetchStarted
+   *  flips before the disabled path's state is fully processed. */
+  function Harness({ load }: { load: (signal: AbortSignal) => Promise<string> }) {
+    const [enabled, setEnabled] = useState(false)
+    const q = useGitQuery<string>({ enabled, queryKey: 'k', load })
+    harnessState = { data: q.data, loading: q.loading, error: q.error }
+    useEffect(() => {
+      setEnabled(true)
+    }, [])
+    return null
+  }
+
+  beforeEach(() => {
+    harnessState = { data: null, loading: false, error: null }
+  })
+
+  it('batched disabled→enabled: new controller is not aborted and fetch resolves', async () => {
+    const load = trackLoad<string>()
+    render(createElement(Harness, { load: load.fn }))
+
+    // The Harness's mount effect flips enabled to true, batching with the
+    // disabled path's setState in the same React update. On the pre-fix
+    // core, the abort effect saw the stale 'external' tokenKind and
+    // aborted the new controller — the fetch response was then discarded.
+    await waitFor(() => expect(load.count()).toBe(1))
+
+    // The new controller must NOT be aborted.
+    expect(load.lastSignal()!.aborted).toBe(false)
+
+    // The fetch resolves and commits.
+    await act(async () => {
+      load.resolveLast('data')
+      await Promise.resolve()
+    })
+    expect(harnessState.data).toBe('data')
+    expect(harnessState.loading).toBe(false)
+  })
+
+  it('rerender-based disabled→enabled→disabled→enabled: each enable starts a fresh, unaborted request', async () => {
+    // Uses rerender (act flushes between calls, so no batching). Still
+    // guards against regressions where the abort effect might fire for
+    // the disabled path's external token on any enable transition.
+    const load = trackLoad<string>()
+    const { result, rerender } = renderHook(
+      ({ e }) => useGitQuery<string>({ enabled: e, queryKey: 'k', load: load.fn }),
+      { initialProps: { e: false } },
+    )
+    expect(result.current.data).toBeNull()
+    expect(load.count()).toBe(0)
+
+    // First enable.
+    rerender({ e: true })
+    await waitFor(() => expect(load.count()).toBe(1))
+    expect(load.lastSignal()!.aborted).toBe(false)
+    await act(async () => {
+      load.resolveLast('first')
+      await Promise.resolve()
+    })
+    expect(result.current.data).toBe('first')
+
+    // Disable — data cleared, loading false.
+    rerender({ e: false })
+    expect(result.current.data).toBeNull()
+    expect(result.current.loading).toBe(false)
+
+    // Re-enable — fresh request, NOT aborted.
+    rerender({ e: true })
+    await waitFor(() => expect(load.count()).toBe(2))
+    expect(load.lastSignal()!.aborted).toBe(false)
+    await act(async () => {
+      load.resolveLast('second')
+      await Promise.resolve()
+    })
+    expect(result.current.data).toBe('second')
   })
 })
