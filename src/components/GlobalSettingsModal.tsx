@@ -3,11 +3,8 @@
 
 import { cloneElement, isValidElement, lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api } from '../hooks/useApi'
-import { useLocalStorage } from '../hooks/useLocalStorage'
+import { useRecentCwds } from '../hooks/useRecentItems'
 import { getHostCapabilities } from '../host-capabilities'
-import { RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../constants/recentKeys'
-import { isStringArray } from '../../shared/type-guards'
-import { clamp } from '../utils/clamp'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { IconX, IconCheck, IconChevronDown, IconRefresh, IconSparkles, IconTerminal } from './icons/ToolIcons'
 import { EmptyState } from './EmptyState'
@@ -1018,19 +1015,10 @@ function SkillsTab({
   // fade — hold the record the way SkillPreviewModal holds its content.
   const previewPresence = usePresenceValue(previewSkill)
   // Recent projects — the SAME MRU list the New Session dialog offers, so a
-  // project used there is pickable here and vice versa.
-  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
-  const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
-  const recentCwdsCap = clamp(Math.round(recentCwdsCapRaw), 3, 50)
-  const rememberCwd = useCallback((raw: string) => {
-    const v = raw.trim()
-    if (!v) return
-    setRecentCwds((prev) => [v, ...prev.filter((x) => x !== v)].slice(0, recentCwdsCap))
-  }, [recentCwdsCap, setRecentCwds])
-  // The picker's per-row ✕ drops one entry from the shared MRU.
-  const forgetCwd = useCallback((path: string) => {
-    setRecentCwds((prev) => prev.filter((c) => c !== path))
-  }, [setRecentCwds])
+  // project used there is pickable here and vice versa. Threaded through the
+  // shared `useRecentCwds` adapter so every call site (New Session, ChatPanel
+  // relocation, Skills tab) converges on one list.
+  const { recents: recentCwds, remember: rememberCwd, forget: forgetCwd } = useRecentCwds()
   // Browse dialog for choosing an arbitrary project directory as target.
   const [showTargetPicker, setShowTargetPicker] = useState(false)
 

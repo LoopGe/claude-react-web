@@ -8,10 +8,7 @@ import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
 import { SessionBody, errorCardState } from './SessionErrorCard'
 import { DirectoryPicker } from './DirectoryPicker'
-import { useLocalStorage } from '../hooks/useLocalStorage'
-import { RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT } from '../constants/recentKeys'
-import { isStringArray } from '../../shared/type-guards'
-import { clamp } from '../utils/clamp'
+import { useRecentCwds } from '../hooks/useRecentItems'
 import type { ScrollNavigator } from './MessageList'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
@@ -384,16 +381,10 @@ export const ChatPanel = memo(function ChatPanel({
   const isMobile = useIsMobile()
   const diagnostics = useDiagnostics(session.id, errorCardState(session) !== null)
   // New-session project picker (the error card's relocation affordance):
-  // recents are the same localStorage MRU the new-session dialog maintains.
-  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
-  const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
-  const recentCwdsCap = clamp(Math.round(recentCwdsCapRaw), 3, 50)
-  const rememberCwd = (raw: string) => {
-    const v = raw.trim()
-    if (!v) return
-    setRecentCwds((prev) => [v, ...prev.filter((x) => x !== v)].slice(0, recentCwdsCap))
-  }
-  const forgetCwd = (path: string) => setRecentCwds((prev) => prev.filter((c) => c !== path))
+  // recents are the same localStorage MRU the new-session dialog maintains,
+  // threaded through the shared `useRecentCwds` adapter so every call site
+  // (New Session, ChatPanel relocation, Skills tab) converges on one list.
+  const { recents: recentCwds, remember: rememberCwd, forget: forgetCwd } = useRecentCwds()
   const [cwdPickerOpen, setCwdPickerOpen] = useState(false)
   const handleSelectCwd = (path: string) => {
     // Record only after the relocation lands — a failed PATCH must not
