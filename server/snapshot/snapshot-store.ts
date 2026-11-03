@@ -59,9 +59,10 @@ export class SnapshotStore {
     }
   }
 
-  private chain(sessionId: string, fn: () => Promise<void>): Promise<void> {
+  private chain(sessionId: string, fn: () => Promise<void>, opts?: { strict?: boolean }): Promise<void> {
     const prev = this.writing.get(sessionId) ?? Promise.resolve()
-    const next = prev.then(fn).catch((err) => {
+    const next = prev.catch(() => undefined).then(fn).catch((err) => {
+      if (opts?.strict) throw err
       log.warn(`write chain error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`)
     })
     this.writing.set(sessionId, next)
@@ -151,21 +152,29 @@ export class SnapshotStore {
     this.removed.delete(sessionId)
   }
 
-  async remove(sessionId: string): Promise<void> {
+  async remove(sessionId: string, opts?: { strict?: boolean }): Promise<void> {
     this.removed.add(sessionId)
+    // Deletion is a consumer of the write barrier, not another writer in it.
+    // A concurrent remove must be able to reach its own filesystem operations
+    // instead of queueing behind an earlier remove that may still be blocked.
+    await this.writing.get(sessionId)?.catch(() => undefined)
     const file = this.file(sessionId)
     if (!file) return
     try {
       await unlink(file)
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
-      if (code !== 'ENOENT') log.warn(`remove failed for ${sessionId}: ${(err as Error).message ?? err}`)
+      if (code !== 'ENOENT') {
+        if (opts?.strict) throw err
+        log.warn(`remove failed for ${sessionId}: ${(err as Error).message ?? err}`)
+      }
     }
     // Also remove the shadow odb directory so git objects are not leaked.
     if (this.dir) {
       try {
         await rm(odbDir(this.dir, sessionId), { recursive: true, force: true })
-      } catch {
+      } catch (err) {
+        if (opts?.strict) throw err
         // ENOENT-tolerant — odb dir may not exist if the session was
         // never captured or was already cleaned up.
       }

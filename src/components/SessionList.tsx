@@ -20,6 +20,7 @@ import { SessionCard } from './session-list/SessionCard'
 import { DialogHosts } from './DialogHosts'
 import { useDialogHosts } from '../hooks/useDialogHosts'
 import { ContextMenu } from './ContextMenu'
+import type { SessionDeleteHandler } from './session-delete-menu'
 import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { Virtuoso } from 'react-virtuoso'
@@ -112,7 +113,7 @@ interface Props {
    *  <NewSessionDialog> so the create form can offer per-server checkboxes
    *  pre-checked from the global default. */
   firstPartyTools?: Record<string, { enabled: boolean }>
-  onDelete: (id: string) => void
+  onDelete: SessionDeleteHandler
   /** Put a live, idle session into dormant state (release the SDK
    *  subprocess) without deleting it. Reversible via resume. */
   onSleep: (id: string) => void
@@ -985,7 +986,7 @@ export const SessionList = memo(function SessionList({
         onClose={() => setMenu(null)}
         onRename={(s) => startRename(s)}
         onClosePanel={(id) => onClosePanel?.(id)}
-        onDelete={(id) => onDelete(id)}
+        onDelete={onDelete}
         onSleep={(id) => onSleep(id)}
         onMove={handleMove}
         canMoveUp={canMoveUp}

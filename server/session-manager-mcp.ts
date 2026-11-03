@@ -21,7 +21,7 @@
 //   - Persisting mcpServerNames as part of the Session/SessionMeta shape
 
 import type { FirstPartyToolDef } from '../shared/first-party.js'
-import type { ControlWrapOpts } from './errors.js'
+import { HttpError, type ControlWrapOpts } from './errors.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
 import { LEGACY_GIT_TOOLS_SERVER_NAME, migrateLegacyGitToolsKey } from '../shared/first-party.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
@@ -131,6 +131,7 @@ export class SessionMcpManager {
   /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
   async setMcpServers(id: string, servers: Record<string, unknown>) {
     const s = this.deps.requireLive(id)
+    const handle = s.handle
     // Inject first-party servers so a live setMcpServers (replace semantics)
     // doesn't drop what spawn installed — same single code path as the spawn
     // injection, so on/off is consistent between spawn and live.
@@ -142,6 +143,11 @@ export class SessionMcpManager {
       'supportsMcp',
       { classify: true },
     )(injected ?? servers)
+
+    const current = this.deps.requireLive(id)
+    if (current !== s || s.handle !== handle) {
+      throw new HttpError(409, `session ${id} changed while updating MCP servers`)
+    }
 
     // Update the tracked MCP server names + the runtime dynamic map so the
     // client's "available" computation stays in sync and an immediate

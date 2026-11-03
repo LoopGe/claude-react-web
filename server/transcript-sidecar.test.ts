@@ -1,7 +1,8 @@
 import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises'
+import * as nodeFs from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TranscriptStore } from './transcript-store'
 import {
   TranscriptSidecar,
@@ -11,6 +12,11 @@ import {
   transcriptRow,
   type TranscriptHolder,
 } from './transcript-sidecar'
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return { ...actual, open: vi.fn(actual.open) }
+})
 
 const dirs: string[] = []
 afterEach(async () => { await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true }))) })
@@ -90,6 +96,39 @@ describe('TranscriptSidecar', () => {
     await appendFile(file, '{"seq":2')
     const rows = await new TranscriptSidecar(dir, 'sid-1').load()
     expect(rows.map((r) => r.seq)).toEqual([0, 1])
+  })
+  it('close drains pending appends, preserves the file, and blocks later appends', async () => {
+    const dir = await tmpDir()
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    for (let i = 0; i < 5; i++) void sc.appendRow({ seq: i, uuid: `u${i}` })
+    await sc.close()
+    await sc.appendRow({ seq: 5, uuid: 'late' })
+    const rows = await new TranscriptSidecar(dir, 'sid-1').load()
+    expect(rows.map((r) => r.seq)).toEqual([0, 1, 2, 3, 4])
+  })
+  it('closes the file handle when an append fails', async () => {
+    const dir = await tmpDir()
+    const sc = new TranscriptSidecar(dir, 'sid-1')
+    let closeCalls = 0
+    const originalOpen = nodeFs.open
+    const actualOpen = (await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')).open
+    const openMock = vi.mocked(nodeFs.open)
+    openMock.mockImplementationOnce(async (...args) => {
+      const handle = await originalOpen(...args)
+      vi.spyOn(handle, 'writeFile').mockRejectedValueOnce(new Error('disk full'))
+      const originalClose = handle.close.bind(handle)
+      vi.spyOn(handle, 'close').mockImplementation(async () => {
+        closeCalls++
+        return originalClose()
+      })
+      return handle
+    })
+    try {
+      await sc.appendRow({ seq: 0, uuid: 'a' })
+      expect(closeCalls).toBe(1)
+    } finally {
+      openMock.mockImplementation(actualOpen)
+    }
   })
   it('remove unlinks the file and is idempotent (ENOENT = success)', async () => {
     const dir = await tmpDir()

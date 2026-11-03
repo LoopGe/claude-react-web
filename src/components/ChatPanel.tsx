@@ -15,6 +15,7 @@ import { clamp } from '../utils/clamp'
 import type { ScrollNavigator } from './MessageList'
 import { SideChatDrawer } from './SideChatDrawer'
 import { ContextMenu } from './ContextMenu'
+import type { SessionDeleteHandler } from './session-delete-menu'
 import { DialogHosts } from './DialogHosts'
 import { WorktreeIsolationBadge } from './WorktreeIsolationBadge'
 import { Tooltip } from './Tooltip'
@@ -193,7 +194,7 @@ export interface ChatPanelProps {
   /** Delete the session entirely (App.handleDelete). Offered as a
    *  "Delete session" item in the panel context menu, mirroring the
    *  sidebar's Delete. */
-  onDelete?: (sessionId: string) => void
+  onDelete?: SessionDeleteHandler
   onSessionUpdate: (s: SessionInfo) => void
   /** Panel-swap and sidebar-card-accept drops are resolved by the App-level
    *  DndContext's onDragEnd (the panel here only provides the draggable

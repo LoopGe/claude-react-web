@@ -143,7 +143,7 @@ import {
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
-import { deleteTranscriptFile } from './history-reader.js'
+import { deleteTranscriptFile, deleteTranscriptFiles, findTranscriptFile, isSafeSessionId } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
@@ -169,7 +169,7 @@ import {
 } from '../shared/skills.js'
 import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
-import { raceWithFallback } from './with-timeout.js'
+import { raceWithFallback, withTimeout } from './with-timeout.js'
 import { COMMAND_PREVIEW_CAP, DELETE_LOCK_MAX_WAIT_MS, MODEL_SWITCH_RETRY_DELAY_MS } from './constants.js'
 
 // Re-export types so existing importers continue to work.
@@ -778,6 +778,20 @@ export function userTextOf(msg: SDKUserMessage): string {
 
 export class SessionManager {
   private sessions = new Map<string, Session>()
+  /** Real-exit promises for CLIs whose Session was unloaded but which may
+   *  still be closing. Kept across sleep/delete without retaining SDK handles. */
+  private closingHandles = new Map<string, Set<Promise<unknown>>>()
+  /** Active deletes and process-wait failures. Completed ordinary and
+   *  permanent deletes stay tombstoned so late async work cannot resurrect them. */
+  private deletedSessionIds = new Set<string>()
+  private ordinaryDeletedSessionIds = new Set<string>()
+  private permanentDeleteCounts = new Map<string, number>()
+  private completedPermanentDeletes = new Set<string>()
+  /** Permanent-delete attempts that failed only because the old CLI would not
+   *  confirm its exit. Their tombstone lifts once every real process is gone;
+   *  completed ordinary deletes must stay tombstoned until explicit adoption. */
+  private resumeAfterProcessExit = new Set<string>()
+  private pendingTitleWrites = new Map<string, Promise<void>>()
   private historyCap: number
   private subagentHistoryCap: number
   private forwardSubagentText: boolean
@@ -1756,6 +1770,24 @@ export class SessionManager {
   }
 
   private async doResume(id: string, opts?: { permissionMode?: PermissionMode; allowAdopt?: boolean }): Promise<SessionInfo> {
+    if (opts?.allowAdopt) {
+      const closing = this.closingHandles.get(id)
+      if (closing && closing.size > 0) {
+        const exits = await withTimeout(Promise.all([...closing]), 15_000) as ProcessExitInfo[]
+        if (exits.some((exit) => exit?.exitSafetyTimeout)) {
+          throw new HttpError(409, `session ${id} is still closing and cannot be resumed`)
+        }
+      }
+    }
+    if (opts?.allowAdopt
+      && !this.completedPermanentDeletes.has(id)
+      && !this.permanentDeleteCounts.has(id)
+      && !this.resumeAfterProcessExit.has(id)) {
+      // Explicit re-adoption clears an ordinary delete's tombstone. Active or
+      // completed permanent deletion, and a still-closing CLI, remain blocked.
+      this.deletedSessionIds.delete(id)
+      this.ordinaryDeletedSessionIds.delete(id)
+    }
     const live = this.sessions.get(id)
     if (live) {
       // The pump's cleanup tail sets `terminated=true` but does NOT unload,
@@ -1855,6 +1887,12 @@ export class SessionManager {
             ? ensured.worktree
             : { ...ensured.worktree, path: ensured.cwd })
         : undefined
+      if (this.isSessionDeleteTombstoned(id)) {
+        if (ensured.worktree) {
+          await removeWorktreeForSession(this.store!.getDir(), id, ensured.worktree, log, ensured.cwd)
+        }
+        throw new HttpError(410, `session ${id} was deleted and cannot be resumed`)
+      }
       if (ensured.cwd !== meta.cwd || worktree !== meta.worktree) {
         meta = { ...meta, cwd: ensured.cwd, worktree }
         this.store?.upsert(meta)
@@ -2101,7 +2139,7 @@ export class SessionManager {
       log.warn(`[session ${id}] adoptDiskSession(${providerName}): getSessionInfo threw:`, err)
       return undefined
     }
-    if (!info) return undefined
+    if (!info || this.isSessionDeleteTombstoned(id)) return undefined
     const now = Date.now()
     const meta: SessionMeta = {
       id,
@@ -2185,6 +2223,7 @@ export class SessionManager {
    *  `caller` is "fork" or "resume" so post-mortem log greps can tell
    *  which path tripped. */
   private markTranscriptMissing(meta: SessionMeta, caller: 'fork' | 'resume' | 'side-chat'): void {
+    if (this.isSessionDeleteTombstoned(meta.id)) return
     log.warn(
       `[session ${meta.id}] marking terminated:transcript_missing via ${caller} ` +
       `(cwd=${meta.cwd ?? '<none>'}, lastTurnAt=${meta.lastTurnAt ?? 'none'}, ` +
@@ -3026,6 +3065,12 @@ export class SessionManager {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
     const fullOpts: Options & { provider?: string; modelGroupId?: string } = { ...opts, provider: providerName }
+    if (this.isSessionDeleteTombstoned(id)) {
+      // delete() may overtake any slow async path via its op-lock escape
+      // hatch. A tombstone covers both resume and turn-less fresh respawns,
+      // and also the window before metadata removal has completed.
+      throw new HttpError(410, `session ${id} was deleted and cannot be respawned`)
+    }
     const requestedMode = fullOpts.permissionMode
 
     // NOTE: the spawn-time mode filter (which of plan/auto/… actually reaches
@@ -3419,7 +3464,9 @@ export class SessionManager {
     if (superseded && superseded.handle && superseded.handle !== handle) {
       log.warn(`[session ${id}] spawn superseding a live session — destroying prior handle`)
       try {
-        superseded.handle.destroy('session superseded by new spawn')
+        void this.destroyProviderHandle(id, superseded.handle, 'session superseded by new spawn').catch((err) => {
+          log.warn(`[session ${id}] failed to destroy superseded handle:`, err)
+        })
       } catch (err) {
         log.warn(`[session ${id}] failed to destroy superseded handle:`, err)
       }
@@ -3429,6 +3476,7 @@ export class SessionManager {
     // Clear any snapshot / sidecar tombstone from a previous session with
     // this id, so the new session's sidecar writes are not silently suppressed.
     this.snapshotStore.revive(id)
+    this.snapshots.revive(id)
     this.turnAnchorStore.revive(id)
     this.resultFrameStore.revive(id)
     this.taskResultStore.revive(id)
@@ -4771,7 +4819,10 @@ export class SessionManager {
         return this.info(s)
       }
       const resumeOpts = await this.buildResumeOpts(s)
-      this.respawnInPlace(s, resumeOpts, 'restart')
+      if (this.isSessionDeleteTombstoned(id) || this.sessions.get(id) !== s || s.terminatedReason === 'deleted') {
+        throw new HttpError(410, `session ${id} was deleted and cannot be restarted`)
+      }
+      await this.respawnInPlace(s, resumeOpts, 'restart')
       return this.info(s)
     })
   }
@@ -4891,7 +4942,7 @@ export class SessionManager {
         // transcript so it survives an external `claude --resume` (which prefers
         // the transcript title over this app's metadata). Fire-and-forget — the
         // metadata rename is authoritative and must not block on a failed write.
-        void this.persistTitleToTranscript(live.provider, id, trimmed)
+        this.trackTitleWrite(id, () => this.persistTitleToTranscript(live.provider, id, trimmed))
         return this.info(live)
       }
       if (!this.store) throw new HttpError(404, `session ${id} not found`)
@@ -4901,8 +4952,21 @@ export class SessionManager {
       const nextMeta = this.store.patch(id, { title: trimmed, lastActivityAt: Date.now() })!
       const info = this.infoFromMeta(nextMeta)
       this.broadcastGlobal({ kind: 'update', session: info })
-      void this.persistTitleToTranscript(meta.provider, id, trimmed)
+      this.trackTitleWrite(id, () => this.persistTitleToTranscript(meta.provider, id, trimmed))
       return info
+    })
+  }
+
+  /** Serialize transcript-title writes so permanent deletion can drain them
+   *  before unlinking the main JSONL. */
+  private trackTitleWrite(id: string, write: () => Promise<void>): void {
+    if (this.isSessionDeleteTombstoned(id)) return
+    const guardedWrite = () => this.isSessionDeleteTombstoned(id) ? Promise.resolve() : write()
+    const previous = this.pendingTitleWrites.get(id)
+    const next = previous ? previous.then(guardedWrite) : guardedWrite()
+    this.pendingTitleWrites.set(id, next)
+    void next.finally(() => {
+      if (this.pendingTitleWrites.get(id) === next) this.pendingTitleWrites.delete(id)
     })
   }
 
@@ -6798,6 +6862,13 @@ export class SessionManager {
    *  I/O-free: the store starts EMPTY and unreconciled — reconciling against
    *  the sidecar + on-disk JSONL happens in ensureTranscriptReconciled. */
   private getOrCreateTranscript(id: string): TranscriptHolder {
+    if (this.isSessionDeleteTombstoned(id)) {
+      // A late pump/reconcile must not recreate durable state after permanent
+      // deletion. Return a tombstoned writer instead of a fresh appendable one.
+      const sidecar = new TranscriptSidecar(this.store?.getDir(), id)
+      sidecar.tombstone()
+      return { store: new TranscriptStore(id), sidecar, reconciled: true }
+    }
     let t = this.transcriptStores.get(id)
     if (!t) {
       t = {
@@ -6876,7 +6947,8 @@ export class SessionManager {
     const p = (async () => {
       try {
         t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
-        backfillFromEntries(t, await this.composeTranscriptEntries(id))
+        const composed = await this.composeTranscriptEntries(id)
+        if (!this.isSessionDeleteTombstoned(id)) backfillFromEntries(t, composed)
       } catch (err) {
         // Degraded but usable: the store keeps whatever hydrated/appended
         // before the failure; the sidecar's append queue is unbroken.
@@ -7088,17 +7160,73 @@ export class SessionManager {
    *  deliberately NOT here — it keeps the session resumable (transcript on
    *  disk), spawns the fresh conversation under a NEW id whose seq space
    *  starts at zero, so the "generation reset" is the new session itself. */
-  private async removeTranscriptState(id: string): Promise<void> {
+  private async removeTranscriptState(id: string, opts?: { strict?: boolean; sidecar?: TranscriptSidecar }): Promise<void> {
+    const sidecars = new Set<TranscriptSidecar>()
+    if (opts?.sidecar) sidecars.add(opts.sidecar)
+    const current = this.transcriptStores.get(id)?.sidecar
+    if (current) sidecars.add(current)
+    // A restart may have no hydrated holder at all; the file still exists on disk.
+    if (sidecars.size === 0) sidecars.add(new TranscriptSidecar(this.store?.getDir(), id))
     this.transcriptStores.delete(id)
     this.transcriptReconciles.delete(id)
-    // Construct (not fetch) the sidecar: the file may outlive the in-memory
-    // holder across a server restart, and removal must still reach it.
-    await new TranscriptSidecar(this.store?.getDir(), id).remove()
+    const removals = await Promise.allSettled([...sidecars].map((sidecar) => sidecar.remove(opts)))
+    const failed = removals.find((r) => r.status === 'rejected')
+    if (failed) throw failed.reason
+  }
+
+  private isSessionDeleteTombstoned(id: string): boolean {
+    return this.deletedSessionIds.has(id)
+      || this.ordinaryDeletedSessionIds.has(id)
+      || this.completedPermanentDeletes.has(id)
+  }
+
+  private beginPermanentDelete(id: string): void {
+    this.deletedSessionIds.add(id)
+    this.permanentDeleteCounts.set(id, (this.permanentDeleteCounts.get(id) ?? 0) + 1)
+  }
+
+  private failPermanentDelete(id: string, allowResume: boolean): void {
+    if (this.completedPermanentDeletes.has(id)) {
+      this.permanentDeleteCounts.delete(id)
+      return
+    }
+    const remaining = (this.permanentDeleteCounts.get(id) ?? 1) - 1
+    if (remaining > 0) {
+      this.permanentDeleteCounts.set(id, remaining)
+      return
+    }
+    this.permanentDeleteCounts.delete(id)
+    // A prior process-wait failure owns recovery until the real exit lands.
+    // Early retry failures must not clear that marker or unblock a live CLI.
+    if (allowResume && !this.resumeAfterProcessExit.has(id)) this.deletedSessionIds.delete(id)
+  }
+
+  private finishPermanentDelete(id: string): void {
+    this.permanentDeleteCounts.delete(id)
+    this.resumeAfterProcessExit.delete(id)
+    this.deletedSessionIds.delete(id)
+    this.ordinaryDeletedSessionIds.delete(id)
+    this.completedPermanentDeletes.add(id)
+  }
+
+  private finishOrdinaryDelete(id: string): void {
+    // A completed ordinary delete now owns the tombstone until explicit
+    // adoption; an earlier process-wait failure must not lift it on exit.
+    this.resumeAfterProcessExit.delete(id)
+    this.failPermanentDelete(id, false)
+    if (this.completedPermanentDeletes.has(id)) {
+      this.deletedSessionIds.delete(id)
+      this.ordinaryDeletedSessionIds.delete(id)
+      return
+    }
+    this.ordinaryDeletedSessionIds.add(id)
+    if (!this.permanentDeleteCounts.has(id)) this.deletedSessionIds.delete(id)
   }
 
   /** Delete a session for good: close its Query AND erase its persistence
-   *  entry. Use when the user explicitly clicks "delete" in the UI. */
-  async delete(id: string): Promise<void> {
+   *  entry. The SDK transcript stays on disk unless deleteTranscript is true. */
+  async delete(id: string, opts?: { deleteTranscript?: boolean }): Promise<void> {
+    if (!isSafeSessionId(id)) throw new HttpError(400, `Invalid session id: ${id}`)
     // Locked. unload({ terminated }) awaits the pump from inside the lock;
     // that's safe because the pump's teardown only reaches unlocked methods
     // (see the deadlock rule at opLock) and the await is capped at 1 s.
@@ -7107,38 +7235,187 @@ export class SessionManager {
     // delete must still work then — it already tolerates running alongside
     // other work (unload is idempotent; the health monitor calls it unlocked).
     return this.opLock.run(id, async () => {
+      this.beginPermanentDelete(id)
       // Read the meta BEFORE store.remove drops the entry — the worktree
       // info must survive long enough to drive the cleanup below.
       const meta = this.store?.get(id)
-      await this.unload(id, { terminated: true, reason: 'deleted' })
+      if (opts?.deleteTranscript) {
+        try {
+          await findTranscriptFile(id, { strict: true })
+        } catch (err) {
+          this.failPermanentDelete(id, true)
+          throw err
+        }
+      }
+      const transcriptSidecar = opts?.deleteTranscript ? this.transcriptStores.get(id)?.sidecar : undefined
+      if (opts?.deleteTranscript) {
+        try {
+          await withTimeout(this.pendingTitleWrites.get(id) ?? Promise.resolve(), 15_000)
+        } catch (err) {
+          this.failPermanentDelete(id, true)
+          throw err
+        }
+      }
+      const live = this.sessions.get(id)
+      const previousLifecycle = live
+        ? { terminated: live.terminated, terminatedReason: live.terminatedReason, running: live.running }
+        : undefined
+      try {
+        await this.unload(id, { terminated: true, reason: 'deleted', awaitDestroy: opts?.deleteTranscript === true })
+      } catch (err) {
+        this.failPermanentDelete(id, true)
+        if (live && previousLifecycle) {
+          live.terminated = previousLifecycle.terminated
+          live.terminatedReason = previousLifecycle.terminatedReason
+          live.running = previousLifecycle.running
+          this.broadcastGlobal({ kind: 'update', session: this.info(live) })
+        }
+        throw err
+      }
+      if (opts?.deleteTranscript) {
+        // Process-wait failures are NOT rolled back: a live/wedged CLI must
+        // not become resumable while it can still write the transcript.
+        const closingHandles = this.closingHandles.get(id)
+        try {
+          if (closingHandles && closingHandles.size > 0) {
+            const exits = await withTimeout(
+              Promise.all([...closingHandles]),
+              15_000,
+            ) as ProcessExitInfo[]
+            if (exits.some((exit) => exit?.exitSafetyTimeout)) {
+              throw new Error(`CLI process for session ${id} did not exit; permanent deletion aborted`)
+            }
+          }
+        } catch (err) {
+          this.resumeAfterProcessExit.add(id)
+          this.failPermanentDelete(id, false)
+          const current = this.store?.get(id)
+          if (current) this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(current) })
+          if (err instanceof Error && err.message === 'Connection timed out after 15000ms') {
+            throw new Error(`CLI process for session ${id} did not exit; permanent deletion aborted`)
+          }
+          throw err
+        }
+        let deletedTranscript = false
+        try {
+          await this.snapshots.delete(id)
+          // Delete the CLI transcript before any app-owned data. If this fails,
+          // the retained sidecars still support a meaningful rollback/retry.
+          deletedTranscript = await deleteTranscriptFiles(id)
+          jsonlPageCache.invalidate(id)
+          // Permanent deletion must not leave app sidecars behind or hide their
+          // filesystem failures behind best-effort logging.
+          const removals = await Promise.allSettled([
+            this.promptUuidStore.remove(id, { strict: true }),
+            this.steeredStore.remove(id, { strict: true }),
+            this.turnAnchorStore.remove(id, { strict: true }),
+            this.resultFrameStore.remove(id, { strict: true }),
+            this.taskResultStore.remove(id, { strict: true }),
+            this.snapshotStore.remove(id, { strict: true }),
+            this.removeTranscriptState(id, { strict: true, sidecar: transcriptSidecar }),
+          ])
+          const failed = removals.find((r) => r.status === 'rejected')
+          if (failed) throw failed.reason
+        } catch (err) {
+          this.failPermanentDelete(id, true)
+          let canRestore = !this.completedPermanentDeletes.has(id)
+          if (canRestore && deletedTranscript) {
+            try {
+              canRestore = Boolean(await findTranscriptFile(id, { strict: true }))
+            } catch {
+              canRestore = false
+            }
+          }
+          if (canRestore) {
+            // A failed permanent upgrade re-adopts the transcript retained by
+            // an earlier ordinary delete; its completed tombstone must not
+            // block that rollback once no permanent delete remains active.
+            if (!this.permanentDeleteCounts.has(id)) this.ordinaryDeletedSessionIds.delete(id)
+            // Roll back to a resumable pre-delete session instead of leaving a
+            // hard-terminated card. If an ordinary delete already removed the
+            // index entry, re-adopt the still-present main transcript so a
+            // queued permanent upgrade gets the same recovery/retry affordance.
+            const needsCreate = !this.store?.has(id)
+            let restored = meta
+            if (!restored) {
+              try {
+                restored = await this.adoptDiskSession(id, this.defaultProvider) ?? undefined
+              } catch (adoptErr) {
+                log.warn(`[session ${id}] permanent-delete rollback adopt failed:`, adoptErr)
+              }
+            }
+            if (restored && !this.completedPermanentDeletes.has(id)) {
+              if (!this.permanentDeleteCounts.has(id)) {
+                this.snapshots.revive(id)
+                this.snapshotStore.revive(id)
+              }
+              this.store?.upsert(restored)
+              // A session removed by an already-completed ordinary delete must
+              // be re-created in every tab; update-only reducers ignore unknown ids.
+              if (needsCreate) this.broadcastGlobal({ kind: 'created', session: this.infoFromMeta(restored) })
+              else this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(restored) })
+            }
+          }
+          // A failure must not remove the persistence entry or emit `removed`.
+          throw err
+        }
+      }
       // Best-effort worktree teardown (dir removed, branch kept). A failure
       // only warns — deletion must not be blocked by it.
       if (meta?.worktree && this.store) {
         await removeWorktreeForSession(this.store.getDir(), id, meta.worktree, log, meta.cwd)
       }
       this.store?.remove(id)
-      // Drop the promptUuids sidecar too — the session is gone for good.
-      void this.promptUuidStore.remove(id)
-      // And the steered-message sidecar (mid-run steering replay source).
-      void this.steeredStore.remove(id)
-      // And the turn-anchor sidecar (legal discard cut points).
-      void this.turnAnchorStore.remove(id)
-      // And the result-frame sidecar (per-turn result summaries).
-      void this.resultFrameStore.remove(id)
-      // And the task-result sidecar (background-task records + completions).
-      void this.taskResultStore.remove(id)
-      // And the snapshot sidecar (shadow-repo file snapshots + anchors).
-      void this.snapshotStore.remove(id)
-      // And the transcript seq store (in-memory holder + ndjson sidecar) —
-      // the session is gone for good, so its seq space goes with it.
-      void this.removeTranscriptState(id)
+      if (!opts?.deleteTranscript) {
+        void this.promptUuidStore.remove(id)
+        void this.steeredStore.remove(id)
+        void this.turnAnchorStore.remove(id)
+        void this.resultFrameStore.remove(id)
+        void this.taskResultStore.remove(id)
+        void this.snapshotStore.remove(id)
+        void this.removeTranscriptState(id)
+      }
       // Drop any stored recap — otherwise a new session that happens to
       // reuse this id (rare, but possible under --state-dir swaps) would
       // see the old summary. unload() already calls invalidate() but we
       // do it again here as a safety net for delete-without-unload paths.
       this.recapManager.invalidate(id)
+      if (opts?.deleteTranscript) this.finishPermanentDelete(id)
+      else this.finishOrdinaryDelete(id)
       this.broadcastGlobal({ kind: 'removed', id })
     }, { maxWaitMs: this.deleteLockMaxWaitMs })
+  }
+
+  /** Destroy a provider handle and retain it until its real process exit.
+   *  A session id can have several closing handles after same-id respawns. */
+  private destroyProviderHandle(id: string, handle: ProviderSessionHandle, reason?: string): Promise<void> {
+    let handles = this.closingHandles.get(id)
+    if (!handles) {
+      handles = new Set()
+      this.closingHandles.set(id, handles)
+    }
+    const exitPromise = handle.processRealExit ?? handle.processExited
+    handles.add(exitPromise)
+    void exitPromise.then((info) => {
+      // A synthetic safety-timeout is not proof the OS process died. Retain
+      // the promise so every later permanent-delete attempt rejects it too.
+      if ((info as ProcessExitInfo | undefined)?.exitSafetyTimeout) return
+      const current = this.closingHandles.get(id)
+      current?.delete(exitPromise)
+      if (current?.size === 0) {
+        this.closingHandles.delete(id)
+        if (this.resumeAfterProcessExit.delete(id) && !this.permanentDeleteCounts.has(id) && !this.completedPermanentDeletes.has(id)) {
+          this.deletedSessionIds.delete(id)
+          const meta = this.store?.get(id)
+          if (meta?.terminated && meta.terminatedReason === 'deleted') {
+            this.store?.patch(id, { terminated: false, terminatedReason: undefined, error: undefined })
+            const restored = this.store?.get(id)
+            if (restored) this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(restored) })
+          }
+        }
+      }
+    })
+    return Promise.resolve(handle.destroy(reason))
   }
 
   /** Close the Query and drop the in-memory session, but keep metadata on
@@ -7155,7 +7432,7 @@ export class SessionManager {
    *  `adoptDiskSession` — only the sidebar/sessions.json entry is dropped.
    *  Used by `clear()` so a cleared session doesn't linger as a dormant
    *  sidebar entry. Default false. */
-  async unload(id: string, opts: { terminated?: boolean; reason?: string; removeFromStore?: boolean } = {}): Promise<void> {
+  async unload(id: string, opts: { terminated?: boolean; reason?: string; removeFromStore?: boolean; awaitDestroy?: boolean } = {}): Promise<void> {
     const s = this.sessions.get(id)
     if (!s) return
     if (opts.terminated) {
@@ -7171,7 +7448,10 @@ export class SessionManager {
     // Stop polling any background subagents' transcripts — a late completion
     // must not broadcast into a session being torn down.
     this.stopBackgroundSubagentWatchers(id)
-    s.handle.destroy(opts.reason ?? 'unload')
+    if (opts.awaitDestroy) await this.destroyProviderHandle(id, s.handle, opts.reason ?? 'unload')
+    else void this.destroyProviderHandle(id, s.handle, opts.reason ?? 'unload').catch((err) => {
+      log.warn(`[session ${id}] provider destroy failed:`, err)
+    })
     // When terminating (explicit delete or graceful shutdown), await the
     // pump so the SDK subprocess has time to exit cleanly.
     if (opts.terminated) {
@@ -7200,6 +7480,7 @@ export class SessionManager {
       this.broadcastGlobal({ kind: 'update', session: this.info(s) })
     }
     this.sessions.delete(id)
+    const transcript = this.transcriptStores.get(id)
     // Drop the in-memory transcript seq store with the session. The ndjson
     // sidecar file is deliberately KEPT: unload() (unlike delete()) leaves
     // the session resumable, so a later resume re-hydrates the seq space
@@ -7224,9 +7505,13 @@ export class SessionManager {
       // just hidden from the sidebar.
       this.store?.remove(id)
       this.broadcastGlobal({ kind: 'removed', id })
-    } else {
+    } else if (!this.completedPermanentDeletes.has(id)) {
       this.writeStore(s)
     }
+    // State cleanup above stays synchronous for dormant unload callers. Only
+    // after that contract is satisfied do we stop appends, drain queued rows,
+    // and release the old fd; the ndjson file itself remains for resume.
+    if (transcript) await transcript.sidecar.close()
   }
 
   /** List sessions: everything currently live + everything in the store
@@ -8234,7 +8519,7 @@ export class SessionManager {
       for (const msg of stranded) {
         this.broadcastSystemNotice(session, `自动恢复失败，消息未送达：${describeUserMessage(msg)}`)
       }
-      session.handle.destroy('auto-resume-failed')
+      await this.destroyProviderHandle(session.id, session.handle, 'auto-resume-failed')
       throw err
     }
     // Re-check liveness after the async buildResumeOpts — a concurrent
@@ -8244,7 +8529,7 @@ export class SessionManager {
     // termination tail in both cases (the session is either gone or being
     // taken over by clear()).
     if (!this.sessions.has(session.id) || session.terminated || session.clearing) return true
-    this.respawnInPlace(session, resumeOpts, 'auto-resume')
+    await this.respawnInPlace(session, resumeOpts, 'auto-resume')
     this.autoResumeCounts.set(session, resumeCount + 1)
     // A clean idle-autoResume means the session was healthy (the prior
     // crash recovery, if any, succeeded) — reset the crash ladder so a
@@ -8444,7 +8729,10 @@ export class SessionManager {
    *  Throws if createSession fails — callers wrap per their semantics
    *  (autoResume lets it propagate to cleanupPump; crash-recovery catches
    *  and gives up). */
-  private respawnInPlace(session: Session, resumeOpts: Options, destroyReason: string): void {
+  private async respawnInPlace(session: Session, resumeOpts: Options, destroyReason: string): Promise<void> {
+    if (this.isSessionDeleteTombstoned(session.id)) {
+      throw new HttpError(410, `session ${session.id} was deleted and cannot be restarted`)
+    }
     // Recover any user turns queued but NOT yet consumed by the crashed CLI.
     // Without this, a message sent mid-turn that the SDK hadn't read yet is
     // silently lost on re-resume: the UI already painted the bubble (pushToSession
@@ -8454,7 +8742,10 @@ export class SessionManager {
     // SDK processes it as the next turn. (The SDK's echo of the re-enqueued
     // turn is dropped by the pump's echo filter — no duplicate bubble.)
     const pendingInput = session.handle.drainQueuedInput?.() ?? []
-    session.handle.destroy(destroyReason)
+    await this.destroyProviderHandle(session.id, session.handle, destroyReason)
+    if (this.isSessionDeleteTombstoned(session.id) || this.sessions.get(session.id) !== session) {
+      throw new HttpError(410, `session ${session.id} was deleted and cannot be restarted`)
+    }
     const provider = this.providers.get(session.provider)
     // Inject the first-party in-process MCP servers (same as spawn()): they
     // exist only when passed per-spawn, so an in-place respawn must re-inject
@@ -8530,6 +8821,7 @@ export class SessionManager {
     // in-place respawn is this session's "next spawn" — un-tombstone so the
     // next turn's capture can re-establish snapshots against the new tree.
     this.snapshotStore.revive(session.id)
+    this.snapshots.revive(session.id)
     this.broadcastGlobal({ kind: 'update', session: this.info(session) })
     session.pumpTask = this.pump(session)
   }
@@ -8622,7 +8914,7 @@ export class SessionManager {
     // Destroy the (already-aborted) old handle BEFORE the async
     // buildResumeOpts: if the MCP refresh throws, the handle is already
     // cleaned up (no ProcessMonitor/Pushable leak).
-    session.handle.destroy('crash-recovery')
+    await this.destroyProviderHandle(session.id, session.handle, 'crash-recovery')
     let resumeOpts: Options
     try {
       resumeOpts = await this.buildResumeOpts(session)
@@ -8640,7 +8932,7 @@ export class SessionManager {
     // either gone or being taken over by clear()).
     if (!this.sessions.has(session.id) || session.terminated || session.clearing) return true
     try {
-      this.respawnInPlace(session, resumeOpts, 'crash-recovery')
+      await this.respawnInPlace(session, resumeOpts, 'crash-recovery')
     } catch (err) {
       log.error(`[session ${session.id}] crash-recovery Step 1 spawn failed:`, err)
       return this.crashRecoveryGiveUp(session)

@@ -139,7 +139,7 @@ export class PerSessionSidecar<E> {
   }
 
   /** Tombstone the id now, then (after its queued writes) unlink the file. */
-  remove(id: string): Promise<void> {
+  remove(id: string, opts?: { strict?: boolean }): Promise<void> {
     this.removed.add(id)
     if (!this.dir) return Promise.resolve()
     return this.chain(id, async () => {
@@ -148,7 +148,10 @@ export class PerSessionSidecar<E> {
         await unlink(this.file(id))
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code
-        if (code !== 'ENOENT') this.log.warn(`remove failed for ${id}: ${(err as Error).message ?? err}`)
+        if (code !== 'ENOENT') {
+          if (opts?.strict) throw err
+          this.log.warn(`remove failed for ${id}: ${(err as Error).message ?? err}`)
+        }
       }
     })
   }

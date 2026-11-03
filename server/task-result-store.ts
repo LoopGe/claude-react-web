@@ -48,8 +48,8 @@ export class TaskResultStore {
 
   /** Delete the sidecar. Tombstones the id so a late save cannot recreate
    *  the file. */
-  remove(sessionId: string): Promise<void> {
-    return this.sidecar.remove(sessionId)
+  remove(sessionId: string, opts?: { strict?: boolean }): Promise<void> {
+    return this.sidecar.remove(sessionId, opts)
   }
 
   /** Clear the remove() tombstone for a new session reusing `sessionId`. */

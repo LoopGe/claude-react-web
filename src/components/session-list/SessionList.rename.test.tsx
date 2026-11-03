@@ -71,7 +71,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   } as SessionInfo
 }
 
-function renderList(session: SessionInfo) {
+function renderList(session: SessionInfo, onDelete: (id: string, opts?: { deleteTranscript?: boolean }) => void = () => {}) {
   return render(
     <ToastProvider>
       <SessionList
@@ -89,7 +89,7 @@ function renderList(session: SessionInfo) {
         maxGroupSize={3}
         onSelect={() => {}}
         onCreate={() => {}}
-        onDelete={() => {}}
+        onDelete={onDelete}
         onSleep={() => {}}
         onActivateGroup={() => {}}
         onCreateGroup={() => 'g1'}
@@ -321,5 +321,23 @@ describe('SessionList inline rename', () => {
     await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
     expect(patch.mock.calls[0][0]).toBe('/sessions/sess-1')
     expect(patch.mock.calls[0][1]).toEqual({ title: 'Trimmed' })
+  })
+
+  it('forwards permanent-delete options through the sidebar wrapper', async () => {
+    const onDelete = vi.fn()
+    const { container } = renderList(makeSession(), onDelete)
+    fireEvent.contextMenu(container.querySelector('.session-item')!)
+    const item = [...document.body.querySelectorAll('[role="menuitem"]')]
+      .find((el) => el.textContent === 'Delete permanently')
+    expect(item).toBeTruthy()
+    fireEvent.click(item!)
+
+    await waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull())
+    const confirm = [...document.body.querySelectorAll('button')]
+      .find((el) => el.textContent === 'Delete permanently')
+    expect(confirm).toBeTruthy()
+    fireEvent.click(confirm!)
+
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith('sess-1', { deleteTranscript: true }))
   })
 })

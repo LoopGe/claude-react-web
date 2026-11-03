@@ -176,6 +176,10 @@ export interface ProviderSessionHandle {
    *  `Promise<ProcessExitInfo>`. Resolves immediately when no real process
    *  ever spawned. Never rejects. */
   readonly processExited: Promise<unknown>
+  /** Stronger exit gate used by permanent deletion: never resolves for the
+   *  ProcessMonitor safety timeout. Optional for non-process providers/test
+   *  doubles; callers fall back to processExited when absent. */
+  readonly processRealExit?: Promise<unknown>
   abort(): void
   destroy(reason?: string): Promise<void> | void
   /** Interrupt the in-flight turn. With `cancelQueued`, ALSO ask the CLI to
