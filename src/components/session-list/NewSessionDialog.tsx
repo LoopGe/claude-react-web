@@ -5,8 +5,8 @@ import { FieldPicker } from '../FieldPicker'
 import type { FieldPickerOption } from '../FieldPicker'
 import { IconX, IconPencil } from '../icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
-import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { api } from '../../hooks/useApi'
+import { useRecentCwds, useRecentModels } from '../../hooks/useRecentItems'
 import type { McpServerConfigMeta, NewSessionForm, PermissionMode, SessionGroup } from '../../types'
 import { parseTaskBudgetInput } from '../../../shared/session-info'
 import type { ModelGroupConfig } from '../../types/config'
@@ -21,15 +21,9 @@ const McpInstaller = lazy(() =>
   import('../McpInstaller').then((m) => ({ default: m.McpInstaller })),
 )
 import { ONE_M_CONTEXT_BETA } from '../../constants/contextSteps'
-import { RECENT_MODELS_KEY, RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT, RECENT_CWDS_KEY, RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT, NEW_SESSION_AUTO_COMPACT_WINDOW_KEY } from '../../constants/recentKeys'
+import { NEW_SESSION_AUTO_COMPACT_WINDOW_KEY } from '../../constants/recentKeys'
 import { clamp } from '../../utils/clamp'
 import { groupNameIssue } from '../../utils/group-name'
-
-/** useLocalStorage validator for the recent lists. A corrupt entry (other tab,
- *  older build, hand-edit) must collapse to [] — iterating a non-array would
- *  throw and white-screen the dialog. */
-const isStringArray = (v: unknown): v is string[] =>
-  Array.isArray(v) && v.every((x) => typeof x === 'string')
 
 export interface NewSessionDialogProps {
   open?: boolean
@@ -76,7 +70,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // the drag-and-drop prefill and the server-provided defaults.cwd as
   // fallbacks. useLocalStorage reads synchronously, so the first render
   // already sees the stored list.
-  const [recentCwds, setRecentCwds] = useLocalStorage<string[]>(RECENT_CWDS_KEY, [], { validate: isStringArray })
+  const { recents: recentCwds, rememberNow: rememberCwd, forget: forgetCwd } = useRecentCwds()
   const [cwd, setCwd] = useState<string>(initialCwd ?? recentCwds[0] ?? defaults.cwd ?? '')
   // Opt-in worktree isolation — off by default; only sent when checked.
   const [isolate, setIsolate] = useState(false)
@@ -180,7 +174,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [taskBudget, setTaskBudget] = useState('')
   // Auto-compact window (official token semantics). Seeded from the last
   // choice; written synchronously at submit because the dialog unmounts on
-  // the same tick (see the rememberIn note below).
+  // the same tick (see the rememberNow note above).
   const [autoCompactWindow, setAutoCompactWindow] = useState(() => {
     try {
       return window.localStorage.getItem(NEW_SESSION_AUTO_COMPACT_WINDOW_KEY) ?? ''
@@ -213,65 +207,12 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   // per-server override model.
   const [firstPartyDiffs, setFirstPartyDiffs] = useState<Record<string, boolean>>({})
 
-  const [recentModels, setRecentModels] = useLocalStorage<string[]>(RECENT_MODELS_KEY, [], { validate: isStringArray })
-  const [recentModelsCapRaw] = useLocalStorage<number>(RECENT_MODELS_CAP_KEY, RECENT_MODELS_CAP_DEFAULT)
-  const [recentCwdsCapRaw] = useLocalStorage<number>(RECENT_CWDS_CAP_KEY, RECENT_CWDS_CAP_DEFAULT)
-  const recentModelsCap = clamp(Math.round(recentModelsCapRaw), 3, 50)
-  const recentCwdsCap = clamp(Math.round(recentCwdsCapRaw), 3, 50)
-
-  // Shared "remember recent …" helper: MRU-order, de-duped, capped.
-  //
-  // This dialog unmounts on the same tick as submit() (the parent flips
-  // showDialog=false), so we CAN'T rely on the useLocalStorage hook's
-  // effect to flush. We also can't put the side effect inside the setState
-  // updater: React 19 will skip an updater whose resulting state is
-  // discarded by an imminent unmount, which previously meant our second
-  // call (rememberCwd, right after rememberModel) silently lost its write.
-  //
-  // So we do two independent things:
-  //   1) compute `next` synchronously from the latest disk value and
-  //      write it to localStorage right away — the important, persistent
-  //      side effect.
-  //   2) fire-and-forget the state update so that if the dialog happens
-  //      to stay mounted, the chips list still reflects the new value.
-  const rememberIn = (
-    storageKey: string,
-    setter: (next: string[]) => void,
-    cap: number,
-    raw: string,
-  ) => {
-    const v = raw.trim()
-    if (!v) return
-    let prev: string[] = []
-    try {
-      const existing = window.localStorage.getItem(storageKey)
-      if (existing) {
-        const parsed = JSON.parse(existing)
-        if (Array.isArray(parsed)) prev = parsed.filter((x): x is string => typeof x === 'string')
-      }
-    } catch {
-      /* fall through with prev=[] */
-    }
-    const next = [v, ...prev.filter((x) => x !== v)].slice(0, cap)
-    try {
-      window.localStorage.setItem(storageKey, JSON.stringify(next))
-    } catch {
-      /* quota / SecurityError — the in-memory state still wins this session */
-    }
-    setter(next)
-  }
-
-  const rememberModel = (raw: string) =>
-    rememberIn(RECENT_MODELS_KEY, setRecentModels, recentModelsCap, raw)
-  const forgetModel = useCallback((name: string) => {
-    setRecentModels((prev) => prev.filter((m) => m !== name))
-  }, [setRecentModels])
-
-  const rememberCwd = (raw: string) =>
-    rememberIn(RECENT_CWDS_KEY, setRecentCwds, recentCwdsCap, raw)
-  const forgetCwd = (name: string) => {
-    setRecentCwds((prev) => prev.filter((c) => c !== name))
-  }
+  // rememberNow writes synchronously to localStorage before returning — the
+  // dialog unmounts on the same tick as submit() (the parent flips
+  // showDialog=false), so a deferred persist (the useLocalStorage effect,
+  // which fires after commit) would race the unmount and lose the write.
+  // The adapter owns the MRU / cap / normalize logic; see useRecentItems.
+  const { recents: recentModels, rememberNow: rememberModel, forget: forgetModel } = useRecentModels()
 
   // Model menu rows: Model Groups first (ChatPanel ModelPicker order), then
   // "Default" (clears the pin so the server default wins), then server models,
@@ -518,7 +459,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     // Auto-compact window — official token semantics: '' / garbage = auto
     // (omit), out-of-range clamps into the CLI's 100k–1M window range. The
     // raw choice is remembered synchronously — the dialog unmounts on this
-    // same tick (see the rememberIn note below).
+    // same tick (see the rememberNow note above).
     const rawAutoCompactWindow = autoCompactWindow.trim()
     // Number(), not parseInt: a type=number input accepts exponent notation
     // ("5e5"), which parseInt would misread as 5 (same pitfall as
