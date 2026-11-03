@@ -128,10 +128,15 @@ export function useLocalStorage<T>(
       const raw = window.localStorage.getItem(key)
       if (raw == null) return initial
       const parsed: unknown = JSON.parse(raw)
-      // Initial READ boundary: normalize → validate.
-      const normalize = normalizeRef.current
+      // Initial READ boundary: normalize → validate. Read from `options`
+      // directly (NOT the refs) — the useState initializer runs during
+      // render, and the react-hooks/refs rule forbids ref access there.
+      // On the first render (the only time this initializer runs)
+      // `options?.X === XRef.current`, so behaviour is identical to the
+      // ref reads used in the effect and `update` (which run after render).
+      const normalize = options?.normalize
       const normalized = normalize ? normalize(parsed) : parsed
-      const validate = validateRef.current
+      const validate = options?.validate
       if (validate && !validate(normalized)) return initial
       return normalized as T
     } catch {
