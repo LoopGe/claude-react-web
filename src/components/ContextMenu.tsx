@@ -35,6 +35,9 @@ interface Props {
   /** Client-coordinate (event.clientX/Y) anchor point. */
   x: number
   y: number
+  /** Place the menu below the anchor (default) or above it using the measured
+   *  menu height. Composer-anchored menus use 'above'. */
+  placement?: 'above' | 'below'
   items: ContextMenuItem[]
   onClose: () => void
   /** The control that opened the menu, when it ALSO toggles it closed.
@@ -55,6 +58,7 @@ interface Props {
 export const ContextMenu = memo(function ContextMenu({
   x,
   y,
+  placement = 'below',
   items,
   onClose,
   triggerRef,
@@ -83,6 +87,10 @@ export const ContextMenu = memo(function ContextMenu({
   // Under reduced motion, snap (duration:0) instead of fading — see
   // useMotionTransition.
   const { popover } = usePopoverMotion()
+  // Labels and separator rows determine the measured menu dimensions. Track
+  // their content rather than only items.length so above-placement stays
+  // anchored when a same-length update adds/removes rows or changes wrapping.
+  const itemsLayoutKey = items.map((item) => item.label ?? '').join('\0')
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -94,7 +102,8 @@ export const ContextMenu = memo(function ContextMenu({
     const vw = window.innerWidth
     const vh = window.innerHeight
     const nx = Math.min(x, vw - rect.width - 4)
-    const ny = Math.min(y, vh - rect.height - 4)
+    const anchorY = placement === 'above' ? y - rect.height : y
+    const ny = Math.min(anchorY, vh - rect.height - 4)
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
     // Keyboard-owned menus (autoFocus) land on the first enabled row — the
     // menu is portaled to the end of <body>, so without an explicit move the
@@ -105,7 +114,7 @@ export const ContextMenu = memo(function ContextMenu({
       el.querySelector<HTMLButtonElement>('.ctx-menu-item:not(:disabled)')
         ?.focus({ preventScroll: true })
     }
-  }, [x, y, autoFocus])
+  }, [x, y, placement, itemsLayoutKey, autoFocus])
 
   // Default 'ignore': right-click (button 2) must NOT close a right-click
   // menu — the browser fires `contextmenu` next, which the owning component

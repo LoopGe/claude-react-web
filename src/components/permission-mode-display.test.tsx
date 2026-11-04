@@ -51,6 +51,10 @@ describe('permission-mode-display', () => {
     expect(bypass).toContain('lucide-zap')
   })
 
+  it('renders a neutral shield for an unknown runtime mode', () => {
+    expect(svgHtml(<PermissionModeIcon mode={'nope' as PermissionMode} />)).toContain('lucide-shield')
+  })
+
   it('permissionModeLabel falls back to Default (ask) for missing/unknown', () => {
     expect(permissionModeLabel(undefined)).toBe('Default (ask)')
     expect(permissionModeLabel('nope' as PermissionMode)).toBe('nope')

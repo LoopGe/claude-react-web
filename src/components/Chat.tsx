@@ -316,6 +316,10 @@ interface Props {
    *  slot shortcuts. Combined with the local composerFocusSignal so the
    *  target panel's <Composer> refocuses after a slot switch. */
   composerFocusSignal?: number
+  /** Session-level setting chips supplied by ChatPanel and rendered in the
+   *  composer's bottom toolbar. Kept as a slot so their state and API commits
+   *  remain owned by ChatPanel. */
+  composerControls?: React.ReactNode
   /** Global UI-pref defaults (server-backed). Effective values are
    *  `session.<field> ?? globalPrefs.<field>` — a per-session override
    *  wins, otherwise the global default applies. Forwarded to
@@ -458,7 +462,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, handoffing, settingsTabRequest, messageJumpTarget, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, handoffing, settingsTabRequest, messageJumpTarget, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -2420,6 +2424,7 @@ export const Chat = memo(function Chat({
               {error ?? ''}
             </div>
             <Composer
+              composerControls={composerControls}
               suggestion={promptSuggestion}
               input={input}
               setInput={setInput}

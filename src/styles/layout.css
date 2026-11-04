@@ -809,9 +809,9 @@ body.resizing-col .app {
 
 /* Non-default permission mode no longer tints the panel header — the mode
    is conveyed by the badge label (and its tooltip) only. The mode badge is
-   a small pill near the title and doubles as the interactive control
+   a small pill in the composer toolbar and doubles as the interactive control
    (clicking opens the mode menu). It stays uniformly muted across modes so
-   switching permission mode doesn't repaint the header. */
+   switching permission mode doesn't repaint the surrounding surface. */
 
 /* Panel enter/exit animations — fade + subtle scale on mount, fade-out
    on unmount. The exiting class is applied by App.tsx before the panel
@@ -875,18 +875,16 @@ body.resizing-col .app {
   position: relative;
   display: inline-flex;
   border-radius: var(--radius-xs);
-  /* Width is set inline only during a mode switch (to reserve the wider
-     label then glide to the new width) — this makes the trailing chips
-     follow smoothly instead of teleporting. No-op when width is auto. */
-  transition: width var(--motion-duration-moderate) var(--motion-ease-standard);
+}
+/* Clip only while the outgoing icon slides left; keyboard focus outlines
+   remain visible when no transition is running. */
+.chat-panel-mode-badge-wrap:has(.mode-slide-out) {
+  overflow: hidden;
 }
 
 .chat-panel-mode-badge {
   display: inline-flex;
   align-items: center;
-  /* Gap is zero: the icon↔label spacing lives on the label's own
-     padding-left (4px when expanded) so a collapsed label leaves no
-     phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
@@ -894,8 +892,8 @@ body.resizing-col .app {
   font-family: var(--mono);
   /* The accent-tinted chip is uniform across modes (theme色); the mode
      distinction lives in the per-mode label colour rules below, so
-     switching modes repaints the chip text but never the header. */
-  /* ...so switching modes repaints the chip text but never the header. The
+     switching modes repaints the chip text but never the composer. */
+  /* ...so switching modes repaints the chip text but never the composer. The
      wash is capped at 10%: the per-mode inks have to clear AA on it, and an
      18% accent tint put every one of them under 4.5:1. */
   color: var(--fg);
@@ -947,67 +945,12 @@ body.resizing-col .app {
   opacity: 0.45;
 }
 
-/* Mode-badge label. Collapsed to zero width by default so the chip reads
-   as icon-only; expands on hover, keyboard focus, or while the mode menu
-   is open. The 3s delay on the base transition is what implements
-   "unhover, then 3s later it collapses" — the expanded rules zero the
-   delay so hovering expands instantly. Spacing between the icon and the
-   label lives on the label's padding-left (not the badge gap) so a
-   collapsed label leaves no phantom gap.
-
-   Width animates via the 0fr->1fr grid trick: the inner <span> carries
-   the clip, and the track animates to the content's exact width — no
-   fixed max-width cap to stall against on collapse, and a future longer
-   label is never truncated. */
-.chat-panel-mode-label {
-  display: grid;
-  grid-template-columns: 0fr;
-  opacity: 0;
-  padding-left: 0;
-  transition:
-    grid-template-columns var(--motion-duration-base) var(--motion-ease-standard) 3s,
-    opacity var(--motion-duration-base) var(--motion-ease-standard) 3s,
-    padding-left var(--motion-duration-base) var(--motion-ease-standard) 3s;
-}
-/* Inner span carries the clip. Without min-width: 0 the 0fr track can't
-   actually shrink to zero. */
-.chat-panel-mode-label > span {
-  overflow: hidden;
-  white-space: nowrap;
-  min-width: 0;
-}
-.chat-panel-mode-badge-wrap:hover .chat-panel-mode-label,
-.chat-panel-mode-badge-wrap:focus-within .chat-panel-mode-label,
-.chat-panel-mode-badge.mode-expanded .chat-panel-mode-label {
-  grid-template-columns: 1fr;
-  opacity: 1;
-  padding-left: var(--space-1);
-  transition-delay: 0s;
-}
-/* The outgoing slide-out badge keeps its label collapsed even while the
-   wrap is hovered, so the old mode's text can't ghost over the incoming
-   badge during the ~240ms exit slide. */
-.chat-panel-mode-badge.mode-slide-out .chat-panel-mode-label {
-  grid-template-columns: 0fr;
-  opacity: 0;
-  padding-left: 0;
-  transition: none;
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-panel-mode-label {
-    transition: none;
-  }
-}
-
 /* Fast-mode badge — same pill shape as the mode badge. Muted when off
    (a quiet, opt-in control), tinted with --fast when on, and rendered in
    --warn with a "cooldown" label when rate-limited. */
 .chat-panel-fast-badge {
   display: inline-flex;
   align-items: center;
-  /* Gap is zero: the icon↔label spacing lives on the label's own
-     padding-left (4px when expanded) so a collapsed label leaves no
-     phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
@@ -1043,47 +986,12 @@ body.resizing-col .app {
   cursor: not-allowed;
   opacity: 0.45;
 }
-/* Fast-mode label — mirrors the mode badge's collapse: icon-only by
-   default, expands on hover or keyboard focus, then 3s after the pointer
-   leaves. Same 0fr->1fr grid width animation (exact content width, no
-   fixed cap to stall against or truncate a longer label). */
-.chat-panel-fast-label {
-  display: grid;
-  grid-template-columns: 0fr;
-  opacity: 0;
-  padding-left: 0;
-  transition:
-    grid-template-columns var(--motion-duration-base) var(--motion-ease-standard) 3s,
-    opacity var(--motion-duration-base) var(--motion-ease-standard) 3s,
-    padding-left var(--motion-duration-base) var(--motion-ease-standard) 3s;
-}
-.chat-panel-fast-label > span {
-  overflow: hidden;
-  white-space: nowrap;
-  min-width: 0;
-}
-.chat-panel-fast-badge:hover .chat-panel-fast-label,
-.chat-panel-fast-badge:focus-within .chat-panel-fast-label {
-  grid-template-columns: 1fr;
-  opacity: 1;
-  padding-left: var(--space-1);
-  transition-delay: 0s;
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-panel-fast-label {
-    transition: none;
-  }
-}
-
 /* Effort-level badge — same pill shape as the mode badge. Neutral/muted by
    default; tinted with --accent when set above the default 'high' so the
    chip quietly signals a non-default reasoning depth. */
 .chat-panel-effort-badge {
   display: inline-flex;
   align-items: center;
-  /* Gap is zero: the icon↔label spacing lives on the label's own
-     padding-left (4px when expanded) so a collapsed label leaves no
-     phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
@@ -1160,9 +1068,6 @@ body.resizing-col .app {
 .chat-panel-persona-badge {
   display: inline-flex;
   align-items: center;
-  /* Gap is zero: the icon↔label spacing lives on the label's own
-     padding-left (4px when expanded) so a collapsed label leaves no
-     phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);
@@ -1196,8 +1101,8 @@ body.resizing-col .app {
 }
 /* Persona label — same 0fr->1fr collapse as the mode/fast/effort labels.
    Unlike those, the text is a USER-CHOSEN agent name, so the expanded width
-   is capped and ellipsised: a long definition name must not push the git /
-   context chips out of the header. */
+   is capped and ellipsised: a long definition name must not push the orb /
+   send actions out of the composer toolbar. */
 .chat-panel-persona-label {
   display: grid;
   grid-template-columns: 0fr;
@@ -1235,9 +1140,6 @@ body.resizing-col .app {
 .chat-panel-thinking-badge {
   display: inline-flex;
   align-items: center;
-  /* Gap is zero: the icon↔label spacing lives on the label's own
-     padding-left (4px when expanded) so a collapsed label leaves no
-     phantom gap and the chip stays symmetric. */
   gap: 0;
   padding: var(--space-0-5) var(--space-2);
   font-size: var(--fs-xs);

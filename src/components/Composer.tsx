@@ -128,6 +128,10 @@ interface Props {
   /** Called when the user picks a fire-at time from the schedule popover. */
   onSendScheduled?: (fireAtMs: number) => void
 
+  /** Session-level setting chips rendered between the attachment controls and
+   *  the flexible spacer. Optional for hosts without a session header. */
+  composerControls?: ReactNode
+
   /** Slot for the ContextOrb, portaled in by the host. Usage frames change
    *  identity every WS tick — keeping the orb outside Composer's props is
    *  what lets React.memo skip re-rendering the rich editor on each one. */
@@ -188,6 +192,7 @@ export const Composer = memo(function Composer({
   suggestion,
   scheduled,
   onSendScheduled,
+  composerControls,
   contextOrbSlotRef,
   onOpenTasks,
   taskCount,
@@ -1027,6 +1032,9 @@ export const Composer = memo(function Composer({
           >
             <IconClock size={18} />
           </button>
+        )}
+        {composerControls && (
+          <div className="composer-session-controls">{composerControls}</div>
         )}
         <span className="composer-bar-spacer" aria-hidden />
         {/* ContextOrb is portaled here by Chat — see contextOrbSlotRef. */}

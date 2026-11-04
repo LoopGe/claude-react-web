@@ -49,15 +49,15 @@ export function permissionModeShortLabel(mode: PermissionMode): string {
   return PERMISSION_MODE_SHORT_LABELS[mode] ?? mode
 }
 
-/** Small SVG glyph for a permission mode. Default renders a neutral shield;
- *  unknown modes return null. `size` defaults to 13 to suit inline badges. */
+/** Small SVG glyph for a permission mode. Default and unrecognized runtime
+ *  modes render a neutral shield so icon-only chips never become blank. */
 export function PermissionModeIcon({
   mode,
   size = 13,
 }: {
   mode: PermissionMode
   size?: number
-}): ReactElement | null {
+}): ReactElement {
   switch (mode) {
     case 'plan':
       return <IconFileText size={size} aria-hidden />
@@ -74,6 +74,6 @@ export function PermissionModeIcon({
     case 'default':
       return <IconShield size={size} aria-hidden />
     default:
-      return null
+      return <IconShield size={size} aria-hidden />
   }
 }

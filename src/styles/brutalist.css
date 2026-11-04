@@ -141,6 +141,23 @@
   color: var(--on-accent);
 }
 
+/* Composer session controls are ordinary toolbar buttons, not decorative
+   header stickers: match Attach/Tasks instead of rotating or adding the
+   sticker border/shadow. State remains in the icon ink only. */
+[data-skin="brutalist"] .composer-session-controls .chat-panel-mode-badge,
+[data-skin="brutalist"] .composer-session-controls .chat-panel-fast-badge {
+  rotate: none;
+  border: 1px solid var(--border);
+  box-shadow: none;
+  background-color: var(--bg-elev-2);
+}
+[data-skin="brutalist"] .composer-session-controls .chat-panel-mode-badge.mode-plan {
+  color: var(--warn-text);
+}
+[data-skin="brutalist"] .composer-session-controls .chat-panel-fast-badge.fast-on {
+  color: var(--fast);
+}
+
 /* ── 3c. Working bar = the yellow sticker (spec §7: 黄贴纸 + 橙状态点) ─
    The bar's plate (::before) goes solid yellow — the translucent
    --bg-elev wash is wrong colour AND wrong opacity for this skin.

@@ -7,6 +7,7 @@ import { expectPortaledToBody } from './portal-test-utils'
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
 })
 
 // The menu positions itself via useLayoutEffect using real getBoundingClientRect;
@@ -108,6 +109,78 @@ describe('ContextMenu', () => {
     await waitFor(() => {
       expect(document.querySelector('.ctx-menu')).toBeNull()
     })
+  })
+
+  it('places an above-placed menu using its measured height', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 100,
+      height: 200,
+      top: 0,
+      left: 0,
+      right: 100,
+      bottom: 200,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
+    const items: ContextMenuItem[] = [{ label: 'Run', onClick: () => {} }]
+    render(<ContextMenu x={40} y={500} placement="above" items={items} onClose={() => {}} />)
+    const menu = document.querySelector<HTMLElement>('.ctx-menu')!
+    expect(menu.style.left).toBe('40px')
+    expect(menu.style.top).toBe('300px')
+  })
+
+  it('keeps an above-placed menu anchored when items are added', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const height = this.classList.contains('ctx-menu')
+        ? this.querySelectorAll('.ctx-menu-item').length * 40
+        : 0
+      return {
+        width: 100,
+        height,
+        top: 0,
+        left: 0,
+        right: 100,
+        bottom: height,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect
+    })
+    const first = <ContextMenu x={40} y={500} placement="above" items={[{ label: 'One' }]} onClose={() => {}} />
+    const { rerender } = render(first)
+    const menu = document.querySelector<HTMLElement>('.ctx-menu')!
+    expect(menu.style.top).toBe('460px')
+
+    rerender(<ContextMenu x={40} y={500} placement="above" items={[{ label: 'One' }, { label: 'Two' }]} onClose={() => {}} />)
+    expect(menu.style.top).toBe('420px')
+  })
+
+  it('re-measures an above-placed menu when rows change without changing item count', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const height = this.classList.contains('ctx-menu')
+        ? this.querySelectorAll('.ctx-menu-item').length * 40
+        : 0
+      return {
+        width: 100,
+        height,
+        top: 0,
+        left: 0,
+        right: 100,
+        bottom: height,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect
+    })
+    const { rerender } = render(
+      <ContextMenu x={40} y={500} placement="above" items={[{ label: 'One' }]} onClose={() => {}} />,
+    )
+    const menu = document.querySelector<HTMLElement>('.ctx-menu')!
+    expect(menu.style.top).toBe('460px')
+
+    rerender(<ContextMenu x={40} y={500} placement="above" items={[{}]} onClose={() => {}} />)
+    expect(menu.style.top).toBe('500px')
   })
 
   it('portals to <body> so its viewport coordinates are honoured', () => {

@@ -116,6 +116,20 @@ describe('Composer', () => {
     expect(editor).not.toBeNull()
   })
 
+  it('renders session controls inside the bottom toolbar', () => {
+    const { container, getByRole } = render(
+      <Composer
+        {...defaultProps}
+        composerControls={<button type="button">Permission mode</button>}
+      />,
+    )
+    const control = getByRole('button', { name: 'Permission mode' })
+    const controls = container.querySelector('.composer-session-controls')
+    expect(controls).not.toBeNull()
+    expect(controls!.contains(control)).toBe(true)
+    expect(container.querySelector('.composer-bar')!.contains(controls)).toBe(true)
+  })
+
   it('calls onSend on Enter (no shift)', () => {
     const onSend = vi.fn()
     const { container } = render(

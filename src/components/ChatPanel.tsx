@@ -630,7 +630,7 @@ export const ChatPanel = memo(function ChatPanel({
     )
   }
 
-  const commitFastMode = () => {
+  const commitFastMode = useCallback(() => {
     const next = !(session.fastMode ?? false)
     commitWithRollback(
       session,
@@ -641,7 +641,7 @@ export const ChatPanel = memo(function ChatPanel({
       onSessionUpdate,
       toast.error,
     )
-  }
+  }, [session, onSessionUpdate, toast.error])
 
   const commitEffortLevel = (level: EffortLevel) => {
     // Don't close the popover here — the slider stays open so the user can
@@ -755,11 +755,8 @@ export const ChatPanel = memo(function ChatPanel({
   const effortChoices = effortCaps && effortCaps.length > 0 ? effortCaps : EFFORT_LEVELS
 
   const permMode = session.permissionMode ?? 'default'
-  /** Track the previous mode for the badge slide-out transition (the
-   *  mode switch no longer flashes the header — colours were removed).
-   *  Runs in a layout effect so the transition is in place before the
-   *  first paint — otherwise the new label would flash one frame at its
-   *  natural width and the trailing chips would already have shifted. */
+  /** Track the previous mode for the badge's icon slide transition. Runs in a
+   *  layout effect so the outgoing icon is present before the first paint. */
   const prevPermModeRef = useRef(permMode)
   const [modeTransitionFrom, setModeTransitionFrom] = useState<PermissionMode | null>(null)
   useLayoutEffect(() => {
@@ -768,39 +765,6 @@ export const ChatPanel = memo(function ChatPanel({
       prevPermModeRef.current = permMode
     }
   }, [permMode])
-  /** Mode labels vary in width ("ask" vs "accept edits"), so the
-   *  wrap would otherwise snap to the new width the instant the label
-   *  swaps and teleport every chip after it (fast, effort, model). On a
-   *  transition we pin the wrap to the OLD width on the first painted
-   *  frame, then glide it to the NEW width — that animates BOTH
-   *  directions (narrowing glides left, widening glides right). Overflow
-   *  is clipped while the width is pinned so the wider incoming label
-   *  can't overlap the chips after it. */
-  const modeWrapRef = useRef<HTMLSpanElement>(null)
-  useLayoutEffect(() => {
-    if (modeTransitionFrom == null) return
-    const wrap = modeWrapRef.current
-    const incoming = wrap?.querySelector<HTMLElement>('.chat-panel-mode-badge.mode-slide-in')
-    if (!wrap || !incoming) return
-    const newW = incoming.getBoundingClientRect().width
-    const outgoing = wrap.querySelector<HTMLElement>('.chat-panel-mode-badge.mode-slide-out')
-    const oldW = outgoing ? outgoing.getBoundingClientRect().width : newW
-    wrap.style.width = `${oldW}px`
-    wrap.style.overflow = 'hidden'
-    // Glide to the new width on the next frame. Guard on the same incoming
-    // node so a stale rAF from a rapid A→B→C switch can't write a wrong
-    // width.
-    const raf = requestAnimationFrame(() => {
-      if (wrap.querySelector('.chat-panel-mode-badge.mode-slide-in') === incoming) {
-        wrap.style.width = `${newW}px`
-      }
-    })
-    return () => {
-      cancelAnimationFrame(raf)
-      wrap.style.width = ''
-      wrap.style.overflow = ''
-    }
-  }, [modeTransitionFrom])
   // Fast mode chip.
   //  - Visibility is gated on the SDK reporting a runtime state: undefined
   //    means the current model doesn't support fast mode (the SDK omits the
@@ -820,6 +784,194 @@ export const ChatPanel = memo(function ChatPanel({
   // three props forwarded to <SideChatDrawer> share one computation.
   // `streamingRenderMode` is global-only and read directly off globalPrefs.
   const sideChatPrefs = sideChatSession ? resolveSessionPrefs(sideChatSession, globalPrefs) : null
+
+  // Session-level generation and permission controls live in the composer's
+  // bottom toolbar. Their state and commit handlers stay here so the header's
+  // Model control and all existing menu/popover wiring remain unchanged.
+  const composerControls = useMemo(() => (
+    <>
+      {/* Permission-mode control. Doubles as the at-a-glance cue and the
+          switch control — clicking opens the mode menu. */}
+      <Tooltip label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`} placement="top">
+        <span
+          className="chat-panel-mode-badge-wrap"
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {modeTransitionFrom != null && (
+            <span
+              key={`out-${modeTransitionFrom}`}
+              className={`btn btn-icon chat-panel-mode-badge mode-${modeTransitionFrom} mode-slide-out`}
+              aria-hidden
+            >
+              <PermissionModeIcon mode={modeTransitionFrom} size={18} />
+            </span>
+          )}
+          <button
+            type="button"
+            key={`mode-${permMode}`}
+            className={`btn btn-icon chat-panel-mode-badge mode-${permMode}${modeTransitionFrom != null ? ' mode-slide-in' : ''}`}
+            disabled={chipsDisabled}
+            aria-label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`}
+            onAnimationEnd={() => setModeTransitionFrom(null)}
+            onClick={(e) => {
+              e.stopPropagation()
+              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+              setPermMenu({ x: rect.left, y: rect.top - 4 })
+            }}
+          >
+            <PermissionModeIcon mode={permMode} size={18} />
+          </button>
+        </span>
+      </Tooltip>
+      {/* Fast-mode control. Only shown when the SDK reports a fast-mode
+          runtime state for the current model (undefined → model doesn't
+          support it → chip hidden). 'cooldown' means the speedup is
+          rate-limited and temporarily inactive, so we disable the toggle
+          and explain why. Clicking flips the persisted intent. */}
+      {fastVisible && (
+        <Tooltip
+          label={
+            fastCooldown
+              ? 'Fast mode: rate-limited (cooldown) · resumes automatically'
+              : `Fast mode: ${fastOn ? 'on' : 'off'} · Opus-only · faster output, premium pricing · click to toggle`
+          }
+          placement="top"
+        >
+          <button
+            type="button"
+            className={`btn btn-icon chat-panel-fast-badge${fastOn ? ' fast-on' : ''}${fastCooldown ? ' fast-cooldown' : ''}`}
+            disabled={chipsDisabled || fastCooldown}
+            aria-pressed={fastOn}
+            aria-label={`Fast mode: ${fastState} · click to toggle`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              commitFastMode()
+            }}
+          >
+            <IconGauge size={18} aria-hidden />
+          </button>
+        </Tooltip>
+      )}
+      {/* Effort-level control. Shown when the current model supports
+          effort (or its capability is unknown → fallback to offering all
+          5). Hidden only when the SDK explicitly reports no effort support
+          (effortLevels === []). The menu lists the supported subset, or all
+          5 when capability is unknown. Chip shows the active level,
+          defaulting to 'high'. */}
+      {effortVisible && (
+        <Tooltip
+          label={`Effort: ${effortLevel} · controls reasoning depth & token spend · click to change`}
+          placement="top"
+        >
+          <button
+            type="button"
+            key={`effort-${effortLevel}`}
+            className={`btn btn-icon chat-panel-effort-badge effort-${effortLevel}${effortMenu ? ' effort-expanded' : ''}`}
+            disabled={chipsDisabled}
+            aria-haspopup="menu"
+            aria-expanded={!!effortMenu}
+            aria-label={`Effort: ${effortLevel} · click to change`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+              setEffortMenu({ x: rect.left, y: rect.top - 4 })
+            }}
+          >
+            <IconLayers size={13} aria-hidden />
+            <span className="chat-panel-effort-label"><span>{effortLevel}</span></span>
+          </button>
+        </Tooltip>
+      )}
+      {/* Persona control — the custom agent driving the MAIN thread (its
+          system prompt, model and tool restrictions). Distinct from "Run as
+          agent" in the panel menu, which delegates a task to a SUBagent.
+          Tinted only when a persona is active, so a plain session reads as
+          a quiet, opt-in control. */}
+      {personaVisible && (
+        <Tooltip
+          label={
+            session.agent
+              ? `Persona: ${session.agent} · its prompt, model and tool limits drive the main thread · click to change`
+              : 'Persona: none · run the main thread as a custom agent · click to pick'
+          }
+          placement="top"
+        >
+          <button
+            type="button"
+            key={`persona-${session.agent ?? 'none'}`}
+            className={`btn btn-icon chat-panel-persona-badge${session.agent ? ' persona-on' : ''}${personaMenu ? ' persona-expanded' : ''}`}
+            disabled={chipsDisabled}
+            aria-haspopup="menu"
+            aria-expanded={!!personaMenu}
+            aria-label={`Persona: ${session.agent ?? 'none'} · click to change`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              void refreshAgentDefs()
+              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+              setPersonaMenu({ x: rect.left, y: rect.top - 4 })
+            }}
+          >
+            <IconMask size={13} aria-hidden />
+            <span className="chat-panel-persona-label"><span>{session.agent ?? 'persona'}</span></span>
+          </button>
+        </Tooltip>
+      )}
+      {/* Extended-thinking control. Shown unless the model is known to not
+          support thinking (thinkingSupported === false → chip hidden);
+          undefined capability fails open. Menu offers Auto (model decides),
+          Off, and a few token budgets — the shape POST /thinking accepts.
+          The chip label shows the effective setting. */}
+      {thinkingVisible && (
+        <Tooltip
+          label={`Thinking: ${thinkingLabel}${currentDisplay === 'omitted' ? ' · reasoning hidden' : ''} · extended reasoning budget · click to change`}
+          placement="top"
+        >
+          <button
+            type="button"
+            key={`thinking-${thinkingLabel}`}
+            className={`btn btn-icon chat-panel-thinking-badge${session.thinking?.type === 'disabled' ? ' thinking-off' : ''}${thinkingMenu ? ' thinking-expanded' : ''}`}
+            disabled={chipsDisabled}
+            aria-haspopup="menu"
+            aria-expanded={!!thinkingMenu}
+            aria-label={`Thinking: ${thinkingLabel}${currentDisplay === 'omitted' ? ' · reasoning hidden' : ''} · click to change`}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
+              setThinkingMenu({ x: rect.left, y: rect.top - 4 })
+            }}
+          >
+            <IconBrain size={13} aria-hidden />
+            <span className="chat-panel-thinking-label"><span>{thinkingLabel}</span></span>
+            {currentDisplay === 'omitted' && <IconEyeOff size={12} aria-hidden />}
+          </button>
+        </Tooltip>
+      )}
+    </>
+  ), [
+    chipsDisabled,
+    commitFastMode,
+    currentDisplay,
+    effortLevel,
+    effortMenu,
+    effortVisible,
+    fastCooldown,
+    fastOn,
+    fastState,
+    fastVisible,
+    modeTransitionFrom,
+    permMode,
+    personaMenu,
+    personaVisible,
+    refreshAgentDefs,
+    session,
+    thinkingLabel,
+    thinkingMenu,
+    thinkingVisible,
+  ])
 
   return (
     <section
@@ -890,173 +1042,6 @@ export const ChatPanel = memo(function ChatPanel({
         >
           <span className="chat-panel-title">{sessionTitleOrFallback(session)}</span>
         </Tooltip>
-        {/* Permission-mode control. Doubles as the at-a-glance cue (the
-            user's eye lands on the title first) and the switch control —
-            clicking opens the mode menu. Color-coded for non-default
-            modes; muted/neutral in default mode so it reads as a quiet
-            control rather than a warning. */}
-        <Tooltip label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`} placement="bottom">
-          <span
-            ref={modeWrapRef}
-            className="chat-panel-mode-badge-wrap"
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            {modeTransitionFrom != null && (
-              <span
-                key={`out-${modeTransitionFrom}`}
-                className={`chat-panel-mode-badge mode-${modeTransitionFrom} mode-slide-out`}
-                aria-hidden
-              >
-                <PermissionModeIcon mode={modeTransitionFrom} />
-                <span className="chat-panel-mode-label"><span>{permissionModeShortLabel(modeTransitionFrom)}</span></span>
-              </span>
-            )}
-            <button
-              type="button"
-              key={`mode-${permMode}`}
-              className={`chat-panel-mode-badge mode-${permMode}${modeTransitionFrom != null ? ' mode-slide-in' : ''}${permMenu ? ' mode-expanded' : ''}`}
-              disabled={chipsDisabled}
-              aria-label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`}
-              onAnimationEnd={() => setModeTransitionFrom(null)}
-              onClick={(e) => {
-                e.stopPropagation()
-                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-                setPermMenu({ x: rect.left, y: rect.bottom + 4 })
-              }}
-            >
-              <PermissionModeIcon mode={permMode} />
-              <span className="chat-panel-mode-label"><span>{permissionModeShortLabel(permMode)}</span></span>
-            </button>
-          </span>
-        </Tooltip>
-        {/* Fast-mode control. Only shown when the SDK reports a fast-mode
-            runtime state for the current model (undefined → model doesn't
-            support it → chip hidden). 'cooldown' means the speedup is
-            rate-limited and temporarily inactive, so we disable the toggle
-            and explain why. Clicking flips the persisted intent. */}
-        {fastVisible && (
-          <Tooltip
-            label={
-              fastCooldown
-                ? 'Fast mode: rate-limited (cooldown) · resumes automatically'
-                : `Fast mode: ${fastOn ? 'on' : 'off'} · Opus-only · faster output, premium pricing · click to toggle`
-            }
-            placement="bottom"
-          >
-            <button
-              type="button"
-              className={`chat-panel-fast-badge${fastOn ? ' fast-on' : ''}${fastCooldown ? ' fast-cooldown' : ''}`}
-              disabled={chipsDisabled || fastCooldown}
-              aria-pressed={fastOn}
-              aria-label={`Fast mode: ${fastState} · click to toggle`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                commitFastMode()
-              }}
-            >
-              <IconGauge size={13} aria-hidden />
-              <span className="chat-panel-fast-label"><span>{fastCooldown ? 'cooldown' : 'fast'}</span></span>
-            </button>
-          </Tooltip>
-        )}
-        {/* Effort-level control. Shown when the current model supports
-            effort (or its capability is unknown → fallback to offering all
-            5). Hidden only when the SDK explicitly reports no effort support
-            (effortLevels === []). The menu lists the supported subset, or all
-            5 when capability is unknown. Chip shows the active level,
-            defaulting to 'high'. */}
-        {effortVisible && (
-          <Tooltip
-            label={`Effort: ${effortLevel} · controls reasoning depth & token spend · click to change`}
-            placement="bottom"
-          >
-            <button
-              type="button"
-              key={`effort-${effortLevel}`}
-              className={`chat-panel-effort-badge effort-${effortLevel}${effortMenu ? ' effort-expanded' : ''}`}
-              disabled={chipsDisabled}
-              aria-haspopup="menu"
-              aria-expanded={!!effortMenu}
-              aria-label={`Effort: ${effortLevel} · click to change`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-                setEffortMenu({ x: rect.left, y: rect.bottom + 4 })
-              }}
-            >
-              <IconLayers size={13} aria-hidden />
-              <span className="chat-panel-effort-label"><span>{effortLevel}</span></span>
-            </button>
-          </Tooltip>
-        )}
-        {/* Persona control — the custom agent driving the MAIN thread (its
-            system prompt, model and tool restrictions). Distinct from "Run as
-            agent" in the panel menu, which delegates a task to a SUBagent.
-            Tinted only when a persona is active, so a plain session reads as
-            a quiet, opt-in control. */}
-        {personaVisible && (
-          <Tooltip
-            label={
-              session.agent
-                ? `Persona: ${session.agent} · its prompt, model and tool limits drive the main thread · click to change`
-                : 'Persona: none · run the main thread as a custom agent · click to pick'
-            }
-            placement="bottom"
-          >
-            <button
-              type="button"
-              key={`persona-${session.agent ?? 'none'}`}
-              className={`chat-panel-persona-badge${session.agent ? ' persona-on' : ''}${personaMenu ? ' persona-expanded' : ''}`}
-              disabled={chipsDisabled}
-              aria-haspopup="menu"
-              aria-expanded={!!personaMenu}
-              aria-label={`Persona: ${session.agent ?? 'none'} · click to change`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                void refreshAgentDefs()
-                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-                setPersonaMenu({ x: rect.left, y: rect.bottom + 4 })
-              }}
-            >
-              <IconMask size={13} aria-hidden />
-              <span className="chat-panel-persona-label"><span>{session.agent ?? 'persona'}</span></span>
-            </button>
-          </Tooltip>
-        )}
-        {/* Extended-thinking control. Shown unless the model is known to not
-            support thinking (thinkingSupported === false → chip hidden);
-            undefined capability fails open. Menu offers Auto (model decides),
-            Off, and a few token budgets — the shape POST /thinking accepts.
-            The chip label shows the effective setting. */}
-        {thinkingVisible && (
-          <Tooltip
-            label={`Thinking: ${thinkingLabel}${currentDisplay === 'omitted' ? ' · reasoning hidden' : ''} · extended reasoning budget · click to change`}
-            placement="bottom"
-          >
-            <button
-              type="button"
-              key={`thinking-${thinkingLabel}`}
-              className={`chat-panel-thinking-badge${session.thinking?.type === 'disabled' ? ' thinking-off' : ''}${thinkingMenu ? ' thinking-expanded' : ''}`}
-              disabled={chipsDisabled}
-              aria-haspopup="menu"
-              aria-expanded={!!thinkingMenu}
-              aria-label={`Thinking: ${thinkingLabel}${currentDisplay === 'omitted' ? ' · reasoning hidden' : ''} · click to change`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation()
-                const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect()
-                setThinkingMenu({ x: rect.left, y: rect.bottom + 4 })
-              }}
-            >
-              <IconBrain size={13} aria-hidden />
-              <span className="chat-panel-thinking-label"><span>{thinkingLabel}</span></span>
-              {currentDisplay === 'omitted' && <IconEyeOff size={12} aria-hidden />}
-            </button>
-          </Tooltip>
-        )}
         <div className="chat-panel-meta">
           <Tooltip
             label={
@@ -1111,6 +1096,7 @@ export const ChatPanel = memo(function ChatPanel({
               key="perm"
               x={permMenu.x}
               y={permMenu.y}
+              placement="above"
               onClose={() => setPermMenu(null)}
               items={PERMISSION_MODES.map((m) => ({
                 label: permissionModeShortLabel(m),
@@ -1126,6 +1112,7 @@ export const ChatPanel = memo(function ChatPanel({
               key="persona"
               x={personaMenu.x}
               y={personaMenu.y}
+              placement="above"
               onClose={() => setPersonaMenu(null)}
               items={[
                 {
@@ -1151,6 +1138,7 @@ export const ChatPanel = memo(function ChatPanel({
             <EffortSlider
               key="effort"
               anchor={effortMenu}
+              placement="above"
               levels={effortChoices}
               current={effortLevel}
               disabled={chipsDisabled}
@@ -1165,6 +1153,7 @@ export const ChatPanel = memo(function ChatPanel({
               key="thinking"
               x={thinkingMenu.x}
               y={thinkingMenu.y}
+              placement="above"
               onClose={() => setThinkingMenu(null)}
               items={[
                 {
@@ -1371,6 +1360,7 @@ export const ChatPanel = memo(function ChatPanel({
             panelVisible={panelVisible}
             showEpoch={showEpoch}
             composerFocusSignal={composerFocusSignal}
+            composerControls={composerControls}
             globalPrefs={globalPrefs}
             clearing={clearing}
             onSessionUpdate={onSessionUpdate}

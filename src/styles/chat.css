@@ -1385,6 +1385,70 @@ button.chat-empty-env-chip:hover {
   flex: 1;
   min-width: 0;
 }
+/* Session setting chips migrated from the panel header. They share one
+   compact flex lane with the composer actions; on narrow panels the lane
+   wraps instead of clipping tooltips or pushing ContextOrb/Send outside. */
+.composer-session-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  min-width: 34px;
+}
+.composer-session-controls > .tt-wrap {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* Match the composer's attachment/task icon-button chrome. The shared chip
+   classes still own state ink (permission risk, Fast, effort, persona and
+   thinking), while these scoped rules keep their former header dimensions
+   and transparent background from leaking into the toolbar. */
+.composer-session-controls .chat-panel-mode-badge,
+.composer-session-controls .chat-panel-fast-badge,
+.composer-session-controls .chat-panel-effort-badge,
+.composer-session-controls .chat-panel-persona-badge,
+.composer-session-controls .chat-panel-thinking-badge {
+  height: 30px;
+  min-width: 34px;
+  max-width: 100%;
+  flex-shrink: 1;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-elev-2);
+}
+/* Values stay visible at a stable width; hovering never expands a chip. */
+.composer-session-controls .chat-panel-effort-label,
+.composer-session-controls .chat-panel-persona-label,
+.composer-session-controls .chat-panel-thinking-label {
+  grid-template-columns: 1fr;
+  opacity: 1;
+  padding-left: var(--space-1);
+  transition: none;
+}
+.composer-session-controls .chat-panel-fast-badge.fast-on {
+  color: var(--fast);
+}
+.composer-session-controls .chat-panel-fast-badge.fast-cooldown {
+  color: var(--warn-text);
+}
+[data-skin="glow"] .composer-session-controls .chat-panel-fast-badge.fast-on {
+  box-shadow: none;
+}
+.composer-session-controls .chat-panel-effort-badge.effort-xhigh,
+.composer-session-controls .chat-panel-effort-badge.effort-max,
+.composer-session-controls .chat-panel-persona-badge.persona-on {
+  background-color: color-mix(in srgb, var(--accent) 14%, var(--bg-elev-2));
+}
+.composer-session-controls .chat-panel-mode-badge:hover:not(:disabled),
+.composer-session-controls .chat-panel-fast-badge:hover:not(:disabled),
+.composer-session-controls .chat-panel-effort-badge:hover:not(:disabled),
+.composer-session-controls .chat-panel-persona-badge:hover:not(:disabled),
+.composer-session-controls .chat-panel-thinking-badge:hover:not(:disabled) {
+  background-color: var(--btn-hover-bg);
+  border-color: var(--btn-hover-border);
+}
 /* Send is a circle rather than the square .btn-icon default — matches the
    floating-card language (and the mock's round CTA). Fixed 32×32 so the
    morph between send/interrupt never resizes the bar. */

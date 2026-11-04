@@ -2879,8 +2879,12 @@ button.tool-group-failed-jump:focus-visible {
   /* Bottom-bar controls (attach + circular send) must clear the 44px
      touch-target floor. Send is a 44×44 circle — more specific than the
      generic .btn floor so it never stretches into an oval. */
-  .composer-bar .btn {
+  .composer-bar .btn,
+  .composer-bar .composer-session-controls button {
     min-height: 44px;
+  }
+  .composer-bar .composer-session-controls button {
+    min-width: 44px;
   }
   .composer-bar .composer-send {
     width: 44px;

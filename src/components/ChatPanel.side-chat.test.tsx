@@ -13,6 +13,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ReactElement } from 'react'
 
 // ── Deferred-tail fake hub ──────────────────────────────────────────
 type L = (frame: Record<string, unknown>) => void
@@ -395,5 +396,52 @@ describe('ChatPanel Delete confirmation', () => {
     )
 
     expect(lastChatProps.onAskConfirm).toBeUndefined()
+  })
+})
+
+describe('ChatPanel composer session controls', () => {
+  beforeEach(() => {
+    lastChatProps = {}
+  })
+
+  it('moves session controls out of the header while keeping Model there', () => {
+    const { container } = render(
+      <ToastProvider>
+        <ChatPanel
+          {...basePanelProps}
+          session={makeSession('main-controls', { agent: 'helper', fastModeState: 'off' })}
+        />
+      </ToastProvider>,
+    )
+    const header = container.querySelector('.chat-panel-header')!
+    for (const label of ['Permission mode:', 'Fast mode:', 'Effort:', 'Persona:', 'Thinking:']) {
+      expect(header.querySelector(`[aria-label^="${label}"]`)).toBeNull()
+    }
+    expect(header.querySelector('[aria-label^="Model:"]')).not.toBeNull()
+
+    const controls = lastChatProps.composerControls as ReactElement | undefined
+    expect(controls).toBeDefined()
+    const rendered = render(<ToastProvider>{controls}</ToastProvider>)
+    for (const label of ['Permission mode:', 'Fast mode:', 'Effort:', 'Persona:', 'Thinking:']) {
+      expect(rendered.container.querySelector(`[aria-label^="${label}"]`)).not.toBeNull()
+    }
+    expect(rendered.container.querySelector('[aria-label^="Model:"]')).toBeNull()
+  })
+
+  it('keeps the composer slot stable across unrelated panel updates', () => {
+    const session = makeSession('main-controls-stable')
+    const { rerender } = render(
+      <ToastProvider>
+        <ChatPanel {...basePanelProps} session={session} />
+      </ToastProvider>,
+    )
+    const controls = lastChatProps.composerControls
+
+    rerender(
+      <ToastProvider>
+        <ChatPanel {...basePanelProps} session={session} hasUnread />
+      </ToastProvider>,
+    )
+    expect(lastChatProps.composerControls).toBe(controls)
   })
 })

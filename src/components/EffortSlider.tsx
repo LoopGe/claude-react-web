@@ -1,5 +1,6 @@
-// Discrete effort-level slider, shown as a popover anchored under the
-// ChatPanel header's effort chip. Replaces the plain dropdown menu with a
+// Discrete effort-level slider, anchored to the session's effort chip (above
+// the chip in the composer, below it for any header-hosted caller). Replaces
+// the plain dropdown menu with a
 // horizontal slider whose stops are the supported effort levels (low → max).
 //
 // Mirrors ContextMenu's popover mechanics: fixed positioning at an anchor
@@ -22,6 +23,9 @@ import type { EffortLevel } from '../types'
 interface Props {
   /** Client-coordinate anchor (typically the chip's bottom-left). */
   anchor: { x: number; y: number }
+  /** Place the slider below the anchor (default) or above it using the measured
+   *  slider height. Composer-anchored sliders use 'above'. */
+  placement?: 'above' | 'below'
   /** Levels to offer, in order (low → max). At least one. */
   levels: EffortLevel[]
   /** Currently selected level. If not in `levels`, the slider clamps to 0. */
@@ -32,7 +36,7 @@ interface Props {
   onClose: () => void
 }
 
-export function EffortSlider({ anchor, levels, current, disabled, onSelect, onClose }: Props) {
+export function EffortSlider({ anchor, placement = 'below', levels, current, disabled, onSelect, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
   // Under reduced motion, snap (duration:0) instead of fading — see
@@ -72,9 +76,10 @@ export function EffortSlider({ anchor, levels, current, disabled, onSelect, onCl
     const vw = window.innerWidth
     const vh = window.innerHeight
     const nx = Math.min(anchor.x, vw - rect.width - 4)
-    const ny = Math.min(anchor.y, vh - rect.height - 4)
+    const anchorY = placement === 'above' ? anchor.y - rect.height : anchor.y
+    const ny = Math.min(anchorY, vh - rect.height - 4)
     setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
-  }, [anchor.x, anchor.y])
+  }, [anchor.x, anchor.y, placement])
 
   // Outside-click dismissal (Escape is owned by the shared stack below).
   // No trigger: the effort chip only opens this slider.
