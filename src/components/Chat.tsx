@@ -20,6 +20,7 @@ import { shouldMountRecapWindow } from '../utils/recap-visibility'
 // gate its first mount on `settingsEverOpened` rather than `settingsOpen`.
 const SettingsPanel = lazy(() => import('./SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
 const GitPanel = lazy(() => import('./GitPanel').then((m) => ({ default: m.GitPanel })))
+const TurnChangesPanel = lazy(() => import('./TurnChangesPanel').then((m) => ({ default: m.TurnChangesPanel })))
 const TasksPanel = lazy(() => import('./TasksPanel').then((m) => ({ default: m.TasksPanel })))
 // ResumeSessionDialog is also a per-panel overlay (its 'panel' variant,
 // rendered here) — lazy so the picker code stays out of the main bundle for
@@ -56,6 +57,7 @@ import { HandoffOverlay } from './HandoffOverlay'
 import { ContextOrb } from './ContextOrb'
 import { type ScrollNavigator } from './MessageList'
 import { SessionMessageList } from './SessionMessageList'
+import { TurnChangesProvider } from './message-list/turn-changes-context'
 import { SessionWorkingBubble } from './message-list/SessionWorkingBubble'
 import { SessionBottomCards } from './SessionBottomCards'
 import { OlderHistoryFloat } from './message-list/transcript-chrome'
@@ -550,6 +552,12 @@ export const Chat = memo(function Chat({
   // the message first paints. Stored as the start timestamp so the elapsed
   // timer has something to count from until `workingSince` arrives.
   const [pendingTurnSince, setPendingTurnSince] = useState<number | null>(null)
+  // Per-turn change review, opened by the changed-files card under a result row.
+  const [turnReview, setTurnReview] = useState<{ resultUuid: string; index: number } | null>(null)
+  const openTurnReview = useCallback((resultUuid: string, index: number) => {
+    setTurnReview({ resultUuid, index })
+  }, [])
+  const turnChangesContext = useMemo(() => ({ openTurnReview }), [openTurnReview])
   // Non-stale mirror of session.working: handleSend's useCallback deps don't
   // include `session.working`, so reading it directly there would be stale.
   const workingRef = useRef(session.working)
@@ -2256,6 +2264,7 @@ export const Chat = memo(function Chat({
             refreshRewindAnchors()
           }}
         >
+        <TurnChangesProvider value={turnChangesContext}>
         <SessionMessageList
           sessionId={session.id}
           loadingOlder={paging.loadingOlder}
@@ -2291,6 +2300,7 @@ export const Chat = memo(function Chat({
           bottomOverlay={bottomOverlay}
           emptyStateExtra={emptyStateExtra}
         />
+        </TurnChangesProvider>
         {/* /handoff wait pill — centered over the blurred transcript. The
             composer is locked (below); the pill is why. pointer-events:none
             keeps the context menu working during the wait. Conditional MOUNT
@@ -2656,6 +2666,30 @@ export const Chat = memo(function Chat({
             onRefresh={() => onGitRefresh?.()}
             onClose={() => onCloseGitPanel?.()}
           />
+          </ErrorBoundary>
+        </Suspense>
+      </Overlay>
+
+      <Overlay
+        variant="git"
+        ariaLabel="Turn changes"
+        open={turnReview !== null}
+        onClose={() => { setTurnReview(null) }}
+        renderCard={false}
+        trapRefTarget="backdrop"
+        focusEscapeSelector=".chat-panel"
+      >
+        <Suspense fallback={null}>
+          <ErrorBoundary resetKey={session.id}>
+            {turnReview !== null && (
+              <TurnChangesPanel
+                key={`${turnReview.resultUuid}:${turnReview.index}`}
+                sessionId={session.id}
+                resultUuid={turnReview.resultUuid}
+                initialIndex={turnReview.index}
+                onClose={() => { setTurnReview(null) }}
+              />
+            )}
           </ErrorBoundary>
         </Suspense>
       </Overlay>

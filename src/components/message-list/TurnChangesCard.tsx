@@ -24,7 +24,8 @@ function basename(display: string): string {
   return slash < 0 ? display : display.slice(slash + 1)
 }
 
-function Counts({ file }: { file: TurnChangedFile }) {
+/** Added/deleted counts (or the binary/oversized label). */
+export function Counts({ file }: { file: TurnChangedFile }) {
   if (file.binary === true) return <span className="turn-changes-note-inline">binary</span>
   if (file.oversized === true) return <span className="turn-changes-note-inline">too large</span>
   return (

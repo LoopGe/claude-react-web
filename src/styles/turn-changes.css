@@ -166,3 +166,110 @@
   color: var(--fg-muted);
   font-size: 12px;
 }
+
+/* ── Per-turn review panel (the chat overlay) ───────────────────────── */
+
+.turn-review {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.turn-review-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.turn-review-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.turn-review-stat {
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-review-close {
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  border: 0;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.turn-review-close:hover {
+  color: var(--fg);
+}
+
+.turn-review-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.turn-review-files {
+  flex: none;
+  width: 260px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+  border-right: 1px solid var(--border);
+}
+
+.turn-review-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px var(--space-2);
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-review-file:hover {
+  background: var(--btn-hover-bg);
+}
+
+.turn-review-file.selected {
+  background: var(--btn-hover-bg);
+}
+
+.turn-review-diff {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+}
+
+.turn-review-diff-path {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.turn-review-loading {
+  padding: var(--space-3);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
