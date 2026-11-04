@@ -790,14 +790,13 @@ export interface PumpDeps {
    *  `assistantUuid` is the turn's last assistant uuid (positions the result
    *  in the seed). Fire-and-forget on the turn path. */
   recordResultFrame?: (sessionId: string, resultUuid: string, assistantUuid: string, result: SDKMessage) => void
-  /** Capture the end-of-turn worktree state and append a patch (the diff
-   *  from the previous tree to this one) to the snapshot sidecar. Pairs
-   *  with `recordTurnAnchor`/`recordResultFrame` on the success-result
-   *  path. Fire-and-forget: a missed patch only means that turn's file
-   *  mutations aren't separately rewindable (the previous anchor still
-   *  is). Optional so test fixtures that don't exercise snapshot behavior
-   *  can omit it. */
-  recordTurnSnapshot?: (sessionId: string, assistantUuid: string) => void
+  /** Capture the end-of-turn worktree state, record this turn's changed-file
+   *  summary, and append the patch to the snapshot sidecar. Pairs with
+   *  `recordTurnAnchor`/`recordResultFrame` on the result path. Fire-and-
+   *  forget: a missed record only costs that turn's changed-files card (and
+   *  separately rewindable patch; the previous anchor still is). Optional so
+   *  test fixtures that don't exercise snapshot behavior can omit it. */
+  recordTurnSnapshot?: (sessionId: string, resultUuid: string, assistantUuid: string) => void
   /** Called whenever `session.tasks` changed so the manager can persist the
    *  durable sidecar. Fire-and-forget; a missed write only costs the panel
    *  its history across a restart. */
@@ -1607,6 +1606,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // `result` BEFORE calling iter.next() for the next turn, so the
         // queued item is still in our Pushable when we observe `result`.
         if (msg.type === 'result') {
+          // The frame's uuid anchors the turn's changed-files card; undefined
+          // only for frames the non-empty guard below rejects anyway.
+          let resultFrameUuid: string | undefined
           // SDK 0.3.274 emits one result per queued background-task completion,
           // all but the last empty (num_turns: 0) — same shape as the
           // spawn/restart warm-up result. They are not real turns: they must
@@ -1650,6 +1652,9 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             if (resultUuid && session.lastAssistantUuid) {
               deps.recordResultFrame?.(session.id, resultUuid, session.lastAssistantUuid, msg)
             }
+            // Kept in this block so the turn's result uuid is in scope for the
+            // changed-files record below (empty results are never turns).
+            resultFrameUuid = resultUuid
             // Ask the manager to reconcile the context snapshot against the
             // CLI's own accounting (see the PumpDeps doc). Fire-and-forget.
             //
@@ -1701,8 +1706,8 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
           // restore the pre-turn state. Fire-and-forget like the anchor/
           // result-frame writes; a missed patch only means this turn's
           // mutations aren't separately rewindable.
-          if (!emptyResult && session.lastAssistantUuid) {
-            deps.recordTurnSnapshot?.(session.id, session.lastAssistantUuid)
+          if (!emptyResult && resultFrameUuid && session.lastAssistantUuid) {
+            deps.recordTurnSnapshot?.(session.id, resultFrameUuid, session.lastAssistantUuid)
           }
           // Mid-run steering turn-end fallback (spec §6.3): drain undelivered
           // supplements and requeue them as normal next-turn prompts BEFORE

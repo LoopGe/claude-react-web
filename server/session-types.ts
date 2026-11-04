@@ -24,6 +24,7 @@ import type { PluginLoadError, SessionInfoBase, SessionMemorySettings, ThinkingS
 import type { SandboxSetting } from '../shared/sandbox.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import type { ProviderSessionHandle } from './providers/types.js'
+import type { FileCopy } from './snapshot/capture.js'
 import type { HookRunRecord, HookRuntimeEvent, SessionHooksConfig } from '../shared/hooks.js'
 import type { SessionSkillOverride } from '../shared/skills.js'
 import type { SessionToolProfile } from '../shared/tool-profile.js'
@@ -776,6 +777,23 @@ export interface Session {
    *  is a user message that needs capture+recordAnchor when the turn
    *  finishes and the message is consumed. Cleared on consume. */
   pendingSnapshotAnchors?: string[]
+  /** The turn currently being recorded for the changed-files card: its
+   *  start tree, the promise the first tool waits on, and the before-copies
+   *  taken around file-tool calls. Replaced at each turn start and cleared
+   *  once its summary is recorded. Runtime-only. */
+  turnSnapshot?: SessionTurnSnapshot
+}
+
+/** Per-turn snapshot state backing one changed-files card. */
+export interface SessionTurnSnapshot {
+  /** The user message that anchors the turn. */
+  messageId: string
+  /** The turn-start tree once captured; null when capture failed / no repo. */
+  startTree: string | null
+  /** Resolves after the turn-start capture attempt (never rejects). */
+  anchorReady: Promise<void>
+  /** Before-copies keyed by canonical absolute path (first mutation only). */
+  captures: Map<string, FileCopy>
 }
 
 /** End every subscriber in a collection and clear it. Works on both
