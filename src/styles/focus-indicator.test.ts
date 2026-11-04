@@ -150,6 +150,7 @@ const LOAD_ORDER = [
   'overlays.css',
   'setup-page.css',
   'git-panel.css',
+  'turn-changes.css',
   'tasks-panel.css',
   'usage-panel.css',
   'uploads-manager.css',

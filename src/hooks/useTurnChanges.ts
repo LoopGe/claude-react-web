@@ -61,33 +61,26 @@ export interface TurnChangesView {
  */
 export function useTurnChanges(sessionId: string | undefined, resultUuid: string | undefined): TurnChangesView {
   const hub = useOptionalWsHub()
-  const [view, setView] = useState<TurnChangesView>(() => {
-    if (!sessionId || !resultUuid) return { summary: null, loading: false }
-    const cached = summaryCache.get(cacheKey(sessionId, resultUuid))
-    if (cached === undefined) return { summary: null, loading: true }
-    return { summary: cached === 'missing' ? null : cached, loading: false }
-  })
+  const key = sessionId !== undefined && resultUuid !== undefined ? cacheKey(sessionId, resultUuid) : null
+  // Result state carries the key it belongs to, so an abandoned request for a
+  // previous turn can never paint the current one.
+  const [loaded, setLoaded] = useState<{ key: string; value: TurnChangesSummary | 'missing' } | null>(null)
+
+  const cached = key === null ? undefined : summaryCache.get(key)
+  const value = cached ?? (loaded !== null && loaded.key === key ? loaded.value : undefined)
+  const summary = value === undefined || value === 'missing' ? null : value
+  const loading = key !== null && value === undefined
 
   useEffect(() => {
-    if (!sessionId || !resultUuid) {
-      setView({ summary: null, loading: false })
-      return
-    }
-    const key = cacheKey(sessionId, resultUuid)
+    if (key === null || sessionId === undefined || resultUuid === undefined) return
     let cancelled = false
-    const cached = summaryCache.get(key)
-    if (cached !== undefined) {
-      setView({ summary: cached === 'missing' ? null : cached, loading: false })
-    } else {
-      setView({ summary: null, loading: true })
+    if (summaryCache.get(key) === undefined) {
       void loadSummary(sessionId, resultUuid)
-        .then((value) => {
-          if (!cancelled) setView({ summary: value === 'missing' ? null : value, loading: false })
-        })
+        .then((next) => { if (!cancelled) setLoaded({ key, value: next }) })
         .catch(() => {
           // A transport failure is not "no changes": leave the card absent and
           // let a later live frame or remount retry the read.
-          if (!cancelled) setView({ summary: null, loading: false })
+          if (!cancelled) setLoaded({ key, value: 'missing' })
         })
     }
 
@@ -98,16 +91,16 @@ export function useTurnChanges(sessionId: string | undefined, resultUuid: string
       if (frame.kind !== 'turn-changes') return
       if (frame.summary.resultUuid !== resultUuid) return
       summaryCache.set(key, frame.summary)
-      setView({ summary: frame.summary, loading: false })
+      setLoaded({ key, value: frame.summary })
     })
     return () => {
       cancelled = true
       unsubscribe?.()
       removeListener?.()
     }
-  }, [sessionId, resultUuid, hub?.subscribe, hub?.addSessionListener])
+  }, [key, sessionId, resultUuid, hub])
 
-  return view
+  return { summary, loading }
 }
 
 /** One listed file's comparison, fetched on demand. */
@@ -130,33 +123,31 @@ export function useTurnDiff(
   index: number | null,
   opts?: { full?: boolean },
 ): TurnDiffView {
-  const [view, setView] = useState<TurnDiffView>({ diff: null, loading: false })
   const full = opts?.full === true
+  const key = sessionId !== undefined && resultUuid !== undefined && index !== null
+    ? `${sessionId}:${resultUuid}:${index}:${full ? 1 : 0}`
+    : null
+  const [loaded, setLoaded] = useState<{ key: string; value: TurnDiffPayload | null } | null>(null)
+
+  const diff = loaded !== null && loaded.key === key ? loaded.value : null
+  const loading = key !== null && (loaded === null || loaded.key !== key)
 
   useEffect(() => {
-    if (!sessionId || !resultUuid || index === null) {
-      setView({ diff: null, loading: false })
-      return
-    }
+    if (key === null || sessionId === undefined || resultUuid === undefined || index === null) return
     const controller = new AbortController()
     let cancelled = false
-    setView({ diff: null, loading: true })
     const query = new URLSearchParams({ resultUuid, index: String(index) })
     if (full) query.set('full', '1')
     api.get<TurnDiffPayload>(`/sessions/${encodeURIComponent(sessionId)}/turn-diff?${query}`, {
       signal: controller.signal,
     })
-      .then((diff) => {
-        if (!cancelled) setView({ diff, loading: false })
-      })
-      .catch(() => {
-        if (!cancelled) setView({ diff: null, loading: false })
-      })
+      .then((next) => { if (!cancelled) setLoaded({ key, value: next }) })
+      .catch(() => { if (!cancelled) setLoaded({ key, value: null }) })
     return () => {
       cancelled = true
       controller.abort()
     }
-  }, [sessionId, resultUuid, index, full])
+  }, [key, sessionId, resultUuid, index, full])
 
-  return view
+  return { diff, loading }
 }

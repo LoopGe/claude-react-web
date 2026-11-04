@@ -4,7 +4,7 @@
 .turn-changes-card {
   margin: var(--space-2) 0;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   background: var(--bg-elev);
   overflow: hidden;
 }
@@ -34,7 +34,7 @@
   width: 28px;
   height: 28px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--accent-text);
   font-family: var(--mono);
   font-size: 13px;
@@ -138,7 +138,7 @@
   width: min(560px, calc(100vw - 16px));
   max-height: 420px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   background: var(--bg-elev);
   box-shadow: var(--card-shadow);
   overflow: hidden;
