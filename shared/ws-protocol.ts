@@ -11,6 +11,9 @@
 // - Outbound: self-describing frames with no stream-order dependency.
 
 import type { GitStatusResponse, GitBranch, GitStashEntry } from './git-types.js'
+import type { WsTurnChanges } from './turn-changes.js'
+
+export type { WsTurnChanges } from './turn-changes.js'
 
 // --- inbound (client → server) -----------------------------------------------
 
@@ -592,6 +595,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsGitSnapshot
   | WsTasklistSnapshot
   | WsMessageConsumed
+  | WsTurnChanges
   | WsMessagesWithdrawn
   | WsAttached
   | WsMessageSteered

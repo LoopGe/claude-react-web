@@ -5417,8 +5417,9 @@ describe('SessionManager', () => {
 
   it('waits for the turn-start snapshot and captures a tool target before allowing the tool', async () => {
     const spies = spySnapshots()
-    const deferred = Promise.withResolvers<string | null>()
-    spies.capture.mockReturnValueOnce(deferred.promise)
+    let resolveDeferred!: (value: string | null) => void
+    const deferred = new Promise<string | null>((resolve) => { resolveDeferred = resolve })
+    spies.capture.mockReturnValueOnce(deferred)
     const info = await sm.create({ cwd: dir, permissionMode: 'bypassPermissions' })
     sm.send(info.id, 'edit a file')
 
@@ -5433,7 +5434,7 @@ describe('SessionManager', () => {
     expect(settled).toBe(false)
     expect(spies.captureToolTarget).not.toHaveBeenCalled()
 
-    deferred.resolve('tree-1')
+    resolveDeferred('tree-1')
     await expect(call).resolves.toMatchObject({ behavior: 'allow' })
     expect(settled).toBe(true)
     expect(spies.captureToolTarget).toHaveBeenCalledWith(info.id, join(dir, 'x.ts'))

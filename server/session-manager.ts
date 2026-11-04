@@ -50,7 +50,7 @@ import {
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
-import type { WsTurnChanges } from '../shared/turn-changes.js'
+import type { TurnChangesPayload, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
 import { toolTargetPaths } from './snapshot/tool-targets.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees } from './session-worktree.js'
@@ -6326,6 +6326,37 @@ export class SessionManager {
     return { available: true, anchors }
   }
 
+  /** One completed turn's changed-file summary from the snapshot sidecar.
+   *  Does NOT require a live Query — dormant and terminated sessions can
+   *  serve their recorded turns. Throws HttpError 404 for unknown sessions. */
+  async turnChanges(id: string, resultUuid: string): Promise<TurnChangesPayload> {
+    this.requireKnownSession(id)
+    if (this.snapshots.isDisabled()) return { available: false }
+    const summary = await this.snapshots.turnChanges(id, resultUuid)
+    return summary ? { available: true, summary } : { available: false }
+  }
+
+  /** One listed file's turn-start / turn-end comparison. Same lifecycle
+   *  guards as {@link turnChanges}; the index addresses the summary's
+   *  `files` array. */
+  async turnDiff(
+    id: string,
+    resultUuid: string,
+    index: number,
+    opts?: { full?: boolean },
+  ): Promise<TurnDiffPayload> {
+    this.requireKnownSession(id)
+    if (this.snapshots.isDisabled()) return { available: false }
+    return this.snapshots.turnDiff(id, resultUuid, index, opts)
+  }
+
+  /** 404 unless the id names a live session or a known persisted one. */
+  private requireKnownSession(id: string): void {
+    if (!this.sessions.has(id) && !this.store?.get(id)) {
+      throw new HttpError(404, `session ${id} not found`)
+    }
+  }
+
   /** Structured diff from a recorded snapshot anchor to the current
    *  capture. Requires the snapshot sidecar to be available (same
    *  guards as rewindFiles). Does NOT require a live Query.
@@ -6570,7 +6601,7 @@ export class SessionManager {
   }
 
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges>
     unsubscribe: () => void
   } | null {
     return this.broadcaster.subscribeMessageStatus(id)
