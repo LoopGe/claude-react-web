@@ -21,7 +21,7 @@ import type {
   SessionInfo,
   UserDialogRequestUi,
 } from './session-types.js'
-import type { WsClientDebugRequest, WsClientFrame, WsMessageConsumed, WsMessageSteered, WsMessagesEvicted, WsMessagesWithdrawn, WsServerFrame } from './ws-protocol.js'
+import type { WsClientDebugRequest, WsClientFrame, WsMessageConsumed, WsMessageSteered, WsMessagesEvicted, WsMessagesWithdrawn, WsServerFrame, WsTurnChanges } from './ws-protocol.js'
 
 const tick = () => new Promise<void>((r) => setImmediate(r))
 
@@ -174,7 +174,7 @@ interface FakeSession {
   perms: Chan<PermissionEvent>
   elicits: Chan<ElicitationEvent>
   dialogs: Chan<DialogEvent>
-  msgstat: Chan<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>
+  msgstat: Chan<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges>
   /** unsubscribe() calls per core channel, so teardown is observable. */
   unsubs: { msg: number; perm: number; elicit: number; dialog: number }
 }
@@ -707,6 +707,23 @@ describe('transcript seq handshake (attached / seq / evicted)', () => {
     // seq guard falls to the legacy append.
     expect(f1.kind === 'message' && f1.seq).toBe(17)
     expect(f1.kind === 'message' && f1.generation).toBe(3)
+  })
+
+  it('forwards a turn-changes frame from the message-status channel', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+
+    const summary = { resultUuid: 'r1', assistantUuid: 'a1', files: [], total: 0, added: 0, deleted: 0 }
+    sess.msgstat.push({ kind: 'turn-changes', sessionId: 's1', summary })
+    const frame = await waitForFrame(sink, (f) => f.kind === 'turn-changes')
+    expect(frame).toMatchObject({ kind: 'turn-changes', sessionId: 's1', summary })
+    // The frame must not fall through to the message-consumed branch with
+    // undefined uuid/timestamp.
+    expect(sink.frames.some((f) => f.kind === 'message-consumed')).toBe(false)
   })
 
   it('forwards a messages-evicted frame from the message-status channel', async () => {

@@ -5256,12 +5256,18 @@ describe('SessionManager', () => {
    *  spawn a real git subprocess. Returns the spies so each test can wire
    *  its own resolved values. */
   const spySnapshots = () => {
-    const any = sm as unknown as { snapshots: { dryRun: ReturnType<typeof vi.fn>; rewind: ReturnType<typeof vi.fn>; capture: ReturnType<typeof vi.fn>; recordAnchor: ReturnType<typeof vi.fn> } }
+    const any = sm as unknown as { snapshots: {
+      dryRun: ReturnType<typeof vi.fn>; rewind: ReturnType<typeof vi.fn>
+      capture: ReturnType<typeof vi.fn>; recordAnchor: ReturnType<typeof vi.fn>
+      captureToolTarget: ReturnType<typeof vi.fn>; recordTurn: ReturnType<typeof vi.fn>
+    } }
     return {
       dryRun: vi.spyOn(any.snapshots, 'dryRun').mockResolvedValue({ canRewind: false, error: 'stub' }),
       rewind: vi.spyOn(any.snapshots, 'rewind').mockResolvedValue({ canRewind: false, error: 'stub' }),
       capture: vi.spyOn(any.snapshots, 'capture').mockResolvedValue(null),
       recordAnchor: vi.spyOn(any.snapshots, 'recordAnchor').mockResolvedValue(undefined),
+      captureToolTarget: vi.spyOn(any.snapshots, 'captureToolTarget').mockResolvedValue({ kind: 'absent' }),
+      recordTurn: vi.spyOn(any.snapshots, 'recordTurn').mockResolvedValue(null),
     }
   }
 
@@ -5407,6 +5413,58 @@ describe('SessionManager', () => {
     await tick()
     expect(spies.capture).toHaveBeenCalledTimes(2)
     expect(spies.recordAnchor).toHaveBeenCalledWith(info.id, dir, queued.uuid, 'tree-q')
+  })
+
+  it('waits for the turn-start snapshot and captures a tool target before allowing the tool', async () => {
+    const spies = spySnapshots()
+    let resolveDeferred!: (value: string | null) => void
+    const deferred = new Promise<string | null>((resolve) => { resolveDeferred = resolve })
+    spies.capture.mockReturnValueOnce(deferred)
+    const info = await sm.create({ cwd: dir, permissionMode: 'bypassPermissions' })
+    sm.send(info.id, 'edit a file')
+
+    const canUseTool = mockHandles[0].options.canUseTool as (
+      name: string, input: Record<string, unknown>, opts: { signal: AbortSignal },
+    ) => Promise<unknown>
+    let settled = false
+    const call = canUseTool('Edit', { file_path: join(dir, 'x.ts') }, { signal: new AbortController().signal })
+      .then((value) => { settled = true; return value })
+
+    await tick()
+    expect(settled).toBe(false)
+    expect(spies.captureToolTarget).not.toHaveBeenCalled()
+
+    resolveDeferred('tree-1')
+    await expect(call).resolves.toMatchObject({ behavior: 'allow' })
+    expect(settled).toBe(true)
+    expect(spies.captureToolTarget).toHaveBeenCalledWith(info.id, join(dir, 'x.ts'))
+  })
+
+  it('binds each turn summary to its own start tree and result uuid', async () => {
+    const spies = spySnapshots()
+    spies.capture.mockResolvedValueOnce('tree-1').mockResolvedValueOnce('tree-2')
+    const info = await sm.create({ cwd: dir })
+    sm.send(info.id, 'first')
+    await tick()
+    await tick()
+    mockHandles[0].emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })
+    mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1' })
+    await tick()
+    await tick()
+    expect(spies.recordTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      resultUuid: 'r1', assistantUuid: 'a1', startTree: 'tree-1',
+    }))
+
+    sm.send(info.id, 'second')
+    await tick()
+    await tick()
+    mockHandles[0].emit({ type: 'assistant', uuid: 'a2', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })
+    mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r2' })
+    await tick()
+    await tick()
+    expect(spies.recordTurn).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      resultUuid: 'r2', assistantUuid: 'a2', startTree: 'tree-2',
+    }))
   })
 
   // --- readFile: SDK readFile + CLI read-state seeding (seedReadState) ---

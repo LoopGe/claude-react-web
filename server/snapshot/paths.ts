@@ -9,3 +9,6 @@ export function odbDir(stateDir: string, sessionId: string): string {
 export function metaFile(stateDir: string, sessionId: string): string {
   return join(snapshotRoot(stateDir), 'meta', `${sessionId}.json`)
 }
+export function capturesDir(stateDir: string, sessionId: string): string {
+  return join(snapshotRoot(stateDir), 'captures', sessionId)
+}

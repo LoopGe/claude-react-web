@@ -528,6 +528,13 @@ export function useWsHub(): WsHubApi {
   return ctx
 }
 
+/** The hub when one is mounted, or null. For leaf components that are also
+ *  rendered outside the app shell (transcript overlays, component tests) and
+ *  can still work over REST without live frames. */
+export function useOptionalWsHub(): WsHubApi | null {
+  return useContext(WsHubContext)
+}
+
 /** Read the current WebSocket hub lifecycle status. Separated from
  *  useWsHub so status flips don't change the hub object's identity
  *  and trigger effect teardown in consumers. */

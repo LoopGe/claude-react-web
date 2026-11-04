@@ -42,7 +42,7 @@ import { McpConfigStore } from './mcp-config.js'
 import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from './agent-definition-store.js'
 import { RecapManager } from './recap.js'
 import { summarizeForCompact } from './compact-summary.js'
-import type { SessionActivity, SessionPhase, SessionRecap } from './session-types.js'
+import type { SessionActivity, SessionPhase, SessionRecap, SessionTurnSnapshot } from './session-types.js'
 import {
   applyToolProfile,
   extractToolProfile,
@@ -50,6 +50,8 @@ import {
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
+import type { TurnChangesPayload, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
+import { toolTargetPaths } from './snapshot/tool-targets.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
@@ -114,7 +116,7 @@ import { coerceStructuredOutput, type StructuredRunRequest, type StructuredRunRe
 import { coerceReadFileOutput, type FileReadResult } from '../shared/read-file.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
 import { migrateLegacyGitToolsKey } from '../shared/first-party.js'
-import { PermissionBroker } from './permission-broker.js'
+import { PermissionBroker, type BrokerCanUseTool } from './permission-broker.js'
 import { ClientDebugBroker } from './client-debug-broker.js'
 import { ElicitationBroker } from './elicitation-broker.js'
 import { DialogBroker } from './user-dialog-broker.js'
@@ -3291,7 +3293,7 @@ export class SessionManager {
     }
 
     if (!fullOpts.canUseTool) {
-      const canUseTool = this.permBroker.buildCanUseTool(
+      const broker = this.permBroker.buildCanUseTool(
         session,
         (s, snapshot) => {
           // Global broadcast — for desktop notifications on dormant sessions
@@ -3306,6 +3308,10 @@ export class SessionManager {
           this.broadcastGlobal({ kind: 'update', session: this.info(s) })
         },
       )
+      // The snapshot barrier rides the same callback: it runs before the
+      // broker resolves, so the first tool of a turn cannot outrun the
+      // turn-start snapshot or its own before-copy.
+      const canUseTool = this.withSnapshotCapture(session, broker)
       session.canUseTool = canUseTool
       fullOpts.canUseTool = canUseTool
     } else {
@@ -3612,7 +3618,16 @@ export class SessionManager {
   private captureAnchorNow(id: string, s: Session, userUuid: string): void {
     const cwd = s.cwd
     if (!cwd) return
-    void (async () => {
+    const state: SessionTurnSnapshot = {
+      messageId: userUuid,
+      startTree: null,
+      // Replaced immediately below; the field must exist before any tool can
+      // observe the state.
+      anchorReady: Promise.resolve(),
+      captures: new Map(),
+    }
+    s.turnSnapshot = state
+    state.anchorReady = (async () => {
       try {
         // 15s timeout: a slow git subprocess (especially the first capture
         // on a large repo, which must seed the shadow index) must not leave
@@ -3625,11 +3640,37 @@ export class SessionManager {
           15_000,
           null,
         )
+        state.startTree = tree
         if (tree) await this.snapshots.recordAnchor(id, cwd, userUuid, tree)
       } catch (err) {
         log.warn(`[session ${id}] snapshot capture failed: ${(err as Error).message ?? err}`)
       }
     })()
+  }
+
+  /**
+   * Wrap the permission broker so the first tool of a turn cannot mutate
+   * before the turn-start snapshot lands, and so every mutation target gets
+   * a whole-file before-copy for paths the git snapshots do not cover.
+   * Capture failures are logged and never block the tool.
+   */
+  private withSnapshotCapture(session: Session, broker: BrokerCanUseTool): BrokerCanUseTool {
+    return async (toolName, input, options) => {
+      const state = session.turnSnapshot
+      if (state !== undefined) {
+        // The barrier: on a cold repo the first capture can take seconds.
+        await state.anchorReady
+        for (const target of toolTargetPaths(toolName, input, session.cwd ?? '')) {
+          if (state.captures.has(target)) continue
+          try {
+            state.captures.set(target, await this.snapshots.captureToolTarget(session.id, target))
+          } catch (err) {
+            log.warn(`[session ${session.id}] tool-target capture failed for ${target}: ${(err as Error).message ?? err}`)
+          }
+        }
+      }
+      return broker(toolName, input, options)
+    }
   }
 
   /** Shared tail for send() and sendContent(): push into the SDK input
@@ -4023,7 +4064,7 @@ export class SessionManager {
    *  reconnect) for consumed flips, the ring removal + `withdrawnUuids`
    *  subscribe replay for withdrawals, the sidecar tombstone rows for
    *  evictions — so a dropped live frame self-heals. */
-  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted): void {
+  private pushMessageStatus(id: string, frame: WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges): void {
     const s = this.sessions.get(id)
     if (!s || s.messageStatusSubscribers.size === 0) return
     for (const sub of s.messageStatusSubscribers) {
@@ -6285,6 +6326,37 @@ export class SessionManager {
     return { available: true, anchors }
   }
 
+  /** One completed turn's changed-file summary from the snapshot sidecar.
+   *  Does NOT require a live Query — dormant and terminated sessions can
+   *  serve their recorded turns. Throws HttpError 404 for unknown sessions. */
+  async turnChanges(id: string, resultUuid: string): Promise<TurnChangesPayload> {
+    this.requireKnownSession(id)
+    if (this.snapshots.isDisabled()) return { available: false }
+    const summary = await this.snapshots.turnChanges(id, resultUuid)
+    return summary ? { available: true, summary } : { available: false }
+  }
+
+  /** One listed file's turn-start / turn-end comparison. Same lifecycle
+   *  guards as {@link turnChanges}; the index addresses the summary's
+   *  `files` array. */
+  async turnDiff(
+    id: string,
+    resultUuid: string,
+    index: number,
+    opts?: { full?: boolean },
+  ): Promise<TurnDiffPayload> {
+    this.requireKnownSession(id)
+    if (this.snapshots.isDisabled()) return { available: false }
+    return this.snapshots.turnDiff(id, resultUuid, index, opts)
+  }
+
+  /** 404 unless the id names a live session or a known persisted one. */
+  private requireKnownSession(id: string): void {
+    if (!this.sessions.has(id) && !this.store?.get(id)) {
+      throw new HttpError(404, `session ${id} not found`)
+    }
+  }
+
   /** Structured diff from a recorded snapshot anchor to the current
    *  capture. Requires the snapshot sidecar to be available (same
    *  guards as rewindFiles). Does NOT require a live Query.
@@ -6529,7 +6601,7 @@ export class SessionManager {
   }
 
   subscribeMessageStatus(id: string): {
-    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted>
+    iterable: AsyncIterable<WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges>
     unsubscribe: () => void
   } | null {
     return this.broadcaster.subscribeMessageStatus(id)
@@ -8302,22 +8374,30 @@ export class SessionManager {
           const s = this.sessions.get(sessionId)
           if (s) this.persistTasks(s)
         },
-        recordTurnSnapshot: (sessionId, assistantUuid) => {
-          // Fire-and-forget on the turn path; a missed patch only means
-          // this turn's file mutations aren't separately rewindable. The
-          // service's internal lock serializes against any concurrent
-          // rewind for the same session.
+        recordTurnSnapshot: (sessionId, resultUuid, assistantUuid) => {
+          // Fire-and-forget on the turn path; a missed record only costs
+          // this turn's changed-files card. The service's internal lock
+          // serializes against any concurrent rewind for the same session.
           const session = this.sessions.get(sessionId)
           const cwd = session?.cwd
-          if (!cwd) return
+          if (!session || !cwd) return
+          // Capture the state object now: a queued next turn replaces
+          // session.turnSnapshot before this async work finishes.
+          const state = session.turnSnapshot
           void (async () => {
             try {
-              // captureWithPrev reads prev and captures under the SAME
-              // lock — no race where two concurrent captures both read
-              // the same last.tree.
-              const result = await this.snapshots.captureWithPrev(sessionId, cwd)
-              if (!result) return
-              await this.snapshots.appendPatch(sessionId, assistantUuid, result.tree, result.prev)
+              const summary = await this.snapshots.recordTurn({
+                sessionId,
+                cwd,
+                resultUuid,
+                assistantUuid,
+                startTree: state?.startTree ?? null,
+                captures: state?.captures ?? new Map(),
+              })
+              if (session.turnSnapshot === state) session.turnSnapshot = undefined
+              if (summary) {
+                this.pushMessageStatus(sessionId, { kind: 'turn-changes', sessionId, summary })
+              }
             } catch (err) {
               log.warn(`[session ${sessionId}] turn snapshot failed: ${(err as Error).message ?? err}`)
             }

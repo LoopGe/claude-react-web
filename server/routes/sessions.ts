@@ -1122,6 +1122,32 @@ export function buildSessionRouter(
     return c.json(result)
   })
 
+  // Per-turn changed-file summary recorded by the snapshot sidecar.
+  // `resultUuid` (required) is the result frame that closed the turn — the
+  // same anchor the client renders the card on. No live Query required.
+  app.get('/sessions/:id/turn-changes', async (c) => {
+    const resultUuid = c.req.query('resultUuid')
+    if (!resultUuid) {
+      return c.json({ error: 'resultUuid query parameter is required' }, 400)
+    }
+    return c.json(await sm.turnChanges(c.req.param('id'), resultUuid))
+  })
+
+  // One listed file's turn-start / turn-end comparison. `index` addresses
+  // the summary's `files` array; `full=1` skips the line clip.
+  app.get('/sessions/:id/turn-diff', async (c) => {
+    const resultUuid = c.req.query('resultUuid')
+    if (!resultUuid) {
+      return c.json({ error: 'resultUuid query parameter is required' }, 400)
+    }
+    const index = Number(c.req.query('index'))
+    if (!Number.isInteger(index) || index < 0) {
+      return c.json({ error: 'index must be a non-negative integer' }, 400)
+    }
+    const full = c.req.query('full') === '1'
+    return c.json(await sm.turnDiff(c.req.param('id'), resultUuid, index, { full }))
+  })
+
   // Read a file's current content via the session (SDK readFile): gated by
   // the session's Read-permission rules inside the SDK. `path` is absolute
   // (resolved against cwd by the SDK); absent/non-absolute → 400. Response is

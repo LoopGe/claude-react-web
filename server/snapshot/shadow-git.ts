@@ -266,6 +266,73 @@ export async function deletePaths(_repo: ShadowRepo, absPaths: string[]): Promis
  *  line cap is the shared MAX_DIFF_LINES from constants.ts.) */
 const MAX_DIFF_FILES = 200
 
+/** A file changed between two snapshot trees, with git's line counts. */
+export interface TreeDiffEntry {
+  /** Path relative to the repository root, slash-separated. */
+  path: string
+  status: 'added' | 'deleted' | 'modified'
+  additions: number
+  deletions: number
+  binary: boolean
+}
+
+/**
+ * Per-file line counts between two snapshot trees. Two bulk spawns
+ * (name-status + numstat); renames are deliberately not detected, matching
+ * the rest of the shadow-repo helpers.
+ * @param repo - addressed shadow repository.
+ * @param from - earlier tree id.
+ * @param to - later tree id.
+ * @returns changed files relative to the repository root.
+ */
+export async function treeDiff(repo: ShadowRepo, from: string, to: string): Promise<TreeDiffEntry[]> {
+  if (from === to) return []
+  const [statusBulk, numstatBulk] = await Promise.all([
+    run(repo.worktree, args(repo, ['diff', '--name-status', '-z', '--no-renames', from, to, '--'])),
+    run(repo.worktree, args(repo, ['diff', '--numstat', '-z', '--no-renames', from, to, '--'])),
+  ])
+  const statusMap = parseNameStatusZ(statusBulk.stdout)
+  const numstatMap = parseNumstatZ(numstatBulk.stdout)
+  const out: TreeDiffEntry[] = []
+  for (const [path, code] of statusMap) {
+    const num = numstatMap.get(path)
+    const binary = num?.a === '-' || num?.d === '-'
+    out.push({
+      path,
+      status: code === 'A' ? 'added' : code === 'D' ? 'deleted' : 'modified',
+      additions: binary ? 0 : Number(num?.a) || 0,
+      deletions: binary ? 0 : Number(num?.d) || 0,
+      binary,
+    })
+  }
+  return out
+}
+
+/**
+ * Unified diff for one path between two snapshot trees.
+ * @param repo - addressed shadow repository.
+ * @param from - earlier tree id.
+ * @param to - later tree id.
+ * @param repoPath - path relative to the repository root.
+ * @param full - when true, do not clip at MAX_DIFF_LINES.
+ * @returns the patch body and its clip state.
+ */
+export async function filePatch(
+  repo: ShadowRepo,
+  from: string,
+  to: string,
+  repoPath: string,
+  full = false,
+): Promise<{ patch: string; truncated: boolean; totalLines: number }> {
+  const r = await run(repo.worktree, args(repo, [
+    'diff', '--unified=3', '--no-renames', from, to, '--', `:(top,literal)${repoPath}`,
+  ]))
+  const lines = r.stdout.split('\n')
+  if (lines.length === 1 && lines[0] === '') return { patch: '', truncated: false, totalLines: 0 }
+  const kept = full ? lines : lines.slice(0, MAX_DIFF_LINES)
+  return { patch: kept.join('\n'), truncated: kept.length < lines.length, totalLines: lines.length }
+}
+
 /** Parse NUL-delimited name-status output (`-z`): STATUS\0FILE\0 pairs. */
 function parseNameStatusZ(raw: string): Map<string, string> {
   const map = new Map<string, string>()

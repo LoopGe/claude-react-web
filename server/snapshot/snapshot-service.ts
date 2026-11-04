@@ -1,9 +1,17 @@
-import { realpath } from 'node:fs/promises'
-import { join, isAbsolute } from 'node:path'
+import { realpath, rm } from 'node:fs/promises'
+import { join, isAbsolute, relative, resolve, sep } from 'node:path'
 import { createLogger } from '../log.js'
 import { runGit } from '../git.js'
 import { DEFAULT_MAX_UNTRACKED_BYTES } from '../constants.js'
-import { odbDir } from './paths.js'
+import {
+  TURN_CHANGES_MAX_FILE_BYTES,
+  TURN_CHANGES_MAX_FILES,
+  type TurnChangesSummary,
+  type TurnDiffPayload,
+} from '../../shared/turn-changes.js'
+import { captureCopy, canonicalTargetPath, sameCopy, type FileCopy } from './capture.js'
+import { compareCopies } from './copy-diff.js'
+import { capturesDir, odbDir } from './paths.js'
 import {
   type ShadowRepo,
   scopeFromCwd,
@@ -15,8 +23,10 @@ import {
   deletePaths,
   structuredDiff,
   diffStats,
+  treeDiff,
+  filePatch,
 } from './shadow-git.js'
-import { SnapshotStore } from './snapshot-store.js'
+import { SnapshotStore, type TurnChangesFileRecord, type TurnChangesRecord } from './snapshot-store.js'
 
 const log = createLogger('snapshot')
 
@@ -31,6 +41,21 @@ export interface SnapshotServiceOptions {
   store?: SnapshotStore
   fileSnapshots?: boolean
   maxUntrackedBytes?: number
+  /** Inclusive byte cap for a captured copy and for reading one back.
+   *  Defaults to {@link TURN_CHANGES_MAX_FILE_BYTES}. */
+  maxTurnFileBytes?: number
+}
+
+/** One turn's recording input: the trees and the pre-mutation tool copies. */
+export interface TurnRecordInput {
+  sessionId: string
+  cwd: string
+  resultUuid: string
+  assistantUuid: string
+  /** Turn-start tree from the send-time anchor; null falls back to `meta.last.tree`. */
+  startTree: string | null
+  /** Before-copies captured around file-tool calls in this turn, keyed by absolute path. */
+  captures: ReadonlyMap<string, FileCopy>
 }
 
 export interface RewindPreview {
@@ -112,6 +137,7 @@ export class SnapshotService {
   private readonly store: SnapshotStore
   private readonly fileSnapshots: boolean
   private readonly maxUntrackedBytes: number
+  private readonly maxTurnFileBytes: number
   private readonly locks = new Map<string, Promise<void>>()
   private readonly deleted = new Set<string>()
 
@@ -120,6 +146,7 @@ export class SnapshotService {
     this.store = opts.store ?? new SnapshotStore(opts.stateDir)
     this.fileSnapshots = opts.fileSnapshots !== false
     this.maxUntrackedBytes = opts.maxUntrackedBytes ?? DEFAULT_MAX_UNTRACKED_BYTES
+    this.maxTurnFileBytes = opts.maxTurnFileBytes ?? TURN_CHANGES_MAX_FILE_BYTES
   }
 
   /** Whether the service was configured with fileSnapshots disabled.
@@ -132,6 +159,7 @@ export class SnapshotService {
   async delete(sessionId: string): Promise<void> {
     this.deleted.add(sessionId)
     await this.lock(sessionId, async () => {}, { allowDeleted: true })
+    await rm(capturesDir(this.stateDir, sessionId), { recursive: true, force: true })
   }
 
   /** Allow a same-id fresh session to capture into a new shadow repo. */
@@ -220,40 +248,47 @@ export class SnapshotService {
   ): Promise<{ tree: string; prev: string | null } | null> {
     if (!this.fileSnapshots) return null
     try {
-      return await this.lock(sessionId, async () => {
-        if (this.deleted.has(sessionId)) return null
-        const info = await this.resolveRepo(sessionId, cwd)
-        if (!info) return null
-        // Read prev BEFORE capture overwrites meta.last.tree
-        const prevMeta = await this.store.load(sessionId)
-        const prev = prevMeta?.last?.tree ?? null
-        const tree = await captureTree(info.repo, {
-          maxUntrackedBytes: this.maxUntrackedBytes,
-          sourceGitDir: info.sourceGitDir,
-        })
-        if (!tree) return null
-        await this.store.update(sessionId, (prev_) => {
-          if (prev_) {
-            const sourceGitDir = prev_.sourceGitDir ?? info.sourceGitDir
-            return { ...prev_, sourceGitDir, last: { tree, at: Date.now() } }
-          }
-          return {
-            version: 1 as const,
-            gitDir: info.repo.gitDir,
-            worktree: info.repo.worktree,
-            scope: info.repo.scope,
-            sourceGitDir: info.sourceGitDir,
-            byMessage: {},
-            patches: [],
-            last: { tree, at: Date.now() },
-          }
-        })
-        return { tree, prev }
-      })
+      return await this.lock(sessionId, () => this.captureWithPrevLocked(sessionId, cwd))
     } catch (err) {
       log.warn(`captureWithPrev failed for ${sessionId}: ${(err as Error).message ?? err}`)
       return null
     }
+  }
+
+  /** {@link captureWithPrev} under the caller-held session lock. */
+  private async captureWithPrevLocked(
+    sessionId: string,
+    cwd: string,
+  ): Promise<{ tree: string; prev: string | null } | null> {
+    if (this.deleted.has(sessionId)) return null
+    const info = await this.resolveRepo(sessionId, cwd)
+    if (!info) return null
+    // Read prev BEFORE capture overwrites meta.last.tree
+    const prevMeta = await this.store.load(sessionId)
+    const prev = prevMeta?.last?.tree ?? null
+    const tree = await captureTree(info.repo, {
+      maxUntrackedBytes: this.maxUntrackedBytes,
+      sourceGitDir: info.sourceGitDir,
+    })
+    if (!tree) return null
+    await this.store.update(sessionId, (prev_) => {
+      if (prev_) {
+        const sourceGitDir = prev_.sourceGitDir ?? info.sourceGitDir
+        return { ...prev_, sourceGitDir, last: { tree, at: Date.now() } }
+      }
+      return {
+        version: 1 as const,
+        gitDir: info.repo.gitDir,
+        worktree: info.repo.worktree,
+        scope: info.repo.scope,
+        sourceGitDir: info.sourceGitDir,
+        byMessage: {},
+        patches: [],
+        turns: [],
+        last: { tree, at: Date.now() },
+      }
+    })
+    return { tree, prev }
   }
 
   /**
@@ -290,6 +325,7 @@ export class SnapshotService {
             sourceGitDir: info.sourceGitDir,
             byMessage: {},
             patches: [],
+            turns: [],
             last: { tree, at: Date.now() },
           }
         })
@@ -358,6 +394,195 @@ export class SnapshotService {
       })
     } catch (err) {
       log.warn(`appendPatch failed for ${sessionId}: ${(err as Error).message ?? err}`)
+    }
+  }
+
+  /**
+   * Capture one file-tool target before the tool mutates it. Content-addressed,
+   * so identical bytes across paths/turns share one copy. No session lock: a
+   * `canUseTool` barrier must not queue behind a long git snapshot.
+   * @param sessionId - owning session (selects the copy directory).
+   * @param absPath - the tool's resolved target.
+   * @returns the capture; `absent` for a create.
+   */
+  async captureToolTarget(sessionId: string, absPath: string): Promise<FileCopy> {
+    if (this.deleted.has(sessionId)) throw new Error(`session ${sessionId} was deleted; snapshot operation refused`)
+    const canonical = await canonicalTargetPath(absPath)
+    return captureCopy(canonical, capturesDir(this.stateDir, sessionId), this.maxTurnFileBytes)
+  }
+
+  /**
+   * Record one completed turn: capture the end tree, diff it against the
+   * turn-start tree, fold in copied paths the snapshots do not cover, and
+   * persist the summary for `turnChanges`/`turnDiff`.
+   * @param input - the turn's trees and pre-mutation copies.
+   * @returns the served summary, or null when the turn changed nothing.
+   */
+  async recordTurn(input: TurnRecordInput): Promise<TurnChangesSummary | null> {
+    if (!this.fileSnapshots) return null
+    try {
+      return await this.lock(input.sessionId, () => this.recordTurnLocked(input))
+    } catch (err) {
+      log.warn(`recordTurn failed for ${input.sessionId}: ${(err as Error).message ?? err}`)
+      return null
+    }
+  }
+
+  private async recordTurnLocked(input: TurnRecordInput): Promise<TurnChangesSummary | null> {
+    if (this.deleted.has(input.sessionId)) return null
+    const info = await this.resolveRepo(input.sessionId, input.cwd)
+    if (!info) return null
+    const captured = await this.captureWithPrevLocked(input.sessionId, input.cwd)
+    if (!captured) return null
+    const start = input.startTree ?? captured.prev
+    if (!start) return null
+    const end = captured.tree
+    const repo = info.repo
+    const worktree = repo.worktree
+    // The caller's cwd may be an 8.3 short name while captured paths and the
+    // git worktree are canonical; compare them in one spelling.
+    const cwd = await canonicalTargetPath(input.cwd)
+    const capturesRoot = capturesDir(this.stateDir, input.sessionId)
+
+    const entries = await treeDiff(repo, start, end)
+    const changed = new Set(entries.map((entry) => entry.path))
+    // Windows paths are case-insensitive; the tree diff reports git's spelling.
+    const changedLower = process.platform === 'win32'
+      ? new Set(entries.map((entry) => entry.path.toLowerCase()))
+      : null
+
+    const listed: TurnChangesFileRecord[] = entries.map((entry) => {
+      const absolute = resolve(worktree, entry.path)
+      return {
+        path: durablePath(cwd, absolute),
+        display: displayPath(cwd, absolute),
+        status: entry.status,
+        additions: entry.additions,
+        deletions: entry.deletions,
+        ...(entry.binary ? { binary: true as const } : {}),
+        source: { kind: 'tree', repoPath: entry.path },
+      }
+    })
+
+    for (const [rawPath, before] of input.captures) {
+      const absolute = await canonicalTargetPath(rawPath)
+      // Our own copy store must never enter a summary.
+      if (isInsidePath(capturesRoot, absolute)) continue
+      const repoPath = toPosix(relative(worktree, absolute))
+      const insideWorktree = repoPath !== '' && !repoPath.startsWith('..') && !isAbsolute(repoPath)
+      if (insideWorktree && (changed.has(repoPath) || changedLower?.has(repoPath.toLowerCase()) === true)) continue
+
+      const after = await captureCopy(absolute, capturesRoot, this.maxTurnFileBytes)
+      if (sameCopy(before, after)) continue
+      const display = displayPath(cwd, absolute)
+      const comparison = await compareCopies(before, after, display, this.maxTurnFileBytes)
+      const status = before.kind === 'absent' ? 'added' as const
+        : after.kind === 'absent' ? 'deleted' as const
+          : 'modified' as const
+      listed.push({
+        path: durablePath(cwd, absolute),
+        display,
+        status,
+        additions: comparison.added,
+        deletions: comparison.deleted,
+        ...(comparison.binary ? { binary: true as const } : {}),
+        ...(comparison.oversized ? { oversized: true as const } : {}),
+        source: {
+          kind: 'copy',
+          before: before.kind === 'file' ? before.file : null,
+          after: after.kind === 'file' ? after.file : null,
+        },
+      })
+    }
+
+    listed.sort((a, b) => a.display < b.display ? -1 : a.display > b.display ? 1 : 0)
+    if (listed.length === 0) {
+      // An empty list supersedes an earlier record for the same turn.
+      await this.store.update(input.sessionId, (prev) => prev
+        ? { ...prev, turns: (prev.turns ?? []).filter((turn) => turn.resultUuid !== input.resultUuid) }
+        : prev)
+      return null
+    }
+
+    const kept = listed.slice(0, TURN_CHANGES_MAX_FILES)
+    const record: TurnChangesRecord = {
+      resultUuid: input.resultUuid,
+      assistantUuid: input.assistantUuid,
+      start,
+      end,
+      at: Date.now(),
+      files: kept,
+      total: listed.length,
+      added: listed.reduce((sum, file) => sum + file.additions, 0),
+      deleted: listed.reduce((sum, file) => sum + file.deletions, 0),
+    }
+    await this.store.update(input.sessionId, (prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        turns: [...(prev.turns ?? []).filter((turn) => turn.resultUuid !== record.resultUuid), record],
+      }
+    })
+    return summarizeTurn(record)
+  }
+
+  /**
+   * The summary announced by one completed turn.
+   * @param sessionId - owning session.
+   * @param resultUuid - the `result` frame that closed the turn.
+   * @returns the summary, or undefined when no record exists.
+   */
+  async turnChanges(sessionId: string, resultUuid: string): Promise<TurnChangesSummary | undefined> {
+    const meta = await this.store.load(sessionId)
+    const record = meta?.turns?.find((turn) => turn.resultUuid === resultUuid)
+    return record ? summarizeTurn(record) : undefined
+  }
+
+  /**
+   * Compare one listed file's turn-start and turn-end contents.
+   * @param sessionId - owning session.
+   * @param resultUuid - the `result` frame that closed the turn.
+   * @param index - the file's index in the summary.
+   * @param opts.full - return the unclipped patch body.
+   * @returns the comparison, or `{ available: false }` for an unknown record/index.
+   */
+  async turnDiff(
+    sessionId: string,
+    resultUuid: string,
+    index: number,
+    opts?: { full?: boolean },
+  ): Promise<TurnDiffPayload> {
+    if (!this.fileSnapshots) return { available: false }
+    const meta = await this.store.load(sessionId)
+    const record = meta?.turns?.find((turn) => turn.resultUuid === resultUuid)
+    const file = record?.files[index]
+    if (!record || !file || !meta?.gitDir) return { available: false }
+    if (file.binary) return { available: true, reason: 'binary' }
+    if (file.oversized) return { available: true, reason: 'oversized' }
+
+    if (file.source.kind === 'tree') {
+      const repo: ShadowRepo = { gitDir: meta.gitDir, worktree: meta.worktree, scope: meta.scope }
+      const patch = await filePatch(repo, record.start, record.end, file.source.repoPath, opts?.full)
+      if (patch.patch === '') return { available: false, reason: 'missing' }
+      return { available: true, patch: patch.patch, truncated: patch.truncated, totalLines: patch.totalLines }
+    }
+
+    // A binary/oversized side returned above, so both stored copies are text.
+    const before: FileCopy = file.source.before === null
+      ? { kind: 'absent' }
+      : { kind: 'file', file: file.source.before, binary: false }
+    const after: FileCopy = file.source.after === null
+      ? { kind: 'absent' }
+      : { kind: 'file', file: file.source.after, binary: false }
+    const comparison = await compareCopies(before, after, file.display, this.maxTurnFileBytes)
+    if (comparison.binary) return { available: true, reason: 'binary' }
+    if (comparison.oversized) return { available: true, reason: 'oversized' }
+    if (comparison.patch === undefined || comparison.patch === '') return { available: false, reason: 'missing' }
+    return {
+      available: true,
+      patch: comparison.patch,
+      truncated: comparison.truncated,
+      totalLines: comparison.totalLines,
     }
   }
 
@@ -504,5 +729,48 @@ export class SnapshotService {
         return { canRewind: false, error: 'rewind failed' }
       }
     })
+  }
+}
+
+/** Slash-separated form of a native path. */
+function toPosix(path: string): string {
+  return path.split(sep).join('/')
+}
+
+/** Whether `candidate` lies strictly inside `parent`. */
+function isInsidePath(parent: string, candidate: string): boolean {
+  const rel = relative(parent, candidate)
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+/** Durable path: relative to the session cwd when inside it, otherwise absolute. */
+function durablePath(cwd: string, absolute: string): string {
+  const rel = toPosix(relative(cwd, absolute))
+  return rel === '' || rel === '..' || rel.startsWith('../') || isAbsolute(rel) ? toPosix(absolute) : rel
+}
+
+/** Sort label: cwd-relative (including `../` for paths above it), otherwise absolute. */
+function displayPath(cwd: string, absolute: string): string {
+  const rel = toPosix(relative(cwd, absolute))
+  return rel === '' || rel === '..' || isAbsolute(rel) ? toPosix(absolute) : rel
+}
+
+/** The wire summary: the record's snapshot sources stay on the server. */
+function summarizeTurn(record: TurnChangesRecord): TurnChangesSummary {
+  return {
+    resultUuid: record.resultUuid,
+    assistantUuid: record.assistantUuid,
+    files: record.files.map((file) => ({
+      path: file.path,
+      display: file.display,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      ...(file.binary ? { binary: true as const } : {}),
+      ...(file.oversized ? { oversized: true as const } : {}),
+    })),
+    total: record.total,
+    added: record.added,
+    deleted: record.deleted,
   }
 }

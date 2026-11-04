@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SnapshotService } from './snapshot-service.js'
+import { capturesDir } from './paths.js'
 
 const execFileAsync = promisify(execFile)
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true })
@@ -216,6 +217,92 @@ describe('SnapshotService', { timeout: 30_000 }, () => {
     expect(diffs[0].status).toBe('modified')
     expect(diffs[0].patch).toContain('@@')
     expect(diffs[0].additions).toBeGreaterThan(0)
+  })
+
+  it('records tree changes and captured ignored files in one summary', async () => {
+    await writeFile(join(wt, '.gitignore'), '*.local\n')
+    await writeFile(join(wt, 'notes.local'), 'start\n')
+    const start = await svc.capture({ sessionId: 's-turn', cwd: wt })
+    const before = await svc.captureToolTarget('s-turn', join(wt, 'notes.local'))
+    await writeFile(join(wt, 'a.txt'), 'one\ntwo\n')
+    await writeFile(join(wt, 'notes.local'), 'start\ndone\n')
+    const summary = await svc.recordTurn({
+      sessionId: 's-turn', cwd: wt, resultUuid: 'r-turn', assistantUuid: 'a-turn',
+      startTree: start, captures: new Map([[join(wt, 'notes.local'), before]]),
+    })
+    expect(summary?.files.map((f) => [f.display, f.status, f.additions])).toEqual([
+      ['a.txt', 'modified', 1],
+      ['notes.local', 'modified', 1],
+    ])
+    expect(summary?.total).toBe(2)
+    expect(summary?.added).toBe(2)
+    expect(summary?.deleted).toBe(0)
+    expect((await svc.turnDiff('s-turn', 'r-turn', 1)).patch).toContain('+done')
+  })
+
+  it('lists a captured path above the session cwd as ../<path>', async () => {
+    await mkdir(join(wt, 'sub'))
+    const cwd = join(wt, 'sub')
+    const start = await svc.capture({ sessionId: 's-outer', cwd })
+    const before = await svc.captureToolTarget('s-outer', join(wt, 'a.txt'))
+    await writeFile(join(wt, 'a.txt'), 'changed\n')
+    const summary = await svc.recordTurn({
+      sessionId: 's-outer', cwd, resultUuid: 'r-outer', assistantUuid: 'a-outer',
+      startTree: start, captures: new Map([[join(wt, 'a.txt'), before]]),
+    })
+    expect(summary?.files[0]?.display).toBe('../a.txt')
+    expect((await svc.turnDiff('s-outer', 'r-outer', 0)).patch).toContain('+changed')
+  })
+
+  it('survives a restart and replaces a record by resultUuid', async () => {
+    const start = await svc.capture({ sessionId: 's-restart', cwd: wt })
+    const before = await svc.captureToolTarget('s-restart', join(wt, 'a.txt'))
+    const input = {
+      sessionId: 's-restart', cwd: wt, resultUuid: 'r-restart', assistantUuid: 'a-restart',
+      startTree: start, captures: new Map([[join(wt, 'a.txt'), before]]),
+    }
+    await writeFile(join(wt, 'a.txt'), 'one\ntwo\n')
+    expect((await svc.recordTurn(input))?.files[0]?.additions).toBe(1)
+
+    const fresh = new SnapshotService({ stateDir: state })
+    expect((await fresh.turnChanges('s-restart', 'r-restart'))?.resultUuid).toBe('r-restart')
+
+    await writeFile(join(wt, 'a.txt'), 'one\ntwo\nthree\n')
+    expect((await svc.recordTurn(input))?.files[0]?.additions).toBe(2)
+    const replaced = await fresh.turnChanges('s-restart', 'r-restart')
+    expect(replaced?.files).toHaveLength(1)
+    expect(replaced?.files[0]?.additions).toBe(2)
+  })
+
+  it('returns null for a no-change turn', async () => {
+    const start = await svc.capture({ sessionId: 's-nochange', cwd: wt })
+    expect(await svc.recordTurn({
+      sessionId: 's-nochange', cwd: wt, resultUuid: 'r-nochange', assistantUuid: 'a-nochange',
+      startTree: start, captures: new Map(),
+    })).toBeNull()
+  })
+
+  it('keeps turns across a real rewind and removes captures on delete', async () => {
+    const start = await svc.capture({ sessionId: 's-keep', cwd: wt })
+    await svc.recordAnchor('s-keep', wt, 'U1', start!)
+    // The before-copy exists so the captures directory is created before the turn.
+    await writeFile(join(wt, 'notes.local'), 'start\n')
+    const before = await svc.captureToolTarget('s-keep', join(wt, 'notes.local'))
+    await writeFile(join(wt, 'notes.local'), 'start\ndone\n')
+    await writeFile(join(wt, 'a.txt'), 'two\n')
+    const summary = await svc.recordTurn({
+      sessionId: 's-keep', cwd: wt, resultUuid: 'r-keep', assistantUuid: 'a-keep',
+      startTree: start, captures: new Map([[join(wt, 'notes.local'), before]]),
+    })
+    expect(summary?.total).toBe(2)
+
+    const rew = await svc.rewind('s-keep', 'U1')
+    expect(rew.canRewind).toBe(true)
+    expect((await svc.turnChanges('s-keep', 'r-keep'))?.resultUuid).toBe('r-keep')
+
+    await expect(access(capturesDir(state, 's-keep'))).resolves.toBeUndefined()
+    await svc.delete('s-keep')
+    await expect(access(capturesDir(state, 's-keep'))).rejects.toThrow()
   })
 
   it('real rewind invalidates later anchors (F5)', async () => {

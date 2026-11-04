@@ -36,6 +36,7 @@ import type {
   WsSubagentTranscriptSubscribe,
   WsSubagentTranscriptUnsubscribe,
   WsTasklistSnapshot,
+  WsTurnChanges,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
 import type { TaskRecordUi } from '../shared/tasks.js'
@@ -773,13 +774,15 @@ export class SessionConnection {
         // The channel is typed at the source (see
         // SessionManager.subscribeMessageStatus), so this is a
         // plain discriminated-union switch, not a defensive parse.
-        const v = value as WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted
+        const v = value as WsMessageConsumed | WsMessageSteered | WsMessagesWithdrawn | WsMessagesEvicted | WsTurnChanges
         if (v.kind === 'messages-withdrawn') {
           this.sink.send({ kind: 'messages-withdrawn', sessionId, uuids: v.uuids })
         } else if (v.kind === 'messages-evicted') {
           this.sink.send({ kind: 'messages-evicted', sessionId, seqs: v.seqs, generation: v.generation })
         } else if (v.kind === 'message-steered') {
           this.sink.send({ kind: 'message-steered', sessionId, uuid: v.uuid, state: v.state })
+        } else if (v.kind === 'turn-changes') {
+          this.sink.send({ kind: 'turn-changes', sessionId, summary: v.summary })
         } else {
           this.sink.send({ kind: 'message-consumed', sessionId, uuid: v.uuid, consumedAt: v.consumedAt })
         }

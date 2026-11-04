@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { SnapshotStore, type SessionSnapshotMeta } from './snapshot-store.js'
+import { SnapshotStore, type SessionSnapshotMeta, type TurnChangesRecord } from './snapshot-store.js'
+import { capturesDir, metaFile } from './paths.js'
 
 let dir: string
 let store: SnapshotStore
@@ -158,6 +159,55 @@ describe('SnapshotStore', () => {
     expect(keys.length).toBe(500)
     expect(keys[0]).toBe('U2')
     expect(keys[keys.length - 1]).toBe('U501')
+  })
+
+  it('tolerates metadata without turns and round-trips a turn record', async () => {
+    await store.save('x', empty())
+    expect((await store.load('x'))?.turns ?? []).toEqual([])
+
+    const turn: TurnChangesRecord = {
+      resultUuid: 'r1', assistantUuid: 'a1', start: 't0', end: 't1', at: 2, total: 1, added: 1, deleted: 0,
+      files: [{
+        path: 'src/a.ts', display: 'src/a.ts', status: 'added', additions: 1, deletions: 0,
+        source: { kind: 'tree', repoPath: 'src/a.ts' },
+      }],
+    }
+    await store.update('x', (prev) => prev && { ...prev, turns: [turn] })
+    expect((await store.load('x'))?.turns?.[0]?.resultUuid).toBe('r1')
+  })
+
+  it('rejects a non-array turns field', async () => {
+    await mkdir(join(dir, 'snapshots', 'meta'), { recursive: true })
+    await writeFile(metaFile(dir, 'x'), JSON.stringify({ ...empty(), turns: 'bad' }), 'utf8')
+    expect(await store.load('x')).toBeNull()
+  })
+
+  it('capAnchors evicts the oldest turn records beyond MAX_ANCHORS', async () => {
+    const turns: TurnChangesRecord[] = Array.from({ length: 502 }, (_, i) => ({
+      resultUuid: `r${i}`, assistantUuid: `a${i}`, start: 's', end: 'e', at: i, total: 0, added: 0, deleted: 0, files: [],
+    }))
+    await store.save('x', empty({ turns }))
+    const loaded = await store.load('x')
+    expect(loaded?.turns).toHaveLength(500)
+    expect(loaded?.turns?.[0]?.resultUuid).toBe('r2')
+  })
+
+  it('copyForFork filters turns by assistant uuid and copies captures', async () => {
+    const hash = 'abc123'
+    await mkdir(capturesDir(dir, 'x'), { recursive: true })
+    await writeFile(join(capturesDir(dir, 'x'), hash), 'content')
+
+    const turn = (resultUuid: string, assistantUuid: string): TurnChangesRecord => ({
+      resultUuid, assistantUuid, start: 's', end: 'e', at: 1, total: 1, added: 1, deleted: 0,
+      files: [{
+        path: 'a.local', display: 'a.local', status: 'modified', additions: 1, deletions: 0,
+        source: { kind: 'copy', before: join(capturesDir(dir, 'x'), hash), after: null },
+      }],
+    })
+    await store.save('x', empty({ turns: [turn('r1', 'a1'), turn('r2', 'a2')] }))
+    await store.copyForFork('x', 'y', new Set(), new Set(['a1']))
+    expect((await store.load('y'))?.turns?.map((t) => t.resultUuid)).toEqual(['r1'])
+    await expect(access(join(capturesDir(dir, 'y'), hash))).resolves.toBeUndefined()
   })
 
   it('revive clears tombstone so a re-created session can write again', async () => {

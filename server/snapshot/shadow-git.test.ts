@@ -13,6 +13,7 @@ import { odbDir, metaFile, snapshotRoot } from './paths.js'
 import {
   initShadowRepo, captureTree, nameOnlyDiff, treeHasPath,
   restorePaths, deletePaths, diffStats, structuredDiff,
+  treeDiff, filePatch,
   scopeFromCwd,
 } from './shadow-git.js'
 
@@ -151,6 +152,63 @@ describe('shadow-git capture/restore', () => {
     // rev was bad; the whole diagnostic must survive.
     const bogus = 'x'.repeat(400) + 'deadbeef'
     await expect(nameOnlyDiff(repo, bogus, 'HEAD')).rejects.toThrow(/bad revision.*deadbeef/)
+  })
+})
+
+describe('treeDiff / filePatch', () => {
+  let worktree: string
+  let sourceGitDir: string
+  let repo: { gitDir: string; worktree: string; scope: string }
+
+  beforeAll(async () => {
+    worktree = await mkdtemp(join(tmpdir(), 'snap-treediff-'))
+    await git(worktree, ['init'])
+    await git(worktree, ['config', 'user.email', 't@t.test'])
+    await git(worktree, ['config', 'user.name', 'T'])
+    await git(worktree, ['config', 'commit.gpgsign', 'false'])
+    await writeFile(join(worktree, 'a.txt'), 'one\n')
+    await git(worktree, ['add', '.'])
+    await git(worktree, ['commit', '-m', 'init'])
+    const common = (await git(worktree, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).stdout.trim()
+    sourceGitDir = (await git(worktree, ['rev-parse', '--path-format=absolute', '--git-dir'])).stdout.trim()
+    const gitDir = join(worktree, '.snap-odb')
+    await initShadowRepo({ gitDir, worktree, scope: '.', sourceCommonDir: common, sourceGitDir })
+    repo = { gitDir, worktree, scope: '.' }
+  })
+
+  afterAll(async () => {
+    await rm(worktree, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it('reports status, counts, binary, and resolves special filenames', async () => {
+    const t1 = await captureTree(repo, { sourceGitDir })
+    await writeFile(join(worktree, 'a.txt'), 'one\ntwo\n')
+    await writeFile(join(worktree, 'b.txt'), 'new\n')
+    await writeFile(join(worktree, 'bin.dat'), Buffer.from([0x00, 0x01]))
+    await writeFile(join(worktree, 'a b.txt'), 'space\n')
+    await writeFile(join(worktree, 'ü.txt'), 'unicode\n')
+    const t2 = await captureTree(repo, { sourceGitDir })
+
+    const entries = await treeDiff(repo, t1!, t2!)
+    const byPath = new Map(entries.map((e) => [e.path, e]))
+    expect(byPath.get('a.txt')).toMatchObject({ status: 'modified', additions: 1, deletions: 0, binary: false })
+    expect(byPath.get('b.txt')).toMatchObject({ status: 'added', additions: 1, deletions: 0 })
+    expect(byPath.get('bin.dat')).toMatchObject({ status: 'added', binary: true, additions: 0, deletions: 0 })
+    expect(byPath.has('a b.txt')).toBe(true)
+    expect(byPath.has('ü.txt')).toBe(true)
+
+    const patch = await filePatch(repo, t1!, t2!, 'a.txt')
+    expect(patch.patch).toContain('@@')
+    expect(patch.patch).toContain('+two')
+    expect(patch.truncated).toBe(false)
+
+    const spaced = await filePatch(repo, t1!, t2!, 'a b.txt')
+    expect(spaced.patch).toContain('+space')
+  })
+
+  it('returns no entries when the trees match', async () => {
+    const t = await captureTree(repo, { sourceGitDir })
+    expect(await treeDiff(repo, t!, t!)).toEqual([])
   })
 })
 
