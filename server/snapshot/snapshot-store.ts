@@ -2,13 +2,44 @@ import { readFile, unlink, rm, cp, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createLogger } from '../log.js'
 import { writeAtomic } from '../json-file-store.js'
-import { metaFile, odbDir, snapshotRoot } from './paths.js'
+import type { TurnChangedFileStatus } from '../../shared/turn-changes.js'
+import { capturesDir, metaFile, odbDir, snapshotRoot } from './paths.js'
 
 const log = createLogger('snapshots')
 
 /** Maximum number of rewind anchors (byMessage entries) per session.
  *  Oldest entries are evicted when the cap is exceeded. */
 const MAX_ANCHORS = 500
+
+/** One listed file's turn-start / turn-end sources, index-aligned with the served summary. */
+export interface TurnChangesFileRecord {
+  path: string
+  display: string
+  status: TurnChangedFileStatus
+  additions: number
+  deletions: number
+  binary?: true
+  oversized?: true
+  /** How the on-demand diff is produced. */
+  source:
+    /** A path in the two snapshot trees. */
+    | { kind: 'tree'; repoPath: string }
+    /** Two content-addressed copies; null means that side was absent. */
+    | { kind: 'copy'; before: string | null; after: string | null }
+}
+
+/** One completed top-level turn's changed-file record, served while the sidecar lives. */
+export interface TurnChangesRecord {
+  resultUuid: string
+  assistantUuid: string
+  start: string
+  end: string
+  at: number
+  files: TurnChangesFileRecord[]
+  total: number
+  added: number
+  deleted: number
+}
 
 export interface SessionSnapshotMeta {
   version: 1
@@ -21,6 +52,8 @@ export interface SessionSnapshotMeta {
   sourceGitDir?: string
   byMessage: Record<string, { start: string }>
   patches: Array<{ messageId: string; hash: string; files: string[] }>
+  /** Per-turn changed-file records, oldest first. Absent in older sidecars. */
+  turns?: TurnChangesRecord[]
   last?: { tree: string; at: number }
 }
 
@@ -50,6 +83,7 @@ export class SnapshotStore {
       if (!parsed || typeof parsed !== 'object' || parsed.version !== 1) return null
       if (typeof parsed.byMessage !== 'object' || parsed.byMessage == null) return null
       if (!Array.isArray(parsed.patches)) return null
+      if (parsed.turns !== undefined && !Array.isArray(parsed.turns)) return null
       return parsed
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code
@@ -107,11 +141,13 @@ export class SnapshotStore {
       if (keepMessageIds.has(k)) byMessage[k] = v
     }
     const patches = src.patches.filter((p) => keepPatchMessageIds.has(p.messageId))
+    const turns = (src.turns ?? []).filter((t) => keepPatchMessageIds.has(t.assistantUuid))
     // Copy the odb directory so the fork has its own git objects.
     // This eliminates the concurrency risk where remove(fromId) would
     // destroy objects the fork still references. The fork's byMessage/
     // patches reference tree SHAs that live in the copied odb.
     let odbCopyFailed = false
+    let capturesCopyFailed = false
     if (this.dir) {
       const srcOdb = odbDir(this.dir, fromId)
       const dstOdb = odbDir(this.dir, toId)
@@ -133,6 +169,21 @@ export class SnapshotStore {
           odbCopyFailed = true
         }
       }
+      // Copy-sourced turn records reference content-addressed files under the
+      // source session's captures directory; the fork needs its own copy so a
+      // later source removal cannot break its diffs.
+      const srcCaptures = capturesDir(this.dir, fromId)
+      const dstCaptures = capturesDir(this.dir, toId)
+      try {
+        await mkdir(dstCaptures, { recursive: true })
+        await cp(srcCaptures, dstCaptures, { recursive: true, force: true })
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code
+        if (code !== 'ENOENT') {
+          log.warn(`copyForFork captures copy failed for ${fromId} → ${toId}: ${(err as Error).message ?? err}`)
+          capturesCopyFailed = true
+        }
+      }
     }
     // Clear tombstone in case the fork id was previously used and removed.
     this.removed.delete(toId)
@@ -141,6 +192,7 @@ export class SnapshotStore {
       gitDir: this.dir ? odbDir(this.dir, toId) : src.gitDir,
       byMessage: odbCopyFailed ? {} : byMessage,
       patches: odbCopyFailed ? [] : patches,
+      turns: odbCopyFailed || capturesCopyFailed ? [] : turns,
       last: undefined,
     })
   }
@@ -199,6 +251,9 @@ function capAnchors(meta: SessionSnapshotMeta): SessionSnapshotMeta {
   }
   if (result.patches.length > MAX_ANCHORS) {
     result = { ...result, patches: result.patches.slice(result.patches.length - MAX_ANCHORS) }
+  }
+  if (result.turns !== undefined && result.turns.length > MAX_ANCHORS) {
+    result = { ...result, turns: result.turns.slice(result.turns.length - MAX_ANCHORS) }
   }
   return result
 }
