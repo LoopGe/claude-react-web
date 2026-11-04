@@ -176,6 +176,46 @@ export function summarizeSpawn(opts: CreateSessionOptions, sdkOptions: Options):
   }
 }
 
+/** The four tier env vars the CLI resolves its own internal queries through
+ *  (tier aliases, builtin subagents, the auto-mode safety classifier). */
+const MODEL_TIER_ENV_KEYS = [
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+] as const
+
+/**
+ * Mirror the resolved tier models into the flag-settings layer.
+ *
+ * `Options.env` is the environment the CLI is spawned with, but the CLI then
+ * applies `~/.claude/settings.json`'s `env` on top of it: it only treats the
+ * spawn env as authoritative when it detects a host-orchestrated entrypoint
+ * (`claude-desktop*` / `local-agent` / `CLAUDE_CODE_ENVIRONMENT_KIND=byoc`).
+ * An SDK spawn is `sdk-ts`, so a user-wide tier override silently redirects
+ * builtin subagents and the auto-mode classifier away from this session's
+ * model group.
+ *
+ * The flag-settings layer (`Options.settings`, sent as `--settings`) is
+ * applied after the user layer, so mirroring only these four keys there makes
+ * the session's tier routing win without disabling any of the user's other
+ * settings. Provider credentials must NOT go here — `--settings` is argv, so
+ * it is visible in the process list.
+ */
+export function mergeTierEnvIntoSettings(
+  settings: Options['settings'],
+  env: Options['env'],
+): Options['settings'] {
+  if (typeof settings === 'string') return settings
+  const tierEnv: Record<string, string> = {}
+  for (const key of MODEL_TIER_ENV_KEYS) {
+    const value = env?.[key]
+    if (value !== undefined) tierEnv[key] = value
+  }
+  if (Object.keys(tierEnv).length === 0) return settings
+  return { ...(settings ?? {}), env: { ...settings?.env, ...tierEnv } }
+}
+
 /** Build the SDK subprocess env for a profile. Exported pure for tests. */
 export function buildProfileEnv(profile: ProviderProfile, maxOutputTokens: number): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -913,6 +953,11 @@ export class ClaudeProvider implements AgentProvider {
       }
     }
     if (customEnv) opts.env = { ...opts.env, ...filterClientEnv(customEnv) }
+    // C1 — a user-wide `~/.claude/settings.json` env overrides the spawn env
+    // at CLI startup, which would redirect subagents / the auto-mode
+    // classifier. Mirror the final tier values into the flag-settings layer,
+    // which is applied after the user layer (see mergeTierEnvIntoSettings).
+    opts.settings = mergeTierEnvIntoSettings(opts.settings, opts.env)
     // Force-disable the CLI's auto-updater. claude-react-web pins the binary
     // itself (resolveClaudeBinary -> pathToClaudeCodeExecutable), so if a
     // spawned subprocess ALSO runs its own updater, an upgrade replaces

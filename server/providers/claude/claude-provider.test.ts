@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { isAbsolute, resolve } from 'node:path'
-import { buildProfileEnv, envCacheKey, summarizeSpawn } from './claude-provider.js'
+import type { Settings } from '@anthropic-ai/claude-agent-sdk'
+import {
+  buildProfileEnv,
+  envCacheKey,
+  mergeTierEnvIntoSettings,
+  summarizeSpawn,
+} from './claude-provider.js'
 import type { ProviderProfile } from '../../config.js'
 
 const PROFILE: ProviderProfile = {
@@ -84,6 +90,54 @@ describe('buildProfileEnv', () => {
       if (prev === undefined) delete process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL
       else process.env.CLAUDE_CODE_CUSTOM_OAUTH_URL = prev
     }
+  })
+})
+
+describe('mergeTierEnvIntoSettings (C1: flag-settings layer)', () => {
+  const TIER_ENV = {
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'vendor/opus-tier',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'vendor/sonnet-tier',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'vendor/haiku-tier',
+    ANTHROPIC_SMALL_FAST_MODEL: 'vendor/haiku-tier',
+    PATH: '/usr/bin',
+  }
+
+  it('mirrors the four per-session tier models into settings.env', () => {
+    // The CLI applies ~/.claude/settings.json's env AFTER the process env it
+    // was spawned with, so Options.env alone loses to a user-wide override.
+    // The flag-settings layer is applied after the user layer — this is the
+    // only key set that needs to ride there for per-session model routing.
+    expect(mergeTierEnvIntoSettings(undefined, TIER_ENV)).toEqual({
+      env: {
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'vendor/opus-tier',
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 'vendor/sonnet-tier',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'vendor/haiku-tier',
+        ANTHROPIC_SMALL_FAST_MODEL: 'vendor/haiku-tier',
+      },
+    })
+  })
+
+  it('keeps existing settings keys and unrelated settings.env entries', () => {
+    const settings = {
+      autoCompactWindow: 883000,
+      env: { GERRIT_USERNAME: 'me', ANTHROPIC_DEFAULT_SONNET_MODEL: 'stale' },
+    } as Settings
+
+    const merged = mergeTierEnvIntoSettings(settings, TIER_ENV) as Settings
+
+    expect(merged.autoCompactWindow).toBe(883000)
+    expect(merged.env).toEqual({
+      GERRIT_USERNAME: 'me',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'vendor/opus-tier',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'vendor/sonnet-tier',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'vendor/haiku-tier',
+      ANTHROPIC_SMALL_FAST_MODEL: 'vendor/haiku-tier',
+    })
+  })
+
+  it('leaves a settings-file path untouched', () => {
+    // Options.settings is `string | Settings`; a path cannot be merged into.
+    expect(mergeTierEnvIntoSettings('/tmp/settings.json', TIER_ENV)).toBe('/tmp/settings.json')
   })
 })
 
