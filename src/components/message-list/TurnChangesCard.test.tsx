@@ -1,15 +1,13 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import type { TurnChangedFile, TurnChangesSummary, TurnDiffPayload } from '../../../shared/turn-changes.js'
+import type { TurnChangedFile, TurnChangesSummary } from '../../../shared/turn-changes.js'
 
 const hooks = vi.hoisted(() => ({
   summary: null as TurnChangesSummary | null,
-  diff: null as TurnDiffPayload | null,
   loading: false,
 }))
 vi.mock('../../hooks/useTurnChanges', () => ({
   useTurnChanges: () => ({ summary: hooks.summary, loading: hooks.loading }),
-  useTurnDiff: () => ({ diff: hooks.diff, loading: false }),
 }))
 
 import { TurnChangesCard } from './TurnChangesCard'
@@ -39,7 +37,6 @@ function renderCard(open = vi.fn()) {
 
 beforeEach(() => {
   hooks.summary = null
-  hooks.diff = null
   hooks.loading = false
 })
 afterEach(() => vi.useRealTimers())
@@ -88,17 +85,21 @@ describe('TurnChangesCard', () => {
     expect(screen.getByText('binary')).toBeTruthy()
   })
 
-  it('previews a file after the hover delay and only then reads its diff', () => {
+  it('opens no preview on hover; clicking opens the review', () => {
     vi.useFakeTimers()
     hooks.summary = summaryOf([fileA])
-    hooks.diff = { available: true, patch: '@@ -1 +1 @@\n-old\n+new\n', truncated: false, totalLines: 3 }
-    renderCard()
+    const { open } = renderCard()
 
-    expect(document.querySelector('.turn-changes-preview')).toBeNull()
-    fireEvent.mouseEnter(screen.getByRole('button', { name: 'View changes to src/a.ts' }))
+    const button = screen.getByRole('button', { name: 'View changes to src/a.ts' })
+    // Body element count is the class-agnostic guard: a future hover preview
+    // under any markup (inline or portal) would have to mount something.
+    const bodyCount = document.body.querySelectorAll('*').length
+    fireEvent.mouseEnter(button)
+    // Past the old 400ms hover delay: nothing may appear.
     act(() => { vi.advanceTimersByTime(400) })
+    expect(document.body.querySelectorAll('*').length).toBe(bodyCount)
 
-    expect(document.querySelector('.turn-changes-preview-path')?.textContent).toBe('src/a.ts')
-    expect(document.querySelector('.git-diff-row.add')).toBeTruthy()
+    fireEvent.click(button)
+    expect(open).toHaveBeenCalledWith('r1', 0)
   })
 })

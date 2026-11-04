@@ -1,8 +1,13 @@
-/* Per-turn changed-files card (transcript) and its hover preview.
+/* Per-turn changed-files card (transcript) and the review panel it opens.
    Colors come from the theme tokens in both :root and [data-theme="light"]. */
 
 .turn-changes-card {
-  margin: var(--space-2) 0;
+  /* The wrapper (.virtuoso-item-wrapper) supplies half a --chat-row-gap at
+     each of its edges; the card's top margin completes the full gap against
+     the result row above it, and its bottom edge hands off to the next
+     wrapper through the wrapper paddings alone — the transcript's standard
+     12px rhythm, no extra card margin. */
+  margin: var(--chat-row-gap) 0 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--bg-elev);
@@ -130,36 +135,6 @@
   background: var(--btn-hover-bg);
 }
 
-.turn-changes-preview {
-  position: fixed;
-  z-index: var(--z-overlay);
-  display: flex;
-  flex-direction: column;
-  width: min(560px, calc(100vw - 16px));
-  max-height: 420px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-elev);
-  box-shadow: var(--card-shadow);
-  overflow: hidden;
-}
-
-.turn-changes-preview-path {
-  padding: var(--space-1) var(--space-2);
-  border-bottom: 1px solid var(--border);
-  color: var(--fg-muted);
-  font-family: var(--mono);
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.turn-changes-diff {
-  max-height: 380px;
-  overflow: auto;
-}
-
 .turn-changes-note {
   display: block;
   padding: var(--space-2);
@@ -169,13 +144,29 @@
 
 /* ── Per-turn review panel (the chat overlay) ───────────────────────── */
 
+/* Mounted as the sole child of .git-overlay (Overlay variant="git",
+   renderCard={false} — the child IS the card). The card constraints mirror
+   .git-overlay > .git-panel (git-panel.css): without a width cap the flex
+   item sizes to its max-content and the DiffView's pre-formatted lines blow
+   the panel out past both overlay edges (measured: 891px inside 487px).
+   Unlike the git panel this keeps height: 100% — a review surface fills the
+   column on purpose, so the loading state doesn't collapse to a sliver and
+   the diff loading in never reflows the card. */
 .turn-review {
   display: flex;
   flex-direction: column;
+  width: min(720px, 100%);
   height: 100%;
   min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   background: var(--bg);
+  box-shadow: var(--overlay-shadow);
+  overflow: hidden;
 }
+
+.git-overlay[data-state="open"] > .turn-review { animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both; }
+.git-overlay[data-state="closing"] > .turn-review { animation: overlay-panel-out var(--motion-duration-base) var(--motion-ease-exit) both; }
 
 .turn-review-head {
   display: flex;
