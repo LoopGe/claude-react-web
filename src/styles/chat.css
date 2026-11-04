@@ -1400,6 +1400,21 @@ button.chat-empty-env-chip:hover {
   flex: 0 1 auto;
   min-width: 0;
 }
+/* Tooltip bubbles here are centered over their trigger, and this lane starts
+   close to the panel's left edge: a chip that begins a row — the permission
+   chip always, and any chip `flex-wrap` pushes onto a new row — has its
+   center only ~124px in (12px reading inset + card border + bar padding +
+   Attach/Tasks). The base `.tt-bubble` allowance is 280px, so half a bubble
+   (140px) overhangs that edge and `.chat-panel`'s `overflow:hidden` hard-clips
+   the label's leading characters. Capping every chip's bubble at 230px —
+   below 2 × the ~124px first-column center — keeps a row-leading bubble
+   inside the left edge; chips further along a row sit further from it, and a
+   narrower bubble also shrinks their right-edge overhang. Growing the bubble
+   rightward instead (`align="start"`) would trade this for right-edge clipping
+   in narrow multi-panel layouts, where each panel is a bare `1fr` track. */
+.composer-session-controls > .tt-wrap > .tt-bubble {
+  max-width: 230px;
+}
 /* Match the composer's attachment/task icon-button chrome. The shared chip
    classes still own state ink (permission risk, Fast, effort, persona and
    thinking), while these scoped rules keep their former header dimensions
