@@ -37,6 +37,31 @@ export function effortLevelsForModel(model?: string): EffortLevel[] | undefined 
   return []
 }
 
+/** Whether `model` supports fast mode. Same keyword-family classification
+ *  and the same gateway rationale as effortLevelsForModel — mirroring the
+ *  CLI's own gate (BA(), claude 2.1.239): fast mode is eligible only for
+ *  `opus-4-8` / `opus-5` family ids (the CLI also consults an org
+ *  capability table we cannot see; a gateway-deployed session never
+ *  qualifies through it).
+ *
+ *  Why this exists: the CLI reports `fast_mode_state: 'off'` on EVERY
+ *  init/result frame regardless of model (probe-verified on a GLM proxy:
+ *  `fast_mode_disabled_reason: 'sdk_opt_in_required'`), so the old
+ *  "fastModeState === undefined → model unsupported" visibility rule never
+ *  fires and the chip shows on models that can never turn it on. The
+ *  SDK's supportedModels() report (ModelInfo.supportsFastMode) has the
+ *  same gateway trust problems documented above, so classify by id.
+ *
+ *  Three-state, mirroring Session.thinkingSupported:
+ *    - undefined : no model set yet (capability unknown → UI shows the chip)
+ *    - false     : model can't serve fast mode → UI hides the chip
+ *    - true      : model can */
+export function supportsFastModeForModel(model?: string): boolean | undefined {
+  if (!model) return undefined
+  const id = model.toLowerCase()
+  return id.includes('opus-4-8') || id.includes('opus-5')
+}
+
 /** Whether `model` supports extended thinking at all. Same keyword-family
  *  classification and the same gateway rationale as effortLevelsForModel:
  *  the SDK's supportedModels() report (ModelInfo.supportsAdaptiveThinking /

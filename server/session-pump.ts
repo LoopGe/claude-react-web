@@ -640,8 +640,12 @@ export function settleTasksOnProcessExit(session: Session, skipTaskIds?: Readonl
  *  The field rides on `system/init` and `result` (success + error) messages
  *  (see sdk.d.ts: SDKSystemMessage, SDKResultSuccess, SDKResultError). We
  *  probe every message defensively rather than branching on type — a missing
- *  field is simply undefined. Returns undefined when absent (which also means
- *  "the current model doesn't support fast mode"). Pure — exported for tests. */
+ *  field is simply undefined. NOTE: absence does NOT mean "the current model
+ *  doesn't support fast mode" — current CLIs report the field (as 'off') on
+ *  every eligible-frame regardless of model (probe-verified on a GLM proxy);
+ *  model support is gated separately via Session.fastModeSupported
+ *  (effort-capability.ts). Undefined here just means "no report seen yet".
+ * Pure — exported for tests. */
 
 function commandsChanged(msg: SDKMessage): SlashCommand[] | undefined {
   const candidate = msg as { type: unknown; subtype: unknown; commands: unknown }

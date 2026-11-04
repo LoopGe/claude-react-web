@@ -215,11 +215,18 @@ export interface SessionInfoBase<PM = string> {
    *  sandbox ON; undefined = off (project/SDK default). Persisted; survives
    *  resume/restart/fork; runtime-switchable. */
   sandbox?: SandboxSetting
-  /** SDK-reported runtime fast-mode state. undefined means the current
-   *  model doesn't support fast mode — the UI uses this to hide the
-   *  toggle entirely. 'cooldown' means fast mode is rate-limited and
-   *  temporarily inactive. Not persisted (the SDK re-reports it). */
+  /** SDK-reported runtime fast-mode state. 'cooldown' means fast mode is
+   *  rate-limited and temporarily inactive. Not persisted (the SDK
+   *  re-reports it). NOTE: the CLI reports this field ('off' included) on
+   *  every init/result regardless of model — it does NOT indicate model
+   *  support; use fastModeSupported for that. */
   fastModeState?: 'off' | 'cooldown' | 'on'
+  /** Whether the current model supports fast mode at all (keyword-classified
+   *  server-side from the model id — the CLI's fast_mode_state report can't
+   *  discriminate, and the SDK's model report is untrustworthy on gateway
+   *  deployments). Three-state like thinkingSupported: undefined = unknown →
+   *  UI shows the chip; false = hide it. Not persisted. */
+  fastModeSupported?: boolean
   /** SDK-reported runtime compaction state — true while the CLI is compacting
    *  the transcript (auto-recap / context-window compression). Surfaced so the
    *  WorkingBubble can show "Recap…" instead of a stale phase while the

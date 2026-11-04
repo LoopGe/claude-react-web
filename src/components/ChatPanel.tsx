@@ -766,9 +766,14 @@ export const ChatPanel = memo(function ChatPanel({
     }
   }, [permMode])
   // Fast mode chip.
-  //  - Visibility is gated on the SDK reporting a runtime state: undefined
-  //    means the current model doesn't support fast mode (the SDK omits the
-  //    field), so we hide the chip entirely.
+  //  - Visibility is gated on TWO signals: the per-model eligibility flag the
+  //    server keyword-classifies from the model id (fastModeSupported, same
+  //    mechanism as effortLevels/thinkingSupported), AND the SDK reporting a
+  //    runtime state (old CLIs omitted the field). The runtime state alone is
+  //    NOT a support signal — the CLI reports fast_mode_state ('off'
+  //    included) on every init/result regardless of model, so without the
+  //    model gate the chip showed on models that can never turn fast mode on
+  //    (probe-verified on a GLM proxy session).
   //  - cooldown is a real runtime state (rate-limited) and must NOT be masked
   //    by the optimistic intent — it takes precedence.
   //  - on/off appearance follows the user INTENT (session.fastMode) so a
@@ -776,7 +781,7 @@ export const ChatPanel = memo(function ChatPanel({
   //    fastModeState on the next init/result). The runtime state catches up
   //    and the POST response / WS update keeps intent authoritative.
   const fastState = session.fastModeState
-  const fastVisible = fastState !== undefined
+  const fastVisible = session.fastModeSupported !== false && fastState !== undefined
   const fastCooldown = fastState === 'cooldown'
   const fastOn = !fastCooldown && (session.fastMode ?? false)
 
@@ -823,11 +828,12 @@ export const ChatPanel = memo(function ChatPanel({
           </button>
         </span>
       </Tooltip>
-      {/* Fast-mode control. Only shown when the SDK reports a fast-mode
-          runtime state for the current model (undefined → model doesn't
-          support it → chip hidden). 'cooldown' means the speedup is
-          rate-limited and temporarily inactive, so we disable the toggle
-          and explain why. Clicking flips the persisted intent. */}
+      {/* Fast-mode control. Shown only when the model is fast-mode eligible
+          (server keyword-classifies the id — the CLI's fast_mode_state report
+          is always present and doesn't discriminate) AND the SDK reports a
+          runtime state. 'cooldown' means the speedup is rate-limited and
+          temporarily inactive, so we disable the toggle and explain why.
+          Clicking flips the persisted intent. */}
       {fastVisible && (
         <Tooltip
           label={

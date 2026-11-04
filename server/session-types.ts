@@ -340,10 +340,18 @@ export interface Session {
   /** SDK-reported runtime fast-mode state ('off' | 'cooldown' | 'on'),
    *  parsed from system/init and result messages. Read-only — reflects what
    *  the backend is actually doing (e.g. 'cooldown' after a rate limit).
-   *  undefined means the current model doesn't support fast mode (the SDK
-   *  omits the field), which the UI uses to hide the toggle. Not persisted —
-   *  the SDK re-reports it after respawn. */
+   *  The CLI reports this field on EVERY init/result regardless of model
+   *  (always 'off' for non-eligible models — see fastModeSupported), so it
+   *  does NOT indicate model support. Not persisted — the SDK re-reports it
+   *  after respawn. */
   fastModeState?: FastModeState
+  /** Whether the current model supports fast mode at all (keyword-classified
+   *  from the model id in effort-capability.ts, mirroring the CLI's own
+   *  eligibility gate — the CLI's fast_mode_state report can't discriminate,
+   *  see fastModeState). Three-state like thinkingSupported:
+   *  undefined = no model set yet → UI shows the chip; false = hide it.
+   *  Recomputed at spawn and on every model switch, like effortLevels. */
+  fastModeSupported?: boolean
   /** SDK-reported runtime compaction state — true while the CLI is compacting
    *  the transcript (`system/status` frames with `status: 'compacting'`), so
    *  the WorkingBubble can show "Recap…" instead of a stale phase.

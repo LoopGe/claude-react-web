@@ -105,7 +105,7 @@ import type { ClientDebugAnswer, ClientDebugOp } from '../shared/client-debug.js
 import type { WsClientDebugRequest } from '../shared/ws-protocol.js'
 import { HttpError, controlHttpError, type ControlWrapOpts } from './errors.js'
 import { filterClientEnv } from './session-env.js'
-import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
+import { effortLevelsForModel, supportsFastModeForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting, type WorktreeInfo } from '../shared/session-info.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
@@ -3506,6 +3506,10 @@ export class SessionManager {
     // Same for thinking capability — keyword-classified, synchronous, so the
     // first `created` frame already carries the correct chip visibility.
     session.thinkingSupported = supportsThinkingForModel(session.model)
+    // Same for fast mode — the CLI reports fast_mode_state on every model, so
+    // chip visibility needs this independent per-model gate (see
+    // supportsFastModeForModel).
+    session.fastModeSupported = supportsFastModeForModel(session.model)
     // Brand-new session (or a resume, which also "creates" as far as the
     // UI list is concerned): persist to disk, then broadcast `created`
     // instead of `update`. The frontend `created` handler is the one
@@ -4773,6 +4777,8 @@ export class SessionManager {
       s.effortLevels = effortLevelsForModel(s.model)
       // Thinking capability tracks the model family too — recompute on switch.
       s.thinkingSupported = supportsThinkingForModel(s.model)
+      // Fast mode eligibility tracks the model family too — recompute on switch.
+      s.fastModeSupported = supportsFastModeForModel(s.model)
       // The CLI's cached auto-compact threshold was computed for the OLD model's
       // window. resolveAutoCompactThreshold gates on the model name so a stale
       // entry can't leak into the bar, but drop it eagerly so the next turn
@@ -4812,6 +4818,7 @@ export class SessionManager {
       s.lastActivityAt = Date.now()
       s.effortLevels = effortLevelsForModel(s.model)
       s.thinkingSupported = supportsThinkingForModel(s.model)
+      s.fastModeSupported = supportsFastModeForModel(s.model)
       this.persist(s)
       return this.info(s)
     })
@@ -8205,6 +8212,7 @@ export class SessionManager {
       betas: s.betas,
       sandbox: s.sandbox,
       fastModeState: s.fastModeState,
+      fastModeSupported: s.fastModeSupported,
       compacting: s.compacting,
       pluginErrors: s.pluginErrors,
       effortLevels: s.effortLevels,

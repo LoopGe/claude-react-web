@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { effortLevelsForModel, supportsThinkingForModel } from './effort-capability.js'
+import { effortLevelsForModel, supportsFastModeForModel, supportsThinkingForModel } from './effort-capability.js'
 
 describe('effortLevelsForModel', () => {
   it('returns all 5 levels for opus-family ids (incl. provider prefixes)', () => {
@@ -68,5 +68,36 @@ describe('supportsThinkingForModel', () => {
   it('returns undefined when no model is set (capability unknown → chip shown)', () => {
     expect(supportsThinkingForModel(undefined)).toBeUndefined()
     expect(supportsThinkingForModel('')).toBeUndefined()
+  })
+})
+
+describe('supportsFastModeForModel', () => {
+  it('returns true for the fast-mode-eligible opus ids (opus-4-8 / opus-5, incl. provider prefixes)', () => {
+    expect(supportsFastModeForModel('claude-opus-4-8')).toBe(true)
+    expect(supportsFastModeForModel('ppio/pa/claude-opus-4-8')).toBe(true)
+    expect(supportsFastModeForModel('anthropic/claude-opus-5')).toBe(true)
+    expect(supportsFastModeForModel('claude-opus-5-20260101')).toBe(true)
+  })
+
+  it('returns false for older opus ids (fast mode is opus-4-8/opus-5 only, mirroring the CLI gate)', () => {
+    expect(supportsFastModeForModel('claude-opus-4-6')).toBe(false)
+    expect(supportsFastModeForModel('claude-opus-4-7')).toBe(false)
+  })
+
+  it('returns false for sonnet / haiku / non-Claude models (fail soft → hide chip)', () => {
+    expect(supportsFastModeForModel('claude-sonnet-4-6')).toBe(false)
+    expect(supportsFastModeForModel('claude-haiku-4-5')).toBe(false)
+    expect(supportsFastModeForModel('glm-5.3-flash')).toBe(false)
+    expect(supportsFastModeForModel('deepseek/deepseek-v4-pro')).toBe(false)
+  })
+
+  it('is case-insensitive', () => {
+    expect(supportsFastModeForModel('PPIO/PA/Claude-OPUS-4-8')).toBe(true)
+    expect(supportsFastModeForModel('Claude-OPUS-5')).toBe(true)
+  })
+
+  it('returns undefined when no model is set (capability unknown → chip shown)', () => {
+    expect(supportsFastModeForModel(undefined)).toBeUndefined()
+    expect(supportsFastModeForModel('')).toBeUndefined()
   })
 })
