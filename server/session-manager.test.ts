@@ -2074,10 +2074,11 @@ describe('SessionManager', () => {
     expect(boundary.compact_metadata.trigger).toBe('manual')
     expect(boundary.handoff).toBe(true)
     // [1] is the user-role summary carrying the hand-off text.
-    const seed = history[1] as { type: string; message: { content: string }; isSynthetic: boolean; shouldQuery: boolean }
+    const seed = history[1] as { type: string; message: { content: string }; isSynthetic: boolean; isCompactSummary?: boolean; shouldQuery: boolean }
     expect(seed.type).toBe('user')
     expect(seed.message.content).toBe('HAND-OFF SUMMARY')
     expect(seed.isSynthetic).toBe(true)
+    expect(seed.isCompactSummary).toBe(true)
     expect(seed.shouldQuery).toBe(false)
     // The seed must not bump Y into a turn.
     expect(sm.get(next.id).working).toBe(false)

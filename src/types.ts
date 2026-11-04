@@ -298,6 +298,8 @@ export interface SdkMessage {
    *  and non-null for tool results and subagent-internal frames. The SDK
    *  declares this on both SDKUserMessage and SDKAssistantMessage. */
   parent_tool_use_id?: string | null
+  /** Server marker for CLI-generated compaction summaries, not human input. */
+  isCompactSummary?: boolean
   /** Server marker for frames normalized from the CLI's persisted JSONL. */
   restoredFromDisk?: boolean
   /** Client-only marker for the in-place draft card (inline streaming): a

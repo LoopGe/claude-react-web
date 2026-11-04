@@ -196,6 +196,16 @@ describe('applyMessage step 1: FIFO consume oldest optimistic placeholder', () =
     expect(state.mirror.items.at(-1)?.optimisticSourceId).toBe('optimistic:1')
   })
 
+  it('does not consume a pending human placeholder for a compact summary', () => {
+    let state = withPlaceholders(freshState(), [placeholderItem('optimistic:1', 'real prompt')])
+    state = applyMessage(state, {
+      ...userMsg('summary-1', 'This session is being continued from a previous conversation.'),
+      isCompactSummary: true,
+    } as unknown as SdkMessage)
+    expect(state.intent.pendingPlaceholders.has('optimistic:1')).toBe(true)
+    expect(state.mirror.items.at(-1)?.isCompactSummary).toBe(true)
+  })
+
   it('does NOT match a subagent tool_result against a pending placeholder (parent guard)', () => {
     // tool_result frames are type:'user' but carry parent_tool_use_id — they
     // must not consume the optimistic placeholder.

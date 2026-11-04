@@ -113,6 +113,22 @@ describe('paginateJsonl — filtering', () => {
 })
 
 describe('paginateJsonl — normalization', () => {
+  it('preserves the compact-summary marker on disk-restored user frames', () => {
+    const raw = jsonl([
+      {
+        type: 'user',
+        uuid: 'summary-1',
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+        message: { role: 'user', content: 'This session is being continued from a previous conversation.' },
+      },
+    ])
+    const page = paginateJsonl(raw, SID, { limit: 100 })
+    const [summary] = page.messages as Array<{ isCompactSummary?: boolean; restoredFromDisk?: boolean }>
+    expect(summary.isCompactSummary).toBe(true)
+    expect(summary.restoredFromDisk).toBe(true)
+  })
+
   it('sets parent_tool_use_id to the tool_use_id for tool_result user lines', () => {
     const raw = jsonl([
       {

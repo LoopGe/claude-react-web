@@ -343,6 +343,15 @@ describe('isHumanUserMessage', () => {
     expect(isHumanUserMessage(userMsg('<local-command-stdout>Set model to zhipuai/glm-5.2</local-command-stdout>'))).toBe(false)
   })
 
+  it('does NOT classify an explicit compact summary as human input', () => {
+    expect(isHumanUserMessage({
+      type: 'user',
+      uuid: 'summary-1',
+      isCompactSummary: true,
+      message: { role: 'user', content: 'This session is being continued from a previous conversation.' },
+    } as unknown as SdkMessage)).toBe(false)
+  })
+
   it('classifies an ordinary user prompt as human input', () => {
     expect(isHumanUserMessage(userMsg('review this gerrit change'))).toBe(true)
   })
@@ -379,6 +388,12 @@ describe('countQueuedUserTurns', () => {
 
   it('returns 0 for an empty transcript', () => {
     expect(countQueuedUserTurns([])).toBe(0)
+  })
+
+  it('does not count an acknowledged compact summary as queued input', () => {
+    expect(countQueuedUserTurns([
+      userWith({ receivedAt: 100, isCompactSummary: true }, 'summary-1'),
+    ])).toBe(0)
   })
 
   it('does not count tool_result or task-notification user frames even when parent is null', () => {
@@ -541,6 +556,21 @@ describe('getSubagentChildStarts', () => {
   it('returns empty for a non-assistant message', () => {
     expect(getSubagentChildStarts({ type: 'user', uuid: 'u', parent_tool_use_id: 'tu_sa', message: { role: 'user', content: 'hi' } } as unknown as SdkMessage))
       .toEqual({ parentId: '', children: [] })
+  })
+})
+
+describe('toTranscriptItem — compact summary identity', () => {
+  it('uses the explicit marker even when compact_boundary is not adjacent', () => {
+    const summary = toTranscriptItem({
+      type: 'user',
+      uuid: 'summary-1',
+      isCompactSummary: true,
+      message: { role: 'user', content: 'This session is being continued from a previous conversation.' },
+      restoredFromDisk: true,
+      receivedAt: 100,
+    } as unknown as SdkMessage, undefined)
+    expect(summary?.isCompactSummary).toBe(true)
+    expect(summary?.deliveryStatus).toBeUndefined()
   })
 })
 

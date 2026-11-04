@@ -26,6 +26,7 @@ export function getMessagesForClassifier(
     if (!message) continue
 
     if (msg.type === 'user' && message.role === 'user') {
+      if (msg.isCompactSummary === true) continue
       const text = extractText(message.content)
       if (text) result.push({ role: 'user', content: text })
     } else if (msg.type === 'assistant' && message.role === 'assistant') {

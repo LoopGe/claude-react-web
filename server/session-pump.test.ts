@@ -3940,6 +3940,68 @@ describe('pump: onTaskListChanged', () => {
     expect(onTaskListChanged).toHaveBeenCalledWith(session.id)
   })
 
+  it('keeps a compact summary out of the top-level user echo drop', async () => {
+    const summary = {
+      ...userMsg('This session is being continued from a previous conversation.'),
+      isCompactSummary: true,
+      isVisibleInTranscriptOnly: true,
+    } as unknown as SDKMessage
+    const { session, broadcasts } = makePumpSession([summary])
+    await pump(session, makePumpDeps())
+
+    expect(session.history).toContain(summary)
+    expect(broadcasts).toContain(summary)
+  })
+
+  it('does not duplicate an app-generated seed when its SDK echo arrives', async () => {
+    const summary = {
+      ...userMsg('HAND-OFF SUMMARY'),
+      isSynthetic: true,
+      isCompactSummary: true,
+    } as unknown as SDKMessage
+    const { session, broadcasts } = makePumpSession([summary])
+    session.history.push(summary)
+    await pump(session, makePumpDeps())
+
+    expect(session.history).toHaveLength(1)
+    expect(broadcasts).not.toContain(summary)
+  })
+
+  it('deduplicates an app-seed echo after the SDK normalizes its text to content blocks', async () => {
+    const seed = {
+      ...userMsg('HAND-OFF SUMMARY'),
+      isSynthetic: true,
+      isCompactSummary: true,
+    } as unknown as SDKMessage
+    const echo = {
+      ...userMsg([{ type: 'text', text: 'HAND-OFF SUMMARY' }]),
+      uuid: 'sdk-echo-2',
+      isSynthetic: true,
+      isCompactSummary: true,
+    } as unknown as SDKMessage
+    const { session, broadcasts } = makePumpSession([echo])
+    session.history.push(seed)
+    await pump(session, makePumpDeps())
+
+    expect(session.history).toHaveLength(1)
+    expect(broadcasts).not.toContain(echo)
+  })
+
+  it('does not discard a distinct native compaction summary with the same text', async () => {
+    const appSeed = {
+      ...userMsg('SUMMARY'),
+      isSynthetic: true,
+      isCompactSummary: true,
+    } as unknown as SDKMessage
+    const nativeSummary = { ...appSeed, uuid: 'native-summary-2', isSynthetic: undefined } as unknown as SDKMessage
+    const { session, broadcasts } = makePumpSession([nativeSummary])
+    session.history.push(appSeed)
+    await pump(session, makePumpDeps())
+
+    expect(session.history).toHaveLength(2)
+    expect(broadcasts).toContain(nativeSummary)
+  })
+
   it('fires onTaskListChanged when a genuine user echo lands (stale-boundary refresh)', async () => {
     const onTaskListChanged = vi.fn()
     const { session } = makePumpSession([

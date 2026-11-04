@@ -205,9 +205,10 @@ export function toTranscriptItem(
       return plainTextMemo
     },
     isCompactSummary: Boolean(
-      msg.type === 'user' &&
+      msg.isCompactSummary ||
+      (msg.type === 'user' &&
       prev?.msg.type === 'system' &&
-      prev.msg.subtype === 'compact_boundary',
+      prev.msg.subtype === 'compact_boundary'),
     ),
     hiddenByDefault,
     // Server-stamped wall-clock time (see SdkMessage.receivedAt). Undefined
@@ -235,6 +236,7 @@ export function toTranscriptItem(
  *  signal to show. */
 function deriveDeliveryStatus(msg: SdkMessage): 'queued' | 'consumed' | 'injecting' | 'injected' | undefined {
   if (msg.type !== 'user') return undefined
+  if (msg.isCompactSummary === true) return undefined
   if (msg.parent_tool_use_id != null) return undefined
   if (userMessageHasToolResult(msg)) return undefined
   if (isTaskNotificationUserMessage(msg)) return undefined
@@ -439,6 +441,7 @@ export function userMessageOriginKind(msg: SdkMessage): string | undefined {
  *      marks synthetic or that match a known injection signature. */
 export function isHumanUserMessage(msg: SdkMessage): boolean {
   if (msg.type !== 'user') return false
+  if (msg.isCompactSummary === true) return false
   if (msg.parent_tool_use_id != null) return false
   if (userMessageHasToolResult(msg)) return false
   const kind = userMessageOriginKind(msg)

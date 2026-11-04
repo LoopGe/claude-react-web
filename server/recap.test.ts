@@ -146,6 +146,65 @@ describe('recap', () => {
       expect(r.stats.userTurns).toBe(1)
     })
 
+    it('keeps compact summaries as neutral context without counting them as user turns', async () => {
+      const fetchMock = mockFetchSuccess('summary')
+      const messages = [
+        userMsg('actual question', 'u1'),
+        {
+          ...userMsg('This session is being continued from a previous conversation.', 'summary-1'),
+          isCompactSummary: true,
+        } as unknown as SDKMessage,
+      ]
+      const r = await generateRecap(messages, 'compact-summary')
+      expect(r.stats.userTurns).toBe(1)
+      const body = JSON.parse((fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1].body)
+      expect(body.messages[0].content).toContain('[2] System: This session is being continued from a previous conversation.')
+    })
+
+    it('does not truncate prior compact summaries for a later recap', async () => {
+      const fetchMock = mockFetchSuccess('summary')
+      const longSummary = `start ${'x'.repeat(700)} NEXT-STEP`
+      const messages = [
+        userMsg('actual question', 'u1'),
+        { ...userMsg(longSummary, 'summary-1'), isCompactSummary: true } as unknown as SDKMessage,
+      ]
+      await generateRecap(messages, 'compact-summary-long')
+      const body = JSON.parse((fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1].body)
+      expect(body.messages[0].content).toContain('NEXT-STEP')
+    })
+
+    it('reserves budget for a full compact summary instead of omitting it with the middle lines', async () => {
+      const fetchMock = mockFetchSuccess('summary')
+      const longSummary = `SUMMARY-START ${'x'.repeat(10_500)} NEXT-STEP`
+      const messages = [
+        userMsg('first question', 'u1'),
+        assistantMsg('first answer', 'a1'),
+        userMsg('second question', 'u2'),
+        { ...userMsg(longSummary, 'summary-1'), isCompactSummary: true } as unknown as SDKMessage,
+        ...Array.from({ length: 10 }, (_, i) => userMsg(`later question ${i} ${'y'.repeat(300)}`, `later-${i}`)),
+      ]
+      await generateRecap(messages, 'compact-summary-budget')
+      const body = JSON.parse((fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1].body)
+      const userContent = body.messages[0].content as string
+      expect(userContent).toContain('SUMMARY-START')
+      expect(userContent).toContain('NEXT-STEP')
+      expect(userContent.length).toBeLessThanOrEqual(12_000)
+    })
+
+    it('drops ordinary head and tail lines when a full compact summary consumes the budget', async () => {
+      const fetchMock = mockFetchSuccess('summary')
+      const longSummary = `SUMMARY-START ${'x'.repeat(11_500)} NEXT-STEP`
+      const messages = [
+        { ...userMsg(longSummary, 'summary-1'), isCompactSummary: true } as unknown as SDKMessage,
+        ...Array.from({ length: 5 }, (_, i) => userMsg(`question ${i} ${'y'.repeat(400)}`, `u${i}`)),
+      ]
+      await generateRecap(messages, 'compact-summary-consumes-budget')
+      const body = JSON.parse((fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1].body)
+      const userContent = body.messages[0].content as string
+      expect(userContent).toContain('NEXT-STEP')
+      expect(userContent.length).toBeLessThanOrEqual(12_000)
+    })
+
     it('uses last result for total_cost_usd (overwrites, not accumulates)', async () => {
       mockFetchSuccess('summary')
       // Need at least one user message — pure result-only history would

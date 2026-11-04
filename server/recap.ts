@@ -111,7 +111,7 @@ export function detectLanguage(userText: string): string | null {
 // ── History extraction ─────────────────────────────────────────────
 
 export interface ExtractedLine {
-  role: 'User' | 'Assistant'
+  role: 'User' | 'Assistant' | 'System'
   text: string
 }
 
@@ -154,6 +154,13 @@ export function extractHistory(messages: SDKMessage[]): {
 
     if (type === 'user') {
       const content = (m as { message?: { content?: unknown } }).message?.content
+      if (m.isCompactSummary === true) {
+        const text = extractText(content)
+        // Keep prior compaction context for the NEXT recap/compaction, but do
+        // not count it as a human turn or use it to infer the user's language.
+        if (text) lines.push({ role: 'System', text: text.trim() })
+        continue
+      }
       if (Array.isArray(content)) {
         const hasToolResult = (content as Array<{ type?: string }>).some((b) => b.type === 'tool_result')
         const hasText = (content as Array<{ type?: string; text?: string }>).some(
@@ -210,17 +217,44 @@ export function buildTranscript(
   const total = formatted.reduce((n, s) => n + s.length + 1, 0)
   if (total <= effectiveBudget) return formatted.join('\n') + tailHint
 
-  const head = formatted.slice(0, 3)
-  let budget = effectiveBudget - head.reduce((n, s) => n + s.length + 1, 0) - 40
-  const tail: string[] = []
-  for (let i = formatted.length - 1; i >= 3; i--) {
+  // Compact summaries are prior context, not disposable middle chatter.
+  // Reserve their full text first, then apply the ordinary head/tail window
+  // to User/Assistant lines with the budget that remains. If the summaries
+  // alone exceed the soft budget, preserving that context takes precedence;
+  // truncating them would lose the next-step state a later recap needs.
+  const preserved = new Set(lines.flatMap((line, i) => line.role === 'System' ? [i] : []))
+  const ordinary = lines.flatMap((line, i) => line.role !== 'System' ? [i] : [])
+  const selected = new Set(preserved)
+  let budget = effectiveBudget - [...selected].reduce((n, i) => n + formatted[i].length + 1, 0) - 40
+  const head: number[] = []
+  for (const i of ordinary.slice(0, 3)) {
+    if (budget - formatted[i].length - 1 < 0) break
+    head.push(i)
+    selected.add(i)
+    budget -= formatted[i].length + 1
+  }
+  const tail: number[] = []
+  for (const i of ordinary.slice(head.length).reverse()) {
     const line = formatted[i]
-    if (budget - line.length - 1 < 0 && tail.length > 0) break
-    tail.unshift(line)
+    if (budget - line.length - 1 < 0) break
+    tail.unshift(i)
+    selected.add(i)
     budget -= line.length + 1
   }
-  const omitted = formatted.length - head.length - tail.length
-  return [...head, `[... ${omitted} messages omitted ...]`, ...tail].join('\n') + tailHint
+  const omitted = ordinary.length - head.length - tail.length
+  const tailSet = new Set(tail)
+  const body: string[] = []
+  let omissionWritten = omitted === 0
+  for (let i = 0; i < formatted.length; i++) {
+    if (!selected.has(i)) continue
+    if (!omissionWritten && tailSet.has(i)) {
+      body.push(`[... ${omitted} messages omitted ...]`)
+      omissionWritten = true
+    }
+    body.push(formatted[i])
+  }
+  if (!omissionWritten) body.push(`[... ${omitted} messages omitted ...]`)
+  return body.join('\n') + tailHint
 }
 
 // ── Anthropic API ──────────────────────────────────────────────────

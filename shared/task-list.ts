@@ -345,6 +345,7 @@ export function countTaskEvents(messages: readonly unknown[]): number {
  *  two never compare across coordinate systems.) */
 export function isGenuineUserInputFrame(msg: UserFrameShape): boolean {
   if (msg.type !== 'user') return false
+  if (msg.isCompactSummary === true) return false
   if (msg.parent_tool_use_id != null) return false
   if (userMessageHasToolResult(msg)) return false
   if (isTaskNotificationUserMessage(msg)) return false

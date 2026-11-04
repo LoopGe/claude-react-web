@@ -164,6 +164,7 @@ export function countQueuedUserTurns(history: readonly SDKMessage[]): number {
   let n = 0
   for (const m of history) {
     if (m.type !== 'user') continue
+    if ((m as { isCompactSummary?: boolean }).isCompactSummary === true) continue
     if (getParentToolUseId(m) != null) continue
     if (userMessageHasToolResult(m)) continue
     if (isTaskNotificationUserMessage(m)) continue

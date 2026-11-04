@@ -29,7 +29,7 @@ import type { CliNotification } from '../shared/ws-protocol.js'
 import { MAX_TERMINAL_TASKS, isTerminalTaskStatus, normalizeTaskType, type TaskRecordUi, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame, localCommandOf } from '../shared/results.js'
-import { isTaskNotificationUserMessage, parseTaskNotificationInjection } from '../shared/user-frames.js'
+import { isTaskNotificationUserMessage, parseTaskNotificationInjection, userMessageText } from '../shared/user-frames.js'
 import { isGenuineUserInputFrame, taskToolUseId } from '../shared/task-list.js'
 
 const MAX_HOOK_OUTPUT_CHARS = 20_000
@@ -1085,6 +1085,16 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // emits task completion as a `system`/`task_notification` frame
         // (already forwarded), so this guard only matters for harnesses
         // that use the user-role injection path.
+        // App-generated compact seeds are manually broadcast once, then the
+        // SDK echoes them with its on-disk uuid. Do not append that echo again.
+        const duplicateCompactSummary = (msg as { isSynthetic?: boolean }).isSynthetic === true &&
+          (msg as { isCompactSummary?: boolean }).isCompactSummary === true &&
+          session.history.some((existing) => {
+            const prior = existing as { isSynthetic?: boolean; isCompactSummary?: boolean }
+            return prior.isSynthetic === true && prior.isCompactSummary === true &&
+              userMessageText(prior) === userMessageText(msg)
+          })
+        if (duplicateCompactSummary) continue
         if (isGenuineUserInputFrame(msg)) {
           // Before dropping the SDK's echo of a top-level user prompt, hand its
           // on-disk uuid (`v`) to the manager so it can pair it with the

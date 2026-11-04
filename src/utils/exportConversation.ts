@@ -18,6 +18,7 @@ export function exportConversation(messages: SdkMessage[], title?: string): void
     if (msg.type === 'stream_event') continue
 
     if (msg.type === 'user') {
+      if (msg.isCompactSummary === true) continue
       const text = extractText(msg)
       if (!text) continue
       // Check if this is a tool_result frame (synthetic) — skip those

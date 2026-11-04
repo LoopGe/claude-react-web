@@ -24,11 +24,29 @@ export interface UserFrameShape {
    *  live wire frames), so classifiers that must recognize the human's own
    *  input have to check both. */
   isSidechain?: unknown
+  /** CLI compaction summary, not a human-authored prompt or an echo to drop. */
+  isCompactSummary?: unknown
   message?: unknown
 }
 
 function frameContent(msg: UserFrameShape): unknown {
   return (msg.message as { content?: unknown } | undefined)?.content
+}
+
+/** Plain text identity of a user frame across the SDK's string and text-block
+ *  wire representations. */
+export function userMessageText(msg: UserFrameShape): string {
+  const content = frameContent(msg)
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((block): block is { type: 'text'; text: string } =>
+      block && typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'text' &&
+      typeof (block as { text?: unknown }).text === 'string',
+    )
+    .map((block) => block.text)
+    .join('\n')
 }
 
 /** True when a `user` message carries at least one `tool_result` content

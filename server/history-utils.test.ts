@@ -113,6 +113,10 @@ describe('countQueuedUserTurns', () => {
     expect(countQueuedUserTurns([taskNotifUser(100)])).toBe(0)
   })
 
+  it('does NOT count an acknowledged compact summary as queued input', () => {
+    expect(countQueuedUserTurns([{ ...topUser(100), isCompactSummary: true } as unknown as SDKMessage])).toBe(0)
+  })
+
   it('counts only real prompts in a ring full of tool_result and notification frames', () => {
     const history: SDKMessage[] = [
       toolResultUser(100),

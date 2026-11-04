@@ -4575,11 +4575,12 @@ export class SessionManager {
     if (typeof control !== 'function') {
       throw new HttpError(501, `provider ${s.provider} does not support compact seeding`)
     }
-    const seed: SDKUserMessage = {
+    const seed: SDKUserMessage & { isCompactSummary: true } = {
       type: 'user',
       message: { role: 'user', content: summary },
       parent_tool_use_id: null,
       isSynthetic: true,
+      isCompactSummary: true,
       shouldQuery: false,
       uuid: randomUUID(),
       session_id: s.id,

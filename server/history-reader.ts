@@ -519,6 +519,7 @@ export function normalize(o: RawLine, sessionId: string, trim: boolean): unknown
     uuid: o.uuid,
     session_id: o.session_id ?? sessionId,
     message: o.message,
+    ...(o.isCompactSummary === true ? { isCompactSummary: true } : {}),
     parent_tool_use_id: parent,
     // Explicit provenance for the client replay reducer. A resumed session's
     // history ring can contain a disk-restored prefix followed by live messages;

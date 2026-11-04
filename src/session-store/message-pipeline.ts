@@ -91,6 +91,7 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
   let placeholderConsumedAt: number | undefined
   if (
     message.type === 'user' &&
+    message.isCompactSummary !== true &&
     workingIntent.pendingPlaceholders.size > 0 &&
     incomingParent == null
   ) {
