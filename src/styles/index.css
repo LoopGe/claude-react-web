@@ -13,6 +13,7 @@
 @import './overlays.css';
 @import './setup-page.css';
 @import './git-panel.css';
+@import './turn-changes.css';
 @import './tasks-panel.css';
 @import './usage-panel.css';
 @import './uploads-manager.css';

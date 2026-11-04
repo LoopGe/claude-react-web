@@ -18,6 +18,7 @@ import { countMatches, extractPlainText, extractMessagePlainText, extractToolUse
 import { getBlocks, isHumanUserMessage, userMessageOriginKind } from '../../session-store/normalize'
 import { BlockView, ToolResultBlock } from './blocks'
 import { DraftTextBody } from './draft-body'
+import { TurnChangesCard } from './TurnChangesCard'
 import { useResultConsumed } from './result-consumed-context'
 import { extractUserText, willRenderEmpty } from './rendering'
 import { FoldableBody } from './FoldableBody'
@@ -661,18 +662,21 @@ export const MessageView = memo(function MessageView({
       cost,
     ].filter(Boolean).join(' \u00b7 ')
     return (
-      <div
-        className={`msg result${isInterrupted ? ' interrupted' : ''}`}
-        aria-label={isInterrupted ? 'turn interrupted' : 'turn complete'}
-      >
-        <span className="result-mark" aria-hidden="true">{isInterrupted ? '!' : 'ok'}</span>
-        {meta && <span className="result-meta">{meta}</span>}
-        {startupReason && (
-          <span className="result-meta" title={startupReason}>
-            startup failed: {STARTUP_FAILURE_LABELS[startupReason] ?? startupReason}
-          </span>
-        )}
-      </div>
+      <>
+        <div
+          className={`msg result${isInterrupted ? ' interrupted' : ''}`}
+          aria-label={isInterrupted ? 'turn interrupted' : 'turn complete'}
+        >
+          <span className="result-mark" aria-hidden="true">{isInterrupted ? '!' : 'ok'}</span>
+          {meta && <span className="result-meta">{meta}</span>}
+          {startupReason && (
+            <span className="result-meta" title={startupReason}>
+              startup failed: {STARTUP_FAILURE_LABELS[startupReason] ?? startupReason}
+            </span>
+          )}
+        </div>
+        <TurnChangesCard sessionId={sessionId} resultUuid={String(msg.uuid ?? '')} />
+      </>
     )
   }
 

@@ -12,7 +12,7 @@
 import { useEffect, useState } from 'react'
 import type { TurnChangesSummary, TurnDiffPayload } from '../../shared/turn-changes.js'
 import { api } from './useApi'
-import { useWsHub } from './useWsHub'
+import { useOptionalWsHub } from './useWsHub'
 
 interface TurnChangesResponse {
   available: boolean
@@ -60,7 +60,7 @@ export interface TurnChangesView {
  * @returns the summary once known; null for a missing/empty turn.
  */
 export function useTurnChanges(sessionId: string | undefined, resultUuid: string | undefined): TurnChangesView {
-  const hub = useWsHub()
+  const hub = useOptionalWsHub()
   const [view, setView] = useState<TurnChangesView>(() => {
     if (!sessionId || !resultUuid) return { summary: null, loading: false }
     const cached = summaryCache.get(cacheKey(sessionId, resultUuid))
@@ -92,9 +92,9 @@ export function useTurnChanges(sessionId: string | undefined, resultUuid: string
     }
 
     // The hook holds the channel for its lifetime; the hub ref-counts it.
-    const { subscribe, addSessionListener } = hub
-    const unsubscribe = subscribe(sessionId)
-    const removeListener = addSessionListener(sessionId, (frame) => {
+    // A transcript rendered outside the app shell still loads over REST.
+    const unsubscribe = hub?.subscribe(sessionId)
+    const removeListener = hub?.addSessionListener(sessionId, (frame) => {
       if (frame.kind !== 'turn-changes') return
       if (frame.summary.resultUuid !== resultUuid) return
       summaryCache.set(key, frame.summary)
@@ -102,10 +102,10 @@ export function useTurnChanges(sessionId: string | undefined, resultUuid: string
     })
     return () => {
       cancelled = true
-      unsubscribe()
-      removeListener()
+      unsubscribe?.()
+      removeListener?.()
     }
-  }, [sessionId, resultUuid, hub.subscribe, hub.addSessionListener])
+  }, [sessionId, resultUuid, hub?.subscribe, hub?.addSessionListener])
 
   return view
 }

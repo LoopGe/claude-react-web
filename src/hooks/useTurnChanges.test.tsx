@@ -21,7 +21,7 @@ vi.mock('./useWsHub', () => {
       return () => { ws.listeners = ws.listeners.filter((listener) => listener !== fn) }
     },
   }
-  return { useWsHub: () => hub }
+  return { useWsHub: () => hub, useOptionalWsHub: () => hub }
 })
 const emit = (frame: unknown): void => {
   for (const listener of [...ws.listeners]) listener(frame)

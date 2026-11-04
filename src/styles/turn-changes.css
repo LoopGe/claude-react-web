@@ -1,0 +1,168 @@
+/* Per-turn changed-files card (transcript) and its hover preview.
+   Colors come from the theme tokens in both :root and [data-theme="light"]. */
+
+.turn-changes-card {
+  margin: var(--space-2) 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+
+.turn-changes-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: none;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-changes-header:hover {
+  background: var(--btn-hover-bg);
+}
+
+.turn-changes-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.turn-changes-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.turn-changes-title {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-changes-stat,
+.turn-changes-counts {
+  display: flex;
+  gap: var(--space-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-changes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.turn-changes-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px var(--space-3);
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-changes-row:hover,
+.turn-changes-row:focus-visible {
+  background: var(--btn-hover-bg);
+}
+
+.turn-changes-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+.turn-changes-counts {
+  flex: none;
+}
+
+.turn-changes-added {
+  color: var(--ok-text);
+}
+
+.turn-changes-deleted {
+  color: var(--danger-text);
+}
+
+.turn-changes-note-inline {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.turn-changes-toggle {
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.turn-changes-toggle:hover {
+  background: var(--btn-hover-bg);
+}
+
+.turn-changes-preview {
+  position: fixed;
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  width: min(560px, calc(100vw - 16px));
+  max-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+
+.turn-changes-preview-path {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-changes-diff {
+  max-height: 380px;
+  overflow: auto;
+}
+
+.turn-changes-note {
+  display: block;
+  padding: var(--space-2);
+  color: var(--fg-muted);
+  font-size: 12px;
+}
