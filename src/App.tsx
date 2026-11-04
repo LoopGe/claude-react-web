@@ -63,6 +63,7 @@ import type { NewSessionForm, PermissionMode, SessionInfo, SessionGroup, Sidebar
 import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
+import { DevTraceButton } from './components/DevTraceButton'
 import { ProfileSwitcher } from './components/ProfileSwitcher'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { BackgroundVideo } from './components/BackgroundVideo'
@@ -5310,6 +5311,7 @@ export function App() {
               reader still announces "App actions" without making a
               keyboard promise we don't keep. */}
           <div className="main-toolbar" role="group" aria-label="App actions">
+            {import.meta.env.DEV && <DevTraceButton />}
             <button
               className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
               onClick={() => void notifications.toggle()}

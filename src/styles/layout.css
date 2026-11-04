@@ -112,6 +112,18 @@ body.resizing-col .app {
   align-items: center;
   margin-left: auto;
 }
+/* Dev-only trace capture pair, rendered directly left of the notification
+   button. The recording state tints the glyph; no new colors are introduced. */
+.dev-trace-group {
+  display: flex;
+  align-items: center;
+  /* Match .main-toolbar's inter-button spacing — the pair must read as two
+     ordinary toolbar buttons, not a tighter sub-cluster. */
+  gap: var(--space-2);
+}
+.dev-trace-recording {
+  color: var(--danger);
+}
 
 /* Full-session nav strip in the top header (desktop hosts without a custom
    titlebar — see utils/nav-strip-mount; mounted whether the sidebar is
