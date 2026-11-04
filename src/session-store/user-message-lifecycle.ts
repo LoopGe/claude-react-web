@@ -115,6 +115,28 @@ export function ackUserMessage(
   if (!placeholder) return state
 
   const consumedAt = state.mirror.pendingConsumedMessages.get(serverUuid)
+
+  // The server copy may already be on screen under the server uuid: a page
+  // batch (recovery tail page / replay) prepends it, and that path can only
+  // match a placeholder by uuid — impossible while this send is still under
+  // its optimistic id. Re-keying here would render the bubble twice (the
+  // render merge appends placeholders), so drop the now-redundant placeholder.
+  // A consumed signal that parked for this uuid while the ack was outstanding
+  // is folded onto the on-screen item first (stampMessageConsumed prunes the
+  // parking entry); otherwise it would leak toward the FIFO cap and a later
+  // real signal could be evicted, leaving a live turn rendered 'queued'.
+  if (state.mirror.items.some((it) => it.id === serverUuid)) {
+    const next = new Map(state.intent.pendingPlaceholders)
+    next.delete(pendingId)
+    const mirror = typeof consumedAt === 'number'
+      ? stampMessageConsumed(state.mirror, serverUuid, consumedAt)
+      : state.mirror
+    return {
+      sessionId: state.sessionId,
+      mirror,
+      intent: { ...state.intent, pendingPlaceholders: next },
+    }
+  }
   const msg: SdkMessage = {
     ...placeholder.msg,
     uuid: serverUuid,

@@ -13,19 +13,124 @@ function msg(type: string, seq: number): SdkMessage {
   return { type, seq, uuid: `u${seq}` } as unknown as SdkMessage
 }
 
-/** Append seqs from..to one by one (contiguous live stream). */
+/** Append seqs from..to one by one (contiguous live stream). Starts at seq 0
+ *  because a live frame may only anchor an empty window there. */
 function stream(w = emptyWindow(0, 0), from = 0, to = 4): typeof w {
   for (let s = from; s <= to; s++) w = liveAppend(w, s, msg('user', s), 0)
   return w
 }
 
+/** Seed a window whose on-screen front is `from` the way the client actually
+ *  gets one: a page anchors it (a tail page over a transcript whose prefix is
+ *  gone, or a recovery page). Live frames can NOT anchor above seq 0. */
+function anchored(from: number, to: number): ReturnType<typeof emptyWindow> {
+  const messages = []
+  for (let s = from; s <= to; s++) messages.push({ seq: s, msg: msg('user', s) })
+  return pageLoaded(emptyWindow(0, 0), {
+    at: 'tail',
+    generation: 0,
+    messages,
+    hasMore: false,
+    headSeq: to + 1,
+  })
+}
+
 describe('seq-window: liveAppend', () => {
-  it('appends the first seq into an empty window (oldest = newest = seq)', () => {
-    const w = liveAppend(emptyWindow(0, 0), 7, msg('user', 7), 0)
-    expect(w.newestSeq).toBe(7)
-    expect(w.oldestSeq).toBe(7)
-    expect(w.window.get(7)).toBeDefined()
+  it('anchors an empty window at seq 0 (nothing can precede it)', () => {
+    const w = liveAppend(emptyWindow(0, 0), 0, msg('user', 0), 0)
+    expect(w.newestSeq).toBe(0)
+    expect(w.oldestSeq).toBe(0)
+    expect(w.window.get(0)).toBeDefined()
+    expect(w.pending.size).toBe(0)
     expect(w.hole).toBeNull()
+  })
+
+  // The window must never anchor ABOVE seq 0 on an empty, generation-adopted
+  // window: the earlier seqs were emitted while no channel was subscribed, and
+  // silently starting mid-way is what put the user's prompt at the bottom of
+  // its own turn. Parking the frame exposes the prefix as a FRONT hole for the
+  // ordinary gap-fill.
+  it('parks the first live seq above 0 as a front hole', () => {
+    const w = liveAppend(emptyWindow(0, 0), 7, msg('user', 7), 0)
+    expect(w.window.size).toBe(0)
+    expect(w.newestSeq).toBeNull()
+    expect(w.oldestSeq).toBeNull()
+    expect(w.pending.get(7)).toBeDefined()
+    expect(w.hole).toEqual([0, 6])
+  })
+
+  it('anchors normally when the whole prefix is tombstoned', () => {
+    // A withdrawal emptied the window and the server declared 0..2 dead —
+    // there is no prefix left to fetch, so a live frame must apply at once
+    // (a parked `result` here would never clear the turn).
+    const w = evictSeqs(emptyWindow(0, 0), [0, 1, 2])
+    expect(w.window.size).toBe(0)
+    const next = liveAppend(w, 3, msg('user', 3), 0)
+    expect(next.window.get(3)).toBeDefined()
+    expect(next.newestSeq).toBe(3)
+    expect(next.pending.size).toBe(0)
+    expect(next.hole).toBeNull()
+  })
+
+  it('drains a parked front frame once the prefix page lands', () => {
+    const parked = liveAppend(emptyWindow(0, 0), 2, msg('user', 2), 0)
+    const w = pageLoaded(parked, {
+      at: 'tail',
+      messages: [
+        { seq: 0, msg: msg('user', 0) },
+        { seq: 1, msg: msg('assistant', 1) },
+      ],
+      hasMore: false,
+      generation: 0,
+      headSeq: 3,
+    })
+    expect(w.hole).toBeNull()
+    expect(w.pending.size).toBe(0)
+    expect(w.newestSeq).toBe(2)
+    expect(w.oldestSeq).toBe(0)
+    expect([...w.window.keys()]).toEqual([0, 1, 2])
+  })
+
+  // A page must not anchor above parked front-hole frames: the front is the
+  // seq just below the lowest pending frame, so a page frame beyond it parks
+  // too. Anchoring would invert the hole range ([newest+1, minPending-1]) and
+  // strand the earlier parked frame forever.
+  it('a page cannot anchor above parked front-hole frames', () => {
+    const parked = liveAppend(emptyWindow(0, 0), 3, msg('user', 3), 0)
+    const w = pageLoaded(parked, {
+      at: 'tail',
+      messages: [{ seq: 4, msg: msg('assistant', 4) }],
+      hasMore: false,
+      generation: 0,
+      headSeq: 5,
+      // No tombstones declared: 0..2 must still be fetched, not skipped.
+    })
+    expect(w.window.size).toBe(0)
+    expect(w.newestSeq).toBeNull()
+    expect([...w.pending.keys()].sort((a, b) => a - b)).toEqual([3, 4])
+    expect(w.hole).toEqual([0, 2])
+  })
+
+  // Front-hole parking makes non-contiguous pending sets reachable. The
+  // empty-window drain may only release the contiguous run from the lowest
+  // parked frame once its prefix is fully tombstoned; releasing everything
+  // would anchor the window across a live, unfetched gap with no hole left to
+  // fetch it.
+  it('never drains past a live gap when releasing front-hole frames', () => {
+    let w = liveAppend(emptyWindow(0, 0), 3, msg('user', 3), 0)
+    w = liveAppend(w, 7, msg('assistant', 7), 0)
+    w = pageLoaded(w, {
+      at: 'tail',
+      messages: [],
+      hasMore: false,
+      generation: 0,
+      headSeq: 8,
+      tombstones: [0, 1, 2],
+    })
+    expect([...w.window.keys()]).toEqual([3])
+    expect([...w.pending.keys()]).toEqual([7])
+    expect(w.newestSeq).toBe(3)
+    expect(w.hole).toEqual([4, 6])
   })
 
   it('tail-appends seq === newestSeq + 1', () => {
@@ -124,7 +229,7 @@ describe('seq-window: pageLoaded', () => {
   })
 
   it('prepends a head page below oldestSeq and updates hasOlder', () => {
-    let w = stream(emptyWindow(0, 0), 10, 12)
+    let w = anchored(10, 12)
     w = { ...w, hasOlder: true }
     const next = pageLoaded(w, {
       at: 'head',
@@ -168,7 +273,7 @@ describe('seq-window: pageLoaded', () => {
   })
 
   it('keeps lowering oldestSeq across successive head pages', () => {
-    let w = stream(emptyWindow(0, 0), 10, 12)
+    let w = anchored(10, 12)
     w = pageLoaded(w, {
       at: 'head',
       generation: 0,
@@ -395,7 +500,7 @@ describe('seq-window: oldestSeq skips slot-routed frames', () => {
     ({ type: 'result', subtype: 'success', num_turns: 0, result: '', seq, uuid: `e${seq}` }) as unknown as SdkMessage
 
   it('a head page whose oldest entry is api_retry anchors on the first log row below it', () => {
-    let w = stream(emptyWindow(0, 0), 10, 12)
+    let w = anchored(10, 12)
     w = { ...w, hasOlder: true }
     const next = pageLoaded(w, {
       at: 'head',
@@ -413,7 +518,7 @@ describe('seq-window: oldestSeq skips slot-routed frames', () => {
   })
 
   it('an empty result frame at the window top is skipped the same way', () => {
-    const w = stream(emptyWindow(0, 0), 10, 12)
+    const w = anchored(10, 12)
     const next = pageLoaded(w, {
       at: 'head',
       generation: 0,
@@ -427,7 +532,7 @@ describe('seq-window: oldestSeq skips slot-routed frames', () => {
   it('a real result frame (non-empty) is NOT skipped', () => {
     const realResult = (seq: number): SdkMessage =>
       ({ type: 'result', subtype: 'success', num_turns: 1, result: 'done', seq, uuid: `e${seq}` }) as unknown as SdkMessage
-    const w = stream(emptyWindow(0, 0), 10, 12)
+    const w = anchored(10, 12)
     const next = pageLoaded(w, {
       at: 'head',
       generation: 0,
@@ -455,7 +560,7 @@ describe('seq-window: oldestSeq skips slot-routed frames', () => {
   })
 
   it('recomputes the skip after evicting the log row under a slot-routed top', () => {
-    let w = stream(emptyWindow(0, 0), 10, 12)
+    let w = anchored(10, 12)
     w = pageLoaded(w, {
       at: 'head',
       generation: 0,

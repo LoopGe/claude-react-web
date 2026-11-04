@@ -72,7 +72,11 @@ function pageFor(sid: string, before: number | undefined, limit: number) {
   )
   const page = eligible.slice(-limit)
   const bound = before ?? t.headSeq
-  const spanStart = page.length > 0 ? page[0].seq : (before ?? t.headSeq)
+  // Mirrors TranscriptStore.window: an empty NON-probe page means every seq
+  // below the bound is evicted, so its span starts at 0 — otherwise an
+  // all-evicted prefix would never be declared and the parked frames above it
+  // could not drain.
+  const spanStart = page.length > 0 ? page[0].seq : limit > 0 ? 0 : bound
   const tombstones = [...t.evicted].filter((s) => s >= spanStart && s < bound).sort((a, b) => a - b)
   return {
     generation: t.generation,
@@ -242,6 +246,136 @@ describe('SessionSynchronizer seq-window protocol', () => {
     const snap = store.getSnapshot()
     expect(snap.newestSeq).toBe(259)
     expect(snap.hole).toBeNull()
+    sync.stop()
+  })
+
+  /** Reconnect on a window adopted from an EMPTY page: no tail page is in
+   *  flight (a WS reconnect does not restart the synchronizer), and the
+   *  empty window would accept the next live frame at ANY seq, anchoring the
+   *  transcript mid-way with the prefix unreachable (hasOlder stays false).
+   *  The attached handshake must re-fetch the tail. */
+  it('re-fetches the tail when attached arrives on an empty window whose open page already landed', async () => {
+    const sid = 'seq-reconnect-empty'
+    const t = transcript(sid)
+    // The session was empty when the panel opened: the open-path page
+    // adopted the generation and flipped replayReady.
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(store.getSnapshot().messages).toHaveLength(0)
+    expect(store.getSnapshot().replayReady).toBe(true)
+    expect(tailFetchUrls()).toEqual([`/sessions/${sid}/messages?limit=200`])
+
+    // Disconnected: the turn emits its whole prefix while no channel is
+    // subscribed, then the socket comes back.
+    for (let i = 0; i < 5; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 5
+    dispatchToSession(sid, { kind: 'attached', sessionId: sid, generation: 0, headSeq: 5 })
+
+    await vi.waitFor(() => expect(store.getSnapshot().messages).toHaveLength(5))
+    expect(tailFetchUrls()).toEqual([
+      `/sessions/${sid}/messages?limit=200`,
+      `/sessions/${sid}/messages?limit=200`,
+    ])
+    const snap = store.getSnapshot()
+    expect(snap.messages.map((m) => (m as { uuid?: string }).uuid)).toEqual([
+      'seq-reconnect-empty-m0', 'seq-reconnect-empty-m1', 'seq-reconnect-empty-m2',
+      'seq-reconnect-empty-m3', 'seq-reconnect-empty-m4',
+    ])
+    expect(snap.oldestSeq).toBe(0)
+    expect(snap.newestSeq).toBe(4)
+    sync.stop()
+  })
+
+  /** The ordinary first open: `attached` races the open-path tail fetch on a
+   *  fresh store (generation -1). It must NOT bootstrap an empty page — that
+   *  flips replayReady off an empty list (empty-state flash) and loses the
+   *  terminated session's replayReady-gated turn-end sweep. */
+  it('leaves replayReady alone when attached races the open-path page', async () => {
+    const sid = 'seq-open-race'
+    const t = transcript(sid)
+    for (let i = 0; i < 5; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 5
+    const store = getSessionStore(sid)
+    const deferred = queueDeferredFetch(/limit=200/)
+    const sync = makeSync(sid)
+    sync.start()
+    dispatchToSession(sid, { kind: 'attached', sessionId: sid, generation: 0, headSeq: 5 })
+    expect(store.getSnapshot().replayReady).toBe(false)
+    expect(store.getSnapshot().generation).toBe(-1)
+
+    deferred.resolve({
+      generation: 0, headSeq: 5, totalCount: 5, startIndex: 0,
+      hasMore: false, messages: t.msgs.slice(), tombstones: [],
+    })
+    await waitForTail(sid)
+    expect(store.getSnapshot().messages).toHaveLength(5)
+    expect(tailFetchUrls()).toHaveLength(1)
+    sync.stop()
+  })
+
+  /** The first live frame of an empty, page-adopted window must not anchor it:
+ *  the seqs below were emitted while no channel was subscribed. The window
+ *  parks the frame and exposes a FRONT hole, so the ordinary gap-fill fetches
+ *  the prefix — otherwise the user's own prompt (seq 0) never appears (or,
+ *  before the front hole, appears at the bottom of its own turn). */
+  it('parks the first live frame and gap-fills the missed prefix', async () => {
+    const sid = 'seq-first-live-anchor'
+    const t = transcript(sid)
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(store.getSnapshot().messages).toHaveLength(0)
+    expect(store.getSnapshot().headSeq).toBe(0)
+
+    // seq 0..2 were emitted while no channel was subscribed; seq 3 is the
+    // first frame this connection sees.
+    for (let i = 0; i < 4; i++) t.msgs.push({ seq: i, msg: fakeMsg(sid, i) })
+    t.headSeq = 4
+    dispatchToSession(sid, {
+      kind: 'message', sessionId: sid, seq: 3, generation: 0, message: fakeMsg(sid, 3),
+    })
+
+    await vi.waitFor(() => expect(store.getSnapshot().messages).toHaveLength(4))
+    expect(tailFetchUrls()).toEqual([`/sessions/${sid}/messages?limit=200`])
+    expect(gapFetchUrls()).toEqual([`/sessions/${sid}/messages?before=3&limit=200`])
+    const snap = store.getSnapshot()
+    expect(snap.messages.map((m) => (m as { uuid?: string }).uuid)).toEqual([
+      'seq-first-live-anchor-m0', 'seq-first-live-anchor-m1',
+      'seq-first-live-anchor-m2', 'seq-first-live-anchor-m3',
+    ])
+    expect(snap.oldestSeq).toBe(0)
+    expect(snap.newestSeq).toBe(3)
+    sync.stop()
+  })
+
+  /** An empty window must still adopt a generation that moved while the tab
+   *  was disconnected (a remote /clear). Skipping the bump leaves liveAppend
+   *  dropping every frame of the new generation — the panel stays blank for
+   *  the whole turn. */
+  it('adopts a moved generation on an empty window instead of dropping the new turn', async () => {
+    const sid = 'seq-empty-gen'
+    const t = transcript(sid)
+    const store = getSessionStore(sid)
+    const sync = makeSync(sid)
+    sync.start()
+    await waitForTail(sid)
+    expect(store.getSnapshot().generation).toBe(0)
+
+    // Another client /clear'ed while this socket was down: the server is on
+    // generation 1 with an empty seq space.
+    t.generation = 1
+    t.headSeq = 0
+    dispatchToSession(sid, { kind: 'attached', sessionId: sid, generation: 1, headSeq: 0 })
+    expect(store.getSnapshot().generation).toBe(1)
+
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    dispatchToSession(sid, { kind: 'message', sessionId: sid, seq: 0, generation: 1, message: fakeMsg(sid, 0) })
+    expect(store.getSnapshot().messages).toHaveLength(1)
+    expect(store.getSnapshot().oldestSeq).toBe(0)
     sync.stop()
   })
 

@@ -62,6 +62,7 @@ import {
   updateTranscriptMirror,
 } from './transcript-log'
 import { clearSendingPlaceholders } from './user-message-lifecycle'
+import { retractedUuidsOf } from './normalize'
 
 /** Apply one streamed or replayed message to a session's state.
  *
@@ -274,14 +275,9 @@ export function applyMessage(state: SessionState, message: SdkMessage): SessionS
   //     end-of-turn audit record (this frame itself stays: it renders as the
   //     fallback notice and is the canonical replacement).
   // Runs through applyMessage so replay/disk-loaded transcripts evict too.
-  const supersedes = incomingMessage.type === 'assistant'
-    ? (incomingMessage as { supersedes?: unknown }).supersedes
-    : undefined
-  const retracted = incomingMessage.type === 'system' && incomingMessage.subtype === 'model_refusal_fallback'
-    ? (incomingMessage as { retracted_message_uuids?: unknown }).retracted_message_uuids
-    : undefined
-  const evictUuids = [...(Array.isArray(supersedes) ? supersedes : []), ...(Array.isArray(retracted) ? retracted : [])]
-    .filter((u): u is string => typeof u === 'string' && u.length > 0)
+  // The extraction is shared with windowPage's older run (which bypasses
+  // applyMessage) — see retractedUuidsOf.
+  const evictUuids = retractedUuidsOf(incomingMessage)
   if (evictUuids.length > 0) {
     working = evictMessages(working, evictUuids)
   }

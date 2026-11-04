@@ -386,22 +386,30 @@ export class SessionSynchronizer {
         // Seq-space handshake (server sends it after every successful
         // subscribe — the reconnect catch-up trigger, spec §6).
         const snap = store.getSnapshot()
-        if (snap.newestSeq == null) {
-          // Empty window: the open path's tail page adopts the server's
-          // generation — reconciling here would double-fetch on every
-          // panel open (the handshake usually races the initial page).
-          // Accepted trade: if the open fetch FAILED (error band up), an
-          // attached frame arriving afterwards does not retry it — the
-          // failure is surfaced loudly and the next subscribe (panel
-          // reopen, running flip) re-fetches.
-          break
-        }
+        // replayReady is false while the open path's first page is in flight
+        // (it adopts the server generation) AND after a failed open — that
+        // failure surfaces as an error band and is retried by the next
+        // start() (panel reopen / running flip), not here, where bootstrapping
+        // an empty page would paint the empty state and lose a terminated
+        // session's replayReady-gated turn-end sweep.
+        if (!snap.replayReady) break
         if (frame.generation !== snap.generation) {
           // Dead universe (/clear or a server-side reset): whole-window
           // invalidation, then re-fetch the tail under the new generation.
+          // WINDOW_BUMP (not an empty page) is what discards the old seq
+          // space's tombstones/pending.
           store.dispatch({ type: 'WINDOW_BUMP', generation: frame.generation, headSeq: frame.headSeq })
           run.minGeneration = frame.generation
           void this.refetchTail(run)
+        } else if (snap.newestSeq == null) {
+          // Post-open recovery with an empty window. A front hole (parked
+          // live frames awaiting their prefix) is owned by fillGap — the
+          // tail fetch would anchor ABOVE the parked run; re-arm the gap
+          // worker instead. Otherwise nothing else fetches the missed
+          // transcript (`headSeq > 0` keeps a genuinely empty session from
+          // re-reading an empty page).
+          if (snap.hole) void this.fillGap(run)
+          else if (frame.headSeq > 0) void this.refetchTail(run)
         } else if (snap.newestSeq < frame.headSeq - 1) {
           // Missed live frames while disconnected: page the REST gap
           // [newestSeq + 1, headSeq - 1] closed — the same paging code
@@ -433,10 +441,10 @@ export class SessionSynchronizer {
           // the reducer keeps returning SessionState; no return-value side
           // channel): the parked-frame hole travels on the window and is
           // read from the snapshot after the dispatch. liveAppend parks
-          // any seq beyond newestSeq + 1 and marks the hole; the REST page
-          // over that range is fetched here.
-          const snap = store.getSnapshot()
-          if (snap.hole) void this.fillGap(run)
+          // any seq beyond newestSeq + 1 AND the first live frame of an
+          // empty window above seq 0 (a front hole for the missed prefix);
+          // the REST page over that range is fetched here.
+          if (store.getSnapshot().hole) void this.fillGap(run)
         } else {
           // No seq on the frame (synthetic / ephemeral frame: stream
           // events, pump errors) — legacy ordered-log append, no window

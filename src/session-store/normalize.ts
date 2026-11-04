@@ -271,6 +271,26 @@ export function countQueuedUserTurns(messages: readonly SdkMessage[]): number {
   return n
 }
 
+/** uuids an incoming frame retracts from the transcript:
+ *    - an assistant frame's `supersedes` — the CLI's mid-turn refusal
+ *      replacement streamed before the end-of-turn audit;
+ *    - a `system/model_refusal_fallback` frame's `retracted_message_uuids` —
+ *      the canonical end-of-turn audit.
+ *
+ *  Shared by `applyMessage` (live / replay path) and `windowPage`'s older run
+ *  (prepended frames bypass `applyMessage`), so the two cannot drift. */
+export function retractedUuidsOf(msg: SdkMessage): string[] {
+  const supersedes = msg.type === 'assistant'
+    ? (msg as { supersedes?: unknown }).supersedes
+    : undefined
+  const retracted = msg.type === 'system' &&
+    (msg as { subtype?: string }).subtype === 'model_refusal_fallback'
+    ? (msg as { retracted_message_uuids?: unknown }).retracted_message_uuids
+    : undefined
+  return [...(Array.isArray(supersedes) ? supersedes : []), ...(Array.isArray(retracted) ? retracted : [])]
+    .filter((u): u is string => typeof u === 'string' && u.length > 0)
+}
+
 /** Content signature of a TOP-LEVEL user prompt, used to dedup the same
  *  logical prompt across the uuid boundary between the in-memory ring and
  *  the on-disk transcript.

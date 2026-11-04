@@ -32,9 +32,10 @@
  *    - `windowLive` — a seq-carrying live frame; contiguous seqs append at
  *      the tail, gapped seqs park in the window and apply when the hole
  *      fills.
- *    - `windowPage` — a REST page; tail pages append in seq order and flip
- *      replayReady, head pages prepend via `prependMessages` with
- *      uuid-exact dedup.
+ *    - `windowPage` — a REST page; head pages prepend via `prependMessages`
+ *      with uuid-exact dedup, tail pages split their fresh frames at the
+ *      on-screen front (older ones prepend, the rest append in seq order)
+ *      and flip replayReady.
  *    - `windowEvict` — server tombstones by seq; maps seqs → uuids and
  *      reuses `evictMessages`, then applies any frames drained by the
  *      tombstone (the interrupt/withdraw race).
@@ -99,12 +100,15 @@ export function windowLive(
 }
 
 /** WINDOW_PAGE: a REST page from GET /sessions/:id/messages. Tail pages
- *  (the newest page, a reconnect catch-up, or a hole fill) append in seq
- *  order and flip replayReady — the tail page IS the transcript's initial
- *  paint in the seq protocol. Head pages prepend below oldestSeq via
- *  prependMessages (uuid dedup is exact: the REST page and the live stream
- *  share one seq space, so the prompt-signature overlap check is skipped —
- *  the same reasoning as tail-first backfill chunks' trustUuidDedup). */
+ *  (the newest page, a reconnect catch-up, or a hole fill) flip replayReady
+ *  and apply their fresh frames in seq order — but a page can also carry
+ *  frames OLDER than everything on screen (a recovery page over a window
+ *  that anchored mid-transcript), so each fresh frame below the on-screen
+ *  front is prepended rather than appended. Head pages prepend below
+ *  oldestSeq via prependMessages (uuid dedup is exact: the REST page and the
+ *  live stream share one seq space, so the prompt-signature overlap check is
+ *  skipped — the same reasoning as tail-first backfill chunks'
+ *  trustUuidDedup). */
 export function windowPage(
   state: SessionState,
   action: Extract<SessionAction, { type: 'WINDOW_PAGE' }>,
@@ -129,7 +133,31 @@ export function windowPage(
       { trustUuidDedup: true },
     )
   }
-  for (const [, msg] of fresh) {
+  // A tail page is not necessarily NEWER than what is already on screen. When
+  // the window adopted the server generation from an EMPTY page (the open-path
+  // bootstrap) and then live frames resumed at a mid-transcript seq — the seqs
+  // before that point were emitted while no channel was subscribed — the
+  // recovery tail page is the first frame carrying them. Those frames sit
+  // BEFORE every row already applied, so they must be prepended; appending
+  // them put the user's own prompt (seq 0) at the bottom of the transcript,
+  // after the whole turn it started. Frames at or above the on-screen front
+  // keep the ordinary append path (a reconnect catch-up / hole fill).
+  //
+  // A page may straddle the front (older frames AND newer ones), so the split
+  // is per frame. `fresh` is seq-sorted, which keeps both runs chronological:
+  // prependMessages preserves the prepended run's order, and the append loop
+  // runs in seq order.
+  const onScreenFront = prev.oldestSeq
+  const older: SdkMessage[] = []
+  const tail: SdkMessage[] = []
+  for (const [seq, msg] of fresh) {
+    if (onScreenFront !== null && seq < onScreenFront) older.push(msg)
+    else tail.push(msg)
+  }
+  // prependMessages owns the batch's lifecycle parity (placeholder echo-drop,
+  // refusal-fallback retraction) for every prepend caller.
+  next = prependMessages(next, older, { trustUuidDedup: true })
+  for (const msg of tail) {
     next = applyMessage(next, msg)
   }
   return withMirror(next, { ...next.mirror, replayReady: true })

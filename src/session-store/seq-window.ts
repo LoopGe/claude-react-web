@@ -12,9 +12,13 @@
  * Semantics (authoritative — from the task brief):
  *
  *  - `liveAppend(w, seq, message, generation)`
- *      · seq === newestSeq + 1 (or the window is empty) → tail append.
- *        If the seq sits in `pending`, it is consumed and any now-contiguous
- *        pending run cascades into the window behind it.
+ *      · seq === newestSeq + 1 → tail append. If the seq sits in `pending`,
+ *        it is consumed and any now-contiguous pending run cascades into the
+ *        window behind it.
+ *      · an EMPTY window has no anchor proving the prefix exists: a live
+ *        frame above seq 0 parks and exposes a FRONT hole ([0, seq-1]) so
+ *        the gap-fill fetches what was emitted while no channel was
+ *        subscribed. Only seq 0 may start a window.
  *      · seq >  newestSeq + 1 → parked in `pending` UNLESS every missing
  *        seq in between is a tombstone (see below — an all-tombstone gap
  *        is unfillable by design, so the seq skips across it); the state
@@ -114,15 +118,24 @@ export function emptyWindow(generation: number, headSeq: number): WindowState {
   }
 }
 
-/** The hole a non-empty `pending` implies: [newestSeq + 1, minPending - 1].
+/** The hole a non-empty `pending` implies.
+ *
+ *  Normal case: [newestSeq + 1, minPending - 1] — parked frames above the
+ *  applied tail.
+ *
+ *  FRONT hole (newestSeq === null): the pending frames are the window's ONLY
+ *  content, so the missing range is the PREFIX [0, minPending - 1]. This is
+ *  what liveAppend records when the first live frame arrives on an empty,
+ *  generation-adopted window: earlier seqs were emitted while no channel was
+ *  subscribed, and the window must not silently anchor above them. Exposing
+ *  the front hole lets the ordinary gap-fill fetch the prefix, after which
+ *  the parked frames drain in seq order.
+ *
  *  Exported for callers that prefer the derivation over the stored field. */
 export function windowHole(w: WindowState): HoleRange | null {
-  if (w.pending.size === 0) return null
-  let min: number | null = null
-  for (const seq of w.pending.keys()) {
-    if (min === null || seq < min) min = seq
-  }
-  if (min === null || w.newestSeq === null) return null
+  const min = minPendingSeq(w)
+  if (min === Infinity) return null
+  if (w.newestSeq === null) return min > 0 ? [0, min - 1] : null
   return [w.newestSeq + 1, min - 1]
 }
 
@@ -178,27 +191,55 @@ function rederive(w: WindowState): WindowState {
   return w
 }
 
-/** Fold the contiguous run at newestSeq+1 into the window: pending frames
- *  move in (their seq becomes newest); tombstoned seqs are skipped WITHOUT
- *  entering the window — they never carry content. newestSeq is only ever
- *  advanced ONTO an inserted pending seq: rederive() recomputes it as the
+/** Lowest parked seq, or Infinity when nothing is parked. */
+function minPendingSeq(w: WindowState): number {
+  let min = Infinity
+  for (const seq of w.pending.keys()) if (seq < min) min = seq
+  return min
+}
+
+/** Every seq in [0, upTo) is tombstoned — server-declared dead, so nothing
+ *  below `upTo` can still be fetched. */
+function prefixTombstoned(w: WindowState, upTo: number): boolean {
+  for (let nx = 0; nx < upTo; nx++) if (!w.tombstones.has(nx)) return false
+  return true
+}
+
+/** The seq the window can extend from: the applied tail. On an EMPTY window
+ *  (no applied rows) the front-hole frame's position still anchors contiguity
+ *  — the seq JUST BELOW the lowest parked frame. Null only when the window
+ *  holds nothing at all (no applied row, no parked frame), where a page is
+ *  allowed to anchor the window at its own first seq. */
+function tailFront(w: WindowState): number | null {
+  if (w.newestSeq !== null) return w.newestSeq
+  const min = minPendingSeq(w)
+  return min === Infinity ? null : min - 1
+}
+
+/** Fold the contiguous run after the window front into the window: pending
+ *  frames move in (their seq becomes newest); tombstoned seqs are skipped
+ *  WITHOUT entering the window — they never carry content. newestSeq is only
+ *  ever advanced ONTO an inserted pending seq: rederive() recomputes it as the
  *  max window key, so it must never be pushed past a tombstone run.
  *
- *  An EMPTY window (newestSeq === null — a withdrawal can evict every
- *  applied row) has no contiguity anchor: insertMessage treats any seq as
- *  appendable there, so parked frames all drain, in seq order — otherwise a
- *  late tombstone closing the hole could never release them. */
+ *  An EMPTY window (newestSeq === null) can hold parked frames only above a
+ *  missing PREFIX (front-hole parking). That prefix must be accounted for
+ *  before the frames may enter: the whole run [0, minPending - 1] has to be
+ *  tombstoned (never re-sendable). Otherwise draining them would anchor the
+ *  window above live, unfetched seqs — a silent gap no hole would ever fetch.
+ *  The drain then runs the ordinary contiguity walk from minPending, so a gap
+ *  BETWEEN parked frames also stays a hole. */
 function drainContiguous(w: WindowState): void {
+  let from: number
   if (w.newestSeq === null) {
     if (w.pending.size === 0) return
-    for (const seq of [...w.pending.keys()].sort((a, b) => a - b)) {
-      const message = w.pending.get(seq)
-      w.pending.delete(seq)
-      if (message !== undefined && !w.tombstones.has(seq)) w.window.set(seq, message)
-    }
-    return
+    const min = minPendingSeq(w)
+    if (!prefixTombstoned(w, min)) return
+    from = min
+  } else {
+    from = w.newestSeq + 1
   }
-  let nx = w.newestSeq + 1
+  let nx = from
   while (w.pending.has(nx) || w.tombstones.has(nx)) {
     if (w.pending.has(nx)) {
       w.window.set(nx, w.pending.get(nx)!)
@@ -210,9 +251,9 @@ function drainContiguous(w: WindowState): void {
 }
 
 /** Insert one seq-keyed message into a window being built, keeping the
- *  tail contiguous: a seq at or below newest+1 lands in the window (with
+ *  tail contiguous: a seq at or below front+1 lands in the window (with
  *  its seq becoming newest when it extends the tail, draining any
- *  now-contiguous pending run behind it); a seq beyond the tail parks in
+ *  now-contiguous pending run behind it); a seq beyond the front parks in
  *  `pending` — but ONLY when a real hole precedes it. A gap of nothing
  *  but tombstones is unfillable by design (pages never return evicted
  *  seqs), so it is skipped across. A seq the server has tombstoned never
@@ -222,8 +263,9 @@ function drainContiguous(w: WindowState): void {
 function insertMessage(w: WindowState, seq: number, message: SdkMessage): void {
   if (w.window.has(seq) || w.pending.has(seq)) return
   if (w.tombstones.has(seq)) return
-  if (w.newestSeq !== null && seq > w.newestSeq + 1) {
-    for (let nx = w.newestSeq + 1; nx < seq; nx++) {
+  const front = tailFront(w)
+  if (front !== null && seq > front + 1) {
+    for (let nx = front + 1; nx < seq; nx++) {
       if (!w.tombstones.has(nx)) {
         w.pending.set(seq, message)
         return
@@ -257,6 +299,22 @@ export function liveAppend(
   // headSeq tracks "next seq the server will allocate" — a live frame at
   // headSeq proves headSeq + 1 is next.
   if (seq >= next.headSeq) next.headSeq = seq + 1
+  // An EMPTY, generation-adopted window has no anchor proving the prefix
+  // exists. A live frame above seq 0 therefore means the earlier seqs were
+  // emitted while no channel was subscribed: park it and expose the prefix
+  // as a front hole (windowHole) so the ordinary gap-fill fetches those seqs
+  // into the window. Anchoring here instead painted the later frames first
+  // and appended the recovered prefix at the tail of the ordered log — the
+  // user's own prompt (seq 0) rendered at the bottom of its whole turn.
+  // A prefix that is entirely tombstoned (a withdrawal emptied the window
+  // and the server declared those seqs dead) is already accounted for —
+  // anchor normally; parking would strand the frame behind a pointless
+  // fetch (e.g. a turn's `result`, leaving liveTurn uncleared).
+  if (next.window.size === 0 && seq > 0 && !prefixTombstoned(next, seq)) {
+    next.pending.set(seq, message)
+    rederive(next)
+    return next
+  }
   insertMessage(next, seq, message)
   rederive(next)
   return next

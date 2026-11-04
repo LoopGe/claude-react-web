@@ -31,6 +31,19 @@ function renderedItems(s: SessionState) {
     : [...s.mirror.items, ...s.intent.pendingPlaceholders.values()]
 }
 
+/** Message fixtures shared by the page/replay merge describes. */
+function pageUserMsg(uuid: string, content: string): SdkMessage {
+  return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
+}
+function pageAssistantMsg(uuid: string, text: string): SdkMessage {
+  return {
+    type: 'assistant',
+    uuid,
+    message: { role: 'assistant', content: [{ type: 'text', text }] },
+    parent_tool_use_id: null,
+  } as unknown as SdkMessage
+}
+
 function applyOptimistic(state: ReturnType<typeof createInitialSessionState>, content: unknown, pendingId = 'optimistic:test'): ReturnType<typeof createInitialSessionState> {
   const message: SdkMessage = {
     type: 'user',
@@ -2743,17 +2756,8 @@ describe('reducer: permission state (write-only maps removed, behavior preserved
 
 
 describe('WINDOW_PAGE at:head (uuid-dedup prepend path)', () => {
-  function userMsg(uuid: string, content: string): SdkMessage {
-    return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
-  }
-  function assistantMsg(uuid: string, text: string): SdkMessage {
-    return {
-      type: 'assistant',
-      uuid,
-      message: { role: 'assistant', content: [{ type: 'text', text }] },
-      parent_tool_use_id: null,
-    } as unknown as SdkMessage
-  }
+  const userMsg = pageUserMsg
+  const assistantMsg = pageAssistantMsg
 
   /** Helper: seed a tail page so the window is non-empty, then dispatch a
    *  head page. WINDOW_PAGE at:'head' calls the internal prependMessages
@@ -2846,18 +2850,166 @@ describe('WINDOW_PAGE at:head (uuid-dedup prepend path)', () => {
   })
 })
 
+describe('WINDOW_PAGE at:tail (frames older than what is on screen)', () => {
+  const userMsg = pageUserMsg
+  const assistantMsg = pageAssistantMsg
+
+  // Regression: a reconnect (or a panel reopen over a cached store) can leave
+  // the window starting at a mid-transcript seq — the empty page adopted the
+  // server generation, then live frames resumed at seq 3 while 0..2 were
+  // missed. The recovery tail page carries those older seqs, and they must be
+  // PREPENDED (seq order), not appended after the live rows. The reported
+  // symptom was the user's own prompt (seq 0) rendering at the bottom of the
+  // transcript, after everything it had asked for.
+  it('prepends page frames whose seq precedes the on-screen transcript', () => {
+    let state = createInitialSessionState('s')
+    // The open path's empty tail page adopted the server generation.
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 0,
+      messages: [], hasMore: false, tombstones: [],
+    })
+    // A page anchored the on-screen transcript at seq 3 (its prefix is loadable
+// history), and a later recovery page carries that prefix.
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 5,
+      messages: [
+        { seq: 3, msg: userMsg('live-3', 'third') },
+        { seq: 4, msg: assistantMsg('live-4', 'fourth') },
+      ],
+      hasMore: false, tombstones: [],
+    })
+    // Recovery tail page covering the whole transcript.
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 5,
+      messages: [
+        { seq: 0, msg: userMsg('page-0', 'prompt') },
+        { seq: 1, msg: assistantMsg('page-1', 'one') },
+        { seq: 2, msg: assistantMsg('page-2', 'two') },
+      ],
+      hasMore: false, tombstones: [],
+    })
+    expect(state.mirror.items.map((i) => i.id)).toEqual([
+      'page-0', 'page-1', 'page-2', 'live-3', 'live-4',
+    ])
+    expect(state.mirror.messages.map((m) => m.uuid)).toEqual([
+      'page-0', 'page-1', 'page-2', 'live-3', 'live-4',
+    ])
+  })
+
+  it('splits a page that straddles the on-screen front', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 0,
+      messages: [], hasMore: false, tombstones: [],
+    })
+    // The on-screen transcript is anchored at seq 10 by a page.
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 12,
+      messages: [
+        { seq: 10, msg: assistantMsg('live-10', 'ten') },
+        { seq: 11, msg: assistantMsg('live-11', 'eleven') },
+      ],
+      hasMore: false, tombstones: [],
+    })
+    // Recovery page straddles the live front: 0..9 precede it, 12 follows.
+    const messages = [
+      { seq: 0, msg: userMsg('page-0', 'prompt') },
+      ...Array.from({ length: 9 }, (_, i) => ({ seq: i + 1, msg: assistantMsg(`page-${i + 1}`, `p${i + 1}`) })),
+      { seq: 12, msg: assistantMsg('page-12', 'twelve') },
+    ]
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 13,
+      messages, hasMore: false, tombstones: [],
+    })
+    expect(state.mirror.items.map((i) => i.id)).toEqual([
+      'page-0', 'page-1', 'page-2', 'page-3', 'page-4', 'page-5',
+      'page-6', 'page-7', 'page-8', 'page-9', 'live-10', 'live-11', 'page-12',
+    ])
+    expect(state.mirror.window.oldestSeq).toBe(0)
+    expect(state.mirror.window.newestSeq).toBe(12)
+  })
+
+  it('drops the acked placeholder whose prompt echo arrives in the older run', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 0,
+      messages: [], hasMore: false, tombstones: [],
+    })
+    // Sent from this tab while the WS echo was missed; the REST ack re-keys
+    // the placeholder to the server uuid.
+    state = applyOptimistic(state, 'prompt', 'optimistic:1')
+    state = reduceSessionState(state, {
+      type: 'ACK_USER_MESSAGE', pendingId: 'optimistic:1', serverUuid: 'srv-prompt',
+    })
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 4,
+      messages: [{ seq: 3, msg: assistantMsg('live-3', 'third') }],
+      hasMore: true, tombstones: [],
+    })
+    // Recovery page carries the prompt echo below the live frame. Without the
+    // placeholder drop, buildSnapshot would paint it again at the bottom.
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 4,
+      messages: [
+        { seq: 0, msg: userMsg('srv-prompt', 'prompt') },
+        { seq: 1, msg: assistantMsg('page-1', 'one') },
+        { seq: 2, msg: assistantMsg('page-2', 'two') },
+      ],
+      hasMore: false, tombstones: [],
+    })
+    expect(state.intent.pendingPlaceholders.size).toBe(0)
+    expect(renderedItems(state).map((i) => i.id)).toEqual([
+      'srv-prompt', 'page-1', 'page-2', 'live-3',
+    ])
+  })
+
+  it('keeps an unrelated pending placeholder when the older run carries other prompts', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 0,
+      messages: [], hasMore: false, tombstones: [],
+    })
+    // A newer send of THIS tab is still in flight; the recovery page's
+    // historical prompt (another turn / another tab) must not pop it.
+    state = applyOptimistic(state, 'newer', 'optimistic:new')
+    state = reduceSessionState(state, {
+      type: 'ACK_USER_MESSAGE', pendingId: 'optimistic:new', serverUuid: 'srv-newer',
+    })
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 4,
+      messages: [{ seq: 3, msg: assistantMsg('live-3', 'third') }],
+      hasMore: true, tombstones: [],
+    })
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 4,
+      messages: [{ seq: 0, msg: userMsg('srv-old', 'old') }],
+      hasMore: false, tombstones: [],
+    })
+    expect(state.intent.pendingPlaceholders.has('srv-newer')).toBe(true)
+    expect(renderedItems(state).map((i) => i.id)).toEqual(['srv-old', 'live-3', 'srv-newer'])
+  })
+
+  it('ack drops the placeholder when a page already put the server copy on screen', () => {
+    let state = createInitialSessionState('s')
+    // The page landed while the POST was still un-acked, so the placeholder
+    // was under its optimistic id and the prepend could not match it.
+    state = reduceSessionState(state, {
+      type: 'WINDOW_PAGE', at: 'tail', generation: 0, headSeq: 1,
+      messages: [{ seq: 0, msg: userMsg('srv-prompt', 'prompt') }],
+      hasMore: false, tombstones: [],
+    })
+    state = applyOptimistic(state, 'prompt', 'optimistic:1')
+    state = reduceSessionState(state, {
+      type: 'ACK_USER_MESSAGE', pendingId: 'optimistic:1', serverUuid: 'srv-prompt',
+    })
+    expect(state.intent.pendingPlaceholders.size).toBe(0)
+    expect(renderedItems(state).map((i) => i.id)).toEqual(['srv-prompt'])
+  })
+})
+
 describe('REPLAY_REPLACE older slice (signature-dedup prepend path)', () => {
-  function userMsg(uuid: string, content: string): SdkMessage {
-    return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
-  }
-  function assistantMsg(uuid: string, text: string): SdkMessage {
-    return {
-      type: 'assistant',
-      uuid,
-      message: { role: 'assistant', content: [{ type: 'text', text }] },
-      parent_tool_use_id: null,
-    } as unknown as SdkMessage
-  }
+  const userMsg = pageUserMsg
+  const assistantMsg = pageAssistantMsg
 
   /** Helper: seed a cache, then replay with an older slice + an overlap
    *  bracket. The older slice is prepended via prependMessages with
@@ -3222,17 +3374,8 @@ describe('reducer: front-trim memory bound', () => {
   const CAP = 1000
   const SLACK = 256
 
-  function userMsg(uuid: string, content: string): SdkMessage {
-    return { type: 'user', uuid, message: { role: 'user', content }, parent_tool_use_id: null } as unknown as SdkMessage
-  }
-  function assistantMsg(uuid: string, text: string): SdkMessage {
-    return {
-      type: 'assistant',
-      uuid,
-      message: { role: 'assistant', content: [{ type: 'text', text }] },
-      parent_tool_use_id: null,
-    } as unknown as SdkMessage
-  }
+  const userMsg = pageUserMsg
+  const assistantMsg = pageAssistantMsg
   function toolUseMsg(uuid: string, toolUseId: string): SdkMessage {
     return {
       type: 'assistant',

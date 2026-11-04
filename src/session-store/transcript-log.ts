@@ -27,12 +27,13 @@
  *  only the primitives it needs from here.
  *
  *  `prependMessages` is exported for the replay-merge path (`replay-merge.ts`,
- *  Task 8) and for `window-bridge.windowPage`'s head-page path. It supports
- *  two dedup modes:
+ *  Task 8) and for `window-bridge.windowPage`'s head-page path and its
+ *  tail-page older run (frames on a recovery page that precede the on-screen
+ *  front). It supports two dedup modes:
  *    - `trustUuidDedup: true` — uuid-exact dedup for same-seq-space batches
- *      (tail-first replay backfill, WINDOW_PAGE at:'head'). The signature
- *      overlap check is skipped because the live stream and the REST page
- *      share one uuid space.
+ *      (tail-first replay backfill, WINDOW_PAGE at:'head', the tail page's
+ *      older run). The signature overlap check is skipped because the live
+ *      stream and the REST page share one uuid space.
  *    - default — uuid dedup PLUS content-signature dedup for top-level user
  *      prompts, whose server-minted in-memory uuid differs from the on-disk
  *      SDK uuid. The signature check matches the batch's trailing prompt run
@@ -57,9 +58,11 @@
 
 import type { SdkMessage } from '../types'
 import {
+  type ClientIntent,
   type ServerMirror,
   type SessionState,
   type TranscriptItem,
+  withIntent,
   withMirror,
 } from './types'
 import {
@@ -67,6 +70,7 @@ import {
   isTrimBoundary,
   messageTouchesWorktree,
   recomputeActiveWorktree,
+  retractedUuidsOf,
   toTranscriptItem,
   topLevelUserPromptSignature,
 } from './normalize'
@@ -175,7 +179,53 @@ export function prependMessages(
   })
   // Additive index update over just the prepended batch.
   next = rebuildIndexesFromMessages(next, newMessages)
+  // Prepended frames bypass applyMessage, so the two per-frame lifecycle
+  // effects a batch can carry must run here (and thus for EVERY prepend
+  // caller: head pages, the tail page's older run, replay older slices):
+  //  - an echoed top-level prompt whose acked placeholder still lives in
+  //    intent would render twice — the page is replying to a send whose live
+  //    echo was missed;
+  //  - refusal-fallback retraction (`supersedes` / a
+  //    model_refusal_fallback frame's `retracted_message_uuids`) must evict
+  //    the refused leg, which can be inside this same batch.
+  const promptUuids = new Set<string>()
+  const evictUuids: string[] = []
+  for (const m of newMessages) {
+    if (
+      m.type === 'user' &&
+      m.parent_tool_use_id == null &&
+      (m as { isCompactSummary?: boolean }).isCompactSummary !== true
+    ) {
+      const u = typeof m.uuid === 'string' ? m.uuid : null
+      if (u) promptUuids.add(u)
+    }
+    evictUuids.push(...retractedUuidsOf(m))
+  }
+  if (promptUuids.size > 0) next = withIntent(next, dropEchoedPlaceholders(next.intent, promptUuids))
+  if (evictUuids.length > 0) next = evictMessages(next, evictUuids)
   return next
+}
+
+/** Drop optimistic placeholders whose server uuid appears in a prepended
+ *  batch. Exact-uuid only: unlike a live echo, a page frame cannot be paired
+ *  FIFO with the oldest placeholder — a recovery page may carry historical
+ *  prompts sent by another tab, and popping FIFO would delete an unrelated
+ *  pending bubble. The REST ack re-keys a placeholder to the server uuid,
+ *  which is exactly what page frames carry; a placeholder still under its
+ *  optimistic id (ack not yet returned) keeps its short-lived duplicate.
+ *  Identity-stable when nothing matches. */
+function dropEchoedPlaceholders(intent: ClientIntent, uuids: ReadonlySet<string>): ClientIntent {
+  if (intent.pendingPlaceholders.size === 0) return intent
+  let changed = false
+  const next = new Map<string, TranscriptItem>()
+  for (const [id, item] of intent.pendingPlaceholders) {
+    if (uuids.has(id)) {
+      changed = true
+      continue
+    }
+    next.set(id, item)
+  }
+  return changed ? { ...intent, pendingPlaceholders: next } : intent
 }
 
 /** Count how many trailing top-level user prompts of an incoming disk page

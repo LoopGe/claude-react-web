@@ -724,9 +724,10 @@ export type SessionAction =
   // applyMessage / prependMessages machinery, so every UI reducer branch
   // (subagent pairing, task folding, plan cards, …) keeps working unchanged.
   /** A REST page from GET /sessions/:id/messages landed. `at: 'tail'` is
-   *  the newest page (or a hole-filling page in between) — messages append
-   *  at the transcript tail in seq order; also flips replayReady. `at:
-   *  'head'` is a strictly-older page below oldestSeq — messages prepend.
+   *  the newest page (or a hole-filling page in between) — fresh messages
+   *  apply in seq order, and any that precede the on-screen front are
+   *  prepended instead of appended; also flips replayReady. `at: 'head'` is
+   *  a strictly-older page below oldestSeq — messages prepend.
    *  `hasMore` becomes the window's hasOlder. An empty window adopts the
    *  page's generation; a non-empty window with a mismatched generation
    *  ignores the page (dead universe — dispatch WINDOW_BUMP first). */
