@@ -212,6 +212,10 @@ describe('recordTranscriptMessage (seq assignment gate)', () => {
     // Main-thread frames after all of that get the seqs.
     expect(recordTranscriptMessage(t, userMsg('u1'))).toBe(0)
     expect(recordTranscriptMessage(t, assistantMsg('main1'))).toBe(1)
+    // Settle the fire-and-forget sidecar writes before afterEach's rm: an
+    // append landing after the recursive rm has unlinked the file re-creates
+    // it, and the final rmdir fails ENOTEMPTY.
+    await drain(t.sidecar)
   })
   it('result frames and tool_use_summary are renderable (they render as transcript rows)', () => {
     const t = stubHolder()
@@ -225,6 +229,9 @@ describe('recordTranscriptMessage (seq assignment gate)', () => {
     const msg = userMsg('u1', 'hello')
     recordTranscriptMessage(t, msg)
     expect(t.store.window(undefined, 10).messages[0].msg).toBe(msg)
+    // Settle the fire-and-forget sidecar write before afterEach's rm (see the
+    // drain note above).
+    await drain(t.sidecar)
   })
 })
 
@@ -247,6 +254,9 @@ describe('backfillFromEntries (sidecar catch-up)', () => {
     expect(t.store.headSeq).toBe(4)
     expect(t.store.seqOf('new1')).toBe(2)
     expect(t.store.seqOf('new2')).toBe(3)
+    // Settle the fire-and-forget sidecar writes before afterEach's rm (see the
+    // drain note above).
+    await drain(t.sidecar)
   })
   it('positionally skips uuid-less entries already covered by the hydrated rows', () => {
     const t = stubHolder()
@@ -263,6 +273,9 @@ describe('backfillFromEntries (sidecar catch-up)', () => {
     expect(t.store.headSeq).toBe(10)
     const w = t.store.window(undefined, 20)
     expect(w.messages.map((m) => m.uuid)).toEqual(Array.from({ length: 10 }, (_, i) => `u${i}`))
+    // Settle the fire-and-forget sidecar writes before afterEach's rm (see the
+    // drain note above).
+    await drain(t.sidecar)
   })
 })
 

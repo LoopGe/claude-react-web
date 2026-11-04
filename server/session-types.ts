@@ -897,6 +897,10 @@ export interface SessionManagerOptions {
   /** How long delete() waits for the session's op lock before running
    *  anyway. Default DELETE_LOCK_MAX_WAIT_MS; tests shorten it. */
   deleteLockMaxWaitMs?: number
+  /** How long a permanent delete waits for the in-flight transcript title
+   *  write / the CLI process exit to settle before aborting. Default
+   *  PERMANENT_DELETE_WAIT_MS; tests shorten it. */
+  permanentDeleteWaitMs?: number
   /** How long setModel() waits before re-issuing a switch the CLI could not
    *  confirm. Default MODEL_SWITCH_RETRY_DELAY_MS; tests shorten it. */
   modelSwitchRetryDelayMs?: number

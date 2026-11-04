@@ -32,6 +32,12 @@ export const GIT_BROADCAST_MAX_WAIT_MS = 3_000
  *  delete only overtakes a holder that is actually wedged. */
 export const DELETE_LOCK_MAX_WAIT_MS = 20_000
 
+/** How long a permanent delete waits for the session's in-flight transcript
+ *  title write and for the CLI subprocess to exit before giving up and
+ *  aborting the deletion. Set above the slowest legitimate settle (a real
+ *  rename against the CLI transcript on disk). */
+export const PERMANENT_DELETE_WAIT_MS = 15_000
+
 /** How long setModel() waits before re-issuing a model switch the CLI could
  *  not CONFIRM (its pre-switch entitlement probe exceeded the CLI's own ~5 s
  *  deadline, answering "Couldn't confirm model … with the API. Try again"),

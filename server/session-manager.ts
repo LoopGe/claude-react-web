@@ -172,7 +172,7 @@ import {
 import { SUPPORTED_DIALOG_KINDS } from '../shared/user-dialog.js'
 import { ONE_M_CONTEXT_BETA } from '../shared/context-steps.js'
 import { raceWithFallback, withTimeout } from './with-timeout.js'
-import { COMMAND_PREVIEW_CAP, DELETE_LOCK_MAX_WAIT_MS, MODEL_SWITCH_RETRY_DELAY_MS } from './constants.js'
+import { COMMAND_PREVIEW_CAP, DELETE_LOCK_MAX_WAIT_MS, MODEL_SWITCH_RETRY_DELAY_MS, PERMANENT_DELETE_WAIT_MS } from './constants.js'
 
 // Re-export types so existing importers continue to work.
 export {
@@ -812,6 +812,9 @@ export class SessionManager {
   private maxCrashRecovery: number
   /** delete()'s bound on queueing for the op lock (see DELETE_LOCK_MAX_WAIT_MS). */
   private readonly deleteLockMaxWaitMs: number
+  /** Permanent delete's bound on waiting for the transcript title write and
+   *  the CLI process exit to settle (see PERMANENT_DELETE_WAIT_MS). */
+  private readonly permanentDeleteWaitMs: number
   /** Delay before re-issuing an unconfirmed model switch (see
    *  MODEL_SWITCH_RETRY_DELAY_MS). */
   private readonly modelSwitchRetryDelayMs: number
@@ -940,6 +943,7 @@ export class SessionManager {
     this.crashRecoveryEnabled = opts.crashRecovery ?? false
     this.maxCrashRecovery = opts.maxCrashRecovery ?? 2
     this.deleteLockMaxWaitMs = opts.deleteLockMaxWaitMs ?? DELETE_LOCK_MAX_WAIT_MS
+    this.permanentDeleteWaitMs = opts.permanentDeleteWaitMs ?? PERMANENT_DELETE_WAIT_MS
     this.modelSwitchRetryDelayMs = opts.modelSwitchRetryDelayMs ?? MODEL_SWITCH_RETRY_DELAY_MS
     this.store = opts.store ?? new SessionStore()
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
@@ -7330,7 +7334,7 @@ export class SessionManager {
       const transcriptSidecar = opts?.deleteTranscript ? this.transcriptStores.get(id)?.sidecar : undefined
       if (opts?.deleteTranscript) {
         try {
-          await withTimeout(this.pendingTitleWrites.get(id) ?? Promise.resolve(), 15_000)
+          await withTimeout(this.pendingTitleWrites.get(id) ?? Promise.resolve(), this.permanentDeleteWaitMs)
         } catch (err) {
           this.failPermanentDelete(id, true)
           throw err
@@ -7360,7 +7364,7 @@ export class SessionManager {
           if (closingHandles && closingHandles.size > 0) {
             const exits = await withTimeout(
               Promise.all([...closingHandles]),
-              15_000,
+              this.permanentDeleteWaitMs,
             ) as ProcessExitInfo[]
             if (exits.some((exit) => exit?.exitSafetyTimeout)) {
               throw new Error(`CLI process for session ${id} did not exit; permanent deletion aborted`)
@@ -7371,7 +7375,7 @@ export class SessionManager {
           this.failPermanentDelete(id, false)
           const current = this.store?.get(id)
           if (current) this.broadcastGlobal({ kind: 'update', session: this.infoFromMeta(current) })
-          if (err instanceof Error && err.message === 'Connection timed out after 15000ms') {
+          if (err instanceof Error && err.message === `Connection timed out after ${this.permanentDeleteWaitMs}ms`) {
             throw new Error(`CLI process for session ${id} did not exit; permanent deletion aborted`)
           }
           throw err

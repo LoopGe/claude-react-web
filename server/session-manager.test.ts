@@ -2570,6 +2570,9 @@ describe('SessionManager', () => {
   })
 
   it('permanent delete aborts when a transcript title write never settles', async () => {
+    // Shorten the production title-write settle wait (15s) — the test gates
+    // the rename forever and only asserts the timeout REJECTS, not its value.
+    ;(sm as unknown as { permanentDeleteWaitMs: number }).permanentDeleteWaitMs = 20
     const info = await sm.create({})
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
@@ -2652,6 +2655,10 @@ describe('SessionManager', () => {
 
   it('a failed concurrent permanent delete keeps the other request tombstoned', async () => {
     const info = await sm.create({})
+    // The second delete queues on the op lock held by the wedged first one;
+    // the production 20s cap would be waited out in full. 0 = overtake
+    // immediately (the same escape-hatch semantics the op-lock suite uses).
+    ;(sm as unknown as { deleteLockMaxWaitMs: number }).deleteLockMaxWaitMs = 0
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
     let releaseFirst!: () => void
@@ -2683,6 +2690,9 @@ describe('SessionManager', () => {
 
   it('a failed delete cannot roll back another request completed permanent deletion', async () => {
     const info = await sm.create({})
+    // The second delete queues on the op lock held by the wedged first one;
+    // overtake immediately instead of waiting out the 20s production cap.
+    ;(sm as unknown as { deleteLockMaxWaitMs: number }).deleteLockMaxWaitMs = 0
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
     process.env.CLAUDE_CONFIG_DIR = dir
     let rejectFirst!: (err: Error) => void
@@ -2756,6 +2766,9 @@ describe('SessionManager', () => {
 
   it('a late disk adoption cannot reinsert permanently deleted metadata', async () => {
     const info = await sm.create({})
+    // delete() queues on the op lock held by the gated in-flight resume;
+    // overtake immediately instead of waiting out the 20s production cap.
+    ;(sm as unknown as { deleteLockMaxWaitMs: number }).deleteLockMaxWaitMs = 0
     await sm.sleep(info.id)
     store.remove(info.id)
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
@@ -2945,6 +2958,10 @@ describe('SessionManager', () => {
   })
 
   it('permanent delete reports a real CLI wait timeout explicitly', async () => {
+    // Shorten the production CLI-exit settle wait (15s) — the mocked
+    // processRealExit never settles; the test only asserts the explicit
+    // "did not exit" rethrow, not the deadline's value.
+    ;(sm as unknown as { permanentDeleteWaitMs: number }).permanentDeleteWaitMs = 20
     const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(
       new Promise<ProcessExitInfo>(() => {}),
     )
