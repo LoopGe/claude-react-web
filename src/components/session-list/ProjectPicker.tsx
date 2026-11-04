@@ -96,7 +96,7 @@ export function ProjectPicker({
     typed,
     rows,
     active,
-    setActiveIndex,
+    hover,
     listRef,
     listId,
     optionId,
@@ -252,7 +252,7 @@ export function ProjectPicker({
                 <div
                   key={`${row.kind}:${row.path}`}
                   className={`project-picker-row${i === active ? ' active' : ''}`}
-                  onMouseEnter={() => setActiveIndex(i)}
+                  onMouseEnter={() => hover(i)}
                 >
                   <button
                     type="button"

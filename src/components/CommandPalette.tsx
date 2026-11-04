@@ -5,6 +5,7 @@ import type { MessageSearchHit, MessageSearchResponse } from '../../shared/searc
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
 import { api } from '../hooks/useApi'
 import { useExitPresence } from '../hooks/useExitPresence'
+import { useListSelection } from '../hooks/useListSelection'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import type { SessionInfo } from '../types'
@@ -40,7 +41,6 @@ function messageLabel(hit: MessageSearchHit): string {
 
 export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSession, onSelectMessage, pluginCommands }: Props) {
   const [query, setQuery] = useState('')
-  const [selectedIndex, setSelectedIndex] = useState(0)
   const [messageHits, setMessageHits] = useState<MessageSearchHit[]>([])
   const [messageSearchLoading, setMessageSearchLoading] = useState(false)
   const [messageSearchError, setMessageSearchError] = useState(false)
@@ -143,44 +143,43 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
     ]
   }, [localItems, messageHits, onSelectMessage, trimmedQuery])
 
-  // Clamp selectedIndex to valid range (derived state, not effect)
-  const clampedSelectedIndex = Math.min(selectedIndex, Math.max(0, filtered.length - 1))
+  // Hover only moves the highlight; arrow keys and the open/query resets also
+  // scroll the selected row into view (see useListSelection).
+  const { activeIndex, hover, move, reset } = useListSelection({
+    count: filtered.length,
+    getRow: (i) => listRef.current?.querySelectorAll<HTMLElement>('[data-palette-option]')[i],
+  })
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional UI reset on open */
   useLayoutEffect(() => {
     if (open) {
       setQuery('')
-      setSelectedIndex(0)
+      reset()
       setMessageHits([])
       setMessageSearchLoading(false)
       setMessageSearchError(false)
     }
-  }, [open])
+  }, [open, reset])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   useLayoutEffect(() => {
     if (presence.shouldRender) inputRef.current?.focus()
   }, [presence.shouldRender])
 
-  useEffect(() => {
-    const el = listRef.current?.querySelectorAll<HTMLElement>('[data-palette-option]')[clampedSelectedIndex]
-    el?.scrollIntoView({ block: 'nearest' })
-  }, [clampedSelectedIndex])
-
   if (!presence.shouldRender) return null
 
   const runSelected = () => {
-    filtered[clampedSelectedIndex]?.action()
+    filtered[activeIndex]?.action()
     onClose()
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSelectedIndex((index) => Math.min(index + 1, filtered.length - 1))
+      move(1)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setSelectedIndex((index) => Math.max(index - 1, 0))
+      move(-1)
     } else if (e.key === 'Enter' && filtered.length > 0) {
       e.preventDefault()
       runSelected()
@@ -210,11 +209,11 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
           type="text"
           placeholder="Search commands, sessions, and messages..."
           value={query}
-          onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0) }}
+          onChange={(e) => { setQuery(e.target.value); reset() }}
           aria-label="Search"
           aria-autocomplete="list"
           aria-controls="palette-list"
-          aria-activedescendant={filtered[clampedSelectedIndex] ? `palette-item-${clampedSelectedIndex}` : undefined}
+          aria-activedescendant={filtered[activeIndex] ? `palette-item-${activeIndex}` : undefined}
         />
         <div className="palette-list" ref={listRefMerged} id="palette-list" role="listbox">
           {filtered.length === 0 && !showSearching && !showSearchError && (
@@ -228,11 +227,11 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
                 {showSection && <div className="palette-section-label">{item.section}</div>}
                 <button
                   id={`palette-item-${index}`}
-                  className={`palette-item${index === clampedSelectedIndex ? ' selected' : ''}${item.detail ? ' palette-item-message' : ''}`}
+                  className={`palette-item${index === activeIndex ? ' selected' : ''}${item.detail ? ' palette-item-message' : ''}`}
                   role="option"
-                  aria-selected={index === clampedSelectedIndex}
+                  aria-selected={index === activeIndex}
                   data-palette-option="true"
-                  onMouseEnter={() => setSelectedIndex(index)}
+                  onMouseEnter={() => hover(index)}
                   onClick={() => { item.action(); onClose() }}
                 >
                   <span className="palette-item-main">

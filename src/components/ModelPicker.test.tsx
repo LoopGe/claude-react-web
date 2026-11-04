@@ -106,4 +106,22 @@ describe('ModelPicker', () => {
       chip.remove()
     }
   })
+
+  // Shared useListSelection wiring: hover only moves the highlight; the arrow
+  // keys scroll the row they land on.
+  it('hovers without scrolling and scrolls the row arrow navigation lands on', () => {
+    render(<ModelPicker {...makeProps()} />)
+    const scrollIntoView = vi.mocked(Element.prototype.scrollIntoView)
+    const rows = () => Array.from(document.querySelectorAll<HTMLElement>('.model-picker-item'))
+    scrollIntoView.mockClear()
+
+    fireEvent.mouseEnter(rows()[2])
+    expect(rows()[2].className).toContain('selected')
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(document.querySelector('.model-picker')!, { key: 'ArrowDown' })
+    expect(rows()[3].className).toContain('selected')
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(scrollIntoView.mock.instances[0]).toBe(rows()[3])
+  })
 })

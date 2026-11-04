@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { FocusEvent as ReactFocusEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useEscapeStack } from './useEscapeStack'
+import { useListSelection } from './useListSelection'
 import { useOutsideMouseDown } from './useOutsideMouseDown'
 import { markPortaledSurface } from '../theme'
 import { clamp } from '../utils/clamp'
@@ -40,11 +41,22 @@ export function useSearchablePicker<T>({
 }: Options<T>) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const [activeIndex, setActiveIndex] = useState(0)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
+
+  const typed = search.trim()
+  const rows = useMemo(() => getRows(typed), [getRows, typed])
+  // Hover only moves the highlight; arrow keys and the open/close/query resets
+  // also scroll the selected row into view (see useListSelection). Menus wrap
+  // past the ends and report "nothing selected" (-1) while empty.
+  const { activeIndex: active, hover, move, reset } = useListSelection({
+    count: rows.length,
+    getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-index="${i}"]`),
+    emptyIndex: -1,
+    wrap: true,
+  })
 
   const close = useCallback(
     (restoreFocus = false) => {
@@ -53,11 +65,11 @@ export function useSearchablePicker<T>({
       const hadFocus = menuRef.current?.contains(document.activeElement) ?? false
       setOpen(false)
       setSearch('')
-      setActiveIndex(0)
+      reset()
       onReset?.()
       if (restoreFocus && hadFocus) triggerRef.current?.focus()
     },
-    [onReset],
+    [onReset, reset],
   )
 
   const toggle = useCallback(() => {
@@ -73,14 +85,10 @@ export function useSearchablePicker<T>({
     if (disabled) {
       setOpen(false)
       setSearch('')
-      setActiveIndex(0)
+      reset()
       onReset?.()
     }
   }
-
-  const typed = search.trim()
-  const rows = useMemo(() => getRows(typed), [getRows, typed])
-  const active = rows.length > 0 ? Math.min(activeIndex, rows.length - 1) : -1
 
   // Register before autofocus so a parent dialog's focus trap cannot reclaim
   // focus from the portaled menu during its first open render.
@@ -138,13 +146,6 @@ export function useSearchablePicker<T>({
     }
   }, [open, rows.length, listMaxVar])
 
-  useEffect(() => {
-    if (!open || active < 0) return
-    listRef.current
-      ?.querySelector<HTMLElement>(`[data-index="${active}"]`)
-      ?.scrollIntoView({ block: 'nearest' })
-  }, [active, open])
-
   const handleMenuBlur = (event: ReactFocusEvent<HTMLDivElement>) => {
     const next = event.relatedTarget as Node | null
     // Safari blurs without a relatedTarget on button mousedown; that is not
@@ -165,13 +166,12 @@ export function useSearchablePicker<T>({
     if (event.nativeEvent.isComposing) return
     if (event.key === 'ArrowDown') {
       event.preventDefault()
-      if (rows.length) setActiveIndex((index) => (Math.min(index, rows.length - 1) + 1) % rows.length)
+      move(1)
       return
     }
     if (event.key === 'ArrowUp') {
       event.preventDefault()
-      if (rows.length)
-        setActiveIndex((index) => (Math.min(index, rows.length - 1) - 1 + rows.length) % rows.length)
+      move(-1)
       return
     }
     if (event.key === 'Enter') {
@@ -184,9 +184,9 @@ export function useSearchablePicker<T>({
 
   const clearSearch = useCallback(() => {
     setSearch('')
-    setActiveIndex(0)
+    reset()
     searchRef.current?.focus()
-  }, [])
+  }, [reset])
 
   const menuId = `${id ?? 'searchable-picker'}-menu`
   const listId = `${menuId}-list`
@@ -198,7 +198,7 @@ export function useSearchablePicker<T>({
     typed,
     rows,
     active,
-    setActiveIndex,
+    hover,
     listRef,
     menuId,
     listId,
@@ -232,7 +232,7 @@ export function useSearchablePicker<T>({
       autoComplete: 'off',
       onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
         setSearch(event.target.value)
-        setActiveIndex(0)
+        reset()
       },
     },
   }

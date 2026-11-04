@@ -16,8 +16,9 @@
 // everything else ("All sessions" / "Other sessions"), including legacy
 // unattributed entries.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useInputHistoryPanel, type HistoryPanelEntry } from '../hooks/useInputHistoryPanel'
+import { useListSelection } from '../hooks/useListSelection'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { PanelOverlay } from './PanelOverlay'
@@ -34,7 +35,6 @@ interface Props {
 
 export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }: Props) {
   const [query, setQuery] = useState('')
-  const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
@@ -45,10 +45,14 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
     query,
   )
 
-  // Defensive clamp for display: a cross-tab store update could shrink `flat`
-  // below the cursor. Query changes reset to 0 in onChange, and Enter checks
-  // `entry != null`, so this only affects which row is highlighted.
-  const safeIndex = flat.length === 0 ? 0 : Math.min(selectedIndex, flat.length - 1)
+  // Hover only moves the highlight; arrow keys and the open/query resets also
+  // scroll the selected entry into view (see useListSelection). The displayed
+  // index is clamped inside the hook, so a cross-tab store update that shrinks
+  // `flat` below the cursor can never render "nothing selected".
+  const { activeIndex, hover, move, reset } = useListSelection({
+    count: flat.length,
+    getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-entry-index="${i}"]`),
+  })
 
   // Reset state when opening, synchronously before first paint so the user
   // never sees stale content from a previous invocation.
@@ -56,9 +60,9 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   useLayoutEffect(() => {
     if (open) {
       setQuery('')
-      setSelectedIndex(0)
+      reset()
     }
-  }, [open])
+  }, [open, reset])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Auto-focus the input on mount / open. Runs in commit, before PanelOverlay's
@@ -68,27 +72,16 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
     if (open) inputRef.current?.focus()
   }, [open])
 
-  // Keep selected item in view.
-  useEffect(() => {
-    const el = listRef.current?.querySelector<HTMLElement>(`[data-entry-index="${selectedIndex}"]`)
-    el?.scrollIntoView({ block: 'nearest' })
-  }, [selectedIndex])
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      // Guard empty list: Math.min(i + 1, -1) would set selectedIndex to -1,
-      // which safeIndex masks while flat stays empty but would surface as
-      // "no highlight, Enter no-op" if a cross-tab store update later made
-      // flat non-empty without resetting the cursor.
-      if (flat.length === 0) return
-      setSelectedIndex((i) => Math.min(i + 1, flat.length - 1))
+      move(1)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setSelectedIndex((i) => Math.max(i - 1, 0))
+      move(-1)
     } else if (e.key === 'Enter' && flat.length > 0) {
       e.preventDefault()
-      const entry = flat[safeIndex]
+      const entry = flat[activeIndex]
       if (entry != null) {
         onSelect(entry)
         onClose()
@@ -108,10 +101,10 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
       key={`${flatIndex}:${entry.text}`}
       id={`history-item-${flatIndex}`}
       data-entry-index={flatIndex}
-      className={`palette-item${flatIndex === safeIndex ? ' selected' : ''}`}
+      className={`palette-item${flatIndex === activeIndex ? ' selected' : ''}`}
       role="option"
-      aria-selected={flatIndex === safeIndex}
-      onMouseEnter={() => setSelectedIndex(flatIndex)}
+      aria-selected={flatIndex === activeIndex}
+      onMouseEnter={() => hover(flatIndex)}
       onClick={() => { onSelect(entry); onClose() }}
     >
       <span className="palette-item-label truncate">{entry.text || '(image)'}</span>
@@ -133,11 +126,11 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
         type="text"
         placeholder="Search input history…"
         value={query}
-        onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0) }}
+        onChange={(e) => { setQuery(e.target.value); reset() }}
         aria-label="Search input history"
         aria-autocomplete="list"
         aria-controls="history-list"
-        aria-activedescendant={flat[safeIndex] != null ? `history-item-${safeIndex}` : undefined}
+        aria-activedescendant={flat[activeIndex] != null ? `history-item-${activeIndex}` : undefined}
       />
       <div className="palette-list" ref={listRefMerged} id="history-list" role="listbox">
         {flat.length === 0 && (

@@ -33,6 +33,7 @@ function Harness({
   const {
     open,
     rows: visibleRows,
+    hover,
     listRef,
     listId,
     optionId,
@@ -85,6 +86,7 @@ function Harness({
                   role="option"
                   key={row.id}
                   onClick={() => activate(row)}
+                  onMouseEnter={() => hover(index)}
                 >
                   {row.label}
                 </button>
@@ -259,5 +261,31 @@ describe('useSearchablePicker', () => {
     expect(menu()).toBeNull()
     expect(document.activeElement).toBe(trigger())
     expect(onReset).toHaveBeenCalledTimes(1)
+  })
+
+  // Shared useListSelection wiring: hover only moves the highlight; the arrow
+  // keys scroll the row they land on (and wrap — see the hook's options).
+  it('hovers without scrolling and scrolls the row arrow navigation lands on', () => {
+    const originalScrollIntoView = Element.prototype.scrollIntoView
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    try {
+      render(<Harness />)
+      openPicker()
+      const options = () => screen.getAllByRole('option')
+      scrollIntoView.mockClear()
+
+      fireEvent.mouseEnter(options()[1])
+      expect(search().getAttribute('aria-activedescendant')).toBe('test-menu-opt-1')
+      expect(scrollIntoView).not.toHaveBeenCalled()
+
+      fireEvent.keyDown(menu()!, { key: 'ArrowDown' })
+      // Wraps from the last row back to the first.
+      expect(search().getAttribute('aria-activedescendant')).toBe('test-menu-opt-0')
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      expect(scrollIntoView.mock.instances[0]).toBe(options()[0])
+    } finally {
+      Element.prototype.scrollIntoView = originalScrollIntoView
+    }
   })
 })

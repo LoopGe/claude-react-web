@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { IconX } from '../icons/ToolIcons'
 import { api } from '../../hooks/useApi'
+import { useListSelection } from '../../hooks/useListSelection'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
 import { shortenPath } from '../../utils/paths'
@@ -56,11 +57,32 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   const [sessions, setSessions] = useState<ResumableSession[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selectedIndex, setSelectedIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return sessions
+    const q = query.toLowerCase()
+    return sessions.filter(
+      (s) =>
+        s.title?.toLowerCase().includes(q) ||
+        s.firstPrompt?.toLowerCase().includes(q) ||
+        s.lastPrompt?.toLowerCase().includes(q) ||
+        s.cwd?.toLowerCase().includes(q) ||
+        s.sessionId.toLowerCase().includes(q),
+    )
+  }, [sessions, query])
+
+  // Hover only moves the highlight; arrow keys and the row-0 resets also
+  // scroll the selected row into view (see useListSelection).
+  const { activeIndex, hover, move, reset } = useListSelection({
+    count: filtered.length,
+    // Address rows by attribute, not child index: the list also renders
+    // loading/empty placeholders, so `children[i]` is not the i-th row.
+    getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-session-index="${i}"]`),
+  })
 
   // Fetch the resumable list whenever the scope toggles. Aborts in-flight
   // requests so a fast toggle doesn't race a stale response onto the list.
@@ -79,7 +101,8 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
       .get<{ sessions: ResumableSession[] }>(path, { signal: ac.signal })
       .then((r) => {
         setSessions(r.sessions)
-        setSelectedIndex(0)
+        // Fresh scope: the cursor returns to row 0.
+        reset()
       })
       .catch((e) => {
         if (ac.signal.aborted) return
@@ -89,7 +112,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
         if (!ac.signal.aborted) setLoading(false)
       })
     return () => ac.abort()
-  }, [allProjects, defaultCwd])
+  }, [allProjects, defaultCwd, reset])
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // Refocus the search input whenever the dialog (re)opens. useExitPresence
@@ -101,25 +124,6 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
     if (open) inputRef.current?.focus()
   }, [open])
 
-  const filtered = useMemo(() => {
-    if (!query.trim()) return sessions
-    const q = query.toLowerCase()
-    return sessions.filter(
-      (s) =>
-        s.title?.toLowerCase().includes(q) ||
-        s.firstPrompt?.toLowerCase().includes(q) ||
-        s.lastPrompt?.toLowerCase().includes(q) ||
-        s.cwd?.toLowerCase().includes(q) ||
-        s.sessionId.toLowerCase().includes(q),
-    )
-  }, [sessions, query])
-
-  // Keep the selected row in view as the user arrows through.
-  useEffect(() => {
-    const el = listRef.current?.children[selectedIndex] as HTMLElement | undefined
-    el?.scrollIntoView({ block: 'nearest' })
-  }, [selectedIndex])
-
   const choose = (s: ResumableSession | undefined) => {
     // Hard-terminal sessions can't be resumed; transiently-terminated ones
     // (canRetryResume) can — let them through so the user can retry.
@@ -130,13 +134,13 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1))
+      move(1)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setSelectedIndex((i) => Math.max(i - 1, 0))
+      move(-1)
     } else if (e.key === 'Enter' && filtered.length > 0) {
       e.preventDefault()
-      choose(filtered[selectedIndex])
+      choose(filtered[activeIndex])
     }
   }
 
@@ -163,7 +167,7 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
           value={query}
           onChange={(e) => {
             setQuery(e.target.value)
-            setSelectedIndex(0)
+            reset()
           }}
           aria-label="Search resumable sessions"
         />
@@ -210,11 +214,12 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
               return (
                 <button
                   key={s.sessionId}
-                  className={`palette-item${i === selectedIndex ? ' selected' : ''}`}
+                  data-session-index={i}
+                  className={`palette-item${i === activeIndex ? ' selected' : ''}`}
                   role="option"
-                  aria-selected={i === selectedIndex}
+                  aria-selected={i === activeIndex}
                   disabled={s.terminated && !s.canRetryResume}
-                  onMouseEnter={() => setSelectedIndex(i)}
+                  onMouseEnter={() => hover(i)}
                   onClick={() => choose(s)}
                   style={{
                     flexDirection: 'column',

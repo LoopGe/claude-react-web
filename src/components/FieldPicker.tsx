@@ -104,7 +104,7 @@ export function FieldPicker({
     search,
     rows,
     active,
-    setActiveIndex,
+    hover,
     listRef,
     listId,
     optionId,
@@ -194,7 +194,7 @@ export function FieldPicker({
                     {showHeading && <div className="field-picker-heading">{row.heading}</div>}
                     <div
                       className={`field-picker-row${i === active ? ' active' : ''}`}
-                      onMouseEnter={() => setActiveIndex(i)}
+                      onMouseEnter={() => hover(i)}
                     >
                       <button
                         type="button"

@@ -30,6 +30,7 @@ import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { usePopoverMotion } from '../../utils/transitions'
 import { useEscapeStack } from '../../hooks/useEscapeStack'
+import { useListSelection } from '../../hooks/useListSelection'
 import { useOutsideMouseDown } from '../../hooks/useOutsideMouseDown'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
@@ -223,13 +224,17 @@ function SubagentSwarmPopover({
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: anchor.x, y: anchor.y })
-  const [cursor, setCursor] = useState(0)
   const { popover } = usePopoverMotion()
 
   const clickable = !!onOpenSubagent
-  // Derive rather than store: the fan-out shrinks as agents settle, so a
-  // stored index can outrun the list between renders.
-  const activeIndex = Math.min(cursor, Math.max(0, subagents.length - 1))
+  // Hover only moves the highlight; arrow keys also scroll the selected row
+  // into view (see useListSelection). Derive rather than store: the fan-out
+  // shrinks as agents settle, so a stored index can outrun the list between
+  // renders — the hook clamps it.
+  const { activeIndex, hover, move } = useListSelection({
+    count: subagents.length,
+    getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-row="${i}"]`),
+  })
 
   // Singular-aware for the same reason the pill's label is (see above): the
   // dialog must not announce the plural straight after the button announced
@@ -282,11 +287,6 @@ function SubagentSwarmPopover({
     if (subagents.length === 0) onClose()
   }, [subagents.length, onClose])
 
-  useEffect(() => {
-    const el = listRef.current?.querySelector<HTMLElement>(`[data-row="${activeIndex}"]`)
-    el?.scrollIntoView({ block: 'nearest' })
-  }, [activeIndex])
-
   const open = (toolUseId: string) => {
     onOpenSubagent?.(toolUseId)
     onClose()
@@ -309,10 +309,10 @@ function SubagentSwarmPopover({
       onKeyDown={(e) => {
         if (e.key === 'ArrowDown') {
           e.preventDefault()
-          setCursor(Math.min(activeIndex + 1, subagents.length - 1))
+          move(1)
         } else if (e.key === 'ArrowUp') {
           e.preventDefault()
-          setCursor(Math.max(activeIndex - 1, 0))
+          move(-1)
         } else if (e.key === 'Enter' && clickable) {
           e.preventDefault()
           const target = subagents[activeIndex]
@@ -339,7 +339,7 @@ function SubagentSwarmPopover({
               data-row={i}
               className={`subagent-swarm-row${clickable ? ' subagent-swarm-row-clickable' : ''}${i === activeIndex ? ' selected' : ''}${a.status === 'pending' ? ' subagent-swarm-row-waiting' : ''}`}
               title={clickable ? `Open ${a.label}` : a.label}
-              onMouseEnter={() => setCursor(i)}
+              onMouseEnter={() => hover(i)}
               onClick={clickable ? () => open(a.toolUseId) : undefined}
             >
               <span className="subagent-swarm-row-dot" aria-hidden />

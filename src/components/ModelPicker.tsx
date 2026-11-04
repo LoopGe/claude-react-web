@@ -12,12 +12,13 @@
 // option, an extra "use <term> (custom)" row lets the user commit an
 // arbitrary id — important for proxy models the SDK doesn't advertise.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import type { ModelOptions } from '../hooks/useModelOptions'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useListSelection } from '../hooks/useListSelection'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 import { useMergedRef } from '../utils/mergedRef'
@@ -67,7 +68,6 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
   const [query, setQuery] = useState('')
-  const [selectedIndex, setSelectedIndex] = useState(0)
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
   // Under reduced motion, snap (duration:0) instead of fading — see
   // useMotionTransition.
@@ -166,10 +166,15 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
     return result
   }, [query, options, current, currentGroupId, onSelect, onSelectGroup])
 
-  // Clamp inline rather than in an effect: when the row set shrinks (e.g.
-  // a search narrows the list) the stored index may exceed the new length,
-  // so the rendered/active index is always derived, not stored stale.
-  const activeIndex = Math.min(selectedIndex, Math.max(0, rows.length - 1))
+  // Hover only moves the highlight; arrow keys and the query reset also scroll
+  // the selected row into view (see useListSelection). The displayed index is
+  // clamped inside the hook: when the row set shrinks (a search narrows the
+  // list) the stored index may exceed the new length, so the active index is
+  // always derived, never stored stale.
+  const { activeIndex, hover, move, reset } = useListSelection({
+    count: rows.length,
+    getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-row="${i}"]`),
+  })
 
   // Measure after layout and nudge inward to stay in the viewport.
   useLayoutEffect(() => {
@@ -205,14 +210,6 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
     inputRef.current?.focus()
   }, [])
 
-  // Keep the highlighted row in view.
-  useEffect(() => {
-    const el = listRef.current?.querySelector(`[data-row="${activeIndex}"]`) as
-      | HTMLElement
-      | undefined
-    el?.scrollIntoView({ block: 'nearest' })
-  }, [activeIndex])
-
   // Outside-click dismissal (Escape is owned by the shared stack above).
   // No trigger: this picker's chip only opens it (see ChatPanel), so a press
   // on the chip is an ordinary outside press.
@@ -221,10 +218,10 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault()
-      setSelectedIndex((i) => Math.min(i + 1, rows.length - 1))
+      move(1)
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
-      setSelectedIndex((i) => Math.max(i - 1, 0))
+      move(-1)
     } else if (e.key === 'Enter') {
       e.preventDefault()
       rows[activeIndex]?.select()
@@ -258,7 +255,7 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
           disabled={disabled}
           onChange={(e) => {
             setQuery(e.target.value)
-            setSelectedIndex(0)
+            reset()
           }}
           aria-label="Search models"
           aria-autocomplete="list"
@@ -278,7 +275,7 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
               role="option"
               aria-selected={i === activeIndex}
               disabled={disabled}
-              onMouseEnter={() => setSelectedIndex(i)}
+              onMouseEnter={() => hover(i)}
               onClick={() => row.select()}
             >
               <span className="model-picker-item-text">

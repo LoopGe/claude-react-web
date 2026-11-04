@@ -254,6 +254,25 @@ describe('subagent swarm popover', () => {
     expect(onOpenSubagent).toHaveBeenCalledWith('tu_1')
   })
 
+  // Shared useListSelection wiring: hover only moves the highlight; the arrow
+  // keys scroll the row they land on.
+  it('hovers without scrolling and scrolls the row arrow navigation lands on', () => {
+    const { container } = render(<WorkingBubble activeSubagents={agents(3)} />)
+    openPopover(container)
+    const scrollIntoView = vi.mocked(Element.prototype.scrollIntoView)
+    const rows = () => Array.from(document.querySelectorAll<HTMLElement>('.subagent-swarm-row'))
+    scrollIntoView.mockClear()
+
+    fireEvent.mouseEnter(rows()[2])
+    expect(rows()[2].className).toContain('selected')
+    expect(scrollIntoView).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(document.querySelector('.subagent-swarm-pop')!, { key: 'ArrowUp' })
+    expect(rows()[1].className).toContain('selected')
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(scrollIntoView.mock.instances[0]).toBe(rows()[1])
+  })
+
   it('toggles shut on a second click of the pill', () => {
     const { container } = render(<WorkingBubble activeSubagents={agents(3)} />)
     openPopover(container)
