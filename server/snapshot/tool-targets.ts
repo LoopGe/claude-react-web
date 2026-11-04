@@ -7,7 +7,7 @@
  * Only first-party file tools are understood; shell commands name no target
  * the host can resolve, and reads never mutate.
  */
-import { isAbsolute, join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 
 /** The argument that names each supported tool's target. */
 const TARGET_FIELDS: Readonly<Record<string, string>> = {
@@ -28,5 +28,8 @@ export function toolTargetPaths(toolName: string, toolInput: unknown, cwd: strin
   if (field === undefined || toolInput === null || typeof toolInput !== 'object') return []
   const value = (toolInput as Record<string, unknown>)[field]
   if (typeof value !== 'string' || value.trim() === '') return []
-  return [isAbsolute(value) ? value : join(cwd, value)]
+  // A target is absolute when EITHER platform's rules say so: the tool input is
+  // model-produced text that may use Windows drive-letter paths even on a
+  // posix host (posix.isAbsolute('D:/x') is false and would double-join it).
+  return [(posix.isAbsolute(value) || win32.isAbsolute(value)) ? value : join(cwd, value)]
 }
