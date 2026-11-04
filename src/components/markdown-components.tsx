@@ -5,11 +5,15 @@
 // CodeBlock, sanitizeHref, and the MD_COMPONENTS map all live here.
 
 import { memo, useRef } from 'react'
-import type { ComponentPropsWithoutRef, Ref } from 'react'
+import type { ComponentPropsWithoutRef, MouseEvent, Ref } from 'react'
 import { defaultUrlTransform, type Components } from 'react-markdown'
 import { MsgImage } from './MsgImage'
 import { useMergedRef } from '../utils/mergedRef'
 import { useCopy } from '../hooks/useCopy'
+import { fileResource } from '../../shared/resource-address'
+import { parseFileLink } from '../../shared/file-link'
+import { resolveAbsolutePath } from '../utils/paths'
+import { useResourceLinkContext } from '../resources/ResourceLinkContext'
 
 /** Sanitize an href for the `a` component.
  *
@@ -39,12 +43,48 @@ export function sanitizeHref(url: string): string {
  * shell reserves <h1> (main region) and <h2> (empty state / panel headers),
  * so an assistant `# Foo` would otherwise inject an <h1> mid-document and
  * break the heading outline for screen-reader navigation. See A11y M4. */
-export const MD_COMPONENTS: Components = {
-  a: ({ href, children, ...props }) => (
-    <a href={sanitizeHref(href ?? '')} target="_blank" rel="noreferrer noopener" {...props}>
+/** Markdown links: relative file links (with an optional `#L10` / `#L10-L20`)
+ *  open the resource preview when a link context is in scope; everything else
+ *  keeps the existing new-tab behavior. */
+function MarkdownLink({ href, children, ...props }: ComponentPropsWithoutRef<'a'>) {
+  const link = useResourceLinkContext()
+  const parsed = typeof href === 'string' ? parseFileLink(href) : null
+  // A bare `#L10` resolves against the file being previewed.
+  const targetPath = parsed ? parsed.path || link?.baseFile : undefined
+  // Root-relative hrefs (`/api/settings`) are web URLs, not workspace files.
+  const rootRelative = !!parsed && parsed.path.startsWith('/')
+  const interceptable = !!(link && parsed && targetPath && !rootRelative)
+  const onClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (!link || !parsed || !targetPath || rootRelative) return
+    // A workspace path has no browser URL: intercept modified clicks too, or
+    // the browser would open a broken SPA-relative tab.
+    event.preventDefault()
+    link.openResource(
+      link.sessionId,
+      fileResource(link.sessionId, resolveAbsolutePath(link.baseDir, targetPath)),
+      parsed.line != null ? { params: { line: parsed.line, endLine: parsed.endLine } } : undefined,
+    )
+  }
+  // Middle-click never reaches onClick; keep it from opening a broken tab.
+  const onAuxClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    if (interceptable && event.button === 1) event.preventDefault()
+  }
+  return (
+    <a
+      href={sanitizeHref(href ?? '')}
+      target={interceptable ? undefined : '_blank'}
+      rel="noreferrer noopener"
+      onClick={onClick}
+      onAuxClick={onAuxClick}
+      {...props}
+    >
       {children}
     </a>
-  ),
+  )
+}
+
+export const MD_COMPONENTS: Components = {
+  a: MarkdownLink,
   // Renders markdown image references defensively. `src` arrives RAW from the
   // hast tree (toJsxRuntime applies no urlTransform), so this component is the
   // sole gate: only data:image/* and http(s) become a real <img>. Anything else

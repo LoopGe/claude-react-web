@@ -38,6 +38,10 @@ export interface GitFileRowProps {
   onFetchReset: () => void
   diff: { data: GitDiff | null; loading: boolean; error: string | null }
   fetchFullText: (signal?: AbortSignal) => Promise<string>
+  /** Open the expanded diff as a resource preview. */
+  onOpenDiff?: (path: string, staged: boolean) => void
+  /** Whether this row's diff is the staged (index) diff. */
+  staged?: boolean
   /** Stage/unstage/discard buttons. Omit for read-only rows. */
   actions?: React.ReactNode
 }
@@ -55,6 +59,8 @@ export const GitFileRow: React.MemoExoticComponent<(props: GitFileRowProps) => R
   onFetchReset,
   diff,
   fetchFullText,
+  onOpenDiff,
+  staged,
   actions,
 }: GitFileRowProps) {
   const [open, setOpen] = useState(false)
@@ -173,6 +179,18 @@ export const GitFileRow: React.MemoExoticComponent<(props: GitFileRowProps) => R
       >
         {fetchStarted && (
           <div className="git-file-diff-wrap">
+            {onOpenDiff && (
+              <div className="git-file-diff-header">
+                <button
+                  type="button"
+                  className="git-diff-open-preview"
+                  aria-label={`Open diff preview for ${path}`}
+                  onClick={() => onOpenDiff(path, staged ?? false)}
+                >
+                  Open diff preview
+                </button>
+              </div>
+            )}
             {loading && <div className="git-file-diff-loading">Loading diff...</div>}
             {error && <div className="git-file-diff-error">{error}</div>}
             {data && data.isBinary && (

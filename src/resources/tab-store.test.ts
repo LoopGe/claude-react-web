@@ -67,6 +67,41 @@ describe('ResourcePaneStore', () => {
     expect(store.getState('s1').tabs[0].id).not.toBe(store.getState('s2').tabs[0].id)
   })
 
+  it('bumps the navigation revision on every open of the same tab', () => {
+    const store = new ResourcePaneStore({ storage: memoryStorage().storage })
+    const opened = store.open('s1', A, { params: { line: 10 } })
+    const tabId = (opened as { tabId: string }).tabId
+    expect(store.getNavigation(tabId)).toEqual({ params: { line: 10 }, revision: 1 })
+    store.open('s1', A, { params: { line: 10 } })
+    expect(store.getNavigation(tabId)).toEqual({ params: { line: 10 }, revision: 2 })
+  })
+
+  it('replaces navigation params; a plain reopen clears them', () => {
+    const store = new ResourcePaneStore({ storage: memoryStorage().storage })
+    const tabId = (
+      store.open('s1', A, { params: { line: 10, endLine: 20 } }) as { tabId: string }
+    ).tabId
+    store.open('s1', A)
+    const navigation = store.getNavigation(tabId)
+    expect(navigation?.revision).toBe(2)
+    expect(navigation?.params).toBeUndefined()
+  })
+
+  it('keeps navigation params per tab', () => {
+    const store = new ResourcePaneStore({ storage: memoryStorage().storage })
+    const a = (store.open('s1', A, { params: { line: 1 } }) as { tabId: string }).tabId
+    const b = (store.open('s1', B, { params: { line: 2 } }) as { tabId: string }).tabId
+    expect(store.getNavigation(a)?.params).toEqual({ line: 1 })
+    expect(store.getNavigation(b)?.params).toEqual({ line: 2 })
+  })
+
+  it('does not persist navigation params', () => {
+    const { storage, data } = memoryStorage()
+    const store = new ResourcePaneStore({ storage })
+    store.open('s1', A, { params: { line: 10 } })
+    expect(data.get(keyFor('s1'))).not.toContain('line')
+  })
+
   it('closing the active tab activates the previous sibling', () => {
     const store = new ResourcePaneStore({ storage: memoryStorage().storage })
     const a = (store.open('s1', A) as { tabId: string }).tabId

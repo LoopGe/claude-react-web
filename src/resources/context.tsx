@@ -32,3 +32,9 @@ export function useResourceRegistry(): ResourceRegistry {
 export function useOpenResource(): ResourcePaneContextValue['openResource'] {
   return useResourcePaneContext().openResource
 }
+
+/** Non-throwing variant for hosts that render outside the App provider (tests,
+ *  standalone markdown): null means "links stay plain". */
+export function useOptionalOpenResource(): ResourcePaneContextValue['openResource'] | null {
+  return useContext(ResourcePaneContext)?.openResource ?? null
+}

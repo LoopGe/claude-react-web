@@ -36,6 +36,8 @@ const InputHistoryPanel = lazy(() =>
 )
 import { RecapWindow } from './RecapWindow'
 import { ResourceModal } from '../resources/ResourceModal'
+import { useOptionalOpenResource } from '../resources/context'
+import { snapshotDiffResource } from '../../shared/resource-address'
 import { PinnedUserMessage } from './PinnedUserMessage'
 import { api } from '../hooks/useApi'
 import { startUploads } from '../hooks/useUploadQueue'
@@ -486,6 +488,7 @@ export const Chat = memo(function Chat({
   // (not a ref) so the write during render goes through React's normal
   // scheduling; a ref would break `react-hooks/refs` and also wouldn't
   // trigger the re-render that reveals the panel on first open.
+  const openResource = useOptionalOpenResource()
   const [settingsEverOpened, setSettingsEverOpened] = useState(false)
   if (settingsOpen && !settingsEverOpened) setSettingsEverOpened(true)
   // In-chat search open state. Declared here (rather than in the search
@@ -2376,6 +2379,25 @@ export const Chat = memo(function Chat({
                     </p>
                   )
                 })()}
+                {openResource &&
+                  rewindConfirm.dry?.canRewind &&
+                  (rewindConfirm.dry.filesChanged?.length ?? 0) > 0 && (
+                    <p className="confirm-dialog-hint">
+                      {/* Opens the structured snapshot diff above the dialog. */}
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() =>
+                          openResource(
+                            session.id,
+                            snapshotDiffResource(session.id, rewindConfirm.messageId),
+                          )
+                        }
+                      >
+                        View changes
+                      </button>
+                    </p>
+                  )}
               </>
             }
             confirmLabel="Rewind files"

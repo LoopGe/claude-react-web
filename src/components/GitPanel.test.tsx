@@ -1,8 +1,16 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { GitPanel } from './GitPanel'
-import { ResourcePaneProvider } from '../resources/ResourcePaneProvider'
+import { parseDiffResource } from '../../shared/resource-address'
+
+// The panel only consumes the resource opener; assert on it directly instead of
+// mounting the whole resource provider.
+const mockOpenResource = vi.hoisted(() => vi.fn())
+vi.mock('../resources/context', () => ({
+  useOpenResource: () => mockOpenResource,
+  useOptionalOpenResource: () => null,
+}))
 import type { GitDiff, GitStatus } from '../../shared/git-types'
 
 // ── hook mocks ──────────────────────────────────────────────────────
@@ -66,6 +74,7 @@ vi.mock('../hooks/useToast', () => ({
 }))
 
 beforeEach(() => {
+  mockOpenResource.mockClear()
   // Overlay / FullDiffViewer / AnimatedCollapse read prefers-reduced-motion.
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   diffState.data = null
@@ -100,17 +109,15 @@ function makeStatus(): GitStatus {
 
 function renderPanel() {
   return render(
-    <ResourcePaneProvider providers={[]}>
-      <GitPanel
-        sessionId="s1"
-        cwd="/repo"
-        status={makeStatus()}
-        loading={false}
-        error={null}
-        onRefresh={() => {}}
-        onClose={() => {}}
-      />
-    </ResourcePaneProvider>,
+    <GitPanel
+      sessionId="s1"
+      cwd="/repo"
+      status={makeStatus()}
+      loading={false}
+      error={null}
+      onRefresh={() => {}}
+      onClose={() => {}}
+    />,
   )
 }
 
@@ -121,6 +128,22 @@ function toggle(): HTMLElement {
 }
 
 describe('GitPanel file-row expand', () => {
+  it('opens the expanded diff as a resource preview', () => {
+    renderPanel()
+    fireEvent.click(toggle()) // start the diff fetch
+    fireEvent.click(toggle()) // force-open the row
+    fireEvent.click(screen.getByRole('button', { name: /open diff preview/i }))
+    expect(mockOpenResource).toHaveBeenCalledTimes(1)
+    const [sessionId, address] = mockOpenResource.mock.calls[0]
+    expect(sessionId).toBe('s1')
+    expect(parseDiffResource(address)).toEqual({
+      sessionId: 's1',
+      cwd: '/repo',
+      path: 'src/a.ts',
+      basis: { type: 'staged' },
+    })
+  })
+
   it('a second click while the fetch is pending OPENS the row instead of cancelling', () => {
     // The bug: the row looks dead while waiting (chevron flips, nothing
     // appears), users click again, and that second click was treated as
@@ -162,17 +185,15 @@ describe('GitPanel file-row expand', () => {
       isBinary: false,
     }
     rerender(
-      <ResourcePaneProvider providers={[]}>
-        <GitPanel
-          sessionId="s1"
-          cwd="/repo"
-          status={makeStatus()}
-          loading={false}
-          error={null}
-          onRefresh={() => {}}
-          onClose={() => {}}
-        />
-      </ResourcePaneProvider>,
+      <GitPanel
+        sessionId="s1"
+        cwd="/repo"
+        status={makeStatus()}
+        loading={false}
+        error={null}
+        onRefresh={() => {}}
+        onClose={() => {}}
+      />,
     )
     expect(toggle().getAttribute('aria-expanded')).toBe('true')
   })

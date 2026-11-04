@@ -77,37 +77,147 @@
   padding: var(--space-2);
 }
 
-/* Closed state: a slim edge control that reopens the modal for this session.
-   Without it the tabs (which survive closing / reload) would be stranded. */
-.resource-reopen {
-  position: absolute;
-  right: 0;
-  /* Below the Side Chat collapsed tab (also right-edge, centred, z-index 5) so
-     the two never overlap. */
-  top: calc(50% + 48px);
-  transform: translateY(-50%);
-  /* Above the panel overlays (--z-panel-overlay: 6): the entry point (Git /
-     Worktree) stays open behind the preview, and after closing the modal the
-     chip must remain reachable rather than sitting under that overlay. */
-  z-index: 7;
-  display: inline-flex;
+/* Diff resource body: header + the shared DiffView, which normally caps at
+   400px for an inline row — inside the modal it fills the body instead. */
+.resource-diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+
+.resource-diff-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+.resource-diff-path {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-diff-basis {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+
+.resource-diff-body .git-file-diff {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+/* Snapshot-diff body: changed-file list beside the selected patch. */
+.resource-snapshot-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+
+.resource-snapshot-header {
+  flex: 0 0 auto;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+
+.resource-snapshot-layout {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: var(--space-2);
+}
+
+.resource-snapshot-files {
+  flex: 0 0 240px;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-right: 1px solid var(--border);
+}
+
+.resource-snapshot-file {
+  display: flex;
+  align-items: baseline;
   gap: var(--space-1);
-  padding: var(--space-1-5) var(--space-1);
-  border: 1px solid var(--border);
-  border-right: 0;
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-  background: var(--bg-elev);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  background: transparent;
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: var(--fs-xs);
+  text-align: left;
   cursor: pointer;
 }
 
-.resource-reopen:hover {
+.resource-snapshot-file.active {
+  background: var(--bg-elev-2);
   color: var(--fg);
 }
 
-.resource-reopen-count {
+.resource-snapshot-flag {
+  flex: 0 0 auto;
+}
+
+.resource-snapshot-path {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-snapshot-stats {
+  flex: 0 0 auto;
+}
+
+.resource-snapshot-patch {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.resource-snapshot-patch .git-file-diff {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+/* Header toggle (app main toolbar, beside "Uploaded files"): opens/closes the
+   focused session's preview; the badge is the open-tab count. */
+.resource-preview-btn {
+  position: relative;
+}
+
+.resource-preview-count {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
   font-variant-numeric: tabular-nums;
 }

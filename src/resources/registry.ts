@@ -104,6 +104,15 @@ export class ResourceRegistry {
     return this.acquire(address, null)
   }
 
+  /** Restart a held stream (manual refresh). The current value is kept while
+   *  the refreshed fetch is in flight, so the body does not blank. */
+  refresh = (address: string): void => {
+    const record = this.records.get(address)
+    if (!record || record.holders === 0) return
+    record.controller?.abort()
+    this.start(record)
+  }
+
   private acquire(address: string, listener: (() => void) | null): () => void {
     const record = this.ensure(address)
     if (listener) record.listeners.add(listener)
@@ -146,7 +155,9 @@ export class ResourceRegistry {
     }
     const controller = new AbortController()
     record.controller = controller
-    record.snapshot = { status: 'loading' }
+    // Keep the last value across a manual refresh (last-good); a fresh start
+    // has no value, so this is a no-op there.
+    record.snapshot = { status: 'loading', value: record.snapshot.value }
     this.emit(record)
 
     void (async () => {

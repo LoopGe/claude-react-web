@@ -5,10 +5,14 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildResourceAddress,
+  diffResource,
   fileResource,
+  parseDiffResource,
   parseFileResource,
   parseResourceAddress,
+  parseSnapshotDiffResource,
   resourceTitle,
+  snapshotDiffResource,
 } from './resource-address'
 
 describe('parseResourceAddress', () => {
@@ -88,5 +92,105 @@ describe('file addresses', () => {
 
   it('derives the title from the decoded basename', () => {
     expect(resourceTitle(fileResource('s1', '/repo/src/App.tsx'))).toBe('App.tsx')
+  })
+})
+
+describe('diff addresses', () => {
+  const base = { sessionId: 's1', cwd: '/repo', path: 'src/a.ts' }
+
+  it('round-trips the worktree basis', () => {
+    const address = diffResource({ ...base, basis: { type: 'worktree' } })
+    expect(address).toBe('crw-resource://diff/s1/src/a.ts?basis=worktree&cwd=%2Frepo')
+    expect(parseDiffResource(address)).toEqual({ ...base, basis: { type: 'worktree' } })
+  })
+
+  it('round-trips staged / commit / range bases with a canonical query', () => {
+    expect(
+      parseDiffResource(diffResource({ ...base, basis: { type: 'staged' } })),
+    ).toEqual({ ...base, basis: { type: 'staged' } })
+
+    const commit = diffResource({ ...base, basis: { type: 'commit', sha: 'abc123' } })
+    expect(commit).toBe('crw-resource://diff/s1/src/a.ts?basis=commit&cwd=%2Frepo&sha=abc123')
+    expect(parseDiffResource(commit)).toEqual({
+      ...base,
+      basis: { type: 'commit', sha: 'abc123' },
+    })
+
+    const range = diffResource({
+      ...base,
+      basis: { type: 'range', from: 'main', to: 'origin/feat', mergeBase: true },
+    })
+    expect(range).toBe(
+      'crw-resource://diff/s1/src/a.ts?basis=range&cwd=%2Frepo&from=main&mode=mergeBase&to=origin%2Ffeat',
+    )
+    expect(parseDiffResource(range)).toEqual({
+      ...base,
+      basis: { type: 'range', from: 'main', to: 'origin/feat', mergeBase: true },
+    })
+  })
+
+  it('keeps a ref containing a slash inside one segment', () => {
+    const address = diffResource({
+      ...base,
+      basis: { type: 'range', from: 'release/1.0', to: 'main', mergeBase: false },
+    })
+    expect(parseDiffResource(address)?.basis).toEqual({
+      type: 'range',
+      from: 'release/1.0',
+      to: 'main',
+      mergeBase: false,
+    })
+  })
+
+  it('treats each basis as a distinct identity', () => {
+    expect(diffResource({ ...base, basis: { type: 'worktree' } })).not.toBe(
+      diffResource({ ...base, basis: { type: 'staged' } }),
+    )
+  })
+
+  it('rejects malformed diff addresses', () => {
+    expect(
+      parseDiffResource('crw-resource://diff/s1/src/a.ts?basis=nope&cwd=%2Frepo'),
+    ).toBeNull()
+    expect(parseDiffResource('crw-resource://diff/s1/src/a.ts?basis=worktree')).toBeNull()
+    expect(
+      parseDiffResource('crw-resource://diff/s1/src/a.ts?basis=commit&cwd=%2Frepo'),
+    ).toBeNull()
+    expect(parseDiffResource('crw-resource://diff/s1?basis=worktree&cwd=%2Frepo')).toBeNull()
+    expect(
+      parseDiffResource(
+        'crw-resource://diff/s1/src/a.ts?basis=range&cwd=%2Frepo&from=main&to=dev',
+      ),
+    ).toBeNull()
+    expect(
+      parseDiffResource(
+        'crw-resource://diff/s1/src/a.ts?basis=range&cwd=%2Frepo&from=main&to=dev&mode=other',
+      ),
+    ).toBeNull()
+    expect(parseDiffResource('crw-resource://file/s1/src/a.ts')).toBeNull()
+  })
+
+  it('derives a diff title from the path basename plus the basis', () => {
+    expect(resourceTitle(diffResource({ ...base, basis: { type: 'worktree' } }))).toBe(
+      'a.ts · worktree',
+    )
+  })
+})
+
+describe('snapshot-diff addresses', () => {
+  it('round-trips and derives a short title', () => {
+    const address = snapshotDiffResource('s1', '1234567890abcdef')
+    expect(address).toBe('crw-resource://snapshot-diff/s1/1234567890abcdef')
+    expect(parseSnapshotDiffResource(address)).toEqual({
+      sessionId: 's1',
+      messageId: '1234567890abcdef',
+    })
+    expect(resourceTitle(address)).toBe('Changes 12345678')
+  })
+
+  it('rejects malformed snapshot-diff addresses', () => {
+    expect(parseSnapshotDiffResource('crw-resource://snapshot-diff/s1')).toBeNull()
+    expect(parseSnapshotDiffResource('crw-resource://snapshot-diff//abc')).toBeNull()
+    expect(parseSnapshotDiffResource('crw-resource://snapshot-diff/s1/m1/junk')).toBeNull()
   })
 })

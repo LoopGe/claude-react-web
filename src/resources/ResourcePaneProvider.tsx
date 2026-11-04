@@ -8,6 +8,8 @@ import { ResourceRegistry, type InvalidationSource, type ResourceProvider } from
 import { ResourcePaneStore, type OpenOptions } from './tab-store'
 import { ResourcePaneContext, type ResourcePaneContextValue } from './context'
 import { createFileProvider } from './providers/file'
+import { createDiffProvider } from './providers/diff'
+import { createSnapshotDiffProvider } from './providers/snapshot-diff'
 import { hubInvalidations } from './hub-invalidations'
 import { useWsHub } from '../hooks/useWsHub'
 
@@ -23,7 +25,13 @@ interface Props {
 export function ResourcePaneProvider({ children, providers, invalidate }: Props) {
   const [registry] = useState(() => {
     const instance = new ResourceRegistry({ invalidate })
-    for (const provider of providers ?? [createFileProvider()]) instance.register(provider)
+    for (const provider of providers ?? [
+      createFileProvider(),
+      createDiffProvider(),
+      createSnapshotDiffProvider(),
+    ]) {
+      instance.register(provider)
+    }
     return instance
   })
   // The store needs to know which kinds have a viewer so an address nothing can

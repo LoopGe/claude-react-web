@@ -24,7 +24,7 @@ import { useGitDiff, useGitLog, useGitBranches, useGitStashes, gitDiffQuery } fr
 import { useGitWrite } from '../hooks/useGitWrite'
 import { api } from '../hooks/useApi'
 import { ConfirmDialog } from './ConfirmDialog'
-import { fileResource } from '../../shared/resource-address'
+import { fileResource, diffResource } from '../../shared/resource-address'
 import { resolveAbsolutePath } from '../utils/paths'
 import { useOpenResource } from '../resources/context'
 import { GitFileRow } from './GitFileRow'
@@ -151,6 +151,28 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
       openResource(sessionId, fileResource(sessionId, absPath))
     },
     [cwd, status, sessionId, openResource],
+  )
+
+  // Git status paths are repo-root relative; every row diff must be anchored at
+// the same root (a subdirectory session cwd would make the pathspec miss).
+  const diffBase = status && 'repoRoot' in status ? status.repoRoot : cwd
+
+  // Open the expanded row's diff as a resource (the file-name click above
+  // keeps opening the file content). Stable so memoized rows don't re-render.
+  const handleOpenDiff = useCallback(
+    (path: string, staged: boolean) => {
+      if (!diffBase) return
+      openResource(
+        sessionId,
+        diffResource({
+          sessionId,
+          cwd: diffBase,
+          path,
+          basis: staged ? { type: 'staged' } : { type: 'worktree' },
+        }),
+      )
+    },
+    [diffBase, sessionId, openResource],
   )
 
   // Helper used inside event handlers: run a write op and translate
@@ -542,7 +564,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             <FileRow
               key={'u:' + f.path}
               file={f}
-              cwd={cwd}
+              cwd={diffBase}
               staged={false}
               selected={selected?.kind === 'unstaged' && selected.file.path === f.path}
               selectIndex={idx}
@@ -551,6 +573,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
               onOpenFile={handleOpenFile}
+              onOpenDiff={handleOpenDiff}
             />
           ))
         )}
@@ -578,7 +601,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
             <FileRow
               key={'s:' + f.path}
               file={f}
-              cwd={cwd}
+              cwd={diffBase}
               staged
               selected={selected?.kind === 'staged' && selected.file.path === f.path}
               selectIndex={unstagedVisible.length + idx}
@@ -587,6 +610,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
               onError={(label, err) => toast.error(`${label}: ${err}`)}
               askConfirm={askThenRun}
               onOpenFile={handleOpenFile}
+              onOpenDiff={handleOpenDiff}
             />
           ))
         )}
@@ -765,9 +789,11 @@ interface FileRowProps {
   askConfirm: (state: Omit<ConfirmState, 'onConfirm'>, fn: () => Promise<unknown>, errLabel: string) => void
   /** Open the file's current content in the read-only viewer. */
   onOpenFile: (path: string) => void
+  /** Open the row's diff as a resource preview. */
+  onOpenDiff: (path: string, staged: boolean) => void
 }
 
-const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex, onSelect, writeOps, onError, askConfirm, onOpenFile }: FileRowProps) {
+const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex, onSelect, writeOps, onError, askConfirm, onOpenFile, onOpenDiff }: FileRowProps) {
   // The diff fetch is armed on the first open attempt — GitFileRow calls
   // onFetchStart from its deferred-open toggle. The diff endpoint is one
   // git invocation per file, so we don't spend the request until the user
@@ -810,6 +836,8 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
       onFetchReset={handleFetchReset}
       diff={{ data: diff, loading, error }}
       fetchFullText={fetchFullText}
+      onOpenDiff={onOpenDiff}
+      staged={staged}
       actions={(
         <>
           <Tooltip label="View file content" placement="left">

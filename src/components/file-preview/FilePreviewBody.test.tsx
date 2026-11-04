@@ -98,6 +98,31 @@ describe('FilePreviewBody images', () => {
 })
 
 describe('FilePreviewBody markdown and text', () => {
+  it('renders numbered lines and highlights the line target', () => {
+    renderBody('/repo/a.ts', 'a.ts', { available: true, contents: 'one\ntwo\nthree' }, { line: 2 })
+    const lines = [...document.body.querySelectorAll<HTMLElement>('[data-line]')]
+    expect(lines).toHaveLength(3)
+    expect(lines[1].className).toContain('code-line-target')
+  })
+
+  it('a line target on a markdown file opens the source view', () => {
+    renderBody(
+      '/repo/README.md',
+      'README.md',
+      { available: true, contents: '# Hi\n\ntext' },
+      { line: 1 },
+    )
+    expect(document.body.querySelector('.numbered-code')).not.toBeNull()
+    expect(document.body.querySelector('.file-viewer-md')).toBeNull()
+  })
+
+  it('falls back to plain text above the line cap', () => {
+    const contents = Array.from({ length: 5001 }, (_, i) => `line ${i}`).join('\n')
+    renderBody('/repo/huge.ts', 'huge.ts', { available: true, contents }, { line: 10 })
+    expect(document.body.querySelectorAll('[data-line]')).toHaveLength(0)
+    expect(document.body.textContent).toContain('Line navigation is unavailable')
+  })
+
   it('keeps the code view for non-image files', () => {
     renderBody('Foo.tsx', 'Foo.tsx', { available: true, contents: 'export const x = 1' })
     expect(document.body.querySelector('.file-viewer-code')).not.toBeNull()

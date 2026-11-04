@@ -16,7 +16,11 @@
 import { cx } from '../utils/cx'
 import { useCallback, useId, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
-import { fileResource } from '../../shared/resource-address'
+import {
+  fileResource,
+  diffResource,
+  type DiffBasis,
+} from '../../shared/resource-address'
 import { resolveAbsolutePath } from '../utils/paths'
 import { useOpenResource } from '../resources/context'
 import { FullDiffViewer } from './FullDiffViewer'
@@ -85,6 +89,23 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
       openResource(sessionId, fileResource(sessionId, resolveAbsolutePath(cwd, path)))
     },
     [cwd, sessionId, openResource],
+  )
+
+  // Open a row's diff as a resource. The basis follows the active tab: the
+  // uncommitted tab is worktree/staged, the branch/base tabs are ref ranges.
+  const handleOpenDiff = useCallback(
+    (path: string, staged: boolean) => {
+      if (!cwd) return
+      let basis: DiffBasis
+      if (tab === 'uncommitted') {
+        basis = staged ? { type: 'staged' } : { type: 'worktree' }
+      } else {
+        if (!baseRef || !branchName) return
+        basis = { type: 'range', from: baseRef, to: branchName, mergeBase: tab === 'branch' }
+      }
+      openResource(sessionId, diffResource({ sessionId, cwd, path, basis }))
+    },
+    [tab, cwd, baseRef, branchName, sessionId, openResource],
   )
   const tablistRef = useRef<HTMLDivElement>(null)
   // Unique-per-instance tab ids: up to 3 panels can hold this overlay open at
@@ -217,6 +238,7 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
                 expanded={expanded}
                 onExpanded={setExpanded}
                 onOpen={handleOpenFile}
+                onOpenDiff={handleOpenDiff}
               />
             )
           ) : rangeFiles.length === 0 ? (
@@ -231,6 +253,7 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
               expanded={expanded}
               onExpanded={setExpanded}
               onOpen={handleOpenFile}
+              onOpenDiff={handleOpenDiff}
             />
           )}
         </div>
@@ -248,8 +271,9 @@ function UncommittedList(props: {
   expanded: string | null
   onExpanded: (k: string | null) => void
   onOpen: (path: string) => void
+  onOpenDiff: (path: string, staged: boolean) => void
 }) {
-  const { cwd, status, expanded, onExpanded, onOpen } = props
+  const { cwd, status, expanded, onExpanded, onOpen, onOpenDiff } = props
   if (!status) return null
   const staged = status.staged.map((f) => ({ ...f, staged: true } as const))
   const unstaged = status.unstaged.map((f) => ({ ...f, staged: false } as const))
@@ -264,6 +288,7 @@ function UncommittedList(props: {
       expanded={expanded}
       onExpanded={onExpanded}
       onOpen={onOpen}
+      onOpenDiff={onOpenDiff}
     />
   )
 }
@@ -279,10 +304,11 @@ function RangeList(props: {
   expanded: string | null
   onExpanded: (k: string | null) => void
   onOpen: (path: string) => void
+  onOpenDiff: (path: string, staged: boolean) => void
 }) {
-  const { cwd, files, expanded, onExpanded, onOpen } = props
+  const { cwd, files, expanded, onExpanded, onOpen, onOpenDiff } = props
   const rows = files.map((f) => ({ path: f.path, status: f.status as string, insertions: f.insertions, deletions: f.deletions, staged: false as const }))
-  return <FileRowGroup cwd={cwd} rows={rows} mergeBase={props.mergeBase} rangeProps={props} expanded={expanded} onExpanded={onExpanded} onOpen={onOpen} />
+  return <FileRowGroup cwd={cwd} rows={rows} mergeBase={props.mergeBase} rangeProps={props} expanded={expanded} onExpanded={onExpanded} onOpen={onOpen} onOpenDiff={onOpenDiff} />
 }
 
 interface RowLike {
@@ -304,8 +330,9 @@ function FileRowGroup(props: {
   expanded: string | null
   onExpanded: (k: string | null) => void
   onOpen: (path: string) => void
+  onOpenDiff: (path: string, staged: boolean) => void
 }) {
-  const { cwd, rows, mergeBase, rangeProps, expanded, onExpanded, onOpen } = props
+  const { cwd, rows, mergeBase, rangeProps, expanded, onExpanded, onOpen, onOpenDiff } = props
 
   return (
     <>
@@ -319,6 +346,7 @@ function FileRowGroup(props: {
           open={expanded === `${row.path}:${row.staged}`}
           onToggle={() => onExpanded(expanded === `${row.path}:${row.staged}` ? null : `${row.path}:${row.staged}`)}
           onOpen={onOpen}
+          onOpenDiff={onOpenDiff}
         />
       ))}
     </>
@@ -336,6 +364,7 @@ function FileRow(props: {
   open: boolean
   onToggle: () => void
   onOpen: (path: string) => void
+  onOpenDiff: (path: string, staged: boolean) => void
 }) {
   if (props.rangeProps) {
     return <RangeFileRow {...props} rangeProps={props.rangeProps} />
@@ -348,11 +377,12 @@ function RowShell(props: {
   open: boolean
   onToggle: () => void
   onOpen: (path: string) => void
+  onOpenDiff: (path: string, staged: boolean) => void
   diff: { loading: boolean; error: string | null; data: GitDiff | null }
   /** Loads the complete diff body for the FullDiffViewer escape hatch. */
   fetchFullText: (signal?: AbortSignal) => Promise<string>
 }) {
-  const { row, open, onToggle, onOpen, diff, fetchFullText } = props
+  const { row, open, onToggle, onOpen, onOpenDiff, diff, fetchFullText } = props
   const path = row.path
   // Escape hatch state lives here so both row kinds share one viewer.
   const [showFull, setShowFull] = useState(false)
@@ -432,6 +462,16 @@ function RowShell(props: {
       </div>
       {open && (
         <div className="git-file-diff-wrap">
+          <div className="git-file-diff-header">
+            <button
+              type="button"
+              className="git-diff-open-preview"
+              aria-label={`Open diff preview for ${path}`}
+              onClick={() => onOpenDiff(path, row.staged)}
+            >
+              Open diff preview
+            </button>
+          </div>
           {diff.loading && <div className="git-file-diff-loading">Loading…</div>}
           {diff.error && <div className="git-file-diff-error">{diff.error}</div>}
           {diff.data && diff.data.isBinary && <div className="git-file-diff-binary">(binary file)</div>}
@@ -461,8 +501,9 @@ function UncommittedFileRow(props: {
   open: boolean
   onToggle: () => void
   onOpen: (path: string) => void
+  onOpenDiff: (path: string, staged: boolean) => void
 }) {
-  const { cwd, row, open, onToggle, onOpen } = props
+  const { cwd, row, open, onToggle, onOpen, onOpenDiff } = props
   const { data, loading, error } = useGitDiff(cwd, open ? row.path : undefined, row.staged, open)
   const fetchFullText = useCallback(
     (signal?: AbortSignal): Promise<string> =>
@@ -475,6 +516,7 @@ function UncommittedFileRow(props: {
       open={open}
       onToggle={onToggle}
       onOpen={onOpen}
+      onOpenDiff={onOpenDiff}
       diff={{ loading, error, data }}
       fetchFullText={fetchFullText}
     />
@@ -489,8 +531,9 @@ function RangeFileRow(props: {
   open: boolean
   onToggle: () => void
   onOpen: (path: string) => void
+  onOpenDiff: (path: string, staged: boolean) => void
 }) {
-  const { cwd, row, mergeBase, rangeProps, open, onToggle, onOpen } = props
+  const { cwd, row, mergeBase, rangeProps, open, onToggle, onOpen, onOpenDiff } = props
   const { data, loading, error } = useGitRangeDiffFile(
     cwd,
     rangeProps.baseRef,
@@ -517,6 +560,7 @@ function RangeFileRow(props: {
       open={open}
       onToggle={onToggle}
       onOpen={onOpen}
+      onOpenDiff={onOpenDiff}
       diff={{ loading, error, data }}
       fetchFullText={fetchFullText}
     />

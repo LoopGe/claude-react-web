@@ -17,6 +17,7 @@ import { TaskInfoProvider } from '../hooks/useTaskInfo'
 import { McpAppsProvider } from '../hooks/useMcpApps'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { SessionCwdProvider } from '../hooks/useSessionCwd'
+import { ResourceLinkProvider } from '../resources/ResourceLinkContext'
 import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
 import { buildTaskStateMapFromItems, mergeTaskList, type TasklistSnapshotPayload } from '../utils/task-events'
 import { cx } from '../utils/cx'
@@ -1630,6 +1631,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
 
   return (
     <SessionCwdProvider value={cwd}>
+    <ResourceLinkProvider sessionId={sessionId} baseDir={cwd}>
     <BackgroundToolProvider value={onBackgroundTool}>
     <PlanStatusProvider value={planStatus}>
     <PlanContentProvider value={planContent}>
@@ -1755,6 +1757,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     </PlanContentProvider>
     </PlanStatusProvider>
     </BackgroundToolProvider>
+    </ResourceLinkProvider>
     </SessionCwdProvider>
   )
 })

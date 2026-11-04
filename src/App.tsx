@@ -49,6 +49,7 @@ import { useBackground } from './hooks/useBackground'
 import { useToast } from './hooks/useToast'
 import { useWsHub } from './hooks/useWsHub'
 import { useResourcePaneStore } from './resources/context'
+import { ResourcePreviewButton } from './resources/ResourcePreviewButton'
 import { usePluginRegistry } from './app-plugins/usePluginRegistry'
 import { usePluginCommands } from './app-plugins/usePluginCommands'
 import { PluginWidgetSlot } from './app-plugins/PluginWidgetSlot'
@@ -5342,6 +5343,11 @@ export function App() {
             >
               <IconFolderSearch size={16} />
             </button>
+            {/* Focused panel's resource preview (badge = open tabs). Always
+                rendered for a focused panel; with no tabs the click is a
+                no-op. Falls back to the first open panel when focus was
+                dropped (e.g. the focused session was deleted). */}
+            <ResourcePreviewButton sessionId={focusedId ?? openIds[0] ?? null} />
             <button
               className="btn btn-icon"
               onClick={() => setGlobalSettingsOpen(true)}

@@ -133,32 +133,172 @@ export function parseFileResource(
   return { sessionId, path }
 }
 
+export type DiffBasis =
+  | { type: 'worktree' }
+  | { type: 'staged' }
+  | { type: 'commit'; sha: string }
+  | { type: 'range'; from: string; to: string; mergeBase: boolean }
+
+export interface DiffResource {
+  sessionId: string
+  /** Working directory the git route runs in (a worktree path for Worktree views). */
+  cwd: string
+  /** Repo-relative path (the same spelling the git routes take). */
+  path: string
+  basis: DiffBasis
+}
+
+export interface SnapshotDiffResource {
+  sessionId: string
+  /** The user-message id whose snapshot anchor the diff starts from. */
+  messageId: string
+}
+
+/** Human label for a diff basis, used in the body header and descriptions. */
+export function diffBasisLabel(basis: DiffBasis): string {
+  switch (basis.type) {
+    case 'worktree':
+      return 'worktree'
+    case 'staged':
+      return 'staged'
+    case 'commit':
+      return `commit ${basis.sha.slice(0, 8)}`
+    case 'range':
+      return `${basis.from} → ${basis.to}${basis.mergeBase ? '' : ' (tip)'}`
+  }
+}
+
+/** Diff addresses keep the path as the trailing segments and the basis in the
+ *  query: branch refs may contain `/`, so the doc's path-encoded basis would be
+ *  ambiguous. The query is canonicalized by the builder. */
+export function diffResource(resource: DiffResource): string {
+  const { sessionId, cwd, path, basis } = resource
+  const segments = path.replace(/\\/g, '/').split('/').filter(Boolean)
+  const query: Record<string, string> = { basis: basis.type, cwd }
+  if (basis.type === 'commit') query.sha = basis.sha
+  if (basis.type === 'range') {
+    query.from = basis.from
+    query.to = basis.to
+    query.mode = basis.mergeBase ? 'mergeBase' : 'tip'
+  }
+  return buildResourceAddress('diff', [sessionId, ...segments], query)
+}
+
+export function parseDiffResource(address: string): DiffResource | null {
+  const parsed = parseResourceAddress(address)
+  if (!parsed || parsed.protocol !== 'diff') return null
+  const [sessionId, ...rest] = parsed.segments
+  const path = rest.join('/')
+  const cwd = parsed.query.cwd
+  if (!sessionId || !path || !cwd) return null
+  switch (parsed.query.basis) {
+    case 'worktree':
+      return { sessionId, cwd, path, basis: { type: 'worktree' } }
+    case 'staged':
+      return { sessionId, cwd, path, basis: { type: 'staged' } }
+    case 'commit': {
+      const sha = parsed.query.sha
+      if (!sha) return null
+      return { sessionId, cwd, path, basis: { type: 'commit', sha } }
+    }
+    case 'range': {
+      const { from, to, mode } = parsed.query
+      if (!from || !to || (mode !== 'mergeBase' && mode !== 'tip')) return null
+      return {
+        sessionId,
+        cwd,
+        path,
+        basis: { type: 'range', from, to, mergeBase: mode === 'mergeBase' },
+      }
+    }
+    default:
+      return null
+  }
+}
+
+export function snapshotDiffResource(sessionId: string, messageId: string): string {
+  return buildResourceAddress('snapshot-diff', [sessionId, messageId])
+}
+
+export function parseSnapshotDiffResource(address: string): SnapshotDiffResource | null {
+  const parsed = parseResourceAddress(address)
+  if (!parsed || parsed.protocol !== 'snapshot-diff') return null
+  if (parsed.segments.length !== 2) return null
+  const [sessionId, messageId] = parsed.segments
+  if (!sessionId || !messageId) return null
+  return { sessionId, messageId }
+}
+
 /** Display title derived from the address (never persisted, so it cannot drift
- *  from the identity). `file` → decoded basename; other kinds → the last
- *  non-empty segment, falling back to the protocol. */
+ *  from the identity). `file` → decoded basename; `diff` → basename + basis
+ *  (same path with different bases must produce different chips);
+ *  `snapshot-diff` → a short anchor label; other kinds → the last non-empty
+ *  segment, falling back to the protocol. */
 export function resourceTitle(address: string): string {
   const parsed = parseResourceAddress(address)
   if (!parsed) return address
-  const file = parseFileResource(address)
-  const base = file
-    ? file.path.split('/').filter(Boolean).pop()
-    : parsed.segments.filter(Boolean).pop()
-  return base || parsed.protocol
+  switch (parsed.protocol) {
+    case 'file': {
+      const rest = parsed.segments.slice(1).join('/')
+      if (!rest) break
+      const base = rest.split('/').filter(Boolean).pop()
+      return base || parsed.protocol
+    }
+    case 'diff': {
+      const diff = parseDiffResource(address)
+      if (!diff) break
+      const base = diff.path.split('/').filter(Boolean).pop() || diff.path
+      return `${base} · ${diffBasisLabel(diff.basis)}`
+    }
+    case 'snapshot-diff': {
+      const messageId = parsed.segments[1]
+      if (!messageId) break
+      return `Changes ${messageId.slice(0, 8)}`
+    }
+  }
+  return parsed.segments.filter(Boolean).pop() || parsed.protocol
 }
 
-/** Path segments used for chip labels (files) / segment trails (other kinds). */
+/** Path segments used for chip labels (files)/segment trails (other kinds). */
 export function resourcePathSegments(address: string): string[] {
-  const file = parseFileResource(address)
-  if (file) return file.path.split('/').filter(Boolean)
   const parsed = parseResourceAddress(address)
-  return parsed ? parsed.segments.filter(Boolean) : []
+  if (!parsed) return []
+  switch (parsed.protocol) {
+    case 'file':
+      return parsed.segments.slice(1).join('/').split('/').filter(Boolean)
+    case 'diff': {
+      const diff = parseDiffResource(address)
+      return diff ? diff.path.split('/').filter(Boolean) : []
+    }
+    case 'snapshot-diff': {
+      const messageId = parsed.segments[1]
+      return messageId ? [messageId] : []
+    }
+    default:
+      return parsed.segments.filter(Boolean)
+  }
 }
 
 /** Human-readable description for a chip tooltip: the decoded path for files,
- *  the decoded segment trail for other kinds. */
+ *  the path + basis for diffs, the anchor for snapshot diffs, otherwise the
+ *  decoded segment trail. */
 export function resourceDescription(address: string): string {
-  const file = parseFileResource(address)
-  if (file) return file.path
   const parsed = parseResourceAddress(address)
-  return parsed ? parsed.segments.filter(Boolean).join('/') || address : address
+  if (!parsed) return address
+  switch (parsed.protocol) {
+    case 'file': {
+      const rest = parsed.segments.slice(1).join('/')
+      return rest || address
+    }
+    case 'diff': {
+      const diff = parseDiffResource(address)
+      return diff ? `${diff.path} — ${diffBasisLabel(diff.basis)}` : address
+    }
+    case 'snapshot-diff': {
+      const messageId = parsed.segments[1]
+      return messageId ? `snapshot diff ${messageId}` : address
+    }
+    default:
+      return parsed.segments.filter(Boolean).join('/') || address
+  }
 }

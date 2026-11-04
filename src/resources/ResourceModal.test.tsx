@@ -6,9 +6,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ResourcePaneProvider } from './ResourcePaneProvider'
 import { ResourceModal } from './ResourceModal'
+import { ResourcePreviewButton } from './ResourcePreviewButton'
 import { useOpenResource } from './context'
 import type { ResourceProvider } from './registry'
-import { fileResource } from '../../shared/resource-address'
+import { fileResource, diffResource, snapshotDiffResource } from '../../shared/resource-address'
 
 const A = fileResource('s1', '/repo/a.ts')
 const B = fileResource('s1', '/repo/b.ts')
@@ -57,6 +58,17 @@ function VisibilityHarness({ visible }: { visible: boolean }) {
         open-file
       </button>
       <ResourceModal sessionId="s1" visible={visible} />
+    </>
+  )
+}
+
+/* For restore cases: opens the modal via the app-header toggle (which bypasses
+   openResource's provider check), like the real UI does. */
+function ShowRestoredHarness() {
+  return (
+    <>
+      <ResourcePreviewButton sessionId="s1" />
+      <ResourceModal sessionId="s1" visible />
     </>
   )
 }
@@ -142,17 +154,20 @@ describe('ResourceModal', () => {
     await waitFor(() => expect(screen.queryByRole('tablist')).toBeNull())
   })
 
-  it('restores tabs closed (never auto-opens) and the reopen control opens them', async () => {
+  it('restores tabs closed (never auto-opens) and reuses the restored tab', async () => {
     seedStoredTabs([{ id: 't1', kind: 'file', address: A }])
     renderHarness([fileProvider()])
-    const reopen = await screen.findByRole('button', { name: 'Show resource preview' })
     expect(screen.queryByRole('tablist')).toBeNull()
-    fireEvent.click(reopen)
-    expect(await screen.findByRole('tab', { name: 'a.ts' })).toBeTruthy()
-    expect(await screen.findByText(/hello world/)).toBeTruthy()
+    // Reopening the same address focuses the restored tab instead of
+    // duplicating it.
+    fireEvent.click(screen.getByText('open-file'))
+    expect((await screen.findByRole('tab', { name: 'a.ts' })).getAttribute('data-resource-tab')).toBe(
+      't1',
+    )
+    expect(screen.getAllByRole('tab')).toHaveLength(1)
   })
 
-  it('a restored closed surface opens no streams until reopened', async () => {
+  it('a restored closed surface opens no streams', async () => {
     seedStoredTabs([{ id: 't1', kind: 'file', address: A }])
     let opens = 0
     renderHarness([
@@ -164,7 +179,9 @@ describe('ResourceModal', () => {
         },
       },
     ])
-    await screen.findByRole('button', { name: 'Show resource preview' })
+    await waitFor(() => expect(screen.queryByRole('tablist')).toBeNull())
+    // Give hydration/pin effects a tick: a restored surface must not subscribe.
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(opens).toBe(0)
   })
 
@@ -174,16 +191,20 @@ describe('ResourceModal', () => {
     await screen.findByRole('tab', { name: 'a.ts' })
     fireEvent.click(screen.getByRole('button', { name: 'Close a.ts' }))
     expect(screen.queryByRole('tablist')).toBeNull()
-    // No tabs left → neither the modal nor the reopen control remains.
-    expect(screen.queryByRole('button', { name: 'Show resource preview' })).toBeNull()
   })
 
   it('renders a clear message for a restored kind nothing can open', async () => {
     seedStoredTabs([
-      { id: 't1', kind: 'diff', address: 'crw-resource://diff/s1/worktree/a.ts' },
+      { id: 't1', kind: 'future', address: 'crw-resource://future/s1/x' },
     ])
-    renderHarness([fileProvider()])
-    fireEvent.click(await screen.findByRole('button', { name: 'Show resource preview' }))
+    render(
+      <ResourcePaneProvider providers={[fileProvider()]}>
+        <ShowRestoredHarness />
+      </ResourcePaneProvider>,
+    )
+    // The header toggle opens the restored (unknown-kind) tab without going
+    // through openResource's provider check.
+    fireEvent.click(await screen.findByRole('button', { name: /show resource preview/i }))
     expect(await screen.findByText('Nothing can open this address.')).toBeTruthy()
   })
 
@@ -206,6 +227,129 @@ describe('ResourceModal', () => {
     fireEvent.keyDown(screen.getByRole('tab', { name: 'a.ts' }), { key: 'ArrowRight' })
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: 'b.ts' }).getAttribute('aria-selected')).toBe('true')
+    })
+  })
+
+  it('renders a diff resource body', async () => {
+    const address = diffResource({
+      sessionId: 's1',
+      cwd: '/repo',
+      path: 'src/a.ts',
+      basis: { type: 'worktree' },
+    })
+    const provider: ResourceProvider = {
+      protocol: 'diff',
+      async *open() {
+        yield {
+          ok: true,
+          value: {
+            path: 'src/a.ts',
+            staged: false,
+            truncated: false,
+            totalLines: 3,
+            text: '@@ -1 +1 @@\n-x\n+y\n',
+            isBinary: false,
+          },
+        }
+      },
+    }
+    renderHarness([provider], address)
+    fireEvent.click(screen.getByText('open-file'))
+    expect(await screen.findByText('worktree')).toBeTruthy()
+    expect(await screen.findByText('src/a.ts')).toBeTruthy()
+    expect(document.body.querySelectorAll('.git-diff-row').length).toBeGreaterThan(0)
+  })
+
+  it('renders the snapshot-diff file list and switches files', async () => {
+    const address = snapshotDiffResource('s1', 'm1')
+    const provider: ResourceProvider = {
+      protocol: 'snapshot-diff',
+      async *open() {
+        yield {
+          ok: true,
+          value: {
+            diffs: [
+              {
+                file: 'src/a.ts',
+                status: 'modified',
+                additions: 1,
+                deletions: 1,
+                patch: '@@ -1 +1 @@\n-a\n+new-a\n',
+              },
+              {
+                file: 'src/b.ts',
+                status: 'added',
+                additions: 1,
+                deletions: 0,
+                patch: '@@ -0,0 +1 @@\n+new-b\n',
+              },
+            ],
+          },
+        }
+      },
+    }
+    renderHarness([provider], address)
+    fireEvent.click(screen.getByText('open-file'))
+    expect(await screen.findByText('src/a.ts')).toBeTruthy()
+    expect(await screen.findByText('src/b.ts')).toBeTruthy()
+    expect(await screen.findByText('new-a')).toBeTruthy()
+    fireEvent.click(screen.getByText('src/b.ts'))
+    expect(await screen.findByText('new-b')).toBeTruthy()
+  })
+
+  it('refreshes the snapshot diff on demand', async () => {
+    let opens = 0
+    const address = snapshotDiffResource('s1', 'm2')
+    const provider: ResourceProvider = {
+      protocol: 'snapshot-diff',
+      async *open() {
+        opens += 1
+        yield { ok: true, value: { diffs: [] } }
+      },
+    }
+    renderHarness([provider], address)
+    fireEvent.click(screen.getByText('open-file'))
+    await screen.findByText('No file changes at this anchor.')
+    expect(opens).toBe(1)
+    fireEvent.click(screen.getByRole('button', { name: /refresh snapshot diff/i }))
+    await waitFor(() => expect(opens).toBe(2))
+  })
+
+  it('opens a markdown file link as a resource with its line target', async () => {
+    const readme = fileResource('s1', '/repo/docs/README.md')
+    const target = fileResource('s1', '/repo/src/a.ts')
+    const provider: ResourceProvider = {
+      protocol: 'file',
+      async *open(address) {
+        if (address === readme) {
+          yield {
+            ok: true,
+            value: {
+              available: true,
+              contents: '[open code](../src/a.ts#L10)\n\n[external](https://example.com)\n\n[api](/api/settings)',
+            },
+          }
+          return
+        }
+        if (address === target) {
+          const contents = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join('\n')
+          yield { ok: true, value: { available: true, contents } }
+          return
+        }
+        yield { ok: true, value: { available: true, contents: '' } }
+      },
+    }
+    renderHarness([provider], readme)
+    fireEvent.click(screen.getByText('open-file'))
+    const link = await screen.findByRole('link', { name: 'open code' })
+    expect(screen.getByRole('link', { name: 'external' }).getAttribute('target')).toBe('_blank')
+    // Root-relative hrefs are web URLs, not workspace files.
+    expect(screen.getByRole('link', { name: 'api' }).getAttribute('target')).toBe('_blank')
+
+    fireEvent.click(link)
+    expect(await screen.findByRole('tab', { name: 'a.ts' })).toBeTruthy()
+    await waitFor(() => {
+      expect(document.querySelector('[data-line="10"]')?.className).toContain('code-line-target')
     })
   })
 
@@ -236,9 +380,9 @@ describe('ResourceModal', () => {
         <VisibilityHarness visible />
       </ResourcePaneProvider>,
     )
-    // Tabs survive, but the modal must not pop open again.
+    // Tabs survive, but the modal must not pop open again (the header button
+    // owns reopening now).
     expect(screen.queryByRole('tablist')).toBeNull()
-    expect(await screen.findByRole('button', { name: 'Show resource preview' })).toBeTruthy()
   })
 
   it('disambiguates chips that share a basename with a parent path', async () => {

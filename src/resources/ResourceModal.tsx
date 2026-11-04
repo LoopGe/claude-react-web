@@ -8,7 +8,8 @@
 // Tabs are keyed by `(kind, address)` in the store and rendered as a chip strip;
 // only the active tab mounts its body (so switching chips re-reads the file —
 // bounded memory, since image payloads can be multi-MB). Closing the modal
-// keeps the tabs (persisted per session) and renders a small reopen control; a
+// keeps the tabs (persisted per session); the app-header toggle
+// (`ResourcePreviewButton`, beside "Uploaded files") reopens them, and a
 // persisted session restores its tabs but never auto-opens. `visible` is
 // Chat's panel visibility: a hidden/keep-alive-cached panel must neither leave
 // its portal on screen nor keep `expanded` latched, so hiding the panel
@@ -30,11 +31,14 @@ import {
 } from '../../shared/resource-address'
 import type { FileReadResult } from '../../shared/read-file'
 import { FilePreviewBody } from '../components/file-preview/FilePreviewBody'
-import { IconArrowLeft, IconX } from '../components/icons/ToolIcons'
+import { IconX } from '../components/icons/ToolIcons'
 import { Overlay } from '../components/Overlay'
 import { useResourcePaneStore } from './context'
-import type { ResourceTab } from './tab-store'
+import { type ResourceParams, type ResourceTab } from './tab-store'
 import { useResource } from './useResource'
+import { ResourceDiffBody } from './ResourceDiffBody'
+import { ResourceSnapshotDiffBody } from './ResourceSnapshotDiffBody'
+import { ResourceLinkProvider } from './ResourceLinkContext'
 
 export function ResourceModal({
   sessionId,
@@ -73,6 +77,7 @@ export function ResourceModal({
 
   if (state.tabs.length === 0) return null
   const active = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
+  const navigation = store.getNavigation(active.id)
 
   // Duplicate basenames would produce indistinguishable chips; those widen to
   // the shortest path suffix no other tab shares, so every chip is unique.
@@ -124,8 +129,7 @@ export function ResourceModal({
   }
 
   return (
-    <>
-      <Overlay
+    <Overlay
         open={open}
         onClose={close}
         variant="modal"
@@ -189,41 +193,54 @@ export function ResourceModal({
           aria-labelledby={tabIdOf(active.id)}
           className="modal-section file-viewer-body resource-modal-body"
         >
-          <ResourceBody tab={active} />
+          <ResourceBody
+            tab={active}
+            params={navigation?.params}
+            revision={navigation?.revision ?? 0}
+          />
         </div>
       </Overlay>
-      {visible && !open && (
-        // The modal must stay reachable after closing — otherwise the user's
-        // tabs (which survive reload) would be stranded.
-        <button
-          type="button"
-          className="resource-reopen"
-          aria-label="Show resource preview"
-          title="Show resource preview"
-          onClick={() => store.setExpanded(sessionId, true)}
-        >
-          <IconArrowLeft size={14} />
-          <span className="resource-reopen-count">{state.tabs.length}</span>
-        </button>
-      )}
-    </>
   )
 }
 
-function ResourceBody({ tab }: { tab: ResourceTab }) {
+function ResourceBody({
+  tab,
+  params,
+  revision,
+}: {
+  tab: ResourceTab
+  params?: ResourceParams
+  revision: number
+}) {
   switch (tab.kind) {
     case 'file':
-      return <FileResourceBody address={tab.address} />
+      return <FileResourceBody address={tab.address} params={params} revision={revision} />
+    case 'diff':
+      return <ResourceDiffBody address={tab.address} />
+    case 'snapshot-diff':
+      return <ResourceSnapshotDiffBody address={tab.address} params={params} revision={revision} />
     default:
       return <div className="hint">Nothing can open this address.</div>
   }
 }
 
-function FileResourceBody({ address }: { address: string }) {
+function FileResourceBody({
+  address,
+  params,
+  revision,
+}: {
+  address: string
+  params?: ResourceParams
+  revision: number
+}) {
   const snapshot = useResource<FileReadResult>(address)
   const parsed = parseFileResource(address)
+  // Relative links inside a previewed Markdown file resolve from that file's
+  // directory; a bare `#L10` targets the file itself.
+  const dir = parsed ? parsed.path.split('/').slice(0, -1).join('/') || '/' : ''
   return (
-    <FilePreviewBody
+    <ResourceLinkProvider sessionId={parsed?.sessionId} baseDir={dir} baseFile={parsed?.path}>
+      <FilePreviewBody
       key={address}
       path={parsed?.path ?? null}
       title={resourceTitle(address)}
@@ -234,6 +251,10 @@ function FileResourceBody({ address }: { address: string }) {
           : null
       }
       loading={snapshot.status === 'loading'}
-    />
+      line={typeof params?.line === 'number' ? params.line : undefined}
+      endLine={typeof params?.endLine === 'number' ? params.endLine : undefined}
+      revision={revision}
+      />
+    </ResourceLinkProvider>
   )
 }

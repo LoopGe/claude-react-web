@@ -153,6 +153,38 @@ describe('ResourceRegistry', () => {
     for (const release of releases) release()
   })
 
+  it('refresh restarts the stream while preserving the last good value', async () => {
+    let opens = 0
+    let aborts = 0
+    const registry = new ResourceRegistry()
+    registry.register(
+      provider('test', async function* (_address, { signal }) {
+        opens += 1
+        yield { ok: true, value: opens === 1 ? 'first' : `second-${opens}` }
+        await new Promise<void>((resolve) => {
+          signal.addEventListener('abort', () => {
+            aborts += 1
+            resolve()
+          })
+        })
+      }),
+    )
+    const release = registry.subscribe(ADDRESS, () => {})
+    await until(() => registry.getSnapshot(ADDRESS).status === 'live', 'first live')
+    expect(registry.getSnapshot(ADDRESS).value).toBe('first')
+
+    registry.refresh(ADDRESS)
+    // The body must not blank while the refreshed stream is in flight.
+    expect(registry.getSnapshot(ADDRESS).value).toBe('first')
+    await until(
+      () => registry.getSnapshot(ADDRESS).value === 'second-2',
+      'second live',
+    )
+    expect(opens).toBe(2)
+    expect(aborts).toBe(1)
+    release()
+  })
+
   it('does not notify a released listener', async () => {
     const registry = new ResourceRegistry()
     const frames: ResourceFrame[][] = [

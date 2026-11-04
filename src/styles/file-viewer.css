@@ -55,6 +55,38 @@
   white-space: pre;
 }
 
+/* Line-numbered code view (NumberedCode). One block per line; the gutter is a
+   CSS counter so it never enters textContent (copy stays clean). The extra
+   left padding reserves the number column. */
+.numbered-code {
+  counter-reset: code-line 0;
+  padding-left: 5.5ch;
+}
+
+.code-line {
+  display: block;
+  position: relative;
+}
+
+.code-line::before {
+  counter-increment: code-line;
+  content: counter(code-line);
+  position: absolute;
+  left: -4.5ch;
+  width: 3.5ch;
+  text-align: right;
+  color: var(--fg-muted);
+  user-select: none;
+}
+
+.code-line-target {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.code-line-in-range {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .file-viewer-truncated {
   flex: 0 0 auto;
   margin-top: var(--space-1-5);

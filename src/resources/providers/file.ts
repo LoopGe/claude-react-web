@@ -23,12 +23,9 @@ import { formatError } from '../../utils/format-error'
 import { isPathInside } from '../../../shared/app-plugins/path-security'
 import { IMAGE_PREVIEW_MAX_BYTES, type FileReadResult } from '../../../shared/read-file'
 import type { InvalidationSource, ResourceFrame, ResourceProvider } from '../registry'
+import { failure } from './shared'
 
 type Request = (path: string, init: { signal: AbortSignal }) => Promise<FileReadResult>
-
-function failure(code: string, message: string): ResourceFrame<never> {
-  return { ok: false, failure: { code, message } }
-}
 
 function isUnder(path: string, root: string): boolean {
   // Addresses are `/`-normalized, git frames may carry drive letters/backslashes.
@@ -47,11 +44,7 @@ function frameTouchesFile(frame: unknown, filePath: string): boolean {
   )
 }
 
-async function defaultRequest(path: string, init: { signal: AbortSignal }): Promise<FileReadResult> {
-  return api.get<FileReadResult>(path, init)
-}
-
-export function createFileProvider(request: Request = defaultRequest): ResourceProvider<FileReadResult> {
+export function createFileProvider(request: Request = api.get): ResourceProvider<FileReadResult> {
   return {
     protocol: 'file',
     async *open(address, ctx) {

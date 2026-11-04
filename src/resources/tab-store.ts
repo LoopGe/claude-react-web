@@ -35,7 +35,20 @@ export type OpenResult =
   | { status: 'opened' | 'focused'; tabId: string }
   | { status: 'none'; reason: 'invalid-address' | 'unknown-kind' }
 
+/** Navigation params (line targets, selected snapshot file) never change a
+ *  tab's identity and are never persisted. */
+export type ResourceParams = Record<string, string | number | undefined>
+export interface ResourceNavigation {
+  params?: ResourceParams
+  /** Monotone per tab: bumps on every open (even with identical params) so a
+   *  body can re-scroll to the target. */
+  revision: number
+}
+
 export interface OpenOptions {
+  /** Navigation params for the opened tab. Replaces (never merges) the previous
+   *  params — a plain reopen clears a stale line target. */
+  params?: ResourceParams
   /** false = open a second tab even when one already shows this address. */
   revealIfOpened?: boolean
 }
@@ -90,6 +103,7 @@ export class ResourcePaneStore {
   private readonly storage: StorageLike | null
   private readonly canOpen: (kind: string) => boolean
   private readonly states = new Map<string, ResourcePaneState>()
+  private readonly navigation = new Map<string, ResourceNavigation>()
   private readonly listeners = new Set<() => void>()
 
   constructor(options: Options = {}) {
@@ -141,6 +155,10 @@ export class ResourcePaneStore {
     return hydrated
   }
 
+  getNavigation(tabId: string): ResourceNavigation | undefined {
+    return this.navigation.get(tabId)
+  }
+
   open(sessionId: string, address: string, options: OpenOptions = {}): OpenResult {
     const parsed = parseResourceAddress(address)
     if (!parsed) return { status: 'none', reason: 'invalid-address' }
@@ -155,11 +173,13 @@ export class ResourcePaneStore {
     const reveal = options.revealIfOpened !== false
 
     if (existing && reveal) {
+      this.setNavigation(existing.id, options.params)
       this.write(sessionId, { ...state, activeTabId: existing.id, expanded: true })
       return { status: 'focused', tabId: existing.id }
     }
 
     const tab: ResourceTab = { id: nextTabId(), kind, address }
+    this.setNavigation(tab.id, options.params)
     this.write(sessionId, {
       ...state,
       tabs: [...state.tabs, tab],
@@ -174,6 +194,7 @@ export class ResourcePaneStore {
     const index = state.tabs.findIndex((tab) => tab.id === tabId)
     if (index === -1) return
     const tabs = state.tabs.filter((tab) => tab.id !== tabId)
+    this.navigation.delete(tabId)
     const activeTabId =
       state.activeTabId === tabId
         ? (tabs[index - 1]?.id ?? tabs[index]?.id ?? null)
@@ -203,7 +224,10 @@ export class ResourcePaneStore {
   /** Drop a session's layout entirely (server-side session removal). */
   removeSession(sessionId: string): void {
     const state = this.states.get(sessionId)
-    if (state) this.states.delete(sessionId)
+    if (state) {
+      for (const tab of state.tabs) this.navigation.delete(tab.id)
+      this.states.delete(sessionId)
+    }
     try {
       this.storage?.removeItem(this.keyFor(sessionId))
     } catch {
@@ -250,6 +274,14 @@ export class ResourcePaneStore {
       return initialState()
     }
     return coerceState(parsed) ?? initialState()
+  }
+
+  private setNavigation(tabId: string, params: ResourceParams | undefined): void {
+    const previous = this.navigation.get(tabId)
+    this.navigation.set(tabId, {
+      params,
+      revision: (previous?.revision ?? 0) + 1,
+    })
   }
 
   private write(sessionId: string, next: ResourcePaneState): void {

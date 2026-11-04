@@ -6,9 +6,10 @@
 // Image/markdown detection follows `path` (the bytes actually read), never the
 // display `title` — callers may pass a bare label there.
 
-import { useState } from 'react'
-import { CodeBlock, Markdown } from '../Markdown'
+import { useEffect, useState } from 'react'
+import { Markdown } from '../Markdown'
 import { MsgImage } from '../MsgImage'
+import { NumberedCode } from './NumberedCode'
 import { detectLanguage, imageMediaTypeOf, splitFilePath } from '../../utils/file-display'
 import { imageDataUrl } from '../../utils/image-block'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
@@ -23,9 +24,23 @@ export interface FilePreviewBodyProps {
   data: FileReadResult | null
   error: string | null
   loading: boolean
+  /** 1-based navigation target from a Markdown `#L…` link. */
+  line?: number
+  endLine?: number
+  /** Bumps on every re-open so the same line re-scrolls. */
+  revision?: number
 }
 
-export function FilePreviewBody({ path, title, data, error, loading }: FilePreviewBodyProps) {
+export function FilePreviewBody({
+  path,
+  title,
+  data,
+  error,
+  loading,
+  line,
+  endLine,
+  revision = 0,
+}: FilePreviewBodyProps) {
   const mediaType = path ? imageMediaTypeOf(path) : null
   const imageSrc =
     mediaType && data?.encoding === 'base64' && data.contents
@@ -34,8 +49,14 @@ export function FilePreviewBody({ path, title, data, error, loading }: FilePrevi
   const isMarkdown = path ? detectLanguage(path) === 'markdown' : false
   // Markdown renders formatted by default; the source toggle keeps the code
   // view (and its copy button) one click away. Sticky per mount — hosts mount
-  // one body per open target (modal) or per active tab (pane).
-  const [showSource, setShowSource] = useState(false)
+  // one body per open target (modal) or per active tab (pane). A line target
+  // starts in source view so the jump lands on a real line, and re-applies on
+  // every reopen (revision bump).
+  const [showSource, setShowSource] = useState(line != null)
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: a reopened line target forces the source view
+    if (line != null) setShowSource(true)
+  }, [line, revision])
   // Custom thin scrollbar on whichever body scrolls: the code view's <pre>
   // (CodeBlock forwards the preRef — same pattern DiffView uses for the diff
   // body) or the markdown preview container. The two are mutually exclusive
@@ -110,14 +131,13 @@ export function FilePreviewBody({ path, title, data, error, loading }: FilePrevi
                 View preview
               </button>
             )}
-            <CodeBlock
+            <NumberedCode
+              contents={contents}
               lang={splitFilePath(title).base || title}
-              className="file-viewer-code"
-              showCopy
-              preRef={setCodeOs}
-            >
-              {contents}
-            </CodeBlock>
+              line={line}
+              endLine={endLine}
+              revision={revision}
+            />
             {truncated && (
               <div className="hint file-viewer-truncated">
                 File is large — content truncated by the read cap.
