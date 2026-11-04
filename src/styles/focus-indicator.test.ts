@@ -158,6 +158,7 @@ const LOAD_ORDER = [
   'app-plugins.css',
   'structured-panel.css',
   'file-viewer.css',
+  'resource-modal.css',
   'utilities.css',
   'titlebar.css',
   'glass.css',

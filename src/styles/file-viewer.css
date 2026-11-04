@@ -1,5 +1,5 @@
-/* Per-session read-only file viewer (FileViewer). Scoped under
-   .file-viewer; theme-vars only (light/dark from shared tokens). */
+/* File content body (FilePreviewBody), hosted by the resource modal, plus the
+   card/header classes FullDiffViewer still reuses. Theme-vars only. */
 
 .file-viewer {
   width: min(720px, 92vw);

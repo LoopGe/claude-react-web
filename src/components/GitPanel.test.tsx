@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
 import { GitPanel } from './GitPanel'
+import { ResourcePaneProvider } from '../resources/ResourcePaneProvider'
 import type { GitDiff, GitStatus } from '../../shared/git-types'
 
 // ── hook mocks ──────────────────────────────────────────────────────
@@ -99,15 +100,17 @@ function makeStatus(): GitStatus {
 
 function renderPanel() {
   return render(
-    <GitPanel
-      sessionId="s1"
-      cwd="/repo"
-      status={makeStatus()}
-      loading={false}
-      error={null}
-      onRefresh={() => {}}
-      onClose={() => {}}
-    />,
+    <ResourcePaneProvider providers={[]}>
+      <GitPanel
+        sessionId="s1"
+        cwd="/repo"
+        status={makeStatus()}
+        loading={false}
+        error={null}
+        onRefresh={() => {}}
+        onClose={() => {}}
+      />
+    </ResourcePaneProvider>,
   )
 }
 
@@ -159,15 +162,17 @@ describe('GitPanel file-row expand', () => {
       isBinary: false,
     }
     rerender(
-      <GitPanel
-        sessionId="s1"
-        cwd="/repo"
-        status={makeStatus()}
-        loading={false}
-        error={null}
-        onRefresh={() => {}}
-        onClose={() => {}}
-      />,
+      <ResourcePaneProvider providers={[]}>
+        <GitPanel
+          sessionId="s1"
+          cwd="/repo"
+          status={makeStatus()}
+          loading={false}
+          error={null}
+          onRefresh={() => {}}
+          onClose={() => {}}
+        />
+      </ResourcePaneProvider>,
     )
     expect(toggle().getAttribute('aria-expanded')).toBe('true')
   })

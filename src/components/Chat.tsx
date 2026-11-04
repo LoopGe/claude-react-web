@@ -34,6 +34,7 @@ const InputHistoryPanel = lazy(() =>
   import('./InputHistoryPanel').then((m) => ({ default: m.InputHistoryPanel })),
 )
 import { RecapWindow } from './RecapWindow'
+import { ResourceModal } from '../resources/ResourceModal'
 import { PinnedUserMessage } from './PinnedUserMessage'
 import { api } from '../hooks/useApi'
 import { startUploads } from '../hooks/useUploadQueue'
@@ -2871,6 +2872,11 @@ export const Chat = memo(function Chat({
           {sideChatWorking && <span className="side-chat-expand-tab-dot" aria-hidden />}
         </button>
       )}
+      {/* Per-session resource preview (portal modal). Always mounted so the
+          host can collapse a latched `expanded` when this panel is hidden
+          (keep-alive cache / session switch); it renders itself only when
+          visible. */}
+      <ResourceModal sessionId={session.id} visible={panelVisible !== false} />
     </div>
   )
 })

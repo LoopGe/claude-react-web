@@ -116,7 +116,7 @@ export const CodeBlock = memo(function CodeBlock({
 }: { lang?: string; showCopy?: boolean; preRef?: Ref<HTMLPreElement> } & ComponentPropsWithoutRef<'pre'>) {
   const { copied, copy } = useCopy()
   const innerRef = useRef<HTMLPreElement>(null)
-  // External consumers (e.g. FileViewer's useOverlayScrollbar) need the
+  // External consumers (e.g. FilePreviewBody's useOverlayScrollbar) need the
   // scrollable <pre> element. useMergedRef keeps the copy path's ref intact
   // while also handing the node out to the caller.
   const preRefMerged = useMergedRef(innerRef, preRef)

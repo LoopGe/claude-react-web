@@ -16,7 +16,9 @@
 import { cx } from '../utils/cx'
 import { useCallback, useId, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
-import { FileViewer } from './FileViewer'
+import { fileResource } from '../../shared/resource-address'
+import { resolveAbsolutePath } from '../utils/paths'
+import { useOpenResource } from '../resources/context'
 import { FullDiffViewer } from './FullDiffViewer'
 import { Tooltip } from './Tooltip'
 import { DiffView } from './DiffView'
@@ -73,8 +75,17 @@ function diffTitle(files: RangeRow[] | undefined): string {
 
 export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayName, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('uncommitted')
-  const [openFile, setOpenFile] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const openResource = useOpenResource()
+  // The resource preview is a portal modal stacked above this overlay, so the
+  // worktree panel stays mounted behind it (no state reset on return).
+  const handleOpenFile = useCallback(
+    (path: string) => {
+      if (!cwd) return
+      openResource(sessionId, fileResource(sessionId, resolveAbsolutePath(cwd, path)))
+    },
+    [cwd, sessionId, openResource],
+  )
   const tablistRef = useRef<HTMLDivElement>(null)
   // Unique-per-instance tab ids: up to 3 panels can hold this overlay open at
   // once, and duplicate DOM ids would make aria-controls/aria-labelledby
@@ -205,7 +216,7 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
                 status={uncommitted}
                 expanded={expanded}
                 onExpanded={setExpanded}
-                onOpen={setOpenFile}
+                onOpen={handleOpenFile}
               />
             )
           ) : rangeFiles.length === 0 ? (
@@ -219,21 +230,12 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
               files={rangeFiles}
               expanded={expanded}
               onExpanded={setExpanded}
-              onOpen={setOpenFile}
+              onOpen={handleOpenFile}
             />
           )}
         </div>
 
-        {openFile && (
-          <FileViewer
-            sessionId={sessionId}
-            open
-            path={cwd ? `${cwd}/${openFile}` : null}
-            name={openFile}
-            onClose={() => setOpenFile(null)}
-          />
-        )}
-      </div>
+        </div>
     </Overlay>
   )
 }

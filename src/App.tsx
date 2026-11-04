@@ -48,6 +48,7 @@ import { useTheme } from './hooks/useTheme'
 import { useBackground } from './hooks/useBackground'
 import { useToast } from './hooks/useToast'
 import { useWsHub } from './hooks/useWsHub'
+import { useResourcePaneStore } from './resources/context'
 import { usePluginRegistry } from './app-plugins/usePluginRegistry'
 import { usePluginCommands } from './app-plugins/usePluginCommands'
 import { PluginWidgetSlot } from './app-plugins/PluginWidgetSlot'
@@ -990,6 +991,9 @@ export function App() {
   // and incidentally eliminates the per-panel HTTP/1.1 connection
   // exhaustion we used to hit with three concurrent chats.
   const hub = useWsHub()
+  // Resource-pane state at App level (provider lives in main.tsx, above App),
+  // so a deleted session's persisted tab layout can be purged here.
+  const resourcePaneStore = useResourcePaneStore()
 
   useEffect(() => {
     const off = hub.addListener((frame: WsServerFrame) => {
@@ -1647,6 +1651,8 @@ export function App() {
       turnActiveFnsRef.current.delete(id)
       scrollNavRegistry.delete(id)
       setSidebarOrder((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : prev))
+      // Drop the removed session's resource-tab layout (persisted key + state).
+      resourcePaneStore.removeSession(id)
       // Side chat: parent removed (cleanupSideChat) OR the side-chat session
       // itself was removed (inline — cleanupSideChat only covers the parent).
       cleanupSideChat(id)
@@ -1657,7 +1663,7 @@ export function App() {
         sessionStoreRegistry.delete(sideId)
       }
     },
-    [cleanupSideChat, groups, pendingGroupInheritance, pruneSession, setGroups, setLastSeenTurn, setSidebarOrder, scrollNavRegistry],
+    [cleanupSideChat, groups, pendingGroupInheritance, pruneSession, resourcePaneStore, setGroups, setLastSeenTurn, setSidebarOrder, scrollNavRegistry],
   )
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync (same pattern as animatePanelsRef): the WS session-removed handler (in an effect above) calls teardownRemovedSession via this ref.
   teardownRemovedSessionRef.current = teardownRemovedSession

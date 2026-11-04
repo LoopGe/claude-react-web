@@ -84,6 +84,14 @@ vi.mock('./message-list/draft-body', async (orig) => {
 })
 
 // Virtuoso needs layout; render a fixed tail window like a real viewport.
+// The resource pane is irrelevant to this render-count profile and Chat
+// renders it unconditionally, so stub it rather than wrap every harness mount
+// in a ResourcePaneProvider. Chat also mounts the lazy GitPanel (whose rows now
+// open resources), so that chunk must be stubbed too — otherwise its provider
+// hook throws into the panel ErrorBoundary and perturbs the commit counts.
+vi.mock('../resources/ResourceModal', () => ({ ResourceModal: () => null }))
+vi.mock('./GitPanel', () => ({ GitPanel: () => null }))
+
 vi.mock('react-virtuoso', async () => {
   const React = await vi.importActual<typeof import('react')>('react')
   return {

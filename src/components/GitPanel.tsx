@@ -24,7 +24,9 @@ import { useGitDiff, useGitLog, useGitBranches, useGitStashes, gitDiffQuery } fr
 import { useGitWrite } from '../hooks/useGitWrite'
 import { api } from '../hooks/useApi'
 import { ConfirmDialog } from './ConfirmDialog'
-import { FileViewer } from './FileViewer'
+import { fileResource } from '../../shared/resource-address'
+import { resolveAbsolutePath } from '../utils/paths'
+import { useOpenResource } from '../resources/context'
 import { GitFileRow } from './GitFileRow'
 import { CommitRow } from './GitCommitRows'
 import { isWriteKeyInert } from './git-keyboard'
@@ -94,6 +96,7 @@ interface ConfirmState {
 
 export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading, error, onRefresh, onClose }: Props) {
   const writeOps = useGitWrite(sessionId)
+  const openResource = useOpenResource()
   const setPanelOs = useOverlayScrollbar({ autoHide: 'leave' })
   // Git op failures used to render an in-panel error strip; they now
   // surface as global toasts so the user sees them even if they've
@@ -102,8 +105,6 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [commitMessage, setCommitMessage] = useState('')
-  // File currently open in the read-only content viewer ({absPath, name}).
-  const [viewing, setViewing] = useState<{ absPath: string; name: string } | null>(null)
   // File-filter query and keyboard-selection index across the visible rows.
   const [filter, setFilter] = useState('')
   const [selectedIdx, setSelectedIdx] = useState(0)
@@ -143,10 +144,13 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   const handleOpenFile = useCallback(
     (path: string) => {
       const base = status && 'repoRoot' in status ? status.repoRoot : cwd
-      const absPath = base ? `${base.replace(/\/+$/, '')}/${path}` : path
-      setViewing({ absPath, name: path })
+      const absPath = resolveAbsolutePath(base, path)
+      // The resource preview is a portal modal that stacks ABOVE this overlay,
+      // so the Git panel (with its filter/expanded rows/commit draft) stays
+      // mounted behind it.
+      openResource(sessionId, fileResource(sessionId, absPath))
     },
-    [cwd, status],
+    [cwd, status, sessionId, openResource],
   )
 
   // Helper used inside event handlers: run a write op and translate
@@ -290,8 +294,6 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   function handleKeyDown(e: React.KeyboardEvent<HTMLElement>) {
     const target = e.target as HTMLElement
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
-    // Don't run git shortcuts while the read-only file viewer modal is open.
-    if (viewing) return
     // Live rebuild (see buildSelectable) — the commit's files may have
     // landed in the cache since this render.
     const rows = buildSelectable()
@@ -685,16 +687,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         )}
       </AnimatePresence>
 
-      {viewing && (
-        <FileViewer
-          open
-          sessionId={sessionId}
-          path={viewing.absPath}
-          name={viewing.name}
-          onClose={() => setViewing(null)}
-        />
-      )}
-    </aside>
+      </aside>
   )
 })
 

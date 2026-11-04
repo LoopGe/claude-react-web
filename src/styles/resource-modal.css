@@ -1,0 +1,113 @@
+/* Resource preview modal (docs/resource-tabs-research.md §12 — the host is a
+   portal modal, not a docked pane). Theme variables only; light/dark come from
+   shared tokens. */
+
+.resource-modal {
+  width: min(760px, 92vw);
+  display: flex;
+  flex-direction: column;
+  max-height: min(86vh, 760px);
+}
+
+.resource-modal-header {
+  gap: var(--space-2);
+}
+
+.resource-tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  overflow-x: auto;
+}
+
+.resource-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 220px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+}
+
+.resource-tab-active {
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.resource-tab-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  padding: var(--space-1) var(--space-1-5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.resource-tab-active .resource-tab-label {
+  color: var(--fg);
+}
+
+.resource-tab-close {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-1);
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.resource-tab-close:hover {
+  color: var(--fg);
+}
+
+.resource-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-2);
+}
+
+/* Closed state: a slim edge control that reopens the modal for this session.
+   Without it the tabs (which survive closing / reload) would be stranded. */
+.resource-reopen {
+  position: absolute;
+  right: 0;
+  /* Below the Side Chat collapsed tab (also right-edge, centred, z-index 5) so
+     the two never overlap. */
+  top: calc(50% + 48px);
+  transform: translateY(-50%);
+  /* Above the panel overlays (--z-panel-overlay: 6): the entry point (Git /
+     Worktree) stays open behind the preview, and after closing the modal the
+     chip must remain reachable rather than sitting under that overlay. */
+  z-index: 7;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1-5) var(--space-1);
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+}
+
+.resource-reopen:hover {
+  color: var(--fg);
+}
+
+.resource-reopen-count {
+  font-variant-numeric: tabular-nums;
+}

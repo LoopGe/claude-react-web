@@ -5,6 +5,7 @@ import { App } from './App'
 import { ToastHost } from './components/ToastHost'
 import { ToastProvider } from './components/ToastProvider'
 import { WsHubProvider } from './hooks/useWsHub'
+import { ResourcePaneHost } from './resources/ResourcePaneProvider'
 import { PluginRegistryProvider } from './app-plugins/PluginRegistryProvider'
 import { PluginCommandResultHost } from './app-plugins/PluginCommandResultHost'
 import { installGlobalErrorCapture, rootCallbacks } from './error-capture'
@@ -90,7 +91,13 @@ ReactDOM.createRoot(document.getElementById('root')!, rootCallbacks).render(
         <ToastProvider>
           <WsHubProvider>
             <PluginRegistryProvider>
-              <App />
+              {/* One resource-tab store + registry for every Chat panel. Above
+                  App so App's session-removed handler can purge a deleted
+                  session's persisted layout, and so an LRU-evicted panel loses
+                  its DOM (and stream pins) but restores tabs on remount. */}
+              <ResourcePaneHost>
+                <App />
+              </ResourcePaneHost>
               {/* Global renderer for plugin Popover/Dialog command results. */}
               <PluginCommandResultHost />
             </PluginRegistryProvider>

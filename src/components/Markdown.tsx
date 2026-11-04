@@ -20,7 +20,7 @@ import { ErrorBoundary } from './ErrorBoundary'
 import { compileMarkdown } from '../utils/markdown-cache'
 
 // Re-export CodeBlock so existing `import { CodeBlock } from './Markdown'`
-// sites (e.g. FileViewer.tsx) keep working after the extraction.
+// sites (e.g. FilePreviewBody.tsx) keep working after the extraction.
 export { CodeBlock } from './markdown-components'
 
 export const Markdown = memo(function Markdown({ text, searchQuery, activeMatchIdx, breaks, transient }: { text: string; searchQuery?: string; activeMatchIdx?: number; breaks?: boolean; transient?: boolean }) {

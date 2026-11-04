@@ -4,6 +4,12 @@
 // server narrows the raw SDK response through coerceReadFileOutput before it
 // goes over the wire, so the client always has a guaranteed-clean shape.
 
+// The SDK default cap (1 MB) truncates ordinary screenshots, and a truncated
+// base64 payload decodes to an undecodable — broken — image. Previews ask for
+// this headroom; the request builder and the "too large" hint must agree on it,
+// so it lives beside the result type both sides share.
+export const IMAGE_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
+
 export interface FileReadResult {
   /** false = read permission denied or file missing (SDK returned null). */
   available: boolean
