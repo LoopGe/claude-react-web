@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   installJankMonitor,
+  isInteractionTiming,
   markJank,
   getJankSummary,
   getRecentJankEvents,
@@ -66,6 +67,13 @@ describe('jank-monitor', () => {
     markJank('repro end')
     clock.mockRestore()
     expect(getRecentJankEvents().marks.map((m) => m.label)).toEqual(['repro start', 'repro end'])
+  })
+
+  it('drops non-interaction event-timing entries (hover noise)', () => {
+    // Event Timing reports pointerover/enter/leave with interactionId 0;
+    // those only carry "time until next paint" and flood the trace.
+    expect(isInteractionTiming({ interactionId: 0 })).toBe(false)
+    expect(isInteractionTiming({ interactionId: 1439 })).toBe(true)
   })
 
   it('reset clears everything and allows re-install', () => {

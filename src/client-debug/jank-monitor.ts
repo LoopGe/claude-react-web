@@ -137,6 +137,14 @@ export interface EventTimingEvent {
   interactionId: number
 }
 
+/** Event Timing also reports hover events (pointerenter/leave/over/out,
+ *  mouseover/out) with interactionId 0. They carry no interaction and only
+ *  add "time until next paint" noise — in a real scroll trace they were
+ *  1291 of 1294 entries. Keep real interactions only. */
+export function isInteractionTiming(entry: { interactionId: number }): boolean {
+  return entry.interactionId > 0
+}
+
 /** Fixed-capacity event ring with O(1) amortized push. The naive
  *  shift/splice version moved the whole array on every push once at capacity —
  *  measurable inside the `measure` observer exactly when frames are tight. */
@@ -384,6 +392,7 @@ export function installJankMonitor(): void {
   observeType({ type: 'event', durationThreshold: 16 }, (entries) => {
     for (const entry of entries) {
       const e = entry as unknown as EventTimingEntryLike
+      if (!isInteractionTiming(e)) continue
       pushEventTiming({
         kind: 'event-timing',
         t: e.startTime,
