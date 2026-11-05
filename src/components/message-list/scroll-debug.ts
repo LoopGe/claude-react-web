@@ -15,6 +15,8 @@
 // force a layout read), so with the flag off nothing may be computed. Mirrors
 // src/session-store/debug.ts, with that module's "callers guard the payload"
 // contract made structural.
+import { recordScrollDiagnostic, traceFoldScrollActive } from '../../client-debug/trace-diagnostics'
+
 const FLAG_KEY = 'crw:debug:scroll'
 const FLAG_TTL_MS = 500
 
@@ -51,8 +53,12 @@ type ScrollLogEntry = { t: number; ev: string; d: unknown }
 /** Log a scroll-lifecycle event. No-op (and no payload built) unless the flag
  *  is set, so the cost when off is one localStorage read. */
 export function scrollDebug(event: string, buildPayload: () => Record<string, unknown>): void {
-  if (!readFlag()) return
+  const consoleEnabled = readFlag()
+  const recording = traceFoldScrollActive()
+  if (!consoleEnabled && !recording) return
   const payload = buildPayload()
+  if (recording) recordScrollDiagnostic(event, payload)
+  if (!consoleEnabled) return
   console.debug(`[scroll] ${event}`, payload)
   // The importers run in the browser bundle and jsdom client tests —
   // `window` always exists where this executes.

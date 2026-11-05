@@ -1,8 +1,15 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import {
+  DEFAULT_TRACE_RECORD_OPTIONS,
+  recordScrollDiagnostic,
+  resetTraceDiagnosticsForTests,
+  startTraceDiagnostics,
+} from './trace-diagnostics'
 import {
   buildTrace,
   exportTrace,
+  installJankMonitor,
   markJank,
   resetJankMonitorForTests,
   TRACE_THREADS,
@@ -13,6 +20,12 @@ import {
 
 beforeEach(() => {
   resetJankMonitorForTests()
+  resetTraceDiagnosticsForTests()
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 const META: TraceBuildInput['meta'] = {
@@ -31,6 +44,7 @@ function makeInput(overrides: Partial<TraceBuildInput> = {}): TraceBuildInput {
     loaf: [],
     measures: [],
     eventTimings: [],
+    diagnostics: [],
     marks: [],
     meta: META,
     ...overrides,
@@ -243,5 +257,106 @@ describe('buildTrace', () => {
     expect(trace.crwRaw.meta).toEqual(META)
     expect(trace.crwRaw.now).toBe(10_000)
     expect(trace.crwRaw.windowMs).toBe(5_000)
+  })
+
+  it('serializes diagnostic events with their tracks and args', () => {
+    const trace = buildTrace(makeInput({
+      diagnostics: [
+        { kind: 'diagnostic', t: 7_000, track: 'fold', name: 'fold-start', args: { foldId: 'fold-1' } },
+        { kind: 'diagnostic', t: 7_100, track: 'layout', name: 'layout-shift', args: { value: 0.2 } },
+      ],
+    }))
+
+    expect(byCat(trace, 'crw.fold')[0]).toMatchObject({
+      ph: 'i', name: 'fold-start', ts: 7_000_000, tid: TRACE_THREADS.fold, args: { foldId: 'fold-1' },
+    })
+    expect(byCat(trace, 'crw.layout')[0]).toMatchObject({
+      ph: 'i', name: 'layout-shift', ts: 7_100_000, tid: TRACE_THREADS.layout, args: { value: 0.2 },
+    })
+    expect(trace.crwRaw.diagnostics).toHaveLength(2)
+    expect(trace.crwRaw.recordOptions).toBeNull()
+  })
+
+  it('filters base streams for Record and keeps diagnostics out of Capture', () => {
+    const observers: Array<{ init: PerformanceObserverInit; emit: (entries: unknown[]) => void }> = []
+    class MockPerformanceObserver {
+      constructor(readonly callback: (list: { getEntries: () => unknown[] }) => void) {}
+      observe(init: PerformanceObserverInit) {
+        observers.push({ init, emit: (entries) => this.callback({ getEntries: () => entries }) })
+      }
+      disconnect() {}
+    }
+    vi.stubGlobal('PerformanceObserver', MockPerformanceObserver)
+    installJankMonitor()
+    for (const observer of observers) {
+      if (observer.init.entryTypes?.includes('longtask')) {
+        observer.emit([{ startTime: 1_000, duration: 80, attribution: [] }])
+      }
+      if (observer.init.type === 'measure') {
+        observer.emit([{ startTime: 1_000, duration: 2, name: 'MessageList' }])
+      }
+      if (observer.init.type === 'event') {
+        observer.emit([{ startTime: 1_000, duration: 20, name: 'click', processingStart: 1_001, processingEnd: 1_002, interactionId: 9 }])
+      }
+    }
+    startTraceDiagnostics({ ...DEFAULT_TRACE_RECORD_OPTIONS, performance: false, reactInput: false, visual: false })
+    recordScrollDiagnostic('pin', { before: 10 })
+
+    const record = exportTrace({
+      windowMs: 5_000,
+      now: 5_000,
+      recordOptions: { ...DEFAULT_TRACE_RECORD_OPTIONS, performance: false, reactInput: false, visual: false },
+    })
+    expect(record.crwRaw.longTasks).toEqual([])
+    expect(record.crwRaw.measures).toEqual([])
+    expect(record.crwRaw.eventTimings).toEqual([])
+    expect(record.crwRaw.diagnostics).toHaveLength(1)
+    expect(record.crwRaw.recordOptions).toMatchObject({ performance: false, reactInput: false, visual: false })
+
+    const capture = exportTrace({ windowMs: 5_000, now: 5_000 })
+    expect(capture.crwRaw.longTasks).toHaveLength(1)
+    expect(capture.crwRaw.measures).toHaveLength(1)
+    expect(capture.crwRaw.eventTimings).toHaveLength(1)
+    expect(capture.crwRaw.diagnostics).toEqual([])
+    expect(capture.crwRaw.recordOptions).toBeNull()
+  })
+
+  it('does not report truncation for streams excluded from Record', () => {
+    const observers: Array<{ init: PerformanceObserverInit; emit: (entries: unknown[]) => void }> = []
+    class MockPerformanceObserver {
+      constructor(readonly callback: (list: { getEntries: () => unknown[] }) => void) {}
+      observe(init: PerformanceObserverInit) {
+        observers.push({ init, emit: (entries) => this.callback({ getEntries: () => entries }) })
+      }
+      disconnect() {}
+    }
+    vi.stubGlobal('PerformanceObserver', MockPerformanceObserver)
+    installJankMonitor()
+    const longtask = observers.find((observer) => observer.init.entryTypes?.includes('longtask'))!
+    longtask.emit(Array.from({ length: 2_001 }, (_, i) => ({ startTime: i + 1, duration: 80, attribution: [] })))
+    const recordOptions = { ...DEFAULT_TRACE_RECORD_OPTIONS, performance: false, reactInput: false, visual: false }
+    startTraceDiagnostics(recordOptions)
+
+    const trace = exportTrace({ windowMs: 5_000, now: 5_000, recordOptions })
+
+    expect(trace.crwRaw.longTasks).toEqual([])
+    expect(trace.crwRaw.truncatedStreams).not.toContain('longTasks')
+    expect(trace.crwRaw.coversFullWindow).toBe(true)
+  })
+
+  it('reports diagnostic ring eviction as a truncated stream', () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => ++now)
+    startTraceDiagnostics({ ...DEFAULT_TRACE_RECORD_OPTIONS, visual: false })
+    for (let i = 0; i < 20_001; i++) recordScrollDiagnostic('sample', { i })
+
+    const trace = exportTrace({
+      windowMs: 60_000,
+      now: 60_000,
+      recordOptions: { ...DEFAULT_TRACE_RECORD_OPTIONS, visual: false },
+    })
+    expect(trace.crwRaw.diagnostics).toHaveLength(20_000)
+    expect(trace.crwRaw.truncatedStreams).toContain('diagnostics')
+    expect(trace.crwRaw.coversFullWindow).toBe(false)
   })
 })

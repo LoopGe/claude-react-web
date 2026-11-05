@@ -45,6 +45,7 @@ import type { VirtuosoHandle } from 'react-virtuoso'
 import { anyCollapseAnimatingInside, bodyHeightDelta, snapshotBodyHeights, type BodyHeightSnapshot } from '../collapse-animation'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { scrollDebug as dbg } from './scroll-debug'
+import { traceFoldIdFor } from '../../client-debug/trace-diagnostics'
 import { clamp } from '../../utils/clamp'
 import { snapToDevicePx } from '../../utils/pixel-grid'
 import { PANEL_RESHOW_SETTLE_MS, TRANSCRIPT_SEEK_EVENT, keyboardTargetsScroller, middleClickTargetsScroller, touchTargetsScroller, wheelChainsToScroller } from '../panel-transition'
@@ -461,9 +462,10 @@ export function useTranscriptScroll({
     if (!el) { dbg('pin skip', () => ({ reason, why: 'no-el' })); return }
     if (!shouldFollowRef.current) { dbg('pin skip', () => ({ reason, why: 'away' })); return }
     if (scrollAnimatingRef.current && !allowDuringAnimation) { dbg('pin skip', () => ({ reason, why: 'animating' })); return }
-    dbg('pin', () => ({ reason, before: Math.round(el.scrollTop) }))
+    dbg('pin', () => ({ writer: 'pinToBottom', reason, before: Math.round(el.scrollTop), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, distanceFromBottom: getDistanceFromTrueBottom(el) }))
     // eslint-disable-next-line react-hooks/immutability -- imperative bottom-pin writes are the scroll controller's event-time contract
     el.scrollTop = el.scrollHeight
+    dbg('pin-written', () => ({ writer: 'pinToBottom', reason, after: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, distanceFromBottom: getDistanceFromTrueBottom(el) }))
     // Every correction is provisional: the layout can keep moving after this
     // write, so verify the invariant across the next frames (see
     // verifyFollowInvariant). Handled through a ref so this callback stays
@@ -752,7 +754,7 @@ export function useTranscriptScroll({
     // dropped instead. Same for an away user: `following` is false, so nothing
     // here ever yanks them.
     if (following && !userLeft && !isAtTrueBottom(el)) {
-      dbg('follow-invariant', () => ({ modeWhenAway }))
+      dbg('follow-invariant', () => ({ writer: 'follow-invariant', modeWhenAway, distanceFromBottom: getDistanceFromTrueBottom(el) }))
       pinToBottom(el, { reason: 'follow-invariant' })
     }
 
@@ -1138,9 +1140,11 @@ export function useTranscriptScroll({
         // a fold (no previous snapshot) it returns null — fall back to the
         // item-list delta so the frame is still compensated.
         const bodySnap = snapshotBodyHeights(scroller)
+        const previousBodySnap = lastBodySnap
         const foldDelta = bodyHeightDelta(lastBodySnap, bodySnap)
         lastBodySnap = bodySnap
         // Keep the item-list baseline current for the non-fold path below.
+        const previousItemListH = lastItemListH
         const itemDelta = lastItemListH == null ? null : itemListH - lastItemListH
         lastItemListH = itemListH
         lastContentHeight = contentH
@@ -1148,6 +1152,7 @@ export function useTranscriptScroll({
         // item-list delta on the first fold frame.
         const delta = foldDelta ?? itemDelta
         const domTop = scroller.scrollTop
+        const ledgerBefore = ledger
         if (delta == null) {
           // No fractional reference (first observation after a baseline
           // reset): fall back to the integer pin for this frame.
@@ -1191,8 +1196,27 @@ export function useTranscriptScroll({
         // (foldDelta vs the first-frame itemDelta fallback), how big the step
         // was, and where the ledger/rounding left the DOM.
         dbg('itemlist-RO fold-lockstep', () => ({
+          firstFrame: foldDelta == null,
+          deltaSource: foldDelta != null ? 'body' : itemDelta != null ? 'itemDelta' : 'integer-pin',
           foldDelta, itemDelta, delta, domTop,
-          ledger, scrollTopAfter: scroller.scrollTop,
+          ledgerBefore, ledger, scrollTopAfter: scroller.scrollTop,
+          previousItemListH, itemListH,
+          paddingTop: (entry.target as HTMLElement).style.paddingTop || '0px',
+          bodyHeights: Array.from(bodySnap, ([body, height]) => ({
+            foldId: traceFoldIdFor(body) ?? null,
+            height,
+            pinnedHeight: body.style.height || null,
+            usedHeight: body.offsetHeight,
+          })),
+          previousBodyHeights: previousBodySnap == null ? null : Array.from(previousBodySnap, ([body, height]) => ({
+            foldId: traceFoldIdFor(body) ?? null,
+            height,
+          })),
+          contentH,
+          scrollHeight: scroller.scrollHeight,
+          clientHeight: scroller.clientHeight,
+          maxScrollTop: scroller.scrollHeight - scroller.clientHeight,
+          transform: (entry.target as HTMLElement).style.transform || null,
         }))
         // Arm the settle watcher on every fold frame: at settle it must clear
         // BOTH the transform and the LEDGER (a ledger surviving the fold makes

@@ -115,6 +115,7 @@ body.resizing-col .app {
 /* Dev-only trace capture pair, rendered directly left of the notification
    button. The recording state tints the glyph; no new colors are introduced. */
 .dev-trace-group {
+  position: relative;
   display: flex;
   align-items: center;
   /* Match .main-toolbar's inter-button spacing — the pair must read as two
@@ -123,6 +124,41 @@ body.resizing-col .app {
 }
 .dev-trace-recording {
   color: var(--danger);
+}
+.dev-trace-menu {
+  position: absolute;
+  z-index: var(--z-overlay);
+  top: calc(100% + var(--space-1));
+  right: 0;
+  display: grid;
+  gap: var(--space-2);
+  width: 250px;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  box-shadow: var(--overlay-shadow);
+  color: var(--fg);
+}
+.dev-trace-menu-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.dev-trace-menu-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+.dev-trace-menu-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.dev-trace-menu-note {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 /* Full-session nav strip in the top header (desktop hosts without a custom

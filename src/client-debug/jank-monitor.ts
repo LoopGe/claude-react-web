@@ -32,6 +32,13 @@
 // `__crwJankMark(label)` to stamp a repro window so events can be correlated
 // with the user's action after the fact.
 
+import {
+  resetTraceDiagnosticsForTests,
+  traceDiagnosticsSnapshot,
+  type TraceDiagnosticEvent,
+  type TraceRecordOptions,
+} from './trace-diagnostics'
+
 const FRAME_GAP_MS = 32
 // > 2 frames at 60Hz (~33ms), ~4 at 120Hz — a real compositor stall on any
 // display, not single-frame noise on a ProMotion screen.
@@ -78,6 +85,10 @@ export const TRACE_THREADS = {
   react: 5,
   input: 6,
   marks: 7,
+  fold: 8,
+  scroll: 9,
+  visual: 10,
+  layout: 11,
 } as const
 
 interface FrameGapEvent {
@@ -464,7 +475,7 @@ export interface TraceEvent {
 
 /** The time-windowed sampled streams. Marks are excluded: they are manual
  *  anchors retained past the window on purpose. */
-export type TraceStream = 'gaps' | 'longTasks' | 'loaf' | 'measures' | 'eventTimings'
+export type TraceStream = 'gaps' | 'longTasks' | 'loaf' | 'measures' | 'eventTimings' | 'diagnostics'
 
 export interface TraceBuildInput {
   now: number
@@ -474,7 +485,10 @@ export interface TraceBuildInput {
   loaf: LoafEvent[]
   measures: MeasureEvent[]
   eventTimings: EventTimingEvent[]
+  diagnostics: TraceDiagnosticEvent[]
   marks: JankMark[]
+  /** Null for legacy Capture; a frozen selection for manual Record. */
+  recordOptions?: TraceRecordOptions | null
   /** Streams whose ring cap evicted events inside this window. Computed by
    *  exportTrace from the ring's own eviction record, not inferred from the
    *  array length. */
@@ -504,7 +518,9 @@ export interface TraceFile {
     loaf: LoafEvent[]
     measures: MeasureEvent[]
     eventTimings: EventTimingEvent[]
+    diagnostics: TraceDiagnosticEvent[]
     marks: JankMark[]
+    recordOptions: TraceRecordOptions | null
     meta: TraceBuildInput['meta']
   }
 }
@@ -525,6 +541,7 @@ export function buildTrace(input: TraceBuildInput): TraceFile {
   const windowLoaf = inWindow(input.loaf, since)
   const windowMeasures = inWindow(input.measures, since)
   const windowEventTimings = inWindow(input.eventTimings, since)
+  const windowDiagnostics = inWindow(input.diagnostics ?? [], since)
   // Marks are retained past the window on purpose; a repro-start anchor must
   // survive even when the capture click happens minutes later.
   const windowMarks = input.marks
@@ -533,7 +550,7 @@ export function buildTrace(input: TraceBuildInput): TraceFile {
   // LOSS is the caller's eviction record, never inferred from array length.
   const truncatedStreams = input.truncatedStreams ?? []
   let oldestRetained = Infinity
-  for (const list of [input.gaps, input.longTasks, input.loaf, input.measures, input.eventTimings]) {
+  for (const list of [input.gaps, input.longTasks, input.loaf, input.measures, input.eventTimings, input.diagnostics ?? []]) {
     for (const event of list) oldestRetained = Math.min(oldestRetained, event.t)
   }
   const coverageMs = Number.isFinite(oldestRetained)
@@ -646,6 +663,18 @@ export function buildTrace(input: TraceBuildInput): TraceFile {
       tid: TRACE_THREADS.marks,
     })
   }
+  for (const event of windowDiagnostics) {
+    data.push({
+      ph: 'i',
+      name: event.name,
+      cat: `crw.${event.track}`,
+      ts: us(event.t),
+      s: 't',
+      pid,
+      tid: TRACE_THREADS[event.track],
+      args: event.args,
+    })
+  }
 
   data.sort((a, b) => a.ts - b.ts)
   return {
@@ -662,7 +691,9 @@ export function buildTrace(input: TraceBuildInput): TraceFile {
       loaf: windowLoaf,
       measures: windowMeasures,
       eventTimings: windowEventTimings,
+      diagnostics: windowDiagnostics,
       marks: windowMarks,
+      recordOptions: input.recordOptions ?? null,
       meta: input.meta,
     },
   }
@@ -670,21 +701,31 @@ export function buildTrace(input: TraceBuildInput): TraceFile {
 
 /** Snapshot the live rings into a trace file. The caller decides what to do
  *  with it (the dev button downloads it; `__crwTrace()` returns it). */
-export function exportTrace(opts: { windowMs: number; now?: number }): TraceFile {
+export function exportTrace(opts: { windowMs: number; now?: number; recordOptions?: TraceRecordOptions }): TraceFile {
   const now = opts.now ?? performance.now()
+  const recordOptions = opts.recordOptions ?? null
   // The rings cannot reach past TRACE_WINDOW_MS; a larger request would
   // silently drop its first half while still claiming full coverage.
   const windowMs = Math.min(opts.windowMs, TRACE_WINDOW_MS)
   const since = now - windowMs
+  const diagnosticSnapshot = recordOptions && (recordOptions.foldScroll || recordOptions.visual)
+    ? traceDiagnosticsSnapshot()
+    : { events: [], capDroppedAtTime: 0 }
   // Truncation comes from each ring's own cap-eviction record. Only drops that
   // happened INSIDE this window matter; older drops are outside the file.
-  const rings: Array<[TraceStream, { capDroppedAtTime: number }]> = [
+  const allRings: Array<[TraceStream, { capDroppedAtTime: number }]> = [
     ['gaps', gaps],
     ['longTasks', longTasks],
     ['loaf', loafEvents],
     ['measures', measures],
     ['eventTimings', eventTimings],
+    ['diagnostics', diagnosticSnapshot],
   ]
+  const rings = allRings.filter(([name]) => {
+    if (name === 'gaps' || name === 'longTasks' || name === 'loaf') return recordOptions?.performance !== false
+    if (name === 'measures' || name === 'eventTimings') return recordOptions?.reactInput !== false
+    return recordOptions != null && (recordOptions.foldScroll || recordOptions.visual)
+  })
   const truncatedStreams = rings
     .filter(([, ring]) => ring.capDroppedAtTime > 0 && ring.capDroppedAtTime >= since)
     .map(([name]) => name)
@@ -692,12 +733,14 @@ export function exportTrace(opts: { windowMs: number; now?: number }): TraceFile
   return buildTrace({
     now,
     windowMs,
-    gaps: gaps.toArray(),
-    longTasks: longTasks.toArray(),
-    loaf: loafEvents.toArray(),
-    measures: measures.toArray(),
-    eventTimings: eventTimings.toArray(),
+    gaps: recordOptions && !recordOptions.performance ? [] : gaps.toArray(),
+    longTasks: recordOptions && !recordOptions.performance ? [] : longTasks.toArray(),
+    loaf: recordOptions && !recordOptions.performance ? [] : loafEvents.toArray(),
+    measures: recordOptions && !recordOptions.reactInput ? [] : measures.toArray(),
+    eventTimings: recordOptions && !recordOptions.reactInput ? [] : eventTimings.toArray(),
+    diagnostics: recordOptions ? diagnosticSnapshot.events : [],
     marks: marks.toArray(),
+    recordOptions,
     truncatedStreams,
     meta: {
       url: location.href,
@@ -741,6 +784,7 @@ export function resetJankMonitorForTests(): void {
   measures.clear()
   eventTimings.clear()
   marks.clear()
+  resetTraceDiagnosticsForTests()
   installed = false
 }
 

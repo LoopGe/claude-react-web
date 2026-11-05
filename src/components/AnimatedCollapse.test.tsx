@@ -4,13 +4,21 @@ import { act, render } from '@testing-library/react'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { setCollapseAnimating } from './collapse-animation'
 import { clearResizeObserverStub, fireResize, stubResizeObserver } from '../test/resize-observer-stub'
+import {
+  DEFAULT_TRACE_RECORD_OPTIONS,
+  resetTraceDiagnosticsForTests,
+  startTraceDiagnostics,
+  traceDiagnosticsSnapshot,
+} from '../client-debug/trace-diagnostics'
 
 beforeEach(() => {
+  resetTraceDiagnosticsForTests()
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))
   stubResizeObserver()
 })
 
 afterEach(() => {
+  resetTraceDiagnosticsForTests()
   clearResizeObserverStub()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -846,5 +854,58 @@ describe('AnimatedCollapse — a nested fold is never relayed through an ancesto
     act(() => fireResize(outerContent)) // no difference to detect
 
     expect(outer.style.height).toBe('100px')
+  })
+})
+
+describe('AnimatedCollapse — trace diagnostics', () => {
+  it('emits nothing while no manual Record is active', () => {
+    vi.useFakeTimers()
+    const { container, rerender } = render(
+      <AnimatedCollapse open={false} unmountOnExit={false}><span>body</span></AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    mockLayoutHeight(body, 0)
+    mockLayoutHeight(content, 40)
+
+    rerender(<AnimatedCollapse open unmountOnExit={false}><span>body</span></AnimatedCollapse>)
+    act(() => { vi.advanceTimersByTime(400) })
+
+    expect(traceDiagnosticsSnapshot().events).toEqual([])
+  })
+
+  it('correlates open, close, and cancellation without changing the tween', () => {
+    vi.useFakeTimers()
+    startTraceDiagnostics({ ...DEFAULT_TRACE_RECORD_OPTIONS, visual: false })
+    const { container, rerender, unmount } = render(
+      <AnimatedCollapse open={false} unmountOnExit={false}><span>body</span></AnimatedCollapse>,
+    )
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    mockLayoutHeight(body, 0)
+    mockLayoutHeight(content, 40)
+
+    rerender(<AnimatedCollapse open unmountOnExit={false}><span>body</span></AnimatedCollapse>)
+    expect(body.classList.contains('animating')).toBe(true)
+    act(() => { vi.advanceTimersByTime(400) })
+    expect(body.style.height).toBe('40px')
+
+    rerender(<AnimatedCollapse open={false} unmountOnExit={false}><span>body</span></AnimatedCollapse>)
+    act(() => { vi.advanceTimersByTime(400) })
+    rerender(<AnimatedCollapse open unmountOnExit={false}><span>body</span></AnimatedCollapse>)
+    unmount()
+
+    const events = traceDiagnosticsSnapshot().events
+    const names = events.map((event) => event.name)
+    expect(names).toContain('fold-start')
+    expect(names).toContain('fold-frame')
+    expect(names.filter((name) => name === 'fold-settled')).toHaveLength(2)
+    expect(names).toContain('fold-cancelled')
+    expect(new Set(events.map((event) => event.args.foldId)).size).toBe(3)
+    expect(events.find((event) => event.name === 'fold-frame')?.args).toMatchObject({
+      open: true,
+      kind: 'fold',
+      writtenHeight: expect.any(Number),
+    })
   })
 })

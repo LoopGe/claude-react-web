@@ -3,6 +3,7 @@ import { isRendered } from '../utils/rendered'
 import { snapToDevicePx } from '../utils/pixel-grid'
 import { easeStandard } from '../utils/cubic-bezier'
 import { anyCollapseAnimatingInside, currentBodyHeight, releaseAncestorCollapsePins, setCollapseAnimating } from './collapse-animation'
+import { traceFoldEnd, traceFoldFrame, traceFoldStart } from '../client-debug/trace-diagnostics'
 import {
   type DetailsHTMLAttributes,
   type MouseEvent,
@@ -300,6 +301,7 @@ export function AnimatedCollapse({
 
     animKindRef.current = kind
     animatingRef.current = true
+    traceFoldStart(body, { open: nextOpen, kind, from, to, writtenHeight: from })
 
     // Per-frame DEVICE-pixel height tween (rAF), not a CSS height transition.
     // The transition interpolates at fractional px per frame, which re-phases
@@ -333,6 +335,13 @@ export function AnimatedCollapse({
         const pFade = ease(Math.min(1, (now - startedAt) / FADE_DURATION_MS))
         body.style.opacity = String(nextOpen ? pFade : 1 - pFade)
       }
+      traceFoldFrame(body, {
+        open: nextOpen,
+        kind,
+        from,
+        to,
+        writtenHeight: Number.parseFloat(body.style.height) || 0,
+      })
       if (t < 1) raf = window.requestAnimationFrame(step)
       else finish()
     }
@@ -355,6 +364,13 @@ export function AnimatedCollapse({
       setCollapseAnimating(body, false)
       if (nextOpen) finishOpen(to)
       else finishClosed()
+      traceFoldEnd(body, 'settled', {
+        open: nextOpen,
+        kind,
+        from,
+        to,
+        writtenHeight: Number.parseFloat(body.style.height) || 0,
+      })
     }
 
     // Safety net: the tween finishes itself on its last frame; the timer only
@@ -368,6 +384,13 @@ export function AnimatedCollapse({
       body.classList.remove('animating')
       setCollapseAnimating(body, false)
       animatingRef.current = false
+      traceFoldEnd(body, 'cancelled', {
+        open: nextOpen,
+        kind,
+        from,
+        to,
+        writtenHeight: Number.parseFloat(body.style.height) || 0,
+      })
     }
   }, [cleanupAnimation, durationMs, finishClosed, finishOpen])
 
