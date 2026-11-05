@@ -8,7 +8,7 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { sessionTitleOrFallback } from '../utils/session-title'
@@ -38,7 +38,8 @@ import { RecapWindow } from './RecapWindow'
 import { ResourceModal } from '../resources/ResourceModal'
 import { useOptionalOpenResource } from '../resources/context'
 import { snapshotDiffResource } from '../../shared/resource-address'
-import { PinnedUserMessage } from './PinnedUserMessage'
+import { PinnedUserMessageHeader } from './PinnedUserMessageHeader'
+import { PinnedMessageStore } from '../utils/pinned-message-store'
 import { api } from '../hooks/useApi'
 import { startUploads } from '../hooks/useUploadQueue'
 import { useSessionSynchronizer } from '../session-sync/useSessionSynchronizer'
@@ -509,19 +510,22 @@ export const Chat = memo(function Chat({
   const effectiveAutoExpandRunningGroups = sessionPrefs.autoExpandRunningGroups
   const effectiveShowMessageHeaders = sessionPrefs.showMessageHeaders
   // Pinned "current question" header — the user message of the turn in view,
-  // shown when it has scrolled above the viewport. `pinnedUserMsg` drives
-  // presence (open/exit); `pinnedText` retains the last text through the exit
-  // animation so the bar can fade out instead of snapping. Presence is also
-  // gated by the effective `showPinnedUserMessage` pref so disabling it fades
-  // the bar out.
-  const [pinnedUserMsg, setPinnedUserMsg] = useState<{ id: string; text: string } | null>(null)
-  const [pinnedText, setPinnedText] = useState('')
+  // shown when it has scrolled above the viewport. The pinned value lives in a
+  // per-panel store, NOT Chat state: a scroll that crosses a user-message
+  // boundary must not re-render Chat (it would re-render the provider chain,
+  // composer and task list inside Virtuoso's synchronous scroll flush). Chat
+  // subscribes to presence only (mount/exit animation + RecapWindow's mount
+  // predicate); the header subscribes to the full snapshot, and the store
+  // retains the last text through the exit animation. Presence is also gated
+  // by the effective `showPinnedUserMessage` pref so disabling it fades the
+  // bar out.
+  const [pinnedStore] = useState(() => new PinnedMessageStore())
+  const hasPinnedUserMessage = useSyncExternalStore(pinnedStore.subscribe, pinnedStore.getPresence)
   const handlePinnedUserMessageChange = useCallback(
     (info: { id: string; text: string } | null) => {
-      if (info) setPinnedText(info.text)
-      setPinnedUserMsg(info)
+      pinnedStore.set(info)
     },
-    [],
+    [pinnedStore],
   )
   // Full list of rendered user messages, lifted from MessageList for the
   // pinned-header dropdown. Dedup is done in MessageList (length+ids), so a
@@ -2813,7 +2817,7 @@ export const Chat = memo(function Chat({
             searchOpen,
             hasRecap: session.recap != null,
             hasOlder: hasOlder,
-            hasPinnedUserMessage: pinnedUserMsg != null,
+            hasPinnedUserMessage,
           }) && session.recap && (
             <RecapWindow
               key="recap"
@@ -2823,13 +2827,12 @@ export const Chat = memo(function Chat({
               onRetry={recap.refresh}
             />
           )}
-          {effectiveShowPinned && !!pinnedUserMsg && !searchOpen && (
-            <PinnedUserMessage
+          {effectiveShowPinned && hasPinnedUserMessage && !searchOpen && (
+            <PinnedUserMessageHeader
               key="pinned"
-              text={pinnedText}
+              store={pinnedStore}
               clearing={effectiveClearing}
               userMessages={userMessages}
-              activeId={pinnedUserMsg.id}
               onJumpTo={(id) => {
                 const msg = userMessages.find((m) => m.id === id)
                 if (msg) scrollNavRef.current?.to(msg.index)
