@@ -46,25 +46,33 @@ beforeEach(() => {
 })
 
 describe('TurnChangesPanel', () => {
-  it('defaults to Full file and preserves it while following the file list', () => {
+  /** Open the header file dropdown (FieldPicker) and pick a file row. */
+  function pickFile(triggerName: RegExp, optionName: RegExp): void {
+    fireEvent.click(screen.getByRole('button', { name: triggerName }))
+    fireEvent.click(screen.getByRole('option', { name: optionName }))
+  }
+
+  it('defaults to Full file and preserves it while following the file dropdown', () => {
     render(<TurnChangesPanel sessionId="s" resultUuid="r" initialIndex={1} onClose={vi.fn()} />)
     expect(screen.getByText('Turn changes')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Full file' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Full' }).getAttribute('aria-pressed')).toBe('true')
     expect(hooks.diffCalls.at(-1)).toEqual({ index: 1, opts: { view: 'full-file', full: true } })
     expect(document.querySelector('.diff-line-add .diff-line-text')?.textContent).toBe('b')
 
-    fireEvent.click(screen.getByRole('button', { name: /src\/a\.ts/ }))
+    pickFile(/src\/b\.ts/, /src\/a\.ts/)
     expect(hooks.diffCalls.at(-1)).toEqual({ index: 0, opts: { view: 'full-file', full: true } })
     expect(document.querySelector('.diff-line-add .diff-line-text')?.textContent).toBe('a')
+    // The trigger now carries the newly selected file and its counts.
+    expect(screen.getByRole('button', { name: /src\/a\.ts \+2 −1/ })).toBeTruthy()
   })
 
   it('switches to Changes and preserves that view across files', () => {
     render(<TurnChangesPanel sessionId="s" resultUuid="r" initialIndex={0} onClose={vi.fn()} />)
-    fireEvent.click(screen.getByRole('button', { name: /^Changes$/ }))
-    expect(screen.getByRole('button', { name: /^Changes$/ }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: /^Part$/ }))
+    expect(screen.getByRole('button', { name: /^Part$/ }).getAttribute('aria-pressed')).toBe('true')
     expect(hooks.diffCalls.at(-1)).toEqual({ index: 0, opts: { view: 'changes', full: false } })
 
-    fireEvent.click(screen.getByRole('button', { name: /src\/b\.ts/ }))
+    pickFile(/src\/a\.ts/, /src\/b\.ts/)
     expect(hooks.diffCalls.at(-1)).toEqual({ index: 1, opts: { view: 'changes', full: false } })
   })
 
@@ -73,6 +81,8 @@ describe('TurnChangesPanel', () => {
     hooks.diffs = { 0: { available: true, reason: 'binary' } }
     render(<TurnChangesPanel sessionId="s" resultUuid="r" initialIndex={0} onClose={vi.fn()} />)
     expect(screen.getByText('Binary file')).toBeTruthy()
+    // The trigger labels the file instead of showing a meaningless `+0 −0`.
+    expect(screen.getByRole('button', { name: /src\/a\.ts binary/ })).toBeTruthy()
     expect(document.querySelector('.turn-review-diff-row')).toBeNull()
   })
 
@@ -87,7 +97,7 @@ describe('TurnChangesPanel', () => {
     render(<TurnChangesPanel sessionId="s" resultUuid="r" initialIndex={0} onClose={vi.fn()} />)
 
     expect(screen.queryByRole('button', { name: 'View full diff' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^Changes$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^Part$/ }))
     const showFull = screen.getByRole('button', { name: 'View full diff' })
     expect(showFull.closest('.turn-review-diff-view')).not.toBeNull()
     fireEvent.click(showFull)

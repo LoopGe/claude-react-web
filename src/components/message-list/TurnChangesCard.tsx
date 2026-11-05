@@ -8,6 +8,7 @@
  */
 import { useCallback, useId, useState } from 'react'
 import type { TurnChangedFile } from '../../../shared/turn-changes.js'
+import { countsLabel } from '../../../shared/turn-changes.js'
 import { useTurnChanges } from '../../hooks/useTurnChanges'
 import { AnimatedCollapse } from '../AnimatedCollapse'
 import { useTurnChangesContext } from './turn-changes-context'
@@ -22,8 +23,9 @@ function basename(display: string): string {
 
 /** Added/deleted counts (or the binary/oversized label). */
 export function Counts({ file }: { file: TurnChangedFile }) {
-  if (file.binary === true) return <span className="turn-changes-note-inline">binary</span>
-  if (file.oversized === true) return <span className="turn-changes-note-inline">too large</span>
+  if (file.binary === true || file.oversized === true) {
+    return <span className="turn-changes-note-inline">{countsLabel(file)}</span>
+  }
   return (
     <>
       <span className="turn-changes-added">+{file.additions}</span>

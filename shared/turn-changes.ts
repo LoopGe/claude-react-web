@@ -76,6 +76,16 @@ export interface TurnDiffPayload {
 /** Maximum files carried by one summary; `total` still reports the full count. */
 export const TURN_CHANGES_MAX_FILES = 500
 
+/** Plain-text per-file count label shared by the transcript card, the review
+ *  panel's picker trigger and its dropdown rows. Binary / oversized files
+ *  record zero additions/deletions, so the label replaces `+0 −0` instead of
+ *  sitting next to it. */
+export function countsLabel(file: TurnChangedFile): string {
+  if (file.binary === true) return 'binary'
+  if (file.oversized === true) return 'too large'
+  return `+${file.additions} −${file.deletions}`
+}
+
 /** Inclusive byte cap for a captured copy and for reading one back. */
 export const TURN_CHANGES_MAX_FILE_BYTES = 2 * 1024 * 1024
 
