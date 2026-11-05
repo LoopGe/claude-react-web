@@ -2078,6 +2078,415 @@ describe('MessageList', () => {
     vi.useRealTimers()
   })
 
+  describe('central fold scroll arbitration', () => {
+    function harness() {
+      vi.useFakeTimers()
+      const msgs = [
+        makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } }),
+        makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
+      ]
+      const state = { contentHeight: 200, stackHeight: 80, itemListH: 200, foldBodyH: 0, clientHeight: 100, rawScrollTop: 180, appWrites: 0 }
+      const utils = render(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />)
+      const { container } = utils
+      const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
+      const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
+      const itemList = scroller.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+      const readSpacer = () => {
+        const sp = scroller.querySelector<HTMLElement>('.virtuoso-bottom-spacer')
+        return sp ? (Number.parseFloat(sp.style.height) || 0) : 0
+      }
+      const maxScrollTop = () => Math.max(0, state.contentHeight + readSpacer() - state.clientHeight)
+      Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => state.contentHeight + readSpacer() })
+      Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => state.clientHeight })
+      Object.defineProperty(scroller, 'scrollTop', {
+        configurable: true,
+        get: () => Math.min(state.rawScrollTop, maxScrollTop()),
+        set: (v: number) => { state.appWrites++; state.rawScrollTop = Math.min(v, maxScrollTop()) },
+      })
+      Object.defineProperty(stack, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ height: state.stackHeight, width: 400, top: 0, left: 0, right: 400, bottom: state.stackHeight, x: 0, y: 0 }),
+      })
+      Object.defineProperty(itemList, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ height: state.itemListH, width: 400, top: 0, left: 0, right: 400, bottom: state.itemListH, x: 0, y: 0 }),
+      })
+      const fold = document.createElement('div')
+      fold.className = 'animated-collapse animating'
+      Object.defineProperty(fold, 'offsetHeight', { configurable: true, get: () => state.foldBodyH })
+      const startFold = () => {
+        scroller.appendChild(fold)
+        setCollapseAnimating(fold, true)
+      }
+      act(() => { fireResize(stack) })
+      act(() => { fireResize(itemList) })
+      act(() => { vi.advanceTimersByTime(2500) })
+      let appendSeq = 0
+      let currentMsgs = msgs
+      const appendMessage = () => {
+        appendSeq++
+        currentMsgs = [...currentMsgs, makeMsg('assistant', { uuid: `added-${appendSeq}`, message: { content: [{ type: 'text', text: 'new' }] } })]
+        act(() => { utils.rerender(<MessageList items={toItems(currentMsgs as SdkMessage[])} streamingContent="Live tokens" />) })
+      }
+      return { state, scroller, stack, itemList, fold, startFold, appendMessage }
+    }
+
+    it('defers follow and verify pins during a fold, then applies one at settle', () => {
+      const { state, scroller, itemList, fold, startFold } = harness()
+      try {
+        // A non-fold pin arms the verify loop. It must stop writing as soon as
+        // the fold owns the viewport instead of rebasing the fold ledger.
+        state.contentHeight = 214
+        state.itemListH = 214
+        act(() => { fireResize(itemList) })
+        expect(scroller.scrollTop).toBe(194)
+        startFold()
+        state.foldBodyH = 14
+        state.contentHeight = 228
+        state.itemListH = 228
+        const writes = state.appWrites
+        act(() => { vi.advanceTimersByTime(20) })
+        act(() => { fireEvent.scroll(scroller) })
+        expect(state.appWrites).toBe(writes)
+
+        // Lockstep performs the next alignment itself.
+        act(() => { fireResize(itemList) })
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(208)
+
+        // A follow-invariant request during the next growth is also deferred.
+        state.foldBodyH = 28
+        state.contentHeight = 242
+        state.itemListH = 242
+        act(() => { fireEvent.scroll(scroller) })
+        expect(state.appWrites).toBe(writes + 1)
+        act(() => { fireResize(itemList) })
+        expect(state.appWrites).toBe(writes + 2)
+        expect(scroller.scrollTop).toBe(222)
+
+        // One final request is applied once the fold releases ownership.
+        state.foldBodyH = 42
+        state.contentHeight = 256
+        state.itemListH = 256
+        act(() => { fireEvent.scroll(scroller) })
+        expect(state.appWrites).toBe(writes + 2)
+        act(() => { setCollapseAnimating(fold, false) })
+        act(() => { vi.advanceTimersByTime(20) })
+        expect(state.appWrites).toBe(writes + 3)
+        expect(scroller.scrollTop).toBe(236)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('routes a spacer pin through the next fold observation', () => {
+      const { state, scroller, stack, itemList, fold, startFold } = harness()
+      try {
+        startFold()
+        state.foldBodyH = 14
+        state.contentHeight = 214
+        state.itemListH = 214
+        state.stackHeight = 94
+        const writes = state.appWrites
+
+        act(() => { fireResize(stack) })
+        expect(state.appWrites).toBe(writes)
+
+        act(() => { fireResize(itemList) })
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(208)
+
+        // Deliver the previous write's scroll event before the margin-only
+        // change, so the assertion isolates verification rather than follow.
+        act(() => { fireEvent.scroll(scroller) })
+        // The deferred pin must retain append-style verification: a later
+        // margin-only bottom change (no RO / scroll event) is corrected too.
+        state.contentHeight = 228
+        act(() => { vi.advanceTimersByTime(20) })
+        act(() => { setCollapseAnimating(fold, false) })
+        act(() => { vi.advanceTimersByTime(20) })
+        expect(state.appWrites).toBe(writes + 2)
+        expect(scroller.scrollTop).toBe(222)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('defers viewport-shrink writes until the fold settles', () => {
+      const { state, scroller, itemList, fold, startFold } = harness()
+      try {
+        const scrollTo = vi.fn()
+        scroller.scrollTo = scrollTo
+        startFold()
+        state.foldBodyH = 14
+        state.contentHeight = 214
+        state.itemListH = 214
+        act(() => { fireResize(itemList) })
+        expect(scroller.scrollTop).toBe(194)
+        const writes = state.appWrites
+
+        state.clientHeight = 50
+        act(() => { fireResize(scroller) })
+        expect(scrollTo).not.toHaveBeenCalled()
+        act(() => { setCollapseAnimating(fold, false) })
+        act(() => { vi.advanceTimersByTime(20) })
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(244)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not start the follow rAF while a fold owns scrolling', () => {
+      const { state, scroller, itemList, fold, startFold, appendMessage } = harness()
+      try {
+        const scrollTo = vi.fn()
+        scroller.scrollTo = scrollTo
+        startFold()
+        state.foldBodyH = 14
+        state.contentHeight = 214
+        state.itemListH = 214
+        const writes = state.appWrites
+
+        appendMessage()
+        act(() => { vi.advanceTimersByTime(20) })
+        expect(scrollTo).not.toHaveBeenCalled()
+
+        act(() => { fireResize(itemList) })
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(194)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('aligns non-fold row growth through the next observation instead of dropping it', () => {
+      const { state, scroller, itemList, fold, startFold } = harness()
+      try {
+        startFold()
+        state.foldBodyH = 10
+        state.contentHeight = 210
+        state.itemListH = 210
+        act(() => { fireResize(itemList) })
+        expect(scroller.scrollTop).toBe(190)
+        const writes = state.appWrites
+
+        // The fold grows 10px while another row grows 100px in the same frame.
+        state.foldBodyH = 20
+        state.contentHeight = 320
+        state.itemListH = 320
+        act(() => { fireResize(itemList) })
+
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(300)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('releases the previous follow animation when a fold takes ownership', () => {
+      const { state, scroller, itemList, fold, startFold, appendMessage } = harness()
+      try {
+        appendMessage() // starts an animated follow before the fold
+        startFold()
+        appendMessage() // cancels it and defers to the fold
+        state.foldBodyH = 14
+        state.contentHeight = 214
+        state.itemListH = 214
+        const writes = state.appWrites
+        act(() => { vi.advanceTimersByTime(20) })
+
+        act(() => { fireResize(itemList) })
+        state.foldBodyH = 28
+        state.contentHeight = 228
+        state.itemListH = 228
+        act(() => { fireResize(itemList) })
+
+        expect(state.appWrites).toBe(writes + 2)
+        expect(scroller.scrollTop).toBe(208)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('uses absolute alignment when padding changes with a first-body fallback', () => {
+      const { state, scroller, itemList, fold, startFold } = harness()
+      try {
+        startFold()
+        itemList.style.paddingTop = '20px'
+        state.foldBodyH = 10
+        state.contentHeight = 230
+        state.itemListH = 230
+
+        act(() => { fireResize(itemList) })
+
+        expect(scroller.scrollTop).toBe(210)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('accumulates sub-pixel non-fold growth instead of discarding it', () => {
+      const { state, scroller, itemList, fold, startFold } = harness()
+      try {
+        startFold()
+        state.foldBodyH = 10
+        state.contentHeight = 210
+        state.itemListH = 210
+        act(() => { fireResize(itemList) })
+        expect(scroller.scrollTop).toBe(190)
+
+        for (let i = 0; i < 10; i++) {
+          state.contentHeight += 0.8
+          state.itemListH += 0.8
+          act(() => { fireResize(itemList) })
+        }
+
+        expect(scroller.scrollTop).toBeCloseTo(198, 8)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('keeps verification when an absolute first observation consumes a settle pin', () => {
+      const { state, scroller, itemList, fold, startFold } = harness()
+      try {
+        startFold()
+        state.foldBodyH = 14
+        state.contentHeight = 214
+        state.itemListH = 214
+        state.clientHeight = 0
+        act(() => { fireResize(itemList) }) // reset the item-list baseline
+        state.clientHeight = 100
+        act(() => { fireEvent.scroll(scroller) }) // deferred settle correction
+        const writes = state.appWrites
+
+        act(() => { fireResize(itemList) })
+        expect(scroller.scrollTop).toBe(194)
+        act(() => { fireEvent.scroll(scroller) })
+        state.contentHeight = 228
+        act(() => { vi.advanceTimersByTime(20) })
+        act(() => { setCollapseAnimating(fold, false) })
+        act(() => { vi.advanceTimersByTime(20) })
+
+        expect(state.appWrites).toBe(writes + 2)
+        expect(scroller.scrollTop).toBe(208)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('settles a deferred pin even when no fold-owned observation arrives', () => {
+      const { state, scroller, stack, fold, startFold } = harness()
+      try {
+        startFold()
+        state.contentHeight = 214
+        state.stackHeight = 94
+        const writes = state.appWrites
+        act(() => { fireResize(stack) })
+        expect(state.appWrites).toBe(writes)
+
+        // No item-list RO occurs before the fold is cancelled.
+        act(() => { setCollapseAnimating(fold, false) })
+        act(() => { vi.advanceTimersByTime(20) })
+
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(208)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('cancels an existing follow animation on the first fold observation', () => {
+      const { state, scroller, itemList, fold, startFold, appendMessage } = harness()
+      try {
+        appendMessage()
+        startFold()
+        state.foldBodyH = 14
+        state.contentHeight = 214
+        state.itemListH = 214
+        const writes = state.appWrites
+
+        act(() => { fireResize(itemList) })
+
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(194)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('absolutely aligns margin-only bottom growth that the item-list does not report', () => {
+      const { state, scroller, itemList, fold, startFold } = harness()
+      try {
+        startFold()
+        state.foldBodyH = 10
+        state.contentHeight = 210
+        state.itemListH = 210
+        act(() => { fireResize(itemList) })
+        expect(scroller.scrollTop).toBe(190)
+        const writes = state.appWrites
+
+        state.contentHeight = 230
+        act(() => { fireResize(itemList) })
+
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(210)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+
+    it('absolutely aligns a padding-only bottom change on a zero-height fold frame', () => {
+      const { state, scroller, itemList, fold, startFold } = harness()
+      try {
+        startFold()
+        state.foldBodyH = 10
+        state.contentHeight = 210
+        state.itemListH = 210
+        act(() => { fireResize(itemList) })
+        expect(scroller.scrollTop).toBe(190)
+        const writes = state.appWrites
+
+        itemList.style.paddingTop = '20px'
+        state.contentHeight = 230
+        state.itemListH = 230
+        act(() => { fireResize(itemList) })
+
+        expect(state.appWrites).toBe(writes + 1)
+        expect(scroller.scrollTop).toBe(210)
+      } finally {
+        setCollapseAnimating(fold, false)
+        fold.remove()
+        vi.useRealTimers()
+      }
+    })
+  })
+
   it('item-list micro-deltas schedule ONE trailing exact pin once the chain quiets', () => {
     // The residue the bands leave behind: a POSITIVE sub-band growth has no
     // clamp to correct it (the browser only clamps on shrink) and fires no

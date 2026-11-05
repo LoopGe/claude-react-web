@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  bodyHeightDelta,
   currentBodyHeight,
   releaseAncestorCollapsePins,
   setCollapseAnimating,
@@ -112,6 +113,37 @@ describe('currentBodyHeight', () => {
     vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(80)
 
     expect(currentBodyHeight(body)).toBe(80)
+  })
+})
+
+describe('bodyHeightDelta', () => {
+  it('returns null when the previous snapshot belongs only to an earlier fold', () => {
+    const [previous] = nest(1)
+    const [current] = nest(1)
+    const prev = new Map([[previous, 0]])
+    const snap = new Map([[current, 14]])
+
+    expect(bodyHeightDelta(prev, snap)).toBeNull()
+  })
+
+  it('returns null when a new body joins an already animating snapshot', () => {
+    const [shared] = nest(1)
+    const [current] = nest(1)
+
+    expect(bodyHeightDelta(
+      new Map([[shared, 10]]),
+      new Map([[shared, 12], [current, 20]]),
+    )).toBeNull()
+  })
+
+  it('sums changes only for bodies present in both snapshots', () => {
+    const [shared] = nest(1)
+    const [previous] = nest(1)
+
+    expect(bodyHeightDelta(
+      new Map([[shared, 10], [previous, 0]]),
+      new Map([[shared, 24]]),
+    )).toBe(14)
   })
 })
 

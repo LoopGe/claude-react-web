@@ -445,6 +445,10 @@ export function useTranscriptScroll({
   // verification pass. Declared before it to avoid a use-before-define cycle.
   const verifyRef = useRef<() => void>(() => {})
   const settleRafRef = useRef<number | null>(null)
+  /** Absolute bottom-pin requests arriving while a fold owns scrollTop.
+   *  append/spacer ride the next RO; corrective pins wait for settle. */
+  const pendingFoldPinRef = useRef<'next-ro' | 'settle' | null>(null)
+  const armFoldSettleRef = useRef<() => void>(() => {})
   // Explicit "a pass is running" flag, NOT the rAF handle. `tick` re-enters
   // through `pinToBottom` → `verifyRef.current()` (every pin starts a pass by
   // design), so using the handle as the guard would let a pinning tick start a
@@ -462,6 +466,16 @@ export function useTranscriptScroll({
     if (!el) { dbg('pin skip', () => ({ reason, why: 'no-el' })); return }
     if (!shouldFollowRef.current) { dbg('pin skip', () => ({ reason, why: 'away' })); return }
     if (scrollAnimatingRef.current && !allowDuringAnimation) { dbg('pin skip', () => ({ reason, why: 'animating' })); return }
+    if (reason !== 'fold-lockstep' && anyCollapseAnimatingInside(el)) {
+      const delivery = reason === 'append' || reason === 'spacer' ? 'next-ro' : 'settle'
+      if (pendingFoldPinRef.current !== 'next-ro') pendingFoldPinRef.current = delivery
+      armFoldSettleRef.current()
+      dbg('pin-deferred', () => ({ writer: 'pinToBottom', reason, delivery }))
+      return
+    }
+    // Any absolute pin that does run satisfies a previously deferred request;
+    // verify and the settle watcher must not both write for the same one.
+    pendingFoldPinRef.current = null
     dbg('pin', () => ({ writer: 'pinToBottom', reason, before: Math.round(el.scrollTop), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, distanceFromBottom: getDistanceFromTrueBottom(el) }))
     // eslint-disable-next-line react-hooks/immutability -- imperative bottom-pin writes are the scroll controller's event-time contract
     el.scrollTop = el.scrollHeight
@@ -615,15 +629,6 @@ export function useTranscriptScroll({
   const setBottomState = useCallback((nextAtBottom: boolean) => {
     atBottomRef.current = nextAtBottom
   }, [])
-
-  const scrollScrollerToBottom = useCallback((behavior: 'auto' | 'smooth' = 'auto') => {
-    const el = scrollerRef.current
-    if (el) {
-      el.scrollTo({ top: el.scrollHeight, behavior })
-      return
-    }
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior })
-  }, [virtuosoRef])
 
   const syncBottomState = useCallback((
     nextAtBottom: boolean,
@@ -816,6 +821,13 @@ export function useTranscriptScroll({
       virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
       return
     }
+    if (anyCollapseAnimatingInside(el)) {
+      pendingFoldPinRef.current = 'next-ro'
+      armFoldSettleRef.current()
+      scrollAnimatingRef.current = false
+      dbg('follow-deferred', () => ({ writer: 'animateScrollToBottom', delivery: 'next-ro' }))
+      return
+    }
     scrollAnimatingRef.current = true
     let lastSetTop = el.scrollTop
     const step = () => {
@@ -831,8 +843,10 @@ export function useTranscriptScroll({
       }
       const remaining = target - current
       if (remaining <= BOTTOM_EPSILON_PX) {
-        // Snap the last sub-pixel and finalize.
+        // Snap the last sub-pixel and finalize. Reaching the real bottom also
+        // satisfies any append/pin deferred by an overlapping fold.
         el.scrollTo({ top: target, behavior: 'auto' })
+        pendingFoldPinRef.current = null
         scrollAnimatingRef.current = false
         // Confirm bottom state now that we've truly arrived; the guard is
         // already false so this sync runs for real.
@@ -906,12 +920,12 @@ export function useTranscriptScroll({
       // write scrollTop 0 on a collapsed box (and the follow invariant
       // re-pins to the real bottom once the panel is shown again anyway).
       if (shrunk && atBottomRef.current && current.clientHeight > 0) {
-        scrollScrollerToBottom('auto')
+        pinToBottom(current, { reason: 'viewport-shrink' })
       }
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [rowCount, scrollScrollerToBottom, syncBottomGeometry])
+  }, [rowCount, pinToBottom, syncBottomGeometry])
 
   // Re-pin AFTER the bottom spacer commits its new height.
   //
@@ -993,6 +1007,9 @@ export function useTranscriptScroll({
     // sub-pixel content change — the fold-lockstep compensation below needs
     // the FRACTIONAL delta to keep the bottom exactly still.
     let lastItemListH: number | null = null
+    let lastPaddingTop: number | null = null
+    let lastPaddingBottom: number | null = null
+    let otherResidual = 0
     /** Previous frame's animating-body height snapshot — the fold-lockstep's
      *  reference for computing the fold's own height contribution as a
      *  per-body delta (so a body that just registered or just settled
@@ -1052,9 +1069,15 @@ export function useTranscriptScroll({
         }
         clearFoldTransform()
         ledger = null
+        const pendingPin = pendingFoldPinRef.current
+        pendingFoldPinRef.current = null
+        if (pendingPin && scroller.clientHeight !== 0 && shouldFollowRef.current && !scrollAnimatingRef.current) {
+          pinToBottom(scroller, { reason: 'fold-settle' })
+        }
       }
       settleRaf = requestAnimationFrame(step)
     }
+    armFoldSettleRef.current = settleFoldTransform
     const contentHeightOf = (scroller: HTMLElement) =>
       scroller.scrollHeight - getBottomSpacerHeight(scroller)
     const ro = new ResizeObserver((entries) => {
@@ -1068,14 +1091,28 @@ export function useTranscriptScroll({
       // fired the instant re-pin with scrollTop = scrollHeight = 0 on the
       // hidden element. Same stand-down contract as syncBottomGeometry and
       // the scroller-RO backstop: decide nothing from collapsed geometry.
-      if (scroller.clientHeight === 0) { dbg('itemlist-RO collapsed-skip', () => ({})); lastItemListH = null; lastBodySnap = null; ledger = null; return }
+      if (scroller.clientHeight === 0) { dbg('itemlist-RO collapsed-skip', () => ({})); lastItemListH = null; lastPaddingTop = null; lastPaddingBottom = null; otherResidual = 0; lastBodySnap = null; ledger = null; return }
+      if (scrollAnimatingRef.current && anyCollapseAnimatingInside(scroller)) {
+        if (scrollAnimRafRef.current != null) cancelAnimationFrame(scrollAnimRafRef.current)
+        scrollAnimRafRef.current = null
+        scrollAnimatingRef.current = false
+        pendingFoldPinRef.current = 'next-ro'
+        dbg('follow-cancelled-for-fold', () => ({}))
+      }
       // This frame's observation of the item-list box. borderBoxSize carries
       // the fractional block size; the rect fallback covers engines without
       // the entries API shape. RO is state-based: one entry per element per
       // callback, so the last entry IS this frame's geometry.
       const entry = entries[entries.length - 1]
       const itemListH = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height
-      if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); lastItemListH = itemListH; lastBodySnap = snapshotBodyHeights(scroller); ledger = null; return }
+      const itemList = entry.target as HTMLElement
+      const paddingTop = Number.parseFloat(itemList.style.paddingTop) || 0
+      const paddingBottom = Number.parseFloat(itemList.style.paddingBottom) || 0
+      const paddingDelta = (lastPaddingTop == null ? 0 : paddingTop - lastPaddingTop)
+        + (lastPaddingBottom == null ? 0 : paddingBottom - lastPaddingBottom)
+      lastPaddingTop = paddingTop
+      lastPaddingBottom = paddingBottom
+      if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); lastItemListH = itemListH; lastBodySnap = snapshotBodyHeights(scroller); otherResidual = 0; ledger = null; return }
       const contentH = contentHeightOf(scroller)
 
       // Lockstep bottom-pinning while a collapse fold is in flight anywhere in
@@ -1147,16 +1184,31 @@ export function useTranscriptScroll({
         const previousItemListH = lastItemListH
         const itemDelta = lastItemListH == null ? null : itemListH - lastItemListH
         lastItemListH = itemListH
+        const contentDelta = contentH - lastContentHeight
         lastContentHeight = contentH
-        // Primary signal: the bodies' per-body height delta. Fall back to the
-        // item-list delta on the first fold frame.
-        const delta = foldDelta ?? itemDelta
+        // Primary signal: the bodies' per-body height delta. Any other change
+        // in the real content bottom — another row, a margin, or a Virtuoso
+        // padding rebalance — gets one absolute alignment instead of being
+        // silently dropped from the incremental fold ledger.
+        const otherDelta = contentDelta - (foldDelta ?? 0)
+        otherResidual += otherDelta
+        let pendingPin = pendingFoldPinRef.current
+        if (Math.abs(otherResidual) >= 1) {
+          pendingFoldPinRef.current = 'next-ro'
+          pendingPin = 'next-ro'
+        }
+        if (pendingPin === 'next-ro') {
+          pendingFoldPinRef.current = null
+          otherResidual = 0
+        }
+        const fallbackDelta = itemDelta == null ? null : itemDelta - paddingDelta
+        const delta = pendingPin === 'next-ro' ? null : foldDelta ?? fallbackDelta
         const domTop = scroller.scrollTop
         const ledgerBefore = ledger
         if (delta == null) {
           // No fractional reference (first observation after a baseline
           // reset): fall back to the integer pin for this frame.
-          pinToBottom(scroller, { reason: 'fold-lockstep', verify: false })
+          pinToBottom(scroller, { reason: 'fold-lockstep', verify: pendingPin != null })
           ledger = scroller.scrollTop
         } else {
           // Seed the ledger direction-aware. GROWTH: the browser does not
@@ -1197,11 +1249,13 @@ export function useTranscriptScroll({
         // was, and where the ledger/rounding left the DOM.
         dbg('itemlist-RO fold-lockstep', () => ({
           firstFrame: foldDelta == null,
-          deltaSource: foldDelta != null ? 'body' : itemDelta != null ? 'itemDelta' : 'integer-pin',
+          deltaSource: pendingPin === 'next-ro' ? 'deferred-pin' : foldDelta != null ? 'body' : itemDelta != null ? 'itemDelta' : 'integer-pin',
           foldDelta, itemDelta, delta, domTop,
+          otherDelta, otherResidual, paddingDelta, contentDelta,
           ledgerBefore, ledger, scrollTopAfter: scroller.scrollTop,
           previousItemListH, itemListH,
-          paddingTop: (entry.target as HTMLElement).style.paddingTop || '0px',
+          paddingTop: itemList.style.paddingTop || '0px',
+          paddingBottom: itemList.style.paddingBottom || '0px',
           bodyHeights: Array.from(bodySnap, ([body, height]) => ({
             foldId: traceFoldIdFor(body) ?? null,
             height,
@@ -1230,6 +1284,7 @@ export function useTranscriptScroll({
       }
       lastItemListH = itemListH
       lastBodySnap = null
+      otherResidual = 0
       ledger = null
       clearFoldTransform()
 
@@ -1283,12 +1338,17 @@ export function useTranscriptScroll({
       // delta. `lastContentHeight` keeps its content-based seed — scrollHeight
       // is transform-free.
       lastItemListH = null
+      lastPaddingTop = null
+      lastPaddingBottom = null
+      otherResidual = 0
       lastBodySnap = null
       ro.observe(itemList)
     }
     attach()
     return () => {
       cancelled = true
+      armFoldSettleRef.current = () => {}
+      pendingFoldPinRef.current = null
       cancelAnimationFrame(raf)
       ro.disconnect()
       // A mid-fold teardown (transcript switch) must not leave the sub-pixel

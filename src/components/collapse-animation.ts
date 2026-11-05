@@ -188,18 +188,19 @@ export function snapshotBodyHeights(root: ParentNode | null): BodyHeightSnapshot
 }
 
 /** Height delta attributable to bodies that were animating in BOTH the
- *  previous and current snapshots. Bodies new to the current snapshot (a
- *  fold just started) and bodies missing from it (a fold just settled) are
- *  excluded — their full height is not a frame-to-frame change.
- *
- *  Returns null when there is no previous snapshot (the caller should fall
- *  back to the item-list delta for that first frame). */
+ *  previous and current snapshots. If ANY current body lacks a previous
+ *  baseline — typically the first frame of a new fold, with or without other
+ *  folds already running — return null and let the caller use the item-list
+ *  fallback rather than dropping that new body's first change. */
 export function bodyHeightDelta(prev: BodyHeightSnapshot | null, current: BodyHeightSnapshot): number | null {
   if (prev == null) return null
   let delta = 0
   for (const [el, h] of current) {
     const prevH = prev.get(el)
-    if (prevH != null) delta += h - prevH
+    // A body that was not in the previous snapshot has no baseline. Its first
+    // change must use the item-list fallback, including when other bodies match.
+    if (prevH == null) return null
+    delta += h - prevH
   }
   return delta
 }
