@@ -298,7 +298,7 @@ describe('resolveSessionPrefs', () => {
 // ── appearanceFromFullConfig ──────────────────────────────────────────
 
 describe('appearanceFromFullConfig', () => {
-  it('copies every appearance field from a FullServerConfig', () => {
+  it('copies only the fields the settings modal owns', () => {
     const full: FullServerConfig = {
       configured: true,
       authTokenMasked: '***',
@@ -329,12 +329,38 @@ describe('appearanceFromFullConfig', () => {
       toolGroupCards: false,
       autoExpandRunningGroups: false,
       showMessageHeaders: false,
-      rowGap: 'compact',
-      textSpacing: 'compact',
-      fontSize: 'small',
-      animationSpeed: 'slow',
       streamingRenderMode: 'inline',
     })
+  })
+
+  it('never includes the four display presets owned by the Theme popover', () => {
+    const full: FullServerConfig = {
+      configured: true,
+      authTokenMasked: '***',
+      baseUrl: 'https://example.com',
+      modelList: [],
+      modelGroups: [],
+      recapModel: 'r',
+      commitMessageModel: 'c',
+      maxUploadBytes: 1024,
+      historyCap: 500,
+      maxGroupPanels: 3,
+      workingStuckMs: 60000,
+      updateCheckRegistry: '',
+      skillLoadMode: 'lazy',
+      enabledSkills: [],
+      allowSensitivePathEdits: false,
+      steering: true,
+      fileSnapshots: true,
+      fileSnapshotsMaxUntrackedBytes: 2097152,
+      defaults: {},
+      ...NON_DEFAULT_PREFS,
+    } as unknown as FullServerConfig
+
+    const appearance = appearanceFromFullConfig(full)
+    for (const key of ['rowGap', 'textSpacing', 'fontSize', 'animationSpeed'] as const) {
+      expect(key in appearance).toBe(false)
+    }
   })
 
   it('never includes firstPartyTools in the result', () => {

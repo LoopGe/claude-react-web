@@ -1,6 +1,8 @@
-// Unified "Appearance" popover — one entry point for skin, light/dark
-// mode, and accent colour. Replaces the old standalone ThemeToggle (cycle
-// button) + AccentPicker (swatch trigger) in the toolbar.
+// Unified "Appearance" popover — one entry point for skin, light/dark mode,
+// accent colour, and the four global display presets (transcript spacing,
+// message text density, font size, animation speed). Replaces the old
+// standalone ThemeToggle (cycle button) + AccentPicker (swatch trigger) in
+// the toolbar.
 //
 // Reuses the project's established popover conventions:
 //   - AccentPicker: uncontrolled trigger button → getBoundingClientRect()
@@ -20,9 +22,15 @@ import { isBackgroundLocked, isTransparencyLocked } from '../utils/theme'
 import { ACCENT_COLORS, markPortaledSurface } from '../theme'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import type { BackgroundSetting } from '../theme'
+import type { DisplayPresetPrefs } from '../types/config'
+import { ROW_GAP_LABELS, ROW_GAP_PRESETS } from '../../shared/row-gap'
+import { TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spacing'
+import { FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../shared/font-size'
+import { ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { AccentSwatchGrid } from './AccentPicker'
 import { BackgroundPicker } from './BackgroundPicker'
 import { Switch } from './Switch'
+import { Segmented } from './Segmented'
 import { IconSparkles, IconSun, IconMoon, IconMonitor, IconCheck } from './icons/ToolIcons'
 
 interface Props {
@@ -36,6 +44,10 @@ interface Props {
   onBackgroundChange?: (next: BackgroundSetting) => void
   transparency?: boolean
   onTransparency?: (on: boolean) => void
+  /** The four global display presets this popover now owns (moved here from
+   *  Global Settings → Appearance). Saved immediately by the parent. */
+  displayPrefs: DisplayPresetPrefs
+  onDisplayPrefChange: (patch: Partial<DisplayPresetPrefs>) => void
   className?: string
 }
 
@@ -77,6 +89,36 @@ const MODE_OPTIONS: { value: Theme; label: string; icon: ReactNode }[] = [
   { value: 'system', label: 'System', icon: <IconMonitor size={15} /> },
 ]
 
+/** One Display row: title + its grid-variant Segmented. `title` drives both
+ *  the visible label and the radiogroup's aria-label so they cannot drift. */
+function PresetRow<T extends string>({
+  title,
+  value,
+  options,
+  labels,
+  onChange,
+}: {
+  title: string
+  value: T
+  options: readonly T[]
+  labels: Record<T, string>
+  onChange: (v: T) => void
+}) {
+  return (
+    <div className="appearance-preset-row">
+      <span className="appearance-preset-label">{title}</span>
+      <Segmented
+        variant="grid"
+        ariaLabel={title}
+        value={value}
+        options={options}
+        labelFor={(v) => labels[v]}
+        onChange={onChange}
+      />
+    </div>
+  )
+}
+
 function AppearancePopover({
   skin,
   mode,
@@ -88,6 +130,8 @@ function AppearancePopover({
   onBackgroundChange = () => {},
   transparency = true,
   onTransparency = () => {},
+  displayPrefs,
+  onDisplayPrefChange,
   anchor,
   triggerRef,
   onClose,
@@ -102,6 +146,8 @@ function AppearancePopover({
   onBackgroundChange?: (next: BackgroundSetting) => void
   transparency?: boolean
   onTransparency?: (on: boolean) => void
+  displayPrefs: DisplayPresetPrefs
+  onDisplayPrefChange: (patch: Partial<DisplayPresetPrefs>) => void
   anchor: { x: number; y: number }
   /** The Theme button — a TOGGLE, so it must be exempt from the outside-press
    *  dismissal or it can never close this popover (see the hook). */
@@ -112,6 +158,10 @@ function AppearancePopover({
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
 
   // Measure then nudge inward to stay in the viewport (mirrors ModelPicker).
+  // Re-clamped whenever the panel itself resizes, not just on open: the
+  // Display section's Font size control rescales this panel's own labels while
+  // it is open, and switching Background to a custom wallpaper grows it too —
+  // without a re-measure the growing box would spill off the bottom edge.
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
@@ -120,13 +170,42 @@ function AppearancePopover({
     // accent/skill rows and inputs inside read --bg-elev* and would otherwise
     // sit opaque while the panel behind them dims.
     markPortaledSurface(el)
-    const rect = el.getBoundingClientRect()
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    const margin = 12
-    const nx = Math.min(anchor.x, vw - rect.width - margin)
-    const ny = Math.min(anchor.y, vh - rect.height - margin)
-    setPos({ x: Math.max(margin, nx), y: Math.max(margin, ny) })
+    const clamp = () => {
+      // Use the visual viewport when available: a mobile keyboard shrinks it
+      // without changing innerHeight. The height cap is applied HERE (not
+      // only in CSS) so the cap and the position share one viewport source.
+      const vv = window.visualViewport
+      const vw = vv?.width ?? window.innerWidth
+      const vh = vv?.height ?? window.innerHeight
+      const cap = Math.max(0, vh - 24)
+      if (el.style.maxHeight !== `${cap}px`) el.style.maxHeight = `${cap}px`
+      // offsetWidth/offsetHeight, NOT getBoundingClientRect: the entrance
+      // animation still holds scale(0.98) when this first runs, and a
+      // transformed rect measures ~2% short — enough to place a capped panel
+      // below the viewport. Offset metrics ignore transforms.
+      const w = el.offsetWidth
+      const h = el.offsetHeight
+      const margin = 12
+      const nx = Math.max(margin, Math.min(anchor.x, vw - w - margin))
+      const ny = Math.max(margin, Math.min(anchor.y, vh - h - margin))
+      setPos((prev) => (prev.x === nx && prev.y === ny ? prev : { x: nx, y: ny }))
+    }
+    clamp()
+    // A viewport resize changes neither the panel's own border box nor its
+    // configured anchor, so the ResizeObserver alone would miss it.
+    window.addEventListener('resize', clamp)
+    window.visualViewport?.addEventListener('resize', clamp)
+    // The visual viewport can PAN (pinch-zoom / focus scroll) without a
+    // height change; subscribe to scroll as well so the panel is re-clamped.
+    window.visualViewport?.addEventListener('scroll', clamp)
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(clamp)
+    ro?.observe(el)
+    return () => {
+      window.removeEventListener('resize', clamp)
+      window.visualViewport?.removeEventListener('resize', clamp)
+      window.visualViewport?.removeEventListener('scroll', clamp)
+      ro?.disconnect()
+    }
   }, [anchor.x, anchor.y])
 
   // Outside-click dismissal. The trigger is exempt because it toggles: closing
@@ -201,6 +280,42 @@ function AppearancePopover({
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Display — the four global typography/spacing/motion presets moved
+          here from Global Settings → Appearance. Each click saves immediately
+          (server config); unlike the localStorage theme controls above, there
+          is no staged Save button. Titles only, no descriptions. */}
+      <div className="appearance-section">
+        <div className="appearance-heading">Display</div>
+        <PresetRow
+          title="Transcript spacing"
+          value={displayPrefs.rowGap}
+          options={ROW_GAP_PRESETS}
+          labels={ROW_GAP_LABELS}
+          onChange={(rowGap) => onDisplayPrefChange({ rowGap })}
+        />
+        <PresetRow
+          title="Message text density"
+          value={displayPrefs.textSpacing}
+          options={TEXT_SPACING_PRESETS}
+          labels={TEXT_SPACING_LABELS}
+          onChange={(textSpacing) => onDisplayPrefChange({ textSpacing })}
+        />
+        <PresetRow
+          title="Font size"
+          value={displayPrefs.fontSize}
+          options={FONT_SIZE_PRESETS}
+          labels={FONT_SIZE_LABELS}
+          onChange={(fontSize) => onDisplayPrefChange({ fontSize })}
+        />
+        <PresetRow
+          title="Animation speed"
+          value={displayPrefs.animationSpeed}
+          options={ANIMATION_SPEED_PRESETS}
+          labels={ANIMATION_SPEED_LABELS}
+          onChange={(animationSpeed) => onDisplayPrefChange({ animationSpeed })}
+        />
       </div>
 
       {/* Transparency — hidden on hc / soft-hc, whose glass is already
@@ -303,6 +418,8 @@ export function AppearancePanel({
   onBackgroundChange = () => {},
   transparency = true,
   onTransparency = () => {},
+  displayPrefs,
+  onDisplayPrefChange,
   className,
 }: Props) {
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -328,7 +445,7 @@ export function AppearancePanel({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label="Theme"
-        title="Theme — skin, mode & accent"
+        title="Theme — skin, mode, display & accent"
       >
         <IconSparkles size={16} />
       </button>
@@ -344,6 +461,8 @@ export function AppearancePanel({
           onBackgroundChange={onBackgroundChange}
           transparency={transparency}
           onTransparency={onTransparency}
+          displayPrefs={displayPrefs}
+          onDisplayPrefChange={onDisplayPrefChange}
           anchor={anchor}
           triggerRef={triggerRef}
           onClose={() => {

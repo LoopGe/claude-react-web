@@ -45,15 +45,31 @@ export type SessionPrefs = Pick<
   'autoExpandRunningGroups' | 'showMessageHeaders'
 >
 
-/** The appearance slice of GlobalPrefs, used by the GlobalSettingsModal's
- *  staged appearance state. Excludes `firstPartyTools` (which has its own
- *  independent save path). */
+/** The appearance slice of GlobalPrefs — everything except `firstPartyTools`
+ *  (which has its own independent save path). The settings modal stages the
+ *  narrower `ModalAppearancePrefs`; the display presets in this type are
+ *  owned by the header Theme popover. */
 export type AppearancePrefs = Omit<GlobalPrefs, 'firstPartyTools'>
 
+/** The four display presets owned by the header Theme popover. They stay part
+ *  of `GlobalPrefs` (App applies them document-wide), but their controls live
+ *  outside the settings modal so the popover can read and patch them as one
+ *  unit. */
+export type DisplayPresetPrefs = Pick<
+  GlobalPrefs,
+  'rowGap' | 'textSpacing' | 'fontSize' | 'animationSpeed'
+>
+
+/** The settings modal's staged slice: `AppearancePrefs` minus the four display
+ *  presets owned by the Theme popover. Narrowing the type makes a
+ *  reintroduced preset patch a compile error rather than a value that stages
+ *  but is never written. */
+export type ModalAppearancePrefs = Omit<AppearancePrefs, keyof DisplayPresetPrefs>
+
 /** Shipped defaults for every appearance field. Typed as `AppearancePrefs`
- *  (no `firstPartyTools`) so it doubles as the initial state for the
- *  GlobalSettingsModal's staged appearance object. Also assignable to
- *  `GlobalPrefs` since `firstPartyTools` is optional. */
+ *  (no `firstPartyTools`) and assignable to `GlobalPrefs` since
+ *  `firstPartyTools` is optional. The settings modal starts from the narrower
+ *  `DEFAULT_MODAL_APPEARANCE` instead. */
 export const DEFAULT_GLOBAL_PREFS: AppearancePrefs = {
   showPinnedUserMessage: true,
   autoRecap: true,
@@ -88,27 +104,30 @@ export function globalPrefsFromConfig(config: Partial<GlobalPrefs>): GlobalPrefs
   }
 }
 
-/** Extract the `AppearancePrefs` slice from a full config. Reuses the same
- *  field mapping as `globalPrefsFromConfig` — the `??` defaults never trigger
- *  for the appearance fields because `FullServerConfig` (which extends
- *  `GlobalPrefs`) has them all required; `firstPartyTools` is the one optional
- *  field and is dropped by this function. */
-export function appearanceFromFullConfig(config: FullServerConfig): AppearancePrefs {
+/** Extract the settings modal's staged slice from a full config. Reuses the
+ *  same field mapping as `globalPrefsFromConfig`; `firstPartyTools` and the
+ *  four display presets (owned by the Theme popover) are dropped so the
+ *  modal's state never carries values it does not render or write. */
+export function appearanceFromFullConfig(config: FullServerConfig): ModalAppearancePrefs {
   const g = globalPrefsFromConfig(config)
-  // Destructure to drop firstPartyTools without a rest binding (which would
-  // create an unused-variable lint).
   return {
     showPinnedUserMessage: g.showPinnedUserMessage,
     autoRecap: g.autoRecap,
     toolGroupCards: g.toolGroupCards,
     autoExpandRunningGroups: g.autoExpandRunningGroups,
     showMessageHeaders: g.showMessageHeaders,
-    rowGap: g.rowGap,
-    textSpacing: g.textSpacing,
-    fontSize: g.fontSize,
-    animationSpeed: g.animationSpeed,
     streamingRenderMode: g.streamingRenderMode,
   }
+}
+
+/** Initial staged state for the settings modal — the six fields it owns. */
+export const DEFAULT_MODAL_APPEARANCE: ModalAppearancePrefs = {
+  showPinnedUserMessage: DEFAULT_GLOBAL_PREFS.showPinnedUserMessage,
+  autoRecap: DEFAULT_GLOBAL_PREFS.autoRecap,
+  toolGroupCards: DEFAULT_GLOBAL_PREFS.toolGroupCards,
+  autoExpandRunningGroups: DEFAULT_GLOBAL_PREFS.autoExpandRunningGroups,
+  showMessageHeaders: DEFAULT_GLOBAL_PREFS.showMessageHeaders,
+  streamingRenderMode: DEFAULT_GLOBAL_PREFS.streamingRenderMode,
 }
 
 /** Shallow scalar equality plus reference identity for `firstPartyTools`.

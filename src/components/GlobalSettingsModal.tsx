@@ -11,11 +11,7 @@ import { EmptyState } from './EmptyState'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Skeleton } from './Skeleton'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
-import { DEFAULT_GLOBAL_PREFS, appearanceFromFullConfig, type AppearancePrefs, type FullServerConfig } from '../types/config'
-import { ROW_GAP_LABELS, ROW_GAP_PRESETS } from '../../shared/row-gap'
-import { TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spacing'
-import { FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../shared/font-size'
-import { ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
+import { DEFAULT_MODAL_APPEARANCE, appearanceFromFullConfig, type ModalAppearancePrefs, type FullServerConfig } from '../types/config'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
 import { AddSkillCard } from './settings/AddSkillCard'
 import { SkillPreviewModal } from './settings/SkillPreviewModal'
@@ -31,6 +27,7 @@ import { useExitPresence, usePresenceValue } from '../hooks/useExitPresence'
 import { DirectoryPicker } from './DirectoryPicker'
 import { Switch } from './Switch'
 import { SettingsRow } from './SettingsRow'
+import { Segmented } from './Segmented'
 import { DaemonSection } from './settings/DaemonSection'
 import { Overlay } from './Overlay'
 import { McpToolsList, firstPartyToolDefsAsMcpTools } from './McpToolsList'
@@ -160,11 +157,12 @@ export function GlobalSettingsModal({
   // (which preserves explicit `false`); patched field-by-field through
   // `patchAppearance`, which merges a Partial so an edit to one field never
   // clobbers the others.
-  const [appearance, setAppearance] = useState<AppearancePrefs>(DEFAULT_GLOBAL_PREFS)
+  // Clone: never hand the shared module constant to a state setter.
+  const [appearance, setAppearance] = useState<ModalAppearancePrefs>(() => ({ ...DEFAULT_MODAL_APPEARANCE }))
   // useCallback so onPatch has stable identity across re-renders — a future
   // React.memo on AppearanceTab would then skip re-renders driven by unrelated
   // modal state changes. The merge preserves every non-patched field.
-  const patchAppearance = useCallback((patch: Partial<AppearancePrefs>) => {
+  const patchAppearance = useCallback((patch: Partial<ModalAppearancePrefs>) => {
     setAppearance((prev) => ({ ...prev, ...patch }))
   }, [])
 
@@ -286,9 +284,13 @@ export function GlobalSettingsModal({
         updateCheckRegistry: updateCheckRegistry.trim() || null,
         skillLoadMode,
         enabledSkills: enabledSkills.length > 0 ? enabledSkills : null,
-        // The staged appearance object — spread so every field is sent
-        // explicitly, including literal `false` (PUT /config treats null/''
-        // as "delete key", so `false` must persist a real OFF default).
+        // The staged appearance slice — exhaustive by construction: its type
+        // (ModalAppearancePrefs) and loader only ever contain the six fields
+        // this modal owns. The four display presets live in the header Theme
+        // popover and are deliberately absent, so echoing a mount-time copy
+        // cannot undo a parallel change. Literal `false` is sent explicitly
+        // (PUT /config treats null/'' as "delete key", so `false` must persist
+        // a real OFF default).
         ...appearance,
         allowSensitivePathEdits,
         steering,
@@ -728,7 +730,7 @@ function ServerTab({
 /** Display / behaviour defaults applied to every session, overridable per
  *  session from the session Settings panel's own Appearance tab. Split out of
  *  the Server tab, which now holds only server-wide Limits + Permissions.
- *  Receives the staged `AppearancePrefs` object and a single `onPatch` callback
+ *  Receives the staged `ModalAppearancePrefs` object and a single `onPatch` callback
  *  that merges a Partial — each control patches only its own key, so an edit to
  *  one field never clobbers the others. Exported for direct unit testing of the
  *  values/onPatch contract. */
@@ -736,8 +738,8 @@ export function AppearanceTab({
   values,
   onPatch,
 }: {
-  values: AppearancePrefs
-  onPatch: (patch: Partial<AppearancePrefs>) => void
+  values: ModalAppearancePrefs
+  onPatch: (patch: Partial<ModalAppearancePrefs>) => void
 }) {
   return (
     <div className="settings-stack">
@@ -747,8 +749,9 @@ export function AppearanceTab({
           <span className="settings-group-desc">
             Defaults for every session. The pinned header / recap / tool-group /
             message-header rows are overridable per session (session Settings →
-            Appearance); streaming preview and the spacing, size and speed
-            presets are global-only personal preferences.
+            Appearance); streaming preview is a global-only personal preference.
+            Transcript spacing, message text density, font size and animation
+            speed now live in the header's Theme menu.
           </span>
         </div>
         <SettingsRow
@@ -816,55 +819,7 @@ export function AppearanceTab({
             onChange={(on) => onPatch({ streamingRenderMode: on ? 'inline' : 'overlay' })}
           />
         </SettingsRow>
-        <SettingsRow
-          title="Transcript spacing"
-          hint="Vertical rhythm between message rows, folded tool groups, and the floating task/monitor cards. Applies globally to every session."
-        >
-          <Segmented
-            ariaLabel="Transcript spacing"
-            value={values.rowGap}
-            options={ROW_GAP_PRESETS}
-            onChange={(p) => onPatch({ rowGap: p })}
-            labelFor={(p) => ROW_GAP_LABELS[p]}
-          />
-        </SettingsRow>
-        <SettingsRow
-          title="Message text density"
-          hint="White-space and line-height inside each message card: prose rhythm, paragraph/heading spacing, code-block gaps, and card padding. Sibling of transcript spacing (which controls the gap between cards). Applies globally to every session."
-        >
-          <Segmented
-            ariaLabel="Message text density"
-            value={values.textSpacing}
-            options={TEXT_SPACING_PRESETS}
-            onChange={(p) => onPatch({ textSpacing: p })}
-            labelFor={(p) => TEXT_SPACING_LABELS[p]}
-          />
-        </SettingsRow>
-        <SettingsRow
-          title="Font size"
-          hint="Scales the whole app's typography — message text, sidebar, buttons, panel headers, code blocks — in lockstep. Does not change text spacing (that's the two settings above). Applies globally to every session."
-        >
-          <Segmented
-            ariaLabel="Font size"
-            value={values.fontSize}
-            options={FONT_SIZE_PRESETS}
-            onChange={(p) => onPatch({ fontSize: p })}
-            labelFor={(p) => FONT_SIZE_LABELS[p]}
-          />
-        </SettingsRow>
-        <SettingsRow
-          title="Animation speed"
-          hint="Speeds up or slows down the app's CSS transitions and animations — panel entrances, hover fades, transcript reveals — without changing their distance or easing. Applies globally to every session."
-        >
-          <Segmented
-            ariaLabel="Animation speed"
-            value={values.animationSpeed}
-            options={ANIMATION_SPEED_PRESETS}
-            onChange={(p) => onPatch({ animationSpeed: p })}
-            labelFor={(p) => ANIMATION_SPEED_LABELS[p]}
-          />
-        </SettingsRow>
-      </section>
+              </section>
     </div>
   )
 }
@@ -954,38 +909,6 @@ function Stepper({
     </div>
   )
 }
-
-/** Compact segmented picker for small ordinal ranges (e.g. 2–5 panels). */
-function Segmented<T extends number | string>({
-  value, options, onChange, ariaLabel, labelFor,
-}: {
-  value: T
-  options: readonly T[]
-  onChange: (v: T) => void
-  ariaLabel: string
-  /** Optional display text; defaults to the raw value (used by numeric
-   *  options like "Max group panels", where the number is the label). */
-  labelFor?: (v: T) => string
-}) {
-  return (
-    <div className="segmented" role="radiogroup" aria-label={ariaLabel}>
-      {options.map((opt) => (
-        <button
-          key={opt}
-          type="button"
-          role="radio"
-          aria-checked={value === opt}
-          className={`segmented-btn${value === opt ? ' active' : ''}`}
-          onClick={() => onChange(opt)}
-        >
-          {labelFor ? labelFor(opt) : opt}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-
 
 function SkillsTab({
   cwd: defaultCwd,

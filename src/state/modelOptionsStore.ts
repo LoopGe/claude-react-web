@@ -71,6 +71,12 @@ interface Entry<T> {
  *  capture it and discard their result if it moved — a slow pre-invalidate
  *  response must not clobber the post-invalidate generation. */
 let generation = 0
+/** Locally-persisted /config values (successful immediate-save display
+ *  presets), overlaid on EVERY /config response. A refetch — settings save,
+ *  profile change, or a fetch already in flight — returns a server body that
+ *  may predate a concurrent write; the locally-persisted value must win so
+ *  neither the cached body nor App state can snap back. */
+let localConfigPatch: Partial<ConfigResponse> = {}
 /** Generation the current /config in-flight was started at. A `force` call
  *  joins it only when both are the same generation (two pickers opening
  *  together want the same fresh body); a force after markConfigStale() sees
@@ -113,6 +119,18 @@ export function peekConfig(): ConfigResponse | null {
   return configEntry.data
 }
 
+/** Apply a locally-known /config patch to the cached body. The immediate-save
+ *  display presets need this: a later model-options notify re-applies
+ *  `peekConfig()`, and a pre-save body would silently revert the value the
+ *  user just set. Does NOT notify — the caller has already applied the value
+ *  to its own state. No-op before the first fetch (nothing to patch yet). */
+export function patchConfigCache(patch: Partial<ConfigResponse>): void {
+  // Remember the value for every future /config response too (see
+  // localConfigPatch): a refetch must not revert what the client persisted.
+  localConfigPatch = { ...localConfigPatch, ...patch }
+  if (configEntry.data) configEntry.data = { ...configEntry.data, ...patch }
+}
+
 /** Last snapshot for `profileId` (default: active), or null if never fetched. */
 export function peekModelOptions(profileId?: string): ModelOptionsSnapshot | null {
   return entryFor(keyOf(profileId)).data
@@ -153,7 +171,10 @@ export function fetchConfig(opts?: { force?: boolean }): Promise<ConfigResponse>
         return configEntry.promise ??
           (configEntry.data ? Promise.resolve(configEntry.data) : fetchConfig())
       }
-      configEntry.data = r
+      // Apply the local overlay AFTER the server body: a response that
+      // started before a display-preset write (or a settings refresh racing
+      // one) must not revert the value the client already persisted.
+      configEntry.data = { ...r, ...localConfigPatch }
       const active = entryFor('')
       active.data = snapshotFromModelList(r.models, r.modelGroups)
       notify()
@@ -247,6 +268,7 @@ export function invalidateModelOptions(): void {
 /** Test-only: hard reset (cache + subscribers + generation). */
 export function resetModelOptionsStoreForTest(): void {
   generation += 1
+  localConfigPatch = {}
   configEntry.data = null
   configEntry.promise = null
   byProfile.clear()

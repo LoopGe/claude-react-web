@@ -1107,6 +1107,29 @@
   outline-offset: -2px;
 }
 
+/* Two-column grid variant (Theme popover display presets): a four-item set
+   becomes 2×2, and an odd-length set's final item spans both columns. The
+   shared button styling above is reused; only layout and the divider
+   pseudo-elements change. */
+.segmented-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  /* The 1px gap paints the shared divider lines. */
+  gap: 1px;
+  background: var(--border);
+}
+/* :where() keeps this rule below `.segmented-btn:hover` / `.active` in the
+   cascade, so the grid's base fill never overrides their accent/hover
+   backgrounds. */
+.segmented-grid :where(.segmented-btn) {
+  min-width: 0;
+  padding: 5px 4px;
+  background: var(--bg-elev-1);
+}
+.segmented-grid .segmented-btn:not(:last-child)::after { display: none; }
+.segmented-grid .segmented-btn:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
 /* Switch (boolean row control). */
 .settings-switch {
   position: relative;

@@ -459,7 +459,7 @@ Tabs in order: `General` · `Appearance` · `Context` · `Hooks` · `Plugins` ·
 Tabs: `Profiles` · `Server` · `Appearance` · `Skills` · `MCP Servers` · `Marketplace` · `App Plugins` · `Open on phone` · `Logs` · `About`. The footer notes `Changes are saved to config.json`; press `Save` to persist.
 
 - **Server**: `Max upload size`, `History cap`, `Working-stuck timeout`, `Max group panels` (2–5, i.e. how many conversations sit side by side), and `Allow editing sensitive paths in auto-approve modes`.
-- **Appearance**: the defaults (pinned current question, auto recap, tool-group cards, message card headers) plus `Transcript spacing`, `Message text density`, and `Font size`; the `Render live text inline in the transcript` switch picks the streaming-preview shape — off (default) is the floating bottom bubble, on makes the message card **grow in place** inside the transcript (the live text streams straight into a real message card; it settles in place with no card swap).
+- **Appearance**: the defaults (pinned current question, auto recap, tool-group cards, message card headers); the `Render live text inline in the transcript` switch picks the streaming-preview shape — off (default) is the floating bottom bubble, on makes the message card **grow in place** inside the transcript (the live text streams straight into a real message card; it settles in place with no card swap). `Transcript spacing`, `Message text density`, `Font size`, and `Animation speed` now live in the header's Theme menu and save immediately.
 - **Logs**: `Level` (error/warn/info/debug/trace), `Scope filter`, and the `Log to file` toggle. Note that level/scope changes **apply immediately but are not persisted**.
 
 ![Profiles](screenshots/manual/ch9-global-profiles.png)
@@ -478,6 +478,7 @@ The toolbar `Theme` button opens the appearance popover:
 
 - **Theme (skin)**: `Default` (flat, high contrast), `Glow` (soft depth & glow), `Anthropic` (warm paper & terracotta), `High Contrast` (pure B/W, square corners, a11y), `Soft High Contrast`;
 - **Mode**: `Light` / `Dark` / `System`;
+- **Display**: `Transcript spacing`, `Message text density`, `Font size`, `Animation speed` — each saves immediately (global, no Save button);
 - **Accent**: the swatch grid (the Anthropic, High Contrast and Soft High Contrast skins lock it, showing `Locked to Anthropic terracotta` and friends);
 - **Background**: available only on some skins — `None`/`Image`/`Video`, by URL or local upload, with `Opacity` / `Blur` / `Content` sliders.
 

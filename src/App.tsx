@@ -124,10 +124,10 @@ import {
   LAST_SEEN_TURN_KEY,
   clampMaxOpen,
 } from './constants/storageKeys'
-import type { Defaults, ConfigResponse, ModelGroupConfig, GlobalPrefs } from './types/config'
+import type { Defaults, ConfigResponse, ModelGroupConfig, GlobalPrefs, DisplayPresetPrefs } from './types/config'
 import { DEFAULT_GLOBAL_PREFS, globalPrefsFromConfig, sameGlobalPrefs } from './types/config'
 import { onProfilesChanged } from './utils/profiles-events'
-import { fetchConfig, markConfigStale, peekConfig, subscribeModelOptions } from './state/modelOptionsStore'
+import { fetchConfig, markConfigStale, patchConfigCache, peekConfig, subscribeModelOptions } from './state/modelOptionsStore'
 import { ROW_GAP_PX } from '../shared/row-gap'
 import { TEXT_SPACING_CSS } from '../shared/text-spacing'
 import { FONT_SIZE_SCALE } from '../shared/font-size'
@@ -144,6 +144,7 @@ import { groupNameIssue } from './utils/group-name'
 import { escapeAction } from './utils/escape-action'
 import { prepareGroupFlip, prepareSessionMoveFlip } from './utils/flip'
 import { clamp } from './utils/clamp'
+import { createDisplayPrefSaver } from './utils/display-pref-save'
 
 /** Shallow-compare two SessionInfo objects across every own property.
  *
@@ -5005,6 +5006,70 @@ export function App() {
     updateInfo.refresh()
   }, [refreshConfigResponse, updateInfo])
 
+  /** The header Theme popover's Display presets are server config (unlike the
+   *  popover's localStorage theme controls) and that popover has no Save
+   *  button, so each click applies optimistically here — the CSS-var effects
+   *  above pick it up immediately — and enqueues a one-key PUT. PUT /config
+   *  merges partials, so no other config field is touched.
+   *
+   *  The saver serializes clicks (their order must survive to config.json)
+   *  and patches the shared /config cache on success so a later model-options
+   *  notify cannot re-apply the pre-save body. On failure it re-reads the
+   *  server truth rather than keeping a rejected value. */
+  const applyDisplayPrefPatch = useCallback((patch: Partial<DisplayPresetPrefs>) => {
+    setGlobalPrefs((prev) => {
+      const next = { ...prev, ...patch }
+      // Preserve identity when the patch is already reflected (e.g. a
+      // re-apply after a failed write's reconcile) so panels don't re-render.
+      return sameGlobalPrefs(prev, next) ? prev : next
+    })
+  }, [])
+
+  // A stable instance: React may discard/recreate useMemo caches, which would
+  // drop the saver's queued writes and its order guarantee. useState's lazy
+  // initializer runs exactly once (its callbacks are all stable).
+  const [saveDisplayPref] = useState(() =>
+    createDisplayPrefSaver<Partial<DisplayPresetPrefs>>({
+      put: (path, body) => api.put(path, body),
+      onSaved: (patch) => {
+        // A reconcile for an earlier failure (or another config save) may
+        // have reverted the optimistic value; re-apply the value that
+        // actually landed so the UI and config.json cannot diverge. The
+        // saver already drops keys superseded by a queued click.
+        applyDisplayPrefPatch(patch)
+        patchConfigCache(patch)
+      },
+      onError: (err) => toast.error(`Couldn't save display preference: ${err.message}`),
+      onSavedError: (err) => {
+        console.error('Display-pref save success hook failed:', err)
+      },
+      refresh: async () => {
+        try {
+          await refreshConfigResponse()
+        } catch (err) {
+          // Server unreachable: fall back to the last known-good body when
+          // one exists, so an unsaved value does not masquerade as persisted.
+          // Before the first successful /config load there is nothing to
+          // revert to; the error toast is the only signal.
+          const cached = peekConfig()
+          if (cached) applyConfigResponse(cached)
+          throw err
+        }
+      },
+      onRefreshError: (err) => {
+        console.error('Post-display-pref /config refresh failed:', err)
+      },
+    }),
+  )
+
+  const handleDisplayPrefChange = useCallback(
+    (patch: Partial<DisplayPresetPrefs>) => {
+      applyDisplayPrefPatch(patch)
+      void saveDisplayPref(patch)
+    },
+    [applyDisplayPrefPatch, saveDisplayPref],
+  )
+
   if (isConfigured === null) {
     return (
       <div className="app-loading">
@@ -5335,6 +5400,8 @@ export function App() {
               onBackgroundChange={setBackgroundSetting}
               transparency={transparency}
               onTransparency={setTransparency}
+              displayPrefs={globalPrefs}
+              onDisplayPrefChange={handleDisplayPrefChange}
               className="btn btn-icon"
             />
             <button

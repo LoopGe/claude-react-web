@@ -3,6 +3,7 @@ import {
   fetchConfig,
   fetchModelOptions,
   invalidateModelOptions,
+  patchConfigCache,
   peekConfig,
   peekModelOptions,
   resetModelOptionsStoreForTest,
@@ -34,6 +35,86 @@ describe('modelOptionsStore', () => {
     expect(api.get).toHaveBeenCalledTimes(2)
     expect(r.models).toEqual(['new'])
     expect(peekConfig()?.models).toEqual(['new'])
+  })
+
+  it('patchConfigCache updates the cached body in place, preserving other keys', async () => {
+    // The immediate-save display presets are written to config.json and need
+    // the shared cache to reflect them too: a later model-options notify
+    // re-applies peekConfig(), and a pre-save body would revert the UI.
+    vi.mocked(api.get).mockResolvedValue({ models: ['m1'], rowGap: 'spacious' })
+    await fetchConfig()
+
+    patchConfigCache({ rowGap: 'airy' })
+
+    expect(peekConfig()?.rowGap).toBe('airy')
+    expect(peekConfig()?.models).toEqual(['m1'])
+  })
+
+  it('patchConfigCache is a no-op before the first /config fetch', () => {
+    patchConfigCache({ rowGap: 'airy' })
+    expect(peekConfig()).toBeNull()
+  })
+
+  it('patchConfigCache does not discard an in-flight pinned-profile fetch', async () => {
+    // The config patch only concerns the /config body; a concurrent
+    // /profiles fetch must still land and cache its own snapshot.
+    vi.mocked(api.get).mockResolvedValueOnce({ models: ['m1'] })
+    await fetchConfig()
+
+    let resolveProfiles!: (value: unknown) => void
+    vi.mocked(api.get).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveProfiles = resolve
+    }) as never)
+
+    const pending = fetchModelOptions('p1')
+    patchConfigCache({ rowGap: 'airy' })
+    resolveProfiles({ profiles: [{ id: 'p1', modelList: ['px1'], modelGroups: [] }] })
+    const snap = await pending
+
+    expect(snap.models.map((m) => m.id)).toEqual(['px1'])
+    expect(peekModelOptions('p1')?.models.map((m) => m.id)).toEqual(['px1'])
+  })
+
+  it('a later /config response keeps the locally-patched values', async () => {
+    vi.mocked(api.get).mockResolvedValueOnce({
+      models: ['m1'],
+      rowGap: 'spacious',
+      showPinnedUserMessage: true,
+    })
+    await fetchConfig()
+
+    patchConfigCache({ rowGap: 'airy' })
+
+    // A settings-save refresh returns the server body (new switch value,
+    // pre-save rowGap); the locally-persisted preset must still win.
+    vi.mocked(api.get).mockResolvedValueOnce({
+      models: ['m1'],
+      rowGap: 'spacious',
+      showPinnedUserMessage: false,
+    })
+    await fetchConfig({ force: true })
+
+    expect(peekConfig()?.rowGap).toBe('airy')
+    expect(peekConfig()?.showPinnedUserMessage).toBe(false)
+  })
+
+  it('patchConfigCache supersedes an in-flight /config response', async () => {
+    // A fetch that started before the patch carries the pre-save body. Its
+    // late response must not overwrite the patched cache.
+    vi.mocked(api.get).mockResolvedValueOnce({ models: ['m1'], rowGap: 'spacious' })
+    await fetchConfig()
+
+    let resolveInFlight!: (value: unknown) => void
+    vi.mocked(api.get).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveInFlight = resolve
+    }) as never)
+
+    const pending = fetchConfig({ force: true })
+    patchConfigCache({ rowGap: 'airy' })
+    resolveInFlight({ models: ['m1'], rowGap: 'spacious' })
+    await pending
+
+    expect(peekConfig()?.rowGap).toBe('airy')
   })
 
   it('derives the active-profile model snapshot from /config', async () => {

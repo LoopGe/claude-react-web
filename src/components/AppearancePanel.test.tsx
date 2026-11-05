@@ -1,10 +1,19 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
 import { AppearancePanel } from './AppearancePanel'
 import { expectPortaledToBody } from './portal-test-utils'
 import type { BackgroundSetting } from '../theme'
 
 const noBg: BackgroundSetting = { pref: { kind: 'none' }, opacity: 0.85 }
+
+/** Non-default values (none equals the shipped default) so a control
+ *  rendering a hardcoded default can't pass. */
+const DISPLAY_PREFS = {
+  rowGap: 'airy',
+  textSpacing: 'comfortable',
+  fontSize: 'large',
+  animationSpeed: 'fast',
+} as const
 
 function renderPanel(skin: 'default' | 'glow' | 'anthropic' | 'hc' | 'soft-hc') {
   return render(
@@ -17,6 +26,8 @@ function renderPanel(skin: 'default' | 'glow' | 'anthropic' | 'hc' | 'soft-hc') 
       onAccent={() => {}}
       background={noBg}
       onBackgroundChange={() => {}}
+      displayPrefs={DISPLAY_PREFS}
+      onDisplayPrefChange={() => {}}
     />,
   )
 }
@@ -88,6 +99,91 @@ describe('AppearancePanel trigger toggle', () => {
   })
 })
 
+describe('AppearancePanel display presets', () => {
+  /** aria-checked of one option inside a named radiogroup. */
+  const activeIn = (group: string, option: string) =>
+    within(screen.getByRole('radiogroup', { name: group }))
+      .getByRole('radio', { name: option })
+      .getAttribute('aria-checked')
+
+  it('renders the four preset groups reflecting displayPrefs', async () => {
+    renderPanel('default')
+    await openPanel()
+
+    expect(activeIn('Transcript spacing', 'Airy')).toBe('true')
+    expect(activeIn('Message text density', 'Comfortable')).toBe('true')
+    expect(activeIn('Font size', 'Large')).toBe('true')
+    expect(activeIn('Animation speed', 'Fast')).toBe('true')
+  })
+
+  it('renders only the control titles, not the explanatory hints', async () => {
+    renderPanel('default')
+    await openPanel()
+
+    expect(screen.getByText('Transcript spacing')).toBeTruthy()
+    expect(screen.queryByText(/Vertical rhythm between message rows/)).toBeNull()
+  })
+
+  it('emits the field-specific patch for each preset group', async () => {
+    const onDisplayPrefChange = vi.fn()
+    render(
+      <AppearancePanel
+        skin="default"
+        mode="dark"
+        accentColor="#7b8cde"
+        onSkin={() => {}}
+        onMode={() => {}}
+        onAccent={() => {}}
+        background={noBg}
+        onBackgroundChange={() => {}}
+        displayPrefs={DISPLAY_PREFS}
+        onDisplayPrefChange={onDisplayPrefChange}
+      />,
+    )
+    await openPanel()
+
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Transcript spacing' }))
+      .getByRole('radio', { name: 'Compact' }))
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Message text density' }))
+      .getByRole('radio', { name: 'Compact' }))
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Font size' }))
+      .getByRole('radio', { name: 'X-Large' }))
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
+      .getByRole('radio', { name: 'Slow' }))
+
+    expect(onDisplayPrefChange).toHaveBeenNthCalledWith(1, { rowGap: 'compact' })
+    expect(onDisplayPrefChange).toHaveBeenNthCalledWith(2, { textSpacing: 'compact' })
+    expect(onDisplayPrefChange).toHaveBeenNthCalledWith(3, { fontSize: 'xlarge' })
+    expect(onDisplayPrefChange).toHaveBeenNthCalledWith(4, { animationSpeed: 'slow' })
+  })
+
+  it('does not emit a patch when the already-active option is clicked', async () => {
+    const onDisplayPrefChange = vi.fn()
+    render(
+      <AppearancePanel
+        skin="default"
+        mode="dark"
+        accentColor="#7b8cde"
+        onSkin={() => {}}
+        onMode={() => {}}
+        onAccent={() => {}}
+        background={noBg}
+        onBackgroundChange={() => {}}
+        displayPrefs={DISPLAY_PREFS}
+        onDisplayPrefChange={onDisplayPrefChange}
+      />,
+    )
+    await openPanel()
+
+    // 'Airy' is already active for DISPLAY_PREFS.rowGap; a re-click must not
+    // trigger a no-op config write.
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Transcript spacing' }))
+      .getByRole('radio', { name: 'Airy' }))
+
+    expect(onDisplayPrefChange).not.toHaveBeenCalled()
+  })
+})
+
 describe('AppearancePanel transparency toggle', () => {
   it('shows the Transparency section with the switch on by default', async () => {
     renderPanel('default')
@@ -124,6 +220,8 @@ describe('AppearancePanel transparency toggle', () => {
         onAccent={() => {}}
         background={noBg}
         onBackgroundChange={() => {}}
+        displayPrefs={DISPLAY_PREFS}
+        onDisplayPrefChange={() => {}}
         transparency
         onTransparency={onTransparency}
       />,

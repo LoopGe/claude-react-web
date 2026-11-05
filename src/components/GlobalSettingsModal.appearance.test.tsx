@@ -8,7 +8,7 @@
 // rendered control state.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
 import { GlobalSettingsModal, AppearanceTab } from './GlobalSettingsModal'
 import { api } from '../hooks/useApi'
@@ -25,20 +25,21 @@ vi.stubGlobal('matchMedia', () => ({
   removeEventListener() {},
 }))
 
-/** Every appearance field, asserted as a unit so a dropped field can't hide
- *  behind a sample. Excludes `firstPartyTools` (independent save path). */
-const APPEARANCE_FIELDS: ReadonlyArray<keyof AppearancePrefs> = [
+/** Fields the modal still owns, asserted as a unit so a dropped field can't
+ *  hide behind a sample. Excludes `firstPartyTools` (independent save path)
+ *  and the display presets, which moved to the Theme popover. */
+const MODAL_APPEARANCE_FIELDS: ReadonlyArray<keyof AppearancePrefs> = [
   'showPinnedUserMessage',
   'autoRecap',
   'toolGroupCards',
   'autoExpandRunningGroups',
   'showMessageHeaders',
-  'rowGap',
-  'textSpacing',
-  'fontSize',
-  'animationSpeed',
   'streamingRenderMode',
 ]
+
+/** Owned by the header Theme popover (immediate-save): the modal must never
+ *  write them from its mount-time snapshot. */
+const MOVED_DISPLAY_FIELDS = ['rowGap', 'textSpacing', 'fontSize', 'animationSpeed'] as const
 
 /** A config where EVERY appearance field is a non-default value — explicit
  *  false on every boolean, non-default presets, inline streaming. A coincidental
@@ -79,7 +80,7 @@ describe('GlobalSettingsModal staged appearance state', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
     // Content is gated on the /config/full fetch — wait for an Appearance-only
     // control so a slow resolve can't race the first assertion.
-    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Font size' })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' })).toBeTruthy())
   }
 
   const save = () => fireEvent.click(screen.getByText('Save'))
@@ -115,29 +116,31 @@ describe('GlobalSettingsModal staged appearance state', () => {
     expect(screen.getByRole('switch', { name: 'Render live text inline in the transcript' }).getAttribute('aria-checked')).toBe('false')
   })
 
-  // ── Save spreads the entire appearance object ───────────────────────
+  // ── Save covers the modal-owned fields and nothing else ─────────────
 
-  it('saves every appearance field on Save, including explicit false', async () => {
+  it('saves every modal-owned appearance field, including explicit false, and omits the moved presets', async () => {
     await openAppearanceTab(ALL_NON_DEFAULT)
 
     save()
     const body = await savedPayload()
 
-    // Every appearance field is present in the payload — `...appearance` must
-    // not drop a key. A false value is the literal boolean, never null/undefined
-    // (PUT /config treats null/'' as "delete key", so false must be explicit).
-    for (const field of APPEARANCE_FIELDS) {
+    // Every field the modal still owns is present — a dropped key would fall
+    // back to the server default. A false value is the literal boolean, never
+    // null/undefined (PUT /config treats null/'' as "delete key").
+    for (const field of MODAL_APPEARANCE_FIELDS) {
       expect(body[field], `${String(field)} should be present in the Save payload`).toBeDefined()
+    }
+    // The moved presets must NOT ride along: the modal's copy is the
+    // mount-time snapshot, so echoing it would undo a parallel Theme-popover
+    // change made in another tab.
+    for (const field of MOVED_DISPLAY_FIELDS) {
+      expect(body[field], `${field} is owned by the Theme popover`).toBeUndefined()
     }
     expect(body.showPinnedUserMessage).toBe(false)
     expect(body.autoRecap).toBe(false)
     expect(body.toolGroupCards).toBe(false)
     expect(body.autoExpandRunningGroups).toBe(false)
     expect(body.showMessageHeaders).toBe(false)
-    expect(body.rowGap).toBe('comfortable')
-    expect(body.textSpacing).toBe('compact')
-    expect(body.fontSize).toBe('large')
-    expect(body.animationSpeed).toBe('fast')
     expect(body.streamingRenderMode).toBe('inline')
   })
 
@@ -163,32 +166,6 @@ describe('GlobalSettingsModal staged appearance state', () => {
     // staged value rides along and is saved.
     expect(body.autoExpandRunningGroups).toBe(false)
     expect(body.showMessageHeaders).toBe(false)
-    expect(body.rowGap).toBe('comfortable')
-    expect(body.textSpacing).toBe('compact')
-    expect(body.fontSize).toBe('large')
-    expect(body.animationSpeed).toBe('fast')
-    expect(body.streamingRenderMode).toBe('inline')
-  })
-
-  it('patching one segmented preset changes only its target field', async () => {
-    await openAppearanceTab(ALL_NON_DEFAULT)
-
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Font size' }))
-      .getByRole('radio', { name: 'X-Large' }))
-
-    save()
-    const body = await savedPayload()
-
-    expect(body.fontSize).toBe('xlarge')
-    // Every other field preserved at its initialized value.
-    expect(body.showPinnedUserMessage).toBe(false)
-    expect(body.autoRecap).toBe(false)
-    expect(body.toolGroupCards).toBe(false)
-    expect(body.autoExpandRunningGroups).toBe(false)
-    expect(body.showMessageHeaders).toBe(false)
-    expect(body.rowGap).toBe('comfortable')
-    expect(body.textSpacing).toBe('compact')
-    expect(body.animationSpeed).toBe('fast')
     expect(body.streamingRenderMode).toBe('inline')
   })
 
@@ -197,17 +174,15 @@ describe('GlobalSettingsModal staged appearance state', () => {
 
     // Patch two independent fields — the staged object must carry both.
     fireEvent.click(screen.getByRole('switch', { name: 'Show pinned “current question” header' }))
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
-      .getByRole('radio', { name: 'Slow' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-generate session recap' }))
 
     save()
     const body = await savedPayload()
 
     expect(body.showPinnedUserMessage).toBe(true)
-    expect(body.animationSpeed).toBe('slow')
+    expect(body.autoRecap).toBe(true)
     // Untouched fields are still at their initialized values.
-    expect(body.autoRecap).toBe(false)
-    expect(body.fontSize).toBe('large')
+    expect(body.toolGroupCards).toBe(false)
   })
 
   // ── firstPartyTools independence ────────────────────────────────────
@@ -237,7 +212,7 @@ describe('GlobalSettingsModal staged appearance state', () => {
 
   it('opening the modal and navigating to the Appearance tab renders the staged controls', async () => {
     // The Appearance deep-link (group nav → Appearance leaf) must land on the
-    // staged controls — the Font size segmented group is Appearance-only.
+    // staged controls — the pinned-question switch is Appearance-only.
     mockGet({})
     render(
       <ToastProvider>
@@ -246,7 +221,7 @@ describe('GlobalSettingsModal staged appearance state', () => {
     )
     await waitFor(() => expect(screen.getByRole('button', { name: 'Appearance' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
-    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Font size' })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' })).toBeTruthy())
     // A switch control is also present — the staged state rendered.
     expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' })).toBeTruthy()
   })
@@ -297,16 +272,6 @@ describe('AppearanceTab direct render (values/onPatch contract)', () => {
     expect(onPatch).toHaveBeenCalledTimes(1)
   })
 
-  it('emits the exact patch object for a Segmented change', () => {
-    const onPatch = vi.fn()
-    render(<AppearanceTab values={baselineValues} onPatch={onPatch} />)
-
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Font size' }))
-      .getByRole('radio', { name: 'X-Large' }))
-    expect(onPatch).toHaveBeenCalledWith({ fontSize: 'xlarge' })
-    expect(onPatch).toHaveBeenCalledTimes(1)
-  })
-
   it('emits the exact patch for the streaming-render mode switch', () => {
     const onPatch = vi.fn()
     // Start in overlay (default) so the switch flips to inline.
@@ -347,11 +312,6 @@ describe('AppearanceTab direct render (values/onPatch contract)', () => {
     expect(screen.getByRole('switch', { name: 'Use collapsible transcript cards' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Show message card headers' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('switch', { name: 'Render live text inline in the transcript' }).getAttribute('aria-checked')).toBe('true')
-    // Segmented groups reflect the preset from values.
-    expect(within(screen.getByRole('radiogroup', { name: 'Font size' }))
-      .getByRole('radio', { name: 'Large' }).getAttribute('aria-checked')).toBe('true')
-    expect(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
-      .getByRole('radio', { name: 'Fast' }).getAttribute('aria-checked')).toBe('true')
   })
 
   it('passes onPatch through to controls without wrapping (identity pass-through)', () => {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
 import { GlobalSettingsModal } from './GlobalSettingsModal'
 import { api } from '../hooks/useApi'
@@ -369,7 +369,9 @@ describe('GlobalSettingsModal Appearance tab', () => {
     'Use collapsible transcript cards',
     'Show message card headers',
   ] as const
-  const MOVED_GROUPS = ['Transcript spacing', 'Message text density', 'Font size', 'Animation speed'] as const
+  /** The four preset groups moved out of the modal into the header Theme
+   *  popover — they must not linger on either tab. */
+  const REMOVED_GROUPS = ['Transcript spacing', 'Message text density', 'Font size', 'Animation speed'] as const
 
   const openAppearanceTab = async (config: Record<string, unknown>) => {
     mockGet(config)
@@ -381,63 +383,44 @@ describe('GlobalSettingsModal Appearance tab', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Appearance' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Appearance' }))
     // Content is gated on the /config/full fetch — wait for an Appearance-only control.
-    await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Font size' })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Show pinned “current question” header' })).toBeTruthy())
   }
 
   const save = () => fireEvent.click(screen.getByText('Save'))
 
-  /** aria-checked of one option inside a named segmented group. Scoped by the
-   *  radiogroup because the two spacing groups reuse the same option labels. */
-  const segmentedActive = (group: string, option: string) =>
-    within(screen.getByRole('radiogroup', { name: group }))
-      .getByRole('radio', { name: option })
-      .getAttribute('aria-checked')
-
-  it('renders every moved display default from config', async () => {
+  it('renders every display default switch from config', async () => {
     // Every value is deliberately the NON-default so a dropped /config/full
     // mapping can't pass by coinciding with the useState initial value.
-    // (useState defaults: all four switches true, spacious/spacious/standard.)
+    // (useState defaults: all four switches true.)
     await openAppearanceTab({
       showPinnedUserMessage: false,
       autoRecap: false,
       toolGroupCards: false,
       showMessageHeaders: false,
-      rowGap: 'comfortable',
-      textSpacing: 'compact',
-      fontSize: 'large',
-      animationSpeed: 'fast',
     })
 
     for (const name of MOVED_SWITCHES) {
       expect(screen.getByRole('switch', { name }).getAttribute('aria-checked')).toBe('false')
     }
-
-    // Each segmented group reflects its configured preset.
-    expect(segmentedActive('Transcript spacing', 'Comfortable')).toBe('true')
-    expect(segmentedActive('Message text density', 'Compact')).toBe('true')
-    expect(segmentedActive('Font size', 'Large')).toBe('true')
-    expect(segmentedActive('Animation speed', 'Fast')).toBe('true')
   })
 
-  it('persists a switch flip and a preset change on Save', async () => {
-    await openAppearanceTab({
-      showPinnedUserMessage: false,
-      fontSize: 'standard',
-      animationSpeed: 'slow',
-    })
+  it('no longer renders the removed preset groups on the Appearance tab', async () => {
+    await openAppearanceTab({})
+
+    for (const name of REMOVED_GROUPS) {
+      expect(screen.queryByRole('radiogroup', { name })).toBeNull()
+    }
+  })
+
+  it('persists a switch flip on Save', async () => {
+    await openAppearanceTab({ showPinnedUserMessage: false })
 
     fireEvent.click(screen.getByRole('switch', { name: 'Show pinned “current question” header' }))
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Font size' }))
-      .getByRole('radio', { name: 'X-Large' }))
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
-      .getByRole('radio', { name: 'Fast' }))
 
     save()
     await waitFor(() => expect(api.put).toHaveBeenCalled())
     expect(vi.mocked(api.put)).toHaveBeenCalledWith('/config', expect.objectContaining({
       showPinnedUserMessage: true,
-      fontSize: 'xlarge',
-      animationSpeed: 'fast',
     }))
   })
 
@@ -484,7 +467,7 @@ describe('GlobalSettingsModal Appearance tab', () => {
     for (const name of MOVED_SWITCHES) {
       expect(screen.queryByRole('switch', { name })).toBeNull()
     }
-    for (const name of MOVED_GROUPS) {
+    for (const name of REMOVED_GROUPS) {
       expect(screen.queryByRole('radiogroup', { name })).toBeNull()
     }
   })
