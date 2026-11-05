@@ -248,21 +248,148 @@
 }
 
 .turn-review-diff {
+  display: flex;
   flex: 1;
+  flex-direction: column;
   min-width: 0;
-  overflow: auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.turn-review-diff-path {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+.turn-review-diff-toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+}
+
+.turn-review-diff-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
   color: var(--fg-muted);
   font-family: var(--mono);
   font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turn-review-diff-modes {
+  flex: none;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.turn-review-diff-modes button {
+  padding: 2px var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.turn-review-diff-modes button + button { border-left: 1px solid var(--border); }
+.turn-review-diff-modes button:hover { color: var(--fg); }
+.turn-review-diff-modes button[aria-pressed="true"] {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+
+/* Full-height diff viewport. Turn changes deliberately owns these row styles
+   instead of inheriting GitPanel's inline 400px preview. The path header stays
+   pinned by flex layout; this child is the only vertical scroll container. */
+.turn-review-diff-view {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+
+.turn-review-diff-row {
+  display: grid;
+  grid-template-columns: 34px 14px 1fr;
+  white-space: pre;
+}
+
+.turn-review-diff-gutter {
+  grid-column: 1;
+  padding-right: var(--space-1-5);
+  color: var(--fg-muted);
+  opacity: 0.75;
+  text-align: right;
+  user-select: none;
+}
+
+.turn-review-diff-sign {
+  grid-column: 2;
+  color: var(--fg-muted);
+  text-align: center;
+  user-select: none;
+}
+
+.turn-review-diff-body {
+  grid-column: 3;
+  padding-right: var(--space-3);
+}
+
+.turn-review-diff-view .diff-line {
+  /* Preserve the shared Edit-row clearance: zero left padding let the first
+     old-line gutter sit against (and visually clip into) the viewport edge. */
+  padding: 1px var(--space-3) 1px var(--space-2);
+}
+.turn-review-diff-view .diff-line-add { box-shadow: inset 3px 0 0 var(--ok); }
+.turn-review-diff-view .diff-line-del { box-shadow: inset 3px 0 0 var(--danger); }
+
+.turn-review-diff-more {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  color: var(--accent-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.turn-review-diff-more:hover { background: var(--btn-hover-bg); }
+
+.turn-review-diff-row.hunk {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.turn-review-diff-row.hunk .turn-review-diff-body { color: var(--accent-text); font-weight: 600; }
+.turn-review-diff-row.meta .turn-review-diff-body { color: var(--fg-muted); }
+.turn-review-diff-row.nonewline .turn-review-diff-body { color: var(--fg-muted); font-style: italic; }
+.turn-review-diff-row.truncated .turn-review-diff-body { color: var(--fg-muted); font-style: italic; }
+
+.turn-review-diff-show-full {
+  margin-left: var(--space-2);
+  padding: 1px var(--space-1-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-3xs);
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  font-style: normal;
+  cursor: pointer;
+}
+
+.turn-review-diff-show-full:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
 }
 
 .turn-review-loading {

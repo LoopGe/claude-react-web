@@ -7,6 +7,7 @@ import {
   TURN_CHANGES_MAX_FILE_BYTES,
   TURN_CHANGES_MAX_FILES,
   type TurnChangesSummary,
+  type TurnDiffOptions,
   type TurnDiffPayload,
 } from '../../shared/turn-changes.js'
 import { captureCopy, canonicalTargetPath, sameCopy, type FileCopy } from './capture.js'
@@ -550,7 +551,7 @@ export class SnapshotService {
     sessionId: string,
     resultUuid: string,
     index: number,
-    opts?: { full?: boolean },
+    opts?: TurnDiffOptions,
   ): Promise<TurnDiffPayload> {
     if (!this.fileSnapshots) return { available: false }
     const meta = await this.store.load(sessionId)
@@ -562,7 +563,7 @@ export class SnapshotService {
 
     if (file.source.kind === 'tree') {
       const repo: ShadowRepo = { gitDir: meta.gitDir, worktree: meta.worktree, scope: meta.scope }
-      const patch = await filePatch(repo, record.start, record.end, file.source.repoPath, opts?.full)
+      const patch = await filePatch(repo, record.start, record.end, file.source.repoPath, opts)
       if (patch.patch === '') return { available: false, reason: 'missing' }
       return { available: true, patch: patch.patch, truncated: patch.truncated, totalLines: patch.totalLines }
     }
@@ -574,7 +575,7 @@ export class SnapshotService {
     const after: FileCopy = file.source.after === null
       ? { kind: 'absent' }
       : { kind: 'file', file: file.source.after, binary: false }
-    const comparison = await compareCopies(before, after, file.display, this.maxTurnFileBytes)
+    const comparison = await compareCopies(before, after, file.display, this.maxTurnFileBytes, opts)
     if (comparison.binary) return { available: true, reason: 'binary' }
     if (comparison.oversized) return { available: true, reason: 'oversized' }
     if (comparison.patch === undefined || comparison.patch === '') return { available: false, reason: 'missing' }

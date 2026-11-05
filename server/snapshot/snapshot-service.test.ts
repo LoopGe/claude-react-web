@@ -240,6 +240,37 @@ describe('SnapshotService', { timeout: 30_000 }, () => {
     expect((await svc.turnDiff('s-turn', 'r-turn', 1)).patch).toContain('+done')
   })
 
+  it('serves complete unclipped full-file context for tree and copy sources', async () => {
+    const treeBefore = Array.from({ length: 20 }, (_, i) => `tree ${i + 1}`)
+    const copyBefore = Array.from({ length: 600 }, (_, i) => `copy ${i + 1}`)
+    await writeFile(join(wt, '.gitignore'), '*.local\n')
+    await writeFile(join(wt, 'a.txt'), `${treeBefore.join('\n')}\n`)
+    await writeFile(join(wt, 'notes.local'), `${copyBefore.join('\n')}\n`)
+    const start = await svc.capture({ sessionId: 's-full-file', cwd: wt })
+    const before = await svc.captureToolTarget('s-full-file', join(wt, 'notes.local'))
+
+    const treeAfter = [...treeBefore]
+    treeAfter[1] = 'tree 2 changed'
+    treeAfter[19] = 'tree 20 changed'
+    const copyAfter = [...copyBefore]
+    copyAfter[1] = 'copy 2 changed'
+    copyAfter[599] = 'copy 600 changed'
+    await writeFile(join(wt, 'a.txt'), `${treeAfter.join('\n')}\n`)
+    await writeFile(join(wt, 'notes.local'), `${copyAfter.join('\n')}\n`)
+    await svc.recordTurn({
+      sessionId: 's-full-file', cwd: wt, resultUuid: 'r-full-file', assistantUuid: 'a-full-file',
+      startTree: start, captures: new Map([[join(wt, 'notes.local'), before]]),
+    })
+
+    const tree = await svc.turnDiff('s-full-file', 'r-full-file', 0, { view: 'full-file', full: true })
+    expect(tree.patch).toContain(' tree 10\n')
+    const copy = await svc.turnDiff('s-full-file', 'r-full-file', 1, { view: 'full-file', full: true })
+    expect(copy.truncated).toBe(false)
+    expect(copy.totalLines).toBeGreaterThan(500)
+    expect(copy.patch).toContain(' copy 300\n')
+    expect(copy.patch).toContain('+copy 600 changed')
+  })
+
   it('lists a captured path above the session cwd as ../<path>', async () => {
     await mkdir(join(wt, 'sub'))
     const cwd = join(wt, 'sub')

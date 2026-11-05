@@ -85,7 +85,35 @@ describe('useTurnDiff', () => {
     mockGet.mockResolvedValue({ available: true, patch: '@@ -1 +1 @@\n-a\n+b', truncated: false, totalLines: 3 })
     const { result } = renderHook(() => useTurnDiff('s-diff', 'r1', 2, { full: true }))
     await waitFor(() => expect(result.current.diff?.available).toBe(true))
-    expect(mockGet.mock.calls[0]?.[0]).toBe('/sessions/s-diff/turn-diff?resultUuid=r1&index=2&full=1')
+    expect(mockGet.mock.calls[0]?.[0]).toBe('/sessions/s-diff/turn-diff?resultUuid=r1&index=2&view=changes&full=1')
+  })
+
+  it('serializes full-file and unclipped output independently', async () => {
+    mockGet.mockResolvedValue({ available: true, patch: 'full file', truncated: false, totalLines: 1 })
+    const { result } = renderHook(() => useTurnDiff('s-diff', 'r1', 2, { view: 'full-file', full: true }))
+    await waitFor(() => expect(result.current.diff?.patch).toBe('full file'))
+    expect(mockGet.mock.calls[0]?.[0]).toBe('/sessions/s-diff/turn-diff?resultUuid=r1&index=2&view=full-file&full=1')
+  })
+
+  it('aborts a stale view request and does not paint its response', async () => {
+    const requests: Array<{ resolve: (value: { available: boolean; patch: string }) => void; signal: AbortSignal }> = []
+    mockGet.mockImplementation((_url: string, options: { signal: AbortSignal }) => new Promise((resolve) => {
+      requests.push({ resolve, signal: options.signal })
+    }))
+    const { result, rerender } = renderHook(
+      ({ view }: { view: 'changes' | 'full-file' }) => useTurnDiff('s-diff', 'r1', 2, { view, full: true }),
+      { initialProps: { view: 'changes' } },
+    )
+    await waitFor(() => expect(requests).toHaveLength(1))
+
+    rerender({ view: 'full-file' })
+    await waitFor(() => expect(requests).toHaveLength(2))
+    expect(requests[0]!.signal.aborted).toBe(true)
+    await act(async () => { requests[0]!.resolve({ available: true, patch: 'stale changes' }) })
+    expect(result.current.diff).toBeNull()
+
+    await act(async () => { requests[1]!.resolve({ available: true, patch: 'current full file' }) })
+    await waitFor(() => expect(result.current.diff?.patch).toBe('current full file'))
   })
 
   it('does nothing when the index is null', () => {

@@ -10,7 +10,7 @@
 // renders as soon as the turn closes, while the server records the summary a
 // moment later.
 import { useEffect, useState } from 'react'
-import type { TurnChangesSummary, TurnDiffPayload } from '../../shared/turn-changes.js'
+import type { TurnChangesSummary, TurnDiffOptions, TurnDiffPayload } from '../../shared/turn-changes.js'
 import { api } from './useApi'
 import { useOptionalWsHub } from './useWsHub'
 
@@ -115,17 +115,19 @@ export interface TurnDiffView {
  * @param resultUuid - the result frame that closed the turn.
  * @param index - file index in the summary; null skips the read.
  * @param opts.full - request the unclipped patch body.
+ * @param opts.view - three-line change context or the complete file.
  * @returns the comparison state.
  */
 export function useTurnDiff(
   sessionId: string | undefined,
   resultUuid: string | undefined,
   index: number | null,
-  opts?: { full?: boolean },
+  opts?: TurnDiffOptions,
 ): TurnDiffView {
   const full = opts?.full === true
+  const view = opts?.view ?? 'changes'
   const key = sessionId !== undefined && resultUuid !== undefined && index !== null
-    ? `${sessionId}:${resultUuid}:${index}:${full ? 1 : 0}`
+    ? `${sessionId}:${resultUuid}:${index}:${view}:${full ? 1 : 0}`
     : null
   const [loaded, setLoaded] = useState<{ key: string; value: TurnDiffPayload | null } | null>(null)
 
@@ -136,7 +138,7 @@ export function useTurnDiff(
     if (key === null || sessionId === undefined || resultUuid === undefined || index === null) return
     const controller = new AbortController()
     let cancelled = false
-    const query = new URLSearchParams({ resultUuid, index: String(index) })
+    const query = new URLSearchParams({ resultUuid, index: String(index), view })
     if (full) query.set('full', '1')
     api.get<TurnDiffPayload>(`/sessions/${encodeURIComponent(sessionId)}/turn-diff?${query}`, {
       signal: controller.signal,
@@ -147,7 +149,7 @@ export function useTurnDiff(
       cancelled = true
       controller.abort()
     }
-  }, [key, sessionId, resultUuid, index, full])
+  }, [key, sessionId, resultUuid, index, full, view])
 
   return { diff, loading }
 }

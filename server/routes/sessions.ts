@@ -1134,7 +1134,8 @@ export function buildSessionRouter(
   })
 
   // One listed file's turn-start / turn-end comparison. `index` addresses
-  // the summary's `files` array; `full=1` skips the line clip.
+  // the summary's `files` array; `full=1` skips the line clip, while `view`
+  // independently selects three-line context or the complete file.
   app.get('/sessions/:id/turn-diff', async (c) => {
     const resultUuid = c.req.query('resultUuid')
     if (!resultUuid) {
@@ -1144,8 +1145,13 @@ export function buildSessionRouter(
     if (!Number.isInteger(index) || index < 0) {
       return c.json({ error: 'index must be a non-negative integer' }, 400)
     }
+    const requestedView = c.req.query('view')
+    if (requestedView !== undefined && requestedView !== 'changes' && requestedView !== 'full-file') {
+      return c.json({ error: 'view must be changes or full-file' }, 400)
+    }
     const full = c.req.query('full') === '1'
-    return c.json(await sm.turnDiff(c.req.param('id'), resultUuid, index, { full }))
+    const view = requestedView ?? 'changes'
+    return c.json(await sm.turnDiff(c.req.param('id'), resultUuid, index, { full, view }))
   })
 
   // Read a file's current content via the session (SDK readFile): gated by

@@ -3,6 +3,7 @@ import { join, relative, sep, isAbsolute } from 'node:path'
 import { createLogger } from '../log.js'
 import { runGit, parseNumstatZ } from '../git.js'
 import { MAX_DIFF_LINES, DEFAULT_MAX_UNTRACKED_BYTES } from '../constants.js'
+import type { TurnDiffOptions } from '../../shared/turn-changes.js'
 
 const log = createLogger('snapshot-git')
 
@@ -308,13 +309,18 @@ export async function treeDiff(repo: ShadowRepo, from: string, to: string): Prom
   return out
 }
 
+/** Git accepts a signed 32-bit context count. The maximum value requests every
+ *  available context line without a second pair of blob-reading subprocesses. */
+const FULL_FILE_CONTEXT_LINES = 2_147_483_647
+
 /**
  * Unified diff for one path between two snapshot trees.
  * @param repo - addressed shadow repository.
  * @param from - earlier tree id.
  * @param to - later tree id.
  * @param repoPath - path relative to the repository root.
- * @param full - when true, do not clip at MAX_DIFF_LINES.
+ * @param opts.full - when true, do not clip at MAX_DIFF_LINES.
+ * @param opts.view - three context lines or the complete file.
  * @returns the patch body and its clip state.
  */
 export async function filePatch(
@@ -322,14 +328,15 @@ export async function filePatch(
   from: string,
   to: string,
   repoPath: string,
-  full = false,
+  opts?: TurnDiffOptions,
 ): Promise<{ patch: string; truncated: boolean; totalLines: number }> {
+  const contextLines = opts?.view === 'full-file' ? FULL_FILE_CONTEXT_LINES : 3
   const r = await run(repo.worktree, args(repo, [
-    'diff', '--unified=3', '--no-renames', from, to, '--', `:(top,literal)${repoPath}`,
+    'diff', `--unified=${contextLines}`, '--no-renames', from, to, '--', `:(top,literal)${repoPath}`,
   ]))
   const lines = r.stdout.split('\n')
   if (lines.length === 1 && lines[0] === '') return { patch: '', truncated: false, totalLines: 0 }
-  const kept = full ? lines : lines.slice(0, MAX_DIFF_LINES)
+  const kept = opts?.full === true ? lines : lines.slice(0, MAX_DIFF_LINES)
   return { patch: kept.join('\n'), truncated: kept.length < lines.length, totalLines: lines.length }
 }
 

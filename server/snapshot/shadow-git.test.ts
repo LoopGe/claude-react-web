@@ -206,6 +206,42 @@ describe('treeDiff / filePatch', () => {
     expect(spaced.patch).toContain('+space')
   })
 
+  it('separates full-file context from unclipped output', async () => {
+    const before = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`)
+    await writeFile(join(worktree, 'context.txt'), `${before.join('\n')}\n`)
+    const t1 = await captureTree(repo, { sourceGitDir })
+    const after = [...before]
+    after[1] = 'line 2 changed'
+    after[10] = 'line 11 changed'
+    await writeFile(join(worktree, 'context.txt'), `${after.join('\n')}\n`)
+    const t2 = await captureTree(repo, { sourceGitDir })
+
+    const changes = await filePatch(repo, t1!, t2!, 'context.txt', { full: true })
+    expect(changes.patch).not.toContain(' line 6\n')
+    const fullFile = await filePatch(repo, t1!, t2!, 'context.txt', { view: 'full-file', full: true })
+    expect(fullFile.patch).toContain(' line 6\n')
+    expect(fullFile.patch).toContain(' line 12\n')
+  })
+
+  it('keeps full-file preview clipping independent from the complete response', async () => {
+    const before = Array.from({ length: 620 }, (_, i) => `row ${i + 1}`)
+    await writeFile(join(worktree, 'long-context.txt'), `${before.join('\n')}\n`)
+    const t1 = await captureTree(repo, { sourceGitDir })
+    const after = [...before]
+    after[0] = 'row 1 changed'
+    after[619] = 'row 620 changed'
+    await writeFile(join(worktree, 'long-context.txt'), `${after.join('\n')}\n`)
+    const t2 = await captureTree(repo, { sourceGitDir })
+
+    const preview = await filePatch(repo, t1!, t2!, 'long-context.txt', { view: 'full-file' })
+    expect(preview.truncated).toBe(true)
+    expect(preview.patch.split('\n')).toHaveLength(500)
+    const complete = await filePatch(repo, t1!, t2!, 'long-context.txt', { view: 'full-file', full: true })
+    expect(complete.truncated).toBe(false)
+    expect(complete.totalLines).toBeGreaterThan(500)
+    expect(complete.patch).toContain('+row 620 changed')
+  })
+
   it('returns no entries when the trees match', async () => {
     const t = await captureTree(repo, { sourceGitDir })
     expect(await treeDiff(repo, t!, t!)).toEqual([])

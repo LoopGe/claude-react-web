@@ -46,7 +46,23 @@ describe('GET /sessions/:id/turn-diff', () => {
     const body = await res.json() as { available: boolean; patch: string }
     expect(body.available).toBe(true)
     expect(body.patch).toContain('@@')
-    expect(sm.turnDiff).toHaveBeenCalledWith('s1', 'r1', 2, { full: true })
+    expect(sm.turnDiff).toHaveBeenCalledWith('s1', 'r1', 2, { full: true, view: 'changes' })
+  })
+
+  it('defaults to changes and forwards full-file independently from full', async () => {
+    const { app, sm } = router()
+    await app.request('/sessions/s1/turn-diff?resultUuid=r1&index=0')
+    expect(sm.turnDiff).toHaveBeenCalledWith('s1', 'r1', 0, { full: false, view: 'changes' })
+
+    await app.request('/sessions/s1/turn-diff?resultUuid=r1&index=2&view=full-file&full=1')
+    expect(sm.turnDiff).toHaveBeenCalledWith('s1', 'r1', 2, { full: true, view: 'full-file' })
+  })
+
+  it('400s on an unknown view without calling the manager', async () => {
+    const { app, sm } = router()
+    const res = await app.request('/sessions/s1/turn-diff?resultUuid=r1&index=0&view=unknown')
+    expect(res.status).toBe(400)
+    expect(sm.turnDiff).not.toHaveBeenCalled()
   })
 
   it('400s on a missing resultUuid, a negative index, or a non-integer index', async () => {

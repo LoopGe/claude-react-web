@@ -7,6 +7,7 @@
 import { readFile } from 'node:fs/promises'
 import { structuredPatch } from 'diff'
 import { MAX_DIFF_LINES } from '../constants.js'
+import type { TurnDiffOptions } from '../../shared/turn-changes.js'
 import type { FileCopy } from './capture.js'
 
 /** Context lines around each change, the unified-diff default. */
@@ -56,7 +57,9 @@ async function readText(copy: FileCopy, maxBytes: number): Promise<string | null
  * @param after - the turn-end capture.
  * @param display - path label used in the patch headers.
  * @param maxBytes - inclusive byte cap on either side's stored copy.
- * @param timeoutMs - milliseconds the line comparison may run before degrading.
+ * @param opts.view - three context lines or the complete file.
+ * @param opts.full - skip preview clipping when true.
+ * @param opts.timeoutMs - milliseconds the line comparison may run before degrading.
  * @returns counts, the patch, and its truncation state.
  */
 export async function compareCopies(
@@ -64,8 +67,9 @@ export async function compareCopies(
   after: FileCopy,
   display: string,
   maxBytes: number,
-  timeoutMs = 100,
+  opts?: TurnDiffOptions & { timeoutMs?: number },
 ): Promise<CopyComparison> {
+  const timeoutMs = opts?.timeoutMs ?? 100
   const empty: CopyComparison = { added: 0, deleted: 0, binary: false, oversized: false, truncated: false, totalLines: 0 }
   if (before.kind === 'oversized' || after.kind === 'oversized') return { ...empty, oversized: true }
   if ((before.kind === 'file' && before.binary) || (after.kind === 'file' && after.binary)) return { ...empty, binary: true }
@@ -81,7 +85,7 @@ export async function compareCopies(
       `+++ b/${display}`,
       `@@ -1,0 +1,${added} @@`,
       ...terminated(newText!).slice(0, -1).split('\n').map((line) => `+${line}`),
-    ], added, 0)
+    ], added, 0, opts?.full === true)
   }
   if (newText === null) {
     const deleted = lineCount(terminated(oldText))
@@ -90,14 +94,14 @@ export async function compareCopies(
       `+++ /dev/null`,
       `@@ -1,${deleted} +1,0 @@`,
       ...terminated(oldText).slice(0, -1).split('\n').map((line) => `-${line}`),
-    ], 0, deleted)
+    ], 0, deleted, opts?.full === true)
   }
 
   const oldBody = terminated(oldText)
   const newBody = terminated(newText)
   if (oldBody === newBody) return empty
   const patch = structuredPatch('', '', oldBody, newBody, undefined, undefined, {
-    context: CONTEXT_LINES,
+    context: opts?.view === 'full-file' ? Math.max(lineCount(oldBody), lineCount(newBody)) : CONTEXT_LINES,
     timeout: timeoutMs,
   })
 
@@ -130,13 +134,13 @@ export async function compareCopies(
     if (line.startsWith('+') && !line.startsWith('+++')) added += 1
     else if (line.startsWith('-') && !line.startsWith('---')) deleted += 1
   }
-  return finish(hunkLines, added, deleted)
+  return finish(hunkLines, added, deleted, opts?.full === true)
 }
 
-/** Clip a patch body at MAX_DIFF_LINES, preserving the unclipped counts and line total. */
-function finish(hunkLines: string[], added: number, deleted: number): CopyComparison {
+/** Clip a preview patch at MAX_DIFF_LINES, preserving unclipped counts and line total. */
+function finish(hunkLines: string[], added: number, deleted: number, full: boolean): CopyComparison {
   const totalLines = hunkLines.length
-  const kept = hunkLines.slice(0, MAX_DIFF_LINES)
+  const kept = full ? hunkLines : hunkLines.slice(0, MAX_DIFF_LINES)
   return {
     added,
     deleted,

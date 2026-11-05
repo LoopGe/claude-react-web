@@ -62,4 +62,28 @@ describe('compareCopies', () => {
     expect(r.totalLines).toBeGreaterThan(500)
     expect(r.patch!.split('\n').length).toBeLessThanOrEqual(500)
   })
+
+  it('includes distant context only in full-file mode', async () => {
+    const oldLines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`)
+    const newLines = [...oldLines]
+    newLines[1] = 'line 2 changed'
+    newLines[19] = 'line 20 changed'
+    const before = await copyOf('context-before', `${oldLines.join('\n')}\n`)
+    const after = await copyOf('context-after', `${newLines.join('\n')}\n`)
+
+    const changes = await compareCopies(before, after, 'context.txt', 1_000_000, { full: true })
+    expect(changes.patch).not.toContain(' line 10\n')
+    const fullFile = await compareCopies(before, after, 'context.txt', 1_000_000, { view: 'full-file', full: true })
+    expect(fullFile.patch).toContain(' line 10\n')
+    expect(fullFile.patch).toContain('+line 20 changed')
+  })
+
+  it('honors unclipped output for copy-backed added files', async () => {
+    const before = await copyOf('long-before', '')
+    const after = await copyOf('long-after', Array.from({ length: 700 }, (_, i) => `line ${i}`).join('\n') + '\n')
+    const complete = await compareCopies(before, after, 'long.txt', 1_000_000, { full: true })
+    expect(complete.truncated).toBe(false)
+    expect(complete.patch!.split('\n')).toHaveLength(703)
+    expect(complete.patch).toContain('+line 699')
+  })
 })

@@ -50,7 +50,7 @@ import {
 } from '../shared/tool-profile.js'
 import { taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
-import type { TurnChangesPayload, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
+import type { TurnChangesPayload, TurnDiffOptions, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
 import { toolTargetPaths } from './snapshot/tool-targets.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
 import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees } from './session-worktree.js'
@@ -6354,7 +6354,7 @@ export class SessionManager {
     id: string,
     resultUuid: string,
     index: number,
-    opts?: { full?: boolean },
+    opts?: TurnDiffOptions,
   ): Promise<TurnDiffPayload> {
     this.requireKnownSession(id)
     if (this.snapshots.isDisabled()) return { available: false }

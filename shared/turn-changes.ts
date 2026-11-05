@@ -49,10 +49,21 @@ export interface TurnChangesPayload {
   summary?: TurnChangesSummary
 }
 
+/** Context shown around a turn modification. Independent from body clipping. */
+export type TurnDiffViewMode = 'changes' | 'full-file'
+
+export interface TurnDiffOptions {
+  /** Return the complete generated patch instead of the preview line cap. */
+  full?: boolean
+  /** Three context lines around changes, or the complete file. Defaults to changes. */
+  view?: TurnDiffViewMode
+}
+
 /** Response of `GET /sessions/:id/turn-diff`. */
 export interface TurnDiffPayload {
   available: boolean
-  /** Unified-diff body (git-style headers + hunks), clipped unless `full=1`. */
+  /** Unified-diff body (git-style headers + hunks). Context size follows `view`;
+   *  the body is clipped unless `full=1`. */
   patch?: string
   /** True when the patch body was clipped. */
   truncated?: boolean
