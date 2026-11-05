@@ -20,6 +20,7 @@
 import { memo, useEffect, useRef, useState, useCallback } from 'react'
 import type { SessionInfo } from '../types'
 import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
+import { SUPPORTED_IMAGE_MEDIA_TYPES } from '../../shared/image-media'
 import type { TranscriptPaging } from '../session-sync/useSessionSynchronizer'
 import type { UsePermissionChannel } from '../hooks/usePermissionChannel'
 import { SessionMessageList } from './SessionMessageList'
@@ -378,7 +379,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
             placeholder={session.terminated ? 'Session ended' : 'Ask something...'}
             disabled={session.terminated || sending}
             onSubmit={() => void handleSend()}
-            onPasteImage={(file) => void pastedImages.addImage(file)}
+            onPasteImages={(files) => void pastedImages.addImages(files)}
             onNewline={() => {
               // Insert a literal \n at the live caret. execCommand is a jsdom
               // no-op (it does not exist there) but works in real browsers;
@@ -423,7 +424,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/jpeg,image/png,image/gif,image/webp"
+          accept={SUPPORTED_IMAGE_MEDIA_TYPES.join(',')}
           multiple
           aria-hidden
           tabIndex={-1}
@@ -431,7 +432,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           onChange={(e) => {
             const files = e.target.files ? Array.from(e.target.files) : []
             e.target.value = ''
-            for (const f of files) void pastedImages.addImage(f)
+            void pastedImages.addImages(files)
           }}
         />
       </div>

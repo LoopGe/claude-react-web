@@ -1,6 +1,6 @@
 import type { ScheduledSendBody, ScheduledSendContentBlock } from '../shared/scheduled-send.js'
+import { isSupportedImageMediaType } from '../shared/image-media.js'
 
-const VALID_IMG_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 export const MAX_MESSAGE_BASE64 = 28_000_000
 
 export type SendBodyValidation =
@@ -20,7 +20,7 @@ export function validateSendBody(raw: { text?: unknown; content?: unknown }): Se
         if (!source || source.type !== 'base64' || typeof source.data !== 'string' || typeof source.media_type !== 'string') {
           return { ok: false, status: 400, error: 'invalid image block: missing base64 source' }
         }
-        if (!VALID_IMG_TYPES.has(source.media_type as string)) {
+        if (!isSupportedImageMediaType(source.media_type as string)) {
           return { ok: false, status: 400, error: `unsupported image type: ${source.media_type}` }
         }
         totalBase64 += (source.data as string).length

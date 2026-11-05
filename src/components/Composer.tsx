@@ -80,7 +80,7 @@ interface Props {
   commands?: SlashCommand[]
   /** Pending pasted images to send inline. */
   pastedImages: PastedImage[]
-  onPasteImage: (file: File) => Promise<void>
+  onPasteImages: (files: readonly File[]) => void | Promise<void>
   onRemovePastedImage: (id: string) => void
   /** Store a collapsed paste's full text and return the id its
    *  `[Pasted text #N]` reference should carry. Nothing else sees the body
@@ -176,7 +176,7 @@ export const Composer = memo(function Composer({
   onRecallImages,
   commands,
   pastedImages,
-  onPasteImage,
+  onPasteImages,
   onRemovePastedImage,
   onAddPastedText,
   onSend,
@@ -838,7 +838,7 @@ export const Composer = memo(function Composer({
           <RichPromptInput
             editorRef={editorRef}
             value={input}
-            onPasteImage={(file) => void onPasteImage(file)}
+            onPasteImages={(files) => void onPasteImages(files)}
             onChange={(val) => {
               setInput(val)
               if (history.isBrowsing()) history.reset()

@@ -116,6 +116,7 @@ import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
 import type { ScheduledSendBody } from '../../shared/scheduled-send'
 import { buildOutgoingBody } from '../utils/message-body'
+import { routeIntakeFiles } from '../utils/image-intake'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
@@ -860,6 +861,9 @@ export const Chat = memo(function Chat({
 
   const [dragOver, setDragOver] = useState(false)
   const pastedImages = usePastedImages()
+  // Stable callback (usePastedImages memoises it), so intake handlers do not
+  // change identity when only the images list or error string does.
+  const addPastedImages = pastedImages.addImages
   // The draft's image half. The text half survives unmounts via
   // sessionStorage (readDraft/writeDraft above); the image half survives via
   // the IDB side store — restored here on mount, debounced-written on every
@@ -889,13 +893,6 @@ export const Chat = memo(function Chat({
   // the seq guard only orders recall STEPS against each other, so without
   // this a slow IDB load landing after a paste/remove would silently
   // overwrite the user's edit.
-  const onPasteImage = useCallback(
-    (file: File) => {
-      invalidateHistoryImages()
-      return pastedImages.addImage(file)
-    },
-    [invalidateHistoryImages, pastedImages],
-  )
   const onRemovePastedImage = useCallback(
     (id: string) => {
       invalidateHistoryImages()
@@ -1307,6 +1304,14 @@ export const Chat = memo(function Chat({
   }, [allContribs, executePluginCommand, session.id, session.working])
   // Export-success feedback now goes through the global toast hub.
   const toast = useToast()
+  // One image intake path for paste, drag and the paperclip: attach the batch,
+  // then surface the hook's first refusal. Toast the RETURNED message (not the
+  // state value) so dropping the same oversized file twice still reports.
+  const intakeImages = useCallback(async (images: readonly File[]) => {
+    invalidateHistoryImages()
+    const error = await addPastedImages(images)
+    if (error !== null) toast.error(error)
+  }, [invalidateHistoryImages, addPastedImages, toast])
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
   // Raw state; the value consumers see (`searchActiveIdx`, below) is
@@ -1535,10 +1540,18 @@ export const Chat = memo(function Chat({
 
   const onFilesPicked = useCallback(
     (files: File[]) => {
-      onOpenUploads?.()
-      void startUploads(files, { sessionId: session.id, autoClose: true })
+      // One intake rule for drag + paperclip: supported images join the inline
+      // draft (paste already goes there), everything else keeps the generic
+      // upload path. Only a non-empty upload group opens the manager.
+      routeIntakeFiles(files, {
+        addImages: intakeImages,
+        uploadFiles: (uploads) => {
+          onOpenUploads?.()
+          void startUploads(uploads, { sessionId: session.id, autoClose: true })
+        },
+      })
     },
-    [onOpenUploads, session.id],
+    [intakeImages, onOpenUploads, session.id],
   )
 
   const onDrop = useCallback(
@@ -2484,7 +2497,7 @@ export const Chat = memo(function Chat({
               onRecallImages={historyImageRecallApi}
               commands={mergedCommands}
               pastedImages={pastedImages.images}
-              onPasteImage={onPasteImage}
+              onPasteImages={intakeImages}
               onRemovePastedImage={onRemovePastedImage}
               onAddPastedText={addPastedText}
               onSend={handleSend}

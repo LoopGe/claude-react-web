@@ -1,23 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { fileToBase64 } from '../utils/file-to-base64'
 import { formatBytes } from '../utils/format'
+import { isSupportedImageMediaType } from '../../shared/image-media'
 import { randomId } from '../utils/uuid'
 import { getMaxPastedImageBytes } from './config-store'
 import type { PastedImage } from '../types'
 
-const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 const MAX_PER_IMAGE = 10 * 1024 * 1024 // 10 MB
+/** Concurrent decodes inside one intake batch. */
+const DECODE_CONCURRENCY = 2
 
 export interface UsePastedImages {
   images: PastedImage[]
   error: string | null
-  addImage: (file: File) => Promise<void>
+  /** Add one intake batch (drag/picker multi-select) with the limit checks
+   *  counted across the whole batch. Landed images are appended as they
+   *  decode. Returns the first refusal message (or null), so a caller can
+   *  surface it even when the committed error string is unchanged between two
+   *  attempts. */
+  addImages: (files: readonly File[]) => Promise<string | null>
   removeImage: (id: string) => void
   clear: () => void
   /** Replace the pending images with a PREBUILT set (history recall — the
    *  images come from the decode cache with cache-owned URLs, `fromCache`).
    *  Replaced composer-owned URLs are revoked; cache-owned ones survive (the
-   *  cache owns their lifecycle). An in-flight addImage is NOT discarded —
+   *  cache owns their lifecycle). An in-flight add batch is NOT discarded —
    *  it lands on the applied set. Empty array = clear (text-only recall). */
   applyImages: (prebuilt: readonly PastedImage[]) => void
   /** Synchronous mutation signal, replaced (not mutated) with every image-set
@@ -46,9 +53,23 @@ export function usePastedImages(): UsePastedImages {
   const [images, setImages] = useState<PastedImage[]>([])
   const [error, setError] = useState<string | null>(null)
   const imagesRef = useRef(images)
-  useEffect(() => { imagesRef.current = images }, [images])
-  // Generation counter bumped on every clear(). addImage captures the
-  // value before its await and skips the state update if clear() ran
+  // Bytes accepted by batches that have not committed yet. imagesRef only
+  // catches up after a render, so overlapping intake calls (two drops, a drop
+  // plus a paste) must also see each other's in-flight reservations.
+  const reservedBytesRef = useRef(0)
+  // A committed batch keeps its reservation until the imagesRef sync effect
+  // runs. Releasing it at decode completion would let the very next call in
+  // the same task compute its total from a stale imagesRef.
+  const pendingReleaseRef = useRef(0)
+  useEffect(() => {
+    imagesRef.current = images
+    if (pendingReleaseRef.current !== 0) {
+      reservedBytesRef.current -= pendingReleaseRef.current
+      pendingReleaseRef.current = 0
+    }
+  }, [images])
+  // Generation counter bumped on every clear(). An add captures the
+  // value before its first await and skips each commit if clear() ran
   // in the interim — otherwise the image lands with a revoked blob URL.
   const clearGenerationRef = useRef(0)
   // Synchronous mutation signal for async appliers — see the interface docs.
@@ -58,7 +79,7 @@ export function usePastedImages(): UsePastedImages {
   }, [])
   // Every blob URL we create is registered here the instant it's minted,
   // and removed only once it has been explicitly revoked. This closes the
-  // race where the component unmounts while addImage is still awaiting
+  // race where the component unmounts while an add is still awaiting
   // fileToBase64/getImageDimensions: the previewUrl was created but never
   // yet pushed into `images` (so imagesRef doesn't know about it), and
   // the unmount cleanup below would otherwise miss it, pinning the blob's
@@ -92,7 +113,7 @@ export function usePastedImages(): UsePastedImages {
   // is a pure Blob memo — it never owns URLs, never revokes), so the normal
   // revoke-on-replace lifecycle applies unchanged. Runs synchronously — no
   // awaits — so no generation guard is needed here, and deliberately does
-  // NOT bump clearGenerationRef: an addImage still decoding when the user
+  // NOT bump clearGenerationRef: an add still decoding when the user
   // steps ↑ then ↓ back to the draft must LAND on the applied set, not be
   // silently dropped. clear() keeps the bump — after a send a stale
   // in-flight paste must not repopulate the emptied composer.
@@ -108,57 +129,95 @@ export function usePastedImages(): UsePastedImages {
     [revokeUrl, bumpMutations],
   )
 
-  const addImage = useCallback(async (file: File) => {
+  const addImages = useCallback(async (files: readonly File[]): Promise<string | null> => {
     setError(null)
 
-    if (!ALLOWED_TYPES.has(file.type)) {
-      setError(`Unsupported image type: ${file.type || 'unknown'}. Use JPEG, PNG, GIF, or WebP.`)
-      return
-    }
-    if (file.size > MAX_PER_IMAGE) {
-      setError(`Image too large (${formatBytes(file.size)}). Max ${formatBytes(MAX_PER_IMAGE)} per image.`)
-      return
-    }
-    const currentTotal = imagesRef.current.reduce((sum, i) => sum + i.size, 0)
+    // Check the batch as one sequence: each accepted file raises the running
+    // total, so N files that each fit individually can no longer slip past the
+    // aggregate limit in the same render cycle (imagesRef lags a commit).
+    // `reservedBytesRef` extends the same accounting across overlapping
+    // batches that have not committed yet.
+    const accepted: File[] = []
+    let total = imagesRef.current.reduce((sum, img) => sum + img.size, 0) + reservedBytesRef.current
     const maxTotal = getMaxPastedImageBytes()
-    if (currentTotal + file.size > maxTotal) {
-      setError(`Total image size too large. Max ${formatBytes(maxTotal)} across all images.`)
-      return
+    let failure: string | null = null
+    const refuse = (message: string): void => {
+      if (failure !== null) return
+      failure = message
+      setError(message)
     }
-
-    const id = randomId()
-    const previewUrl = URL.createObjectURL(file)
-    allUrlsRef.current.add(previewUrl)
-    const generation = clearGenerationRef.current
-
-    try {
-      const data = await fileToBase64(file)
-      const dims = await getImageDimensions(previewUrl)
-
-      // If clear() was called while we were awaiting, the blob URL has
-      // already been revoked and imagesRef was reset. Discard instead of
-      // inserting a broken preview.
-      if (clearGenerationRef.current !== generation) {
-        revokeUrl(previewUrl)
-        return
+    for (const file of files) {
+      if (!isSupportedImageMediaType(file.type)) {
+        refuse(`Unsupported image type: ${file.type || 'unknown'}. Use JPEG, PNG, GIF, or WebP.`)
+        continue
       }
-
-      bumpMutations('add')
-      setImages((prev) => [
-        ...prev,
-        {
-          id,
-          data,
-          mediaType: file.type as PastedImage['mediaType'],
-          width: dims.width,
-          height: dims.height,
-          size: file.size,
-          previewUrl,
-        },
-      ])
-    } catch {
-      revokeUrl(previewUrl)
+      if (file.size > MAX_PER_IMAGE) {
+        refuse(`Image too large (${formatBytes(file.size)}). Max ${formatBytes(MAX_PER_IMAGE)} per image.`)
+        continue
+      }
+      if (total + file.size > maxTotal) {
+        refuse(`Total image size too large. Max ${formatBytes(maxTotal)} across all images.`)
+        continue
+      }
+      total += file.size
+      accepted.push(file)
     }
+    if (accepted.length === 0) return failure
+
+    const acceptedBytes = accepted.reduce((sum, file) => sum + file.size, 0)
+    reservedBytesRef.current += acceptedBytes
+    const generation = clearGenerationRef.current
+    // Decode at most two images at a time: one drop can carry many
+    // screenshots, and N concurrent FileReaders + Image decodes is a needless
+    // main-thread burst. Each chunk's images still land as soon as it
+    // finishes, so a send during a long batch sees what already made it.
+    // Their bytes move from the reservation to `pendingReleaseRef` at commit;
+    // the imagesRef sync effect drains them once the commit is visible.
+    let committedBytes = 0
+    try {
+      for (let index = 0; index < accepted.length; index += DECODE_CONCURRENCY) {
+        if (clearGenerationRef.current !== generation) break
+        const chunk = accepted.slice(index, index + DECODE_CONCURRENCY)
+        const decoded = await Promise.all(chunk.map(async (file) => {
+          let previewUrl: string | undefined
+          try {
+            const url = URL.createObjectURL(file)
+            previewUrl = url
+            allUrlsRef.current.add(url)
+            const data = await fileToBase64(file)
+            const dims = await getImageDimensions(url)
+            return { file, url, data, dims }
+          } catch {
+            if (previewUrl !== undefined) revokeUrl(previewUrl)
+            return null
+          }
+        }))
+        for (const entry of decoded) {
+          if (entry === null) continue
+          if (clearGenerationRef.current !== generation) {
+            revokeUrl(entry.url)
+            continue
+          }
+          pendingReleaseRef.current += entry.file.size
+          committedBytes += entry.file.size
+          bumpMutations('add')
+          setImages((prev) => [...prev, {
+            id: randomId(),
+            data: entry.data,
+            mediaType: entry.file.type as PastedImage['mediaType'],
+            width: entry.dims.width,
+            height: entry.dims.height,
+            size: entry.file.size,
+            previewUrl: entry.url,
+          }])
+        }
+      }
+    } finally {
+      // Release the bytes that never reached a commit; committed bytes are
+      // released by the imagesRef sync effect.
+      reservedBytesRef.current -= acceptedBytes - committedBytes
+    }
+    return failure
   }, [revokeUrl, bumpMutations])
 
   // Cleanup on unmount: revoke every URL we created, including any that
@@ -182,8 +241,8 @@ export function usePastedImages(): UsePastedImages {
   // callbacks are `useCallback([])`-stable — so the memo returns the
   // same reference until the user pastes / removes / clears.
   return useMemo(
-    () => ({ images, error, addImage, removeImage, clear, applyImages, mutationsRef }),
-    [images, error, addImage, removeImage, clear, applyImages, mutationsRef],
+    () => ({ images, error, addImages, removeImage, clear, applyImages, mutationsRef }),
+    [images, error, addImages, removeImage, clear, applyImages, mutationsRef],
   )
 }
 

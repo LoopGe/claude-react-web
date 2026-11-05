@@ -14,6 +14,7 @@
 
 import { openDB, type IDBPDatabase } from 'idb'
 import type { PastedImage } from '../types'
+import type { SupportedImageMediaType } from '../../shared/image-media'
 
 const DB_NAME = 'claude-web-history'
 const DB_VERSION = 1
@@ -24,7 +25,7 @@ const IMAGES_STORE = 'images'
 export interface PersistedImage {
   /** base64 payload, no data-URL prefix (same shape as PastedImage.data). */
   data: string
-  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+  mediaType: SupportedImageMediaType
   width: number
   height: number
   size: number

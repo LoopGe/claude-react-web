@@ -301,35 +301,64 @@ describe('RichPromptInput paste', () => {
     expect(el.textContent).toBe('small')
   })
 
-  it('routes image items to onPasteImage and still inserts the text body', () => {
+  it('routes supported image items to onPasteImages as one batch and still inserts the text body', () => {
     // Regression: the old textarea path iterated clipboardData.items and
-    // handed each image/* file to onPasteImage. RichPromptInput must do the
-    // same — and must keep doing it when the clipboard ALSO carries a text
-    // body (a screenshot copied from a rich editor, say).
-    const onPasteImage = vi.fn()
+    // handed each image/* file to the parent one call at a time, so batch
+    // limits were checked per file. RichPromptInput hands the whole batch
+    // over once — and must keep doing it when the clipboard ALSO carries a
+    // text body (a screenshot copied from a rich editor, say).
+    const onPasteImages = vi.fn()
     const onChange = vi.fn()
     const { container } = render(
       <RichPromptInput
         value=""
         onChange={onChange}
         ariaLabel="M"
-        onPasteImage={onPasteImage}
+        onPasteImages={onPasteImages}
       />,
     )
     const el = editor(container)
-    const file = new File(['data'], 'shot.png', { type: 'image/png' })
+    const a = new File(['a'], 'a.png', { type: 'image/png' })
+    const b = new File(['b'], 'b.jpg', { type: 'image/jpeg' })
     const event = createEvent.paste(el, {
       clipboardData: {
         getData: (t: string) => (t === 'text/plain' ? 'caption' : ''),
-        items: [{ type: 'image/png', getAsFile: () => file }],
+        items: [
+          { type: 'image/png', getAsFile: () => a },
+          { type: 'image/jpeg', getAsFile: () => b },
+        ],
       },
     })
     fireEvent(el, event)
     expect(event.defaultPrevented).toBe(true)
-    expect(onPasteImage).toHaveBeenCalledOnce()
-    expect(onPasteImage).toHaveBeenCalledWith(file)
+    expect(onPasteImages).toHaveBeenCalledOnce()
+    expect(onPasteImages).toHaveBeenCalledWith([a, b])
     // The text body still landed in the editor.
     expect(el.textContent).toBe('caption')
+  })
+
+  it('hands unsupported raster image items to the batch handler but excludes incidental SVG', () => {
+    const onPasteImages = vi.fn()
+    const { container } = render(
+      <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" onPasteImages={onPasteImages} />,
+    )
+    const el = editor(container)
+    const svg = new File(['<svg/>'], 'vector.svg', { type: 'image/svg+xml' })
+    const avif = new File(['a'], 'shot.avif', { type: 'image/avif' })
+    const png = new File(['p'], 'shot.png', { type: 'image/png' })
+    const event = createEvent.paste(el, {
+      clipboardData: {
+        getData: () => '',
+        items: [
+          { type: 'image/svg+xml', getAsFile: () => svg },
+          { type: 'image/avif', getAsFile: () => avif },
+          { type: 'image/png', getAsFile: () => png },
+        ],
+      },
+    })
+    fireEvent(el, event)
+    expect(onPasteImages).toHaveBeenCalledOnce()
+    expect(onPasteImages).toHaveBeenCalledWith([avif, png])
   })
 })
 

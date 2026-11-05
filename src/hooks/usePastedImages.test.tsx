@@ -6,7 +6,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { usePastedImages } from './usePastedImages'
+import { getMaxPastedImageBytes } from './config-store'
 import type { PastedImage } from '../types'
+
+/** Browser File with a declared size but no real bytes: the hook only reads
+ *  size/type/name, and both decode globals are stubbed below. */
+function sizedFile(type: string, size: number, name = 'f'): File {
+  return { type, size, name } as unknown as File
+}
 
 function built(data = 'AAAA'): PastedImage {
   return {
@@ -90,7 +97,7 @@ describe('usePastedImages.applyImages', () => {
     stubDecodeGlobals()
     try {
       await act(async () => {
-        await result.current.addImage(new File(['x'], 'p.png', { type: 'image/png' }))
+        await result.current.addImages([new File(['x'], 'p.png', { type: 'image/png' })])
       })
       const live = result.current.images[0]
       expect(live.previewUrl).toBe('blob:mock-1')
@@ -126,17 +133,185 @@ describe('usePastedImages.applyImages', () => {
   })
 
   it('an in-flight paste survives an applyImages (no data loss on recall)', async () => {
-    // Same scenario as the R2-review finding: addImage is still decoding
+    // Same scenario as the R2-review finding: the add is still decoding
     // when the recall applies — the paste must land on top.
     const { result } = renderHook(() => usePastedImages())
     stubDecodeGlobals()
     try {
       await act(async () => {
-        const adding = result.current.addImage(new File(['x'], 'p.png', { type: 'image/png' }))
+        const adding = result.current.addImages([new File(['x'], 'p.png', { type: 'image/png' })])
         result.current.applyImages([built('RESTORED')])
         await adding
       })
       expect(result.current.images.map((i) => i.data)).toEqual(['RESTORED', 'ZZZZ'])
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+})
+
+describe('usePastedImages.addImages', () => {
+  it('adds every supported image in source order, one add bump per landed image', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      await act(async () => {
+        await result.current.addImages([
+          new File(['a'], 'a.png', { type: 'image/png' }),
+          new File(['b'], 'b.jpg', { type: 'image/jpeg' }),
+        ])
+      })
+      expect(result.current.images).toHaveLength(2)
+      expect(result.current.error).toBeNull()
+      expect(result.current.mutationsRef.current).toMatchObject({ seq: 2, kind: 'add' })
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('counts the whole batch against the total limit instead of checking each file alone', async () => {
+    const maxTotal = getMaxPastedImageBytes()
+    // Three files that each fit the per-image limit but together exceed the
+    // configured total; the third must be refused.
+    const each = Math.floor(maxTotal / 3) + 1
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      await act(async () => {
+        await result.current.addImages([
+          sizedFile('image/png', each, 'big-0.png'),
+          sizedFile('image/png', each, 'big-1.png'),
+          sizedFile('image/png', each, 'big-2.png'),
+        ])
+      })
+      expect(result.current.images).toHaveLength(2)
+      expect(result.current.error).toMatch(/Total image size too large/)
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('skips an oversized image without dropping the rest of the batch', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      await act(async () => {
+        await result.current.addImages([
+          sizedFile('image/png', 10 * 1024 * 1024 + 1, 'too-big.png'),
+          new File(['x'], 'ok.png', { type: 'image/png' }),
+        ])
+      })
+      expect(result.current.images).toHaveLength(1)
+      expect(result.current.error).toMatch(/Image too large/)
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('skips an unsupported image type without dropping the rest of the batch', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      await act(async () => {
+        await result.current.addImages([
+          new File(['<svg/>'], 'vector.svg', { type: 'image/svg+xml' }),
+          new File(['x'], 'ok.png', { type: 'image/png' }),
+        ])
+      })
+      expect(result.current.images).toHaveLength(1)
+      expect(result.current.error).toMatch(/Unsupported image type/)
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('does not stamp a mutation when every file is refused', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    try {
+      await act(async () => {
+        await result.current.addImages([sizedFile('image/png', 10 * 1024 * 1024 + 1)])
+      })
+      expect(result.current.images).toEqual([])
+      expect(result.current.mutationsRef.current).toMatchObject({ seq: 0, kind: 'apply' })
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('returns null when the whole batch lands', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      const error = await result.current.addImages([
+        new File(['a'], 'a.png', { type: 'image/png' }),
+      ])
+      expect(error).toBeNull()
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('returns the refusal message on every call so a caller can surface it again', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    const tooBig = () => sizedFile('image/png', 10 * 1024 * 1024 + 1, 'too-big.png')
+    const first = await result.current.addImages([tooBig()])
+    const second = await result.current.addImages([tooBig()])
+    expect(first).toMatch(/Image too large/)
+    expect(second).toBe(first)
+  })
+
+  it('reserves accepted bytes across overlapping batches', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      const sevenMb = (name: string) => sizedFile('image/png', 7 * 1024 * 1024, name)
+      await act(async () => {
+        const first = result.current.addImages([sevenMb('a.png'), sevenMb('b.png')])
+        const second = result.current.addImages([sevenMb('c.png'), sevenMb('d.png')])
+        await Promise.all([first, second])
+      })
+      // The first batch reserves 14 MB. The second may add one more (21 MB)
+      // and must refuse the last (28 MB > the 25 MB aggregate cap).
+      expect(result.current.images).toHaveLength(3)
+      expect(result.current.error).toMatch(/Total image size too large/)
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('counts a resolved batch against the next call in the same task', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      const sevenMb = (name: string) => sizedFile('image/png', 7 * 1024 * 1024, name)
+      await act(async () => {
+        // The first batch resolves before the second starts. React has not
+        // committed/run the imagesRef sync effect yet, so the second call
+        // must still see the first batch's bytes.
+        await result.current.addImages([sevenMb('a.png'), sevenMb('b.png')])
+        await result.current.addImages([sevenMb('c.png'), sevenMb('d.png')])
+      })
+      expect(result.current.images).toHaveLength(3)
+      expect(result.current.error).toMatch(/Total image size too large/)
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('discards the whole in-flight batch when the draft is cleared during decoding', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      await act(async () => {
+        const adding = result.current.addImages([
+          new File(['a'], 'a.png', { type: 'image/png' }),
+          new File(['b'], 'b.png', { type: 'image/png' }),
+        ])
+        result.current.clear()
+        await adding
+      })
+      expect(result.current.images).toEqual([])
+      expect(result.current.mutationsRef.current).toMatchObject({ seq: 1, kind: 'clear' })
     } finally {
       unstubDecodeGlobals()
     }
@@ -170,12 +345,12 @@ describe('usePastedImages.mutationsRef', () => {
     expect(result.current.mutationsRef.current).toMatchObject({ seq: 1, kind: 'clear' })
   })
 
-  it('stamps kind=add when an addImage LANDS, not when it starts — a discarded in-flight paste must not bump', async () => {
+  it('stamps kind=add when an add LANDS, not when it starts — a discarded in-flight paste must not bump', async () => {
     const { result } = renderHook(() => usePastedImages())
     stubDecodeGlobals()
     try {
       await act(async () => {
-        await result.current.addImage(new File(['x'], 'p.png', { type: 'image/png' }))
+        await result.current.addImages([new File(['x'], 'p.png', { type: 'image/png' })])
       })
       // The paste landed: exactly one bump.
       expect(result.current.mutationsRef.current).toMatchObject({ seq: 1, kind: 'add' })
@@ -183,7 +358,7 @@ describe('usePastedImages.mutationsRef', () => {
       // Second paste gets cleared mid-decode: the clear bumps, the discarded
       // paste must NOT add a second bump.
       await act(async () => {
-        const adding = result.current.addImage(new File(['x'], 'p.png', { type: 'image/png' }))
+        const adding = result.current.addImages([new File(['x'], 'p.png', { type: 'image/png' })])
         result.current.clear()
         await adding
       })

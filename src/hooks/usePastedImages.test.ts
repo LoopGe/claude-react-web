@@ -13,7 +13,7 @@ describe('usePastedImages cap', () => {
     setMaxPastedImageBytes(5) // 5 bytes
     const { result } = renderHook(() => usePastedImages())
     await act(async () => {
-      await result.current.addImage(new File([new Uint8Array(10)], 'a.png', { type: 'image/png' }))
+      await result.current.addImages([new File([new Uint8Array(10)], 'a.png', { type: 'image/png' })])
     })
     expect(result.current.error).toMatch(/too large/i)
     expect(result.current.images).toHaveLength(0)

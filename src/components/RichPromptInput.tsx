@@ -59,13 +59,15 @@ interface Props {
    *  undo stack. A caller that spliced its own state instead would make every
    *  paste un-undoable. */
   onPasteText?: (raw: string) => string | null
-  /** Image handler — each `image/*` item on the clipboard is handed here
-   *  (the `getAsFile()` result). The editor never accepts image bytes itself;
-   *  the parent attaches them as preview chips the way the old textarea path
-   *  did. A single paste can carry BOTH an image and a text/plain body (e.g.
+  /** Image handler — every non-SVG `image/*` clipboard item is collected and
+   *  handed over as ONE batch (each entry is the `getAsFile()` result). The
+   *  intake owner decides which formats it accepts, so an unsupported raster
+   *  image still produces its normal refusal instead of vanishing. The editor
+   *  never accepts image bytes itself; the parent attaches them as preview
+   *  chips. A single paste can carry BOTH images and a text/plain body (e.g.
    *  copying a selection from a rich editor), so images are collected before
    *  the text path runs and neither path bails the other. */
-  onPasteImage?: (file: File) => void
+  onPasteImages?: (files: readonly File[]) => void
   /** Right-click context menu handler. */
   onContextMenu?: (e: React.MouseEvent<HTMLElement>) => void
   /** Additional keydown handler for keys the editor does not handle itself
@@ -105,7 +107,7 @@ export function RichPromptInput({
   onSubmit,
   onNewline,
   onPasteText,
-  onPasteImage,
+  onPasteImages,
   onContextMenu,
   onKeyDown: onKeyDownProp,
 }: Props) {
@@ -233,16 +235,18 @@ export function RichPromptInput({
     // uncollapsed. The editor never holds image bytes; the parent attaches
     // them as preview chips, the same collection the textarea path did.
     const items = e.clipboardData?.items
-    if (items && onPasteImage) {
+    if (items && onPasteImages) {
+      const files: File[] = []
       for (const item of items) {
-        if (
-          item.type.startsWith('image/') &&
-          item.type !== 'image/svg+xml'
-        ) {
-          const file = item.getAsFile()
-          if (file) onPasteImage(file)
-        }
+        // SVG is deliberately excluded: copying ordinary content from a
+        // browser often carries an incidental image/svg+xml item, and it must
+        // not turn a text paste into a refusal. Other unsupported image
+        // formats still reach the intake so they get a real error.
+        if (!item.type.startsWith('image/') || item.type === 'image/svg+xml') continue
+        const file = item.getAsFile()
+        if (file) files.push(file)
       }
+      if (files.length > 0) onPasteImages(files)
     }
     const raw = e.clipboardData?.getData('text/plain') ?? ''
     if (!raw) return

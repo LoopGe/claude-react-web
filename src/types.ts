@@ -3,6 +3,7 @@
 // renders defensively.
 
 import type { SessionInfoBase } from '../shared/session-info'
+import type { SupportedImageMediaType } from '../shared/image-media'
 import {
   USER_SELECTABLE_PERMISSION_MODES,
   type SdkAgentPermissionMode,
@@ -473,7 +474,7 @@ export interface Block {
 export interface PastedImage {
   id: string
   data: string
-  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+  mediaType: SupportedImageMediaType
   width: number
   height: number
   size: number

@@ -91,7 +91,7 @@ const defaultProps = {
   history: { add: noop, prev: () => null, next: () => null, isBrowsing: () => false, reset: () => {} },
   commands: [] as SlashCommand[],
   pastedImages: [] as never[],
-  onPasteImage: noopAsync,
+  onPasteImages: noopAsync,
   onRemovePastedImage: noop,
   // Allocates the reference id for a collapsed paste and stores its content.
   onAddPastedText: () => 1,
