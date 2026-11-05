@@ -440,17 +440,17 @@ describe('config', () => {
     expect(WRITABLE_CONFIG_KEYS).toContain('rowGap')
   })
 
-  it('defaults streamingRenderMode to overlay', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {})
-    await loadConfig(dir)
-    expect(config.streamingRenderMode).toBe('overlay')
-  })
-
-  it('honors a streamingRenderMode override from config.json', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ streamingRenderMode: 'inline' }))
+  it('defaults streamingRenderMode to inline', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
     expect(config.streamingRenderMode).toBe('inline')
+  })
+
+  it('honors a streamingRenderMode override from config.json', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ streamingRenderMode: 'overlay' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.streamingRenderMode).toBe('overlay')
   })
 
   it('ignores an invalid streamingRenderMode value', async () => {
@@ -459,7 +459,7 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ streamingRenderMode: 'off' }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
-    expect(config.streamingRenderMode).toBe('overlay')
+    expect(config.streamingRenderMode).toBe('inline')
   })
 
   it('exposes streamingRenderMode as a writable config key', () => {

@@ -1337,7 +1337,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" streamingMode="overlay" />,
     )
 
     const streaming = container.querySelector('.streaming-footer-wrapper')
@@ -1363,14 +1363,14 @@ describe('MessageList', () => {
     ]
 
     const { container, rerender } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="" />,
+      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="" streamingMode="overlay" />,
     )
 
     expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
     expect(container.querySelector('.chat-streaming-region')).toBeNull()
 
     // Once real text flushes, the footer mounts.
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" />)
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" streamingMode="overlay" />)
     expect(container.querySelector('.streaming-footer-wrapper')).not.toBeNull()
     expect(container.querySelector('.streaming-footer-wrapper')?.textContent).toContain('Live tokens')
   })
@@ -1406,7 +1406,7 @@ describe('MessageList', () => {
     ]
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
     )
 
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
@@ -1715,7 +1715,7 @@ describe('MessageList', () => {
     let stackHeight = 80    // capped streaming bubble sitting in the stack
 
     const { container, rerender } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
     )
 
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
@@ -1767,7 +1767,7 @@ describe('MessageList', () => {
     // fires on its own, so drive the stack shrink explicitly — a real browser
     // fires it here. scrollHeight drops to 200 and the browser clamps
     // scrollTop 180 -> 100 (bottom of the settled content).
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent={null} />)
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent={null} streamingMode="overlay" />)
     // Explicit timeout: this is the app's longest presence exit (~250ms of
     // rAF-driven tweens), and a loaded CI runner can starve happy-dom's rAF
     // cadence well past the 1s default's comfort.
@@ -1802,7 +1802,7 @@ describe('MessageList', () => {
     let stackHeight = 80
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
     )
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
     const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
@@ -1874,7 +1874,7 @@ describe('MessageList', () => {
     const stackHeight = 80
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
     )
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
     const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
@@ -1950,7 +1950,7 @@ describe('MessageList', () => {
     const stackHeight = 80
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
     )
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
     const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
@@ -2086,7 +2086,7 @@ describe('MessageList', () => {
         makeMsg('assistant', { message: { content: [{ type: 'text', text: 'a' }] } }),
       ]
       const state = { contentHeight: 200, stackHeight: 80, itemListH: 200, foldBodyH: 0, clientHeight: 100, rawScrollTop: 180, appWrites: 0 }
-      const utils = render(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />)
+      const utils = render(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />)
       const { container } = utils
       const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
       const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
@@ -2126,7 +2126,7 @@ describe('MessageList', () => {
       const appendMessage = () => {
         appendSeq++
         currentMsgs = [...currentMsgs, makeMsg('assistant', { uuid: `added-${appendSeq}`, message: { content: [{ type: 'text', text: 'new' }] } })]
-        act(() => { utils.rerender(<MessageList items={toItems(currentMsgs as SdkMessage[])} streamingContent="Live tokens" />) })
+        act(() => { utils.rerender(<MessageList items={toItems(currentMsgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />) })
       }
       return { state, scroller, stack, itemList, fold, startFold, appendMessage }
     }
@@ -2504,7 +2504,7 @@ describe('MessageList', () => {
     const stackHeight = 80
 
     const { container } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
     )
     const scroller = container.querySelector('.chat-virtuoso-scroller') as HTMLElement
     const stack = container.querySelector('.chat-bottom-stack') as HTMLElement
@@ -2626,6 +2626,7 @@ describe('MessageList', () => {
       <MessageList
         items={toItems(msgs as SdkMessage[])}
         streamingContent="Live tokens"
+        streamingMode="overlay"
         transcriptRevealKey="A"
       />,
     )
@@ -2659,6 +2660,7 @@ describe('MessageList', () => {
       <MessageList
         items={toItems(msgs as SdkMessage[])}
         streamingContent="Live tokens"
+        streamingMode="overlay"
         transcriptRevealKey="B"
       />,
     )
@@ -2669,15 +2671,26 @@ describe('MessageList', () => {
     vi.useRealTimers()
   })
 
-  it('overlay mode (default): the streaming region stays in the bottom stack, nothing in-list', () => {
-    // Regression fence for the seam: without streamingMode, NOTHING in-list.
+  it('overlay mode: the streaming region stays in the bottom stack, nothing in-list', () => {
+    // Regression fence for the seam: with streamingMode="overlay", NOTHING in-list.
+    const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
+    const { container } = render(
+      <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="streaming answer" streamingMode="overlay" />,
+    )
+    expect(container.querySelector('.chat-streaming-clip .streaming-footer-wrapper')).not.toBeNull()
+    const list = container.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
+    expect(list.querySelector('.streaming-footer-wrapper')).toBeNull()
+  })
+
+  it('prop-fed transcript (no sessionId) resolves to overlay so streamingContent still renders', () => {
+    // Inline draft rows need a session store; a prop-fed transcript has none.
+    // The absent mode must fall back to the bubble rather than silently drop
+    // the live text.
     const msgs = [makeMsg('user', { message: { content: [{ type: 'text', text: 'q' }] } })]
     const { container } = render(
       <MessageList items={toItems(msgs as SdkMessage[])} streamingContent="streaming answer" />,
     )
     expect(container.querySelector('.chat-streaming-clip .streaming-footer-wrapper')).not.toBeNull()
-    const list = container.querySelector('[data-testid="virtuoso-item-list"]') as HTMLElement
-    expect(list.querySelector('.streaming-footer-wrapper')).toBeNull()
   })
 
   it('stays following when the scroller cannot scroll down', async () => {
@@ -4251,10 +4264,10 @@ describe('MessageList', () => {
     ]
 
     const { container, rerender } = render(
-      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" />,
+      <MessageList items={toItems(msgs as SdkMessage[])}  streamingContent="Live tokens" streamingMode="overlay" />,
     )
 
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent={null} />)
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])}  streamingContent={null} streamingMode="overlay" />)
 
     const exiting = container.querySelector('.chat-streaming-region')
     expect(exiting).not.toBeNull()
@@ -4594,6 +4607,7 @@ describe('MessageList', () => {
       <MessageList
         items={toItems(msgs as SdkMessage[])}
         streamingContent="Live tokens"
+        streamingMode="overlay"
         bottomOverlay={<div className="probe-card">card</div>}
       />,
     )
@@ -4614,7 +4628,7 @@ describe('MessageList', () => {
     // The region lingers through its AnimatePresence exit tweens, so assert it
     // is no longer a LIVE region (aria-hidden, the presence-driven flag) rather
     // than absent.
-    rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="" />)
+    rerender(<MessageList items={toItems(msgs as SdkMessage[])} streamingContent="" streamingMode="overlay" />)
     const stack2 = container.querySelector('.chat-bottom-stack') as HTMLElement
     expect(stack2).not.toBeNull()
     expect(stack2.querySelector('.chat-streaming-region:not([aria-hidden="true"])')).toBeNull()
@@ -6176,7 +6190,7 @@ describe('in-place draft rows (store-backed)', () => {
         message: { role: 'assistant', content: [{ type: 'text', text }] },
       } as unknown as SdkMessage,
     })
-  const list = (mode?: 'inline', replayReady?: boolean) => (
+  const list = (mode?: 'inline' | 'overlay', replayReady?: boolean) => (
     <MessageList
       items={getSessionStore(SID).getSnapshot().items}
       sessionId={SID}
@@ -6184,7 +6198,7 @@ describe('in-place draft rows (store-backed)', () => {
       replayReady={replayReady}
     />
   )
-  const renderList = (mode?: 'inline') => render(list(mode))
+  const renderList = (mode?: 'inline' | 'overlay') => render(list(mode))
 
   it('inline renders the draft row as an assistant card shell; overlay renders none', () => {
     streamDelta('hello ')
@@ -6192,10 +6206,36 @@ describe('in-place draft rows (store-backed)', () => {
     const inline = renderList('inline')
     expect(inline.container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
     inline.unmount()
-    // Same store, overlay mode (the default): the transcript shows settled
+    // Same store, overlay mode: the transcript shows settled
     // rows only — the bubble preview owns live text there.
-    const overlay = renderList()
+    const overlay = renderList('overlay')
     expect(overlay.container.querySelector('[data-message-id^="draft:"]')).toBeNull()
+  })
+
+  it('defaults to inline when no streamingMode is given (the shipped default)', () => {
+    streamDelta('default mode text')
+    flush()
+    // No mode prop at all: the seam falls back to
+    // DEFAULT_STREAMING_RENDER_MODE, which ships as 'inline'.
+    const { container } = renderList()
+    expect(container.querySelector('[data-message-id="draft:1"]')).toBeTruthy()
+    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
+  })
+
+  it('does not append the root draft row to a drill-in transcript', () => {
+    streamDelta('main-thread only')
+    flush()
+    const { container } = render(
+      <MessageList
+        items={getSessionStore(SID).getSnapshot().items}
+        sessionId={SID}
+        streamingMode="inline"
+        parentToolUseIdFilter="agent-1"
+      />,
+    )
+    // The session's draft belongs to the root transcript; a subagent/workflow
+    // drill-in must not inherit it.
+    expect(container.querySelector('[data-message-id^="draft:"]')).toBeNull()
   })
 
   it('keeps the draft row identity across supersede (settled row adopts the draft key)', () => {

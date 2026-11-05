@@ -811,7 +811,7 @@ export function AppearanceTab({
         </SettingsRow>
         <SettingsRow
           title="Render live text inline in the transcript"
-          hint="Where the reply's text streams while it renders. On: a growing row inside the transcript that scrolls with the conversation (the card-era feel). Off (default): the capped floating bubble above the composer. Applies globally to every session; flipping mid-turn is safe."
+          hint="Where the reply's text streams while it renders. On (default): a growing row inside the transcript that scrolls with the conversation (the card-era feel). Off: the capped floating bubble above the composer. Applies globally to every session; flipping mid-turn is safe."
         >
           <Switch
             label="Render live text inline in the transcript"

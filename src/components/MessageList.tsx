@@ -192,12 +192,13 @@ interface Props {
    *  `streamingContent` prop below is used directly. */
   sessionId?: string
   /** Accumulated text from streaming deltas. Only read when `sessionId` is
-   *  NOT provided (prop-fed mode). When non-null, a live "typing" bubble is
-   *  rendered at the bottom of the transcript. */
+   *  NOT provided (prop-fed mode). A transcript without a session store has no
+   *  draft card to grow, so its absent `streamingMode` resolves to overlay and
+   *  this text renders in the bottom bubble. */
   streamingContent?: string | null
-  /** Which streaming render mode this transcript uses: 'overlay' (default —
-   *  the capped floating bubble in `.chat-bottom-stack`) or 'inline' (the
-   *  in-place growing message card). The global `streamingRenderMode`
+  /** Which streaming render mode this transcript uses: 'inline' (the
+   *  in-place growing message card, the default) or 'overlay' (the capped
+   *  floating bubble in `.chat-bottom-stack`). The global `streamingRenderMode`
    *  setting threads through here (Chat / SideChatDrawer / the drill-ins);
    *  omitted → DEFAULT_STREAMING_RENDER_MODE. One union with the config
    *  field, both aliasing shared/streaming-render-mode.ts — the renderer's
@@ -475,8 +476,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // Which streaming render mode this transcript uses. The global
   // `streamingRenderMode` setting threads through the `streamingMode` prop
   // (Chat / SideChatDrawer / the drill-in overlays); tests force either mode
-  // through the same prop. Absent → the floating-bubble default.
-  const resolvedMode = streamingMode ?? DEFAULT_STREAMING_RENDER_MODE
+  // through the same prop. Without a session store there is no draft card to
+  // grow, so a prop-fed transcript (no `sessionId`) falls back to overlay —
+  // the only mode that can render its `streamingContent` prop.
+  const resolvedMode =
+    streamingMode ?? (sessionId != null ? DEFAULT_STREAMING_RENDER_MODE : 'overlay')
   // Live-turn text never flows through this component's render: in OVERLAY
   // mode the capped bubble (OverlayStreamingRegion) owns the 12.5 Hz
   // `streamingContent` subscription as a leaf; in INLINE mode the growing
@@ -621,13 +625,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // `resolvedMode === 'inline' ? sessionId : undefined` trick): in overlay
   // mode the draft fields must stay unsubscribed, or a draftKey flip would
   // re-render MessageList and break the leaf-isolation pin.
-  const draftSessionId = resolvedMode === 'inline' ? sessionId : undefined
+  // Also gated on the ROOT transcript: the session's draft belongs to the
+  // main thread, so appending it to a drill-in (parentToolUseIdFilter set)
+  // would inject unrelated text into the subagent/workflow conversation.
+  const showsRootDrafts = resolvedMode === 'inline' && parentToolUseIdFilter == null
+  const draftSessionId = showsRootDrafts ? sessionId : undefined
   const draftKey = useOptionalSessionField(draftSessionId, 'draftKey')
   const frozenDrafts = useOptionalSessionField(draftSessionId, 'frozenDrafts')
   const draftRowKeys = useOptionalSessionField(draftSessionId, 'draftRowKeys')
   const { rows: renderableItems, firstItemId, lastItemId, nextItemTypeMap } = useMemo(() => {
     const base = builtRows
-    const drafts = resolvedMode === 'inline'
+    const drafts = showsRootDrafts
       ? buildDraftRows(draftKey != null ? { key: draftKey, text: '' } : null, frozenDrafts ?? [])
       : []
     if (drafts.length === 0) return base
@@ -642,7 +650,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     if (base.rows.length > 0) nextItemTypeMap.set(base.rows[base.rows.length - 1]!.id, 'assistant')
     for (let i = 0; i < drafts.length - 1; i++) nextItemTypeMap.set(drafts[i]!.id, 'assistant')
     return { rows, firstItemId: base.firstItemId, lastItemId: rows[rows.length - 1]!.id, nextItemTypeMap }
-  }, [builtRows, resolvedMode, draftKey, frozenDrafts])
+  }, [builtRows, showsRootDrafts, draftKey, frozenDrafts])
 
   // The easter-egg game can only open from the default empty state, so fetch
   // its lazy chunk once that state is on screen: the triple-click then swaps

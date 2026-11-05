@@ -37,7 +37,7 @@ const NON_DEFAULT_PREFS: GlobalPrefs = {
   textSpacing: 'compact',
   fontSize: 'small',
   animationSpeed: 'slow',
-  streamingRenderMode: 'inline',
+  streamingRenderMode: 'overlay',
   firstPartyTools: { 'git-tools': { enabled: false } },
 }
 
@@ -69,7 +69,7 @@ describe('DEFAULT_GLOBAL_PREFS', () => {
     expect(DEFAULT_GLOBAL_PREFS.textSpacing).toBe('spacious')
     expect(DEFAULT_GLOBAL_PREFS.fontSize).toBe('standard')
     expect(DEFAULT_GLOBAL_PREFS.animationSpeed).toBe('standard')
-    expect(DEFAULT_GLOBAL_PREFS.streamingRenderMode).toBe('overlay')
+    expect(DEFAULT_GLOBAL_PREFS.streamingRenderMode).toBe('inline')
   })
 
   it('does not carry firstPartyTools (AppearancePrefs has no firstPartyTools)', () => {
@@ -123,13 +123,13 @@ describe('globalPrefsFromConfig', () => {
       textSpacing: 'compact',
       fontSize: 'small',
       animationSpeed: 'slow',
-      streamingRenderMode: 'inline',
+      streamingRenderMode: 'overlay',
     })
     expect(prefs.rowGap).toBe('compact')
     expect(prefs.textSpacing).toBe('compact')
     expect(prefs.fontSize).toBe('small')
     expect(prefs.animationSpeed).toBe('slow')
-    expect(prefs.streamingRenderMode).toBe('inline')
+    expect(prefs.streamingRenderMode).toBe('overlay')
   })
 
   it('passes firstPartyTools through by reference when present', () => {
@@ -214,7 +214,7 @@ describe('sameGlobalPrefs', () => {
       ['textSpacing', 'compact'],
       ['fontSize', 'small'],
       ['animationSpeed', 'slow'],
-      ['streamingRenderMode', 'inline'],
+      ['streamingRenderMode', 'overlay'],
     ] as const) {
       const a: GlobalPrefs = { ...ALL_DEFAULT }
       const b: GlobalPrefs = { ...ALL_DEFAULT, [key]: alt }
@@ -329,7 +329,7 @@ describe('appearanceFromFullConfig', () => {
       toolGroupCards: false,
       autoExpandRunningGroups: false,
       showMessageHeaders: false,
-      streamingRenderMode: 'inline',
+      streamingRenderMode: 'overlay',
     })
   })
 

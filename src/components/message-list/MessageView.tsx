@@ -636,7 +636,11 @@ export const MessageView = memo(function MessageView({
           )}
         </div>
         )}
-        <div className={msg.isDraft ? 'msg-body assistant-body draft-body' : 'msg-body'}>
+        <div
+          className={msg.isDraft ? 'msg-body assistant-body draft-body' : 'msg-body'}
+          aria-live={msg.isDraft ? 'polite' : undefined}
+          aria-atomic={msg.isDraft ? false : undefined}
+        >
           {msg.isDraft ? (
             <DraftTextBody sessionId={sessionId} frozenText={draftFrozenText || undefined} />
           ) : (

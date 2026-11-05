@@ -6,10 +6,10 @@ import {
 } from './streaming-render-mode.js'
 
 describe('streaming-render-mode', () => {
-  it('ships with the floating bubble as the default', () => {
-    // The app's long-standing rendering — flipping this is a product
-    // decision that must break this line on purpose.
-    expect(DEFAULT_STREAMING_RENDER_MODE).toBe('overlay')
+  it('ships with the inline growing card as the default', () => {
+    // Flipping this is a product decision that must break this line on
+    // purpose.
+    expect(DEFAULT_STREAMING_RENDER_MODE).toBe('inline')
     expect(STREAMING_RENDER_MODES).toEqual(['overlay', 'inline'])
   })
 

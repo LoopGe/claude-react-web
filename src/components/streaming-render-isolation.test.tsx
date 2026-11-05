@@ -335,7 +335,7 @@ describe('live-turn streaming re-renders only the leaves', () => {
     })
     const stableLoadOlder = async () => 0
     const { container } = render(
-      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} />,
+      <SessionMessageList sessionId={SID} loadingOlder={false} loadOlder={stableLoadOlder} streamingMode="overlay" />,
     )
     // Start the assistant message + a text block so the live turn exists
     // and `streamingContent` becomes non-empty after the first flush.
