@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { parseTaskResource } from '../../shared/resource-address'
 import type { TaskRecordUi } from '../types'
+
+const mockOpenResource = vi.hoisted(() => vi.fn())
+vi.mock('../resources/context', () => ({ useOptionalOpenResource: () => mockOpenResource }))
 
 // The panel's data comes from two selectors; drive them directly so the test
 // is about the RENDERED counts, not the store plumbing.
@@ -32,6 +36,18 @@ function renderTasks(tasks: TaskRecordUi[]) {
   countsRef.current = countTaskActivity(tasks)
   return render(<TasksPanel sessionId="s1" onClose={() => {}} />)
 }
+
+describe('TasksPanel task preview entry', () => {
+  it('opens the task resource from a row', () => {
+    mockOpenResource.mockClear()
+    renderTasks([task({ taskId: 't1', description: 'build', status: 'running', taskType: 'shell' })])
+    fireEvent.click(screen.getByRole('button', { name: 'Open task preview' }))
+    expect(mockOpenResource).toHaveBeenCalledTimes(1)
+    const [sessionId, address] = mockOpenResource.mock.calls[0]
+    expect(sessionId).toBe('s1')
+    expect(parseTaskResource(address)).toEqual({ sessionId: 's1', taskId: 't1' })
+  })
+})
 
 describe('TasksPanel header count', () => {
   it('counts only indicator tasks — the same number the WorkingBubble pill shows', () => {

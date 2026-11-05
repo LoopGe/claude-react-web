@@ -7,7 +7,7 @@ import { ToolCard } from '../ToolCard'
 import { IconFileText } from '../icons/ToolIcons'
 import { formatJson } from '../../utils/format'
 import type { ToolViewProps } from './shared'
-import { FilePathTitle } from './shared'
+import { FilePathTitle, readLineParams } from './shared'
 
 /**
  * File-path header (filename + grey dir) plus a "lines N–M" / "pages X–Y"
@@ -40,7 +40,7 @@ export const ReadToolView = memo(function ReadToolView({ input, toolUseId, searc
   return (
     <ToolCard
       icon={<IconFileText />}
-      title={<FilePathTitle path={filePath} />}
+      title={<FilePathTitle path={filePath} params={readLineParams(offset, limit)} />}
       chips={rangeText ? <span className="tool-chip">{rangeText}</span> : null}
       toolUseId={toolUseId}
       searchQuery={searchQuery}

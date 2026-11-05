@@ -5,11 +5,8 @@
 // pushes snapshot + incremental frames so a running background task's
 // transcript fills in live.
 
-import { McpAppsProvider } from '../hooks/useMcpApps'
-import { useSubagentTranscriptStore, subagentStoreId } from '../hooks/useSubagentTranscriptStore'
-import { useSessionField } from '../session-store/selectors'
 import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
-import { MessageList } from './MessageList'
+import { SubagentTranscriptBody } from './SubagentTranscriptBody'
 import { Overlay } from './Overlay'
 import { IconX } from './icons/ToolIcons'
 
@@ -18,6 +15,7 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   agentId,
   label,
   streamingMode,
+  cwd,
   onClose,
 }: {
   sessionId: string
@@ -26,17 +24,11 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   /** Global streaming-preview mode, threaded from the panel prefs so the
    *  dialog follows the same setting as the main transcript. */
   streamingMode?: StreamingRenderMode
+  /** Session working directory — relative paths in the transcript resolve
+   *  against it. */
+  cwd?: string
   onClose: () => void
 }) {
-  const { replayReady, error } = useSubagentTranscriptStore(sessionId, agentId)
-  const storeId = subagentStoreId(sessionId, agentId)
-  const items = useSessionField(storeId, 'items')
-  const toolStatus = useSessionField(storeId, 'toolStatus')
-  const toolResults = useSessionField(storeId, 'toolResults')
-  const planStatus = useSessionField(storeId, 'planStatus')
-  const planContent = useSessionField(storeId, 'planContent')
-  const questionAnswers = useSessionField(storeId, 'questionAnswers')
-
   return (
     <Overlay
       variant="modal"
@@ -59,44 +51,13 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
             <IconX size={14} />
           </button>
         </header>
-        <div className="subagent-transcript-body">
-          {/* Data present = show data: a stale store error must not hide
-              content that already arrived (the scratch store's error field is
-              sticky by design — the reducer never clears it on REPLAY_REPLACE). */}
-          {error && items.length === 0 ? (
-            <div className="subagent-transcript-error">Failed to load transcript: {error}</div>
-          ) : (
-            <McpAppsProvider sessionId={sessionId}>
-              <MessageList
-                items={items}
-                sessionId={sessionId}
-                replayReady={replayReady}
-                // Gate the empty state on the REST bootstrap: without this the
-                // "No transcript on disk" card flashes before the store's
-                // replayReady flips.
-                expectHistory
-                toolStatus={toolStatus}
-                toolResults={toolResults}
-                planStatus={planStatus}
-                planContent={planContent}
-                questionAnswers={questionAnswers}
-                // Fixed defaults: the TasksPanel context has no panel prefs.
-                toolGroupCards
-                autoExpandRunningGroups
-                showMessageHeaders
-                streamingMode={streamingMode}
-                emptyStateContent={(
-                  <div className="chat-messages-empty-side">
-                    <div className="chat-messages-empty-title">No transcript on disk for this subagent.</div>
-                    <div className="chat-messages-empty-hint">
-                      Background subagents write their transcript when they run — nothing was recorded.
-                    </div>
-                  </div>
-                )}
-              />
-            </McpAppsProvider>
-          )}
-        </div>
+        <SubagentTranscriptBody
+          sessionId={sessionId}
+          agentId={agentId}
+          streamingMode={streamingMode}
+          cwd={cwd}
+          variant="dialog"
+        />
       </div>
     </Overlay>
   )

@@ -2752,6 +2752,7 @@ export const Chat = memo(function Chat({
           <TasksPanel
             key={session.id}
             sessionId={session.id}
+            cwd={session.cwd}
             streamingMode={globalPrefs.streamingRenderMode}
             onClose={() => onCloseTasksPanel?.()}
           />
@@ -2863,6 +2864,7 @@ export const Chat = memo(function Chat({
           <SubagentOverlay
             stack={subagentStack}
             sessionId={session.id}
+            cwd={session.cwd}
             items={items}
             index={overlayIndex}
             onClose={closeSubagent}
@@ -2935,7 +2937,7 @@ export const Chat = memo(function Chat({
           host can collapse a latched `expanded` when this panel is hidden
           (keep-alive cache / session switch); it renders itself only when
           visible. */}
-      <ResourceModal sessionId={session.id} visible={panelVisible !== false} />
+      <ResourceModal sessionId={session.id} cwd={session.cwd} visible={panelVisible !== false} />
     </div>
   )
 })

@@ -200,6 +200,89 @@
   max-height: none;
 }
 
+/* Task resource body (lifecycle record) + Agent resource body (conversation). */
+.resource-task-body,
+.resource-agent-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+
+.resource-task-header,
+.resource-agent-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font-size: var(--fs-xs);
+  color: var(--fg-muted);
+}
+
+.resource-task-title,
+.resource-agent-title {
+  color: var(--fg);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-task-kind,
+.resource-agent-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+}
+
+.resource-task-spacer,
+.resource-agent-spacer {
+  flex: 1 1 auto;
+}
+
+.resource-task-badge {
+  flex: 0 0 auto;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+}
+
+.resource-task-details {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+}
+
+/* Subagent tasks: the details sit above the transcript and must not eat it. */
+.resource-task-details-compact {
+  flex: 0 1 auto;
+  max-height: 40%;
+}
+
+.resource-task-progress {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+
+.resource-task-links {
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.resource-agent-conversation {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 /* Header toggle (app main toolbar, beside "Uploaded files"): opens/closes the
    focused session's preview; the badge is the open-tab count. */
 .resource-preview-btn {

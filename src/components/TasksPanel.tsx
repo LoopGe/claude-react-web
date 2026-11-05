@@ -25,44 +25,14 @@ import { useCountUp } from '../hooks/useCountUp'
 import { ElapsedTimer } from './ElapsedTimer'
 import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
-import { isTerminalTaskStatus } from '../../shared/tasks.js'
+import { isSubagentTask, isTerminalTaskStatus } from '../../shared/tasks.js'
 import type { StreamingRenderMode } from '../../shared/streaming-render-mode.js'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
-import { IconX, IconCheck, IconCircle, IconAlertCircle, IconClock, IconLoader, IconTerminal, IconBot, IconListTodo, IconWorkflow, IconFileText } from './icons/ToolIcons'
+import { IconEye, IconFileText, IconLoader, IconX } from './icons/ToolIcons'
+import { taskResource } from '../../shared/resource-address'
+import { useOptionalOpenResource } from '../resources/context'
+import { TaskResultBlock, TaskStatusIcon, TaskTypeIcon } from './task-parts'
 import { formatError } from '../utils/format-error'
-
-function StatusIcon({ status }: { status: TaskRecordUi['status'] }) {
-  if (status === 'running' || status === 'pending') {
-    return <IconLoader size={14} className="tasks-row-spin" aria-hidden />
-  }
-  if (status === 'completed') return <IconCheck size={14} className="tasks-icon-ok" aria-hidden />
-  if (status === 'paused') return <IconClock size={14} className="tasks-icon-muted" aria-hidden />
-  // `stopped` renders NEUTRAL: it means "ended, and no completion evidence was
-  // found" — never an assertion of failure. Every producer establishes that
-  // first: the Stop-hook sweep settles a record that left the CLI's in-flight
-  // list (reconcileTasksFromStopHook), the watcher reads the subagent's own
-  // completion from its transcript before falling back to `stopped`
-  // (subagent-watcher.ts), and the maxMs backstop synthesizes it only when no
-  // completion ever arrived. Only failed/killed — where the CLI DID report a
-  // failure — take the error styling, which is the contract stated in
-  // server/session-pump.ts. Distinct glyph from paused's clock so the two muted
-  // states stay tellable apart.
-  if (status === 'stopped') return <IconCircle size={14} className="tasks-icon-muted" aria-hidden />
-  return <IconAlertCircle size={14} className="tasks-icon-err" aria-hidden />
-}
-
-/** Icon for a task's kind. Matches the FRIENDLY vocabulary ('shell' /
- *  'subagent' / 'monitor' / 'workflow'), which is the canonical one: the CLI's
- *  frames spell it `local_bash` / `local_agent` / `local_workflow` and every
- *  writer into `session.tasks` folds that on the way in (see normalizeTaskType
- *  in shared/tasks.ts). Add a mapping there, not a branch here, when a new
- *  discriminant appears. */
-function TypeIcon({ task }: { task: TaskRecordUi }) {
-  if (task.taskType === 'workflow') return <IconWorkflow size={13} aria-hidden />
-  if (task.taskType === 'subagent' || task.subagentType) return <IconBot size={13} aria-hidden />
-  if (task.taskType === 'shell') return <IconTerminal size={13} aria-hidden />
-  return <IconListTodo size={13} aria-hidden />
-}
 
 /** Elapsed span for one task row. A row with no `endedAt` is still running and
  *  ticks; a terminal row freezes at its recorded delta. The shared
@@ -84,23 +54,20 @@ const RowTimer = memo(function RowTimer({ startedAt, endedAt }: { startedAt?: nu
  *  itself lives in the row-end control cluster beside .tasks-row-view
  *  (spec §3.8: the two are the row's "see more" affordances), so the
  *  expand state rides TaskRow and gates this block. */
-function TaskResultBlock({ result }: { result: string }) {
-  return (
-    <span className="tasks-row-result">
-      <pre className="tasks-row-result-body">{result}</pre>
-    </span>
-  )
-}
 
 export const TasksPanel = memo(function TasksPanel({
   sessionId,
   streamingMode,
+  cwd,
   onClose,
 }: {
   sessionId: string
   /** Global streaming-preview mode, forwarded to the disk-transcript dialog
    *  so it follows the same setting as the main transcript. */
   streamingMode?: StreamingRenderMode
+  /** Session working directory — forwarded to the transcript dialog so its
+   *  tool rows can resolve relative paths. */
+  cwd?: string
   onClose: () => void
 }) {
   const tasks = useSessionField(sessionId, 'tasks')
@@ -179,7 +146,7 @@ export const TasksPanel = memo(function TasksPanel({
         {active.length > 0 && (
           <section className="tasks-panel-section">
             {active.map((t) => (
-              <TaskRow key={t.taskId} task={t} stopping={stopping.has(t.taskId)} onStop={stopTask} onViewTranscript={openTranscript} />
+              <TaskRow key={t.taskId} sessionId={sessionId} task={t} stopping={stopping.has(t.taskId)} onStop={stopTask} onViewTranscript={openTranscript} />
             ))}
           </section>
         )}
@@ -187,7 +154,7 @@ export const TasksPanel = memo(function TasksPanel({
           <section className="tasks-panel-section">
             <div className="tasks-panel-section-title">Finished</div>
             {finished.map((t) => (
-              <TaskRow key={t.taskId} task={t} stopping={false} onStop={stopTask} onViewTranscript={openTranscript} />
+              <TaskRow key={t.taskId} sessionId={sessionId} task={t} stopping={false} onStop={stopTask} onViewTranscript={openTranscript} />
             ))}
           </section>
         )}
@@ -198,6 +165,7 @@ export const TasksPanel = memo(function TasksPanel({
           agentId={transcript.agentId}
           label={transcript.label}
           streamingMode={streamingMode}
+          cwd={cwd}
           onClose={() => setTranscript(null)}
         />
       )}
@@ -206,20 +174,23 @@ export const TasksPanel = memo(function TasksPanel({
 })
 
 const TaskRow = memo(function TaskRow({
+  sessionId,
   task,
   stopping,
   onStop,
   onViewTranscript,
 }: {
+  sessionId: string
   task: TaskRecordUi
   stopping: boolean
   onStop: (taskId: string) => void
   onViewTranscript?: (task: TaskRecordUi) => void
 }) {
+  const openResource = useOptionalOpenResource()
   const terminal = isTerminalTaskStatus(task.status)
   // Only finished subagent rows can open the disk-transcript viewer: their
   // taskId is the Agent's agentId that keys subagents/agent-<id>.jsonl.
-  const canViewTranscript = terminal && (task.taskType === 'subagent' || Boolean(task.subagentType))
+  const canViewTranscript = terminal && isSubagentTask(task)
   // Spec §3.8 gate, unchanged: the expand affordance (and its body) exists
   // only for a terminal task whose `result` is non-empty.
   const resultBody = terminal && task.result != null && task.result !== '' ? task.result : null
@@ -229,10 +200,10 @@ const TaskRow = memo(function TaskRow({
   return (
     <div className={`tasks-row${terminal ? ' tasks-row-terminal' : ''}`}>
       <span className="tasks-row-icon">
-        <StatusIcon status={task.status} />
+        <TaskStatusIcon status={task.status} />
       </span>
       <span className="tasks-row-type" title={task.subagentType ?? task.workflowName ?? task.taskType}>
-        <TypeIcon task={task} />
+        <TaskTypeIcon task={task} />
       </span>
       <span className="tasks-row-main">
         <span className="tasks-row-desc" title={task.description}>
@@ -265,6 +236,17 @@ const TaskRow = memo(function TaskRow({
         <span className="tasks-row-timer tasks-row-timer-final">
           {formatElapsed(Math.max(0, task.endedAt - task.startedAt))}
         </span>
+      )}
+      {openResource && (
+        <button
+          type="button"
+          className="tasks-row-open"
+          title={`Open preview: ${task.description || task.taskId}`}
+          aria-label="Open task preview"
+          onClick={() => openResource(sessionId, taskResource(sessionId, task.taskId))}
+        >
+          <IconEye size={12} />
+        </button>
       )}
       {canViewTranscript && onViewTranscript && (
         <button

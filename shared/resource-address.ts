@@ -229,6 +229,43 @@ export function parseSnapshotDiffResource(address: string): SnapshotDiffResource
   return { sessionId, messageId }
 }
 
+export interface TaskResource {
+  sessionId: string
+  taskId: string
+}
+
+export interface SubagentResource {
+  sessionId: string
+  /** The Agent/Task tool_use id (the same key SubagentOverlay filters by). */
+  toolUseId: string
+}
+
+export function taskResource(sessionId: string, taskId: string): string {
+  return buildResourceAddress('task', [sessionId, taskId])
+}
+
+export function parseTaskResource(address: string): TaskResource | null {
+  const parsed = parseResourceAddress(address)
+  if (!parsed || parsed.protocol !== 'task') return null
+  if (parsed.segments.length !== 2) return null
+  const [sessionId, taskId] = parsed.segments
+  if (!sessionId || !taskId) return null
+  return { sessionId, taskId }
+}
+
+export function subagentResource(sessionId: string, toolUseId: string): string {
+  return buildResourceAddress('subagent', [sessionId, toolUseId])
+}
+
+export function parseSubagentResource(address: string): SubagentResource | null {
+  const parsed = parseResourceAddress(address)
+  if (!parsed || parsed.protocol !== 'subagent') return null
+  if (parsed.segments.length !== 2) return null
+  const [sessionId, toolUseId] = parsed.segments
+  if (!sessionId || !toolUseId) return null
+  return { sessionId, toolUseId }
+}
+
 /** Display title derived from the address (never persisted, so it cannot drift
  *  from the identity). `file` → decoded basename; `diff` → basename + basis
  *  (same path with different bases must produce different chips);
@@ -255,6 +292,16 @@ export function resourceTitle(address: string): string {
       if (!messageId) break
       return `Changes ${messageId.slice(0, 8)}`
     }
+    case 'task': {
+      const taskId = parsed.segments[1]
+      if (!taskId) break
+      return `Task ${taskId.slice(0, 8)}`
+    }
+    case 'subagent': {
+      const toolUseId = parsed.segments[1]
+      if (!toolUseId) break
+      return `Agent ${toolUseId.slice(0, 8)}`
+    }
   }
   return parsed.segments.filter(Boolean).pop() || parsed.protocol
 }
@@ -273,6 +320,11 @@ export function resourcePathSegments(address: string): string[] {
     case 'snapshot-diff': {
       const messageId = parsed.segments[1]
       return messageId ? [messageId] : []
+    }
+    case 'task':
+    case 'subagent': {
+      const id = parsed.segments[1]
+      return id ? [id] : []
     }
     default:
       return parsed.segments.filter(Boolean)
@@ -297,6 +349,14 @@ export function resourceDescription(address: string): string {
     case 'snapshot-diff': {
       const messageId = parsed.segments[1]
       return messageId ? `snapshot diff ${messageId}` : address
+    }
+    case 'task': {
+      const taskId = parsed.segments[1]
+      return taskId ? `task ${taskId}` : address
+    }
+    case 'subagent': {
+      const toolUseId = parsed.segments[1]
+      return toolUseId ? `agent ${toolUseId}` : address
     }
     default:
       return parsed.segments.filter(Boolean).join('/') || address

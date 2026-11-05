@@ -9,7 +9,7 @@ import { ResourceModal } from './ResourceModal'
 import { ResourcePreviewButton } from './ResourcePreviewButton'
 import { useOpenResource } from './context'
 import type { ResourceProvider } from './registry'
-import { fileResource, diffResource, snapshotDiffResource } from '../../shared/resource-address'
+import { fileResource, diffResource, snapshotDiffResource, taskResource } from '../../shared/resource-address'
 
 const A = fileResource('s1', '/repo/a.ts')
 const B = fileResource('s1', '/repo/b.ts')
@@ -351,6 +351,14 @@ describe('ResourceModal', () => {
     await waitFor(() => {
       expect(document.querySelector('[data-line="10"]')?.className).toContain('code-line-target')
     })
+  })
+
+  it('opens a task resource without a provider (client-local kind)', async () => {
+    const address = taskResource('s1', 'task-123456789')
+    renderHarness([fileProvider()], address)
+    fireEvent.click(screen.getByText('open-file'))
+    expect(await screen.findByRole('tab', { name: 'Task task-123' })).toBeTruthy()
+    expect(await screen.findByText(/loading task/i)).toBeTruthy()
   })
 
   it('does not create a chip for a kind with no provider', () => {

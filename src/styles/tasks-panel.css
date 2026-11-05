@@ -303,7 +303,8 @@
 
 /* --- per-row "view disk transcript" action ------------------------------ */
 
-.tasks-row-view {
+.tasks-row-view,
+.tasks-row-open {
   border: none;
   background: transparent;
   color: var(--fg-muted);
@@ -316,7 +317,8 @@
   align-items: center;
   justify-content: center;
 }
-.tasks-row-view:hover {
+.tasks-row-view:hover,
+.tasks-row-open:hover {
   background: var(--btn-hover-bg);
   color: var(--fg);
 }
@@ -378,6 +380,13 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+/* Resource-preview host: fill the modal body instead of the dialog's fixed
+   62vh. Keeps the dialog-sized rule above untouched. */
+.subagent-transcript-body-fill {
+  height: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 /* .subagent-transcript-spin animation comes from the shared loading-indicator
    group in utilities.css. */

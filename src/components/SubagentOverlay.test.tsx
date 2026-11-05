@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { __resetForTests, getEscapeStackCount } from '../hooks/useEscapeStack'
 import { SubagentOverlay } from './SubagentOverlay'
+import { subagentResource } from '../../shared/resource-address'
 import type { ActiveSubagent } from '../session-store/types'
+
+const mockOpenResource = vi.hoisted(() => vi.fn())
+vi.mock('../resources/context', () => ({ useOptionalOpenResource: () => mockOpenResource }))
 
 // MessageList is a heavy virtualized transcript — irrelevant to the Escape
 // wiring under test. Stub it so the overlay's own contract is what's exercised.
@@ -53,6 +57,16 @@ function renderSubagent(opts: {
   )
   return { onClose, onPop }
 }
+
+describe('SubagentOverlay resource preview entry', () => {
+  it('opens the subagent resource and closes the overlay', () => {
+    mockOpenResource.mockClear()
+    const { onClose } = renderSubagent()
+    fireEvent.click(screen.getByRole('button', { name: 'Open in resource preview' }))
+    expect(mockOpenResource).toHaveBeenCalledWith('s-test', subagentResource('s-test', 'a'))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+})
 
 describe('SubagentOverlay escape stack', () => {
   it('registers in the escape stack while mounted and unregisters on unmount', () => {

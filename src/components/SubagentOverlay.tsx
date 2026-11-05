@@ -5,11 +5,12 @@
 // supports nested drill-down (a Task spawned inside an Agent etc.).
 
 import { memo, useEffect } from 'react'
-import { MessageList } from './MessageList'
-import { McpAppsProvider } from '../hooks/useMcpApps'
+import { SubagentConversationBody } from './SubagentConversationBody'
 import { TranscriptDrawerShell } from './TranscriptDrawerShell'
 import { ElapsedTimer } from './ElapsedTimer'
-import { IconX, IconArrowLeft } from './icons/ToolIcons'
+import { IconX, IconArrowLeft, IconEye } from './icons/ToolIcons'
+import { subagentResource } from '../../shared/resource-address'
+import { useOptionalOpenResource } from '../resources/context'
 import type {
   ActiveSubagent,
   PlanStatus,
@@ -75,6 +76,9 @@ interface Props {
   /** Global streaming-preview mode (from the owning Chat panel) — forwarded
    *  so the seam here follows the same setting as the main transcript. */
   streamingMode?: StreamingRenderMode
+  /** Session working directory — relative paths in the conversation resolve
+   *  against it (tool-row open buttons / Markdown links). */
+  cwd?: string
 }
 
 export const SubagentOverlay = memo(function SubagentOverlay({
@@ -98,9 +102,11 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   showMessageHeaders,
   streamingMode,
   sessionId,
+  cwd,
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
+  const openResource = useOptionalOpenResource()
   // Synthetic prompt/result rows are derived by MessageList from the record.
 
   // If the referenced subagent vanishes from the index (session reset,
@@ -191,6 +197,21 @@ export const SubagentOverlay = memo(function SubagentOverlay({
                 </span>
               )}
           </div>
+          {openResource && (
+          <button
+            type="button"
+            className="subagent-overlay-open"
+            onClick={() => {
+              openResource(sessionId, subagentResource(sessionId, currentId))
+              onClose()
+            }}
+            disabled={isExiting}
+            title="Open in resource preview"
+            aria-label="Open in resource preview"
+          >
+            <IconEye size={14} />
+          </button>
+        )}
           <button
             type="button"
             className="subagent-overlay-close"
@@ -233,49 +254,23 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           transitionDirection ? `subagent-overlay-body-${transitionDirection}` : '',
         )}
       >
-        {/* Same-session MCP Apps context: a subagent can call the session's
-              mcp tools too, and its transcript renders through the same
-              ToolUseBlock. Lazy-demand keyed on mcp__ tool names — an
-              mcp-free subagent transcript costs nothing. */}
-        <McpAppsProvider sessionId={sessionId}>
-          <MessageList
-            items={items}
-            parentToolUseIdFilter={currentId}
-            subagent={current}
-            transcriptRevealKey={`subagent:${currentId}`}
-            toolStatus={toolStatus}
-            toolResults={toolResults}
-            planStatus={planStatus}
-            planContent={planContent}
-            questionAnswers={questionAnswers}
-            onBackgroundTool={onBackgroundTool}
-            toolGroupCards={toolGroupCards}
-            autoExpandRunningGroups={autoExpandRunningGroups}
-            showMessageHeaders={showMessageHeaders}
-            streamingMode={streamingMode}
-            replayReady
-            // Subagents are not interactive — you can't type into them.
-            // The default ChatEmptyState ("Type a message below, or paste
-            // an image to begin") would be misleading here, so override
-            // with copy that explains why the body is empty. Reuses the
-            // Side Chat two-line empty-state shape (.chat-messages-empty-side).
-            emptyStateContent={
-              <div className="chat-messages-empty-side">
-                <div className="chat-messages-empty-title">
-                  {current.status === 'running' ||
-                  current.status === 'background' ||
-                  current.status === 'pending'
-                    ? 'This subagent is working'
-                    : 'No subagent output'}
-                </div>
-                <div className="chat-messages-empty-hint">
-                  Subagents run autonomously — you can follow its progress here, but can't send messages to
-                  it.
-                </div>
-              </div>
-            }
-          />
-        </McpAppsProvider>
+        <SubagentConversationBody
+          sessionId={sessionId}
+          currentId={currentId}
+          current={current}
+          items={items}
+          toolStatus={toolStatus}
+          toolResults={toolResults}
+          planStatus={planStatus}
+          planContent={planContent}
+          questionAnswers={questionAnswers}
+          onBackgroundTool={onBackgroundTool}
+          toolGroupCards={toolGroupCards}
+          autoExpandRunningGroups={autoExpandRunningGroups}
+          showMessageHeaders={showMessageHeaders}
+          streamingMode={streamingMode}
+          cwd={cwd}
+        />
       </div>
     </TranscriptDrawerShell>
   )

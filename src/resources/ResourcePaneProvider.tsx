@@ -10,6 +10,10 @@ import { ResourcePaneContext, type ResourcePaneContextValue } from './context'
 import { createFileProvider } from './providers/file'
 import { createDiffProvider } from './providers/diff'
 import { createSnapshotDiffProvider } from './providers/snapshot-diff'
+
+/** Kinds whose body reads the client session mirror directly — they have no
+ *  provider stream, but must still be accepted by the store's `canOpen` gate. */
+const LOCAL_RESOURCE_KINDS = new Set(['task', 'subagent'])
 import { hubInvalidations } from './hub-invalidations'
 import { useWsHub } from '../hooks/useWsHub'
 
@@ -37,7 +41,10 @@ export function ResourcePaneProvider({ children, providers, invalidate }: Props)
   // The store needs to know which kinds have a viewer so an address nothing can
   // open never becomes a tab. `registry` is stable, so the predicate is too.
   const [store] = useState(
-    () => new ResourcePaneStore({ canOpen: (kind) => registry.hasProvider(kind) }),
+    () =>
+      new ResourcePaneStore({
+        canOpen: (kind) => registry.hasProvider(kind) || LOCAL_RESOURCE_KINDS.has(kind),
+      }),
   )
 
   const openResource = useCallback(

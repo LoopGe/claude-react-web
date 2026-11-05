@@ -70,6 +70,15 @@ export function normalizeTaskType(raw: string | undefined): string | undefined {
   return TASK_TYPE_ALIASES[raw] ?? raw
 }
 
+/** Whether a task is an Agent/subagent conversation. Single owner of the
+ *  predicate shared by the Tasks panel's transcript button and the resource
+ *  preview's body choice. */
+export function isSubagentTask(
+  task: Pick<TaskRecordUi, 'taskType' | 'subagentType'>,
+): boolean {
+  return task.taskType === 'subagent' || Boolean(task.subagentType)
+}
+
 /** A file a backgrounded MCP task returned by reference (SDK
  *  `SDKMcpResourceLink`), flattened to the fields the UI renders. */
 export interface TaskResourceLink {

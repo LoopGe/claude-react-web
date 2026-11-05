@@ -38,13 +38,19 @@ import { type ResourceParams, type ResourceTab } from './tab-store'
 import { useResource } from './useResource'
 import { ResourceDiffBody } from './ResourceDiffBody'
 import { ResourceSnapshotDiffBody } from './ResourceSnapshotDiffBody'
+import { ResourceTaskBody } from './ResourceTaskBody'
+import { ResourceSubagentBody } from './ResourceSubagentBody'
 import { ResourceLinkProvider } from './ResourceLinkContext'
 
 export function ResourceModal({
   sessionId,
+  cwd,
   visible,
 }: {
   sessionId: string
+  /** Session working directory — forwarded to mirror-backed bodies so relative
+   *  paths in agent transcripts resolve (tool-row open buttons / links). */
+  cwd?: string
   /** False while the hosting Chat panel is hidden (keep-alive cache / switch). */
   visible: boolean
 }) {
@@ -197,6 +203,7 @@ export function ResourceModal({
             tab={active}
             params={navigation?.params}
             revision={navigation?.revision ?? 0}
+            cwd={cwd}
           />
         </div>
       </Overlay>
@@ -207,10 +214,12 @@ function ResourceBody({
   tab,
   params,
   revision,
+  cwd,
 }: {
   tab: ResourceTab
   params?: ResourceParams
   revision: number
+  cwd?: string
 }) {
   switch (tab.kind) {
     case 'file':
@@ -219,6 +228,10 @@ function ResourceBody({
       return <ResourceDiffBody address={tab.address} />
     case 'snapshot-diff':
       return <ResourceSnapshotDiffBody address={tab.address} params={params} revision={revision} />
+    case 'task':
+      return <ResourceTaskBody address={tab.address} cwd={cwd} />
+    case 'subagent':
+      return <ResourceSubagentBody address={tab.address} cwd={cwd} />
     default:
       return <div className="hint">Nothing can open this address.</div>
   }

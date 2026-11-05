@@ -11,6 +11,10 @@ import { useSessionCwd } from '../../hooks/useSessionCwd'
 import { useCopy } from '../../hooks/useCopy'
 import { splitFilePath, shortenDir } from '../../utils/file-display'
 import { resolveAbsolutePath } from '../../utils/paths'
+import { fileResource } from '../../../shared/resource-address'
+import { useResourceLinkContext } from '../../resources/ResourceLinkContext'
+import type { ResourceParams } from '../../resources/tab-store'
+import { IconEye } from '../icons/ToolIcons'
 
 // Per-tool input view. Each view receives the raw tool_use input (loosely
 // type because SDK schemas drift) and falls back to formatJson internally
@@ -68,18 +72,30 @@ export function useCopyablePath(path: string): {
   copied: boolean
   title: string
   onClick: MouseEventHandler<HTMLButtonElement>
+  absPath: string
 } {
   const cwd = useSessionCwd()
   const { copied, copy } = useCopy()
   const absPath = resolveAbsolutePath(cwd, path)
   return {
     copied,
+    absPath,
     title: copied ? 'Copied!' : `Click to copy path\n${absPath}`,
     onClick: (e) => {
       e.stopPropagation()
       void copy(() => absPath)
     },
   }
+}
+
+/** Map the Read tool's 0-based offset/limit to the preview's 1-based line
+ *  params. No offset → no navigation (the whole file). */
+export function readLineParams(
+  offset: number | null,
+  limit: number | null,
+): ResourceParams | undefined {
+  if (offset == null) return undefined
+  return { line: offset + 1, endLine: limit != null ? offset + limit : undefined }
 }
 
 /** A two-line file-path display used as the *title* of file-touching tool
@@ -99,25 +115,49 @@ export function useCopyablePath(path: string): {
 export function FilePathTitle({
   path,
   badge,
+  params,
 }: {
   path: string
   badge?: string
+  /** Navigation params for the resource preview (Read's line target). */
+  params?: ResourceParams
 }) {
-  const { copied, title, onClick } = useCopyablePath(path)
+  const { copied, title, onClick, absPath } = useCopyablePath(path)
+  const link = useResourceLinkContext()
   const { dir, base } = splitFilePath(path)
   const shortDir = dir ? shortenDir(dir, 48) : ''
   return (
-    <button
-      type="button"
-      className={`tool-card-filepath${copied ? ' copied' : ''}`}
-      title={title}
-      onClick={onClick}
-    >
-      <span className="tool-card-filepath-base">{base || path}</span>
-      {badge && <span className="tool-card-filepath-badge">{badge}</span>}
-      {shortDir && <span className="tool-card-filepath-dir">{shortDir}</span>}
-      {copied && <span className="tool-card-filepath-copied copied-pop">copied</span>}
-    </button>
+    <>
+      <button
+        type="button"
+        className={`tool-card-filepath${copied ? ' copied' : ''}`}
+        title={title}
+        onClick={onClick}
+      >
+        <span className="tool-card-filepath-base">{base || path}</span>
+        {badge && <span className="tool-card-filepath-badge">{badge}</span>}
+        {shortDir && <span className="tool-card-filepath-dir">{shortDir}</span>}
+        {copied && <span className="tool-card-filepath-copied copied-pop">copied</span>}
+      </button>
+      {link && absPath && (
+        <button
+          type="button"
+          className="tool-card-filepath-open"
+          title={`Open in preview\n${absPath}`}
+          aria-label={`Open ${path}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            link.openResource(
+              link.sessionId,
+              fileResource(link.sessionId, absPath),
+              params ? { params } : undefined,
+            )
+          }}
+        >
+          <IconEye size={13} />
+        </button>
+      )}
+    </>
   )
 }
 

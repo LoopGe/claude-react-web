@@ -11,8 +11,12 @@ import {
   parseFileResource,
   parseResourceAddress,
   parseSnapshotDiffResource,
+  parseSubagentResource,
+  parseTaskResource,
   resourceTitle,
   snapshotDiffResource,
+  subagentResource,
+  taskResource,
 } from './resource-address'
 
 describe('parseResourceAddress', () => {
@@ -192,5 +196,33 @@ describe('snapshot-diff addresses', () => {
     expect(parseSnapshotDiffResource('crw-resource://snapshot-diff/s1')).toBeNull()
     expect(parseSnapshotDiffResource('crw-resource://snapshot-diff//abc')).toBeNull()
     expect(parseSnapshotDiffResource('crw-resource://snapshot-diff/s1/m1/junk')).toBeNull()
+  })
+})
+
+describe('task and subagent addresses', () => {
+  it('round-trips a task address and derives a short title', () => {
+    const address = taskResource('s1', 'task-123456789')
+    expect(address).toBe('crw-resource://task/s1/task-123456789')
+    expect(parseTaskResource(address)).toEqual({ sessionId: 's1', taskId: 'task-123456789' })
+    expect(resourceTitle(address)).toBe('Task task-123')
+  })
+
+  it('round-trips a subagent address and derives a short title', () => {
+    const address = subagentResource('s1', 'toolu_abcdef123')
+    expect(address).toBe('crw-resource://subagent/s1/toolu_abcdef123')
+    expect(parseSubagentResource(address)).toEqual({
+      sessionId: 's1',
+      toolUseId: 'toolu_abcdef123',
+    })
+    expect(resourceTitle(address)).toBe('Agent toolu_ab')
+  })
+
+  it('rejects malformed task / subagent addresses', () => {
+    expect(parseTaskResource('crw-resource://task/s1')).toBeNull()
+    expect(parseTaskResource('crw-resource://task//abc')).toBeNull()
+    expect(parseTaskResource('crw-resource://task/s1/t/junk')).toBeNull()
+    expect(parseTaskResource('crw-resource://subagent/s1/t')).toBeNull()
+    expect(parseSubagentResource('crw-resource://subagent//t')).toBeNull()
+    expect(parseSubagentResource('crw-resource://subagent/s1/t/junk')).toBeNull()
   })
 })

@@ -299,6 +299,28 @@
 .tool-card-filepath.copied .tool-card-filepath-dir {
   color: var(--ok-text);
 }
+
+/* Sibling open-in-preview button (never nested inside the copy button). */
+.tool-card-filepath-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: var(--space-0-5) var(--space-1);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.tool-card-filepath-open:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.tool-card-filepath-open:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
 .tool-card-filepath-copied {
   font-family: var(--mono);
   font-size: var(--fs-2xs);

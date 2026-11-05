@@ -3638,6 +3638,7 @@ button.chat-empty-env-chip:hover {
 }
 .subagent-overlay-back,
 .subagent-overlay-close,
+.subagent-overlay-open,
 .workflow-overlay-close {
   background: transparent;
   border: 1px solid transparent;
@@ -3650,6 +3651,7 @@ button.chat-empty-env-chip:hover {
 }
 .subagent-overlay-back:hover,
 .subagent-overlay-close:hover,
+.subagent-overlay-open:hover,
 .workflow-overlay-close:hover {
   border-color: var(--border);
   color: var(--fg);
