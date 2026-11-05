@@ -83,6 +83,17 @@ export function toolResultConsumedKey(
   return key
 }
 
+/** Does this content block paint anything? SSOT for the assistant branch's
+ *  per-block visibility rule: `willRenderEmpty` folds it over the block list,
+ *  and MessageView's multi-block split uses it to skip empty thinking/text
+ *  blocks that BlockView would render as null (an empty bubble otherwise). */
+export function blockRendersContent(b: Block): boolean {
+  if (b.type === 'tool_use' || b.type === 'image') return true
+  if (b.type === 'text') return typeof b.text === 'string' && b.text.trim().length > 0
+  if (b.type === 'thinking') return typeof b.thinking === 'string' && b.thinking.trim().length > 0
+  return true
+}
+
 /** Would MessageView render nothing for this message? Mirrors the merged
  *  tool-result/subagent-heartbeat and empty assistant branches so callers can
  *  drop empty messages before they become Virtuoso rows.
@@ -131,12 +142,7 @@ export function willRenderEmpty(
     // A structured /context or /usage twin renders its own card even when the
     // text body is empty — never drop the row on the blocks alone.
     Boolean(msg.context_usage || msg.usage_report) ||
-    blocks.some((b) => {
-      if (b.type === 'tool_use' || b.type === 'image') return true
-      if (b.type === 'text') return typeof b.text === 'string' && b.text.trim().length > 0
-      if (b.type === 'thinking') return typeof b.thinking === 'string' && b.thinking.trim().length > 0
-      return true
-    })
+    blocks.some(blockRendersContent)
   return !hasVisibleContent
 }
 

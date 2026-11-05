@@ -85,6 +85,53 @@ export function dedupeReplayPayload(messages: SdkMessage[]): SdkMessage[] {
   return out
 }
 
+/** The API response id (`message.id`) of an assistant frame, when present. */
+function assistantResponseId(m: SdkMessage): string | null {
+  if (m.type !== 'assistant') return null
+  const id = (m.message as { id?: unknown } | undefined)?.id
+  return typeof id === 'string' ? id : null
+}
+
+/**
+ * Drop replay assistant frames that re-state a response the cache already
+ * holds under a different uuid.
+ *
+ * The SDK stream emits one assistant frame PER CONTENT BLOCK — a thinking
+ * block and a tool_use block are separate frames with distinct uuids that
+ * share one `message.id` (verified against a live query). The CLI normally
+ * persists them the same way, but has been observed writing a whole
+ * multi-block response as ONE disk frame with a fresh uuid. uuid-based
+ * overlap cannot see that frame as a twin of the cached per-block frames, so
+ * `applyMidSlice` fills it as a hole: an extra bubble with thinking and
+ * tool_use merged (the resume regression).
+ *
+ * `message.id` is the API response identity and is unique per response, so a
+ * cached match means the same response. Only MULTI-BLOCK frames are eligible,
+ * and a frame whose OWN uuid is cached is kept for the overlap bracket —
+ * `replaceStaleCachedMessages` still needs it to restore a degraded copy.
+ */
+export function dropCachedAssistantResponses(
+  messages: SdkMessage[],
+  items: ServerMirror['items'],
+): SdkMessage[] {
+  const cachedIds = new Set<string>()
+  const cachedUuids = new Set<string>()
+  for (const it of items) {
+    if (typeof it.msg.uuid === 'string') cachedUuids.add(it.msg.uuid)
+    const id = assistantResponseId(it.msg)
+    if (id != null) cachedIds.add(id)
+  }
+  if (cachedIds.size === 0) return messages
+  return messages.filter((m) => {
+    if (m.type !== 'assistant') return true
+    if (typeof m.uuid === 'string' && cachedUuids.has(m.uuid)) return true
+    const content = (m.message as { content?: unknown } | undefined)?.content
+    if (!Array.isArray(content) || content.length <= 1) return true
+    const id = assistantResponseId(m)
+    return id == null || !cachedIds.has(id)
+  })
+}
+
 /** Apply a `REPLAY_REPLACE` action: merge an incoming replay payload into the
  *  session's transcript, deduping against the existing cache and preserving
  *  client-side dismissals.
@@ -111,9 +158,11 @@ export function replayReplace(
   messages: SdkMessage[],
   permissions: PermissionRequest[],
 ): SessionState {
-  // Dedup BEFORE anything reads the payload — see dedupeReplayPayload.
-  const payload = dedupeReplayPayload(messages)
   const prevMirror = prevState.mirror
+  // Dedup BEFORE anything reads the payload — see dedupeReplayPayload. The
+  // assistant-response twin filter also runs here: a combined disk frame must
+  // not survive as a "hole" next to the cache's per-block copies.
+  const payload = dropCachedAssistantResponses(dedupeReplayPayload(messages), prevMirror.items)
   // If the server replay is empty but we already have cached messages
   // (from localStorage), keep the cache as a fallback. This prevents
   // blank screens when the server's history ring has been trimmed or

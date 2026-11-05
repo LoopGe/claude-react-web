@@ -2332,6 +2332,15 @@ button.chat-empty-env-chip:hover {
    compact bubbles instead of full-column blocks. The 900px ceiling
    keeps long prose, code blocks, and tables capped at the readable
    column width; flex-start pins it to the left edge. */
+/* A multi-block assistant frame is split into one .msg.assistant bubble per
+   block (see MessageView). The wrapper reproduces the between-message rhythm
+   that separate Virtuoso rows get from .virtuoso-item-wrapper. */
+.msg-split {
+  display: flex;
+  flex-direction: column;
+  gap: var(--chat-row-gap);
+}
+
 .msg.assistant {
   align-self: flex-start;
   width: auto;

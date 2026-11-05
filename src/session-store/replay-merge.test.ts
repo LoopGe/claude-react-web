@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import {
   replayReplace,
   dedupeReplayPayload,
+  dropCachedAssistantResponses,
   splitReplayAgainstCache,
 } from './replay-merge'
 import { applyMessage } from './message-pipeline'
@@ -41,6 +42,25 @@ function resultMsg(uuid: string, receivedAt?: number): SdkMessage {
     subtype: 'success',
     uuid,
     ...(receivedAt != null ? { receivedAt } : {}),
+  } as unknown as SdkMessage
+}
+
+/** An assistant frame carrying an explicit API response id (`message.id`) and
+ *  an arbitrary block list. The CLI normally writes one frame per content
+ *  block (all sharing the response id), but can persist a whole response as
+ *  one multi-block frame — see the assistant-twin replay test. */
+function blocksMsg(
+  uuid: string,
+  responseId: string,
+  blocks: unknown[],
+  receivedAt: number,
+): SdkMessage {
+  return {
+    type: 'assistant',
+    uuid,
+    message: { id: responseId, role: 'assistant', content: blocks },
+    parent_tool_use_id: null,
+    receivedAt,
   } as unknown as SdkMessage
 }
 
@@ -332,6 +352,50 @@ describe('replay-merge: mid-slice and chronology repair', () => {
       asstMsg('live2', 'live-two', 2100),
     ], [])
     expect(ids(out)).toEqual(['disk-head', 'live1', 'live2'])
+  })
+})
+
+describe('replay-merge: assistant response twins', () => {
+  it('does not append a combined disk frame when the cache holds the same API response per block', () => {
+    // Live: the SDK stream delivered one assistant frame per content block
+    // (observed: 3 blocks → 3 frames, distinct uuids, one message.id).
+    const responseId = 'msg_combined_1'
+    let cache = createInitialSessionState('s')
+    cache = replayReplace(cache, [
+      blocksMsg('live-think', responseId, [{ type: 'thinking', thinking: 'plan' }], 100_000),
+      blocksMsg('live-tool', responseId, [{ type: 'tool_use', id: 'tu1', name: 'Edit', input: {} }], 101_000),
+      asstMsg('later', 'later reply', 300_000),
+    ], [])
+    // Disk: the CLI persisted the SAME response as ONE multi-block frame with
+    // a new uuid. uuid overlap cannot see the twin, so applyMidSlice treats it
+    // as a hole and appends it — the extra bubble that merged thinking +
+    // tool_use after resume.
+    const combinedDisk = blocksMsg('disk-combined', responseId, [
+      { type: 'thinking', thinking: 'plan' },
+      { type: 'tool_use', id: 'tu1', name: 'Edit', input: {} },
+    ], 100_500)
+
+    const out = replayReplace(cache, [combinedDisk], [])
+
+    expect(ids(out)).toEqual(['live-think', 'live-tool', 'later'])
+  })
+
+  it('keeps a multi-block frame whose own uuid is cached (stale-copy replacement path)', () => {
+    // A uuid match must stay eligible for the overlap bracket: only that path
+    // can replace a degraded cached copy with the authoritative replay copy.
+    const responseId = 'msg_stale_1'
+    const cache = replayReplace(createInitialSessionState('s'), [
+      blocksMsg('same-uuid', responseId, [
+        { type: 'thinking', thinking: '' },
+        { type: 'text', text: 'stale' },
+      ], 100_000),
+    ], [])
+    const authoritative = blocksMsg('same-uuid', responseId, [
+      { type: 'thinking', thinking: 'full plan' },
+      { type: 'text', text: 'full body' },
+    ], 100_000)
+
+    expect(dropCachedAssistantResponses([authoritative], cache.mirror.items)).toEqual([authoritative])
   })
 })
 

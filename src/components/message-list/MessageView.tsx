@@ -20,7 +20,7 @@ import { BlockView, ToolResultBlock } from './blocks'
 import { DraftTextBody } from './draft-body'
 import { TurnChangesCard } from './TurnChangesCard'
 import { useResultConsumed } from './result-consumed-context'
-import { extractUserText, willRenderEmpty } from './rendering'
+import { blockRendersContent, extractUserText, willRenderEmpty } from './rendering'
 import { FoldableBody } from './FoldableBody'
 import { userBodyFoldKey } from './fold-key'
 import {
@@ -571,6 +571,58 @@ export const MessageView = memo(function MessageView({
     const draftFrozenText = msg.isDraft
       ? blocks.map((b) => (b as { type?: string; text?: string }).type === 'text' ? (b as { text?: string }).text ?? '' : '').join('')
       : ''
+    // The SDK stream emits one assistant frame per content block, so a settled
+    // row is normally single-block. The CLI can also persist a whole response
+    // as one frame (observed: thinking + tool_use). Rendering that as one
+    // bubble merged two message types the live stream shows as separate
+    // bubbles; split per block while keeping the row identity (and therefore
+    // its Virtuoso measurement) unchanged. Only thinking-bearing frames are
+    // split — a multi-block frame of plain text blocks keeps the long-standing
+    // single-bubble rendering.
+    const splitParts = !msg.isDraft && !msg.context_usage && !msg.usage_report
+      ? blocks
+        .map((block, index) => ({ block, index }))
+        .filter(({ block }) => blockRendersContent(block))
+      : []
+    const splitThinking = splitParts.length > 1
+      && splitParts.some(({ block }) => block.type === 'thinking')
+    if (splitThinking) {
+      return (
+        <div className="msg-split">
+          {splitParts.map(({ block, index }, i) => (
+            <div
+              key={index}
+              className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}
+            >
+              {showMessageHeaders && (
+                <div className="msg-header">
+                  <span>{isSubagent ? 'subagent' : 'assistant'}</span>
+                  <MessageTimestamp ms={msg.receivedAt} />
+                  {msg.error && !modelNotFound && (
+                    <span className="msg-header-error" title={msg.error as string}>
+                      {ASSISTANT_ERROR_LABELS[msg.error as string] ?? (msg.error as string)}
+                    </span>
+                  )}
+                </div>
+              )}
+              <div className="msg-body">
+                <BlockView
+                  block={block}
+                  searchQuery={searchQuery}
+                  activeMatchIdx={blockActiveIdx[index]}
+                  toolResultActiveMatchIdx={toolResultActiveMatchIdx}
+                />
+                {modelNotFound && i === splitParts.length - 1 && onSwitchModel && (
+                  <button type="button" className="btn btn-sm msg-switch-model-btn" onClick={onSwitchModel}>
+                    Switch model
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )
+    }
     return (
       <div className={`msg assistant${isSubagent ? ' subagent' : ''}${modelNotFound ? ' msg-error-card' : ''}`}>
         {showMessageHeaders && (
