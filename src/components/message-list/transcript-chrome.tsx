@@ -5,6 +5,7 @@ import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
 import { useStreamingRegionMotion } from '../../utils/transitions'
+import { isRevealableTail, useStreamingReveal } from '../../hooks/useStreamingReveal'
 import { Markdown, CodeBlock } from '../Markdown'
 import { splitStreamBlocks } from '../../utils/stream-segments'
 
@@ -201,6 +202,13 @@ export const StreamingFooter = memo(function StreamingFooter({
   // lever is throttling the tail compile (plain-text tail between compiles).
   const blocks = useMemo(() => splitStreamBlocks(content), [content])
 
+  // Left-to-right reveal for the live tail line. Block-level tails (fences,
+  // tables, images, rules, display math) opt out and appear whole.
+  const revealTailRef = useRef<HTMLDivElement>(null)
+  const tailSegment = blocks.length > 0 ? blocks[blocks.length - 1]! : null
+  const revealable = isRevealableTail(tailSegment)
+  useStreamingReveal(revealTailRef, revealable && tailSegment ? tailSegment.content : '')
+
   return (
     <div
       className="streaming-footer-wrapper"
@@ -253,7 +261,11 @@ export const StreamingFooter = memo(function StreamingFooter({
               // the blinking bar — a sibling span would drop onto its own
               // line below the block), and every block keeps its own memoized
               // .md compile underneath.
-              <div key={i} className={`streaming-block${tail ? ' streaming-tail' : ''}`}>
+              <div
+                key={i}
+                ref={tail ? revealTailRef : undefined}
+                className={`streaming-block${tail ? ' streaming-tail' : ''}`}
+              >
                 {seg.type === 'code' ? (
                   <StreamCodeSegment
                     lang={seg.lang}

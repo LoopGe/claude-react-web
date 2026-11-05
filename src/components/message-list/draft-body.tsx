@@ -12,10 +12,11 @@
 // on the tail's last leaf (chat.css `.draft-body`), so it too leaves no DOM
 // trace; a childless body shows the fallback span instead.
 
-import { Fragment, memo, type ReactElement } from 'react'
+import { Fragment, memo, useRef, type ReactElement } from 'react'
 import { splitStreamBlocks, type StreamSegment } from '../../utils/stream-segments'
 import { compileMarkdown } from '../../utils/markdown-cache'
 import { useOptionalSessionField } from '../../session-store/selectors'
+import { isRevealableTail, useStreamingReveal } from '../../hooks/useStreamingReveal'
 
 /** Rebuild a code segment's fenced source so it compiles to exactly the
  *  settled `pre` override's DOM (the pipeline does the language bar,
@@ -25,11 +26,18 @@ function fenceSource(seg: Extract<StreamSegment, { type: 'code' }>): string {
   return '```' + (seg.lang ?? '') + '\n' + seg.content + (seg.content ? '\n' : '') + (seg.closed ? '```' : '')
 }
 
-/** Bare-block markdown body. */
-export function DraftBlocks({ text }: { text: string }): ReactElement {
+/** Bare-block markdown body. `animate` enables the left-to-right reveal on
+ *  live text; frozen interrupted half-cards render statically. Block-level
+ *  tails (fenced code, tables, images, rules, display math) appear whole —
+ *  see isRevealableTail. */
+export function DraftBlocks({ text, animate = false }: { text: string; animate?: boolean }): ReactElement {
   const blocks = splitStreamBlocks(text)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const tailBlock = blocks.length > 0 ? blocks[blocks.length - 1]! : null
+  const revealable = animate && isRevealableTail(tailBlock)
+  useStreamingReveal(rootRef, revealable ? text : '')
   return (
-    <div className="md">
+    <div ref={rootRef} className="md">
       {blocks.map((seg, i) => {
         const tail = i === blocks.length - 1
         const source = seg.type === 'code' ? fenceSource(seg) : seg.content
@@ -52,5 +60,5 @@ export const DraftTextBody = memo(function DraftTextBody({ sessionId, frozenText
 }) {
   const draft = useOptionalSessionField(frozenText != null ? undefined : sessionId, 'draft')
   const text = frozenText ?? draft?.text ?? ''
-  return <DraftBlocks text={text} />
+  return <DraftBlocks text={text} animate={frozenText == null} />
 })

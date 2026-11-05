@@ -2615,6 +2615,66 @@ button.chat-empty-env-chip:hover {
   }
 }
 
+/* ── Live-text reveal (left → right) ─────────────────────────────────────
+   Applied by useStreamingReveal to the element holding the live markdown.
+   Three mask layers, unioned (the default mask compositing):
+     1. vertical: opaque down to the tail line, transparent below it — settled
+        lines above the growing line stay fully visible;
+     2. horizontal: a strip whose width the hook animates (WAAPI mask-size)
+        from the previous caret to the new one — only the tail line sweeps;
+     3. a narrow opaque strip at the new caret so the blinking cursor (a
+        ::after inside the masked subtree) leads the ink instead of being
+        hidden by the sweep.
+   The hook writes --stream-reveal-to / -line-top for layers 1 and 3. The mask
+   is purely spatial, so markdown structure, inline formatting and link
+   colours are untouched. The `black` stops are alpha-channel values, not theme
+   colours — same convention as .streaming-plain's edge fade. */
+.stream-reveal {
+  --stream-reveal-to: 0px;
+  --stream-reveal-line-top: 0px;
+  -webkit-mask-image:
+    linear-gradient(
+      to bottom,
+      black 0,
+      black var(--stream-reveal-line-top),
+      transparent var(--stream-reveal-line-top)
+    ),
+    linear-gradient(90deg, black 0, black calc(100% - 10px), transparent 100%),
+    linear-gradient(
+      90deg,
+      transparent 0,
+      transparent var(--stream-reveal-to),
+      black var(--stream-reveal-to),
+      black calc(var(--stream-reveal-to) + 10px),
+      transparent calc(var(--stream-reveal-to) + 10px)
+    );
+  mask-image:
+    linear-gradient(
+      to bottom,
+      black 0,
+      black var(--stream-reveal-line-top),
+      transparent var(--stream-reveal-line-top)
+    ),
+    linear-gradient(90deg, black 0, black calc(100% - 10px), transparent 100%),
+    linear-gradient(
+      90deg,
+      transparent 0,
+      transparent var(--stream-reveal-to),
+      black var(--stream-reveal-to),
+      black calc(var(--stream-reveal-to) + 10px),
+      transparent calc(var(--stream-reveal-to) + 10px)
+    );
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-reveal {
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+}
+
 /* ============================================================
    Liquid Glass refraction (Chromium only)
    ============================================================
