@@ -13,6 +13,9 @@ const DECODE_CONCURRENCY = 2
 export interface UsePastedImages {
   images: PastedImage[]
   error: string | null
+  /** True while at least one accepted image is still being decoded. The
+   *  composer blocks sending so a send cannot race past an in-flight batch. */
+  pending: boolean
   /** Add one intake batch (drag/picker multi-select) with the limit checks
    *  counted across the whole batch. Landed images are appended as they
    *  decode. Returns the first refusal message (or null), so a caller can
@@ -52,6 +55,9 @@ export interface ImageMutations {
 export function usePastedImages(): UsePastedImages {
   const [images, setImages] = useState<PastedImage[]>([])
   const [error, setError] = useState<string | null>(null)
+  // Counts intake batches still decoding, so overlapping batches cannot clear
+  // the pending state early.
+  const [pendingBatches, setPendingBatches] = useState(0)
   const imagesRef = useRef(images)
   // Bytes accepted by batches that have not committed yet. imagesRef only
   // catches up after a render, so overlapping intake calls (two drops, a drop
@@ -166,6 +172,7 @@ export function usePastedImages(): UsePastedImages {
 
     const acceptedBytes = accepted.reduce((sum, file) => sum + file.size, 0)
     reservedBytesRef.current += acceptedBytes
+    setPendingBatches((count) => count + 1)
     const generation = clearGenerationRef.current
     // Decode at most two images at a time: one drop can carry many
     // screenshots, and N concurrent FileReaders + Image decodes is a needless
@@ -216,6 +223,7 @@ export function usePastedImages(): UsePastedImages {
       // Release the bytes that never reached a commit; committed bytes are
       // released by the imagesRef sync effect.
       reservedBytesRef.current -= acceptedBytes - committedBytes
+      setPendingBatches((count) => count - 1)
     }
     return failure
   }, [revokeUrl, bumpMutations])
@@ -240,9 +248,10 @@ export function usePastedImages(): UsePastedImages {
   // from `useState` (only mutate on real changes); the three action
   // callbacks are `useCallback([])`-stable — so the memo returns the
   // same reference until the user pastes / removes / clears.
+  const pending = pendingBatches > 0
   return useMemo(
-    () => ({ images, error, addImages, removeImage, clear, applyImages, mutationsRef }),
-    [images, error, addImages, removeImage, clear, applyImages, mutationsRef],
+    () => ({ images, error, pending, addImages, removeImage, clear, applyImages, mutationsRef }),
+    [images, error, pending, addImages, removeImage, clear, applyImages, mutationsRef],
   )
 }
 

@@ -91,6 +91,7 @@ const defaultProps = {
   history: { add: noop, prev: () => null, next: () => null, isBrowsing: () => false, reset: () => {} },
   commands: [] as SlashCommand[],
   pastedImages: [] as never[],
+  imagesPending: false,
   onPasteImages: noopAsync,
   onRemovePastedImage: noop,
   // Allocates the reference id for a collapsed paste and stores its content.
@@ -138,6 +139,17 @@ describe('Composer', () => {
     const editor = getEditor(container)
     fireEvent.keyDown(editor, { key: 'Enter', shiftKey: false })
     expect(onSend).toHaveBeenCalledOnce()
+  })
+
+  it('disables the send control while image intake is still decoding', () => {
+    // Enter is gated by Chat's send() after command routing, so `!cmd` and
+    // local /commands still work; here we pin the visible control state.
+    const { container } = render(
+      <Composer {...defaultProps} input="hello" imagesPending />,
+    )
+    const send = container.querySelector('.composer-send')
+    expect(send?.hasAttribute('disabled')).toBe(true)
+    expect(container.querySelector('[aria-label="Images are still processing"]')).not.toBeNull()
   })
 
   it('does not call onSend on Shift+Enter', () => {

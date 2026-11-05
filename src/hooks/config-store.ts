@@ -2,6 +2,8 @@
 // response arrives; read by hooks (e.g. usePastedImages) that need
 // server-driven limits without prop-drilling through 4 component layers.
 
+import { MAX_PASTED_IMAGE_BYTES } from '../../shared/upload-limits'
+
 /** Fallback for maxUploadBytes when the /api/config fetch has not arrived yet.
  *  Must match the server default in `server/config.ts`. */
 export const DEFAULT_MAX_UPLOAD_BYTES = 500 * 1024 * 1024 // 500 MB
@@ -16,7 +18,7 @@ export function setMaxUploadBytes(v: number): void {
   if (v > 0) _maxUploadBytes = v
 }
 
-let _maxPastedImageBytes = 25 * 1024 * 1024
+let _maxPastedImageBytes = MAX_PASTED_IMAGE_BYTES
 
 export function getMaxPastedImageBytes(): number {
   return _maxPastedImageBytes

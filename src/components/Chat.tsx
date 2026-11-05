@@ -116,7 +116,7 @@ import type { Skin } from '../utils/theme'
 import type { GitStatusResponse } from '../../shared/git-types'
 import type { ScheduledSendBody } from '../../shared/scheduled-send'
 import { buildOutgoingBody } from '../utils/message-body'
-import { routeIntakeFiles } from '../utils/image-intake'
+import { intakeComposerFiles } from '../utils/image-intake'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
@@ -1543,10 +1543,10 @@ export const Chat = memo(function Chat({
       // One intake rule for drag + paperclip: supported images join the inline
       // draft (paste already goes there), everything else keeps the generic
       // upload path. Only a non-empty upload group opens the manager.
-      routeIntakeFiles(files, {
+      intakeComposerFiles(files, {
         addImages: intakeImages,
+        openUploads: onOpenUploads,
         uploadFiles: (uploads) => {
-          onOpenUploads?.()
           void startUploads(uploads, { sessionId: session.id, autoClose: true })
         },
       })
@@ -1665,6 +1665,13 @@ export const Chat = memo(function Chat({
       })
       return
     }
+    // Image intake is still decoding. Blocking here (not in the composer)
+    // leaves `!cmd` and local `/commands` above working — those never carry
+    // images — while a normal send cannot race past the in-flight batch.
+    if (pastedImages.pending) {
+      toast.info('Images are still processing')
+      return
+    }
     if (!text && pastedImages.images.length === 0) return
     sendingRef.current = true
     setSending(true)
@@ -1761,7 +1768,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestHandoffSession, runBashCommand])
+  }, [input, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestHandoffSession, runBashCommand, toast])
 
   // The Overlay primitive owns the focus traps and presence for the settings
   // + git overlays; its `mounted && open` active gate reproduces the old
@@ -1922,6 +1929,10 @@ export const Chat = memo(function Chat({
   /** Schedule the current draft for a future time. Shares send()'s body
    *  construction; on success clears the composer exactly like a send. */
   const handleSendScheduled = useCallback(async (fireAtMs: number) => {
+    if (pastedImages.pending) {
+      toast.info('Images are still processing')
+      return
+    }
     const built = buildScheduledBody(input, pastedImages.images, expandPastedText)
     if (!built) return
     try {
@@ -1936,7 +1947,7 @@ export const Chat = memo(function Chat({
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [input, scheduled, setInput, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError, session.id])
+  }, [input, scheduled, setInput, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError, session.id, toast])
   /** Snippets are persisted server-side and re-inserted in later sessions, so
    *  a `[Pasted text #N]` reference saved as-is would outlive the body backing
    *  it and resolve to nothing (or to a different paste). Store the text. */
@@ -2497,6 +2508,7 @@ export const Chat = memo(function Chat({
               onRecallImages={historyImageRecallApi}
               commands={mergedCommands}
               pastedImages={pastedImages.images}
+              imagesPending={pastedImages.pending}
               onPasteImages={intakeImages}
               onRemovePastedImage={onRemovePastedImage}
               onAddPastedText={addPastedText}

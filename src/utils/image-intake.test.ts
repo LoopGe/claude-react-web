@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { isSupportedImageMediaType } from '../../shared/image-media'
-import { routeIntakeFiles, splitIntakeFiles } from './image-intake'
+import { intakeComposerFiles, splitIntakeFiles } from './image-intake'
 
 function file(name: string, type: string): File {
   return new File(['x'], name, { type })
@@ -50,42 +50,48 @@ describe('splitIntakeFiles', () => {
   })
 })
 
-describe('routeIntakeFiles', () => {
-  it('adds images inline and does not open the upload path for an image-only batch', () => {
-    const addImages = vi.fn()
-    const uploadFiles = vi.fn()
+describe('intakeComposerFiles', () => {
+  const options = () => ({
+    addImages: vi.fn(),
+    uploadFiles: vi.fn(),
+    openUploads: vi.fn(),
+  })
+
+  it('adds images inline without opening the uploads manager', () => {
+    const o = options()
     const a = file('a.png', 'image/png')
-    routeIntakeFiles([a], { addImages, uploadFiles })
-    expect(addImages).toHaveBeenCalledWith([a])
-    expect(uploadFiles).not.toHaveBeenCalled()
+    intakeComposerFiles([a], o)
+    expect(o.addImages).toHaveBeenCalledWith([a])
+    expect(o.uploadFiles).not.toHaveBeenCalled()
+    expect(o.openUploads).not.toHaveBeenCalled()
   })
 
-  it('uploads non-images and does not touch the inline path for a file-only batch', () => {
-    const addImages = vi.fn()
-    const uploadFiles = vi.fn()
+  it('uploads non-images and opens the manager once', () => {
+    const o = options()
     const pdf = file('doc.pdf', 'application/pdf')
-    routeIntakeFiles([pdf], { addImages, uploadFiles })
-    expect(addImages).not.toHaveBeenCalled()
-    expect(uploadFiles).toHaveBeenCalledWith([pdf])
+    intakeComposerFiles([pdf], o)
+    expect(o.addImages).not.toHaveBeenCalled()
+    expect(o.openUploads).toHaveBeenCalledOnce()
+    expect(o.uploadFiles).toHaveBeenCalledOnce()
+    expect(o.uploadFiles).toHaveBeenCalledWith([pdf])
   })
 
-  it('dispatches both groups once for a mixed batch', () => {
-    const addImages = vi.fn()
-    const uploadFiles = vi.fn()
-    const a = file('a.png', 'image/png')
+  it('splits a mixed batch and opens the manager for the upload half only', () => {
+    const o = options()
+    const png = file('a.png', 'image/png')
     const pdf = file('doc.pdf', 'application/pdf')
-    routeIntakeFiles([a, pdf], { addImages, uploadFiles })
-    expect(addImages).toHaveBeenCalledTimes(1)
-    expect(addImages).toHaveBeenCalledWith([a])
-    expect(uploadFiles).toHaveBeenCalledTimes(1)
-    expect(uploadFiles).toHaveBeenCalledWith([pdf])
+    const svg = file('v.svg', 'image/svg+xml')
+    intakeComposerFiles([png, pdf, svg], o)
+    expect(o.addImages).toHaveBeenCalledWith([png])
+    expect(o.uploadFiles).toHaveBeenCalledWith([pdf, svg])
+    expect(o.openUploads).toHaveBeenCalledOnce()
   })
 
-  it('does nothing for an empty batch', () => {
-    const addImages = vi.fn()
-    const uploadFiles = vi.fn()
-    routeIntakeFiles([], { addImages, uploadFiles })
-    expect(addImages).not.toHaveBeenCalled()
-    expect(uploadFiles).not.toHaveBeenCalled()
+  it('is a no-op for an empty batch', () => {
+    const o = options()
+    intakeComposerFiles([], o)
+    expect(o.addImages).not.toHaveBeenCalled()
+    expect(o.uploadFiles).not.toHaveBeenCalled()
+    expect(o.openUploads).not.toHaveBeenCalled()
   })
 })

@@ -1,7 +1,8 @@
 import type { ScheduledSendBody, ScheduledSendContentBlock } from '../shared/scheduled-send.js'
 import { isSupportedImageMediaType } from '../shared/image-media.js'
+import { MAX_MESSAGE_BASE64 } from '../shared/upload-limits.js'
 
-export const MAX_MESSAGE_BASE64 = 28_000_000
+export { MAX_MESSAGE_BASE64 }
 
 export type SendBodyValidation =
   | { ok: true; body: ScheduledSendBody }

@@ -75,6 +75,18 @@ vi.mock('../hooks/useApi', () => ({
   },
 }))
 
+// The drawer notifies "images are still processing" through the app toast hub;
+// these tests mount it without a ToastProvider.
+vi.mock('../hooks/useToast', () => ({
+  useToast: () => ({
+    error: vi.fn(),
+    success: vi.fn(),
+    info: vi.fn(),
+    show: vi.fn(),
+    dismiss: vi.fn(),
+  }),
+}))
+
 import { SideChatDrawer } from './SideChatDrawer'
 import { getSessionStore } from '../session-store/selectors'
 import { sessionStoreRegistry } from '../session-store/registry'

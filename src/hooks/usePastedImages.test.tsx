@@ -68,6 +68,33 @@ class FakeImage {
   set src(_v: string) { queueMicrotask(() => this.onload?.()) }
 }
 
+/** FileReader that stays pending until the test flushes it. */
+class ManualFileReader {
+  onload: (() => void) | null = null
+  result: string | null = null
+  readAsDataURL() { manualReaders.push(this) }
+}
+let manualReaders: ManualFileReader[] = []
+
+function stubManualDecode() {
+  manualReaders = []
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(globalThis as any).FileReader = ManualFileReader
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(globalThis as any).Image = FakeImage
+}
+
+function flushOneReader() {
+  const reader = manualReaders.shift()
+  if (reader === undefined) return
+  reader.result = 'data:image/png;base64,ZZZZ'
+  reader.onload?.()
+}
+
+function flushManualReaders() {
+  while (manualReaders.length > 0) flushOneReader()
+}
+
 function stubDecodeGlobals() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ;(globalThis as any).FileReader = FakeFileReader
@@ -264,14 +291,15 @@ describe('usePastedImages.addImages', () => {
     const { result } = renderHook(() => usePastedImages())
     stubDecodeGlobals()
     try {
-      const sevenMb = (name: string) => sizedFile('image/png', 7 * 1024 * 1024, name)
+      const each = Math.floor(getMaxPastedImageBytes() / 4) + 1
+      const sized = (name: string) => sizedFile('image/png', each, name)
       await act(async () => {
-        const first = result.current.addImages([sevenMb('a.png'), sevenMb('b.png')])
-        const second = result.current.addImages([sevenMb('c.png'), sevenMb('d.png')])
+        const first = result.current.addImages([sized('a.png'), sized('b.png')])
+        const second = result.current.addImages([sized('c.png'), sized('d.png')])
         await Promise.all([first, second])
       })
-      // The first batch reserves 14 MB. The second may add one more (21 MB)
-      // and must refuse the last (28 MB > the 25 MB aggregate cap).
+      // The first batch reserves two files. The second may add one more and
+      // must refuse the last (four files exceed the aggregate cap).
       expect(result.current.images).toHaveLength(3)
       expect(result.current.error).toMatch(/Total image size too large/)
     } finally {
@@ -283,13 +311,14 @@ describe('usePastedImages.addImages', () => {
     const { result } = renderHook(() => usePastedImages())
     stubDecodeGlobals()
     try {
-      const sevenMb = (name: string) => sizedFile('image/png', 7 * 1024 * 1024, name)
+      const each = Math.floor(getMaxPastedImageBytes() / 4) + 1
+      const sized = (name: string) => sizedFile('image/png', each, name)
       await act(async () => {
         // The first batch resolves before the second starts. React has not
         // committed/run the imagesRef sync effect yet, so the second call
         // must still see the first batch's bytes.
-        await result.current.addImages([sevenMb('a.png'), sevenMb('b.png')])
-        await result.current.addImages([sevenMb('c.png'), sevenMb('d.png')])
+        await result.current.addImages([sized('a.png'), sized('b.png')])
+        await result.current.addImages([sized('c.png'), sized('d.png')])
       })
       expect(result.current.images).toHaveLength(3)
       expect(result.current.error).toMatch(/Total image size too large/)
@@ -312,6 +341,56 @@ describe('usePastedImages.addImages', () => {
       })
       expect(result.current.images).toEqual([])
       expect(result.current.mutationsRef.current).toMatchObject({ seq: 1, kind: 'clear' })
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+})
+
+describe('usePastedImages.pending', () => {
+  it('is true while a batch decodes and false once it settles', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubManualDecode()
+    try {
+      let adding!: Promise<string | null>
+      act(() => {
+        adding = result.current.addImages([new File(['a'], 'a.png', { type: 'image/png' })])
+      })
+      expect(result.current.pending).toBe(true)
+      await act(async () => {
+        flushManualReaders()
+        await adding
+      })
+      expect(result.current.pending).toBe(false)
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
+
+  it('stays pending until every overlapping batch settles', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubManualDecode()
+    try {
+      let first!: Promise<string | null>
+      let second!: Promise<string | null>
+      act(() => {
+        first = result.current.addImages([new File(['a'], 'a.png', { type: 'image/png' })])
+        second = result.current.addImages([new File(['b'], 'b.png', { type: 'image/png' })])
+      })
+      expect(result.current.pending).toBe(true)
+      // Settle only the first batch: the screen must stay blocked because the
+      // second batch is still decoding. Awaiting `first` makes this
+      // deterministic — a boolean pending flag would already read false here.
+      await act(async () => {
+        flushOneReader()
+        await first
+      })
+      expect(result.current.pending).toBe(true)
+      await act(async () => {
+        flushOneReader()
+        await Promise.all([first, second])
+      })
+      expect(result.current.pending).toBe(false)
     } finally {
       unstubDecodeGlobals()
     }

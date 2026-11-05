@@ -388,9 +388,10 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
 
 /** Hard cap on the total size of pasted images in one message. NOT a user
  *  setting: those bytes ride the buffered JSON message body (base64, ~1.33x),
- *  so this is a memory-safety limit, not a preference. The user-facing file
- *  upload knob is `maxUploadBytes`. */
-export const MAX_PASTED_IMAGE_BYTES = 25 * 1024 * 1024
+ *  so this is a memory-safety limit, not a preference. Shared with the
+ *  composer fallback and the wire cap in `shared/upload-limits.ts`; the
+ *  user-facing file upload knob is `maxUploadBytes`. */
+export { MAX_PASTED_IMAGE_BYTES } from '../shared/upload-limits.js'
 
 /** Synthetic fallback profile derived from DEFAULTS. Used as the migration
  *  source, the coerce fallback, and resolveActiveProfile's last resort. */

@@ -80,6 +80,9 @@ interface Props {
   commands?: SlashCommand[]
   /** Pending pasted images to send inline. */
   pastedImages: PastedImage[]
+  /** True while at least one image is still being decoded. Sending and
+   *  scheduling wait for it so a turn cannot race past an in-flight batch. */
+  imagesPending: boolean
   onPasteImages: (files: readonly File[]) => void | Promise<void>
   onRemovePastedImage: (id: string) => void
   /** Store a collapsed paste's full text and return the id its
@@ -176,6 +179,7 @@ export const Composer = memo(function Composer({
   onRecallImages,
   commands,
   pastedImages,
+  imagesPending,
   onPasteImages,
   onRemovePastedImage,
   onAddPastedText,
@@ -657,14 +661,15 @@ export const Composer = memo(function Composer({
   const pendingScheduled = scheduled?.schedules.filter((s) => s.status === 'pending') ?? []
   const failedScheduled = scheduled?.schedules.filter((s) => s.status === 'failed') ?? []
   const canSchedule =
-    !disabled && (input.trim() !== '' || pastedImages.length > 0)
+    !disabled && !imagesPending && (input.trim() !== '' || pastedImages.length > 0)
 
   const confirmScheduled = useCallback((fireAtMs: number) => {
     setScheduleAnchor(null)
     onSendScheduled?.(fireAtMs)
   }, [onSendScheduled])
 
-  const canSend = !disabled && !sending && (input.trim() !== '' || pastedImages.length > 0)
+  const canSend =
+    !disabled && !sending && !imagesPending && (input.trim() !== '' || pastedImages.length > 0)
 
   if (terminated) {
     const reasonText =
@@ -1056,15 +1061,15 @@ export const Composer = memo(function Composer({
           title={
             canInterrupt
               ? `Interrupt the current turn${queueNote} (Alt+B backgrounds it)`
-              : 'Send message (Enter)'
+              : imagesPending ? 'Images are still processing' : 'Send message (Enter)'
           }
           aria-label={
             canInterrupt
               ? `Interrupt the current turn${queueNote}`
-              : 'Send message'
+              : imagesPending ? 'Images are still processing' : 'Send message'
           }
         >
-          {sending && !canInterrupt ? (
+          {(sending || imagesPending) && !canInterrupt ? (
             <IconLoader size={18} className="composer-send-spinner" />
           ) : (
             <span className={'composer-action-toggle ' + (canInterrupt ? 'interrupt' : 'send')}>

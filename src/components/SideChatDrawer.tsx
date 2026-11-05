@@ -33,6 +33,7 @@ import { IconX, IconArrowLeft, IconArrowUp, IconSquare, IconLoader, IconPapercli
 import { ComposerImagePreviews } from './ComposerImagePreviews'
 import { Tooltip } from './Tooltip'
 import { api } from '../hooks/useApi'
+import { useToast } from '../hooks/useToast'
 import { usePastedImages } from '../hooks/usePastedImages'
 import { usePastedTexts } from '../hooks/usePastedTexts'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
@@ -128,6 +129,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const pastedImages = usePastedImages()
+  const toast = useToast()
   // Collapsed pastes: a long clipboard is replaced in the input by a
   // `[Pasted text #N]` reference whose body lives here and is spliced back in
   // on send, same as the main composer.
@@ -191,7 +193,12 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const handleSend = useCallback(async () => {
     // Expand first so no bare `[Pasted text #N]` can reach the model.
     const text = expandPastedText(input.trim())
-    if ((!text && pastedImages.images.length === 0) || sending) return
+    if (sending) return
+    if (pastedImages.pending) {
+      toast.info('Images are still processing')
+      return
+    }
+    if (!text && pastedImages.images.length === 0) return
     setSending(true)
     // Optimistic insert — message appears immediately in the transcript.
     const pendingId = insertUserMessage(text || '(image)')
@@ -209,7 +216,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     } finally {
       setSending(false)
     }
-  }, [input, sending, session.id, insertUserMessage, ackUserMessage, rollbackUserMessage, pastedImages, expandPastedText])
+  }, [input, sending, session.id, insertUserMessage, ackUserMessage, rollbackUserMessage, pastedImages, expandPastedText, toast])
 
   const handleInterrupt = useCallback(async () => {
     try { await api.post(`/sessions/${session.id}/interrupt`, {}) } catch { /* */ }
@@ -406,11 +413,11 @@ export const SideChatDrawer = memo(function SideChatDrawer({
               type="button"
               className={`btn btn-icon ${session.working ? 'btn-danger' : 'btn-primary'}`}
               onClick={session.working ? handleInterrupt : handleSend}
-              disabled={(!input.trim() && pastedImages.images.length === 0 && !session.working) || sending}
-              title={session.working ? 'Interrupt' : 'Send message (Enter)'}
-              aria-label={session.working ? 'Interrupt' : 'Send message'}
+              disabled={(!session.working && ((!input.trim() && pastedImages.images.length === 0) || pastedImages.pending)) || sending}
+              title={session.working ? 'Interrupt' : pastedImages.pending ? 'Images are still processing' : 'Send message (Enter)'}
+              aria-label={session.working ? 'Interrupt' : pastedImages.pending ? 'Images are still processing' : 'Send message'}
             >
-              {sending && !session.working ? (
+              {(sending || pastedImages.pending) && !session.working ? (
                 <IconLoader size={16} className="glyph-spin" />
               ) : (
                 <span className={`composer-action-toggle ${session.working ? 'interrupt' : 'send'}`}>

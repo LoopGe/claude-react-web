@@ -28,17 +28,27 @@ export function splitIntakeFiles(files: readonly File[]): IntakeSplit {
   return { images, uploads }
 }
 
-/** Destination callbacks for one classified intake batch. */
-export interface IntakeHandlers {
+/** Composer-side destinations for one drag/paperclip batch. */
+export interface ComposerIntakeOptions {
   /** Attach supported images to the composer draft. */
-  addImages: (files: readonly File[]) => void | Promise<void>
-  /** Send every other file through the generic upload path. */
-  uploadFiles: (files: File[]) => void
+  readonly addImages: (files: readonly File[]) => void | Promise<void>
+  /** Send the non-image remainder through the generic upload path. */
+  readonly uploadFiles: (files: File[]) => void | Promise<void>
+  /** Opens the uploads manager; absent when the surface has none. */
+  readonly openUploads: (() => void) | undefined
 }
 
-/** Classify one batch and dispatch each non-empty group exactly once. */
-export function routeIntakeFiles(files: readonly File[], handlers: IntakeHandlers): void {
+/** The composer's drag/paperclip policy: images inline, everything else to
+ *  the generic upload path. The uploads manager opens only when at least one
+ *  file actually uploads, so an image-only batch stays in the composer. */
+export function intakeComposerFiles(
+  files: readonly File[],
+  options: ComposerIntakeOptions,
+): void {
   const { images, uploads } = splitIntakeFiles(files)
-  if (images.length > 0) void handlers.addImages(images)
-  if (uploads.length > 0) handlers.uploadFiles(uploads)
+  if (images.length > 0) void options.addImages(images)
+  if (uploads.length > 0) {
+    options.openUploads?.()
+    void options.uploadFiles(uploads)
+  }
 }

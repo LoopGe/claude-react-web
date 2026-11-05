@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { validateSendBody } from './send-body.js'
+import { validateSendBody, MAX_MESSAGE_BASE64 } from './send-body.js'
+import { MAX_PASTED_IMAGE_BYTES } from './config.js'
+
+describe('image size caps', () => {
+  it('keeps the largest accepted raw image batch representable in base64', () => {
+    // The client caps raw file bytes; the wire carries base64. Per-image
+    // padding can only make the real payload larger, so this is a
+    // lower-bound guard against the two caps drifting apart.
+    expect(Math.ceil(MAX_PASTED_IMAGE_BYTES / 3) * 4).toBeLessThanOrEqual(MAX_MESSAGE_BASE64)
+  })
+})
 
 describe('validateSendBody', () => {
   it('accepts a non-empty text body', () => {
