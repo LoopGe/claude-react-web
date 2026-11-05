@@ -6,9 +6,10 @@
  * until it is known, so a turn with no changes leaves no gap in the
  * transcript.
  */
-import { useState } from 'react'
+import { useCallback, useId, useState } from 'react'
 import type { TurnChangedFile } from '../../../shared/turn-changes.js'
 import { useTurnChanges } from '../../hooks/useTurnChanges'
+import { AnimatedCollapse } from '../AnimatedCollapse'
 import { useTurnChangesContext } from './turn-changes-context'
 
 /** Rows shown before the fold. */
@@ -31,6 +32,27 @@ export function Counts({ file }: { file: TurnChangedFile }) {
   )
 }
 
+/** One clickable changed-file row. `index` addresses the FULL summary. */
+function FileRow({ file, index, onOpen }: {
+  file: TurnChangedFile
+  index: number
+  onOpen: (index: number) => void
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        className="turn-changes-row"
+        aria-label={`View changes to ${file.display}`}
+        onClick={() => { onOpen(index) }}
+      >
+        <span className="turn-changes-path">{file.display}</span>
+        <span className="turn-changes-counts"><Counts file={file} /></span>
+      </button>
+    </li>
+  )
+}
+
 /**
  * Render one turn's changed files.
  * @param props.sessionId - viewed session; the card is inert without it.
@@ -41,12 +63,23 @@ export function TurnChangesCard({ sessionId, resultUuid }: { sessionId?: string;
   const { loading, summary } = useTurnChanges(sessionId, resultUuid)
   const { openTurnReview } = useTurnChangesContext()
   const [expanded, setExpanded] = useState(false)
+  // The tail mounts on the first expand only, and unmounts again once the close
+  // tween settles: a card for a turn that touched hundreds of files must not
+  // carry hundreds of hidden rows while folded. The outer collapse body stays
+  // mounted (unmountOnExit=false), so its 0px pin survives and the next open
+  // still tweens from 0.
+  const [revealed, setRevealed] = useState(false)
+  const hideRevealed = useCallback(() => { setRevealed(false) }, [])
+  const listId = useId()
 
   if (!sessionId || !resultUuid || loading || summary === null || summary.total === 0) return null
 
   const single = summary.total === 1 ? summary.files[0] : undefined
   const foldable = summary.files.length > COLLAPSED_ROWS
-  const rows = foldable && !expanded ? summary.files.slice(0, COLLAPSED_ROWS) : summary.files
+  // The first COLLAPSED_ROWS rows stay static; only the tail folds. Folding the
+  // whole list would replay the visible rows from height 0 on expand.
+  const rows = foldable ? summary.files.slice(0, COLLAPSED_ROWS) : summary.files
+  const extraRows = foldable ? summary.files.slice(COLLAPSED_ROWS) : []
 
   return (
     <div className="turn-changes-card" data-changed-files>
@@ -69,28 +102,66 @@ export function TurnChangesCard({ sessionId, resultUuid }: { sessionId?: string;
         </span>
       </button>
       {single === undefined && (
-        <ul className="turn-changes-list">
-          {rows.map((file, index) => (
-            <li key={file.display}>
-              <button
-                type="button"
-                className="turn-changes-row"
-                aria-label={`View changes to ${file.display}`}
-                onClick={() => { openTurnReview(resultUuid, index) }}
-              >
-                <span className="turn-changes-path">{file.display}</span>
-                <span className="turn-changes-counts"><Counts file={file} /></span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        /* One logical list across the fold boundary: the two <ul>s are
+           presentation-only partitions, so AT still hears a single list. */
+        <div role="list">
+          <ul role="presentation" className="turn-changes-list">
+            {rows.map((file, index) => (
+              <FileRow
+                key={file.display}
+                file={file}
+                index={index}
+                onOpen={(i) => { openTurnReview(resultUuid, i) }}
+              />
+            ))}
+          </ul>
+          {/* Only the tail is inside the animated body. AnimatedCollapse
+              registers in collapse-animation.ts, so the transcript's
+              fold-lockstep compensates the row-height change while following
+              the bottom (a hand-written CSS transition would not).
+              unmountOnExit={false} is load-bearing: a remounted body has no
+              0px pin, so currentBodyHeight() would read its natural height and
+              the second expand would snap instead of tweening. */}
+          {foldable && (
+            <AnimatedCollapse
+              open={expanded}
+              unmountOnExit={false}
+              id={listId}
+              onExitComplete={hideRevealed}
+            >
+              {revealed && (
+                /* inert while folded: unmountOnExit keeps these buttons mounted
+                   through the close, and without it Tab would reach the
+                   invisible rows before the toggle. */
+                <ul
+                  role="presentation"
+                  className="turn-changes-list turn-changes-list-tail"
+                  inert={!expanded}
+                >
+                  {extraRows.map((file, index) => (
+                    <FileRow
+                      key={file.display}
+                      file={file}
+                      index={COLLAPSED_ROWS + index}
+                      onOpen={(i) => { openTurnReview(resultUuid, i) }}
+                    />
+                  ))}
+                </ul>
+              )}
+            </AnimatedCollapse>
+          )}
+        </div>
       )}
       {foldable && (
         <button
           type="button"
           className="turn-changes-toggle"
           aria-expanded={expanded}
-          onClick={() => { setExpanded((value) => !value) }}
+          aria-controls={listId}
+          onClick={() => {
+            setRevealed(true)
+            setExpanded((value) => !value)
+          }}
         >
           {expanded ? 'Show fewer' : `Show all ${summary.files.length}`}
         </button>

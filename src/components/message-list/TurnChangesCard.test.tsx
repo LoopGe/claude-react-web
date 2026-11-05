@@ -10,6 +10,7 @@ vi.mock('../../hooks/useTurnChanges', () => ({
   useTurnChanges: () => ({ summary: hooks.summary, loading: hooks.loading }),
 }))
 
+import { anyCollapseAnimatingInside } from '../collapse-animation'
 import { TurnChangesCard } from './TurnChangesCard'
 import { TurnChangesProvider } from './turn-changes-context'
 
@@ -69,6 +70,78 @@ describe('TurnChangesCard', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Show all 6' }))
     expect(screen.getAllByRole('listitem')).toHaveLength(6)
+  })
+
+  it('folds the extra rows into one animated list', () => {
+    const files = Array.from({ length: 6 }, (_, index) => ({
+      ...fileA,
+      path: `src/f${index}.ts`,
+      display: `src/f${index}.ts`,
+    }))
+    hooks.summary = summaryOf(files)
+    const { open, container } = renderCard()
+
+    const toggle = screen.getByRole('button', { name: 'Show all 6' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    // The disclosure control points at the fold's content box.
+    const controls = toggle.getAttribute('aria-controls')
+    expect(controls).toBeTruthy()
+    expect(container.querySelector(`[id="${controls}"]`)).not.toBeNull()
+    // A collapsed card mounts only the four visible rows, never the hidden tail.
+    expect(container.querySelectorAll('li')).toHaveLength(4)
+
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getAllByRole('listitem')).toHaveLength(6)
+    // The animated segment must not split the logical list into two.
+    expect(screen.getAllByRole('list')).toHaveLength(1)
+
+    // A tail row still addresses its index in the FULL summary.
+    fireEvent.click(screen.getByRole('button', { name: 'View changes to src/f5.ts' }))
+    expect(open).toHaveBeenCalledWith('r1', 5)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show fewer' }))
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    // The settled close drops the tail again.
+    expect(screen.queryByRole('button', { name: 'View changes to src/f5.ts' })).toBeNull()
+    expect(container.querySelector('.turn-changes-list-tail')).toBeNull()
+    expect(screen.getAllByRole('listitem')).toHaveLength(4)
+  })
+
+  it('animates the fold again after a close', () => {
+    vi.useFakeTimers()
+    const files = Array.from({ length: 6 }, (_, index) => ({
+      ...fileA,
+      path: `src/f${index}.ts`,
+      display: `src/f${index}.ts`,
+    }))
+    hooks.summary = summaryOf(files)
+    const { container } = renderCard()
+    // happy-dom has no layout: give the collapsed body a 0 pin and the content
+    // a real height, the metrics AnimatedCollapse tweens between.
+    const body = container.querySelector('.animated-collapse') as HTMLElement
+    const content = container.querySelector('.animated-collapse-content') as HTMLElement
+    vi.spyOn(body, 'offsetHeight', 'get').mockReturnValue(0)
+    vi.spyOn(content, 'offsetHeight', 'get').mockReturnValue(80)
+    vi.spyOn(content, 'scrollHeight', 'get').mockReturnValue(80)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 6' }))
+    expect(anyCollapseAnimatingInside(container)).toBe(true)
+    act(() => { vi.advanceTimersByTime(400) })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show fewer' }))
+    // During the exit tween the tail is still mounted but inert, so Tab cannot
+    // reach an invisible row.
+    const tail = container.querySelector('.turn-changes-list-tail') as HTMLElement
+    expect(tail.hasAttribute('inert')).toBe(true)
+    act(() => { vi.advanceTimersByTime(400) })
+    expect(anyCollapseAnimatingInside(container)).toBe(false)
+    expect(container.querySelector('.turn-changes-list-tail')).toBeNull()
+
+    // Closing must keep the 0px pin; a remounted body would read its natural
+    // height and the second open would snap instead of tweening.
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 6' }))
+    expect(anyCollapseAnimatingInside(container)).toBe(true)
   })
 
   it('renders a single file as the header only', () => {

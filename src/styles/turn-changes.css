@@ -75,6 +75,12 @@
   border-top: 1px solid var(--border);
 }
 
+/* The folded tail follows the first four rows without a divider of its own;
+   the border belongs to the list as a whole, not to each animated segment. */
+.turn-changes-list-tail {
+  border-top: 0;
+}
+
 .turn-changes-row {
   display: flex;
   align-items: center;
