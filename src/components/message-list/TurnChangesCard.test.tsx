@@ -25,22 +25,26 @@ function summaryOf(files: TurnChangedFile[]): TurnChangesSummary {
   }
 }
 
+function cardElement(open: (resultUuid: string, index: number) => void) {
+  return (
+    <TurnChangesProvider value={{ openTurnReview: open }}>
+      <TurnChangesCard sessionId="s1" resultUuid="r1" />
+    </TurnChangesProvider>
+  )
+}
+
 function renderCard(open = vi.fn()) {
-  return {
-    open,
-    ...render(
-      <TurnChangesProvider value={{ openTurnReview: open }}>
-        <TurnChangesCard sessionId="s1" resultUuid="r1" />
-      </TurnChangesProvider>,
-    ),
-  }
+  return { open, ...render(cardElement(open)) }
 }
 
 beforeEach(() => {
   hooks.summary = null
   hooks.loading = false
 })
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 describe('TurnChangesCard', () => {
   it('renders nothing without a summary or for an empty turn', () => {
@@ -142,6 +146,65 @@ describe('TurnChangesCard', () => {
     // height and the second open would snap instead of tweening.
     fireEvent.click(screen.getByRole('button', { name: 'Show all 6' }))
     expect(anyCollapseAnimatingInside(container)).toBe(true)
+  })
+
+  it('grows the row height when the summary lands after the row mounted', () => {
+    vi.useFakeTimers()
+    // happy-dom has no layout; the arrival path measures the content's
+    // scrollHeight at mount, before any element exists to mock per-node.
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(100)
+    hooks.summary = null
+    hooks.loading = true
+    const { container, rerender } = render(cardElement(vi.fn()))
+
+    hooks.summary = summaryOf([fileA, fileB])
+    hooks.loading = false
+    rerender(cardElement(vi.fn()))
+
+    // Mounted inside a CLOSED collapse while the row's own entrance window
+    // runs, so the two opacity ramps never compound and no height is laid out.
+    // The closed card is inert, keeping its buttons out of the tab order.
+    const card = container.querySelector('.turn-changes-card') as HTMLElement
+    expect(card.closest('.animated-collapse')).not.toBeNull()
+    expect(card.hasAttribute('inert')).toBe(true)
+    expect(anyCollapseAnimatingInside(container)).toBe(false)
+
+    act(() => { vi.advanceTimersByTime(240) })
+
+    // AnimatedCollapse owns the 0 -> content-height beat, so the transcript's
+    // bottom-follow compensates instead of the row snapping by one card height.
+    expect(card.hasAttribute('inert')).toBe(false)
+    expect(anyCollapseAnimatingInside(container)).toBe(true)
+  })
+
+  it('does not add an arrival fold when the summary is known at mount', () => {
+    hooks.summary = summaryOf([fileA, fileB])
+    hooks.loading = false
+    const { container } = renderCard(vi.fn())
+    const card = container.querySelector('.turn-changes-card') as HTMLElement
+    expect(card.closest('.animated-collapse')).toBeNull()
+    expect(card.hasAttribute('inert')).toBe(false)
+  })
+
+  it('opens immediately under reduced motion', () => {
+    vi.stubGlobal('matchMedia', () => ({
+      matches: true,
+      addEventListener() {},
+      removeEventListener() {},
+    }))
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(100)
+    hooks.summary = null
+    hooks.loading = true
+    const { container, rerender } = render(cardElement(vi.fn()))
+
+    hooks.summary = summaryOf([fileA, fileB])
+    hooks.loading = false
+    rerender(cardElement(vi.fn()))
+
+    const card = container.querySelector('.turn-changes-card') as HTMLElement
+    // No waiting window and no tween: the collapse settles at full height.
+    expect(card.hasAttribute('inert')).toBe(false)
+    expect(anyCollapseAnimatingInside(container)).toBe(false)
   })
 
   it('renders a single file as the header only', () => {

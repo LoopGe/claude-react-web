@@ -6,9 +6,12 @@
  * until it is known, so a turn with no changes leaves no gap in the
  * transcript.
  */
-import { useCallback, useId, useState } from 'react'
+import { useCallback, useId, useLayoutEffect, useState } from 'react'
 import type { TurnChangedFile } from '../../../shared/turn-changes.js'
+import { useEnterOnArrival } from '../../hooks/useEnterOnArrival'
 import { useTurnChanges } from '../../hooks/useTurnChanges'
+import { prefersReducedMotion } from '../../utils/reduced-motion'
+import { revealDurationMs } from '../../utils/reveal-duration'
 import { AnimatedCollapse } from '../AnimatedCollapse'
 import { useTurnChangesContext } from './turn-changes-context'
 
@@ -57,12 +60,43 @@ function FileRow({ file, index, onOpen }: {
  * Render one turn's changed files.
  * @param props.sessionId - viewed session; the card is inert without it.
  * @param props.resultUuid - the result frame that closed the turn.
- * @returns the card, or null while the summary is unknown or empty.
+ * @returns the card (wrapped in an arrival fold when its summary lands after
+ *   the host row mounted), or null while the summary is unknown or empty.
  */
 export function TurnChangesCard({ sessionId, resultUuid }: { sessionId?: string; resultUuid: string }) {
   const { loading, summary } = useTurnChanges(sessionId, resultUuid)
   const { openTurnReview } = useTurnChangesContext()
   const [expanded, setExpanded] = useState(false)
+  // Nullish -> non-nullish during this mount. The shared gate also keeps a
+  // Virtuoso scroll-back remount silent (the value is already present).
+  const summaryArrived = useEnterOnArrival(summary)
+  // A row's own entrance (msg-enter, or the transcript reveal on a switch)
+  // runs for ~240ms from this component's mount. Content that lands inside
+  // that window must not start its height fold too — the card would compound
+  // two opacity ramps — so hold it in a closed, inert collapse and open it
+  // once the row's window has passed. A summary that lands after the window
+  // opens immediately.
+  const [mountedAt] = useState(() => performance.now())
+  const [arrivalReady, setArrivalReady] = useState(false)
+  /* eslint-disable react-hooks/set-state-in-effect -- the arrival fold must
+     wait out the row's own entrance window; the ready flag is a one-shot
+     mount-time decision whose remaining delay is read from the clock, which a
+     render-phase update cannot do */
+  useLayoutEffect(() => {
+    if (!summaryArrived || arrivalReady) return
+    if (prefersReducedMotion()) {
+      setArrivalReady(true)
+      return
+    }
+    const wait = revealDurationMs() - (performance.now() - mountedAt)
+    if (wait <= 0) {
+      setArrivalReady(true)
+      return
+    }
+    const timer = window.setTimeout(() => setArrivalReady(true), wait)
+    return () => window.clearTimeout(timer)
+  }, [summaryArrived, arrivalReady, mountedAt])
+  /* eslint-enable react-hooks/set-state-in-effect */
   // The tail mounts on the first expand only, and unmounts again once the close
   // tween settles: a card for a turn that touched hundreds of files must not
   // carry hundreds of hidden rows while folded. The outer collapse body stays
@@ -81,8 +115,11 @@ export function TurnChangesCard({ sessionId, resultUuid }: { sessionId?: string;
   const rows = foldable ? summary.files.slice(0, COLLAPSED_ROWS) : summary.files
   const extraRows = foldable ? summary.files.slice(COLLAPSED_ROWS) : []
 
-  return (
-    <div className="turn-changes-card" data-changed-files>
+  const card = (
+    /* inert while the arrival fold is closed: the buttons are mounted but
+       clipped to zero height, and neither clipping nor aria-hidden removes them
+       from the tab order. */
+    <div className="turn-changes-card" data-changed-files inert={summaryArrived && !arrivalReady}>
       <button
         type="button"
         className="turn-changes-header"
@@ -168,4 +205,16 @@ export function TurnChangesCard({ sessionId, resultUuid }: { sessionId?: string;
       )}
     </div>
   )
+
+  // A card whose summary lands after its row mounted grows the row height
+// instead of snapping it: AnimatedCollapse registers the fold, so the
+// transcript's bottom-follow compensates every frame rather than jumping once.
+// The wrapper mounts CLOSED with the card inside and flips `open` once the
+// row's own entrance has ended — the established open-transition path, not a
+// mount-time `appear` (which a StrictMode double-invoked layout effect cancels
+// before its first frame, leaving the body at opacity 0 forever). A summary
+// already present at mount needs no height beat and stays unwrapped.
+  return summaryArrived
+    ? <AnimatedCollapse open={arrivalReady} unmountOnExit={false}>{card}</AnimatedCollapse>
+    : card
 }
