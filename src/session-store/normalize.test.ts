@@ -301,9 +301,11 @@ describe('shouldHideByDefault', () => {
   })
 
   it('hides a <task-notification> user injection (output lives in TasksPanel)', () => {
+    // Foldable wins over payload: a routable completion with an inline
+    // <result> is hidden here and rendered in the TasksPanel instead.
     expect(shouldHideByDefault({
       type: 'user',
-      message: { content: [{ type: 'text', text: '<task-notification><tool-use-id>tu1</tool-use-id><status>completed</status></task-notification>' }] },
+      message: { content: [{ type: 'text', text: '<task-notification><tool-use-id>tu1</tool-use-id><status>completed</status><result>report body</result></task-notification>' }] },
     } as unknown as SdkMessage)).toBe(true)
   })
 
@@ -319,13 +321,42 @@ describe('shouldHideByDefault', () => {
     expect(item!.id).toBe('u1')
   })
 
-  it('does NOT hide an injection with no <tool-use-id> (nothing to fold — must not vanish)', () => {
-    // Review Focus #6: without tool-use-id the parser returns null, so there
-    // is no Tasks record to route the output to. Hiding it here would drop
-    // the only signal it has. It falls through to MessageView's neutral card.
+  it('still returns a hidden status-only injection from toTranscriptItem', () => {
+    // Hiding only gates RENDERING: the reducer's activeSubagents fold and the
+    // disk backfill read this item, so a status-only notice must survive here
+    // even though no row is painted.
+    const item = toTranscriptItem({
+      type: 'user',
+      uuid: 'u2',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'text', text: '<task-notification><task-id>t2</task-id><status>stopped</status><summary>x</summary></task-notification>' }] },
+    } as unknown as SdkMessage, undefined)
+    expect(item).not.toBeNull()
+    expect(item!.hiddenByDefault).toBe(true)
+    expect(item!.id).toBe('u2')
+  })
+
+  it('hides a status-only injection with no <tool-use-id> (resume recovery notice)', () => {
+    // The harness injects this once per abandoned background task per server
+    // restart. It has no tool-use-id to fold and no result/event to render,
+    // so its only possible presentation was a raw-XML neutral card.
     expect(shouldHideByDefault({
       type: 'user',
-      message: { content: [{ type: 'text', text: '<task-notification><task-id>t1</task-id><status>completed</status></task-notification>' }] },
+      message: { content: [{ type: 'text', text: '<task-notification><task-id>t1</task-id><output-file>/tmp/t1.output</output-file><status>stopped</status><summary>Background agent "x" didn\'t finish before the previous session ended</summary><note>No completion record was found.</note></task-notification>' }] },
+    } as unknown as SdkMessage)).toBe(true)
+  })
+
+  it('keeps a payload-bearing injection with no <tool-use-id> visible (nothing to fold)', () => {
+    // A monitor <event> (or an unroutable <result>) has no task record to
+    // route to and no other render path — its neutral card is the only place
+    // the payload can surface.
+    expect(shouldHideByDefault({
+      type: 'user',
+      message: { content: [{ type: 'text', text: '<task-notification><task-id>m1</task-id><summary>Monitor event: "build"</summary><event>exe produced</event></task-notification>' }] },
+    } as unknown as SdkMessage)).toBe(false)
+    expect(shouldHideByDefault({
+      type: 'user',
+      message: { content: [{ type: 'text', text: '<task-notification><task-id>t1</task-id><status>completed</status><result>report</result></task-notification>' }] },
     } as unknown as SdkMessage)).toBe(false)
   })
 })

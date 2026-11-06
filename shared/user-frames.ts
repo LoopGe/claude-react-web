@@ -127,22 +127,40 @@ export function taskNotificationToolUseId(msg: UserFrameShape): string | null {
  *  client's parser, which unescapes but ids never carry entities). */
 const TASK_NOTIFICATION_TOOL_USE_ID_RE = /<tool-use-id>([\s\S]*?)<\/tool-use-id>/
 
-/** Extract the inner text of the first `<tag>…</tag>` in `s`, with basic XML
- *  entity unescaping. Mirrors the parser the client's reducer uses, lifted
- *  here so server and client cannot drift. */
-function extractXmlTag(s: string, tag: string): string | null {
-  const open = `<${tag}>`
-  const close = `</${tag}>`
-  const start = s.indexOf(open)
-  if (start < 0) return null
-  const end = s.indexOf(close, start + open.length)
-  if (end < 0) return null
-  return s.slice(start + open.length, end)
+function unescapeXml(s: string): string {
+  return s
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&amp;/g, '&')
+}
+
+/** Inner text of EVERY `<tag>…</tag>` occurrence in `s`, entity-unescaped.
+ *  Injection bodies repeat tags in the corpus (one notification can list
+ *  several `<task-id>`s — see `extractTags` in rendering.ts), so callers that
+ *  ask "does any occurrence carry content?" must not stop at the first. */
+function extractXmlTags(s: string, tag: string): string[] {
+  const open = `<${tag}>`
+  const close = `</${tag}>`
+  const out: string[] = []
+  let at = 0
+  while (true) {
+    const start = s.indexOf(open, at)
+    if (start < 0) break
+    const end = s.indexOf(close, start + open.length)
+    if (end < 0) break
+    out.push(unescapeXml(s.slice(start + open.length, end)))
+    at = end + close.length
+  }
+  return out
+}
+
+/** Extract the inner text of the first `<tag>…</tag>` in `s`, with basic XML
+ *  entity unescaping. Mirrors the parser the client's reducer uses, lifted
+ *  here so server and client cannot drift. */
+function extractXmlTag(s: string, tag: string): string | null {
+  return extractXmlTags(s, tag)[0] ?? null
 }
 
 export type TaskNotificationStatus = 'completed' | 'failed' | 'stopped'
@@ -168,18 +186,72 @@ export interface TaskNotificationInjection {
   result?: string
 }
 
+/** One XML pass over a `<task-notification>` injection, shared by the two
+ *  public readers below. The transcript filter classifies once per frame
+ *  instead of running the predicate, the parser and the payload scan in
+ *  sequence. */
+interface RawTaskNotification {
+  taskId?: string
+  toolUseId?: string
+  status: TaskNotificationStatus
+  summary?: string
+  result?: string
+  event?: string
+}
+
+function readTaskNotification(msg: UserFrameShape): RawTaskNotification | null {
+  if (!isTaskNotificationUserMessage(msg)) return null
+  const text = taskNotificationText(msg)
+  return {
+    taskId: extractXmlTag(text, 'task-id') ?? undefined,
+    toolUseId: extractXmlTag(text, 'tool-use-id') ?? undefined,
+    status: normalizeTaskStatus(extractXmlTag(text, 'status') ?? undefined),
+    summary: extractXmlTag(text, 'summary') ?? undefined,
+    result: extractXmlTags(text, 'result').find((v) => v.trim()),
+    event: extractXmlTags(text, 'event').find((v) => v.trim()),
+  }
+}
+
 /** Parse a harness `<task-notification>` user-role XML injection. Returns
  *  null when the frame is not an injection, or carries no `<tool-use-id>`. */
 export function parseTaskNotificationInjection(msg: UserFrameShape): TaskNotificationInjection | null {
-  if (!isTaskNotificationUserMessage(msg)) return null
-  const text = taskNotificationText(msg)
-  const toolUseId = extractXmlTag(text, 'tool-use-id')
-  if (!toolUseId) return null
+  const raw = readTaskNotification(msg)
+  if (!raw?.toolUseId) return null
   return {
-    taskId: extractXmlTag(text, 'task-id') ?? toolUseId,
-    toolUseId,
-    status: normalizeTaskStatus(extractXmlTag(text, 'status') ?? undefined),
-    summary: extractXmlTag(text, 'summary') ?? undefined,
-    result: extractXmlTag(text, 'result') ?? undefined,
+    taskId: raw.taskId ?? raw.toolUseId,
+    toolUseId: raw.toolUseId,
+    status: raw.status,
+    summary: raw.summary,
+    result: raw.result,
+  }
+}
+
+/** What the transcript filter needs to know about an injection, in one pass.
+ *
+ *  `foldable` — carries a `<tool-use-id>`, so it can key a `session.tasks`
+ *  record and its result renders in the TasksPanel.
+ *  `hasPayload` — carries a non-empty `<result>` (an agent's returned
+ *  output) or monitor `<event>` line (a Monitor task's delivered stdout);
+ *  whitespace-only bodies carry nothing. This is the only render path for an
+ *  injection that is NOT foldable.
+ *
+ *  A status-only injection has neither. The recurring one is the harness's
+ *  resume-time recovery notice ("Background agent … didn't finish before the
+ *  previous session ended"), injected once per abandoned task per restart:
+ *  nothing to fold, nothing to render, and it would otherwise surface as raw
+ *  XML. `hiddenByDefault` hides every foldable injection and every
+ *  payload-less one; payload-bearing leftovers keep their neutral card so a
+ *  monitor event or an unroutable agent report is never silently dropped. */
+export interface TaskNotificationShape {
+  foldable: boolean
+  hasPayload: boolean
+}
+
+export function classifyTaskNotificationInjection(msg: UserFrameShape): TaskNotificationShape | null {
+  const raw = readTaskNotification(msg)
+  if (!raw) return null
+  return {
+    foldable: Boolean(raw.toolUseId),
+    hasPayload: Boolean(raw.result?.trim() || raw.event?.trim()),
   }
 }

@@ -16,6 +16,7 @@ import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
 import {
+  classifyTaskNotificationInjection,
   isTaskNotificationUserMessage,
   normalizeTaskStatus,
   parseTaskNotificationInjection,
@@ -67,15 +68,27 @@ export function shouldHideByDefault(msg: SdkMessage): boolean {
   ) return true
   if (msg.type === 'user' && isLocalCommandLogUserMessage(msg)) return true
   // Background-task completion injection — its output is routed to the
-  // TasksPanel (TaskResultStore-backed), not the transcript. Gate on the
-  // parser SUCCEEDING: a `<task-notification>` with no `<tool-use-id>`
-  // cannot be folded into session.tasks (parseTaskNotificationInjection
-  // returns null), so hiding it would drop the only signal it has. Unparsed
-  // residue falls through to MessageView's neutral synthetic card instead.
-  // The frame MUST still reach the store and the disk JSONL either way: the
-  // reducer's activeSubagents merge and `backfillSubagentCompletions` both
-  // read it (spec §3.3).
-  if (msg.type === 'user' && parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])) return true
+  // TasksPanel (TaskResultStore-backed), not the transcript.
+  //
+  //   • Foldable (has `<tool-use-id>`) → hidden: the parser keys a task
+  //     record and the result body renders in TasksPanel.
+  //   • Not foldable AND payload-less → hidden too. These are status-only
+  //     notices; the recurring one is the harness's resume-time recovery
+  //     notice ("Background agent … didn't finish before the previous
+  //     session ended"), injected once per abandoned task per restart. There
+  //     is nothing in it for the user and it renders as raw XML.
+  //   • Not foldable but carrying a `<result>` or a monitor `<event>` →
+  //     visible: it is the only place that payload can surface (nothing to
+  //     key a task record on, and monitor events have no other render path),
+  //     so it keeps MessageView's neutral card.
+  //
+  // The frame MUST still reach the store and the disk JSONL in every case:
+  // the reducer's activeSubagents merge and `backfillSubagentCompletions`
+  // both read it (spec §3.3).
+  if (msg.type === 'user') {
+    const shape = classifyTaskNotificationInjection(msg as Parameters<typeof classifyTaskNotificationInjection>[0])
+    if (shape && (shape.foldable || !shape.hasPayload)) return true
+  }
   // `command_lifecycle` is a top-level lifecycle marker the `claude` CLI emits
   // to track a command's state machine (queued → started → completed). It
   // carries only ids/state — no renderable content — and isn't in our bundled
