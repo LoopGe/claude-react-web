@@ -39,3 +39,11 @@ codesclaude-react-web.*/
 # Throwaway probes and investigation artifacts.
 /.scratch/
 /.tmp-investigate/
+# Local design previews, throwaway prototypes and dropped-in screenshots.
+/docs/*.png
+/docs/*.html
+/prototype/
+/semantic-review/
+/spike/
+/plan/suggestion-animation-demo.html
+/*.png
