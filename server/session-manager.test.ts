@@ -9620,8 +9620,12 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // (b) A tombstone row landed in the sidecar file.
       const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
       expect(existsSync(sidecarFile)).toBe(true)
+      // Read through the production loader, which deliberately skips a torn
+      // tail (a read can land while the append is mid-write — reliably visible
+      // on Windows). Hand-rolling JSON.parse here made that race a failure.
+      const sidecar = new TranscriptSidecar(dir, info.id)
       const hasTombstoneRow = async (): Promise<boolean> => {
-        const rows = readFileSync(sidecarFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { seq?: number; evicted?: boolean })
+        const rows = await sidecar.load()
         return rows.some((r) => r.evicted === true && typeof r.seq === 'number')
       }
       expect(await waitFor(hasTombstoneRow)).toBe(true)
