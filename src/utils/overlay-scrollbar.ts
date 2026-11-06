@@ -249,7 +249,7 @@ export function attachOverlayScrollbar(
   // ResizeObserver silent, and the syncs that do run during the motion
   // (attach-time update + its rAF) sample the transform mid-flight — freezing
   // a fractional track `top` below settled layout. In the measured failure a
-  // 967px-tall .tasks-panel froze `top` 17.19px low, so the track's bottom
+  // 967px-tall .tasks-panel-scroll froze `top` 17.19px low, so the track's bottom
   // edge poked past the backdrop's scroll edge by 0.19px and the backdrop
   // materialised its own native scrollbar next to the overlay thumb, with no
   // scroll/resize ever healing it. THE CANONICAL COMMENT for this fix; the
@@ -257,8 +257,9 @@ export function attachOverlayScrollbar(
   // and overlay-backdrop-scroll.test.ts only point here.
   //
   // The settle events are therefore heard on the track's PARENT: the motion
-  // may target el itself (.tasks-panel) or the card around a nested scroller
-  // (.git-panel-scroll inside the animated .git-panel), and el's own settles
+  // may target el itself (a scroller that is also the animated card) or the
+  // card around a nested scroller (.git-panel-scroll / .tasks-panel-scroll
+  // inside their cards), and el's own settles
   // bubble up to the parent with `target` preserved — one registration covers
   // both. The *cancel* twins (animationcancel / transitioncancel) are heard
   // for the same reason: a class rewrite or data-state flip can interrupt the
@@ -269,8 +270,8 @@ export function attachOverlayScrollbar(
   // future ones get silently missed. Listening on the PARENT alone is enough:
   // el's own settles bubble to it with `target` preserved, and the target
   // guard admits exactly the two cases that can move the track geometry — a
-  // settle on el (.tasks-panel's entrance) or on the parent card (.git-panel
-  // around .git-panel-scroll). A descendant's reveal/hover animation moves
+  // settle on el (the scroller itself) or on the parent card (the animated
+  // overlay card around it). A descendant's reveal/hover animation moves
   // its own box, not el's offset within the parent, and instrumented
   // transcripts are full of those — unfiltered, every chip entrance would
   // force a layout pass per live controller. The module's own writes cannot

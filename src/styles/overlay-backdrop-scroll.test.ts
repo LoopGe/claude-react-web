@@ -63,6 +63,29 @@ describe('overlay backdrops are not scroll containers', () => {
     }
   })
 
+  it('TasksPanel scrolls in a nested region so the overlay thumb sits on the card', () => {
+    // attachOverlayScrollbar appends its track to the scroller's PARENT. When
+    // the scroller IS the card, that parent is the full-bleed backdrop and the
+    // CSS `right: 0` track lands at the backdrop edge — far from a centered
+    // card on a wide panel. The card must therefore stay non-scrolling and the
+    // scroll region must be the nested .tasks-panel-scroll (GitPanel's shape).
+    const css = style('tasks-panel.css')
+    const cardBodies = standaloneRuleBodies(css, '.tasks-overlay > .tasks-panel')
+    expect(cardBodies.length, 'standalone ".tasks-overlay > .tasks-panel { … }" rule').toBeGreaterThan(0)
+    for (const body of cardBodies) {
+      // The shorthand counts too (`overflow: auto` / `overflow: scroll`).
+      expect(body).not.toMatch(/overflow(?:-[xy])?\s*:\s*[^;}]*(auto|scroll)/)
+    }
+    const scrollBodies = standaloneRuleBodies(css, '.tasks-panel-scroll')
+    expect(scrollBodies.length, 'standalone ".tasks-panel-scroll { … }" rule').toBeGreaterThan(0)
+    for (const body of scrollBodies) {
+      expect(body).toMatch(/overflow-y\s*:\s*auto/)
+      expect(body).toMatch(/overflow-x\s*:\s*hidden/)
+      expect(body).toMatch(/\bflex:\s*1\b/)
+      expect(body).toMatch(/\bmin-height:\s*0\b/)
+    }
+  })
+
   it('extraction self-test: a violation in a LATER head is visible to the check (exec-only regression)', () => {
     // The helper must surface every matching head, not just the first: this
     // exact shape (clean base rule, violating @media redeclaration after it)

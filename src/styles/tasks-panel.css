@@ -39,6 +39,18 @@
   box-shadow: var(--overlay-shadow);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+/* The scroller is a CHILD of the card (GitPanel's shape), so the overlay
+   scrollbar's track — appended to the scroller's parent — lands on the card's
+   right edge instead of the full-bleed backdrop's. */
+.tasks-panel-scroll {
+  flex: 1;
+  min-height: 0;
+  /* Vertical scroll only: a task row's controls can exceed a narrow reading
+     column, and the old card clipped the horizontal axis. Keep that guarantee
+     here or the scroller silently gains a horizontal bar (the native one is
+     suppressed by [data-os-native-hidden]). */
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -56,9 +68,7 @@
   padding: var(--space-2-5) var(--space-3);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  position: sticky;
-  top: 0;
-  z-index: 2;
+  /* Outside .tasks-panel-scroll now, so it needs no sticky pinning. */
   background: var(--bg-elev);
 }
 

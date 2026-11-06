@@ -118,7 +118,7 @@ export const TasksPanel = memo(function TasksPanel({
   const animatedActive = Math.round(useCountUp(indicatorCount, 300))
 
   return (
-    <aside className="tasks-panel" role="region" aria-label="Tasks" ref={setPanelOs}>
+    <aside className="tasks-panel" role="region" aria-label="Tasks">
       <header className="tasks-panel-header">
         <span className="tasks-panel-title">Tasks</span>
         <span className="tasks-panel-count">
@@ -137,27 +137,35 @@ export const TasksPanel = memo(function TasksPanel({
           <IconX size={14} />
         </button>
       </header>
-      <div className="tasks-panel-body">
-        {tasks.length === 0 && (
-          <div className="tasks-panel-empty">
-            No tasks yet. Background commands and subagents the model launches appear here.
-          </div>
-        )}
-        {active.length > 0 && (
-          <section className="tasks-panel-section">
-            {active.map((t) => (
-              <TaskRow key={t.taskId} sessionId={sessionId} task={t} stopping={stopping.has(t.taskId)} onStop={stopTask} onViewTranscript={openTranscript} />
-            ))}
-          </section>
-        )}
-        {finished.length > 0 && (
-          <section className="tasks-panel-section">
-            <div className="tasks-panel-section-title">Finished</div>
-            {finished.map((t) => (
-              <TaskRow key={t.taskId} sessionId={sessionId} task={t} stopping={false} onStop={stopTask} onViewTranscript={openTranscript} />
-            ))}
-          </section>
-        )}
+      {/* Scroll region is a CHILD of the card, mirroring GitPanel. The overlay
+          scrollbar attaches its track to the scroller's PARENT, so a scroller
+          that IS the card (even when the card is centered inside a much wider
+          overlay backdrop) would leave the track pinned to the backdrop's
+          right edge. Nesting it makes the parent the card, whose right edge is
+          where the thumb belongs. */}
+      <div className="tasks-panel-scroll" ref={setPanelOs}>
+        <div className="tasks-panel-body">
+          {tasks.length === 0 && (
+            <div className="tasks-panel-empty">
+              No tasks yet. Background commands and subagents the model launches appear here.
+            </div>
+          )}
+          {active.length > 0 && (
+            <section className="tasks-panel-section">
+              {active.map((t) => (
+                <TaskRow key={t.taskId} sessionId={sessionId} task={t} stopping={stopping.has(t.taskId)} onStop={stopTask} onViewTranscript={openTranscript} />
+              ))}
+            </section>
+          )}
+          {finished.length > 0 && (
+            <section className="tasks-panel-section">
+              <div className="tasks-panel-section-title">Finished</div>
+              {finished.map((t) => (
+                <TaskRow key={t.taskId} sessionId={sessionId} task={t} stopping={false} onStop={stopTask} onViewTranscript={openTranscript} />
+              ))}
+            </section>
+          )}
+        </div>
       </div>
       {transcript && (
         <SubagentTranscriptDialog

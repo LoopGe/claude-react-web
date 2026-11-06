@@ -17,7 +17,12 @@ vi.mock('../session-store/selectors', () => ({
 }))
 vi.mock('../hooks/useApi', () => ({ api: { post: vi.fn() } }))
 vi.mock('../hooks/useToast', () => ({ useToast: () => ({ error: vi.fn() }) }))
-vi.mock('../hooks/useOverlayScrollbar', () => ({ useOverlayScrollbar: () => () => {} }))
+// Record the element each scrollbar ref receives: the DOM shape alone can't
+// prove where the ref is attached (see the scroll-region test below).
+const scrollbarRefEls = vi.hoisted(() => [] as Array<HTMLElement | null>)
+vi.mock('../hooks/useOverlayScrollbar', () => ({
+  useOverlayScrollbar: () => (el: HTMLElement | null) => { scrollbarRefEls.push(el) },
+}))
 vi.mock('./SubagentTranscriptDialog', () => ({ SubagentTranscriptDialog: () => null }))
 
 import { TasksPanel } from './TasksPanel'
@@ -46,6 +51,22 @@ describe('TasksPanel task preview entry', () => {
     const [sessionId, address] = mockOpenResource.mock.calls[0]
     expect(sessionId).toBe('s1')
     expect(parseTaskResource(address)).toEqual({ sessionId: 's1', taskId: 't1' })
+  })
+})
+
+describe('TasksPanel scroll region', () => {
+  it('attaches the overlay scrollbar to the nested scroller, not the card', () => {
+    // attachOverlayScrollbar appends its track to the scroller's PARENT. If the
+    // card itself is the scroller, that parent is the full-bleed backdrop and
+    // the `right: 0` track lands at the backdrop edge — hundreds of px from a
+    // centered card on a wide panel. Pin the ref target directly.
+    scrollbarRefEls.length = 0
+    const { container } = renderTasks([task({ taskId: 't1' })])
+    const el = scrollbarRefEls.filter((n): n is HTMLElement => n != null).at(-1)
+    expect(el, 'scrollbar ref received an element').toBeTruthy()
+    expect(el!.classList.contains('tasks-panel-scroll')).toBe(true)
+    expect(el!.parentElement).toBe(container.querySelector('.tasks-panel'))
+    expect(el!.querySelector('.tasks-panel-body')).not.toBeNull()
   })
 })
 
