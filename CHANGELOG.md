@@ -7,239 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed
-
-- **StreamingFooter exit rebuilt on the bottom-overlay card pattern** — the
-  live bubble's overlay exit no longer ends with the transcript snapping.
-  The old exit was one 180ms CSS keyframe (`streaming-region-out`:
-  opacity + `max-height` + translate on an ease-exit curve) plus a
-  180ms delayed-unmount timer, and frame-by-frame harness measurement showed
-  three compounding defects: the `max-height` tween started from a cap ABOVE
-  the content height, so nothing moved geometrically until ~85ms (capped
-  bubble) / ~141ms (short reply) of the window — all the collapse compressed
-  into the tail; the accelerating ease-exit curve put the LARGEST per-frame
-  deltas exactly where the RO→spacer→pin pipeline lags; and the timer
-  (started at React-commit time) raced the animation (started at the next
-  rendered frame), so under the finalize-time render storm the region
-  unmounted with residual height still in it. The exit is now
-  `useStreamingRegionMotion` (utils/transitions.ts) inside an
-  `AnimatePresence` — mirroring `useBottomCardMotion`: fade/sink over 110ms
-  while the height collapses over 160ms on the ease-ENTER curve starting at
-  90ms (the same deliberate 20ms overlap as the cards — by 90ms the
-  accelerating fade is ~90% done, so the shrinking box never squashes a
-  still-visible bubble), animating from the element's MEASURED height (no
-  dead zone) to 0, and AnimatePresence owns the unmount after the tweens
-  complete (no timer to race). The manual presence machine (`streamingPresence` +
-  `STREAMING_EXIT_MS` + the exit-timer effect) is deleted — AnimatePresence
-  freezing the last-mounted subtree replaces the content snapshot, and
-  `useIsPresent` drives `aria-hidden`. The CSS `streaming-region-in`
-  keyframes keep only the mount max-height grow (motion owns opacity/
-  transform — filled keyframes would override its inline styles). Reduced
-  motion now snaps the collapse at exit start instead of the old behaviour,
-  where `animation: none` also killed the exiting rule's fade — the bubble
-  froze fully visible at full height for the whole 180ms window and then
-  dropped away in one frame.
-
-- **`api_retry` moved from a transcript divider into the WorkingBubble** — a
-  rate-limit retry (429/529 auto-retry) no longer renders as an amber
-  `.msg.result.retry` tail divider in the message list; the WorkingBubble's
-  phase label is REPLACED by the retry state instead (`⏳ rate limited —
-  retrying in 9s · attempt 1/3`, amber, ticking at 1 Hz). Label precedence:
-  `waiting` still outranks it, it outranks `recapping` and the phase label —
-  during a retry wait nothing streams, so the phase is stale and the retry
-  countdown is the bubble's only true state. The countdown logic (deadline
-  anchoring, stop-at-zero) moved from the deleted `ApiRetryView` into a
-  `RetryLabel` child isolated inside the memoized bubble so the tick
-  re-renders only that subtree. The side-chat drawer's WorkingBubble now gets
-  the frame too (it previously showed nothing during a retry). Two countdown
-  defects were fixed in the move: a follow-up frame carrying the SAME
-  `retry_delay_ms` (a fixed server Retry-After) now restarts the timer
-  instead of freezing at "retrying now", and the deadline anchors at the
-  frame's pump-stamped `receivedAt` so a reconnecting tab's replay-re-armed
-  countdown shows the true remaining wait rather than restarting from the
-  full delay. Nothing changed on the wire or in the store: the transient
-  `mirror.apiRetry` slot remains the single source, and the frame stays
-  durable in the server ring so a reconnecting tab's incremental replay
-  re-arms the slot. The dead `shouldHideByDefault` entry (the slot never
-  produces an item to hide) and the synthetic tail row (`API_RETRY_ROW_ID`)
-  were removed with it.
-- **Config** — `maxOutputTokens` now defaults to `128000` (was `0` = CLI
-  default). The CLI's own default (64000) capped a single model response and
-  surfaced `API Error: Claude's response exceeded the 64000 output token
-  maximum` on long outputs; current-generation models support 128K output so
-  the default now grants the full window. Setting the field back to `0` in
-  `config.json` restores the old behaviour. Documented in CONFIG.md (the field
-  previously had no entry there).
-
-### Removed
-
-- **Per-session accent colour** — the ability to give an individual session its
-  own accent (the session card's right-click `Accent colour…` entry and the
-  accent picker in the New session dialog) has been removed. Sessions now
-  always paint with the global accent (Global Settings → Appearance). The
-  swatch grid stays for the global picker, stored per-session colours in
-  `localStorage` (`claude-react-web:session-colors`) are simply orphaned, and
-  resetting browser appearance data still clears the key.
+A large `0.x` minor release on top of `0.7.3`: daemon auto-start, mid-turn
+steering, per-session worktree isolation, per-turn file snapshots with offline
+rewind, remote skill installs, the Uploads Manager, an Electron desktop host,
+keep-alive panels and a rebuilt seq-windowed transcript.
 
 ### Added
 
-- **Per-session plugin toggles are now durable** — the Plugins tab's
-  Enable/Disable button (`POST /sessions/:id/plugins/:name/toggle`) no longer
-  records an ephemeral, refresh-losing override: the post-toggle spawn set is
-  materialized onto the session's `enabledPlugins` subset (an unpinned session
-  resolves it against the current global enabled list; an already-pinned one
-  flips membership), persisted on `SessionMeta`, and mirrored back through the
-  session-update feed — so the Plugins tab cards derive their initial dot from
-  recorded truth instead of "always enabled", and the empty-state plugin chips
-  render the pinned set directly. The SDK's `applyFlagSettings` stays
-  write-only, so this app-side recording is the only per-session truth source.
-  A toggle that changes nothing (disabling an already-absent key) deliberately
-  leaves the session unpinned, and the global marketplace toggle's live ripple
-  still never pins: those sessions keep following the global list via
-  spawn-time injection. A plugin pinned on while globally disabled is a
-  live-only state — spawn injection drops keys that are not globally enabled.
-  The card dot for an unpinned session renders as a hollow "follows
-  marketplace" ring instead of claiming enabled/disabled.
-- **New-session "Project" picker** — the New session dialog's free-text
-  *Working directory* field is now a Desktop-style dropdown: the trigger shows
-  the project name and its parent directory, and the menu lists the current
-  value followed by the recents in MRU order (each row forgettable, no badge or
-  pinning). A pasted absolute path turns into a "Use this path" row, and
-  `Open project…` reuses the existing server-side directory browser. The dialog
-  now prefills the last-used project ahead of the server-provided default —
-  drag-and-drop still wins over both, and the server/API behaviour is
-  untouched. The menu portals to `<body>` so the dialog's scroll container can
-  never clip it, closes on Escape through the shared escape stack without
-  closing the dialog, and deliberately keeps itself mounted when focus drops to
-  `body`: Safari/WebKit blurs the focused search box when a button is pressed
-  (buttons don't take focus there), which otherwise unmounted the menu on
-  mousedown and swallowed the click.
-- **`autoExpandRunningGroups` display default** — new sub-setting of "Use
-  collapsible tool-group cards" (Global Settings → Appearance, plus a
-  per-session override in each session's Appearance tab). When off, a tool
-  group holding a running tool stays folded: the header keeps its `running`
-  badge and clicking still opens it. Only the *auto-expand* half is gated —
-  every fold path (boundary-row fold, the post-turn 2.2s settle hold, manual
-  toggles) behaves exactly as before, and a group holding a pending
-  plan/question still force-opens. Default `true` preserves current behavior.
-
-### Fixed
-
-- **The context bar now updates right after a manual `/compact`** — the compact
-  turn ends with a result that classifies "empty" (`num_turns: 0`, empty text,
-  all-zero usage, no `terminal_reason`), and the pump's reconcile-probe fire
-  sat inside the `!emptyResult` branch, so the probe never ran: the bar kept
-  the stale pre-compact total until the next ordinary turn, even though the
-  context had actually dropped ("recap ran, the bar didn't move"). The probe
-  is the only post-compact source — the compact result itself can never yield
-  a snapshot (all-zero usage → the zero guard; the aggregate wire's
-  `iterations: []` → the empty-iterations gate) — so an empty result that
-  carries `local_command` (the slash-command name; `/compact` sets it) now
-  fires the reconcile too. Warm-up placeholders and background-task
-  bookkeeping results carry no `local_command` and keep skipping the probe.
-  Verified end-to-end against a live CLI 2.1.278: a probe-sourced
-  context-usage frame lands the same second the compact result does.
-- **App Plugin `ai.request` can now spend the invoking session's profile** — the host broker always
-  authenticated against the globally active profile, so a plugin invoked from a session pinned
-  elsewhere (the `translator`, run from a message selection) billed the wrong subscription and
-  could hand that endpoint a model id it cannot route. `ai.request` takes an optional `sessionId`
-  — the command context already carries it, and the translator now forwards it — and resolves the
-  endpoint, token and aux model from that session (`SessionManager.auxTargetFor`). An unknown id is
-  rejected instead of quietly falling back to the active profile; a plugin with no session context
-  (a background service) keeps using the host config, and an explicit `model` still wins while the
-  credentials stay the session's.
-- **Sessions pinned to a non-active profile now spend their OWN subscription for recaps, compact
-  summaries, commit messages and auto-mode classification** — those calls read the model override
-  and the endpoint/token from the globally *active* profile, while the session's CLI subprocess
-  ran on the profile it is pinned to. A session pinned to B with A active therefore ignored B's
-  `recapModel`/`commitMessageModel` and sent B's model id (or its session model) to **A's**
-  endpoint with A's key — a `401/404` on any gateway, i.e. the same failure this release fixes,
-  just under a different profile layout. Everything an auxiliary call needs is now resolved once
-  per session (`SessionManager.auxTargetFor`): the model (profile override → model group haiku tier
-  → session model) plus that session's own profile credentials. `autoClassifierModel` stays a
-  global setting — no profile carries it.
-- **Profile saves no longer silently ignore a cleared field** — `PUT /profiles/:id` skipped
-  `null` for `baseUrl` / `modelList` / `modelGroups` (the card sends `null` whenever the field is
-  empty), so clearing a value and saving kept the old one while the card showed it cleared —
-  and it reappeared on reload. Model groups now clear (a profile may legitimately have none); a
-  blank name / Base URL / empty model list is rejected with a message instead, since each is an
-  invalid profile (a blank baseUrl would silently fall back to the public API and spend the
-  profile's key there).
-- **Recaps / commit messages / auto-mode classification no longer send a hardcoded Claude model
-  to whatever provider you configured** — `recapModel`, `commitMessageModel` and
-  `autoClassifierModel` all defaulted to `claude-haiku-4-5-20251001`, and an empty value was
-  backfilled with it. On a third-party Anthropic-compatible gateway that model has no provider, so
-  the request failed with `401 该模型未指定供应商` (surfaced as `Anthropic API 401: …` in the recap
-  card) even though the session's own model worked fine. Empty now means exactly what the
-  `(default)` dropdown option promises: **use the session's own model**. `commitMessageModel`
-  gained the session-model fallback the other two already had (and no longer posts `model: ''`),
-  the scaffold no longer bakes a model id into a fresh `config.json`, and `config.example.json`
-  no longer ships one. The fallback itself is the session's **aux model**: a session with an
-  active Model Group uses that group's *haiku* slot — the same cheap tier the CLI routes its own
-  internal queries to (title generation, background subagents) — and only a session without a
-  group (or whose group leaves the haiku slot empty, which collapses all tiers to `Main`) falls
-  back to its own model. That keeps recaps, commit messages and the 5s-budget auto-mode
-  classifier off the flagship model a group's `main` slot would otherwise hand them.
-  *Upgrading:* if your `config.json` already stores
-  `claude-haiku-4-5-20251001` (the old scaffold wrote it), clear it — Profiles → `Recap Model` →
-  `(default)` → Save. Saving `(default)` used to be a silent no-op (`null` was ignored by
-  `PUT /profiles/:id`), which is fixed here too.
-- **"Test connection" no longer reports a bad token for a healthy gateway** — the probe used a
-  sentinel model, and a gateway answers `401` for *any* model it cannot route, so the reply was
-  classified as `Invalid auth token`. The profile test now probes the profile's own first model
-  (bounded to 1 token); when a `401` is genuinely ambiguous the provider's own message is shown
-  instead of a verdict, and the Anthropic error type (`authentication_error` / `permission_error`)
-  remains the only thing reported as an invalid token.
-- **A stored recap/commit model that is not in the profile's model list is now visible** — the
-  `<select>` had no matching option, so it rendered blank while still holding a model id: the user
-  could neither see nor re-pick what would actually be sent. It now renders as its own
-  `… (not in this list)` option.
-
-- **Per-session UI overrides now survive `/clear`, `/compact` and Restart** —
-  the replacement session is a fresh id with no persisted meta, so
-  `showPinnedUserMessage` / `autoRecap` / `toolGroupCards` /
-  `showMessageHeaders` (and the first-party tool pins) silently reverted to
-  the global defaults, and the next write then clobbered the stored values.
-  `clear()` now carries them onto Y, and the client's restart flow sends them
-  on the create body.
-- **The plugin subset survives Restart and "New session like this"** — both
-  create a session under a fresh id, so a narrowed `enabledPlugins` selection
-  was dropped and the new session silently widened to every globally-enabled
-  plugin (`[]` — none — flipped to all).
-- **`showMessageHeaders` overrides now reach the client** — the field was
-  persisted and fork-carried but missing from the SessionInfo projection, so
-  a per-session override never applied (the panel always showed the global
-  default).
+- **Daemon / auto-start** — supervisor with heartbeat, backoff restarts and Windows/macOS/Linux adapters.
+- **Mid-turn steering** — sends while the agent works are injected into the running turn.
+- **Worktree isolation** — opt-in per-session git worktrees with a full resume/clear/fork/delete lifecycle.
+- **Per-turn file changes** — snapshot sidecar, changed-files card, diff review and offline rewind.
+- **Skills** — remote search/install from skills.sh and GitHub, plus update checks.
+- **Uploads Manager** — unified upload store and dialog with progress and previews.
+- **Desktop host** — Electron app, custom titlebar, desktop menus and web-build import.
+- **Keep-alive panels** — session switches preserve scroll, Virtuoso and WS subscriptions.
+- **Streaming** — overlay/inline modes, left-to-right reveal and in-place draft cards.
+- **Appearance** — brutalist theme, transparency toggle and animation speed.
+- **Navigation** — header nav strip, header-tab status and floating composer dock.
+- **Tasks** — TaskList/Monitor panels, persisted task results and notification folding.
+- **Turn review** — full-file turn diff and per-turn change review.
+- **Other** — MCP Apps, `HoverPopover`, image lightbox, markdown preview, `/handoff`, permanent delete.
 
 ### Changed
 
-- **First-party git MCP server renamed `apptools` → `git-tools`** — tool FQNs
-  are now `mcp__git-tools__*`. Existing `firstPartyTools.apptools` config and
-  session overrides migrate on load; the legacy `appToolsGit` boolean still
-  folds into the new key. Historical transcripts keep the old tool names.
-- **`CLAUDE_CONFIG_DIR` now applies end to end** — the resolved path is relayed
-  to the CLI subprocess, and session transcripts, `settings.json`, user-scope
-  skills and the CLI's global config all resolve through it instead of a
-  hardcoded `~/.claude`. Previously only subagent transcripts followed it, so a
-  relocated config dir left history, resume and the skills panel silently
-  empty.
-  **Breaking:** a per-session `env.CLAUDE_CONFIG_DIR` (or
-  `env.CLAUDE_CODE_CUSTOM_OAUTH_URL`) is now rejected with a 400 on
-  `POST /sessions`, its nested `settings.env`, and
-  `POST /sessions/:id/settings`. Pointing one session at its own config dir
-  split it from every server-side reader, so its transcript became invisible
-  to history, replay and fork. Set it for the server process instead.
-- **`--help` lists `--disable-app-plugins` and `--safe-mode`** — both were
-  parsed and honoured, but neither appeared in the help output.
+- SDK `0.3.311` with the bundled native binary pinned.
+- **Transcript rebuilt on a seq-windowed store. Breaking:** WS replay/`sinceUuid`, the IDB cache and uuid merge are retired.
+- `maxOutputTokens` defaults to `128000`.
+- **`CLAUDE_CONFIG_DIR` applies end to end. Breaking:** per-session overrides are rejected with a 400.
+- First-party git MCP renamed `apptools` → `git-tools`.
+- `api_retry` renders in the WorkingBubble; session titles are truncated and AI auto-title is dropped.
+- Settings gain two-level tabs; composer controls and image intake are unified; icons move to `lucide-react`.
+- New `--config`, `--dev`/`--no-dev` and `daemon` CLI surfaces.
 
 ### Removed
 
-- **The Waiting banner's dismiss ✕** — the WorkingBubble's `Waiting...` row no
-  longer carries a ✕ to hide itself. The banner simply reflects the server's
-  task state now: it stays mounted while a non-terminal *indicator* task (a
-  subagent, shell or workflow — ambient/housekeeping records excluded, those
-  show the quiet idle pill instead) or a `pending`/`background` subagent
-  remains, and clears on its own when those settle.
+- Per-session accent colour, the Waiting banner's dismiss ✕, composer attachment chips, the drag-to-pin threshold and AI auto-titles.
+
+### Fixed
+
+- The context bar updates immediately after a manual `/compact`.
+- Auxiliary calls use the invoking session's profile and aux model; no hardcoded Claude model reaches third-party gateways.
+- Per-session UI overrides and the plugin subset survive `/clear`, `/compact` and Restart.
+- Windows: no `.cmd` shim spawns, long-path handling and UTF-8 upload names.
+- WebSocket connections self-heal when wedged; replay ordering and channel liveness are explicit.
+
+### Performance
+
+- Transcript re-renders are isolated at the leaves; markdown trees are cached and search indexes build only during a search.
 
 ## [0.7.1] — 2026-09-02
 
@@ -531,7 +346,7 @@ cuts streaming re-render cost and cold-load latency.
 - **Plan** — deny messages now contain the rejection needle so `PlanCard` status
   flips correctly.
 - **Resume** — `/resume-into-panel` replaces the session in place (panel + group
-  + delete old); Side Chat excludes inherited parent history.
+  - delete old); Side Chat excludes inherited parent history.
 - **Diff** — `Edit` card line-number gutters align between context and add/del
   rows; `edit-locate` rejects paths that escape cwd.
 - **UI / a11y** — `inert` instead of `aria-hidden` when closing the settings
