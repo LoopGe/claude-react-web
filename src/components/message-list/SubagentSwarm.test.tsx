@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, fireEvent } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WorkingBubble } from './WorkingBubble'
@@ -11,6 +11,19 @@ import type { ActiveSubagent } from '../../session-store/types'
 // Stub scrollIntoView — jsdom lacks it, and the popover keeps its highlighted
 // row in view (same stub as ModelPicker.test.tsx / ToolGroupCard.test.tsx).
 Element.prototype.scrollIntoView = vi.fn()
+
+// The popover positions through useAnchorPosition, which observes the surface
+// once it mounts. jsdom has no ResizeObserver.
+class ResizeObserverMock {
+  observe() {}
+  disconnect() {}
+}
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', ResizeObserverMock)
+})
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 // No per-file `afterEach(cleanup)`: src/test-setup.ts registers it globally.
 // CLAUDE.md's rule is "don't re-add per-file cleanup" — the race it documents
@@ -174,6 +187,45 @@ describe('subagent swarm popover', () => {
     expect(document.querySelector('.subagent-swarm-pop')).toBeNull()
     openPopover(container)
     expectPortaledToBody(container, '.subagent-swarm-pop')
+  })
+
+  it('clamps the popover inside the viewport', () => {
+    const setWindowValue = (key: 'innerWidth' | 'innerHeight', value: number) => {
+      Object.defineProperty(window, key, { value, configurable: true })
+    }
+    const prevWidth = window.innerWidth
+    const prevHeight = window.innerHeight
+    setWindowValue('innerWidth', 800)
+    setWindowValue('innerHeight', 600)
+    try {
+      const { container } = render(<WorkingBubble activeSubagents={agents(1)} />)
+      const pill = container.querySelector('.subagent-swarm') as HTMLElement
+      pill.getBoundingClientRect = () => ({
+        left: 780,
+        top: 560,
+        width: 100,
+        height: 20,
+        right: 880,
+        bottom: 580,
+        x: 780,
+        y: 560,
+        toJSON: () => ({}),
+      } as DOMRect)
+      openPopover(container)
+      const pop = document.querySelector('.subagent-swarm-pop') as HTMLElement
+      Object.defineProperty(pop, 'offsetWidth', { value: 320, configurable: true })
+      Object.defineProperty(pop, 'offsetHeight', { value: 340, configurable: true })
+      act(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+      // 4px margins: x clamps to 800−320−4, and the below-placement flips
+      // above (top−height−4) because it cannot fit under the pill.
+      expect(pop.style.left).toBe('476px')
+      expect(pop.style.top).toBe('216px')
+    } finally {
+      setWindowValue('innerWidth', prevWidth)
+      setWindowValue('innerHeight', prevHeight)
+    }
   })
 
   it('lists one row per subagent with its progress summary', () => {

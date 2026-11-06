@@ -34,6 +34,8 @@ import { useDetailedContextUsage } from '../hooks/useDetailedContextUsage'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { usePopoverMotion } from '../utils/transitions'
+import { useAnchorPosition } from '../hooks/useAnchorPosition'
+import { useMergedRef } from '../utils/mergedRef'
 import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 
 interface Props {
@@ -83,6 +85,15 @@ function OrbPopover({
   onPointerLeave: () => void
 }) {
   const { popover: popMotion } = usePopoverMotion()
+  // The orb's panel is deliberately BOTTOM/RIGHT anchored (the ::after arrow
+  // points down at the orb, and the async breakdown grows upward), so it does
+  // not use the hook's left/top coordinates. It adopts the hook for the live
+  // anchor rect and its re-measure loop, then keeps its own clamp.
+  const { ref: positionRef, anchorRect } = useAnchorPosition(anchorRef, {
+    side: 'bottom',
+    align: 'end',
+  })
+  const mergedPopRef = useMergedRef(popRef, positionRef)
 
   // Detailed breakdown — mounted == open, so the hook fetches on mount and
   // refetches on each retry; DISABLED sessions (dormant / terminated) are
@@ -106,20 +117,18 @@ function OrbPopover({
   // deliberately uncapped per product call — no scrollbar.
   useLayoutEffect(() => {
     const el = popRef.current
-    const anchor = anchorRef.current
-    if (!el || !anchor) return
-    markPortaledSurface(el, anchor.closest(PANEL_SELECTOR))
-    const rect = anchor.getBoundingClientRect()
+    if (!el || anchorRect === null) return
+    markPortaledSurface(el, anchorRef.current?.closest(PANEL_SELECTOR))
     const vh = window.innerHeight
     const vw = window.innerWidth
     el.style.top = 'auto'
     el.style.left = 'auto'
-    el.style.bottom = `${Math.max(8, vh - rect.top + 10)}px`
-    let right = vw - rect.right
+    el.style.bottom = `${Math.max(8, vh - anchorRect.top + 10)}px`
+    let right = vw - anchorRect.right
     if (right < 8) right = 8
     if (right > vw - 328) right = Math.max(8, vw - 328)
     el.style.right = `${right}px`
-  }, [anchorRef, popRef])
+  }, [anchorRect, anchorRef, popRef])
 
   // Outside mousedown dismisses the panel — same contract as
   // CommandPicker / SchedulePicker. The surface ref is this portaled panel;
@@ -136,7 +145,7 @@ function OrbPopover({
 
   return createPortal(
     <motion.div
-      ref={popRef}
+      ref={mergedPopRef}
       className="ctx-orb-pop"
       role="dialog"
       aria-label="Context usage details"

@@ -98,6 +98,15 @@ function crossAxis(
   return start + extent / 2 - size / 2
 }
 
+/** Keep the previous rect object when nothing moved: the capture-phase scroll
+ *  listener runs per frame, and consumers that depend on `anchorRect` must not
+ *  re-render (or re-run their own layout effect) for an unchanged anchor. */
+function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
+  if (a === b) return true
+  if (a === null || b === null) return false
+  return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height
+}
+
 /**
  * Position a portalled surface against a live trigger.
  * @param triggerRef - element the surface anchors to
@@ -180,7 +189,7 @@ export function useAnchorPosition(
       x = clamp(x, margin, vw - w - margin)
       if (side === 'left' || side === 'right') y = clamp(y, margin, vh - h - margin)
 
-      setAnchorRect(live)
+      setAnchorRect(prev => (sameRect(prev, live) ? prev : live))
       setHidden(false)
       setPos(prev => (prev !== null && prev.x === snap(x) && prev.y === snap(y) ? prev : { x: snap(x), y: snap(y) }))
     }

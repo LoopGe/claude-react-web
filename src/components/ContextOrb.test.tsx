@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { ContextOrb } from './ContextOrb'
 import { __clearDetailedContextUsageCache } from '../hooks/useDetailedContextUsage'
 import type { ContextUsage } from '../types/context-usage'
@@ -10,11 +10,23 @@ vi.mock('../hooks/useApi', () => ({
 
 import { api } from '../hooks/useApi'
 
+// The popover positions through useAnchorPosition, which observes the surface
+// once it mounts. jsdom has no ResizeObserver.
+class ResizeObserverMock {
+  observe() {}
+  disconnect() {}
+}
+
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', ResizeObserverMock)
   ;(api.get as ReturnType<typeof vi.fn>).mockClear()
   // The detailed-breakdown cache is module-level by design; cold-start it
   // so tests don't inherit each other's fetches.
   __clearDetailedContextUsageCache()
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 const usage: ContextUsage = {
@@ -71,6 +83,45 @@ describe('ContextOrb', () => {
     const nums = document.body.querySelector('.ctx-bar-nums')
     expect(nums?.textContent).toContain('50k / 200k')
     expect(nums?.textContent).not.toContain('1000k')
+  })
+
+  it('bottom/right anchors the popover to the orb and clamps to the viewport', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ usage: detailedUsage })
+    const setWindowValue = (key: 'innerWidth' | 'innerHeight', value: number) => {
+      Object.defineProperty(window, key, { value, configurable: true })
+    }
+    const prevWidth = window.innerWidth
+    const prevHeight = window.innerHeight
+    setWindowValue('innerWidth', 800)
+    setWindowValue('innerHeight', 600)
+    try {
+      const { container } = render(<ContextOrb usage={usage} sessionId="s1" />)
+      const wrap = container.querySelector('.ctx-orb-wrap') as HTMLElement
+      wrap.getBoundingClientRect = () => ({
+        left: 700,
+        top: 550,
+        width: 20,
+        height: 20,
+        right: 720,
+        bottom: 570,
+        x: 700,
+        y: 550,
+        toJSON: () => ({}),
+      } as DOMRect)
+      fireEvent.click(container.querySelector('.ctx-orb')!)
+      await waitFor(() => expect(document.body.querySelector('.ctx-orb-pop')).not.toBeNull())
+      const pop = document.body.querySelector('.ctx-orb-pop') as HTMLElement
+      act(() => {
+        window.dispatchEvent(new Event('resize'))
+      })
+      // The arrow keeps the panel bottom-anchored: bottom = viewport − orb.top + 10.
+      expect(pop.style.bottom).toBe('60px')
+      // Right edge clamped to the orb's right edge (800 − 720).
+      expect(pop.style.right).toBe('80px')
+    } finally {
+      setWindowValue('innerWidth', prevWidth)
+      setWindowValue('innerHeight', prevHeight)
+    }
   })
 
   it('a failed detailed fetch shows the error hint and retry re-requests', async () => {

@@ -34,18 +34,11 @@ import { useListSelection } from '../../hooks/useListSelection'
 import { useOutsideMouseDown } from '../../hooks/useOutsideMouseDown'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../../utils/mergedRef'
+import { useAnchorPosition } from '../../hooks/useAnchorPosition'
 import { PANEL_SELECTOR, markPortaledSurface } from '../../theme'
 import { ElapsedTimer } from '../ElapsedTimer'
 import { IconChevronDown, IconExternalLink } from '../icons/ToolIcons'
 import type { ActiveSubagent } from '../../session-store/types'
-
-/** Viewport-coordinate anchor for the popover. The element the popover has to
- *  find (its trigger, for the theme vars and the outside-press exemption) is a
- *  ref, not part of this state — see `triggerRef` on the pill. */
-interface Anchor {
-  x: number
-  y: number
-}
 
 /** The secondary line for a row: the agent's own words about what it is doing
  *  (refreshed ~every 30s by task_progress) with the last tool it ran as the
@@ -105,7 +98,7 @@ export const SubagentSwarmPill = memo(function SubagentSwarmPill({
    *  hosts with no overlay — the popover is still useful read-only. */
   onOpenSubagent?: (toolUseId: string) => void
 }) {
-  const [anchor, setAnchor] = useState<Anchor | null>(null)
+  const [open, setOpen] = useState(false)
   /** This pill. Two roles, one node: the popover stamps its owning panel from
    *  here (`markPortaledSurface`) and exempts it from outside-press
    *  dismissal (a press on the trigger is the toggle). A ref rather than
@@ -120,7 +113,7 @@ export const SubagentSwarmPill = memo(function SubagentSwarmPill({
   const running = total - waiting
   const startedAt = useMemo(() => oldestStart(subagents), [subagents])
 
-  const close = useCallback(() => setAnchor(null), [])
+  const close = useCallback(() => setOpen(false), [])
 
   // Everything alive has been swept to `pending` (background work outliving
   // the turn) — calm the pill the same way `.working-bar-waiting` calms the
@@ -148,22 +141,20 @@ export const SubagentSwarmPill = memo(function SubagentSwarmPill({
       <button
         type="button"
         ref={triggerRef}
-        className={`subagent-swarm${anchor ? ' subagent-swarm-open' : ''}${allWaiting ? ' subagent-swarm-waiting' : ''}`}
+        className={`subagent-swarm${open ? ' subagent-swarm-open' : ''}${allWaiting ? ' subagent-swarm-waiting' : ''}`}
         aria-haspopup="dialog"
-        aria-expanded={anchor != null}
+        aria-expanded={open}
         aria-label={a11yLabel}
         title={a11yLabel}
-        onClick={(e) => {
-          // Toggle: a second click on the pill closes the popover instead of
-          // re-anchoring it. The full rationale (and this toggle's two known
-          // gaps) lives on the popover's outside-press guard — see
-          // `useOutsideMouseDown`'s `triggerRef`.
-          if (anchor) {
+        onClick={() => {
+          // Toggle: a second click on the pill closes the popover. The full
+          // rationale (and this toggle's two known gaps) lives on the popover's
+          // outside-press guard — see `useOutsideMouseDown`'s `triggerRef`.
+          if (open) {
             close()
             return
           }
-          const r = e.currentTarget.getBoundingClientRect()
-          setAnchor({ x: r.left, y: r.bottom + 4 })
+          setOpen(true)
         }}
       >
         <span className="subagent-swarm-dots" aria-hidden>
@@ -185,9 +176,8 @@ export const SubagentSwarmPill = memo(function SubagentSwarmPill({
           <IconChevronDown size={12} />
         </span>
       </button>
-      {anchor && (
+      {open && (
         <SubagentSwarmPopover
-          anchor={anchor}
           triggerRef={triggerRef}
           subagents={subagents}
           running={running}
@@ -201,7 +191,6 @@ export const SubagentSwarmPill = memo(function SubagentSwarmPill({
 })
 
 function SubagentSwarmPopover({
-  anchor,
   triggerRef,
   subagents,
   running,
@@ -209,8 +198,7 @@ function SubagentSwarmPopover({
   onOpenSubagent,
   onClose,
 }: {
-  anchor: Anchor
-  /** The pill that opened this popover — theme source and outside-press
+  /** The pill that opened this popover — theme source, anchor and outside-press
    *  exemption. See the hook's `triggerRef`. */
   triggerRef: RefObject<HTMLButtonElement | null>
   subagents: ActiveSubagent[]
@@ -219,11 +207,16 @@ function SubagentSwarmPopover({
   onOpenSubagent?: (toolUseId: string) => void
   onClose: () => void
 }) {
-  const ref = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const setListOs = useOverlayScrollbar({ autoHide: 'leave' })
   const listRefMerged = useMergedRef(listRef, setListOs)
-  const [pos, setPos] = useState<{ x: number; y: number }>({ x: anchor.x, y: anchor.y })
+  const { ref, x, y, hidden } = useAnchorPosition(triggerRef, {
+    side: 'bottom',
+    align: 'start',
+    gap: 4,
+    margin: 4,
+    clampAfterFlip: true,
+  })
   const { popover } = usePopoverMotion()
 
   const clickable = !!onOpenSubagent
@@ -242,18 +235,13 @@ function SubagentSwarmPopover({
   const popoverLabel = subagents.length === 1 ? 'Subagent in flight' : 'Subagents in flight'
 
   // Measure after layout, clamp into the viewport, and stamp the owning
-  // panel (the popover portals to <body>, so DOM ancestry can no longer
-  // answer "whose surface is this"). Re-runs on row count changes because
-  // the popover's height (and therefore its clamp) moves as agents settle.
+  // panel. The anchor hook owns the geometry; it re-runs while the popover is
+  // open (scroll, resize, row-count changes).
   useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    const nx = Math.min(anchor.x, window.innerWidth - rect.width - 4)
-    const ny = Math.min(anchor.y, window.innerHeight - rect.height - 4)
-    setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
-    markPortaledSurface(el, triggerRef.current?.closest(PANEL_SELECTOR) ?? null)
-  }, [anchor.x, anchor.y, triggerRef, subagents.length])
+    if (ref.current !== null) {
+      markPortaledSurface(ref.current, triggerRef.current?.closest(PANEL_SELECTOR) ?? null)
+    }
+  }, [ref, triggerRef])
 
   // Esc closes just this popover. Registered through the shared stack (window
   // CAPTURE + stopPropagation) so the keypress cannot fall through to App's
@@ -268,12 +256,12 @@ function SubagentSwarmPopover({
   // without needing a text input to hold focus.
   useLayoutEffect(() => {
     ref.current?.focus()
-  }, [])
+  }, [ref])
 
   // Outside-click dismissal (Escape is owned by the stack above). The trigger
   // is exempt because it is a TOGGLE: closing on its own mousedown would
   // unmount this popover before the click lands, and that click would read a
-  // null `anchor` and re-anchor — the pill could never dismiss its own popover.
+  // closed state and reopen it — the pill could never dismiss its own popover.
   // Two accepted gaps, in gestures whose click never reaches the toggle:
   // a left press released off the trigger, and the clamp parking the popover
   // over the pill (pre-existing geometry — the popover hit-tests first, so the
@@ -296,7 +284,7 @@ function SubagentSwarmPopover({
     <motion.div
       ref={ref}
       className="subagent-swarm-pop"
-      style={{ left: pos.x, top: pos.y }}
+      style={{ left: x ?? 0, top: y ?? 0, visibility: hidden || x === null || y === null ? 'hidden' : undefined }}
       role="dialog"
       aria-label={popoverLabel}
       tabIndex={-1}
