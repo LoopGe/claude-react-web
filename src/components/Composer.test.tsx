@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactElement } from 'react'
 import { useState } from 'react'
-import { render as rtlRender, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { render as rtlRender, cleanup, act, fireEvent, waitFor } from '@testing-library/react'
 import { Composer } from './Composer'
 import { ToastProvider } from './ToastProvider'
 import type { PastedImage, SlashCommand } from '../types'
@@ -205,7 +205,18 @@ describe('Composer', () => {
     const btn = container.querySelector<HTMLButtonElement>(
       '[aria-label="Interrupt the current turn"]',
     )!
-    expect(btn.title).toContain('Alt+B')
+    // The hint moved from a native title to the shared hover card.
+    expect(btn.title).toBe('')
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerEnter(btn)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(document.querySelector('.hover-pop')?.textContent).toContain('Alt+B')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('slash-picker Escape is consumed by the escape stack and never reaches window', () => {

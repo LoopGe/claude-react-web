@@ -27,6 +27,7 @@ import { useCountUp } from '../hooks/useCountUp'
 import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
 import { SchedulePicker } from './SchedulePicker'
+import { HoverHint } from './HoverHint'
 
 // Mouse-wheel history navigation tuning. A single wheel notch fires several
 // wheel events totalling ~100px of deltaY; accumulate across events and gate
@@ -987,28 +988,29 @@ export const Composer = memo(function Composer({
           circular control on the right. Same buttons, same titles — only the
           axis and the send chrome changed. */}
       <div className="composer-bar">
-        <button
-          className="btn btn-icon"
-          type="button"
-          onClick={openFilePicker}
-          disabled={disabled}
-          title="Attach files"
-          aria-label="Attach files"
-        >
-          <IconPaperclip size={18} />
-        </button>
-        {onOpenTasks && (
+        <HoverHint label="Attach files" side="top">
           <button
+            className="btn btn-icon"
             type="button"
-            className={
-              'btn btn-icon composer-tasks'
-              + (tasksIdle ? ' composer-tasks-idle' : '')
-              + (tasksIndicator > 0 ? ' composer-tasks-live' : '')
-            }
-            onClick={onOpenTasks}
-            title={tasksTitle}
-            aria-label={tasksLabel}
+            onClick={openFilePicker}
+            disabled={disabled}
+            aria-label="Attach files"
           >
+            <IconPaperclip size={18} />
+          </button>
+        </HoverHint>
+        {onOpenTasks && (
+          <HoverHint label={tasksTitle} side="top">
+            <button
+              type="button"
+              className={
+                'btn btn-icon composer-tasks'
+                + (tasksIdle ? ' composer-tasks-idle' : '')
+                + (tasksIndicator > 0 ? ' composer-tasks-live' : '')
+              }
+              onClick={onOpenTasks}
+              aria-label={tasksLabel}
+            >
             {/* Icon ⇄ digit share one fixed 18×18 slot — the digit REPLACES
                 the icon instead of widening the button (motion design lives
                 in chat.css .composer-tasks-face). `key` remounts the digit
@@ -1024,19 +1026,21 @@ export const Composer = memo(function Composer({
                 </span>
               )}
             </span>
-          </button>
+            </button>
+          </HoverHint>
         )}
         {SCHEDULE_SEND_ENABLED && onSendScheduled && scheduled && (
-          <button
-            className="btn btn-icon"
-            type="button"
-            onClick={(e) => setScheduleAnchor(e.currentTarget.getBoundingClientRect())}
-            disabled={!canSchedule}
-            title="Schedule this message for a later time"
-            aria-label="Schedule send"
-          >
-            <IconClock size={18} />
-          </button>
+          <HoverHint label="Schedule this message for a later time" side="top">
+            <button
+              className="btn btn-icon"
+              type="button"
+              onClick={(e) => setScheduleAnchor(e.currentTarget.getBoundingClientRect())}
+              disabled={!canSchedule}
+              aria-label="Schedule send"
+            >
+              <IconClock size={18} />
+            </button>
+          </HoverHint>
         )}
         {composerControls && (
           <div className="composer-session-controls">{composerControls}</div>
@@ -1053,17 +1057,20 @@ export const Composer = memo(function Composer({
             Interrupt tooltip. The queued-removal note is computed once so the
             title and the aria-label (which screen readers announce) can't
             drift apart on the pluralization again. */}
-        <button
-          className={'btn btn-icon composer-send ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
-          type="button"
-          onClick={canInterrupt ? onInterrupt : onSend}
-          disabled={!canInterrupt && !canSend}
-          title={
+        <HoverHint
+          label={
             canInterrupt
               ? `Interrupt the current turn${queueNote} (Alt+B backgrounds it)`
               : imagesPending ? 'Images are still processing' : 'Send message (Enter)'
           }
-          aria-label={
+          side="top"
+        >
+          <button
+            className={'btn btn-icon composer-send ' + (canInterrupt ? 'btn-danger' : 'btn-primary')}
+            type="button"
+            onClick={canInterrupt ? onInterrupt : onSend}
+            disabled={!canInterrupt && !canSend}
+            aria-label={
             canInterrupt
               ? `Interrupt the current turn${queueNote}`
               : imagesPending ? 'Images are still processing' : 'Send message'
@@ -1078,6 +1085,7 @@ export const Composer = memo(function Composer({
             </span>
           )}
         </button>
+        </HoverHint>
       </div>
       </div>
       <input

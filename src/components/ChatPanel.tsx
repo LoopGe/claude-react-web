@@ -15,6 +15,7 @@ import type { SessionDeleteHandler } from './session-delete-menu'
 import { DialogHosts } from './DialogHosts'
 import { WorktreeIsolationBadge } from './WorktreeIsolationBadge'
 import { Tooltip } from './Tooltip'
+import { HoverHint } from './HoverHint'
 import { ChatPanelGitChip } from './ChatPanelGitChip'
 import { ChatPanelWorktreeChip } from './ChatPanelWorktreeChip'
 import { api } from '../hooks/useApi'
@@ -762,7 +763,7 @@ export const ChatPanel = memo(function ChatPanel({
     <>
       {/* Permission-mode control. Doubles as the at-a-glance cue and the
           switch control — clicking opens the mode menu. */}
-      <Tooltip label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`} placement="top">
+      <HoverHint label={`Permission mode: ${permissionModeLabel(permMode)} · click to change`} side="top">
         <span
           className="chat-panel-mode-badge-wrap"
           onMouseDown={(e) => e.stopPropagation()}
@@ -792,7 +793,7 @@ export const ChatPanel = memo(function ChatPanel({
             <PermissionModeIcon mode={permMode} size={18} />
           </button>
         </span>
-      </Tooltip>
+      </HoverHint>
       {/* Fast-mode control. Shown only when the model is fast-mode eligible
           (server keyword-classifies the id — the CLI's fast_mode_state report
           is always present and doesn't discriminate) AND the SDK reports a
@@ -800,13 +801,13 @@ export const ChatPanel = memo(function ChatPanel({
           temporarily inactive, so we disable the toggle and explain why.
           Clicking flips the persisted intent. */}
       {fastVisible && (
-        <Tooltip
+        <HoverHint
           label={
             fastCooldown
               ? 'Fast mode: rate-limited (cooldown) · resumes automatically'
               : `Fast mode: ${fastOn ? 'on' : 'off'} · Opus-only · faster output, premium pricing · click to toggle`
           }
-          placement="top"
+          side="top"
         >
           <button
             type="button"
@@ -822,7 +823,7 @@ export const ChatPanel = memo(function ChatPanel({
           >
             <IconGauge size={18} aria-hidden />
           </button>
-        </Tooltip>
+        </HoverHint>
       )}
       {/* Effort-level control. Shown when the current model supports
           effort (or its capability is unknown → fallback to offering all
@@ -831,9 +832,9 @@ export const ChatPanel = memo(function ChatPanel({
           5 when capability is unknown. Chip shows the active level,
           defaulting to 'high'. */}
       {effortVisible && (
-        <Tooltip
+        <HoverHint
           label={`Effort: ${effortLevel} · controls reasoning depth & token spend · click to change`}
-          placement="top"
+          side="top"
         >
           <button
             type="button"
@@ -853,7 +854,7 @@ export const ChatPanel = memo(function ChatPanel({
             <IconLayers size={13} aria-hidden />
             <span className="chat-panel-effort-label"><span>{effortLevel}</span></span>
           </button>
-        </Tooltip>
+        </HoverHint>
       )}
       {/* Persona control — the custom agent driving the MAIN thread (its
           system prompt, model and tool restrictions). Distinct from "Run as
@@ -861,13 +862,13 @@ export const ChatPanel = memo(function ChatPanel({
           Tinted only when a persona is active, so a plain session reads as
           a quiet, opt-in control. */}
       {personaVisible && (
-        <Tooltip
+        <HoverHint
           label={
             session.agent
               ? `Persona: ${session.agent} · its prompt, model and tool limits drive the main thread · click to change`
               : 'Persona: none · run the main thread as a custom agent · click to pick'
           }
-          placement="top"
+          side="top"
         >
           <button
             type="button"
@@ -888,7 +889,7 @@ export const ChatPanel = memo(function ChatPanel({
             <IconMask size={13} aria-hidden />
             <span className="chat-panel-persona-label"><span>{session.agent ?? 'persona'}</span></span>
           </button>
-        </Tooltip>
+        </HoverHint>
       )}
       {/* Extended-thinking control. Shown unless the model is known to not
           support thinking (thinkingSupported === false → chip hidden);
@@ -896,9 +897,9 @@ export const ChatPanel = memo(function ChatPanel({
           Off, and a few token budgets — the shape POST /thinking accepts.
           The chip label shows the effective setting. */}
       {thinkingVisible && (
-        <Tooltip
+        <HoverHint
           label={`Thinking: ${thinkingLabel}${currentDisplay === 'omitted' ? ' · reasoning hidden' : ''} · extended reasoning budget · click to change`}
-          placement="top"
+          side="top"
         >
           <button
             type="button"
@@ -919,7 +920,7 @@ export const ChatPanel = memo(function ChatPanel({
             <span className="chat-panel-thinking-label"><span>{thinkingLabel}</span></span>
             {currentDisplay === 'omitted' && <IconEyeOff size={12} aria-hidden />}
           </button>
-        </Tooltip>
+        </HoverHint>
       )}
     </>
   ), [
@@ -1014,13 +1015,13 @@ export const ChatPanel = memo(function ChatPanel({
           <span className="chat-panel-title">{sessionTitleOrFallback(session)}</span>
         </Tooltip>
         <div className="chat-panel-meta">
-          <Tooltip
+          <HoverHint
             label={
               modelSwitchLabel !== null
                 ? `Model: switching to ${modelSwitchLabel}…`
                 : `Model: ${session.model ?? 'default'} · click to change`
             }
-            placement="bottom"
+            side="bottom"
             align="end"
           >
             <button
@@ -1057,7 +1058,7 @@ export const ChatPanel = memo(function ChatPanel({
                 : <IconSparkles size={13} aria-hidden />}
               <span className="chat-panel-model-badge-value">{shortenModel(session.model)}</span>
             </button>
-          </Tooltip>
+          </HoverHint>
           {/* Side Chat collapsed badge — removed from header;
               now rendered as a tab on the panel's right edge below. */}
         </div>
