@@ -77,7 +77,9 @@ class SessionStoreRegistry {
   /** Start the periodic sweep if not already running. */
   private ensureSweep(): void {
     if (this.sweepTimer) return
-    this.sweepTimer = setInterval(() => { void this.sweep() }, SWEEP_INTERVAL_MS)
+    this.sweepTimer = setInterval(() => {
+      void this.sweep()
+    }, SWEEP_INTERVAL_MS)
     // Allow the process to exit even if the timer is still running.
     if (this.sweepTimer.unref) this.sweepTimer.unref()
   }
@@ -115,3 +117,11 @@ class SessionStoreRegistry {
 }
 
 export const sessionStoreRegistry = new SessionStoreRegistry()
+
+// Vite requires this literal call to register the module as self-accepting.
+// A store/reducer update reaches this boundary through the import graph; reload
+// the page rather than splitting replay, subscriptions and debug state across
+// incompatible module versions.
+if (import.meta.hot) {
+  import.meta.hot.accept(() => window.location.reload())
+}
