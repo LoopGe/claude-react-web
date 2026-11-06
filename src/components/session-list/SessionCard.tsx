@@ -26,6 +26,8 @@ export interface SessionCardProps {
   isFocused: boolean
   isResuming: boolean
   hasUnread: boolean
+  /** Focused session id: a change dismisses this card's hover card. */
+  focusKey?: string | null
   /** True while this card's dnd-kit ghost is in the air (App-level
    *  DndContext) — fades the card into a placeholder. */
   isDragging: boolean
@@ -58,6 +60,7 @@ export const SessionCard = memo(function SessionCard({
   isFocused,
   isResuming,
   hasUnread,
+  focusKey,
   isDragging,
   isDeleting,
   isRenaming,
@@ -295,6 +298,7 @@ export const SessionCard = memo(function SessionCard({
         side="right"
         align="start"
         disabled={isRenaming || isDragging || isDeleting}
+        closeKey={focusKey}
       >
         <SessionHoverContent session={s} statusText={isResuming ? 'Resuming…' : undefined} />
       </HoverPopover>

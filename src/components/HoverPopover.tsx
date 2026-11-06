@@ -41,6 +41,11 @@ export interface HoverPopoverProps {
   ariaLabel?: string
   className?: string
   disabled?: boolean
+  /** Close the open popover when this value changes. Consumers pass the
+   *  selected-session / focus identity: a session switch can move or replace
+   *  the trigger under a stationary pointer, and the browser emits no
+   *  pointerleave for a DOM change. */
+  closeKey?: unknown
   children: ReactNode
 }
 
@@ -54,11 +59,13 @@ export function HoverPopover({
   ariaLabel,
   className,
   disabled = false,
+  closeKey,
   children,
 }: HoverPopoverProps) {
   const [open, setOpen] = useState(false)
   const openRef = useRef(false)
   const disabledRef = useRef(disabled)
+  const closeKeyRef = useRef(closeKey)
   // Whether the pending open came from keyboard focus. An interactive dialog
   // opened by Tab must receive focus; a pointer-opened one must not steal it.
   const openByFocus = useRef(false)
@@ -116,6 +123,14 @@ export function HoverPopover({
       setOpen(false)
     }, closeDelayMs)
   }, [closeDelayMs, cancelClose, ref, triggerRef])
+
+  // A selection change closes an open card even when no pointer event fires
+  // (keyboard session switch, a reordered strip under a stationary pointer).
+  useLayoutEffect(() => {
+    if (closeKeyRef.current === closeKey) return
+    closeKeyRef.current = closeKey
+    close()
+  }, [closeKey, close])
 
   // Trigger listeners. Pointer and focus share the same dwell/grace: a
   // pointer sweep cancels the pending open, and focus gives keyboard users the

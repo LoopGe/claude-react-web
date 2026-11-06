@@ -523,6 +523,7 @@ export const SessionList = memo(function SessionList({
               isFocused={s.id === focusedId}
               isResuming={isResuming}
               hasUnread={!!unread?.[s.id]}
+              focusKey={focusedId}
               isDragging={isDragging}
               isDeleting={isDeleting}
               isRenaming={renamingId === s.id}

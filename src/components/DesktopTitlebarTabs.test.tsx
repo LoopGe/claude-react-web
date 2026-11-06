@@ -22,14 +22,14 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   } as SessionInfo
 }
 
-function setup(sessions: SessionInfo[] = []) {
+function setup(sessions: SessionInfo[] = [], focusedId: string | null = null) {
   const onNewSession = vi.fn()
   const onCreateGroup = vi.fn()
   const askPrompt = vi.fn() as ReturnType<typeof vi.fn>
   const utils = render(
     <DesktopTitlebarTabs
       sessions={sessions}
-      focusedId={null}
+      focusedId={focusedId}
       onSelect={vi.fn()}
       onClose={vi.fn()}
       onNewSession={onNewSession}
@@ -109,6 +109,35 @@ describe('DesktopTitlebarTabs status dots', () => {
       expect(pop?.textContent).toContain('/home/user/project')
       // The tab itself no longer carries the native title.
       expect(tab.getAttribute('title')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('dismisses the hover card when the focused session changes', () => {
+    vi.useFakeTimers()
+    try {
+      const sessions = [makeSession({ id: 's1', title: 'Alpha' })]
+      const { rerender } = setup(sessions, null)
+      const tab = document.querySelector<HTMLElement>('.titlebar-tab')!
+      fireEvent.pointerEnter(tab)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(document.querySelector('.hover-pop')).not.toBeNull()
+      rerender(
+        <DesktopTitlebarTabs
+          sessions={sessions}
+          focusedId="s1"
+          onSelect={vi.fn()}
+          onClose={vi.fn()}
+          onNewSession={vi.fn()}
+          onCreateGroup={vi.fn()}
+          askPrompt={vi.fn() as ReturnType<typeof vi.fn>}
+          maxOpen={3}
+        />,
+      )
+      expect(document.querySelector('.hover-pop')).toBeNull()
     } finally {
       vi.useRealTimers()
     }

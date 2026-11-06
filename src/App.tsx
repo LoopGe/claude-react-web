@@ -4389,6 +4389,7 @@ export function App() {
             isFocused={focusedId === s.id}
             isResuming={resuming.has(s.id)}
             hasUnread={!!unread[s.id]}
+            focusKey={focusedId}
             isDragging={false}
             isDeleting={false}
             isRenaming={false}

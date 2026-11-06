@@ -128,6 +128,22 @@ describe('SessionCard single-line layout', () => {
     }
   })
 
+  it('dismisses the hover card when the focused session changes', () => {
+    vi.useFakeTimers()
+    try {
+      const { container, rerender } = render(<SessionCard {...baseProps} focusKey="s1" />)
+      fireEvent.pointerEnter(container.querySelector('.session-item')!)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(document.querySelector('.hover-pop')).not.toBeNull()
+      rerender(<SessionCard {...baseProps} focusKey="s2" />)
+      expect(document.querySelector('.hover-pop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not render the hover sleep or delete buttons', () => {
     const { container } = render(<SessionCard {...baseProps} />)
     expect(container.querySelector('.session-item-sleep')).toBeNull()

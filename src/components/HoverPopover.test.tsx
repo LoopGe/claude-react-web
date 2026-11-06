@@ -130,6 +130,28 @@ describe('HoverPopover lifecycle', () => {
     expect(pop()).toBeNull()
   })
 
+  it('closes when the close key changes', () => {
+    const { trigger, rerender } = setup({ closeKey: 'session-a' })
+    open(trigger)
+    expect(pop()).not.toBeNull()
+
+    // Same key: stays open.
+    rerender(
+      <HoverPopover triggerRef={{ current: trigger }} closeKey="session-a">
+        <div className="card-body">Details</div>
+      </HoverPopover>,
+    )
+    expect(pop()).not.toBeNull()
+
+    // Session switch: no pointer/focus event, but the card must go.
+    rerender(
+      <HoverPopover triggerRef={{ current: trigger }} closeKey="session-b">
+        <div className="card-body">Details</div>
+      </HoverPopover>,
+    )
+    expect(pop()).toBeNull()
+  })
+
   it('opens on focus and closes on focusout', () => {
     const { trigger } = setup()
     open(trigger, 'focus')

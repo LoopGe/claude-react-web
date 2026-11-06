@@ -48,12 +48,15 @@ function TitlebarTab({
   session,
   selected,
   resuming,
+  focusKey,
   onSelect,
   onClose,
 }: {
   session: SessionInfo
   selected: boolean
   resuming: boolean
+  /** Focused session id: a change dismisses this tab's hover card. */
+  focusKey: string | null
   onSelect: (id: string) => void
   onClose: (id: string) => void
 }) {
@@ -98,7 +101,7 @@ function TitlebarTab({
           ×
         </button>
       </div>
-      <HoverPopover triggerRef={tabRef} side="bottom" align="start">
+      <HoverPopover triggerRef={tabRef} side="bottom" align="start" closeKey={focusKey}>
         <SessionHoverContent session={session} statusText={resuming ? 'Resuming…' : undefined} />
       </HoverPopover>
     </>
@@ -166,6 +169,7 @@ export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
           session={s}
           selected={s.id === focusedId}
           resuming={resumingIds?.has(s.id) ?? false}
+          focusKey={focusedId}
           onSelect={onSelect}
           onClose={onClose}
         />

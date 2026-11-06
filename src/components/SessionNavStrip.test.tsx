@@ -296,6 +296,24 @@ describe('SessionNavStrip', () => {
     }
   })
 
+  it('dismisses the hover card when the focused session changes', () => {
+    const sections = baseSections()
+    vi.useFakeTimers()
+    try {
+      const { rerenderStrip } = renderStrip(sections, { focusedId: 's1' })
+      fireEvent.pointerEnter(screen.getByRole('button', { name: 'Alpha' }))
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(document.querySelector('.hover-pop')).not.toBeNull()
+      // A keyboard switch emits no pointer event; closeKey must dismiss it.
+      rerenderStrip(sections, { focusedId: 's2' })
+      expect(document.querySelector('.hover-pop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the focused tab scrolled into view when focus changes', () => {
     const sections: SidebarSection[] = [
       {

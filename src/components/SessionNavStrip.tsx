@@ -196,6 +196,7 @@ function NavTabDots({ status, unread }: { status: TabDotStatus | null; unread?: 
 function SessionNavTab({
   session,
   focused,
+  focusKey,
   unread,
   resuming,
   deleting,
@@ -206,6 +207,9 @@ function SessionNavTab({
 }: {
   session: SessionInfo
   focused: boolean
+  /** The focused session id: a change dismisses this tab's hover card even
+   *  when the switch came from the keyboard and no pointer event fires. */
+  focusKey: string | null
   unread: boolean
   /** Resume in flight (App's transient `resuming` set) — folds the tab to
    *  'working' so a session the user just woke up pulses instead of sitting
@@ -279,7 +283,7 @@ function SessionNavTab({
           </button>
         )}
       </SortableNode>
-      <HoverPopover triggerRef={tabRef} side="bottom" align="start">
+      <HoverPopover triggerRef={tabRef} side="bottom" align="start" closeKey={focusKey}>
         <SessionHoverContent session={session} statusText={resuming ? 'Resuming…' : undefined} />
       </HoverPopover>
     </>
@@ -546,6 +550,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                       key={s.id}
                       session={s}
                       focused={s.id === focusedId}
+                      focusKey={focusedId}
                       unread={!!unread[s.id]}
                       resuming={!!resumingIds?.has(s.id)}
                       deleting={!!deletingIds?.has(s.id)}
@@ -570,6 +575,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                     key={s.id}
                     session={s}
                     focused={s.id === focusedId}
+                    focusKey={focusedId}
                     unread={!!unread[s.id]}
                     resuming={!!resumingIds?.has(s.id)}
                     deleting={!!deletingIds?.has(s.id)}
