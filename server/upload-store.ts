@@ -48,6 +48,8 @@ export function coerceStoredUpload(raw: unknown): UploadEntry | null {
     uploadedAt: r.uploadedAt,
     sessionTitle: typeof r.sessionTitle === 'string' ? r.sessionTitle : '',
     origin: r.origin === 'common' ? 'common' : undefined,
+    ...(typeof r.sessionId === 'string' && r.sessionId !== '' ? { sessionId: r.sessionId } : {}),
+    ...(typeof r.digest === 'string' && r.digest !== '' ? { digest: r.digest } : {}),
   }
 }
 

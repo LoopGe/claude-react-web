@@ -9,6 +9,8 @@
  *  browser bundle (loose SdkMessage, which does not import the SDK) can call it
  *  without either depending on the other's type root. */
 
+import { parseFileHandle } from './upload-handle.js'
+
 /** Minimal message shape the fingerprint reads. SDK-agnostic. */
 export interface PromptFingerprintInput {
   type?: string
@@ -39,7 +41,15 @@ export function promptContentFingerprint(msg: PromptFingerprintInput): string | 
       if (!block || typeof block !== 'object') continue
       const t = block.type
       if (t === 'text' && typeof block.text === 'string') {
-        text += block.text
+        // A file handle is the disk-side form of a FileBlock. Fold both into
+        // the same `file:<id>` identity so a live prompt and its replayed
+        // disk copy fingerprint identically (and two files stay distinct).
+        const parsed = parseFileHandle(block.text)
+        if (parsed !== null) nonText.push(`file:${parsed.attachment.id}`)
+        else text += block.text
+      } else if (t === 'file') {
+        const attachment = block.attachment as { id?: unknown } | undefined
+        nonText.push(`file:${typeof attachment?.id === 'string' ? attachment.id : 'unknown'}`)
       } else if (t === 'image') {
         const src = block.source as { media_type?: string; data?: string } | undefined
         const media = typeof src?.media_type === 'string' ? src.media_type : ''

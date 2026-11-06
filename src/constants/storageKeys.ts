@@ -26,6 +26,9 @@ export const LAST_SEEN_TURN_KEY = 'claude-react-web:last-seen-turn'
 export const DRAFT_KEY_PREFIX = 'claude-react-web:draft:'
 /** sessionStorage key prefix for per-session composer attachment state. */
 export const DRAFT_BODIES_KEY_PREFIX = 'claude-react-web:draft-bodies:'
+/** sessionStorage key prefix for the composer's uploaded-file chips (ready
+ *  refs only; the bytes already live in the server's upload registry). */
+export const FILE_DRAFT_KEY_PREFIX = 'claude-react-web:file-drafts:'
 /** Debounce for persisting the composer draft, SHARED by both halves of one
  *  draft: the text half (Chat.tsx's sessionStorage writes) and the image
  *  half (useDraftImages' IDB side-store writes) hit their stores at the same

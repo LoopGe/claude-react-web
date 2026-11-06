@@ -9,3 +9,6 @@ export const MAX_PASTED_IMAGE_BYTES = 20 * 1024 * 1024
 
 /** Base64 characters accepted in one message's image blocks. */
 export const MAX_MESSAGE_BASE64 = 28_000_000
+
+/** File blocks accepted in one message (and in one composer draft). */
+export const MAX_FILES_PER_MESSAGE = 20

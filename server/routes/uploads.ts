@@ -14,25 +14,12 @@ import { SessionManager } from '../session-manager.js'
 import { config as serverConfig } from '../config.js'
 import { createLogger } from '../log.js'
 import { UploadStore, UPLOAD_SUBDIR } from '../upload-store.js'
+import { uploadEntryPathContained } from '../upload-path.js'
 import { streamUploads, UploadError, type SavedUpload } from '../stream-upload.js'
 import { uploadMimeType, type UploadEntry } from '../../shared/uploads.js'
 import { safeJson } from './index.js'
 
 const log = createLogger('uploads')
-
-/** True when the entry's recorded path lives under the entry's own upload
- *  dir OR the shared stateDir upload dir. The registry tolerates hand edits
- *  / version drift (coerceStoredUpload), so both the content-serving and
- *  delete routes require this containment before touching entry.path. */
-function entryPathContained(entry: UploadEntry, stateDir: string): boolean {
-  const entryUploadDirNorm = resolvePath(entry.cwd, UPLOAD_SUBDIR).replaceAll('\\', '/')
-  const sharedUploadDirNorm = resolvePath(stateDir, UPLOAD_SUBDIR).replaceAll('\\', '/')
-  const targetNorm = resolvePath(entry.path).replaceAll('\\', '/')
-  return (
-    targetNorm.startsWith(entryUploadDirNorm + '/') ||
-    targetNorm.startsWith(sharedUploadDirNorm + '/')
-  )
-}
 
 /** Live on-disk existence check for a registry entry. Only a clean ENOENT
  *  reports missing — any other stat error reports present (and logs), so a
@@ -111,23 +98,30 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
 
       if (files.length === 0) return c.json({ error: 'no files in request' }, 400)
 
-      const saved = files.map((f) => ({ path: f.path, name: f.name, size: f.size }))
+      const entries: UploadEntry[] = files.map((f) => ({
+        id: randomUUID(),
+        path: f.path,
+        cwd: resolvePath(cwd),
+        name: f.name,
+        size: f.size,
+        uploadedAt: now,
+        sessionTitle,
+        ...(origin ? { origin } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        ...(f.digest ? { digest: f.digest } : {}),
+      }))
       try {
-        uploadStore.record(
-          files.map((f) => ({
-            id: randomUUID(),
-            path: f.path,
-            cwd: resolvePath(cwd),
-            name: f.name,
-            size: f.size,
-            uploadedAt: now,
-            sessionTitle,
-            ...(origin ? { origin } : {}),
-          })),
-        )
+        uploadStore.record(entries)
       } catch (e) {
         log.warn(`upload registry record failed: ${(e as Error).message}`)
       }
+      const saved = entries.map((e) => ({
+        id: e.id,
+        path: e.path,
+        name: e.name,
+        size: e.size,
+        ...(e.digest === undefined ? {} : { digest: e.digest }),
+      }))
       log.info(`upload session=${sessionId ?? 'common'} files=${saved.length} totalBytes=${saved.reduce((s, f) => s + f.size, 0)}`)
       return c.json({ uploads: saved })
     })
@@ -148,7 +142,7 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
       if (!entry) {
         return c.json({ error: 'upload entry not found' }, 404)
       }
-      if (!entryPathContained(entry, stateDir)) {
+      if (!uploadEntryPathContained(entry, stateDir)) {
         return c.json({ error: 'invalid upload path' }, 400)
       }
       // Existence check only — no Content-Length: a concurrent rewrite of
@@ -217,7 +211,7 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
       }
       // Dual-branch validation: path must be under the entry's cwd upload dir
       // OR under the shared stateDir upload dir.
-      if (!entryPathContained(entry, stateDir)) {
+      if (!uploadEntryPathContained(entry, stateDir)) {
         return c.json({ error: 'invalid upload path' }, 400)
       }
       try {

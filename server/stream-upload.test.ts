@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { readdirSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { streamUploads, UploadError, isStreamingUploadPath } from './stream-upload.js'
 import { tempDir } from './__test-utils__/index.js'
@@ -35,6 +36,7 @@ describe('streamUploads', () => {
     expect(readFileSync(saved[0].path, 'utf8')).toBe('hello')
     expect(saved[0].size).toBe(5)
     expect(saved[0].name).toBe('a.txt')
+    expect(saved[0].digest).toBe(createHash('sha256').update('hello').digest('hex'))
     expect(noParts()).toEqual([])
   })
 

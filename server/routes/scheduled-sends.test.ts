@@ -31,6 +31,20 @@ describe('scheduled-send routes', () => {
     expect(manager.list('s1')).toHaveLength(1)
   })
 
+  it('POST rejects file blocks with 400 (schedule path cannot resolve uploads)', async () => {
+    const { app, manager } = make()
+    const res = await app.request('/sessions/s1/schedules', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        fireAt: 2_000_000,
+        content: [{ type: 'file', attachment: { id: 'u1', name: 'a.pdf', size: 3 } }],
+      }),
+    })
+    expect(res.status).toBe(400)
+    expect(manager.list('s1')).toHaveLength(0)
+  })
+
   it('POST rejects a non-numeric fireAt with 400', async () => {
     const { app } = make()
     const res = await app.request('/sessions/s1/schedules', {

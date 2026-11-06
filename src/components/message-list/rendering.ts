@@ -2,14 +2,18 @@ import type { SdkMessage, Block } from '../../types'
 import type { PlanStatus, ToolResultEntry } from '../../session-store/types'
 import type { QuestionAnswerEntry } from '../../utils/question-answers'
 import { getBlocks } from '../../session-store/normalize'
+import { stripFileHandles } from '../../../shared/upload-handle'
 
 export function extractUserText(msg: SdkMessage): string | null {
   const content = msg.message?.content
-  if (typeof content === 'string') return content
+  if (typeof content === 'string') return stripFileHandles(content) || null
   if (Array.isArray(content)) {
     const text = (content as Block[])
+      // A file handle is model-facing plumbing, not something the user typed;
+      // the chip row renders it instead.
       .filter((b) => b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text as string)
+      .map((b) => stripFileHandles(b.text as string))
+      .filter((part) => part !== '')
       .join('')
     return text || null
   }

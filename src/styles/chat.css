@@ -1252,6 +1252,7 @@ button.chat-empty-env-chip:hover {
 }
 .composer-main .attachments,
 .composer-main .image-previews,
+.composer-main .file-previews,
 .composer-main .scheduled-sends,
 .composer-main .composer-expanded-tabs {
   padding-top: var(--space-2);
@@ -2715,6 +2716,110 @@ button.chat-empty-env-chip:hover {
   gap: var(--space-1-5);
   padding: var(--space-1) 0;
 }
+
+/* Composer file chips: fixed-width cards with an inline progress bar. */
+.file-previews {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  padding: var(--space-1) 0;
+}
+
+.file-preview-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 240px;
+  max-width: 100%;
+  height: 48px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+
+.file-preview-failed {
+  border-color: var(--danger);
+}
+
+.file-preview-body {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1;
+  color: var(--fg);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+}
+
+.file-preview-icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.file-preview-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-meta {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-retry {
+  flex: none;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  padding: 0 var(--space-1);
+}
+
+.file-preview-remove {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: var(--space-1);
+  border: none;
+  border-radius: var(--radius-circle);
+  background: var(--bg-elev-2);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.file-preview-remove:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+
+.file-preview-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--border);
+}
+
+.file-preview-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
 .image-preview-card {
   position: relative;
   width: 80px;
@@ -2775,6 +2880,50 @@ button.chat-empty-env-chip:hover {
   flex-wrap: wrap;
   gap: var(--space-1-5);
   margin-bottom: var(--space-1);
+}
+
+/* File chips for one user message: live FileBlocks and handles recovered from
+   disk replay both render here. The anchor opens the stored copy. */
+.msg-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+  margin-bottom: var(--space-1);
+}
+
+.msg-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 320px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  color: var(--fg);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+}
+
+.msg-file-chip:hover {
+  background: var(--btn-hover-bg);
+}
+
+.msg-file-icon {
+  flex: none;
+  color: var(--fg-muted);
+}
+
+.msg-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-file-size {
+  flex: none;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Fallback for markdown image references that can't be rendered as <img>

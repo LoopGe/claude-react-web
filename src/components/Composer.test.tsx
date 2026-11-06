@@ -92,7 +92,12 @@ const defaultProps = {
   commands: [] as SlashCommand[],
   pastedImages: [] as never[],
   imagesPending: false,
+  files: [] as never[],
+  onRemoveFile: noop,
+  onRetryFile: noop,
+  onOpenUploads: noop,
   onPasteImages: noopAsync,
+  onPasteFiles: noopAsync,
   onRemovePastedImage: noop,
   // Allocates the reference id for a collapsed paste and stores its content.
   onAddPastedText: () => 1,
@@ -141,7 +146,17 @@ describe('Composer', () => {
     expect(onSend).toHaveBeenCalledOnce()
   })
 
-  it('disables the send control while image intake is still decoding', () => {
+  it('keeps send disabled when the only file draft failed', () => {
+    const { container } = render(
+      <Composer
+        {...defaultProps}
+        files={[{ key: 'a', status: 'error', loaded: 0, total: 1, error: 'boom' }]}
+      />,
+    )
+    expect(container.querySelector('.composer-send')?.hasAttribute('disabled')).toBe(true)
+  })
+
+  it('disables the send control while intake is decoding', () => {
     // Enter is gated by Chat's send() after command routing, so `!cmd` and
     // local /commands still work; here we pin the visible control state.
     const { container } = render(
@@ -149,7 +164,7 @@ describe('Composer', () => {
     )
     const send = container.querySelector('.composer-send')
     expect(send?.hasAttribute('disabled')).toBe(true)
-    expect(container.querySelector('[aria-label="Images are still processing"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Attachments are still processing"]')).not.toBeNull()
   })
 
   it('does not call onSend on Shift+Enter', () => {

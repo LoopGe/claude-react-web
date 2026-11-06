@@ -10,6 +10,7 @@
 // enforced here, while writing.
 
 import Busboy from 'busboy'
+import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createWriteStream } from 'node:fs'
@@ -21,6 +22,8 @@ export interface SavedUpload {
   filename: string
   mimeType: string
   size: number
+  /** sha256 of the exact stored bytes. */
+  digest: string
 }
 
 export interface PlaceArgs {
@@ -65,6 +68,7 @@ interface Pending {
   filename: string
   mimeType: string
   size: number
+  digest: string
 }
 
 export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload[]> {
@@ -98,9 +102,13 @@ export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload
     const dest = o.place({ filename: info.filename, mimeType: info.mimeType, index: i })
     temps.push(dest.tmp)
     const ws = createWriteStream(dest.tmp)
+    const hash = createHash('sha256')
     let size = 0
     let limited = false
-    stream.on('data', (chunk: Buffer) => { size += chunk.length })
+    stream.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      hash.update(chunk)
+    })
     stream.on('limit', () => { limited = true })
     writes.push(
       pipeline(stream, ws).then(
@@ -109,7 +117,15 @@ export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload
             failure ??= { kind: 'too-large', filename: info.filename, limit: o.maxFileBytes }
             return
           }
-          pending.push({ tmp: dest.tmp, final: dest.final, name: dest.name, filename: info.filename, mimeType: info.mimeType, size })
+          pending.push({
+            tmp: dest.tmp,
+            final: dest.final,
+            name: dest.name,
+            filename: info.filename,
+            mimeType: info.mimeType,
+            size,
+            digest: hash.digest('hex'),
+          })
         },
         (e: Error) => { failure ??= { kind: 'parse', message: e.message } },
       ),
@@ -132,5 +148,12 @@ export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload
     throw new UploadError(failure)
   }
   for (const p of pending) await rename(p.tmp, p.final)
-  return pending.map((p) => ({ path: p.final, name: p.name, filename: p.filename, mimeType: p.mimeType, size: p.size }))
+  return pending.map((p) => ({
+    path: p.final,
+    name: p.name,
+    filename: p.filename,
+    mimeType: p.mimeType,
+    size: p.size,
+    digest: p.digest,
+  }))
 }

@@ -1,7 +1,9 @@
 // Export a session transcript to a Markdown file and trigger a browser
 // download. Pure client-side — no server round-trip needed.
 
-import type { SdkMessage } from '../types'
+import type { Block, SdkMessage } from '../types'
+import { splitUserBlocks } from './file-blocks'
+import { formatBytes } from './format'
 
 /** Convert the SDK message array into Markdown and trigger a download. */
 export function exportConversation(messages: SdkMessage[], title?: string): void {
@@ -19,8 +21,6 @@ export function exportConversation(messages: SdkMessage[], title?: string): void
 
     if (msg.type === 'user') {
       if (msg.isCompactSummary === true) continue
-      const text = extractText(msg)
-      if (!text) continue
       // Check if this is a tool_result frame (synthetic) — skip those
       // for export since they're implementation detail.
       const content = msg.message?.content
@@ -28,9 +28,18 @@ export function exportConversation(messages: SdkMessage[], title?: string): void
         (content as Array<{ type?: string }>).some((b) => b.type === 'tool_result')
       if (hasToolResult) continue
 
+      const blocks = typeof content === 'string'
+        ? [{ type: 'text', text: content } as Block]
+        : Array.isArray(content) ? content as Block[] : []
+      const parts = splitUserBlocks(blocks)
+      if (!parts.text && parts.files.length === 0) continue
+
       lines.push('## You')
       lines.push('')
-      lines.push(text)
+      if (parts.text) lines.push(parts.text)
+      for (const file of parts.files) {
+        lines.push(`- 📎 ${file.name} (${formatBytes(file.size)})`)
+      }
       lines.push('')
     } else if (msg.type === 'assistant') {
       const text = extractText(msg)

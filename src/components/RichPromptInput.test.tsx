@@ -337,28 +337,41 @@ describe('RichPromptInput paste', () => {
     expect(el.textContent).toBe('caption')
   })
 
-  it('hands unsupported raster image items to the batch handler but excludes incidental SVG', () => {
+  it('sends supported images to the image batch and other file items to the file batch', () => {
     const onPasteImages = vi.fn()
+    const onPasteFiles = vi.fn()
     const { container } = render(
-      <RichPromptInput value="" onChange={vi.fn()} ariaLabel="M" onPasteImages={onPasteImages} />,
+      <RichPromptInput
+        value=""
+        onChange={vi.fn()}
+        ariaLabel="M"
+        onPasteImages={onPasteImages}
+        onPasteFiles={onPasteFiles}
+      />,
     )
     const el = editor(container)
     const svg = new File(['<svg/>'], 'vector.svg', { type: 'image/svg+xml' })
     const avif = new File(['a'], 'shot.avif', { type: 'image/avif' })
+    const pdf = new File(['p'], 'doc.pdf', { type: 'application/pdf' })
     const png = new File(['p'], 'shot.png', { type: 'image/png' })
     const event = createEvent.paste(el, {
       clipboardData: {
         getData: () => '',
         items: [
-          { type: 'image/svg+xml', getAsFile: () => svg },
-          { type: 'image/avif', getAsFile: () => avif },
-          { type: 'image/png', getAsFile: () => png },
+          { kind: 'file', type: 'image/svg+xml', getAsFile: () => svg },
+          { kind: 'file', type: 'image/avif', getAsFile: () => avif },
+          { kind: 'file', type: 'application/pdf', getAsFile: () => pdf },
+          { kind: 'file', type: 'image/png', getAsFile: () => png },
         ],
       },
     })
     fireEvent(el, event)
+    // The supported image stays inline; SVG is incidental and ignored;
+    // everything else becomes a file draft.
     expect(onPasteImages).toHaveBeenCalledOnce()
-    expect(onPasteImages).toHaveBeenCalledWith([avif, png])
+    expect(onPasteImages).toHaveBeenCalledWith([png])
+    expect(onPasteFiles).toHaveBeenCalledOnce()
+    expect(onPasteFiles).toHaveBeenCalledWith([avif, pdf])
   })
 })
 

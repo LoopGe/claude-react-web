@@ -15,6 +15,8 @@ import { useToast } from '../hooks/useToast'
 import { writeClipboard } from '../hooks/useCopy'
 import { usePastedTextEditing } from '../hooks/usePastedTextEditing'
 import { ComposerImagePreviews } from './ComposerImagePreviews'
+import { ComposerFilePreviews } from './ComposerFilePreviews'
+import type { DraftFile } from '../hooks/useFileDrafts'
 import { selectionOffsets, placeCaretIn, pasteAtCaret } from './richPromptApi'
 import { RichPromptInput, type RichPromptHandle } from './RichPromptInput'
 import { AnimatedCollapse } from './AnimatedCollapse'
@@ -24,7 +26,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useCountUp } from '../hooks/useCountUp'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo, IconFolder } from './icons/ToolIcons'
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
 import { SchedulePicker } from './SchedulePicker'
 import { HoverHint } from './HoverHint'
@@ -84,7 +86,15 @@ interface Props {
   /** True while at least one image is still being decoded. Sending and
    *  scheduling wait for it so a turn cannot race past an in-flight batch. */
   imagesPending: boolean
+  /** Uploaded non-image drafts (chips above the editor). */
+  files: readonly DraftFile[]
+  onRemoveFile: (key: string) => void
+  onRetryFile: (key: string) => void
+  /** Opens the uploads manager (audit/preview surface, no longer the intake). */
+  onOpenUploads: () => void
   onPasteImages: (files: readonly File[]) => void | Promise<void>
+  /** Non-image clipboard files (PDF, archive, unsupported raster image…). */
+  onPasteFiles: (files: readonly File[]) => void | Promise<void>
   onRemovePastedImage: (id: string) => void
   /** Store a collapsed paste's full text and return the id its
    *  `[Pasted text #N]` reference should carry. Nothing else sees the body
@@ -181,6 +191,11 @@ export const Composer = memo(function Composer({
   commands,
   pastedImages,
   imagesPending,
+  files,
+  onRemoveFile,
+  onRetryFile,
+  onOpenUploads,
+  onPasteFiles,
   onPasteImages,
   onRemovePastedImage,
   onAddPastedText,
@@ -661,8 +676,10 @@ export const Composer = memo(function Composer({
 
   const pendingScheduled = scheduled?.schedules.filter((s) => s.status === 'pending') ?? []
   const failedScheduled = scheduled?.schedules.filter((s) => s.status === 'failed') ?? []
+  const filesPending = files.some((file) => file.status === 'uploading')
+  const attachmentsPending = imagesPending || filesPending
   const canSchedule =
-    !disabled && !imagesPending && (input.trim() !== '' || pastedImages.length > 0)
+    !disabled && !attachmentsPending && (input.trim() !== '' || pastedImages.length > 0)
 
   const confirmScheduled = useCallback((fireAtMs: number) => {
     setScheduleAnchor(null)
@@ -670,7 +687,8 @@ export const Composer = memo(function Composer({
   }, [onSendScheduled])
 
   const canSend =
-    !disabled && !sending && !imagesPending && (input.trim() !== '' || pastedImages.length > 0)
+    !disabled && !sending && !attachmentsPending
+    && (input.trim() !== '' || pastedImages.length > 0 || files.some((file) => file.status === 'ready'))
 
   if (terminated) {
     const reasonText =
@@ -764,6 +782,16 @@ export const Composer = memo(function Composer({
       <ComposerImagePreviews key="image-previews" images={pastedImages} onRemove={onRemovePastedImage} />,
     )
   }
+  if (files.length > 0) {
+    composerRows.push(
+      <ComposerFilePreviews
+        key="file-previews"
+        files={files}
+        onRemove={onRemoveFile}
+        onRetry={onRetryFile}
+      />,
+    )
+  }
   if (bashMode) {
     composerRows.push(
       <div className="composer-bash-indicator" aria-label="Bash mode" key="bash-indicator">
@@ -845,6 +873,7 @@ export const Composer = memo(function Composer({
             editorRef={editorRef}
             value={input}
             onPasteImages={(files) => void onPasteImages(files)}
+            onPasteFiles={(files) => void onPasteFiles(files)}
             onChange={(val) => {
               setInput(val)
               if (history.isBrowsing()) history.reset()
@@ -999,6 +1028,17 @@ export const Composer = memo(function Composer({
             <IconPaperclip size={18} />
           </button>
         </HoverHint>
+        <HoverHint label="Manage uploads" side="top">
+          <button
+            className="btn btn-icon"
+            type="button"
+            onClick={onOpenUploads}
+            disabled={disabled}
+            aria-label="Manage uploads"
+          >
+            <IconFolder size={18} />
+          </button>
+        </HoverHint>
         {onOpenTasks && (
           <HoverHint label={tasksTitle} side="top">
             <button
@@ -1061,7 +1101,7 @@ export const Composer = memo(function Composer({
           label={
             canInterrupt
               ? `Interrupt the current turn${queueNote} (Alt+B backgrounds it)`
-              : imagesPending ? 'Images are still processing' : 'Send message (Enter)'
+              : attachmentsPending ? 'Attachments are still processing' : 'Send message (Enter)'
           }
           side="top"
         >
@@ -1073,10 +1113,10 @@ export const Composer = memo(function Composer({
             aria-label={
             canInterrupt
               ? `Interrupt the current turn${queueNote}`
-              : imagesPending ? 'Images are still processing' : 'Send message'
+              : attachmentsPending ? 'Attachments are still processing' : 'Send message'
           }
         >
-          {(sending || imagesPending) && !canInterrupt ? (
+          {(sending || attachmentsPending) && !canInterrupt ? (
             <IconLoader size={18} className="composer-send-spinner" />
           ) : (
             <span className={'composer-action-toggle ' + (canInterrupt ? 'interrupt' : 'send')}>

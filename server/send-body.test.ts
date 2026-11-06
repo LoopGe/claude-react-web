@@ -45,6 +45,25 @@ describe('validateSendBody', () => {
     expect(v).toEqual({ ok: false, status: 400, error: 'unsupported image type: image/tiff' })
   })
 
+  it('accepts a file block', () => {
+    const content = [{ type: 'file', attachment: { id: 'u1', name: 'a.pdf', size: 3 } }]
+    expect(validateSendBody({ content })).toEqual({ ok: true, body: { content } })
+  })
+
+  it('rejects a malformed file block', () => {
+    expect(validateSendBody({ content: [{ type: 'file', attachment: { id: '', name: 'a', size: 1 } }] }))
+      .toEqual({ ok: false, status: 400, error: 'invalid file block' })
+  })
+
+  it('rejects more than 20 file blocks', () => {
+    const content = Array.from({ length: 21 }, (_, i) => ({
+      type: 'file',
+      attachment: { id: `u${i}`, name: 'a.pdf', size: 1 },
+    }))
+    expect(validateSendBody({ content }))
+      .toEqual({ ok: false, status: 400, error: 'at most 20 file attachments per message' })
+  })
+
   it('rejects an unsupported block type', () => {
     const v = validateSendBody({ content: [{ type: 'video' }] })
     expect(v).toEqual({ ok: false, status: 400, error: 'unsupported content block type: video' })

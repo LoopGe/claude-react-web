@@ -1,11 +1,9 @@
-// Composer image-intake classification for drag + paperclip.
+// Composer intake classification for paste, drag and the paperclip.
 //
-// Supported raster images become inline draft attachments; everything else
-// keeps the generic file-upload path. Paste has no upload route, so it hands
-// its non-SVG image items to the same inline hook, where an unsupported
-// format is refused with the hook's normal error; non-image clipboard items
-// are ignored. The allowlist itself lives in shared/image-media.ts so the
-// server message route accepts exactly the same set.
+// Supported raster images become inline draft attachments; every other file
+// becomes a `useFileDrafts` upload chip. Paste classifies the same way (SVG
+// is ignored as incidental clipboard noise). The image allowlist lives in
+// shared/image-media.ts so the server message route accepts the same set.
 
 import { isSupportedImageMediaType } from '../../shared/image-media'
 
@@ -28,27 +26,21 @@ export function splitIntakeFiles(files: readonly File[]): IntakeSplit {
   return { images, uploads }
 }
 
-/** Composer-side destinations for one drag/paperclip batch. */
+/** Composer-side destinations for one drag/paperclip/paste batch. */
 export interface ComposerIntakeOptions {
   /** Attach supported images to the composer draft. */
   readonly addImages: (files: readonly File[]) => void | Promise<void>
-  /** Send the non-image remainder through the generic upload path. */
-  readonly uploadFiles: (files: File[]) => void | Promise<void>
-  /** Opens the uploads manager; absent when the surface has none. */
-  readonly openUploads: (() => void) | undefined
+  /** Upload the non-image remainder as composer file drafts. */
+  readonly addFiles: (files: File[]) => void | Promise<void>
 }
 
-/** The composer's drag/paperclip policy: images inline, everything else to
- *  the generic upload path. The uploads manager opens only when at least one
- *  file actually uploads, so an image-only batch stays in the composer. */
+/** The composer's intake policy: supported images inline, everything else to
+ *  the file-draft queue. The uploads manager is no longer an intake surface. */
 export function intakeComposerFiles(
   files: readonly File[],
   options: ComposerIntakeOptions,
 ): void {
   const { images, uploads } = splitIntakeFiles(files)
   if (images.length > 0) void options.addImages(images)
-  if (uploads.length > 0) {
-    options.openUploads?.()
-    void options.uploadFiles(uploads)
-  }
+  if (uploads.length > 0) void options.addFiles(uploads)
 }

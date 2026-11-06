@@ -27,6 +27,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { config as serverConfig } from './config.js'
 import { callAnthropicMessages, type AuxLlmTarget } from './anthropic-api.js'
 import type { SessionRecap, SessionRecapStats } from '../shared/session-info.js'
+import { stripFileHandles } from '../shared/upload-handle.js'
 import { HttpError } from './errors.js'
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -116,12 +117,13 @@ export interface ExtractedLine {
 }
 
 function extractText(content: unknown): string {
-  if (typeof content === 'string') return content
+  if (typeof content === 'string') return stripFileHandles(content)
   if (!Array.isArray(content)) return ''
-  return (content as Array<{ type?: string; text?: string }>)
+  const joined = (content as Array<{ type?: string; text?: string }>)
     .filter((b) => b.type === 'text' && typeof b.text === 'string')
     .map((b) => b.text as string)
     .join('')
+  return stripFileHandles(joined)
 }
 
 function extractToolNames(content: unknown): string[] {

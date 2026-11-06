@@ -3,6 +3,7 @@ import { joinTokens, tokenize } from '../utils/pastedText'
 import { renderTokens, serializeTokens, domRepresentsValue } from '../utils/richPromptDom'
 import { syncEditorHeight } from '../utils/editor-height'
 import { offsetOf, slashWordBefore, caretOnFirstLine, placeCaretAtOffset } from './richPromptCaret'
+import { isSupportedImageMediaType } from '../../shared/image-media'
 import { selectionOffsets, placeCaretIn, selectAll } from './richPromptApi'
 
 /**
@@ -59,15 +60,17 @@ interface Props {
    *  undo stack. A caller that spliced its own state instead would make every
    *  paste un-undoable. */
   onPasteText?: (raw: string) => string | null
-  /** Image handler — every non-SVG `image/*` clipboard item is collected and
+  /** Image handler — supported `image/*` clipboard items are collected and
    *  handed over as ONE batch (each entry is the `getAsFile()` result). The
-   *  intake owner decides which formats it accepts, so an unsupported raster
-   *  image still produces its normal refusal instead of vanishing. The editor
-   *  never accepts image bytes itself; the parent attaches them as preview
-   *  chips. A single paste can carry BOTH images and a text/plain body (e.g.
-   *  copying a selection from a rich editor), so images are collected before
-   *  the text path runs and neither path bails the other. */
+   *  editor never accepts image bytes itself; the parent attaches them as
+   *  preview chips. A single paste can carry BOTH images and a text/plain body
+   *  (e.g. copying a selection from a rich editor), so images are collected
+   *  before the text path runs and neither path bails the other. */
   onPasteImages?: (files: readonly File[]) => void
+  /** Non-image file items on the clipboard (PDF, archive, unsupported raster
+   *  image…). SVG is ignored: copying ordinary content often carries an
+   *  incidental image/svg+xml item. */
+  onPasteFiles?: (files: readonly File[]) => void
   /** Right-click context menu handler. */
   onContextMenu?: (e: React.MouseEvent<HTMLElement>) => void
   /** Additional keydown handler for keys the editor does not handle itself
@@ -108,6 +111,7 @@ export function RichPromptInput({
   onNewline,
   onPasteText,
   onPasteImages,
+  onPasteFiles,
   onContextMenu,
   onKeyDown: onKeyDownProp,
 }: Props) {
@@ -235,18 +239,21 @@ export function RichPromptInput({
     // uncollapsed. The editor never holds image bytes; the parent attaches
     // them as preview chips, the same collection the textarea path did.
     const items = e.clipboardData?.items
-    if (items && onPasteImages) {
+    if (items) {
+      const images: File[] = []
       const files: File[] = []
       for (const item of items) {
-        // SVG is deliberately excluded: copying ordinary content from a
-        // browser often carries an incidental image/svg+xml item, and it must
-        // not turn a text paste into a refusal. Other unsupported image
-        // formats still reach the intake so they get a real error.
-        if (!item.type.startsWith('image/') || item.type === 'image/svg+xml') continue
-        const file = item.getAsFile()
-        if (file) files.push(file)
+        if (item.type === 'image/svg+xml') continue
+        if (isSupportedImageMediaType(item.type)) {
+          const image = item.getAsFile()
+          if (image) images.push(image)
+        } else if (item.kind === 'file') {
+          const file = item.getAsFile()
+          if (file) files.push(file)
+        }
       }
-      if (files.length > 0) onPasteImages(files)
+      if (images.length > 0) onPasteImages?.(images)
+      if (files.length > 0) onPasteFiles?.(files)
     }
     const raw = e.clipboardData?.getData('text/plain') ?? ''
     if (!raw) return

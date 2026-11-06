@@ -1,6 +1,8 @@
 // Uploaded-file registry types shared by the server (store + routes) and
 // the client (manager dialog). Browser-safe: no Node imports.
 
+import type { FileAttachmentRef } from './attachments'
+
 /** One recorded upload. `path` is the unique key (dest names embed a
  *  millisecond timestamp, so same-cwd collisions cannot occur); `id`
  *  exists for routes and UI keys. `cwd` is display provenance (the
@@ -10,7 +12,8 @@
  *  `<cwd>/claude-web-uploads/`. `origin: 'common'` marks uploads made from
  *  the manager dialog with no session attached. `sessionTitle` is a
  *  provenance snapshot taken at upload time — a deleted session must not
- *  take the record with it. */
+ *  take the record with it. `sessionId` is the owning session (absent for
+ *  common uploads and legacy entries); `digest` is the sha256 of the bytes. */
 export interface UploadEntry {
   id: string
   path: string
@@ -20,6 +23,18 @@ export interface UploadEntry {
   uploadedAt: number
   sessionTitle: string
   origin?: 'common'
+  sessionId?: string
+  digest?: string
+}
+
+/** The content-facing reference for one recorded upload. */
+export function uploadRefOf(entry: UploadEntry): FileAttachmentRef {
+  return {
+    id: entry.id,
+    name: entry.name,
+    size: entry.size,
+    ...(entry.digest === undefined ? {} : { digest: entry.digest }),
+  }
 }
 
 /** UploadEntry + a live on-disk existence flag computed by GET /uploads. */

@@ -37,4 +37,22 @@ describe('buildOutgoingBody', () => {
     const body = buildOutgoingBody('', [IMG, { ...IMG, mediaType: 'image/jpeg' }])
     expect((body as { content: unknown[] }).content).toHaveLength(2)
   })
+
+  const FILE = { id: 'u1', name: 'a.pdf', size: 3, digest: 'a'.repeat(64) }
+
+  it('appends file blocks after text and images', () => {
+    expect(buildOutgoingBody('hi', [IMG], [FILE])).toEqual({
+      content: [
+        { type: 'text', text: 'hi' },
+        { type: 'image', source: { type: 'base64', data: 'abc123', media_type: 'image/png' } },
+        { type: 'file', attachment: FILE },
+      ],
+    })
+  })
+
+  it('sends a file-only message as a content array', () => {
+    expect(buildOutgoingBody('  ', [], [FILE])).toEqual({
+      content: [{ type: 'file', attachment: FILE }],
+    })
+  })
 })

@@ -25,6 +25,8 @@ import type { ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd } from './cwd-equality.js'
 import { isEmptyResultFrame } from '../shared/results.js'
+import type { FileAttachmentRef } from '../shared/attachments.js'
+import { fileHandleText } from '../shared/upload-handle.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
@@ -734,6 +736,36 @@ const CONTEXT_USAGE_MISMATCH_RATIO = 1.5
  *  server-added field), so this intersection lets callers (the HTTP route)
  *  read both `uuid` and `receivedAt` without an `as unknown as` cast. */
 type SentUserMessage = SDKUserMessage & { receivedAt: number }
+
+/** One resolved file occurrence: where the FileBlock sits in the user
+ *  content and the stored copy's read-only host path. */
+export interface ResolvedFile {
+  readonly blockIndex: number
+  readonly attachment: FileAttachmentRef
+  readonly path: string
+}
+
+/** Project app-level FileBlocks to the text handles the SDK understands.
+ *  The ring/broadcast keeps the structured content; only this SDK copy is
+ *  projected. Never mutates the input message or its content array. */
+export function projectFileBlocksForSdk(
+  message: SDKUserMessage,
+  files: readonly ResolvedFile[],
+): SDKUserMessage {
+  const content = message.message.content
+  if (!Array.isArray(content)) return { ...message }
+  const byIndex = new Map(files.map((file) => [file.blockIndex, file] as const))
+  const projected = content.map((block, index) => {
+    const file = byIndex.get(index)
+    return file === undefined
+      ? block
+      : { type: 'text' as const, text: fileHandleText(file.attachment, file.path) }
+  })
+  return {
+    ...message,
+    message: { ...message.message, content: projected } as SDKUserMessage['message'],
+  }
+}
 
 /** The SDK's camelCase model-info shape (translated to the snake_case wire
  *  `ModelInfo` at the boundary so the browser bundle doesn't import the SDK). */
@@ -3574,8 +3606,12 @@ export class SessionManager {
     return userMsg as SentUserMessage
   }
 
-  /** Send a user turn with a content array (text + image blocks). */
-  sendContent(id: string, content: Array<{ type: string; [k: string]: unknown }>): SentUserMessage {
+  /** Send a user turn with a content array (text + image + file blocks). */
+  sendContent(
+    id: string,
+    content: Array<{ type: string; [k: string]: unknown }>,
+    files?: readonly ResolvedFile[],
+  ): SentUserMessage {
     const s = this.requireSendable(id)
     const userMsg: SDKUserMessage = {
       type: 'user',
@@ -3590,7 +3626,7 @@ export class SessionManager {
       `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
     )
     this.captureAnchor(id, s, userMsg.uuid!)
-    this.dispatchUserMessage(s, userMsg)
+    this.dispatchUserMessage(s, userMsg, files)
     return userMsg as SentUserMessage
   }
 
@@ -3707,7 +3743,7 @@ export class SessionManager {
    *  message the SDK has already read never sat in the queue, so 'queued'
    *  would be a lie. Genuinely queued turns still broadcast without
    *  `consumedAt` and flip later via the `message-consumed` frame. */
-  private dispatchUserMessage(s: Session, userMsg: SDKUserMessage): void {
+  private dispatchUserMessage(s: Session, userMsg: SDKUserMessage, files?: readonly ResolvedFile[]): void {
     // A new top-level user turn invalidates the previous turn's predicted
     // next-prompt. If we leave `lastPromptSuggestion` set, it resurfaces as
     // the reconnect snapshot (subscribePromptSuggestion) and — when the SDK
@@ -3724,7 +3760,11 @@ export class SessionManager {
     // snapshot anchor — is skipped; the turn-end fallback re-routes anything
     // undelivered back through the normal path.
     if (this.trySteerMessage(s, userMsg)) return
-    const forSdk = { ...userMsg }
+    // The SDK gets text handles where our structured FileBlocks sit; the
+    // ring/broadcast keeps the original content so clients render chips.
+    const forSdk = files !== undefined && files.length > 0
+      ? projectFileBlocksForSdk(userMsg, files)
+      : { ...userMsg }
     s.handle.enqueueUserMessage(forSdk)
     // Direct-hand-off case: the consume hook already ran, synchronously,
     // inside enqueueUserMessage. Carry its stamp onto the copy that enters

@@ -53,45 +53,40 @@ describe('splitIntakeFiles', () => {
 describe('intakeComposerFiles', () => {
   const options = () => ({
     addImages: vi.fn(),
-    uploadFiles: vi.fn(),
-    openUploads: vi.fn(),
+    addFiles: vi.fn(),
   })
 
-  it('adds images inline without opening the uploads manager', () => {
+  it('adds images inline and queues no file drafts', () => {
     const o = options()
     const a = file('a.png', 'image/png')
     intakeComposerFiles([a], o)
     expect(o.addImages).toHaveBeenCalledWith([a])
-    expect(o.uploadFiles).not.toHaveBeenCalled()
-    expect(o.openUploads).not.toHaveBeenCalled()
+    expect(o.addFiles).not.toHaveBeenCalled()
   })
 
-  it('uploads non-images and opens the manager once', () => {
+  it('queues non-images as file drafts', () => {
     const o = options()
     const pdf = file('doc.pdf', 'application/pdf')
     intakeComposerFiles([pdf], o)
     expect(o.addImages).not.toHaveBeenCalled()
-    expect(o.openUploads).toHaveBeenCalledOnce()
-    expect(o.uploadFiles).toHaveBeenCalledOnce()
-    expect(o.uploadFiles).toHaveBeenCalledWith([pdf])
+    expect(o.addFiles).toHaveBeenCalledOnce()
+    expect(o.addFiles).toHaveBeenCalledWith([pdf])
   })
 
-  it('splits a mixed batch and opens the manager for the upload half only', () => {
+  it('splits a mixed batch into images and file drafts', () => {
     const o = options()
     const png = file('a.png', 'image/png')
     const pdf = file('doc.pdf', 'application/pdf')
     const svg = file('v.svg', 'image/svg+xml')
     intakeComposerFiles([png, pdf, svg], o)
     expect(o.addImages).toHaveBeenCalledWith([png])
-    expect(o.uploadFiles).toHaveBeenCalledWith([pdf, svg])
-    expect(o.openUploads).toHaveBeenCalledOnce()
+    expect(o.addFiles).toHaveBeenCalledWith([pdf, svg])
   })
 
   it('is a no-op for an empty batch', () => {
     const o = options()
     intakeComposerFiles([], o)
     expect(o.addImages).not.toHaveBeenCalled()
-    expect(o.uploadFiles).not.toHaveBeenCalled()
-    expect(o.openUploads).not.toHaveBeenCalled()
+    expect(o.addFiles).not.toHaveBeenCalled()
   })
 })

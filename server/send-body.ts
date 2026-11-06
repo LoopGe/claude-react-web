@@ -1,8 +1,9 @@
 import type { ScheduledSendBody, ScheduledSendContentBlock } from '../shared/scheduled-send.js'
 import { isSupportedImageMediaType } from '../shared/image-media.js'
-import { MAX_MESSAGE_BASE64 } from '../shared/upload-limits.js'
+import { isFileBlock } from '../shared/attachments.js'
+import { MAX_FILES_PER_MESSAGE, MAX_MESSAGE_BASE64 } from '../shared/upload-limits.js'
 
-export { MAX_MESSAGE_BASE64 }
+export { MAX_FILES_PER_MESSAGE, MAX_MESSAGE_BASE64 }
 
 export type SendBodyValidation =
   | { ok: true; body: ScheduledSendBody }
@@ -14,6 +15,7 @@ export type SendBodyValidation =
 export function validateSendBody(raw: { text?: unknown; content?: unknown }): SendBodyValidation {
   if (Array.isArray(raw.content) && raw.content.length > 0) {
     let totalBase64 = 0
+    let fileCount = 0
     for (const block of raw.content) {
       const b = block as Record<string, unknown>
       if (b.type === 'image') {
@@ -25,6 +27,14 @@ export function validateSendBody(raw: { text?: unknown; content?: unknown }): Se
           return { ok: false, status: 400, error: `unsupported image type: ${source.media_type}` }
         }
         totalBase64 += (source.data as string).length
+      } else if (b.type === 'file') {
+        if (!isFileBlock(block)) {
+          return { ok: false, status: 400, error: 'invalid file block' }
+        }
+        fileCount += 1
+        if (fileCount > MAX_FILES_PER_MESSAGE) {
+          return { ok: false, status: 400, error: `at most ${MAX_FILES_PER_MESSAGE} file attachments per message` }
+        }
       } else if (b.type !== 'text') {
         return { ok: false, status: 400, error: `unsupported content block type: ${b.type}` }
       }

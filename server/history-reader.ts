@@ -43,6 +43,7 @@ import { isRenderableSdkMessage, trimLargeToolResults } from './history-utils.js
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
 import { condensePromptPreview } from '../shared/prompt-preview.js'
+import { stripFileHandles } from '../shared/upload-handle.js'
 
 const log = createLogger('history')
 
@@ -264,15 +265,16 @@ export function parseLastUserPrompt(tail: string): string | undefined {
       // empty" (fresh/failed turn, post-clear bookkeeping). Recording it —
       // instead of skipping to an older user message — keeps the reader's
       // recency-by-file-position rule honest. text may be undefined here.
-      const raw = typeof o.lastPrompt === 'string' ? condensePromptPreview(o.lastPrompt) : undefined
+      const raw = typeof o.lastPrompt === 'string' ? condensePromptPreview(stripFileHandles(o.lastPrompt)) : undefined
       lastPromptHit = { index: i, text: raw || undefined }
       continue
     }
     if (!userHit && o.type === 'user' && !o.isMeta && !o.isSidechain && !o.isCompactSummary) {
       const content = o.message?.content
       if (typeof content === 'string') {
-        if (!isInterruptPlaceholder(content) && !SYNTHETIC_FRAME_PREFIX_RE.test(content)) {
-          const text = condensePromptPreview(content)
+        const cleaned = stripFileHandles(content)
+        if (!isInterruptPlaceholder(cleaned) && !SYNTHETIC_FRAME_PREFIX_RE.test(cleaned)) {
+          const text = condensePromptPreview(cleaned)
           if (text) userHit = { index: i, text }
         }
         continue
@@ -290,7 +292,7 @@ export function parseLastUserPrompt(tail: string): string | undefined {
           if (b.type === 'tool_result') hasToolResult = true
           else if (b.type === 'text' && typeof b.text === 'string') texts.push(b.text)
         }
-        const joined = texts.join(' ')
+        const joined = stripFileHandles(texts.join(' '))
         if (!hasToolResult && joined && !SYNTHETIC_FRAME_PREFIX_RE.test(joined)) {
           const text = condensePromptPreview(joined)
           if (text) userHit = { index: i, text }

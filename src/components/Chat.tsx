@@ -41,12 +41,12 @@ import { snapshotDiffResource } from '../../shared/resource-address'
 import { PinnedUserMessageHeader } from './PinnedUserMessageHeader'
 import { PinnedMessageStore } from '../utils/pinned-message-store'
 import { api } from '../hooks/useApi'
-import { startUploads } from '../hooks/useUploadQueue'
 import { useSessionSynchronizer } from '../session-sync/useSessionSynchronizer'
 import { useSessionStreamError } from '../session-sync/useSessionStreamError'
 import { useSessionCommands } from '../hooks/useSessionCommands'
 import { writeClipboard, COPY_FAILED_MESSAGE } from '../hooks/useCopy'
 import { usePastedImages } from '../hooks/usePastedImages'
+import { useFileDrafts } from '../hooks/useFileDrafts'
 import { useDraftImages } from '../hooks/useDraftImages'
 import { usePastedTexts } from '../hooks/usePastedTexts'
 import { useInputHistory } from '../hooks/useInputHistory'
@@ -864,6 +864,9 @@ export const Chat = memo(function Chat({
   // Stable callback (usePastedImages memoises it), so intake handlers do not
   // change identity when only the images list or error string does.
   const addPastedImages = pastedImages.addImages
+  const fileDrafts = useFileDrafts(session.id)
+  const addFilesToDraft = fileDrafts.addFiles
+  const openUploads = useCallback(() => { onOpenUploads?.() }, [onOpenUploads])
   // The draft's image half. The text half survives unmounts via
   // sessionStorage (readDraft/writeDraft above); the image half survives via
   // the IDB side store — restored here on mount, debounced-written on every
@@ -1312,6 +1315,11 @@ export const Chat = memo(function Chat({
     const error = await addPastedImages(images)
     if (error !== null) toast.error(error)
   }, [invalidateHistoryImages, addPastedImages, toast])
+  // File drafts cap themselves; surface a dropped-file refusal.
+  const addDraftFiles = useCallback((files: readonly File[]) => {
+    const error = addFilesToDraft(files)
+    if (error !== null) toast.info(error)
+  }, [addFilesToDraft, toast])
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
   // Raw state; the value consumers see (`searchActiveIdx`, below) is
@@ -1541,17 +1549,14 @@ export const Chat = memo(function Chat({
   const onFilesPicked = useCallback(
     (files: File[]) => {
       // One intake rule for drag + paperclip: supported images join the inline
-      // draft (paste already goes there), everything else keeps the generic
-      // upload path. Only a non-empty upload group opens the manager.
+      // draft (paste already goes there), everything else becomes an upload
+      // draft chip. The uploads manager is a separate audit surface now.
       intakeComposerFiles(files, {
         addImages: intakeImages,
-        openUploads: onOpenUploads,
-        uploadFiles: (uploads) => {
-          void startUploads(uploads, { sessionId: session.id, autoClose: true })
-        },
+        addFiles: addDraftFiles,
       })
     },
-    [intakeImages, onOpenUploads, session.id],
+    [intakeImages, addDraftFiles],
   )
 
   const onDrop = useCallback(
@@ -1668,11 +1673,15 @@ export const Chat = memo(function Chat({
     // Image intake is still decoding. Blocking here (not in the composer)
     // leaves `!cmd` and local `/commands` above working — those never carry
     // images — while a normal send cannot race past the in-flight batch.
-    if (pastedImages.pending) {
-      toast.info('Images are still processing')
+    if (pastedImages.pending || fileDrafts.pending) {
+      toast.info('Attachments are still processing')
       return
     }
-    if (!text && pastedImages.images.length === 0) return
+    if (fileDrafts.files.some((file) => file.status === 'error')) {
+      toast.info('Some attachments failed to upload. Retry or remove them before sending.')
+      return
+    }
+    if (!text && pastedImages.images.length === 0 && fileDrafts.ready.length === 0) return
     sendingRef.current = true
     setSending(true)
     // Optimistically mark the turn active in the SAME commit as the message
@@ -1724,7 +1733,9 @@ export const Chat = memo(function Chat({
     }
 
     try {
-      const res: SendMessageResponse = await postMessage(buildOutgoingBody(full, pastedImages.images))
+      const res: SendMessageResponse = await postMessage(
+        buildOutgoingBody(full, pastedImages.images, fileDrafts.ready),
+      )
       if (pendingId && typeof res.message?.uuid === 'string') {
         ackUserMessage(pendingId, res.message.uuid, res.message.receivedAt)
       }
@@ -1736,6 +1747,7 @@ export const Chat = memo(function Chat({
       history.add(text, pastedImages.images.map(toPersistedImage))
       setInput('')
       clearPastedImages()
+      fileDrafts.clearFiles()
       // Delete the draft's image record IMPERATIVELY, not via the
       // useDraftImages effect: this continuation runs after the POST, and if
       // the panel unmounted mid-POST (group switch / close) the effect is
@@ -1768,7 +1780,7 @@ export const Chat = memo(function Chat({
       sendingRef.current = false
       setSending(false)
     }
-  }, [input, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError, setInput, clearPastedImages, pastedImages, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestHandoffSession, runBashCommand, toast])
+  }, [input, session.id, history, insertUserMessage, ackUserMessage, rollbackUserMessage, clearError, setInput, clearPastedImages, pastedImages, fileDrafts, expandPastedText, mergedCommands, onRequestResumeForPanel, onOpenSettingsTab, onShowHelp, requestClearSession, requestHandoffSession, runBashCommand, toast])
 
   // The Overlay primitive owns the focus traps and presence for the settings
   // + git overlays; its `mounted && open` active gate reproduces the old
@@ -1929,8 +1941,16 @@ export const Chat = memo(function Chat({
   /** Schedule the current draft for a future time. Shares send()'s body
    *  construction; on success clears the composer exactly like a send. */
   const handleSendScheduled = useCallback(async (fireAtMs: number) => {
-    if (pastedImages.pending) {
-      toast.info('Images are still processing')
+    if (pastedImages.pending || fileDrafts.pending) {
+      toast.info('Attachments are still processing')
+      return
+    }
+    if (fileDrafts.ready.length > 0) {
+      toast.info('File attachments cannot be scheduled yet')
+      return
+    }
+    if (fileDrafts.files.some((file) => file.status === 'error')) {
+      toast.info('Some attachments failed to upload. Retry or remove them before scheduling.')
       return
     }
     const built = buildScheduledBody(input, pastedImages.images, expandPastedText)
@@ -1947,7 +1967,7 @@ export const Chat = memo(function Chat({
     } catch (e) {
       setLocalError((e as Error).message)
     }
-  }, [input, scheduled, setInput, clearPastedImages, pastedImages, expandPastedText, setComposerFocusSignal, setLocalError, session.id, toast])
+  }, [input, scheduled, setInput, clearPastedImages, pastedImages, fileDrafts, expandPastedText, setComposerFocusSignal, setLocalError, session.id, toast])
   /** Snippets are persisted server-side and re-inserted in later sessions, so
    *  a `[Pasted text #N]` reference saved as-is would outlive the body backing
    *  it and resolve to nothing (or to a different paste). Store the text. */
@@ -2509,7 +2529,12 @@ export const Chat = memo(function Chat({
               commands={mergedCommands}
               pastedImages={pastedImages.images}
               imagesPending={pastedImages.pending}
+              files={fileDrafts.files}
+              onRemoveFile={fileDrafts.removeFile}
+              onRetryFile={fileDrafts.retryFile}
+              onOpenUploads={openUploads}
               onPasteImages={intakeImages}
+              onPasteFiles={addDraftFiles}
               onRemovePastedImage={onRemovePastedImage}
               onAddPastedText={addPastedText}
               onSend={handleSend}

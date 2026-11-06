@@ -148,7 +148,7 @@ export function buildApiRouter(
     app.route('/', buildDaemonRouter(configDir))
   }
   app.route('/', buildProfilesRouter(configDir, sm))
-  app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore, configDir))
+  app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore, configDir, uploadStore))
   app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))
   app.route('/', buildDiagnosticsRouter(sm))

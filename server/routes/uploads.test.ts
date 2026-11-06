@@ -49,9 +49,13 @@ describe('uploads routes', () => {
       const res = await app.request('/uploads', { method: 'POST', body: form })
       expect(res.status).toBe(200)
 
-      const body = (await res.json()) as { uploads: Array<{ path: string; name: string }> }
+      const body = (await res.json()) as {
+        uploads: Array<{ id: string; path: string; name: string; digest?: string }>
+      }
       expect(body.uploads).toHaveLength(1)
       expect(body.uploads[0].name).toBe('a.txt')
+      expect(body.uploads[0].id).toEqual(expect.any(String))
+      expect(body.uploads[0].digest).toMatch(/^[a-f0-9]{64}$/)
 
       // File lands under <stateDir>/claude-web-uploads/
       const expectedDir = join(stateDir, UPLOAD_SUBDIR)
@@ -127,6 +131,7 @@ describe('uploads routes', () => {
       expect(entries[0].cwd).toBe(sessionCwd)
       expect(entries[0].sessionTitle).toBe('My Session')
       expect(entries[0].origin).toBeUndefined()
+      expect(entries[0].sessionId).toBe('s1')
     })
 
     it('404s for unknown sessionId', async () => {

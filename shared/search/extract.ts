@@ -39,6 +39,7 @@ import { flattenHast, type HastNode } from './hast-walk.js'
 import { lineDiff } from './line-diff.js'
 import { rehypeStripStructuralWhitespace } from './rehype-strip-structural-whitespace.js'
 import { htmlAsTextHandlers } from '../markdown-html-text.js'
+import { stripFileHandles } from '../upload-handle.js'
 
 interface SearchableMessage {
   type?: string
@@ -180,14 +181,15 @@ export function extractMessagePlainText(msg: SearchableMessage): string | null {
   const message = msg.message
   const content = message && typeof message === 'object' ? (message as { content?: unknown }).content : undefined
   if (typeof content === 'string') {
-    const text = extractPlainText(content)
+    const text = extractPlainText(stripFileHandles(content))
     return text || null
   }
   if (Array.isArray(content)) {
     const parts: string[] = []
     for (const b of content as SearchableBlock[]) {
       if (b.type === 'text' && typeof b.text === 'string') {
-        const text = extractPlainText(b.text)
+        // File handles are model-facing plumbing; the UI renders a chip.
+        const text = extractPlainText(stripFileHandles(b.text))
         if (text) parts.push(text)
       } else if (b.type === 'tool_result') {
         // tool_result content can be a string or an array of nested blocks.

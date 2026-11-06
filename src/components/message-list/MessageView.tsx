@@ -20,7 +20,9 @@ import { BlockView, ToolResultBlock } from './blocks'
 import { DraftTextBody } from './draft-body'
 import { TurnChangesCard } from './TurnChangesCard'
 import { useResultConsumed } from './result-consumed-context'
-import { blockRendersContent, extractUserText, willRenderEmpty } from './rendering'
+import { blockRendersContent, willRenderEmpty } from './rendering'
+import { splitUserBlocks } from '../../utils/file-blocks'
+import { UserFileAttachments } from './UserFileAttachments'
 import { FoldableBody } from './FoldableBody'
 import { userBodyFoldKey } from './fold-key'
 import {
@@ -280,7 +282,7 @@ export const MessageView = memo(function MessageView({
   const isResultConsumed = useResultConsumed()
 
   if (type === 'user') {
-    const userContent = extractUserText(msg)
+    const { text: userContent, images: imageBlocks, files: fileBlocks } = splitUserBlocks(blocks)
     // Tool results that have been consumed by their card (generic ToolCard
     // inline merge, or PlanCard / QuestionCard) are suppressed here. Only
     // ORPHAN results —whose tool_use_id matched no card —fall through to
@@ -371,7 +373,6 @@ export const MessageView = memo(function MessageView({
         </div>
       )
     }
-    const imageBlocks = blocks.filter((b) => b.type === 'image')
     // Show the "queued" chip only while the turn is genuinely waiting behind
     // an in-flight turn: server-acknowledged (deliveryStatus === 'queued')
     // and not still in the optimistic pre-ack 'sending' state. Once the SDK
@@ -481,6 +482,7 @@ export const MessageView = memo(function MessageView({
                 ))}
               </div>
             )}
+            {fileBlocks.length > 0 && <UserFileAttachments files={fileBlocks} />}
             {userContent && <Markdown text={userContent} breaks searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />}
           </FoldableBody>
         </div>
