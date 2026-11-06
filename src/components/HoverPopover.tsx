@@ -59,6 +59,9 @@ export function HoverPopover({
   const [open, setOpen] = useState(false)
   const openRef = useRef(false)
   const disabledRef = useRef(disabled)
+  // Whether the pending open came from keyboard focus. An interactive dialog
+  // opened by Tab must receive focus; a pointer-opened one must not steal it.
+  const openByFocus = useRef(false)
   useLayoutEffect(() => {
     openRef.current = open
   }, [open])
@@ -105,9 +108,14 @@ export function HoverPopover({
     cancelClose()
     closeTimer.current = window.setTimeout(() => {
       closeTimer.current = null
+      // Keyboard focus inside the trigger or the dialog outranks a pointer
+      // leave: moving the mouse away must not dismiss a panel being tabbed
+      // through.
+      const active = document.activeElement
+      if (active !== null && (ref.current?.contains(active) || triggerRef.current?.contains(active))) return
       setOpen(false)
     }, closeDelayMs)
-  }, [closeDelayMs, cancelClose])
+  }, [closeDelayMs, cancelClose, ref, triggerRef])
 
   // Trigger listeners. Pointer and focus share the same dwell/grace: a
   // pointer sweep cancels the pending open, and focus gives keyboard users the
@@ -117,6 +125,7 @@ export function HoverPopover({
     const trigger = triggerRef.current
     if (!trigger) return
     const onEnter = () => {
+      openByFocus.current = false
       cancelClose()
       armOpen()
     }
@@ -125,6 +134,7 @@ export function HoverPopover({
       if (openRef.current) armClose()
     }
     const onFocusIn = () => {
+      openByFocus.current = true
       cancelClose()
       armOpen()
     }
@@ -149,10 +159,24 @@ export function HoverPopover({
   }, [armClose, armOpen, cancelClose, cancelOpen, disabled, ref, triggerRef])
 
   // The portal mounts after `open` flips, so the hook's mount-time measure saw
-  // no element. Measure once the surface exists.
+  // no element. Measure and observe the surface once it exists: live content
+  // (a session's status/error lines) can grow while the card is open, and the
+  // viewport clamp must follow the new height.
   useLayoutEffect(() => {
-    if (open) remeasure()
-  }, [open, remeasure])
+    if (!open) return
+    const el = ref.current
+    if (el === null) return
+    remeasure()
+    const ro = new ResizeObserver(() => remeasure())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [open, ref, remeasure])
+
+  // A dialog opened by keyboard focus must receive focus; a pointer hover must
+  // not steal it from the page.
+  useLayoutEffect(() => {
+    if (open && interactive && openByFocus.current) ref.current?.focus()
+  }, [open, interactive, ref])
 
   // Interactive surfaces can hold focus and pointer; dismiss them like a menu.
   useOutsideMouseDown({ ref, onClose: close, triggerRef, active: open && interactive })
@@ -208,6 +232,7 @@ export function HoverPopover({
       className={`hover-pop${interactive ? ' hover-pop-interactive' : ''}${className ? ` ${className}` : ''}`}
       role={interactive ? 'dialog' : 'tooltip'}
       aria-label={interactive ? ariaLabel : undefined}
+      tabIndex={interactive ? -1 : undefined}
       style={{
         left: x ?? undefined,
         top: y ?? undefined,

@@ -18,7 +18,14 @@ export function WorktreeIsolationBadge({ worktree }: { worktree: WorktreeInfo })
   const lines = ['Isolated worktree', `Main repo: ${worktree.mainRepoPath}`, `Branch: ${worktree.branch}`]
   return (
     <>
-      <span ref={ref} className="chat-panel-worktree-badge">
+      {/* The badge is not focusable, so the hover card alone would leave the
+          isolation detail unreachable to AT. Announce it statically too. */}
+      <span
+        ref={ref}
+        className="chat-panel-worktree-badge"
+        role="img"
+        aria-label={lines.join('. ')}
+      >
         <IconGitFork size={12} className="chat-panel-worktree-badge-icon" aria-hidden />
         <span className="chat-panel-worktree-badge-value">worktree</span>
       </span>

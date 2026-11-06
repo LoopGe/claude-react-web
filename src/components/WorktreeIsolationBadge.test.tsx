@@ -30,6 +30,8 @@ describe('WorktreeIsolationBadge', () => {
       const { container } = render(<WorktreeIsolationBadge worktree={wt} />)
       const badge = container.querySelector('.chat-panel-worktree-badge')!
       expect(badge.textContent).toBe('worktree')
+      // The badge is not focusable; the isolation detail must still reach AT.
+      expect(badge.getAttribute('aria-label')).toContain('Main repo: /home/user/main-repo')
       fireEvent.pointerEnter(badge)
       act(() => {
         vi.advanceTimersByTime(200)

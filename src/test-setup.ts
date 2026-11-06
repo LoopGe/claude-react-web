@@ -63,6 +63,20 @@ if (typeof animationProto?.cancel === 'function') {
   }
 }
 
+// jsdom has no ResizeObserver; several components (useAnchorPosition's
+// surfaces, Tooltip-adjacent popovers) construct one once their portalled
+// surface mounts. A no-op shim is enough for the DOM-level assertions those
+// tests make; tests that need to drive the callback stub their own.
+if (typeof document !== 'undefined' && typeof ResizeObserver === 'undefined') {
+  class ResizeObserverMock {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  ;(globalThis as unknown as { ResizeObserver: typeof ResizeObserver }).ResizeObserver =
+    ResizeObserverMock as unknown as typeof ResizeObserver
+}
+
 afterEach(async () => {
   if (typeof document === 'undefined') return
   const { cleanup } = await import('@testing-library/react')

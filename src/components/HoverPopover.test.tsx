@@ -15,9 +15,17 @@ vi.stubGlobal('matchMedia', () => ({
 }))
 
 class ResizeObserverMock {
-  observe() {}
+  observed: Element[] = []
+  constructor(_callback: ResizeObserverCallback) {
+    observers.push(this)
+  }
+  observe(el: Element) {
+    this.observed.push(el)
+  }
+  unobserve() {}
   disconnect() {}
 }
+const observers: ResizeObserverMock[] = []
 
 const triggers: HTMLButtonElement[] = []
 
@@ -41,6 +49,7 @@ function setWindowValue(key: 'innerWidth' | 'innerHeight' | 'devicePixelRatio', 
 
 beforeEach(() => {
   vi.useFakeTimers()
+  observers.length = 0
   vi.stubGlobal('ResizeObserver', ResizeObserverMock)
   setWindowValue('innerWidth', 800)
   setWindowValue('innerHeight', 600)
@@ -180,6 +189,44 @@ describe('HoverPopover modes', () => {
       vi.advanceTimersByTime(500)
     })
     expect(pop()).not.toBeNull()
+  })
+
+  it('moves focus into a dialog opened by keyboard focus', () => {
+    const { trigger } = setup({ interactive: true })
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    const el = pop()!
+    expect(el.getAttribute('tabindex')).toBe('-1')
+    expect(document.activeElement).toBe(el)
+  })
+
+  it('does not move focus when a pointer opens the dialog', () => {
+    const { trigger } = setup({ interactive: true })
+    open(trigger)
+    expect(document.activeElement).not.toBe(pop())
+  })
+
+  it('keeps a dialog open while focus is inside it', () => {
+    const { trigger } = setup({ interactive: true })
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('observes the open surface so live content growth re-clamps', () => {
+    const { trigger } = setup()
+    expect(observers).toHaveLength(0)
+    open(trigger)
+    expect(observers.length).toBeGreaterThan(0)
+    expect(observers[0].observed).toHaveLength(1)
   })
 
   it('describes the trigger while passive', () => {

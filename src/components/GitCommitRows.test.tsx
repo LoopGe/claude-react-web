@@ -113,6 +113,8 @@ describe('CommitRow', () => {
       const { container } = renderRow()
       const hash = container.querySelector('.git-commit-hash') as HTMLElement
       expect(hash.getAttribute('title')).toBeNull()
+      // The full hash stays reachable to AT without a hover.
+      expect(hash.getAttribute('aria-label')).toBe(HASH)
       fireEvent.pointerEnter(hash)
       act(() => {
         vi.advanceTimersByTime(200)

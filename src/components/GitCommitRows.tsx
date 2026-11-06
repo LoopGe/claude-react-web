@@ -106,7 +106,7 @@ export function CommitRow({
         }
       }}
     >
-      <code ref={hashRef} className="git-commit-hash">{hash.slice(0, 7)}</code>
+      <code ref={hashRef} className="git-commit-hash" aria-label={hash}>{hash.slice(0, 7)}</code>
       <HoverPopover triggerRef={hashRef} side="bottom" align="start">
         <div className="hover-pop-stack">
           <div className="hover-pop-path">{hash}</div>

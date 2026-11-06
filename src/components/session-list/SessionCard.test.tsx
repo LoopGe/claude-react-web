@@ -96,11 +96,26 @@ describe('SessionCard single-line layout', () => {
     vi.useFakeTimers()
     try {
       const { container } = render(<SessionCard {...baseProps} />)
-      fireEvent.pointerEnter(container.querySelector('.session-item')!)
+      const card = container.querySelector('.session-item') as HTMLElement
+      card.getBoundingClientRect = () => ({
+        left: 100,
+        top: 100,
+        width: 200,
+        height: 32,
+        right: 300,
+        bottom: 132,
+        x: 100,
+        y: 100,
+        toJSON: () => ({}),
+      } as DOMRect)
+      fireEvent.pointerEnter(card)
       act(() => {
         vi.advanceTimersByTime(200)
       })
-      const hover = document.querySelector('.hover-pop')
+      const hover = document.querySelector<HTMLElement>('.hover-pop')
+      expect(hover?.style.visibility).not.toBe('hidden')
+      expect(hover?.style.left).toBe('306px')
+      expect(hover?.style.top).toBe('100px')
       expect(hover?.textContent).toContain('/home/user/project')
       expect(hover?.textContent).toContain('sonnet-4')
       expect(hover?.textContent).toContain('5 msgs')
