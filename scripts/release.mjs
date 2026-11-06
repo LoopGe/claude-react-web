@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Cut a release: bump package.json, cut the CHANGELOG's [Unreleased] section
-// into the new version, commit, tag, and push. The tag push hands off to
-// .github/workflows/release.yml, which publishes to npm and creates the GitHub
-// Release.
+// Cut a release: bump package.json and package-lock.json, cut the CHANGELOG's
+// [Unreleased] section into the new version, commit, tag, and push. The tag
+// push hands off to .github/workflows/release.yml, which publishes to npm and
+// creates the GitHub Release.
 //
-//   npm run release patch | minor | major
-//   npm run release --version 1.2.3
-//   npm run release --version 1.3.0-rc.1
-//   npm run release minor --dry-run
+//   npm run release -- patch | minor | major
+//   npm run release -- --version 1.2.3
+//   npm run release -- --version 1.3.0-rc.1
+//   npm run release -- minor --dry-run
 //
 // See RELEASING.md for the policy this enforces.
 
@@ -59,7 +59,7 @@ function parseArgs(args) {
     else if (BUMPS.has(arg) && !opts.bump) opts.bump = arg
     else
       fail(
-        `unknown argument "${arg}"\nusage: npm run release [major|minor|patch] [--version X.Y.Z[-pre]] ` +
+        `unknown argument "${arg}"\nusage: npm run release -- [major|minor|patch] [--version X.Y.Z[-pre]] ` +
           `[--dry-run] [--no-push] [--no-verify] [--branch NAME] [--allow-dirty] [--allow-stale]`,
       )
   }
@@ -146,17 +146,27 @@ if (branch !== opts.branch)
 if (!opts.dirty && !opts.dryRun && git(['status', '--porcelain'])) {
   fail('working tree is dirty — commit or stash first (use --allow-dirty to override)')
 }
+if (opts.dirty && !opts.dryRun && git(['status', '--porcelain', '--', 'package.json', 'package-lock.json'])) {
+  fail(
+    'package.json/package-lock.json have unrelated changes — commit or stash them first ' +
+      '(the release commit stages both files, so --allow-dirty cannot include them safely)',
+  )
+}
 if (opts.push && !opts.dryRun && !opts.stale) {
+  let fetched = true
   try {
     execFileSync('git', ['fetch', '--quiet', 'origin', opts.branch], { cwd: root })
   } catch {
+    fetched = false
     console.warn(`release: could not fetch origin/${opts.branch} — skipping the up-to-date check`)
   }
   let remoteHead = null
-  try {
-    remoteHead = git(['rev-parse', `origin/${opts.branch}`])
-  } catch {
-    // No remote-tracking ref (no remote, or a brand-new branch) — nothing to compare.
+  if (fetched) {
+    try {
+      remoteHead = git(['rev-parse', `origin/${opts.branch}`])
+    } catch {
+      // No remote-tracking ref (no remote, or a brand-new branch) — nothing to compare.
+    }
   }
   if (remoteHead && remoteHead !== git(['rev-parse', 'HEAD'])) {
     fail(
@@ -177,6 +187,7 @@ if (!opts.dryRun) {
 const url = repoUrl(pkg)
 const nextChangelog = cutChangelog(readFileSync(changelogPath, 'utf8'), version, today(), url)
 const nextPkg = `${JSON.stringify({ ...pkg, version }, null, 2)}\n`
+const lockPath = `${root}/package-lock.json`
 
 if (opts.dryRun) {
   console.log(`release (dry run): ${pkg.version} -> ${version}  tag ${tag}  branch ${branch}`)
@@ -197,23 +208,32 @@ if (opts.verify) {
 
 const originalPkg = readFileSync(pkgPath, 'utf8')
 const originalChangelog = readFileSync(changelogPath, 'utf8')
+const originalLock = readFileSync(lockPath, 'utf8')
+const nextLock = (() => {
+  const lock = JSON.parse(originalLock)
+  lock.version = version
+  lock.packages[''].version = version
+  return `${JSON.stringify(lock, null, 2)}\n`
+})()
 
 let committed = false
 try {
   writeFileSync(pkgPath, nextPkg)
   writeFileSync(changelogPath, nextChangelog)
-  run('git', ['add', 'package.json', 'CHANGELOG.md'])
+  writeFileSync(lockPath, nextLock)
+  run('git', ['add', 'package.json', 'package-lock.json', 'CHANGELOG.md'])
   run('git', ['commit', '-m', `chore(release): ${tag}`])
   committed = true
   run('git', ['tag', '-a', tag, '-m', tag])
 } catch {
-  // Nothing was pushed yet. Put the two files back so a retry isn't blocked by
-  // an already-cut (now empty) [Unreleased] section.
+  // Nothing was pushed yet. Put the files back so a retry isn't blocked by an
+  // already-cut (now empty) [Unreleased] section.
   if (!committed) {
     writeFileSync(pkgPath, originalPkg)
     writeFileSync(changelogPath, originalChangelog)
+    writeFileSync(lockPath, originalLock)
     try {
-      run('git', ['reset', '-q', '--', 'package.json', 'CHANGELOG.md'])
+      run('git', ['reset', '-q', '--', 'package.json', 'package-lock.json', 'CHANGELOG.md'])
     } catch {
       // Best-effort unstage.
     }

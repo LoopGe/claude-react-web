@@ -10,7 +10,7 @@ package, the git tag, the GitHub Release, and the in-app updater stay in sync.
   - While on `0.x`, a breaking change bumps **minor** (the accepted `0.x`
     convention); features bump minor, fixes bump patch.
   - Pre-releases are `X.Y.Z-rc.N`, `-beta.N`, etc., cut with an explicit
-    version (`npm run release --version 0.8.0-rc.1`). The tooling publishes
+    version (`npm run release -- --version 0.8.0-rc.1`). The tooling publishes
     them under the suffix as the npm dist-tag (never `latest`) and marks the
     GitHub Release **pre-release**, so the in-app updater ignores them.
 - **`package.json.version` is the single source of truth.** It is inlined into
@@ -49,10 +49,12 @@ CHANGELOG as the record of intent.
 # 1. Land everything on main, with [Unreleased] filled in.
 git switch main && git pull
 
-# 2. Cut the release. This runs `npm run verify`, bumps package.json, cuts the
-#    CHANGELOG, commits `chore(release): vX.Y.Z`, tags, and pushes both.
-npm run release minor        # or: patch | major | --version 1.2.3
-npm run release --version 0.8.0-rc.1   # prerelease
+# 2. Cut the release. This runs `npm run verify`, bumps package.json and
+#    package-lock.json, cuts the CHANGELOG, commits `chore(release): vX.Y.Z`,
+#    tags, and pushes both.
+npm run release -- minor        # or: patch | major
+npm run release -- --version 1.2.3
+npm run release -- --version 0.8.0-rc.1   # prerelease
 
 # 3. CI takes over: .github/workflows/release.yml publishes to npm (with
 #    provenance) and creates the GitHub Release from the CHANGELOG section.
@@ -67,14 +69,16 @@ Useful flags:
 | `--no-push`       | Commit and tag locally, skip `git push`                              |
 | `--no-verify`     | Skip `npm run verify` (emergency only)                               |
 | `--branch <name>` | Override the expected branch (default `main`)                        |
-| `--allow-dirty`   | Skip the clean-working-tree gate                                     |
+| `--allow-dirty`   | Skip the clean-working-tree gate (package files must still be clean) |
 | `--allow-stale`   | Skip the "in sync with origin" check                                 |
 
 `npm run release` refuses to run when: the working tree is dirty, you are not on
 the expected branch, the tag already exists, `[Unreleased]` is empty, or local
-`main` is out of sync with `origin/main`. If it fails after committing but
+`main` is out of sync with `origin/main`. `package.json` and
+`package-lock.json` must be clean even with `--allow-dirty`, since the release
+commit stages both files. If it fails after committing but
 before tagging it tells you the exact `git tag` to finish with, and a failure
-before the commit restores both files.
+before the commit restores the touched files.
 
 ## Manual fallback
 
@@ -82,7 +86,8 @@ If you have to release by hand:
 
 ```bash
 npm run verify
-# edit package.json version and cut CHANGELOG.md [Unreleased] -> [X.Y.Z] — DATE
+npm version X.Y.Z --no-git-tag-version   # bumps package.json + package-lock.json
+# cut CHANGELOG.md [Unreleased] -> [X.Y.Z] — DATE
 git commit -am "chore(release): vX.Y.Z"
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin main

@@ -38,6 +38,6 @@ body:
     attributes:
       label: claude-react-web version
       description: Output of `claude-react-web --version`
-      placeholder: 0.7.3
+      placeholder: 0.8.0
     validations:
       required: false
