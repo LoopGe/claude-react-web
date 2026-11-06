@@ -99,6 +99,22 @@ export function parseBlocks(css: string): CssBlock[] {
   return out
 }
 
+/** Bodies of EVERY standalone rule whose head is exactly `selector` (at any
+ *  indent, so a media-query redeclaration is matched too). Grouped heads
+ *  (`a, b { … }`) are intentionally NOT matched — the invariant these guards
+ *  assert is about the standalone rule. Comments are blanked first so a `}`
+ *  inside one can neither truncate nor satisfy a body; the body stops at the
+ *  first `}` so single-line rules are captured whole.
+ *
+ *  Regex rather than parseBlocks because parseBlocks attributes an @media
+ *  body to the at-rule opener, hiding the nested selector. */
+export function standaloneRuleBodies(css: string, selector: string): string[] {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const head = new RegExp(`(?:^|\\n)[ \\t]*${escaped} \\{([^}]*)\\}`, 'g')
+  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  return [...stripped.matchAll(head)].map((m) => m[1]!)
+}
+
 /** Every context a custom property can resolve in: a bare `:root`, or a pure
  *  attribute-selector block (`[data-skin="hc"][data-theme="light"]`). Derived
  *  from the file rather than listed, so a skin block added to it is checked

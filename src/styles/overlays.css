@@ -136,8 +136,25 @@
    centered card. The <PanelOverlay> component owns the backdrop-click,
    Esc, focus-trap, and enter/exit animation wiring; this is the visual
    surface. Consumers: InputHistoryPanel, ResumeSessionDialog's panel
-   variant. The older .settings-overlay / .git-overlay inline the same
-   pattern and migrate here incrementally. */
+   variant — both palette-style pickers, so this primitive keeps the narrow
+   CommandPalette card width. SettingsPanel (`.settings-overlay`) and the
+   permission / question dialogs (`.perm-overlay`) keep their own backdrops
+   and semantic card widths. */
+/* Reading-column inset shared by the content-browsing in-panel overlays
+   (Git / Worktree / Turn changes / Tasks). Their card rules
+   (git-panel.css / tasks-panel.css / below) then fill the resulting content
+   box, so their edges line up with the transcript's message cards. Kept as
+   ONE grouped rule rather than two copies: the same contract would otherwise
+   have to be re-applied (and re-reviewed) per file. The mobile bottom-sheet
+   override in utilities.css covers git (not tasks).
+   `.panel-overlay` is NOT part of this group: its consumers are palette-style
+   pickers (InputHistoryPanel, ResumeSessionDialog), which keep the narrow
+   560px CommandPalette width instead of a reading column. */
+.git-overlay, .tasks-overlay {
+  padding-block: var(--space-4);
+  padding-inline: var(--chat-reading-inset);
+}
+
 .panel-overlay {
   position: absolute;
   inset: 0;

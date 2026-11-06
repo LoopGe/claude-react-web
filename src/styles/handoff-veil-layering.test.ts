@@ -13,15 +13,14 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { standaloneRuleBodies } from './contrast-test-utils'
 
 const chatCss = readFileSync(join(process.cwd(), 'src/styles', 'chat.css'), 'utf8')
 
 function zIndexOf(selector: string): number {
-  const head = new RegExp(`(?:^|\n)[ \t]*${selector.replace(/[.>]/g, '\\$&')} \\{([\\s\\S]*?)\n\\}`, 'g')
-  const bodies = [...chatCss.matchAll(head)].map((m) => m[1])
+  const bodies = standaloneRuleBodies(chatCss, selector)
   expect(bodies.length, `standalone "${selector} { … }" rule in chat.css`).toBeGreaterThan(0)
   const zs = bodies
-    .map((b) => b.replace(/\/\*[\s\S]*?\*\//g, ''))
     .map((b) => /z-index:\s*(\d+)/.exec(b)?.[1])
     .filter((z): z is string => !!z)
     .map(Number)

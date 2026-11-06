@@ -4,7 +4,8 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: var(--space-4);
+  /* Reading-column padding is shared by the in-panel overlay backdrops in
+     overlays.css (one grouped rule); this panel's card fills that width. */
   background: color-mix(in srgb, var(--bg) 65%, transparent);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
@@ -23,7 +24,8 @@
   animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
 }
 .git-overlay > .git-panel {
-  width: min(520px, 100%);
+  width: 100%;
+  max-width: var(--chat-reading-max-width);
   max-height: 100%;
   background: var(--bg-elev);
   border: 1px solid var(--border);

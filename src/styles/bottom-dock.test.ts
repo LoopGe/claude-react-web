@@ -31,6 +31,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { standaloneRuleBodies } from './contrast-test-utils'
 
 const css = readFileSync(join(process.cwd(), 'src/styles', 'messages.css'), 'utf8')
 const utilitiesCss = readFileSync(join(process.cwd(), 'src/styles', 'utilities.css'), 'utf8')
@@ -38,20 +39,15 @@ const chatCss = readFileSync(join(process.cwd(), 'src/styles', 'chat.css'), 'utf
 const tokensCss = readFileSync(join(process.cwd(), 'src/styles', 'tokens.css'), 'utf8')
 
 /** Bodies of EVERY standalone rule whose head is exactly `selector` (at any
- *  indent), captured to the next line-start `}`. Same extraction contract as
- *  overlay-backdrop-scroll.test.ts: grouped heads are intentionally not
- *  matched, and every head is asserted to exist. */
+ *  indent). The extractor lives in contrast-test-utils so every stylesheet
+ *  guard shares ONE implementation; each head is asserted to exist. */
 function ruleBodies(selector: string): string[] {
-  const head = new RegExp(`(?:^|\n)[ \t]*${selector.replace(/[.>]/g, '\\$&')} \\{([\\s\\S]*?)\n\\}`, 'g')
-  const bodies = [...css.matchAll(head)].map((m) => m[1])
+  const bodies = standaloneRuleBodies(css, selector)
   expect(bodies.length, `standalone "${selector} { … }" rule in messages.css`).toBeGreaterThan(0)
   return bodies
 }
 
-const declarations = (selector: string) =>
-  ruleBodies(selector)
-    .map((b) => b.replace(/\/\*[\s\S]*?\*\//g, ''))
-    .join('\n')
+const declarations = (selector: string) => ruleBodies(selector).join('\n')
 
 describe('TaskList collapsed dock (prototype variant B)', () => {
   it('collapsed card docks behind the composer with the approved geometry', () => {
@@ -107,10 +103,12 @@ describe('TaskList collapsed dock (prototype variant B)', () => {
     // requires.
     const body = declarations('.dock-rotor-text')
     expect(body).toContain('min-width: 0')
-    const truncateRule = utilitiesCss.match(/(?:^|\n)\.truncate \{([\s\S]*?)\n\}/)
-    expect(truncateRule, 'standalone ".truncate { … }" rule in utilities.css').not.toBeNull()
-    expect(truncateRule![1]).toContain('white-space: nowrap')
-    expect(truncateRule![1]).toContain('text-overflow: ellipsis')
+    const truncateRules = standaloneRuleBodies(utilitiesCss, '.truncate')
+    expect(truncateRules.length, 'standalone ".truncate { … }" rule in utilities.css').toBeGreaterThan(0)
+    for (const rule of truncateRules) {
+      expect(rule).toContain('white-space: nowrap')
+      expect(rule).toContain('text-overflow: ellipsis')
+    }
   })
 
   it("the rotor slide text joins the in_progress rows' shimmer while working", () => {

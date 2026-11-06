@@ -161,7 +161,8 @@
 .turn-review {
   display: flex;
   flex-direction: column;
-  width: min(720px, 100%);
+  width: 100%;
+  max-width: var(--chat-reading-max-width);
   height: 100%;
   min-height: 0;
   border: 1px solid var(--border);
