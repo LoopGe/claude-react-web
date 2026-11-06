@@ -267,7 +267,7 @@ describe('SessionNavStrip', () => {
     expect(container.querySelector<HTMLElement>('.session-nav-tab')!.classList.contains('dormant')).toBe(true)
   })
 
-  it('carries the status and the hidden metadata in the tab tooltip', () => {
+  it('carries the status and hidden metadata in the hover card', () => {
     const sections: SidebarSection[] = [
       {
         kind: 'ungrouped',
@@ -277,16 +277,23 @@ describe('SessionNavStrip', () => {
         ],
       },
     ]
-    renderStrip(sections)
-    const alpha = screen.getByRole('button', { name: 'Alpha' }).getAttribute('title') ?? ''
-    expect(alpha).toContain('Alpha — Dormant')
-    expect(alpha).toContain('/home/user/project')
-    expect(alpha).toContain('sonnet-4 · 5 msgs · 1 viewer')
-    // A plain live session keeps the bare label — "Live" explains nothing.
-    const beta = screen.getByRole('button', { name: 'Beta' }).getAttribute('title') ?? ''
-    expect(beta.startsWith('Beta\n')).toBe(true)
-    expect(beta).not.toContain('—')
-    expect(beta).toContain('/home/user/project')
+    vi.useFakeTimers()
+    try {
+      renderStrip(sections)
+      const alpha = screen.getByRole('button', { name: 'Alpha' })
+      fireEvent.pointerEnter(alpha)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      const pop = document.querySelector('.hover-pop')
+      expect(pop?.textContent).toContain('Dormant')
+      expect(pop?.textContent).toContain('/home/user/project')
+      expect(pop?.textContent).toContain('sonnet-4 · 5 msgs · 1 viewer')
+      // The tab itself no longer carries the native title.
+      expect(alpha.getAttribute('title')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps the focused tab scrolled into view when focus changes', () => {
@@ -322,7 +329,7 @@ describe('SessionNavStrip', () => {
       expect(scrollIntoView).toHaveBeenCalledTimes(1)
       // The scrolled element is the newly-focused tab.
       const calledOn = spy.mock.instances[0] as unknown as HTMLElement
-      expect(calledOn.title.startsWith('Three\n')).toBe(true)
+      expect(calledOn.textContent).toContain('Three')
     } finally {
       spy.mockRestore()
     }

@@ -94,28 +94,25 @@ function sessionMetaLine(s: SessionInfo): string {
   return `${shortenModel(s.model)} · ${s.messageCount} msg${s.messageCount === 1 ? '' : 's'}${viewers}`
 }
 
-/** Multi-line hover detail for a session surface: the status the compact dot
- *  stands for, an error that a higher-precedence status outranks, the working
- *  directory, and the model/message/viewer line. Line order is the reading
- *  order: state first, then where, then the counters. `statusText` lets a
- *  caller fold in App-only state the SessionInfo does not carry (a resume in
- *  flight), keeping the hover wording in step with the dot it explains. */
-export function sessionHoverDetails(s: SessionInfo, statusText = statusLabel(s)): string[] {
-  const lines = [statusText]
-  if (s.error != null && !statusText.includes(s.error)) lines.push(`Error: ${s.error}`)
-  if (s.cwd !== undefined && s.cwd !== '') lines.push(s.cwd)
-  lines.push(sessionMetaLine(s))
-  return lines
+/** Structured hover detail for a session surface. `statusText` lets a caller
+ *  fold in App-only state the SessionInfo does not carry (a resume in flight),
+ *  keeping the hover wording in step with the dot it explains. The error is
+ *  kept separately so the renderer can style it; it is non-null only when the
+ *  higher-precedence status text does not already include it. */
+export interface SessionHoverModel {
+  status: string
+  error: string | null
+  cwd: string | null
+  meta: string
 }
 
-/** Tooltip for a compact header tab: the label, the status text when it
- *  explains something (a plain live session adds none), then the same hover
- *  detail the sidebar card shows. Newlines render as separate native-tooltip
- *  lines. */
-export function tabTitle(label: string, s: SessionInfo): string {
-  const [status, ...rest] = sessionHoverDetails(s)
-  const lead = statusClass(s) === 'live' ? label : `${label} — ${status}`
-  return [lead, ...rest].join('\n')
+export function sessionHoverModel(s: SessionInfo, statusText = statusLabel(s)): SessionHoverModel {
+  return {
+    status: statusText,
+    error: s.error != null && !statusText.includes(s.error) ? s.error : null,
+    cwd: s.cwd !== undefined && s.cwd !== '' ? s.cwd : null,
+    meta: sessionMetaLine(s),
+  }
 }
 
 /** Trim namespace prefixes and long version tails so a model name fits

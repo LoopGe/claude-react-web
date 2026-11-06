@@ -28,8 +28,10 @@ import type { CSSProperties } from 'react'
 import { SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable'
 import type { SessionInfo, SidebarSection } from '../types'
 import { sessionTitleOrFallback } from '../utils/session-title'
-import { tabDotStatus, tabTitle } from '../utils/session-status'
+import { tabDotStatus } from '../utils/session-status'
 import type { TabDotStatus } from '../utils/session-status'
+import { HoverPopover } from './HoverPopover'
+import { SessionHoverContent } from './session-list/SessionHoverContent'
 import { dndData } from '../dnd/payload'
 import { SortableNode } from '../dnd/SortableNode'
 import { CreateMenuButton } from './CreateMenuButton'
@@ -220,6 +222,7 @@ function SessionNavTab({
   dndDisabled?: boolean
 }) {
   const label = sessionTitleOrFallback(session)
+  const tabRef = useRef<HTMLButtonElement>(null)
   // ONE fold per tab render: the working class, the dormant dim, the dot and
   // the tooltip all read this status. A resume-in-flight folds to 'working' —
   // the session is waking up, so it must pulse and shed the dormant dim
@@ -237,41 +240,48 @@ function SessionNavTab({
     </>
   )
   return (
-    <SortableNode
-      id={dnd.nodeId}
-      data={dnd.data}
-      disabled={!!dndDisabled}
-      className={`session-nav-slot${deleting ? ' deleting' : ''}`}
-      nodeAttrs={{ [NAV_ITEM_ID_ATTR]: session.id }}
-    >
-      {({ isDragging, setActivatorNodeRef, listeners }) => (
-        <button
-          type="button"
-          ref={setActivatorNodeRef}
-          {...listeners}
-          className={`session-nav-tab${focused ? ' active' : ''}${isDragging ? ' dragging' : ''}${wash.shown === 'working' ? ' working' : ''}${wash.exiting ? ' exiting' : ''}${status === 'dormant' ? ' dormant' : ''}`}
-          // Pointer-events alone leaves the collapsing tab keyboard-
-          // activatable — inert (same as the exiting shell) drops it from the
-          // tab order while the DELETE is in flight.
-          inert={deleting}
-          aria-pressed={focused}
-          title={tabTitle(label, session)}
-          onClick={() => onSelect(session.id)}
-          // preventDefault lives here (not in the caller) so the native menu
-          // is suppressed synchronously, before any state update can render.
-          onContextMenu={
-            onContextMenu
-              ? (e: React.MouseEvent) => {
-                  e.preventDefault()
-                  onContextMenu(e, session.id)
-                }
-              : undefined
-          }
-        >
-          {content}
-        </button>
-      )}
-    </SortableNode>
+    <>
+      <SortableNode
+        id={dnd.nodeId}
+        data={dnd.data}
+        disabled={!!dndDisabled}
+        className={`session-nav-slot${deleting ? ' deleting' : ''}`}
+        nodeAttrs={{ [NAV_ITEM_ID_ATTR]: session.id }}
+      >
+        {({ isDragging, setActivatorNodeRef, listeners }) => (
+          <button
+            type="button"
+            ref={(node) => {
+              tabRef.current = node
+              setActivatorNodeRef(node)
+            }}
+            {...listeners}
+            className={`session-nav-tab${focused ? ' active' : ''}${isDragging ? ' dragging' : ''}${wash.shown === 'working' ? ' working' : ''}${wash.exiting ? ' exiting' : ''}${status === 'dormant' ? ' dormant' : ''}`}
+            // Pointer-events alone leaves the collapsing tab keyboard-
+            // activatable — inert (same as the exiting shell) drops it from the
+            // tab order while the DELETE is in flight.
+            inert={deleting}
+            aria-pressed={focused}
+            onClick={() => onSelect(session.id)}
+            // preventDefault lives here (not in the caller) so the native menu
+            // is suppressed synchronously, before any state update can render.
+            onContextMenu={
+              onContextMenu
+                ? (e: React.MouseEvent) => {
+                    e.preventDefault()
+                    onContextMenu(e, session.id)
+                  }
+                : undefined
+            }
+          >
+            {content}
+          </button>
+        )}
+      </SortableNode>
+      <HoverPopover triggerRef={tabRef} side="bottom" align="start">
+        <SessionHoverContent session={session} statusText={resuming ? 'Resuming…' : undefined} />
+      </HoverPopover>
+    </>
   )
 }
 

@@ -59,6 +59,19 @@ function statusDot(container: HTMLElement): HTMLElement | null {
   return container.querySelector('.session-status-dot')
 }
 
+/** Hover the card long enough for HoverPopover's dwell. */
+function openHoverCard(container: HTMLElement): void {
+  vi.useFakeTimers()
+  try {
+    fireEvent.pointerEnter(container.querySelector('.session-item')!)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+  } finally {
+    vi.useRealTimers()
+  }
+}
+
 describe('SessionCard single-line layout', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -79,15 +92,25 @@ describe('SessionCard single-line layout', () => {
     expect(container.querySelector('.session-item-meta')).toBeNull()
   })
 
-  it('keeps the hidden metadata on the title hover', () => {
-    const { container } = render(<SessionCard {...baseProps} />)
-    const hover = container.querySelector('.session-item-title > span[title]')?.getAttribute('title') ?? ''
-    expect(hover).toContain('/home/user/project')
-    expect(hover).toContain('sonnet-4')
-    expect(hover).toContain('5 msgs')
-    expect(hover).toContain('1 viewer')
-    expect(hover).toContain('Live')
-    expect(hover).toContain('Double-click to rename')
+  it('shows the hidden metadata in the hover card', () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<SessionCard {...baseProps} />)
+      fireEvent.pointerEnter(container.querySelector('.session-item')!)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      const hover = document.querySelector('.hover-pop')
+      expect(hover?.textContent).toContain('/home/user/project')
+      expect(hover?.textContent).toContain('sonnet-4')
+      expect(hover?.textContent).toContain('5 msgs')
+      expect(hover?.textContent).toContain('1 viewer')
+      expect(hover?.textContent).toContain('Live')
+      // The row itself no longer carries the native title.
+      expect(container.querySelector('.session-item-title > span[title]')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not render the hover sleep or delete buttons', () => {
@@ -208,14 +231,15 @@ describe('SessionCard status tooltip', () => {
     vi.clearAllMocks()
   })
 
-  it('carries the error text on the dot instead of a row', () => {
+  it('carries the error text in the hover card instead of a row', () => {
     const { container } = render(
       <SessionCard {...baseProps} session={makeSession({ error: 'Something failed' })} />,
     )
-    const dot = statusDot(container)
-    expect(dot?.getAttribute('title')).toContain('Something failed')
-    expect(dot?.getAttribute('aria-label')).toContain('Something failed')
     expect(container.textContent).not.toContain('Something failed')
+    openHoverCard(container)
+    // The error IS the status here (a running errored session), so it lives on
+    // the status line; the separate error line is only for the outranked case.
+    expect(document.querySelector('.hover-pop-status')?.textContent).toContain('Something failed')
   })
 
   it('keeps the error reachable when waiting takes the dot', () => {
@@ -225,45 +249,48 @@ describe('SessionCard status tooltip', () => {
         session={makeSession({ working: false, backgroundSubagentCount: 1, error: 'Something failed' })}
       />,
     )
-    const dot = statusDot(container)
-    expect(dot?.classList.contains('status-waiting')).toBe(true)
-    expect(dot?.getAttribute('title')).toContain('background subagent')
-    expect(dot?.getAttribute('title')).toContain('Something failed')
+    expect(statusDot(container)?.classList.contains('status-waiting')).toBe(true)
+    openHoverCard(container)
+    expect(document.querySelector('.hover-pop-status')?.textContent).toContain('background subagent')
+    expect(document.querySelector('.hover-pop-error')?.textContent).toContain('Something failed')
   })
 
-  it('explains the dormant state and its stale error on the dot', () => {
+  it('explains the dormant state and its stale error in the hover card', () => {
     const { container } = render(
       <SessionCard
         {...baseProps}
         session={makeSession({ running: false, error: 'spawn failed' })}
       />,
     )
-    const dot = statusDot(container)
-    expect(dot?.classList.contains('status-dormant')).toBe(true)
-    expect(dot?.getAttribute('title')).toContain('Resume failed')
-    expect(dot?.getAttribute('title')).toContain('spawn failed')
+    expect(statusDot(container)?.classList.contains('status-dormant')).toBe(true)
+    openHoverCard(container)
+    const status = document.querySelector('.hover-pop-status')?.textContent ?? ''
+    expect(status).toContain('Resume failed')
+    expect(status).toContain('spawn failed')
+    // The status text already carries the error, so no duplicate error line.
+    expect(document.querySelector('.hover-pop-error')).toBeNull()
   })
 
   it('names unread alongside the state', () => {
     const { container } = render(<SessionCard {...baseProps} hasUnread />)
     expect(statusDot(container)?.getAttribute('aria-label')).toBe('Unread, Live')
-    expect(statusDot(container)?.getAttribute('title')).toBe('Unread, Live')
   })
 
   it('says resuming while a resume is in flight', () => {
     const { container } = render(
       <SessionCard {...baseProps} session={makeSession({ running: false })} isResuming />,
     )
-    expect(statusDot(container)?.getAttribute('title')).toBe('Resuming…')
+    expect(statusDot(container)?.getAttribute('aria-label')).toBe('Resuming…')
   })
 
-  it('keeps the resuming wording in the title hover', () => {
+  it('keeps the resuming wording in the hover card', () => {
     const { container } = render(
       <SessionCard {...baseProps} session={makeSession({ running: false })} isResuming />,
     )
-    const hover = container.querySelector('.session-item-title > span[title]')?.getAttribute('title') ?? ''
-    expect(hover.startsWith('Resuming…')).toBe(true)
-    expect(hover).not.toContain('Dormant')
+    openHoverCard(container)
+    const status = document.querySelector('.hover-pop-status')?.textContent ?? ''
+    expect(status.startsWith('Resuming…')).toBe(true)
+    expect(status).not.toContain('Dormant')
   })
 })
 

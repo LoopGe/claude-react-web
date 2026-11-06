@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, fireEvent, screen } from '@testing-library/react'
+import { render, fireEvent, screen, act } from '@testing-library/react'
 import { DesktopTitlebarTabs } from './DesktopTitlebarTabs'
 import type { SessionInfo } from '../types'
 
@@ -93,11 +93,25 @@ describe('DesktopTitlebarTabs', () => {
 })
 
 describe('DesktopTitlebarTabs status dots', () => {
-  it('renders the dormant hollow-ring dot, marks the tab dormant, and says so in the tooltip', () => {
-    setup([makeSession({ id: 's1', title: 'Alpha', running: false })])
-    expect(document.querySelectorAll('.titlebar-tab .session-status-dot.status-dormant')).toHaveLength(1)
-    expect(document.querySelector<HTMLElement>('.titlebar-tab')!.classList.contains('dormant')).toBe(true)
-    expect(document.querySelector<HTMLElement>('.titlebar-tab')!.getAttribute('title')).toContain('Alpha — Dormant')
+  it('renders the dormant hollow-ring dot, marks the tab dormant, and explains it on hover', () => {
+    vi.useFakeTimers()
+    try {
+      setup([makeSession({ id: 's1', title: 'Alpha', running: false })])
+      expect(document.querySelectorAll('.titlebar-tab .session-status-dot.status-dormant')).toHaveLength(1)
+      const tab = document.querySelector<HTMLElement>('.titlebar-tab')!
+      expect(tab.classList.contains('dormant')).toBe(true)
+      fireEvent.pointerEnter(tab)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      const pop = document.querySelector('.hover-pop')
+      expect(pop?.textContent).toContain('Dormant')
+      expect(pop?.textContent).toContain('/home/user/project')
+      // The tab itself no longer carries the native title.
+      expect(tab.getAttribute('title')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('leaves a live idle tab dot-free', () => {

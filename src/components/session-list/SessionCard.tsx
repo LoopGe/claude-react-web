@@ -5,16 +5,18 @@
 //
 // One line only: slot / pending badge, permission-mode glyph, title, and the
 // status dot shared with the header tabs. Everything else (cwd, model, message
-// and viewer counts, sleep/delete) is deliberately absent — the hover title
-// carries the full status explanation and the right-click menu carries the
-// actions, so the row stays scannable.
+// and viewer counts, sleep/delete) is deliberately absent — the HoverPopover
+// carries the full status/path/counter detail and the right-click menu carries
+// the actions, so the row stays scannable.
 
 import { memo, useEffect, useRef, useState } from 'react'
 import { usePresenceValue } from '../../hooks/useExitPresence'
-import { sessionHoverDetails, statusLabel, tabDotStatus } from '../../utils/session-status'
+import { statusLabel, tabDotStatus } from '../../utils/session-status'
 import { cx } from '../../utils/cx'
 import type { SessionInfo } from '../../types'
 import { Tooltip } from '../Tooltip'
+import { HoverPopover } from '../HoverPopover'
+import { SessionHoverContent } from './SessionHoverContent'
 import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
 
 export interface SessionCardProps {
@@ -69,6 +71,7 @@ export const SessionCard = memo(function SessionCard({
   onStartRename,
 }: SessionCardProps) {
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
 
   // Auto-focus + select the inline rename input when it appears.
   useEffect(() => {
@@ -138,21 +141,16 @@ export const SessionCard = memo(function SessionCard({
     ? `${statusText} — ${s.error}`
     : statusText
   const dotAria = hasUnread ? `Unread, ${dotTitle}` : dotTitle
-  // The metadata the row no longer draws (status, error, cwd, model/counts)
-  // stays one hover away, matching the header tab's tooltip. Pass the resuming
-  // wording so the hover agrees with the pulse it explains.
-  const titleHover = [
-    ...sessionHoverDetails(s, isResuming ? 'Resuming…' : undefined),
-    'Double-click to rename',
-  ].join('\n')
   const permissionMode = s.permissionMode ?? 'default'
 
   return (
-    <div
-      onContextMenu={(e) => {
-        e.preventDefault()
-        onContextMenu(e, s.id)
-      }}
+    <>
+      <div
+        ref={rowRef}
+        onContextMenu={(e) => {
+          e.preventDefault()
+          onContextMenu(e, s.id)
+        }}
       className={cx(
         'session-item',
         isFocused ? 'focused' : '',
@@ -278,7 +276,6 @@ export const SessionCard = memo(function SessionCard({
                 e.stopPropagation()
                 onStartRename(s)
               }}
-              title={titleHover}
             >
               {s.title ?? <span className="session-item-id">{s.id.slice(0, 8)}</span>}
             </span>
@@ -288,11 +285,19 @@ export const SessionCard = memo(function SessionCard({
               className={`session-status-dot status-${dot}`}
               role="img"
               aria-label={dotAria}
-              title={dotAria}
             />
           )}
         </div>
       )}
-    </div>
+      </div>
+      <HoverPopover
+        triggerRef={rowRef}
+        side="right"
+        align="start"
+        disabled={isRenaming || isDragging || isDeleting}
+      >
+        <SessionHoverContent session={s} statusText={isResuming ? 'Resuming…' : undefined} />
+      </HoverPopover>
+    </>
   )
 })

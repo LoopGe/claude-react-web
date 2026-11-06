@@ -9,10 +9,12 @@
 // The whole strip is a no-drag island inside the drag region so clicks land
 // on tabs, not on window-move.
 
-import { memo } from 'react'
+import { memo, useRef } from 'react'
 import type { SessionInfo } from '../types'
-import { tabDotStatus, tabTitle } from '../utils/session-status'
+import { tabDotStatus } from '../utils/session-status'
 import { CreateMenuButton } from './CreateMenuButton'
+import { HoverPopover } from './HoverPopover'
+import { SessionHoverContent } from './session-list/SessionHoverContent'
 import type { PromptRequest } from '../hooks/useDialogHosts'
 
 interface Props {
@@ -37,6 +39,70 @@ function tabLabel(s: SessionInfo): string {
   // Fall back to cwd basename so an untitled session is still identifiable.
   const cwd = s.cwd?.split(/[\\/]/).filter(Boolean).pop()
   return cwd || 'Session'
+}
+
+/** One open-panel tab. Owns its own anchor ref so it can mount its
+ *  HoverPopover without wrapping the tab (the strip's flex geometry stays
+ *  untouched). */
+function TitlebarTab({
+  session,
+  selected,
+  resuming,
+  onSelect,
+  onClose,
+}: {
+  session: SessionInfo
+  selected: boolean
+  resuming: boolean
+  onSelect: (id: string) => void
+  onClose: (id: string) => void
+}) {
+  const label = tabLabel(session)
+  // ONE fold per tab: 'working' covers an active turn, a crash recovery
+  // (statusClass's documented fold) and a resume in flight — all three pulse
+  // instead of reading dead. 'dormant' dims the label, the rest carry a status
+  // dot. No unread concept here — the titlebar mirrors open panels, and unread
+  // state lives on the sidebar/strip surfaces.
+  const status = resuming ? 'working' : tabDotStatus(session)
+  const working = status === 'working'
+  const tabRef = useRef<HTMLDivElement>(null)
+  return (
+    <>
+      <div
+        ref={tabRef}
+        className={`titlebar-tab${selected ? ' active' : ''}${working ? ' working' : ''}${status === 'dormant' ? ' dormant' : ''}`}
+        role="button"
+        aria-pressed={selected}
+        tabIndex={0}
+        onClick={() => onSelect(session.id)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault()
+            onSelect(session.id)
+          }
+        }}
+      >
+        <span className="titlebar-tab-label">{label}</span>
+        {working && <span className="titlebar-tab-dot" aria-hidden />}
+        {!working && status && <span className={`session-status-dot status-${status}`} aria-hidden />}
+        <button
+          type="button"
+          className="titlebar-tab-close"
+          aria-label={`Close ${label}`}
+          title="Close panel"
+          onClick={(e) => {
+            e.stopPropagation()
+            onClose(session.id)
+          }}
+        >
+          ×
+        </button>
+      </div>
+      <HoverPopover triggerRef={tabRef} side="bottom" align="start">
+        <SessionHoverContent session={session} statusText={resuming ? 'Resuming…' : undefined} />
+      </HoverPopover>
+    </>
+  )
 }
 
 function NewButton(props: {
@@ -94,50 +160,16 @@ export const DesktopTitlebarTabs = memo(function DesktopTitlebarTabs({
     // roving focus, which this strip does not implement (same call as
     // App.tsx's .main-toolbar). Tabs remain clickable/focusable buttons.
     <div className="titlebar-tabs" role="group" aria-label="Open sessions">
-      {sessions.map((s) => {
-        const selected = s.id === focusedId
-        const label = tabLabel(s)
-        // ONE fold per tab: 'working' covers an active turn, a crash recovery
-        // (statusClass's documented fold) and a resume in flight — all three
-        // pulse instead of reading dead. 'dormant' dims the label, the rest
-        // carry a status dot. No unread concept here — the titlebar mirrors
-        // open panels, and unread state lives on the sidebar/strip surfaces.
-        const status = resumingIds?.has(s.id) ? 'working' : tabDotStatus(s)
-        const working = status === 'working'
-        return (
-          <div
-            key={s.id}
-            className={`titlebar-tab${selected ? ' active' : ''}${working ? ' working' : ''}${status === 'dormant' ? ' dormant' : ''}`}
-            role="button"
-            aria-pressed={selected}
-            tabIndex={0}
-            title={tabTitle(label, s)}
-            onClick={() => onSelect(s.id)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onSelect(s.id)
-              }
-            }}
-          >
-            <span className="titlebar-tab-label">{label}</span>
-            {working && <span className="titlebar-tab-dot" aria-hidden />}
-            {!working && status && <span className={`session-status-dot status-${status}`} aria-hidden />}
-            <button
-              type="button"
-              className="titlebar-tab-close"
-              aria-label={`Close ${label}`}
-              title="Close panel"
-              onClick={(e) => {
-                e.stopPropagation()
-                onClose(s.id)
-              }}
-            >
-              ×
-            </button>
-          </div>
-        )
-      })}
+      {sessions.map((s) => (
+        <TitlebarTab
+          key={s.id}
+          session={s}
+          selected={s.id === focusedId}
+          resuming={resumingIds?.has(s.id) ?? false}
+          onSelect={onSelect}
+          onClose={onClose}
+        />
+      ))}
       <NewButton
         onNewSession={onNewSession}
         onCreateGroup={onCreateGroup}
