@@ -407,7 +407,7 @@ npm test
 | `npm run lint`      | ESLint (includes `react-hooks`)                                                |
 | `npm run format`    | Prettier write                                                                 |
 | `npm test`          | Vitest (server unit tests + client hook tests)                                 |
-| `npm run verify`    | `typecheck` + `lint` + `test` + `build` in one go                              |
+| `npm run verify`    | `typecheck` + `lint` + `verify:agent-notes` + `test` + `build` in one go        |
 | `npm run release`   | Cut a release: bump, changelog, tag, push — see [RELEASING.md](./RELEASING.md) |
 
 ## Contributing

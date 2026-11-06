@@ -22,8 +22,12 @@ coverage/
 /playwright-report/
 # Local probe/worktree directories created during development.
 codesclaude-react-web.*/
+# Local task artifacts; Agent Notes under .agents/notes/ are committed.
+.agents/tasks/
 # Local Claude Code session state (plans, worktrees, settings).
 .claude/
+# Local-only skills (migrated from deepseek-harness); already covered by .claude/.
+.claude/skills/
 
 # Visual brainstorming mockups
 .superpowers/

@@ -406,7 +406,7 @@ npm test
 | `npm run lint`      | ESLint（含 `react-hooks`）                                             |
 | `npm run format`    | Prettier 写入                                                          |
 | `npm test`          | Vitest（服务端单测 + 客户端 Hook 测试）                                |
-| `npm run verify`    | 依次执行 `typecheck` + `lint` + `test` + `build`                       |
+| `npm run verify`    | 依次执行 `typecheck` + `lint` + `verify:agent-notes` + `test` + `build` |
 
 ## 参与贡献
 

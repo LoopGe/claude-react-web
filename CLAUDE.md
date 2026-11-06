@@ -163,6 +163,14 @@ Bare `console.*` is reserved for three cases that must bypass the logger: `log.t
 - **Never commit unreviewed code.** Every code change must pass a review (self-review or peer review) before committing. Run the review against the full diff (`git diff HEAD` for uncommitted, or the commit range for a feature branch), verify findings, and fix any confirmed issues before the commit lands on `main`. A commit without a prior review is a process violation, not a shortcut.
 - **Auto-trigger `code-review` for unreviewed changes.** Whenever there are uncommitted changes that have not yet been through a code review, run the `code-review` skill on the full diff before declaring the work done or committing — don't wait to be asked. Verify each finding against the code before fixing, and re-run the review on non-trivial fixes since those fixes are themselves unreviewed.
 
+## Agent Notes
+
+`.agents/notes/` holds durable decision records — the *why*, the alternatives that lost, and what a change knowingly gave up — for decisions code, tests, and docs cannot explain. Claude Code does not discover this directory; treat `CLAUDE.md` as the entry point and read notes on demand.
+
+- Path-encoded layout: `.agents/notes/{proposed|implemented|rejected}/{feature|bug-fix|simplification|architecture|process|testing}/yyyy-mm-dd-topic-title.md`. The full contract is in `.agents/notes/README.md`.
+- Write or update the owning note in the same change as the decision. Update an existing note rather than duplicating it, and search for superseded notes first; mechanical or local edits are exempt.
+- `npm run verify:agent-notes` gates the structure (also part of `npm run verify`). Do not add an index file.
+
 ## App Plugins (Mods)
 
 A separate extension system (`shared/app-plugins/`, `server/app-plugins/`, `src/app-plugins/`) lets plugins add menus, commands, settings, and panels to the **app shell** — distinct from the Claude Plugin Marketplace (`mp-store`, which extends the agent) and MCP. Plugins declare a `crw-plugin.json` manifest (commands/contextMenus/actions/configuration); background code runs in a per-plugin Node subprocess over JSON-RPC/stdio; the UI surface is declarative, never raw React/DOM. Trust model: a background plugin is a **trusted local program** (can `import node:fs`); permissions are consent UX + Host API feature flags, NOT a sandbox. The enforced boundaries are the network broker (SSRF: HTTPS-only, host allowlist, pinned-IP lookup), workspace adapter (realpath + `isPathInside`), and a cleaned subprocess env (no authToken).

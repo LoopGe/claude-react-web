@@ -29,6 +29,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Agent notes
+        run: npm run verify:agent-notes
+
       - name: Test
         run: npm test
 
@@ -53,6 +56,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Agent notes
+        run: npm run verify:agent-notes
 
       - name: Test Windows platform behavior
         run: >-

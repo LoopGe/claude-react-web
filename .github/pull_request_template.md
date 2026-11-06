@@ -21,7 +21,7 @@ npm run verify
 
 ## Checklist
 
-- [ ] `npm run verify` passes (typecheck + lint + test + build)
+- [ ] `npm run verify` passes (typecheck + lint + agent notes + test + build)
 - [ ] Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) (`type(scope): subject`)
 - [ ] User-visible changes are recorded under `CHANGELOG.md`'s `[Unreleased]` section
 - [ ] Tests were added or updated for behaviour changes
