@@ -32,10 +32,12 @@
 ### Task 1: Pure lifecycle reducer and transition contract
 
 **Files:**
+
 - Create: `src/components/message-list/transcript-scroll-machine.ts`
 - Create: `src/components/message-list/transcript-scroll-machine.test.ts`
 
 **Interfaces:**
+
 - Produces `Attachment`, `Intent`, `Owner`, `WorkRequest`, `ScrollState`, `ScrollEvent`, `ScrollCommand`.
 - Produces `createInitialScrollState(epoch = 0): ScrollState` and `reduceScroll(state: ScrollState, event: ScrollEvent): { state: ScrollState; commands: ScrollCommand[] }`.
 - Uses the exact state/event/command vocabulary from the spec, including `Owner.kind = 'restore'` and `WorkRequest.delivery = 'next-observation' | 'after-owner'`.
@@ -61,10 +63,12 @@ Expected: PASS for all transition and pending-terminal cases.
 ### Task 2: DOM writer and epoch-aware scheduler
 
 **Files:**
+
 - Create: `src/components/message-list/transcript-scroll-writer.ts`
 - Create: `src/components/message-list/transcript-scroll-writer.test.ts`
 
 **Interfaces:**
+
 - Consumes `ScrollCommand` from Task 1.
 - Produces `ScrollScheduler = { raf(cb): number; cancelRaf(id): void; timeout(cb, ms): number; clearTimeout(id): void }`.
 - Produces `createTranscriptScrollWriter({ scheduler, virtuoso }: { scheduler: ScrollScheduler; virtuoso?: VirtuosoHandle | null }): { attach(el: HTMLElement | null): void; execute(commands: ScrollCommand[]): void; dispose(): void }`.
@@ -90,6 +94,7 @@ Expected: PASS.
 ### Task 3: Migrate the React adapter and every existing writer
 
 **Files:**
+
 - Modify: `src/components/message-list/useTranscriptScroll.ts`
 - Modify: `src/components/MessageList.tsx`
 - Modify: `src/App.tsx`
@@ -98,6 +103,7 @@ Expected: PASS.
 - Modify: `src/components/MessageList.test.tsx`
 
 **Interfaces:**
+
 - Consumes the reducer and writer from Tasks 1–2.
 - Extends `TranscriptScrollApi` with `restoreScroll(target: number): void` for App restoration; existing methods remain unless a caller benefits from simplification.
 - React effects only emit events and execute returned commands through the writer.
@@ -123,12 +129,14 @@ Expected: PASS for all non-fold paths and App restoration.
 ### Task 4: Fold session with unified correction scheduling
 
 **Files:**
+
 - Create: `src/components/message-list/fold-scroll-session.ts`
 - Create: `src/components/message-list/fold-scroll-session.test.ts`
 - Modify: `src/components/message-list/useTranscriptScroll.ts`
 - Modify: `src/components/MessageList.test.tsx`
 
 **Interfaces:**
+
 - Produces `createFoldScrollSession(start: { token: number; from: number; to: number }): FoldScrollSession`.
 - `FoldScrollSession.sample(frame: FoldFrame): { kind: 'delta'; delta: number; ledger: number; transform: number } | { kind: 'absolute-bottom'; reason: 'new-body' | 'other-growth' | 'pending' }`.
 - `FoldFrame` carries `bodyHeights`, `itemListDelta`, `contentDelta`, `paddingDelta`, `itemListHeight`, `contentHeight`, `scrollTop`, `scrollHeight`, `clientHeight`, and `devicePixelRatio`; all are measurements only, not writer state.
@@ -155,6 +163,7 @@ Expected: PASS, including all central arbitration cases.
 ### Task 5: Delete obsolete state and simplify lifecycle producers
 
 **Files:**
+
 - Modify: `src/components/message-list/useTranscriptScroll.ts`
 - Modify: `src/components/MessageList.test.tsx`
 - Modify: `src/app/scroll-restoration.test.tsx`
@@ -162,6 +171,7 @@ Expected: PASS, including all central arbitration cases.
 - Modify: `CLAUDE.md` only if the final architecture requires a short ownership note
 
 **Interfaces:**
+
 - Uses the completed reducer, writer, and fold session from Tasks 1–4.
 
 - [ ] **Step 1: Add source-level ownership and lifecycle tests**
@@ -185,6 +195,7 @@ Expected: PASS.
 ### Task 6: Whole-system verification and review
 
 **Files:**
+
 - Review all files above and the real browser trace; no scope expansion.
 
 - [ ] **Step 1: Run focused and complete automated checks**
