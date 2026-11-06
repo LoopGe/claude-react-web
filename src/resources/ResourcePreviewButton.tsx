@@ -4,6 +4,7 @@
 
 import { useCallback, useSyncExternalStore } from 'react'
 import { IconEye } from '../components/icons/ToolIcons'
+import { HoverHint } from '../components/HoverHint'
 import { useResourcePaneStore } from './context'
 import type { ResourcePaneState } from './tab-store'
 
@@ -22,24 +23,29 @@ export function ResourcePreviewButton({ sessionId }: { sessionId: string | null 
   const expanded = state.expanded
   const label = expanded ? 'Hide resource preview' : 'Show resource preview'
   return (
-    <button
-      type="button"
-      className={`btn btn-icon resource-preview-btn${expanded ? ' active' : ''}`}
-      title={tabs === 0 ? 'No resource previews open in this panel' : label}
-      aria-label={tabs > 0 ? `${label} (${tabs} open)` : label}
-      aria-pressed={expanded}
-      onClick={() => {
-        // No tabs yet → nothing to show; the button stays enabled so it reads
-        // as a normal toolbar control instead of a greyed-out one.
-        if (tabs > 0) store.setExpanded(sessionId, !expanded)
-      }}
+    <HoverHint
+      label={tabs === 0 ? 'No resource previews open in this panel' : label}
+      side="bottom"
+      align="end"
     >
-      <IconEye size={16} />
-      {tabs > 0 && (
-        <span className="resource-preview-count" aria-hidden>
-          {tabs}
-        </span>
-      )}
-    </button>
+      <button
+        type="button"
+        className={`btn btn-icon resource-preview-btn${expanded ? ' active' : ''}`}
+        aria-label={tabs > 0 ? `${label} (${tabs} open)` : label}
+        aria-pressed={expanded}
+        onClick={() => {
+          // No tabs yet → nothing to show; the button stays enabled so it reads
+          // as a normal toolbar control instead of a greyed-out one.
+          if (tabs > 0) store.setExpanded(sessionId, !expanded)
+        }}
+      >
+        <IconEye size={16} />
+        {tabs > 0 && (
+          <span className="resource-preview-count" aria-hidden>
+            {tabs}
+          </span>
+        )}
+      </button>
+    </HoverHint>
   )
 }

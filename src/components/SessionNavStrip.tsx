@@ -31,6 +31,7 @@ import { sessionTitleOrFallback } from '../utils/session-title'
 import { tabDotStatus } from '../utils/session-status'
 import type { TabDotStatus } from '../utils/session-status'
 import { HoverPopover } from './HoverPopover'
+import { HoverHint } from './HoverHint'
 import { SessionHoverContent } from './session-list/SessionHoverContent'
 import { dndData } from '../dnd/payload'
 import { SortableNode } from '../dnd/SortableNode'
@@ -511,27 +512,32 @@ export const SessionNavStrip = memo(function SessionNavStrip({
                   }}
                 >
                   {({ isDragging, setActivatorNodeRef, listeners }) => (
-                    <button
-                      type="button"
-                      ref={setActivatorNodeRef}
-                      {...listeners}
-                      className={`session-nav-chip${activeGroupId === sec.group.id ? ' active' : ''}${isDragging ? ' dragging' : ''}`}
-                      aria-pressed={activeGroupId === sec.group.id}
-                      title={sec.group.name}
-                      onClick={() => onActivateGroup(sec.group.id)}
-                      onContextMenu={
-                        onGroupContextMenu
-                          ? (e) => {
-                              e.preventDefault()
-                              onGroupContextMenu(e, sec.group.id)
-                            }
-                          : undefined
-                      }
+                    <HoverHint
+                      label={`Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`}
+                      side="bottom"
+                      align="start"
                     >
-                      {/* Ellipsis must live on a block-ish child, not the flex
-                          container — text-overflow is inert on the button itself. */}
-                      <span className="session-nav-label">{sec.group.name}</span>
-                    </button>
+                      <button
+                        type="button"
+                        ref={setActivatorNodeRef}
+                        {...listeners}
+                        className={`session-nav-chip${activeGroupId === sec.group.id ? ' active' : ''}${isDragging ? ' dragging' : ''}`}
+                        aria-pressed={activeGroupId === sec.group.id}
+                        onClick={() => onActivateGroup(sec.group.id)}
+                        onContextMenu={
+                          onGroupContextMenu
+                            ? (e) => {
+                                e.preventDefault()
+                                onGroupContextMenu(e, sec.group.id)
+                              }
+                            : undefined
+                        }
+                      >
+                        {/* Ellipsis must live on a block-ish child, not the flex
+                            container — text-overflow is inert on the button itself. */}
+                        <span className="session-nav-label">{sec.group.name}</span>
+                      </button>
+                    </HoverHint>
                   )}
                 </SortableNode>
                 <SortableContext items={sp.tabItems} strategy={horizontalListSortingStrategy}>

@@ -19,6 +19,8 @@ import { useLocalStorage } from '../hooks/useLocalStorage'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { downloadJson } from '../utils/downloadJson'
+import { HoverHint } from './HoverHint'
+import { HoverPopover } from './HoverPopover'
 import { IconCircleDot, IconGauge } from './icons/ToolIcons'
 
 const CAPTURE_WINDOW_MS = 10_000
@@ -124,22 +126,27 @@ export function DevTraceButton() {
 
   return (
     <div className="dev-trace-group" role="group" aria-label="Performance trace">
-      <button
-        type="button"
-        className={`btn btn-icon ${capturing ? 'active' : ''}`}
-        onClick={capture}
-        disabled={capturing || recording}
-        title={
+      <HoverHint
+        label={
           capturing
             ? 'Capturing…'
             : recording
               ? 'Stop the recording first'
               : `Capture the last ${CAPTURE_WINDOW_MS / 1000}s (+${CAPTURE_TAIL_MS / 1000}s tail) as a Perfetto trace`
         }
-        aria-label="Capture performance trace"
+        side="bottom"
+        align="end"
       >
-        <IconGauge size={16} />
-      </button>
+        <button
+          type="button"
+          className={`btn btn-icon ${capturing ? 'active' : ''}`}
+          onClick={capture}
+          disabled={capturing || recording}
+          aria-label="Capture performance trace"
+        >
+          <IconGauge size={16} />
+        </button>
+      </HoverHint>
       <button
         ref={recordButtonRef}
         type="button"
@@ -152,17 +159,19 @@ export function DevTraceButton() {
         disabled={capturing}
         aria-haspopup="dialog"
         aria-expanded={menuOpen}
-        title={
-          capturing
-            ? 'Capturing…'
-            : recording
-              ? `Stop recording and save (max ${MAX_RECORD_MS / 1000}s)`
-              : 'Start recording a performance trace; right-click for recording options'
-        }
         aria-label={recording ? 'Stop recording performance trace' : 'Start recording performance trace'}
       >
         <IconCircleDot size={16} />
       </button>
+      {/* recordButtonRef is the menu anchor, so the hint uses HoverPopover
+          directly instead of HoverHint (which owns its trigger ref). */}
+      <HoverPopover triggerRef={recordButtonRef} side="bottom" align="end">
+        {capturing
+          ? 'Capturing…'
+          : recording
+            ? `Stop recording and save (max ${MAX_RECORD_MS / 1000}s)`
+            : 'Start recording a performance trace; right-click for recording options'}
+      </HoverPopover>
       {menuOpen && !recording && (
         <div ref={menuRef} className="dev-trace-menu" role="dialog" aria-label="Trace recording options">
           <div className="dev-trace-menu-title">Record options</div>

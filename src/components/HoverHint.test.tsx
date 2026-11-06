@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { createRef } from 'react'
 import { act, fireEvent, render } from '@testing-library/react'
 import { HoverHint } from './HoverHint'
 
@@ -47,6 +48,16 @@ describe('HoverHint', () => {
     )
     fireEvent.click(container.querySelector('button')!)
     expect(onClick).toHaveBeenCalledTimes(1)
+  })
+
+  it('merges an existing child ref with the anchor ref', () => {
+    const childRef = createRef<HTMLButtonElement>()
+    render(
+      <HoverHint label="Hint">
+        <button type="button" ref={childRef}>Trigger</button>
+      </HoverHint>,
+    )
+    expect(childRef.current).toBeInstanceOf(HTMLButtonElement)
   })
 
   it('renders nothing while disabled', () => {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useProfiles } from '../hooks/useProfiles'
 import { api } from '../hooks/useApi'
 import { ProfileActivateDialog } from './ProfileActivateDialog'
+import { HoverHint } from './HoverHint'
 import { IconChevronDown, IconChevronUp } from './icons/ToolIcons'
 import { useToast } from '../hooks/useToast'
 import type { SessionInfo } from '../types'
@@ -72,20 +73,21 @@ export function ProfileSwitcher({ onManageProfiles }: { onManageProfiles?: () =>
 
   return (
     <div className="profile-switcher">
-      <button
-        type="button"
-        className="profile-switcher__trigger"
-        onClick={() => setOpen((v) => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title={active ? `Profile: ${active.name}` : 'No profile'}
-      >
-        <span className="profile-switcher__dot" aria-hidden />
-        <span className="profile-switcher__name">{active?.name ?? 'Default'}</span>
-        <span className="profile-switcher__chevron" aria-hidden>
-          {open ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
-        </span>
-      </button>
+      <HoverHint label={active ? `Profile: ${active.name}` : 'No profile'} side="bottom" align="start">
+        <button
+          type="button"
+          className="profile-switcher__trigger"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+        >
+          <span className="profile-switcher__dot" aria-hidden />
+          <span className="profile-switcher__name">{active?.name ?? 'Default'}</span>
+          <span className="profile-switcher__chevron" aria-hidden>
+            {open ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
+          </span>
+        </button>
+      </HoverHint>
       {open && (
         <div className="profile-switcher__menu" role="menu">
           {profiles.map((p) => (

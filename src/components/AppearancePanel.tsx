@@ -30,6 +30,7 @@ import { ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/an
 import { AccentSwatchGrid } from './AccentPicker'
 import { BackgroundPicker } from './BackgroundPicker'
 import { Switch } from './Switch'
+import { HoverPopover } from './HoverPopover'
 import { Segmented } from './Segmented'
 import { IconSparkles, IconSun, IconMoon, IconMonitor, IconCheck } from './icons/ToolIcons'
 
@@ -445,10 +446,12 @@ export function AppearancePanel({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label="Theme"
-        title="Theme — skin, mode, display & accent"
       >
         <IconSparkles size={16} />
       </button>
+      <HoverPopover triggerRef={triggerRef} side="bottom" align="end">
+        Theme — skin, mode, display &amp; accent
+      </HoverPopover>
       {anchor && (
         <AppearancePopover
           skin={skin}

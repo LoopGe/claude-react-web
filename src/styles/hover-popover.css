@@ -11,7 +11,10 @@
 .hover-pop {
   position: fixed;
   z-index: var(--z-popover);
-  min-width: 160px;
+  /* Size to the text: a short hint ("Attach files") must not sit in a
+     160px-minimum box with empty space on the right. Long cards wrap at
+     max-width. */
+  width: max-content;
   max-width: 320px;
   padding: var(--space-1-5) var(--space-2);
   box-sizing: border-box;

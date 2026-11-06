@@ -144,7 +144,7 @@ describe('SessionNavStrip', () => {
 
   it('activates a group on chip click', () => {
     const { onActivateGroup } = renderStrip(baseSections())
-    fireEvent.click(screen.getByTitle('前端'))
+    fireEvent.click(screen.getByRole('button', { name: '前端' }))
     expect(onActivateGroup).toHaveBeenCalledWith('g1')
   })
 
@@ -152,7 +152,7 @@ describe('SessionNavStrip', () => {
     renderStrip(baseSections(), { focusedId: 's2', activeGroupId: 'g1' })
     expect(screen.getByRole('button', { name: 'Alpha' }).getAttribute('aria-pressed')).toBe('false')
     expect(screen.getByRole('button', { name: 'Beta' }).getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByTitle('前端').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: '前端' }).getAttribute('aria-pressed')).toBe('true')
   })
 
   it('renders the working dot only for working sessions', () => {
@@ -531,7 +531,7 @@ describe('SessionNavStrip drag', () => {
       },
     ]
     renderDndStrip(twoGroups, onDragStart)
-    const chip = screen.getByTitle('前端')
+    const chip = screen.getByRole('button', { name: '前端' })
     fireEvent.pointerDown(chip, {
       button: 0,
       pointerId: 1,
@@ -682,7 +682,7 @@ describe('SessionNavStrip context menus', () => {
   it('reports a group chip right-click with the event and group id', () => {
     const onGroupContextMenu = vi.fn()
     renderStrip(baseSections(), { onGroupContextMenu })
-    const chip = screen.getByTitle('前端')
+    const chip = screen.getByRole('button', { name: '前端' })
     const ev = createEvent.contextMenu(chip)
     fireEvent(chip, ev)
     expect(onGroupContextMenu).toHaveBeenCalledTimes(1)
@@ -692,7 +692,7 @@ describe('SessionNavStrip context menus', () => {
   it('right-click does not activate the group', () => {
     const onActivateGroup = vi.fn()
     renderStrip(baseSections(), { onActivateGroup, onGroupContextMenu: vi.fn() })
-    const chip = screen.getByTitle('前端')
+    const chip = screen.getByRole('button', { name: '前端' })
     fireEvent(chip, createEvent.contextMenu(chip))
     expect(onActivateGroup).not.toHaveBeenCalled()
   })

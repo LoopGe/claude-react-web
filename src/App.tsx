@@ -12,6 +12,7 @@ import { ContextMenu } from './components/ContextMenu'
 import type { SessionDeleteHandler, SessionDeleteOptions } from './components/session-delete-menu'
 import { closeAllContextMenus } from './components/context-menu-registry'
 import { DialogHosts } from './components/DialogHosts'
+import { HoverHint } from './components/HoverHint'
 import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
 import { PANEL_CACHE_EXTRA, evictFromCache, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshot, type PanelScrollSnapshot } from './utils/panel-cache'
@@ -5096,15 +5097,20 @@ export function App() {
           {/* Desktop sidebar hide/show toggle. Rendered only on desktop — on mobile
               the sidebar is a drawer controlled by the hamburger (drawer-toggle). */}
           {!isMobile && (
-            <button
-              className="btn btn-icon"
-              onClick={toggleSidebarCollapsed}
-              aria-pressed={!sidebarCollapsed}
-              aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
-              title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+            <HoverHint
+              label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+              side="bottom"
+              align="start"
             >
-              <IconSidebar size={16} />
-            </button>
+              <button
+                className="btn btn-icon"
+                onClick={toggleSidebarCollapsed}
+                aria-pressed={!sidebarCollapsed}
+                aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+              >
+                <IconSidebar size={16} />
+              </button>
+            </HoverHint>
           )}
           <ProfileSwitcher onManageProfiles={() => setGlobalSettingsOpen(true)} />
           {/* Full-session nav strip (hosts without a custom titlebar:
@@ -5219,18 +5225,23 @@ export function App() {
               keyboard promise we don't keep. */}
           <div className="main-toolbar" role="group" aria-label="App actions">
             {import.meta.env.DEV && <DevTraceButton />}
-            <button
-              className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
-              onClick={() => void notifications.toggle()}
-              title={notificationTooltip(notifications.permission, notifications.enabled)}
-              disabled={notifications.permission === 'unsupported'}
-              aria-label="Toggle desktop notifications"
+            <HoverHint
+              label={notificationTooltip(notifications.permission, notifications.enabled)}
+              side="bottom"
+              align="end"
             >
-              <span className={`notification-icon ${notifications.enabled ? 'enabled' : 'disabled'}`}>
-                <IconBell size={16} className="slot-morph notification-icon-bell" />
-                <IconBellOff size={16} className="slot-morph notification-icon-bell-off" />
-              </span>
-            </button>
+              <button
+                className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
+                onClick={() => void notifications.toggle()}
+                disabled={notifications.permission === 'unsupported'}
+                aria-label="Toggle desktop notifications"
+              >
+                <span className={`notification-icon ${notifications.enabled ? 'enabled' : 'disabled'}`}>
+                  <IconBell size={16} className="slot-morph notification-icon-bell" />
+                  <IconBellOff size={16} className="slot-morph notification-icon-bell-off" />
+                </span>
+              </button>
+            </HoverHint>
             <AppearancePanel
               skin={skin}
               mode={theme}
@@ -5246,27 +5257,29 @@ export function App() {
               onDisplayPrefChange={handleDisplayPrefChange}
               className="btn btn-icon"
             />
-            <button
-              className="btn btn-icon"
-              onClick={() => setUploadsDialogOpen(true)}
-              title="Uploaded files"
-              aria-label="Uploaded files"
-            >
-              <IconFolderSearch size={16} />
-            </button>
+            <HoverHint label="Uploaded files" side="bottom" align="end">
+              <button
+                className="btn btn-icon"
+                onClick={() => setUploadsDialogOpen(true)}
+                aria-label="Uploaded files"
+              >
+                <IconFolderSearch size={16} />
+              </button>
+            </HoverHint>
             {/* Focused panel's resource preview (badge = open tabs). Always
                 rendered for a focused panel; with no tabs the click is a
                 no-op. Falls back to the first open panel when focus was
                 dropped (e.g. the focused session was deleted). */}
             <ResourcePreviewButton sessionId={focusedId ?? openIds[0] ?? null} />
-            <button
-              className="btn btn-icon"
-              onClick={() => setGlobalSettingsOpen(true)}
-              title="Global Settings"
-              aria-label="Global Settings"
-            >
-              <IconSettings size={16} />
-            </button>
+            <HoverHint label="Global Settings" side="bottom" align="end">
+              <button
+                className="btn btn-icon"
+                onClick={() => setGlobalSettingsOpen(true)}
+                aria-label="Global Settings"
+              >
+                <IconSettings size={16} />
+              </button>
+            </HoverHint>
           </div>
         </header>
 

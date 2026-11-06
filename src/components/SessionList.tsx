@@ -18,6 +18,7 @@ import { SessionContextMenu } from './session-list/SessionContextMenu'
 import { buildGroupContextMenuItems } from './session-list/groupMenuItems'
 import { SessionCard } from './session-list/SessionCard'
 import { DialogHosts } from './DialogHosts'
+import { HoverHint } from './HoverHint'
 import { useDialogHosts } from '../hooks/useDialogHosts'
 import { ContextMenu } from './ContextMenu'
 import type { SessionDeleteHandler } from './session-delete-menu'
@@ -603,26 +604,31 @@ export const SessionList = memo(function SessionList({
   return (
     <>
       <div className="session-list-top">
-        <button
-          className={`btn btn-primary new-session-btn ${dropZoneActive ? 'drop-target' : ''}`}
-          style={{ width: '100%' }}
-          onClick={() => setShowDialog(true)}
-          onDragOver={(e) => {
-            // Accept anything that carries a file-uri — that covers folder
-            // drops from native file managers (Nautilus, Finder, Windows
-            // Explorer all write text/uri-list). We *don't* preventDefault
-            // for in-app session-card drags; those are handled elsewhere.
-            if (e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes('text/uri-list')) {
-              e.preventDefault()
-              setDropZoneActive(true)
-            }
-          }}
-          onDragLeave={() => setDropZoneActive(false)}
-          onDrop={(e) => void handleFolderDrop(e)}
-          title="New session (Alt+N) · drop a folder here to prefill cwd"
+        <HoverHint
+          label="New session (Alt+N) · drop a folder here to prefill cwd"
+          side="bottom"
+          align="start"
         >
-          + New session
-        </button>
+          <button
+            className={`btn btn-primary new-session-btn ${dropZoneActive ? 'drop-target' : ''}`}
+            style={{ width: '100%' }}
+            onClick={() => setShowDialog(true)}
+            onDragOver={(e) => {
+              // Accept anything that carries a file-uri — that covers folder
+              // drops from native file managers (Nautilus, Finder, Windows
+              // Explorer all write text/uri-list). We *don't* preventDefault
+              // for in-app session-card drags; those are handled elsewhere.
+              if (e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes('text/uri-list')) {
+                e.preventDefault()
+                setDropZoneActive(true)
+              }
+            }}
+            onDragLeave={() => setDropZoneActive(false)}
+            onDrop={(e) => void handleFolderDrop(e)}
+          >
+            + New session
+          </button>
+        </HoverHint>
         {/* Filter input: visible only when there are at least a handful
             of sessions. Keep it mounted so threshold changes animate instead
             of snapping in/out. */}
@@ -671,29 +677,34 @@ export const SessionList = memo(function SessionList({
                 disabled={isMobile || !onReorderGroups || groups.length <= 1}
               >
                 {({ isDragging, setActivatorNodeRef, listeners }) => (
-                  <button
-                    ref={setActivatorNodeRef}
-                    type="button"
-                    data-group-pill-id={g.id}
-                    className={`group-pill ${g.id === activeGroupId ? 'active' : ''} ${
-                      isDragging ? 'dragging' : ''
-                    }`}
-                    aria-pressed={g.id === activeGroupId}
-                    title={`Activate "${g.name}" (${g.sessionIds.length} sessions)${i < 9 ? ` · Alt+${i + 1}` : ''} · right-click for options · drag to reorder`}
-                    {...listeners}
-                    onClick={() => onActivateGroup(g.id)}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      setGroupMenuTarget(g.id)
-                      setGroupMenuPos({ x: e.clientX, y: e.clientY })
-                    }}
+                  <HoverHint
+                    label={`Activate "${g.name}" (${g.sessionIds.length} sessions)${i < 9 ? ` · Alt+${i + 1}` : ''} · right-click for options · drag to reorder`}
+                    side="bottom"
+                    align="start"
                   >
-                    {showGroupHints && i < 9 && (
-                      <span className="group-pill-hint" aria-hidden="true">{i + 1}</span>
-                    )}
-                    {g.name}
-                    <span className="group-pill-count">{g.sessionIds.length}</span>
-                  </button>
+                    <button
+                      ref={setActivatorNodeRef}
+                      type="button"
+                      data-group-pill-id={g.id}
+                      className={`group-pill ${g.id === activeGroupId ? 'active' : ''} ${
+                        isDragging ? 'dragging' : ''
+                      }`}
+                      aria-pressed={g.id === activeGroupId}
+                      {...listeners}
+                      onClick={() => onActivateGroup(g.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        setGroupMenuTarget(g.id)
+                        setGroupMenuPos({ x: e.clientX, y: e.clientY })
+                      }}
+                    >
+                      {showGroupHints && i < 9 && (
+                        <span className="group-pill-hint" aria-hidden="true">{i + 1}</span>
+                      )}
+                      {g.name}
+                      <span className="group-pill-count">{g.sessionIds.length}</span>
+                    </button>
+                  </HoverHint>
                 )}
               </SortableNode>
             ))}
@@ -824,6 +835,15 @@ export const SessionList = memo(function SessionList({
                 >
                   {({ isDragging: groupDragging, isOverDrop, setActivatorNodeRef, listeners }) => (
                     <>
+                  <HoverHint
+                    label={
+                      isMobile
+                        ? `${collapsed ? 'Expand' : 'Collapse'} ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
+                        : `Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
+                    }
+                    side="right"
+                    align="start"
+                  >
                   <div
                     ref={setActivatorNodeRef}
                     className={`session-group-header list-first${collapsed || sec.sessions.length === 0 ? ' list-last' : ''} ${
@@ -861,11 +881,6 @@ export const SessionList = memo(function SessionList({
                         else onActivateGroup(sec.group.id)
                       }
                     }}
-                    title={
-                      isMobile
-                        ? `${collapsed ? 'Expand' : 'Collapse'} ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
-                        : `Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
-                    }
                   >
                     <button
                       className="group-collapse-arrow"
@@ -913,6 +928,7 @@ export const SessionList = memo(function SessionList({
                       </span>
                     )}
                   </div>
+                  </HoverHint>
                   <AnimatedCollapse open={!collapsed} className="session-group-collapse">
                     {sec.sessions.length > 0 ? (
                       <GroupSessionBody
