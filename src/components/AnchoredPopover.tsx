@@ -2,33 +2,27 @@
 // to <body>, measured after layout and nudged back inside the viewport, Esc via
 // the shared escape stack, outside-mousedown via the shared hook (with the open
 // row as triggerRef so its own toggle click closes cleanly instead of
-// close→reopen flicker). Keeps re-measuring while open — the anchor row can
-// scroll, churn, or be hidden under a fixed popover.
+// close→reopen flicker). Re-measuring while open comes from useAnchorPosition.
 //
 // Follows the ContextMenu pattern for the portal (an ancestor carrying
 // filter/transform/backdrop-filter would otherwise become the containing block
 // — see ContextMenu.tsx's canonical note). CSS owns the shape via the caller's
-// `className`; this component owns coordinates and dismissal only.
+// `className`; this component owns the portal, dismissal and motion only.
 //
 // Consumers: TodoDetailPopover (TaskList rows), MonitorDetailPopover
-// (MonitorBar rows), and ProjectPopover (the ChatPanel project chip). They
-// share this shell so portal, measurement and dismissal stay consistent.
+// (MonitorBar rows), and ProjectPopover (the ChatPanel project chip). Hover-
+// driven surfaces use HoverPopover instead.
 
-import { memo, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { memo, useLayoutEffect, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
 import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import { useAnchorPosition, type AnchorRect } from '../hooks/useAnchorPosition'
 import { markPortaledSurface } from '../theme'
 
-export interface AnchorRect {
-  top: number
-  bottom: number
-  left: number
-  width: number
-  height: number
-}
+export type { AnchorRect } from '../hooks/useAnchorPosition'
 
 export type AnchoredPopoverPlacement = 'above' | 'below'
 
@@ -57,81 +51,18 @@ export const AnchoredPopover = memo(function AnchoredPopover({
   onClose,
   children,
 }: Props) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
-  const [anchorHidden, setAnchorHidden] = useState(false)
   const { popover } = usePopoverMotion()
+  const { ref, x, y, hidden, remeasure } = useAnchorPosition(triggerRef, {
+    side: placement === 'below' ? 'bottom' : 'top',
+    align: 'start',
+    fallbackRect: anchor ?? null,
+  })
 
-  // measure() is also called from motion's onAnimationComplete (below), which
-  // fires outside the layout effect's closure — route it through a ref.
-  const measureRef = useRef<() => void>(() => {})
-
+  // Stamp the portalled surface with its owning panel (the portal breaks DOM
+  // ancestry, so the `[data-portaled]` compensations need the marker).
   useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    markPortaledSurface(el)
-    // Measure-and-place, re-run while open: the row can move under a fixed
-    // popover (transcript scroll, list churn when rows land/expire, window
-    // resize) and the popover's own height changes when its content does.
-    // Re-reading the live trigger rect + re-clamping keeps it glued instead of
-    // frozen at the open-time coordinates.
-    const measure = () => {
-      const r = triggerRef.current?.getBoundingClientRect() ?? anchor
-      // Without either anchor there is no meaningful coordinate to place
-      // against. Keep the surface hidden rather than inventing a zero rect.
-      if (!r) {
-        setAnchorHidden(true)
-        return
-      }
-      // A zero-size trigger means the row is display:none (its panel went
-      // into the keep-alive cache) or detached — there is nothing to anchor
-      // to, so hide instead of clamping to viewport bottom-left. (A visible
-      // row never measures 0×0.)
-      const detached = r.width === 0 && r.height === 0
-      setAnchorHidden(detached)
-      if (detached) return
-      // offsetWidth/Height, not getBoundingClientRect: the latter includes
-      // Motion's in-flight enter transform, so the onAnimationComplete
-      // re-measure would move the popover mid-settle. Shared device-pixel
-      // snapping also re-rasterizes SVG children on the device grid when
-      // `transform: none` tears down the entrance compositing layer.
-      const rectW = el.offsetWidth
-      const rectH = el.offsetHeight
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      const dpr = window.devicePixelRatio || 1
-      const snap = (v: number) => Math.round(v * dpr) / dpr
-      // Horizontal: align to the row's left edge, clamped inside the viewport.
-      const x = snap(Math.min(Math.max(8, r.left), vw - rectW - 8))
-      // Vertical: honor the preferred side and flip when that side cannot fit.
-      // The above path retains its final viewport clamp; below→above keeps
-      // ProjectPopover's legacy flip coordinates (see the offscreen test).
-      let y = placement === 'below' ? snap(r.bottom + 6) : snap(r.top - rectH - 6)
-      if (placement === 'below') {
-        if (y + rectH > vh - 8) y = snap(Math.max(8, r.top - rectH - 6))
-      } else {
-        if (y < 8) y = snap(r.bottom + 6)
-        if (y + rectH > vh - 8) y = snap(Math.max(8, vh - rectH - 8))
-      }
-      // Same coordinates → keep the previous object: the capture-phase scroll
-      // listener fires per frame during transcript autoscroll, and a fresh
-      // object per event would re-render the popover every frame.
-      setPos((prev) => (prev !== null && prev.x === x && prev.y === y ? prev : { x, y }))
-    }
-    measureRef.current = measure
-    measure()
-    window.addEventListener('resize', measure)
-    // capture: the transcript scroller is an inner element — its scroll
-    // events don't bubble, but capture-phase window sees them all.
-    window.addEventListener('scroll', measure, true)
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => {
-      window.removeEventListener('resize', measure)
-      window.removeEventListener('scroll', measure, true)
-      ro.disconnect()
-    }
-  }, [anchor, triggerRef, placement])
+    if (ref.current !== null) markPortaledSurface(ref.current)
+  }, [ref])
 
   useOutsideMouseDown({ ref, onClose, triggerRef })
 
@@ -141,12 +72,15 @@ export const AnchoredPopover = memo(function AnchoredPopover({
     getContainer: () => ref.current,
   })
 
-  const hidden = pos === null || anchorHidden
   return createPortal(
     <motion.div
       ref={ref}
       className={className}
-      style={{ left: pos?.x, top: pos?.y, visibility: hidden ? 'hidden' : undefined }}
+      style={{
+        left: x ?? undefined,
+        top: y ?? undefined,
+        visibility: hidden || x === null || y === null ? 'hidden' : undefined,
+      }}
       role="dialog"
       aria-label={ariaLabel}
       initial={popover.initial}
@@ -154,7 +88,7 @@ export const AnchoredPopover = memo(function AnchoredPopover({
       exit={popover.exit}
       // The entrance scale transform skews the first measured height (~2%
       // short) and no layout event follows it — re-measure once it settles.
-      onAnimationComplete={() => measureRef.current()}
+      onAnimationComplete={() => remeasure()}
       // The outside-click listener is on window; a press inside the popover
       // must not dismiss it (same stopPropagation as ContextMenu).
       onMouseDown={(e) => e.stopPropagation()}
