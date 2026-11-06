@@ -6,6 +6,8 @@ export const PANEL_RESHOW_SETTLE_MS = 750
 
 /** A programmatic transcript seek supersedes App's pre-show offset re-assert. */
 export const TRANSCRIPT_SEEK_EVENT = 'crw:transcript-seek'
+/** Restore App's remembered pixel target through the transcript lifecycle writer. */
+export const TRANSCRIPT_RESTORE_EVENT = 'crw:transcript-restore'
 /** Ask the row owner to mount a virtualized scroll-memory anchor by message id. */
 export const TRANSCRIPT_ANCHOR_REVEAL_EVENT = 'crw:transcript-anchor-reveal'
 
