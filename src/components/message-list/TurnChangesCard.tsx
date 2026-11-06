@@ -7,7 +7,7 @@
  * transcript.
  */
 import { useCallback, useId, useLayoutEffect, useState } from 'react'
-import type { TurnChangedFile } from '../../../shared/turn-changes.js'
+import { countsLabel, type TurnChangedFile } from '../../../shared/turn-changes.js'
 import { useEnterOnArrival } from '../../hooks/useEnterOnArrival'
 import { useTurnChanges } from '../../hooks/useTurnChanges'
 import { prefersReducedMotion } from '../../utils/reduced-motion'
@@ -25,8 +25,9 @@ function basename(display: string): string {
 
 /** Added/deleted counts (or the binary/oversized label). */
 export function Counts({ file }: { file: TurnChangedFile }) {
-  if (file.binary === true) return <span className="turn-changes-note-inline">binary</span>
-  if (file.oversized === true) return <span className="turn-changes-note-inline">too large</span>
+  if (file.binary === true || file.oversized === true) {
+    return <span className="turn-changes-note-inline">{countsLabel(file)}</span>
+  }
   return (
     <>
       <span className="turn-changes-added">+{file.additions}</span>

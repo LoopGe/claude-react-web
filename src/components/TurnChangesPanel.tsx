@@ -1,15 +1,19 @@
 /**
- * Per-turn change review: every file one turn changed on the left, the
- * selected file's turn-start / turn-end comparison on the right. Opened from
- * the transcript's changed-files card.
+ * Per-turn change review: the changed-file picker lives in the header (a
+ * FieldPicker dropdown — the whole body belongs to the diff), showing the
+ * selected file's turn-start / turn-end comparison. Opened from the
+ * transcript's changed-files card.
  */
-import { useState } from 'react'
+import { useId, useState } from 'react'
+import { motion } from 'motion/react'
 import type { TurnDiffPayload, TurnDiffViewMode } from '../../shared/turn-changes.js'
+import { countsLabel } from '../../shared/turn-changes.js'
 import { api } from '../hooks/useApi'
 import { useTurnChanges, useTurnDiff } from '../hooks/useTurnChanges'
-import { Counts } from './message-list/TurnChangesCard'
+import { ENTER_TRANSITION } from '../utils/transitions'
 import { TurnDiffView } from './TurnDiffView'
 import { FullDiffViewer } from './FullDiffViewer'
+import { FieldPicker } from './FieldPicker'
 
 export interface TurnChangesPanelProps {
   sessionId: string
@@ -21,6 +25,9 @@ export interface TurnChangesPanelProps {
 }
 
 export function TurnChangesPanel({ sessionId, resultUuid, initialIndex, onClose }: TurnChangesPanelProps) {
+  // Up to 3 chat panels can host this overlay at once — the picker's trigger /
+  // menu / option ids must be unique per instance.
+  const pickerId = useId()
   const { loading, summary } = useTurnChanges(sessionId, resultUuid)
   const [selected, setSelected] = useState(initialIndex)
   const [view, setView] = useState<TurnDiffViewMode>('full-file')
@@ -60,34 +67,37 @@ export function TurnChangesPanel({ sessionId, resultUuid, initialIndex, onClose 
         <span className="turn-review-stat">
           {summary.total} file{summary.total === 1 ? '' : 's'} · +{summary.added} −{summary.deleted}
         </span>
+        <div className="turn-review-file-select">
+          <FieldPicker
+            id={pickerId}
+            label={selectedFile.display}
+            sub={countsLabel(selectedFile)}
+            menuLabel="Changed files in this turn"
+            options={summary.files.map((file, index) => ({
+              key: file.display,
+              label: file.display,
+              sub: countsLabel(file),
+              selected: index === selected,
+              onSelect: () => { setSelected(index); setFullOpen(false) },
+            }))}
+          />
+        </div>
+        <div className="turn-review-diff-modes" role="group" aria-label="Diff view">
+          <button type="button" aria-pressed={view === 'changes'} onClick={() => { selectView('changes') }}>Part</button>
+          <button type="button" aria-pressed={view === 'full-file'} onClick={() => { selectView('full-file') }}>Full</button>
+        </div>
         <button type="button" className="turn-review-close" aria-label="Close turn changes" onClick={onClose}>
           ×
         </button>
       </header>
-      <div className="turn-review-body">
-        <ul className="turn-review-files">
-          {summary.files.map((file, index) => (
-            <li key={file.display}>
-              <button
-                type="button"
-                className={`turn-review-file${index === selected ? ' selected' : ''}`}
-                aria-pressed={index === selected}
-                onClick={() => { setSelected(index); setFullOpen(false) }}
-              >
-                <span className="turn-changes-path">{file.display}</span>
-                <span className="turn-changes-counts"><Counts file={file} /></span>
-              </button>
-            </li>
-          ))}
-        </ul>
-        <div className="turn-review-diff">
-          <div className="turn-review-diff-toolbar">
-            <span className="turn-review-diff-path">{selectedFile.display}</span>
-            <div className="turn-review-diff-modes" role="group" aria-label="Diff view">
-              <button type="button" aria-pressed={view === 'changes'} onClick={() => { selectView('changes') }}>Changes</button>
-              <button type="button" aria-pressed={view === 'full-file'} onClick={() => { selectView('full-file') }}>Full file</button>
-            </div>
-          </div>
+      <div className="turn-review-diff">
+        <motion.div
+          key={`${selected}:${view}`}
+          className="turn-review-diff-anim"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={ENTER_TRANSITION}
+        >
           {diffLoading ? (
             <span className="turn-changes-note">Loading comparison…</span>
           ) : diff === null || !diff.available ? (
@@ -100,15 +110,15 @@ export function TurnChangesPanel({ sessionId, resultUuid, initialIndex, onClose 
             <span className="turn-changes-note">File too large to preview</span>
           ) : (
             <TurnDiffView
-              key={`${selected}:${view}`}
               text={diff.patch ?? ''}
               view={view}
               truncated={diff.truncated === true}
               totalLines={diff.totalLines ?? 0}
               onShowFull={view === 'changes' && diff.truncated === true ? () => { setFullOpen(true) } : undefined}
+              filePath={selectedFile.path}
             />
           )}
-        </div>
+        </motion.div>
       </div>
       <FullDiffViewer
         open={fullOpen && view === 'changes'}
