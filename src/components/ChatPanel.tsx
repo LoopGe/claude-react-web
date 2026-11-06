@@ -3,7 +3,6 @@
  *  placeholder when the session's Query isn't live. */
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
 import { SessionBody, errorCardState } from './SessionErrorCard'
@@ -16,6 +15,8 @@ import type { SessionDeleteHandler } from './session-delete-menu'
 import { DialogHosts } from './DialogHosts'
 import { WorktreeIsolationBadge } from './WorktreeIsolationBadge'
 import { Tooltip } from './Tooltip'
+import { ChatPanelGitChip } from './ChatPanelGitChip'
+import { ChatPanelWorktreeChip } from './ChatPanelWorktreeChip'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { useSessionActiveWorktree } from '../session-store/selectors'
@@ -37,8 +38,7 @@ import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { basenameOf, initialOf } from '../utils/paths'
 import { ProjectPopover } from './ProjectPopover'
-import { gitChipText } from '../utils/git-chip'
-import { IconCheck, IconSparkles, IconLoader, IconGauge, IconBrain, IconLayers, IconGitBranch, IconGitFork, IconEyeOff, IconMask } from './icons/ToolIcons'
+import { IconCheck, IconSparkles, IconLoader, IconGauge, IconBrain, IconLayers, IconEyeOff, IconMask } from './icons/ToolIcons'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { PermissionModeIcon, permissionModeLabel, permissionModeShortLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingDisplay, ThinkingSetting } from '../types'
@@ -50,30 +50,6 @@ import type { MessageJumpTarget } from '../../shared/message-jump'
 import type { GlobalPrefs } from '../types/config'
 import { resolveSessionPrefs } from '../types/config'
 import type { ComposerSnippetsApi } from '../hooks/useComposerSnippets'
-
-/** Chip tooltip — verbose form for users who hover before clicking.
- *  Returns a ReactNode (one <div> per line) rather than a `\n`-joined
- *  string: newlines inside HTML text collapse to spaces, so the multi-
- *  line intent was previously lost in the Tooltip bubble. Values are
- *  wrapped in `.tt-hl` (utilities.css) — a tinted mono pill that makes
- *  refs/identifiers pop out of the label text. */
-function gitChipTitle(s: GitStatus): ReactNode {
-  const hl = (text: string) => <span className="tt-hl">{text}</span>
-  const lines = [
-    <>Branch: {hl(s.detached ? 'detached HEAD' : (s.branch ?? 'unknown'))}</>,
-    s.upstream ? <>Upstream: {hl(s.upstream)}</> : 'No upstream configured',
-  ]
-  if (s.ahead > 0 || s.behind > 0) lines.push(<>Sync: {hl(`${s.ahead} ahead, ${s.behind} behind`)}</>)
-  lines.push(<>State: {hl(s.state)}</>)
-  lines.push(
-    <>
-      Staged: {hl(String(s.staged.length))} · Unstaged: {hl(String(s.unstaged.length))} · Untracked:{' '}
-      {hl(String(s.untracked.length))}
-    </>,
-  )
-  lines.push('Click to open Git panel')
-  return lines.map((line, i) => <div key={i}>{line}</div>)
-}
 
 /** Reconcile the agent's EnterWorktree intent (a name) against the git
  *  fact of what worktrees actually exist, matching by the conventional
@@ -88,17 +64,6 @@ function worktreeMatch(
   const byBranch = wts.find((w) => w.branch === `worktree-${active.name}`)
   if (byBranch) return byBranch
   return wts.find((w) => w.path.split(/[/\\]/).filter(Boolean).pop() === active.name) ?? null
-}
-
-function worktreeChipTitle(
-  match: GitStatus['linkedWorktrees'][number] | null,
-): ReactNode {
-  const lines = match
-    ? ['Agent isolated in worktree', `Worktree: ${match.path}`, `Branch: ${match.branch ?? 'detached'}`]
-    : ['Agent isolated in worktree', 'Git worktree not yet confirmed']
-  if (match?.locked) lines.push(`Locked: ${match.lockMessage ?? 'yes'}`)
-  lines.push('Click to view worktree changes')
-  return lines.map((line, i) => <div key={i}>{line}</div>)
 }
 
 /** How long a model switch may be in flight before the chip swaps its glyph
@@ -1293,24 +1258,10 @@ export const ChatPanel = memo(function ChatPanel({
                 cwd isn't a git repo or while the status fetch is still
                 settling (no data yet). */}
             {gitStatus.data && gitStatus.data.isRepo === true && (
-              <Tooltip label={gitChipTitle(gitStatus.data)} placement="bottom" align="end">
-                <button
-                  type="button"
-                  className={cx(
-                    'chat-panel-git-badge',
-                    gitStatus.data.state !== 'clean' && gitStatus.data.state !== 'dirty' ? 'conflict' : '',
-                    gitStatus.data.state === 'dirty' ? 'dirty' : '',
-                  )}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onOpenGitPanel(session.id)
-                  }}
-                >
-                  <IconGitBranch size={12} className="chat-panel-git-badge-icon" aria-hidden />
-                  <span className="chat-panel-git-badge-value">{gitChipText(gitStatus.data)}</span>
-                </button>
-              </Tooltip>
+              <ChatPanelGitChip
+                status={gitStatus.data}
+                onOpen={() => onOpenGitPanel(session.id)}
+              />
             )}
             {/* Worktree chip — the agent is isolating work in a worktree
                 opened by EnterWorktree (not yet exited). Distinguishes a
@@ -1319,24 +1270,11 @@ export const ChatPanel = memo(function ChatPanel({
                 opens the Worktree-changes overlay — its own view of what
                 the isolated worktree did, distinct from the git panel. */}
             {activeWorktree && (
-              <Tooltip label={worktreeChipTitle(activeWorktreeMatch)} placement="bottom" align="end">
-                <button
-                  type="button"
-                  className={cx(
-                    'chat-panel-worktree-badge',
-                    'clickable',
-                    activeWorktreeMatch ? '' : 'unconfirmed',
-                  )}
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onOpenWorktree(session.id)
-                  }}
-                >
-                  <IconGitFork size={12} className="chat-panel-worktree-badge-icon" aria-hidden />
-                  <span className="chat-panel-worktree-badge-value">{activeWorktree.name}</span>
-                </button>
-              </Tooltip>
+              <ChatPanelWorktreeChip
+                name={activeWorktree.name}
+                match={activeWorktreeMatch}
+                onOpen={() => onOpenWorktree(session.id)}
+              />
             )}
           </div>
         )}
