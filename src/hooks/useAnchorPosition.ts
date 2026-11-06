@@ -20,7 +20,7 @@
 //   - The capture-phase scroll listener is required: an inner transcript
 //     scroller's scroll events do not bubble to window.
 
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 
 export interface AnchorRect {
@@ -116,9 +116,12 @@ export function useAnchorPosition(
   const measureRef = useRef<() => void>(() => {})
 
   useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
+    // Define the measurer even when the surface has not mounted yet:
+    // HoverPopover portals only while open, and calls remeasure() after that
+    // mount. The mount-time pass here is a no-op; the caller's is not.
     const measure = () => {
+      const el = ref.current
+      if (!el) return
       const triggerEl = triggerRef.current
       const live = triggerEl?.getBoundingClientRect() ?? null
       // A live trigger that measures 0×0 is display:none or detached (a
@@ -187,14 +190,17 @@ export function useAnchorPosition(
     window.addEventListener('resize', measure)
     // capture: inner scrollers do not bubble their scroll events to window.
     window.addEventListener('scroll', measure, true)
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
+    const surface = ref.current
+    const ro = surface !== null ? new ResizeObserver(measure) : null
+    if (ro !== null && surface !== null) ro.observe(surface)
     return () => {
       window.removeEventListener('resize', measure)
       window.removeEventListener('scroll', measure, true)
-      ro.disconnect()
+      ro?.disconnect()
     }
   }, [triggerRef, side, align, gap, margin, fallbackRect, clampAfterFlip])
 
-  return { ref, x: pos?.x ?? null, y: pos?.y ?? null, hidden, anchorRect, remeasure: () => measureRef.current() }
+  const remeasure = useCallback(() => measureRef.current(), [])
+
+  return { ref, x: pos?.x ?? null, y: pos?.y ?? null, hidden, anchorRect, remeasure }
 }

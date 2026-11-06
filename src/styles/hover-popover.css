@@ -1,0 +1,88 @@
+/* Shared hover popover (HoverPopover.tsx).
+ *
+ * Surface language copied from the Git panel: --bg-elev card, 1px --border,
+ * --radius-md, --card-shadow, 12px body, mono for paths/identifiers. The
+ * element is position:fixed and portalled to <body>, so it is never clipped by
+ * an ancestor's overflow and never participates in the trigger's layout.
+ *
+ * Passive popovers keep pointer-events:none; only the interactive variant
+ * accepts input (buttons, focusable rows). */
+
+.hover-pop {
+  position: fixed;
+  z-index: var(--z-popover);
+  min-width: 160px;
+  max-width: 320px;
+  padding: var(--space-1-5) var(--space-2);
+  box-sizing: border-box;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--card-shadow);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.hover-pop-interactive {
+  pointer-events: auto;
+}
+
+/* Default content stack: label/value lines in reading order. */
+.hover-pop-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+
+.hover-pop-status {
+  color: var(--fg);
+}
+
+.hover-pop-error {
+  color: var(--danger-text);
+  overflow-wrap: anywhere;
+}
+
+.hover-pop-path {
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.hover-pop-meta {
+  font-family: var(--mono);
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Value pill (branch names, ids, counts) — the git-chip .tt-hl language. */
+.hover-pop-value {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-3xs);
+  background: var(--bg-elev-2);
+  color: var(--accent-text);
+  font-family: var(--mono);
+}
+
+.hover-pop-sep {
+  height: 1px;
+  background: var(--border);
+  margin: var(--space-1) 0;
+}
+
+.hover-pop-actions {
+  display: flex;
+  gap: var(--space-1);
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-1);
+  padding-top: var(--space-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hover-pop {
+    transition: none;
+  }
+}
