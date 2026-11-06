@@ -51,7 +51,7 @@ import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRow
 import { TRANSCRIPT_REVEAL_ROW_CLASS, TRANSCRIPT_ROW_CLASS, useTranscriptAnimations } from './message-list/useTranscriptAnimations'
 import { useTranscriptScroll } from './message-list/useTranscriptScroll'
 import { scrollDebug as dbg } from './message-list/scroll-debug'
-import { TRANSCRIPT_ANCHOR_REVEAL_EVENT } from './panel-transition'
+import { TRANSCRIPT_ANCHOR_REVEAL_EVENT, TRANSCRIPT_RESTORE_EVENT } from './panel-transition'
 /** The easter-egg game only mounts after a triple-click on the empty state's
  *  icon, so it is not shipped in the entry chunk: its chunk is fetched once
  *  the empty state is on screen (see the prefetch effect in MessageList). */
@@ -409,6 +409,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // Handed to the hook, which owns the scroller element and attaches it from
   // the same ref callback that captures it.
   const setOsScroller = useOverlayScrollbar({ autoHide: 'leave' })
+  const [restoreScroller, setRestoreScroller] = useState<HTMLElement | null>(null)
+  const setTranscriptScroller = useCallback((element: HTMLElement | null) => {
+    setOsScroller(element)
+    setRestoreScroller(element)
+  }, [setOsScroller])
   const bottomStackRef = useRef<HTMLDivElement | null>(null)
   // --- /clear blur ----------------------------------------------------
   // MessageList applies `.chat-messages-clearing` (see messagesClassName
@@ -830,10 +835,12 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     atBottomStateChange,
     jumpToBottom,
     seekToIndex,
+    restoreScroll,
+    restoreScrollToIndex,
     getVisibleTopIndex,
   } = useTranscriptScroll({
     virtuosoRef,
-    setOsScroller,
+    setOsScroller: setTranscriptScroller,
     rowCount: renderableItems.length,
     itemCount: items.length,
     transcriptRevealKey,
@@ -845,6 +852,19 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     showEpoch,
   })
 
+  // App owns scroll-memory snapshots; this transcript owns every write. A
+  // restore request becomes a distinct lifecycle owner and never changes the
+  // user's follow intent.
+  useEffect(() => {
+    if (!restoreScroller) return
+    const restore = (event: Event) => {
+      const { target } = (event as CustomEvent<{ target: number }>).detail
+      restoreScroll(target)
+    }
+    restoreScroller.addEventListener(TRANSCRIPT_RESTORE_EVENT, restore)
+    return () => restoreScroller.removeEventListener(TRANSCRIPT_RESTORE_EVENT, restore)
+  }, [restoreScroller, restoreScroll])
+
 
   // App can encounter a scroll-memory anchor that Virtuoso has virtualized
   // out. Resolve the stable row id here, where the real index and Virtuoso
@@ -854,10 +874,13 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     anchorRowsRef.current = renderableItems
   }, [renderableItems])
   useEffect(() => {
-    const el = messagesElRef.current?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
-    if (!el) return
+    if (!restoreScroller) return
     const reveal = (event: Event) => {
-      const { anchorId } = (event as CustomEvent<{ anchorId: string }>).detail
+      const { anchorId, anchorOffset, fallbackTarget } = (event as CustomEvent<{
+        anchorId: string
+        anchorOffset: number
+        fallbackTarget: number
+      }>).detail
       let index = anchorRowsRef.current.findIndex((row) => row.id === anchorId)
       if (index < 0) {
         index = anchorRowsRef.current.findIndex((row) => row.optimisticSourceId === anchorId)
@@ -866,15 +889,16 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         index = anchorRowsRef.current.findIndex((row) => row.msg.uuid != null && draftRowKeys?.[row.msg.uuid] === anchorId)
       }
       if (index < 0) {
-        el.dataset.crwAnchorMissing = anchorId
+        restoreScroller.dataset.crwAnchorMissing = anchorId
+        restoreScroll(fallbackTarget)
         return
       }
-      delete el.dataset.crwAnchorMissing
-      virtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align: 'start' })
+      delete restoreScroller.dataset.crwAnchorMissing
+      restoreScrollToIndex(index, anchorOffset, fallbackTarget)
     }
-    el.addEventListener(TRANSCRIPT_ANCHOR_REVEAL_EVENT, reveal)
-    return () => el.removeEventListener(TRANSCRIPT_ANCHOR_REVEAL_EVENT, reveal)
-  }, [messagesElRef, virtuosoRef, transcriptRevealKey, draftRowKeys])
+    restoreScroller.addEventListener(TRANSCRIPT_ANCHOR_REVEAL_EVENT, reveal)
+    return () => restoreScroller.removeEventListener(TRANSCRIPT_ANCHOR_REVEAL_EVENT, reveal)
+  }, [restoreScroller, restoreScroll, restoreScrollToIndex, draftRowKeys])
 
   // Scroll to the active search result when it changes.
   const prevSearchActiveRef = useRef<number>(-1)

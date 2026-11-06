@@ -1,54 +1,36 @@
 /**
  * L3 of the transcript list: SCROLL BEHAVIOUR.
  *
- * Everything that reads or writes the scroller's geometry lives here — the
- * bottom-follow gate (mirrored out as `following` state), the rAF follow
- * animation, the re-pin backstops and the settle verification pass.
- * It used to be spread across ~600 lines of `MessageList`, interleaved with row
- * derivation and message rendering, which is why each observer's comment had to
- * explain why it doesn't fight the other two.
+ * `reduceScroll` is the only lifecycle policy machine. It owns attachment,
+ * follow intent, the single continuous-write owner, and pending corrections.
+ * This React adapter measures DOM geometry, classifies user input, and dispatches
+ * named events; it does not keep a parallel owner or intent state machine.
  *
- * The model, in one place:
+ * The writer gateway owns every scroll write, item-list transform, animation
+ * frame, timeout, and Virtuoso fallback. Owner tokens and attachment epochs make
+ * every deferred callback stale-safe. Fold mathematics stays in its pure fold
+ * session, with measured frames delivered through FOLD_FRAME commands.
  *
- *   FOLLOWING   `shouldFollowRef` true. New content pins the viewport to the
- *               bottom, and the bottom is an INVARIANT: every pin is verified
- *               against the geometry for the next few frames, and a viewport
- *               that ends up away from the true bottom while still following is
- *               snapped back. This is the resting state.
- *   AWAY        The user scrolled up. Follow is off. Entered
- *               only by a USER-CAUSED upward scroll ('disable-now' — the scroll
- *               handler requires a fresh wheel / touch / scrollbar-drag gesture,
- *               because the transcript's scrollTop is also moved by our own
- *               pins, by Virtuoso's size corrections and by the browser, and
- *               latching on one of those drops follow for good) or by the
- *               follow-disable debounce confirming a settled non-bottom
- *               geometry. Left by scrolling back to the real bottom or by
- *               invoking jump-to-bottom (the chat right-click menu's
- *               "Scroll to bottom").
- *   ANIMATING   `scrollAnimatingRef` true for the duration of a programmatic
- *               scroll (follow or jump). Mid-animation the viewport is
- *               intentionally not at the bottom, so every geometry consumer
- *               short-circuits while this is set — otherwise the 150ms
- *               follow-disable debounce fires mid-flight and drops us to AWAY.
+ * Follow intent and geometry are separate axes. New content keeps a following
+ * viewport at the true bottom, while USER_LEFT drops intent and cancels pending
+ * bottom work. Only USER_RETURNED_TO_TRUE_BOTTOM or an explicit FOLLOW_REQUESTED
+ * may re-arm it. Spacer-aware bottom describes the viewport above the overlay;
+ * it never substitutes for the true-bottom return event.
  *
- * Writes to `scrollTop` go through exactly three paths: `pinToBottom` (instant
- * snap, used by the re-pin backstops and the follow invariant),
- * `animateScrollToBottom` (the rAF easing loop), and the item-list observer's
- * fold-lockstep compensation (absolute `Math.round(ledger)` writes plus a
- * sub-pixel translateY on the item-list — scroll alone is integer-grained and
- * cannot hold the content below the fold still; see the ledger comment at the
- * branch). Keeping that list at three is the point of this module — a fourth
- * writer added elsewhere is how the viewport ends up fighting itself.
+ * Pending corrections have exactly three outcomes: the writer consumes them, a
+ * lifecycle event cancels them, or they remain observably queued for their named
+ * delivery condition. Hidden/collapsed geometry produces no lifecycle decision.
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
-import { anyCollapseAnimatingInside, bodyHeightDelta, snapshotBodyHeights, type BodyHeightSnapshot } from '../collapse-animation'
+import { anyCollapseAnimatingInside, snapshotBodyHeights } from '../collapse-animation'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { scrollDebug as dbg } from './scroll-debug'
-import { traceFoldIdFor } from '../../client-debug/trace-diagnostics'
 import { clamp } from '../../utils/clamp'
-import { snapToDevicePx } from '../../utils/pixel-grid'
 import { PANEL_RESHOW_SETTLE_MS, TRANSCRIPT_SEEK_EVENT, keyboardTargetsScroller, middleClickTargetsScroller, touchTargetsScroller, wheelChainsToScroller } from '../panel-transition'
+import { createInitialScrollState, reduceScroll, type ScrollEvent, type WorkRequest } from './transcript-scroll-machine'
+import { createTranscriptScrollWriter } from './transcript-scroll-writer'
+import type { FoldFrame } from './fold-scroll-session'
 
 /** Pixel tolerance for direct bottom checks. Keep this tiny to cover
  *  fractional scroll values without treating a visibly offset viewport as
@@ -60,15 +42,6 @@ const BOTTOM_EPSILON_PX = 2
  *  be `undefined` for callers like SubagentTranscriptDialog) — so the mount
  *  run of the reset effect always executes once, even for undefined keys. */
 const FOLLOW_RESET_NEVER = Symbol('crw-follow-reset-never')
-
-/** How long a settle-verification pass keeps watching the viewport after a
- *  pin (see verifyFollowInvariant). Long enough to outlast Virtuoso's
- *  post-replay re-measurement storm, short enough that it can never read as a
- *  permanent frame loop. */
-const SETTLE_VERIFY_MS = 1500
-/** End a verification pass early once the viewport has held the true bottom
- *  this many consecutive frames. */
-const SETTLE_STABLE_FRAMES = 3
 
 /**
  * How long a user-scroll gesture keeps a subsequent scrollTop move attributable
@@ -87,10 +60,6 @@ const SETTLE_STABLE_FRAMES = 3
  */
 const USER_SCROLL_INTENT_MS = 1200
 
-/** Seek-easing snap threshold: within this many px of the target the seek
- *  stops easing and pins the final position. Small enough to read as exact. */
-const SEEK_SNAP_PX = 2
-
 /** Item-list height deltas within this band never trigger the re-pin — the
  *  instant scrollTop write costs more (momentum cancellation) than the
  *  invisible ≤3px drift it would fix. See the micro-delta comment in the
@@ -103,11 +72,6 @@ const ITEM_LIST_MICRO_DELTA_PX = 3
  *  ever comes to correct it — the "回复刚结束差几像素" report). Exported for
  *  the band tests' clock. */
 export const TRAILING_MICRO_PIN_MS = 250
-/** Frames the seek loop HOLDS the anchor after landing, re-pinning if a late
- *  row re-measurement (Virtuoso measures fresh-mounted rows a frame or two
- *  after paint) shifts the content under the parked viewport. */
-const SEEK_HOLD_FRAMES = 8
-
 /** Keys that scroll a focused scroll container UPWARD and can therefore
  *  produce a leave. Downward keys don't leave, but still stamp intent so a
  *  genuine post-show scroll back to the bottom can end re-show suppression. */
@@ -149,7 +113,7 @@ const getDistanceFromBottom = (el: HTMLElement) => (
  * for the "at bottom" STATE (a viewport resting above the task
  * list / live bubble should read as at-bottom), but it is WRONG for the
  * user-leave gate: because the spacer height is subtracted, an up-scroll that
- * stays inside the spacer reads as `0`, so `shouldFollowRef` never turns off
+ * stays inside the spacer reads as `0`, so follow intent never turns off
  * and the re-pin backstops keep snapping the viewport back down ("wheel-up gets
  * absorbed").
  *
@@ -175,8 +139,10 @@ const isAtSpacerAwareBottom = (el: HTMLElement) =>
  *  zone (see `getDistanceFromTrueBottom`). */
 const isAtTrueBottom = (el: HTMLElement) => getDistanceFromTrueBottom(el) <= BOTTOM_EPSILON_PX
 
-type FollowMode = 'restore' | 'disable-now' | 'disable-debounced' | 'preserve'
-type BottomSyncMode = FollowMode | 'confirm-away'
+type BottomGeometryEvent =
+  | { type: 'USER_LEFT' }
+  | { type: 'USER_RETURNED_TO_TRUE_BOTTOM' }
+  | { type: 'FOLLOW_DEBOUNCE_REQUESTED' }
 
 /** How long after a keep-alive re-show the scroll machinery treats scroll
  *  events as mechanical artifacts of the row remount rather than user intent.
@@ -260,9 +226,14 @@ export interface TranscriptScrollApi {
    * Programmatic seek to a row — search hits, user-message navigation.
    * Suspends follow first, so the seek can't be yanked back by the bottom pin.
    * The ONLY sanctioned way to move the viewport somewhere other than the
-   * bottom; callers must not reach for `shouldFollowRef` themselves.
+   * bottom; callers must dispatch lifecycle events rather than mutating intent.
    */
   seekToIndex: (index: number, align: 'start' | 'center') => void
+  /** Restore an arbitrary App-owned scroll-memory target through the same
+   *  token-controlled owner used by follow and seek. Follow intent is unchanged. */
+  restoreScroll: (target: number) => void
+  /** Reveal a virtualized App anchor, then hold its row-relative offset. */
+  restoreScrollToIndex: (index: number, offset: number, fallbackTarget: number) => void
   /**
    * Offset-space index of the top-most VISIBLE row, or null when it can't be
    * measured (no scroller yet, or nothing rendered). Callers that receive a
@@ -309,50 +280,9 @@ export function useTranscriptScroll({
   const lastShowAtRef = useRef(0)
   const lastShowGestureSeqRef = useRef(0)
   const lastScrollEpochRef = useRef<number | undefined>(undefined)
-  // useLayoutEffect: the stamp must land BEFORE the remount-clamp scroll
-  // events of the show commit — App's restore layout effect writes scrollTop
-  // pre-paint and Virtuoso's rebuild can emit clamps in the same frame, both
-  // ahead of a passive effect's delivery. Date.now() on purpose: it must be
-  // comparable with userScrollIntentRef (stamped with Date.now() by the
-  // gesture listeners). App-provided epochs replace the visibility inference;
-  // mount still stamps once so fresh Virtuoso clamps are suppressed too.
-  useLayoutEffect(() => {
-    const stampShow = () => {
-      lastShowAtRef.current = Date.now()
-      lastShowGestureSeqRef.current = userGestureSeqRef.current
-      // Visibility is a gesture boundary: anything stamped before it must stay
-      // retired even after the 750ms mechanical window, not reactivate while
-      // the older 1200ms intent window is still running.
-      userScrollIntentRef.current = 0
-    }
-    if (panelVisible === false || (showEpoch !== undefined && lastScrollEpochRef.current !== showEpoch)) {
-      // A seek from the previous visibility/epoch must never write into the
-      // collapsed panel or compete with App's restored offset.
-      seekSeqRef.current += 1
-      if (seekAnimRafRef.current != null) cancelAnimationFrame(seekAnimRafRef.current)
-      seekAnimRafRef.current = null
-      seekActiveRef.current = false
-      if (scrollerRef.current) delete scrollerRef.current.dataset.crwSeekActive
-    }
-    if (showEpoch !== undefined) {
-      if (lastScrollEpochRef.current !== showEpoch) {
-        lastScrollEpochRef.current = showEpoch
-        if (panelVisible !== false) stampShow()
-      }
-      return
-    }
-    if (panelVisible !== false) stampShow()
-  }, [panelVisible, showEpoch])
   // At-bottom mirror, read by callbacks (notably the viewport-shrink backstop)
   // without a stale-closure dance. Written by setBottomState.
   const atBottomRef = useRef(true)
-  // Debounced "should follow" — filters out transient isAtBottom=false spikes
-  // Virtuoso emits during rapid/batch item additions (the scroll-to-bottom
-  // animation hasn't settled yet, so its internal isAtBottom momentarily flips
-  // false). Only after isAtBottom stays false for FOLLOW_DEBOUNCE_MS do we
-  // actually stop following.
-  const shouldFollowRef = useRef(true)
-  const followTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Previous scrollTop, so the scroll handler can detect *user-driven* upward
   // scrolls (scrollTop decreasing) and bypass the follow-disable debounce.
   const lastScrollTopRef = useRef(0)
@@ -377,28 +307,6 @@ export function useTranscriptScroll({
     if (userGestureSeqRef.current > lastShowGestureSeqRef.current) return false
     return true
   }, [])
-  // Held TRUE for the whole of a programmatic scroll-to-bottom animation. See
-  // the ANIMATING state in the module comment: while set, the scroll handler
-  // and syncBottomGeometry leave atBottomRef/shouldFollowRef alone. Bounded by
-  // the rAF loop's own completion or cancellation, so it can never latch.
-  const scrollAnimatingRef = useRef(false)
-  // rAF handle for the in-flight animated scroll, so a new jump (or unmount)
-  // cancels the previous loop instead of stacking two that fight over
-  // scrollTop.
-  const scrollAnimRafRef = useRef<number | null>(null)
-  // Seek-loop state (seekToIndex's own rAF easing): handle, sequence token (so
-  // a newer seek cancels the older loop), and the post-landing hold counter.
-  const seekAnimRafRef = useRef<number | null>(null)
-  const seekSeqRef = useRef(0)
-  // True for the whole life of a seek (ease + landed hold). The scroll
-  // handler's gesture-chaining restamp consults this: the seek's OWN upward
-  // scroll events must not re-arm userScrollIntentRef, or an upward seek fired
-  // while a prior gesture is still fresh (≤ USER_SCROLL_INTENT_MS old) reads
-  // its own first write as a user takeover and self-aborts after one frame
-  // ("Alt+↑ does nothing right after wheeling up"). Genuine user gestures are
-  // unaffected — wheel / touch / scroll key / overlay-thumb listeners stamp
-  // userScrollIntentRef directly, bypassing this chain.
-  const seekActiveRef = useRef(false)
   const [followDebounceRaw] = useLocalStorage<number>(
     'claude-react-web:follow-debounce-ms',
     150,
@@ -406,89 +314,170 @@ export function useTranscriptScroll({
   const FOLLOW_DEBOUNCE_MS = clamp(Math.round(followDebounceRaw), 50, 500)
 
   /**
-   * The single mutation point for the follow gate. `shouldFollowRef` is the
-   * synchronous gate every pin/handler decision reads; the `following` mirror
-   * is React state the OWNER renders declaratively as the wrap element's
-   * `data-following` attribute — the observable that replaced the removed
-   * jump-to-bottom button as the tests' FOLLOWING/AWAY assertion surface.
-   * (The attribute must live on an element the owner renders, not on
-   * Virtuoso's scroller: react-hooks/immutability forbids mutating the
-   * element obtained from `scrollerRef.current` inside hook callbacks, and a
-   * declarative write needs no DOM access at all.)
+   * React's declarative projection of reducer follow intent. The owner renders
+   * it as the wrap element's `data-following` attribute — the observable that
+   * replaced the removed jump-to-bottom button as the tests' FOLLOWING/AWAY
+   * assertion surface. (The attribute must live on an element the owner
+   * renders, not on Virtuoso's scroller: react-hooks/immutability forbids
+   * mutating the element obtained from `scrollerRef.current` inside hook
+   * callbacks, and a declarative write needs no DOM access at all.)
    */
   const [following, setFollowingState] = useState(true)
-  const setFollowing = useCallback((next: boolean) => {
-    shouldFollowRef.current = next
-    setFollowingState(next)
-  }, [])
+  const scrollStateRef = useRef(createInitialScrollState())
+  const epochRef = useRef(0)
+  const panelVisibleRef = useRef(panelVisible)
+  const attachedRevealKeyRef = useRef(transcriptRevealKey)
+  const dispatchRef = useRef<(event: ScrollEvent) => void>(() => {})
+  const focusNavigationRef = useRef(false)
+  const thumbDraggingRef = useRef(false)
+  // The writer stores these callbacks and invokes them only from later DOM or
+  // scheduler events; no ref value is read while this initializer renders.
+  // eslint-disable-next-line react-hooks/refs -- lazy writer construction with event-time ref readers
+  const [writer] = useState(() => createTranscriptScrollWriter({
+    getVirtuoso: () => virtuosoRef.current,
+    firstItemIndex: () => firstItemIndexRef.current,
+    onSeekEaseLanded: (token) => dispatchRef.current({ type: 'SEEK_EASE_LANDED', token }),
+    onOwnerLanded: (token) => dispatchRef.current({ type: 'OWNER_LANDED', token }),
+    onWorkConsumed: (id) => dispatchRef.current({ type: 'WORK_CONSUMED', id }),
+    onFollowDebounce: () => {
+      const el = scrollerRef.current
+      if (!el) {
+        atBottomRef.current = false
+        return
+      }
+      if (scrollStateRef.current.intent === 'follow') return
+      if (el.clientHeight === 0) {
+        atBottomRef.current = false
+        return
+      }
+      if (justReshowed()) return
+      if (isAtTrueBottom(el)) {
+        dispatchRef.current({ type: 'FOLLOW_REQUESTED' })
+        atBottomRef.current = true
+      } else {
+        atBottomRef.current = false
+      }
+    },
+    onFocusReset: () => { focusNavigationRef.current = false },
+    onThumbClear: () => { thumbDraggingRef.current = false },
+  }))
+  const dispatch = useCallback((event: ScrollEvent) => {
+    const previous = scrollStateRef.current
+    const transition = reduceScroll(previous, event)
+    scrollStateRef.current = transition.state
+    const nextFollowing = transition.state.intent === 'follow'
+    if ((previous.intent === 'follow') !== nextFollowing) setFollowingState(nextFollowing)
+    writer.execute(transition.commands)
+  }, [writer])
+  useLayoutEffect(() => {
+    dispatchRef.current = dispatch
+  }, [dispatch])
 
-  /**
-   * The instant-snap scrollTop writer. One of only two places that move the
-   * viewport (the other is the rAF loop in `animateScrollToBottom`).
-   *
-   * Every caller is a measurement CORRECTION — content grew or the viewport
-   * shrank after we had already pinned — so the snap reads as "settle to
-   * bottom", not as a jump, and must not animate. The shared gate lives here so
-   * a new backstop can't forget it: never yank a user who has scrolled up.
-   *
-   * `allowDuringAnimation` exists for the append pin only. The two
-   * ResizeObserver backstops must stand down mid-animation (the rAF loop
-   * re-targets every frame, so a competing snap would fight it), but the append
-   * pin's whole job is to paint a freshly-mounted row at the bottom in the frame
-   * it mounts — and a follow animation is usually still in flight at that
-   * moment, so honouring the guard there would disable it exactly when it
-   * matters. Snapping ahead of the animation is safe: the loop re-reads its
-   * target each frame, finds `remaining ≈ 0`, and finalizes.
-   */
-  // Held in a ref (assigned below, once `verifyFollowInvariant` exists) so
-  // `pinToBottom` can stay dependency-free while still kicking off a
-  // verification pass. Declared before it to avoid a use-before-define cycle.
-  const verifyRef = useRef<() => void>(() => {})
-  const settleRafRef = useRef<number | null>(null)
-  /** Absolute bottom-pin requests arriving while a fold owns scrollTop.
-   *  append/spacer ride the next RO; corrective pins wait for settle. */
-  const pendingFoldPinRef = useRef<'next-ro' | 'settle' | null>(null)
-  const armFoldSettleRef = useRef<() => void>(() => {})
-  // Explicit "a pass is running" flag, NOT the rAF handle. `tick` re-enters
-  // through `pinToBottom` → `verifyRef.current()` (every pin starts a pass by
-  // design), so using the handle as the guard would let a pinning tick start a
-  // SECOND pass whose handle the outer tick then overwrites — an untracked loop
-  // per pinning frame, uncancellable on unmount.
-  const settleRunningRef = useRef(false)
-  // Assigned during render, not in a passive effect: the append pin and the
-  // spacer pin run in LAYOUT effects, i.e. before passive effects, and they
-  // must be able to open a pass on the commit that mounts them.
-
-  const pinToBottom = useCallback((
-    el: HTMLElement | null = scrollerRef.current,
-    { allowDuringAnimation = false, reason = '?', verify = true }: { allowDuringAnimation?: boolean; reason?: string; verify?: boolean } = {},
-  ) => {
-    if (!el) { dbg('pin skip', () => ({ reason, why: 'no-el' })); return }
-    if (!shouldFollowRef.current) { dbg('pin skip', () => ({ reason, why: 'away' })); return }
-    if (scrollAnimatingRef.current && !allowDuringAnimation) { dbg('pin skip', () => ({ reason, why: 'animating' })); return }
-    if (reason !== 'fold-lockstep' && anyCollapseAnimatingInside(el)) {
-      const delivery = reason === 'append' || reason === 'spacer' ? 'next-ro' : 'settle'
-      if (pendingFoldPinRef.current !== 'next-ro') pendingFoldPinRef.current = delivery
-      armFoldSettleRef.current()
-      dbg('pin-deferred', () => ({ writer: 'pinToBottom', reason, delivery }))
+  // Stamp visibility before the remount-clamp scroll events of the show commit.
+  // App-provided epochs replace visibility inference; mount still stamps once
+  // so fresh Virtuoso clamps are suppressed too.
+  useLayoutEffect(() => {
+    panelVisibleRef.current = panelVisible
+    const stampShow = () => {
+      lastShowAtRef.current = Date.now()
+      lastShowGestureSeqRef.current = userGestureSeqRef.current
+      // Visibility retires gestures from the previous panel lifetime.
+      userScrollIntentRef.current = 0
+      dispatch({ type: 'VISIBILITY_CHANGED', visibility: 'visible' })
+    }
+    if (showEpoch !== undefined) {
+      if (lastScrollEpochRef.current !== showEpoch) {
+        lastScrollEpochRef.current = showEpoch
+        if (panelVisible !== false) stampShow()
+      } else {
+        dispatch({ type: 'VISIBILITY_CHANGED', visibility: panelVisible === false ? 'hidden' : 'visible' })
+      }
       return
     }
-    // Any absolute pin that does run satisfies a previously deferred request;
-    // verify and the settle watcher must not both write for the same one.
-    pendingFoldPinRef.current = null
-    dbg('pin', () => ({ writer: 'pinToBottom', reason, before: Math.round(el.scrollTop), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, distanceFromBottom: getDistanceFromTrueBottom(el) }))
-    // eslint-disable-next-line react-hooks/immutability -- imperative bottom-pin writes are the scroll controller's event-time contract
-    el.scrollTop = el.scrollHeight
-    dbg('pin-written', () => ({ writer: 'pinToBottom', reason, after: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, distanceFromBottom: getDistanceFromTrueBottom(el) }))
-    // Every correction is provisional: the layout can keep moving after this
-    // write, so verify the invariant across the next frames (see
-    // verifyFollowInvariant). Handled through a ref so this callback stays
-    // dependency-free and the two can call each other. `verify: false` opts
-    // out — the fold-lockstep pin, whose NEXT observation is guaranteed to
-    // re-pin anyway, must not keep a verify pass ticking (and re-pinning)
-    // every frame for the whole animation.
-    if (verify) verifyRef.current()
-  }, [])
+    if (panelVisible === false) dispatch({ type: 'VISIBILITY_CHANGED', visibility: 'hidden' })
+    else stampShow()
+  }, [dispatch, panelVisible, showEpoch])
+
+  const setFollowing = useCallback((next: boolean) => {
+    if (next) {
+      dispatch({ type: 'FOLLOW_REQUESTED' })
+    } else if (scrollStateRef.current.intent === 'follow') {
+      dispatch({ type: 'USER_LEFT' })
+    }
+  }, [dispatch])
+
+  const cancelContinuousOwner = useCallback(() => {
+    const owner = scrollStateRef.current.owner
+    if (owner.kind !== 'none') dispatch({ type: 'OWNER_CANCELLED', token: owner.token })
+  }, [dispatch])
+
+  const requestWork = useCallback((kind: WorkRequest['kind'], delivery: WorkRequest['delivery']) => {
+    const workId = scrollStateRef.current.nextWorkId
+    dispatch({ type: 'WORK_REQUESTED', kind, delivery })
+    return workId
+  }, [dispatch])
+
+  const fireWork = useCallback((workId: number) => {
+    if (scrollStateRef.current.work.some((work) => work.id === workId)) {
+      dispatch({ type: 'WORK_FIRED', id: workId })
+    }
+  }, [dispatch])
+
+  const startFoldOwner = useCallback(() => {
+    const current = scrollStateRef.current
+    if (current.owner.kind === 'fold') return current.owner.token
+    const token = current.nextToken
+    dispatch({ type: 'FOLD_STARTED' })
+    requestWork('fold-release', 'after-owner')
+    return token
+  }, [dispatch, requestWork])
+
+  /**
+   * Request absolute-bottom alignment through the reducer/writer gateway. This
+   * producer never writes scroll geometry or schedules its own callback.
+   *
+   * Every caller is a measurement CORRECTION — content grew or the viewport
+   * shrank after we had already pinned — so the requested alignment reads as
+   * "settle to bottom", not as a jump, and must not animate. The shared gate
+   * lives here so a new backstop can't forget it: never yank a user who has
+   * scrolled up.
+   *
+   * `allowDuringAnimation` exists for the append pin only. The two
+   * ResizeObserver backstops must stand down while a follow owner is active,
+   * but the append pin's whole job is to paint a freshly-mounted row at the
+   * bottom in the frame it mounts — and a follow animation is usually still in
+   * flight at that moment. Firing that request ahead of the animation is safe:
+   * the writer's follow loop re-reads its target each frame, finds
+   * `remaining ≈ 0`, and finalizes.
+   */
+  const pinToBottom = useCallback((
+    el: HTMLElement | null = scrollerRef.current,
+    {
+      allowDuringAnimation = false,
+      delivery = 'after-owner',
+      verify = true,
+    }: {
+      allowDuringAnimation?: boolean
+      delivery?: WorkRequest['delivery']
+      verify?: boolean
+    } = {},
+  ) => {
+    if (!el || scrollStateRef.current.intent !== 'follow') return
+    if (scrollStateRef.current.owner.kind === 'follow' && !allowDuringAnimation) return
+    if (anyCollapseAnimatingInside(el)) startFoldOwner()
+
+    const absoluteId = requestWork('absolute-bottom', delivery)
+    const owner = scrollStateRef.current.owner
+    if (owner.kind === 'none' || (owner.kind === 'follow' && allowDuringAnimation)) {
+      fireWork(absoluteId)
+    }
+    dbg('pin', () => ({ delivery, before: Math.round(el.scrollTop), after: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }))
+
+    if (verify) {
+      const verifyId = requestWork('verify', 'after-owner')
+      if (scrollStateRef.current.owner.kind === 'none') fireWork(verifyId)
+    }
+  }, [fireWork, requestWork, startFoldOwner])
 
   // --- Trailing micro-band correction --------------------------------------
   //
@@ -504,22 +493,12 @@ export function useTranscriptScroll({
   // all, and ONE exact pin lands once the chain has been quiet for a beat. A
   // panel frozen by a hidden tab heals the same way — the RO's queued entry
   // is delivered after the tab returns and arms the same trailing pass.
-  const trailingMicroPinRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleTrailingMicroPin = useCallback(() => {
-    if (trailingMicroPinRef.current != null) clearTimeout(trailingMicroPinRef.current)
-    trailingMicroPinRef.current = setTimeout(() => {
-      trailingMicroPinRef.current = null
-      const el = scrollerRef.current
-      // Same stand-down contract as every other corrector: not following, an
-      // animation owns the viewport, or the panel is display:none in the
-      // keep-alive cache.
-      if (!el || !shouldFollowRef.current || scrollAnimatingRef.current) return
-      if (el.clientHeight === 0) return
-      if (getDistanceFromTrueBottom(el) > BOTTOM_EPSILON_PX) {
-        pinToBottom(el, { reason: 'trailing-micro' })
-      }
-    }, TRAILING_MICRO_PIN_MS)
-  }, [pinToBottom])
+    for (const work of scrollStateRef.current.work) {
+      if (work.kind === 'trailing-micro') dispatch({ type: 'WORK_CANCELLED', id: work.id })
+    }
+    dispatch({ type: 'WORK_REQUESTED', kind: 'trailing-micro', delivery: 'after-owner' })
+  }, [dispatch])
 
   // --- Settle verification -------------------------------------------------
   //
@@ -544,56 +523,6 @@ export function useTranscriptScroll({
   // construction — it never becomes a permanent frame loop, and it stands down
   // the moment follow is dropped (the user's call) or a follow animation takes
   // ownership of the viewport.
-  const verifyFollowInvariant = useCallback(() => {
-    if (settleRunningRef.current) return
-    settleRunningRef.current = true
-    const deadline = Date.now() + SETTLE_VERIFY_MS
-    let stableFrames = 0
-    const finish = () => {
-      settleRunningRef.current = false
-      settleRafRef.current = null
-    }
-    const tick = () => {
-      const el = scrollerRef.current
-      if (!el || !shouldFollowRef.current || Date.now() > deadline) { dbg('verify stop', () => ({ why: !el ? 'no-el' : !shouldFollowRef.current ? 'away' : 'deadline' })); finish(); return }
-      if (scrollAnimatingRef.current) {
-        // The follow animation owns the viewport; it re-reads its target every
-        // frame. Wait it out, then resume verifying.
-        stableFrames = 0
-        settleRafRef.current = requestAnimationFrame(tick)
-        return
-      }
-      const short = getDistanceFromTrueBottom(el)
-      dbg('verify tick', () => ({ stableFrames }))
-      if (short > BOTTOM_EPSILON_PX) {
-        stableFrames = 0
-        // Re-enters verifyFollowInvariant through pinToBottom; settleRunningRef
-        // is what makes that a no-op instead of a second loop.
-        pinToBottom(el)
-      } else {
-        stableFrames++
-        if (stableFrames >= SETTLE_STABLE_FRAMES) { finish(); return }
-      }
-      settleRafRef.current = requestAnimationFrame(tick)
-    }
-    settleRafRef.current = requestAnimationFrame(tick)
-  }, [pinToBottom])
-
-  // Render-time assignment (not an effect): see the comment where verifyRef is
-  // declared — layout-effect pins run before passive effects and must be able
-  // to open a pass. Deliberate render-time ref use, same escape hatch
-  // MessageList's useStableSet takes for its referential memoization.
-  /* eslint-disable-next-line react-hooks/refs -- documented above */
-  verifyRef.current = verifyFollowInvariant
-
-  useEffect(() => () => {
-    if (settleRafRef.current != null) {
-      cancelAnimationFrame(settleRafRef.current)
-      settleRafRef.current = null
-    }
-    settleRunningRef.current = false
-  }, [])
-
   // Synchronous bottom-pin for freshly-appended trailing items.
   //
   // Root cause of the "new message flashes one row too high, then snaps down"
@@ -617,185 +546,98 @@ export function useTranscriptScroll({
     const prevLen = prevPinItemsLenRef.current
     prevPinItemsLenRef.current = itemCount
     if (itemCount <= prevLen) return
-    pinToBottom(scrollerRef.current, { allowDuringAnimation: true, reason: 'append' })
+    pinToBottom(scrollerRef.current, { allowDuringAnimation: true, delivery: 'next-observation' })
   })
 
   const clearFollowTimer = useCallback(() => {
-    if (followTimerRef.current == null) return
-    clearTimeout(followTimerRef.current)
-    followTimerRef.current = null
-  }, [])
+    dispatch({ type: 'FOLLOW_DEBOUNCE_CANCELLED' })
+  }, [dispatch])
 
   const setBottomState = useCallback((nextAtBottom: boolean) => {
     atBottomRef.current = nextAtBottom
   }, [])
 
-  const syncBottomState = useCallback((
-    nextAtBottom: boolean,
-    followMode: FollowMode,
+  const syncBottomGeometry = useCallback((
+    el: HTMLElement | null = scrollerRef.current,
+    event?: BottomGeometryEvent,
   ) => {
-    dbg('syncBottomState', () => ({ nextAtBottom, followMode, followBefore: shouldFollowRef.current }))
-    if (nextAtBottom || followMode !== 'disable-debounced') {
-      setBottomState(nextAtBottom)
+    // Collapsed geometry carries no intent. The browser preserves scrollTop
+    // across display:none and restores it on show.
+    if (!el || el.clientHeight === 0) return
+    const userLeft = event?.type === 'USER_LEFT'
+    // A follow owner is intentionally away from its target mid-flight. Only a
+    // genuine user leave may preempt that geometry.
+    if (scrollStateRef.current.owner.kind === 'follow' && !userLeft) return
+
+    const following = scrollStateRef.current.intent === 'follow'
+
+    // Follow intent makes the true bottom an invariant. A genuine user leave
+    // arrives as USER_LEFT and is excluded; an away viewport is never yanked.
+    if (following && !userLeft && !isAtTrueBottom(el)) {
+      dbg('follow-invariant', () => ({
+        writer: 'follow-invariant',
+        event: event?.type ?? 'GEOMETRY_CHANGED',
+        distanceFromBottom: getDistanceFromTrueBottom(el),
+      }))
+      pinToBottom(el)
     }
 
-    if (followMode === 'restore') {
-      clearFollowTimer()
-      setFollowing(true)
-      return
-    }
+    // Measure after the invariant correction. True bottom alone may re-arm
+    // follow; spacer-aware bottom only describes the current geometry.
+    const atBottom = isAtSpacerAwareBottom(el)
+    const atTrueBottom = isAtTrueBottom(el)
+    dbg('syncBottomGeometry', () => ({
+      event: event?.type ?? 'GEOMETRY_CHANGED',
+      atBottom,
+      atTrueBottom,
+      following,
+    }))
 
-    if (followMode === 'disable-now') {
-      // Genuine user scroll-away: the user drilled up out of the bottom, so
-      // follow drops immediately. (In contrast, 'disable-debounced' below must
-      // never do this while we're still following — a transient geometry
-      // flutter during a bulk replay isn't a user leave.)
+    if (userLeft) {
       clearFollowTimer()
       setFollowing(false)
       setBottomState(false)
       return
     }
 
-    if (followMode === 'disable-debounced' && followTimerRef.current == null) {
-      followTimerRef.current = setTimeout(() => {
-        followTimerRef.current = null
-        const el = scrollerRef.current
-        if (!el) {
-          setBottomState(false)
-          return
-        }
-
-        // While still following/pinned, a not-at-bottom geometry read is a
-        // pin-lag (content grew before the follow/pin caught up), never a
-        // genuine leave. Flipping shouldFollowRef false here is exactly what
-        // dropped follow across every bulk-load batch on session switches:
-        // the 150ms timer fired during the transient and armed a "leave".
-        // Until the user has actually scrolled up (which trips 'disable-now'),
-        // keep following; the content-growth pin will snap back.
-        if (shouldFollowRef.current) {
-          return
-        }
-
-        // Collapsed scroller (clientHeight 0) = the panel is display:none in
-        // the keep-alive cache. Every distance reads 0 there, so
-        // isAtTrueBottom would report "at the bottom" and re-latch follow on
-        // a panel the user deliberately scrolled away from — the follow
-        // invariant then snaps the viewport back to the bottom when the panel
-        // is re-shown. Same stand-down contract as syncBottomGeometry: decide
-        // nothing from collapsed geometry.
-        if (el.clientHeight === 0) {
-          setBottomState(false)
-          return
-        }
-        // Just-reshowed window: the remount clamps read as "at the bottom"
-        // even with the panel visible. Decide nothing from them — return
-        // WITHOUT touching state, so a re-shown panel that genuinely sits at
-        // the true bottom can still re-latch follow once the window ends.
-        if (justReshowed()) {
-          return
-        }
-
-        // Already away: restore follow only when back at the TRUE bottom.
-        // Restoring while still inside the dead zone (spacer-aware at-bottom)
-        // would re-latch follow and re-arm the re-pin backstops that snap the
-        // viewport back down.
-        if (isAtTrueBottom(el)) {
-          setFollowing(true)
-          setBottomState(true)
-        } else {
-          setBottomState(false)
-        }
-      }, FOLLOW_DEBOUNCE_MS)
-    }
-  }, [FOLLOW_DEBOUNCE_MS, clearFollowTimer, setBottomState, setFollowing])
-
-  const syncBottomGeometry = useCallback((
-    el: HTMLElement | null = scrollerRef.current,
-    modeWhenAway: BottomSyncMode = 'preserve',
-  ) => {
-    if (!el) return
-    // Collapsed scroller (clientHeight 0) = the panel is display:none in
-    // the keep-alive cache. Every distance reads 0 there — "at the bottom"
-    // — which the mode calculus below misreads (a bogus leave/restore, and
-    // a shrink-backstop scroll write). The browser preserves scrollTop
-    // across the hide and restores it on show (verified in-app), so the
-    // correct move is to stand down until the panel is visible again.
-    if (el.clientHeight === 0) return
-    // ANIMATING: the viewport is intentionally not yet at the bottom. Don't let
-    // that mid-animation gap arm the follow-disable debounce or flip
-    // atBottomRef false (which would disarm the re-pin paths the animation
-    // depends on). Treat the viewport as still-at-bottom until the rAF loop
-    // completes and clears the guard.
-    //
-    // Exception: an explicit 'disable-now' is the user's own leave, latched by
-    // a gesture they just made (the wheel/key handlers call it directly, and
-    // the scroll handler forwards a user-driven upward move with it). Dropping
-    // that here leaves `shouldFollowRef` true, so the follow invariant and the
-    // backstops snap the viewport back and the gesture is erased — the rAF loop
-    // aborts on the same move without syncing (its comment assumes the handler
-    // latched the leave), so nothing else would record it.
-    if (scrollAnimatingRef.current && modeWhenAway !== 'disable-now') {
+    const userReturned = event?.type === 'USER_RETURNED_TO_TRUE_BOTTOM'
+    if (atTrueBottom && (following || userReturned)) {
+      clearFollowTimer()
+      dispatch({ type: userReturned ? 'USER_RETURNED_TO_TRUE_BOTTOM' : 'FOLLOW_REQUESTED' })
+      setBottomState(true)
       return
     }
 
-    const following = shouldFollowRef.current
-    const userLeft = modeWhenAway === 'disable-now'
-
-    // FOLLOW INVARIANT — while following, the viewport IS the bottom.
-    //
-    // "Following" is the resting state, so a viewport that is away from the
-    // true bottom while `shouldFollowRef` is still set is not a state the user
-    // asked for; it is a displacement we have not accounted for yet. Enforcing
-    // it here (rather than only in the element-shaped backstops) is what covers
-    // a correction that moves the content bottom under a pinned viewport without
-    // resizing the item-list, the spacer or the viewport and without a scrollTop
-    // write — those slipped past all three backstops and left the transcript
-    // short with follow still on (the "关掉动画效果后 Session 有时候
-    // 滚动不到最底部" bug).
-    //
-    // Safe by construction: a genuine user scroll-up arrives as
-    // `modeWhenAway === 'disable-now'` (the scroll handler latched it as
-    // user-intent BEFORE calling us), so `userLeft` excludes it — follow is
-    // dropped instead. Same for an away user: `following` is false, so nothing
-    // here ever yanks them.
-    if (following && !userLeft && !isAtTrueBottom(el)) {
-      dbg('follow-invariant', () => ({ writer: 'follow-invariant', modeWhenAway, distanceFromBottom: getDistanceFromTrueBottom(el) }))
-      pinToBottom(el, { reason: 'follow-invariant' })
+    if (atBottom) {
+      // Content clamping into the spacer is not a user return. An already-away
+      // viewport stays away and records that it is not at the true bottom.
+      if (!following) {
+        clearFollowTimer()
+        setFollowing(false)
+      }
+      setBottomState(following)
+      return
     }
 
-    // Read the geometry AFTER the invariant pin, so the state below describes
-    // where the viewport IS, not the displacement we just corrected.
-    const atBottom = isAtSpacerAwareBottom(el)
-    // The top of the real bottom: the viewport parked at scrollHeight (what
-    // pinToBottom targets). Follow re-arms ONLY here. The spacer-aware
-    // `atBottom` also covers the dead zone (the region reserved by the task
-    // list / live bubble) — re-latching follow there is exactly the state
-    // that lets the re-pin backstops snap an upward scroll back down.
-    const atTrueBottom = isAtTrueBottom(el)
-    // Follow re-arms ONLY when the user is at the true bottom AND either (a)
-    // they were already following (a passive re-read / content fold keeps it
-    // on), or (b) this call is the scroll handler reporting an active
-    // scroll-BACK-down to the true bottom ('restore'). A passive re-read that
-    // lands at the true bottom while the user is AWAY — notably a bottom-spacer
-    // collapse clamping scrollTop down to the new max — must NOT re-latch,
-    // because the content moved, not the user; re-latching is what lets the
-    // re-pin backstops snap an away viewport back.
-    const followMode = userLeft
-      ? 'disable-now'
-      : (atTrueBottom && (following || modeWhenAway === 'restore'))
-        ? 'restore'
-        : atBottom
-          ? (following ? 'preserve' : 'disable-now')
-          : modeWhenAway === 'confirm-away'
-            ? 'disable-debounced'
-            : modeWhenAway === 'restore' ? 'preserve' : modeWhenAway
-    syncBottomState(atBottom, followMode)
-  }, [pinToBottom, syncBottomState])
+    if (event?.type === 'FOLLOW_DEBOUNCE_REQUESTED') {
+      // Keep the previous bottom mirror until the debounce confirms this
+      // transient geometry; Virtuoso can report false during a batched append.
+      if (!writer.isScheduled('follow-debounce')) {
+        dispatch({ type: 'FOLLOW_DEBOUNCE_REQUESTED', delayMs: FOLLOW_DEBOUNCE_MS })
+      }
+      return
+    }
+    setBottomState(false)
+  }, [FOLLOW_DEBOUNCE_MS, clearFollowTimer, dispatch, pinToBottom, setBottomState, setFollowing, writer])
+
+  const confirmBottomGeometry = useCallback((el: HTMLElement | null = scrollerRef.current) => {
+    syncBottomGeometry(el, { type: 'FOLLOW_DEBOUNCE_REQUESTED' })
+  }, [syncBottomGeometry])
 
   // Animated scroll-to-bottom driven by a requestAnimationFrame easing loop.
   //
-  // Why not native `behavior: 'smooth'`? `el.scrollTo({ top: scrollHeight,
-  // smooth })` captures `scrollHeight` ONCE at call time and animates toward
+  // Why not native smooth scrolling? A native animation captures `scrollHeight`
+  // ONCE at call time and animates toward
   // that stale pixel over ~300ms. While the animation runs, any content growth
   // (streaming text mirroring into the spacer Footer, Virtuoso row-height
   // measurement settling, lazy images/code blocks) moves the real bottom past
@@ -810,58 +652,14 @@ export function useTranscriptScroll({
   // detects the user scrolled up mid-animation (scrollTop dropped below the
   // last value we set), so we never fight a legitimate user scroll.
   const animateScrollToBottom = useCallback(() => {
-    // Cancel any in-flight animation before starting a new one.
-    if (scrollAnimRafRef.current != null) {
-      cancelAnimationFrame(scrollAnimRafRef.current)
-      scrollAnimRafRef.current = null
-    }
     const el = scrollerRef.current
-    if (!el) {
-      // No scroller yet — fall back to Virtuoso's index API.
-      virtuosoRef.current?.scrollToIndex({ index: 'LAST', behavior: 'smooth' })
+    if (el && (scrollStateRef.current.owner.kind === 'fold' || anyCollapseAnimatingInside(el))) {
+      startFoldOwner()
+      requestWork('absolute-bottom', 'next-observation')
       return
     }
-    if (anyCollapseAnimatingInside(el)) {
-      pendingFoldPinRef.current = 'next-ro'
-      armFoldSettleRef.current()
-      scrollAnimatingRef.current = false
-      dbg('follow-deferred', () => ({ writer: 'animateScrollToBottom', delivery: 'next-ro' }))
-      return
-    }
-    scrollAnimatingRef.current = true
-    let lastSetTop = el.scrollTop
-    const step = () => {
-      scrollAnimRafRef.current = null
-      // Re-read the target every frame so it can never go stale.
-      const target = el.scrollHeight - el.clientHeight
-      const current = el.scrollTop
-      // User scrolled up mid-animation — abort and let the normal scroll
-      // handler take over (it will latch user-intent and disable follow).
-      if (current < lastSetTop - BOTTOM_EPSILON_PX) {
-        scrollAnimatingRef.current = false
-        return
-      }
-      const remaining = target - current
-      if (remaining <= BOTTOM_EPSILON_PX) {
-        // Snap the last sub-pixel and finalize. Reaching the real bottom also
-        // satisfies any append/pin deferred by an overlapping fold.
-        el.scrollTo({ top: target, behavior: 'auto' })
-        pendingFoldPinRef.current = null
-        scrollAnimatingRef.current = false
-        // Confirm bottom state now that we've truly arrived; the guard is
-        // already false so this sync runs for real.
-        syncBottomGeometry(el, 'confirm-away')
-        return
-      }
-      // Ease toward the target: cover ~25% of the remaining distance per frame
-      // → ~250-350ms for typical chat heights, matching native smooth scroll.
-      const next = current + remaining * 0.25
-      el.scrollTo({ top: next, behavior: 'auto' })
-      lastSetTop = next
-      scrollAnimRafRef.current = requestAnimationFrame(step)
-    }
-    scrollAnimRafRef.current = requestAnimationFrame(step)
-  }, [syncBottomGeometry, virtuosoRef])
+    dispatch({ type: 'FOLLOW_ANIMATION_REQUESTED' })
+  }, [dispatch, requestWork, startFoldOwner])
 
   // --- Follow-gate reset --------------------------------------------------
   // Session switch: the inner scroller remounts (Virtuoso is keyed on the
@@ -888,12 +686,7 @@ export function useTranscriptScroll({
     lastResetKeyRef.current = transcriptRevealKey
     clearFollowTimer()
     atBottomRef.current = true
-    // eslint-disable-next-line react-hooks/immutability -- intentional one-shot reset on transcript identity change
     userScrollIntentRef.current = 0
-    // Intentional one-shot re-init on a rare event (transcript switch): the
-    // cascading-render cost the set-state rule guards against is irrelevant
-    // for a single commit after a session switch.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFollowing(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transcriptRevealKey])
@@ -910,7 +703,7 @@ export function useTranscriptScroll({
     const ro = new ResizeObserver(() => {
       const current = scrollerRef.current
       if (!current) return
-      syncBottomGeometry(current, 'confirm-away')
+      confirmBottomGeometry(current)
       const now = current.clientHeight
       const shrunk = now < lastHeight
       lastHeight = now
@@ -920,12 +713,12 @@ export function useTranscriptScroll({
       // write scrollTop 0 on a collapsed box (and the follow invariant
       // re-pins to the real bottom once the panel is shown again anyway).
       if (shrunk && atBottomRef.current && current.clientHeight > 0) {
-        pinToBottom(current, { reason: 'viewport-shrink' })
+        pinToBottom(current)
       }
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [rowCount, pinToBottom, syncBottomGeometry])
+  }, [rowCount, pinToBottom, confirmBottomGeometry])
 
   // Re-pin AFTER the bottom spacer commits its new height.
   //
@@ -951,8 +744,8 @@ export function useTranscriptScroll({
     // nothing to re-pin for — skip, to avoid yanking the viewport on mount or
     // after streaming ends when a non-bottom position may be intentional.
     if (bottomStackHeight <= 0) return
-    dbg('spacer-pin', () => ({ bottomStackHeight, animating: scrollAnimatingRef.current }))
-    pinToBottom(undefined, { reason: 'spacer' })
+    dbg('spacer-pin', () => ({ bottomStackHeight, animating: scrollStateRef.current.owner.kind === 'follow' }))
+    pinToBottom(undefined, { delivery: 'next-observation' })
   }, [bottomStackHeight, pinToBottom])
 
   // Re-pin when SETTLED content grows AFTER the follow animation has already
@@ -988,383 +781,87 @@ export function useTranscriptScroll({
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return
     let cancelled = false
-    let raf = 0
-    // Content-only baseline (scrollHeight MINUS the live streaming spacer),
-    // tracked monotonically. The spacer must be excluded rather than tracking
-    // raw scrollHeight: it inflates scrollHeight while a turn is active, and
-    // when the turn ends and the footer exits, the shrink is skipped by the
-    // "only fire on growth" guard WITHOUT decrementing the baseline — leaving
-    // it inflated by ~110px. Any post-exit growth smaller than that inflation
-    // (notably Virtuoso's async re-measurement of the just-landed final
-    // assistant message at its real Markdown height, which routinely lands
-    // after the spacer is gone because the SDK emits `result` only ~15ms after
-    // the `assistant` frame) would then read as no growth and be skipped — so
-    // the viewport never re-pinned and landed short (the "bounces up a bit when
-    // the streaming footer disappears" jolt).
     let lastContentHeight = 0
-    // Fractional border-box height of the observed item-list, from the last
-    // observation. `scrollHeight` is integer-rounded, so it can't express a
-    // sub-pixel content change — the fold-lockstep compensation below needs
-    // the FRACTIONAL delta to keep the bottom exactly still.
     let lastItemListH: number | null = null
     let lastPaddingTop: number | null = null
     let lastPaddingBottom: number | null = null
-    let otherResidual = 0
-    /** Previous frame's animating-body height snapshot — the fold-lockstep's
-     *  reference for computing the fold's own height contribution as a
-     *  per-body delta (so a body that just registered or just settled
-     *  contributes 0, not its full height). Null until the first
-     *  observation of a fold. */
-    let lastBodySnap: BodyHeightSnapshot | null = null
-    // The fold-lockstep LEDGER: the compensation's own fractional scrollTop.
-    // `scrollTop` is quantized by the DOM to whole DEVICE px — at dpr=2 that
-    // reads back floored to whole CSS px ("write x.5 → read x"), at dpr=1.5 a
-    // write of 13659 held 20489/1.5 (measured live 2026-10-27). An
-    // incremental `scrollTop += Δ` therefore loses Δ's fraction EVERY frame,
-    // the loss accumulates, and the follow invariant's 2px threshold
-    // periodically snaps it back — the measured ±2.8px sawtooth mid-expand.
-    // The ledger keeps the exact fractional target (accumulating losslessly in
-    // a JS number) and writes it; the DOM's snap is absorbed by the transform
-    // half (see below), so the content below the fold never sees either the
-    // accumulation or the quantization.
-    let ledger: number | null = null
-    // The sub-pixel half of the compensation. scrollTop is device-px-grained,
-    // so scroll alone can never hold the content below the fold pixel-still —
-    // its position wanders within a ±0.5-device-px band as the eased height's
-    // fraction changes. During a fold, the remainder rides on a translateY
-    // applied to the item-list: the transform is compositor-precise, so
-    //   visual = docPos − snapToDevicePx(ledger) + (snapToDevicePx(ledger) − ledger) ≡ docPos − ledger
-    // is EXACTLY constant per frame. The ≤0.5-device-px error is thereby moved onto
-    // the expanding card itself (whose whole body is visibly animating) and
-    // the clipped bottom edge — both imperceptible.
-    let transformEl: HTMLElement | null = null
-    let settleRaf: number | null = null
-    const clearFoldTransform = () => {
-      if (transformEl) {
-        transformEl.style.transform = ''
-        transformEl = null
-      }
-    }
-    // Settle watcher: RO deliveries stop when the last fold finishes, so the
-    // transform cannot be cleared from the observer path. Keep checking each
-    // frame and, once nothing is animating (or follow was dropped / the
-    // panel hidden mid-fold), clear the transform and the ledger. The ≤1px
-    // fractional residue this leaves (floored scrollTop + integer
-    // scrollHeight) is deliberately dropped, not scrolled in: it is within
-    // the follow invariant's epsilon and the next scroll event / append pin
-    // reconciles it — an extra write here would re-arm a verify pass for an
-    // invisible step.
-    const settleFoldTransform = () => {
-      // Idempotent: a pending loop already polls every frame and stops when
-      // the fold quiets, so re-arming from the observer path is a no-op — the
-      // old per-frame cancel/re-request pair was pure churn.
-      if (settleRaf != null) return
-      const step = () => {
-        settleRaf = null
-        const scroller = scrollerRef.current
-        if (cancelled || !scroller) return
-        if (scroller.clientHeight !== 0 && shouldFollowRef.current && !scrollAnimatingRef.current && anyCollapseAnimatingInside(scroller)) {
-          settleRaf = requestAnimationFrame(step)
-          return
-        }
-        clearFoldTransform()
-        ledger = null
-        const pendingPin = pendingFoldPinRef.current
-        pendingFoldPinRef.current = null
-        if (pendingPin && scroller.clientHeight !== 0 && shouldFollowRef.current && !scrollAnimatingRef.current) {
-          pinToBottom(scroller, { reason: 'fold-settle' })
-        }
-      }
-      settleRaf = requestAnimationFrame(step)
-    }
-    armFoldSettleRef.current = settleFoldTransform
     const contentHeightOf = (scroller: HTMLElement) =>
       scroller.scrollHeight - getBottomSpacerHeight(scroller)
     const ro = new ResizeObserver((entries) => {
       if (cancelled) return
       const scroller = scrollerRef.current
       if (!scroller) return
-      // Collapsed scroller (clientHeight 0) = the panel is display:none in
-      // the keep-alive cache. The hide-flip delivers a 0×0 box whose
-      // scrollHeight reads 0 while the spacer (if any) still contributes its
-      // style height, so the delta reads as a huge "shrink" — pre-guard this
-      // fired the instant re-pin with scrollTop = scrollHeight = 0 on the
-      // hidden element. Same stand-down contract as syncBottomGeometry and
-      // the scroller-RO backstop: decide nothing from collapsed geometry.
-      if (scroller.clientHeight === 0) { dbg('itemlist-RO collapsed-skip', () => ({})); lastItemListH = null; lastPaddingTop = null; lastPaddingBottom = null; otherResidual = 0; lastBodySnap = null; ledger = null; return }
-      if (scrollAnimatingRef.current && anyCollapseAnimatingInside(scroller)) {
-        if (scrollAnimRafRef.current != null) cancelAnimationFrame(scrollAnimRafRef.current)
-        scrollAnimRafRef.current = null
-        scrollAnimatingRef.current = false
-        pendingFoldPinRef.current = 'next-ro'
-        dbg('follow-cancelled-for-fold', () => ({}))
+      if (scroller.clientHeight === 0) {
+        lastItemListH = null
+        lastPaddingTop = null
+        lastPaddingBottom = null
+        return
       }
-      // This frame's observation of the item-list box. borderBoxSize carries
-      // the fractional block size; the rect fallback covers engines without
-      // the entries API shape. RO is state-based: one entry per element per
-      // callback, so the last entry IS this frame's geometry.
+
       const entry = entries[entries.length - 1]
-      const itemListH = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height
       const itemList = entry.target as HTMLElement
+      const itemListH = entry.borderBoxSize?.[0]?.blockSize ?? itemList.getBoundingClientRect().height
       const paddingTop = Number.parseFloat(itemList.style.paddingTop) || 0
       const paddingBottom = Number.parseFloat(itemList.style.paddingBottom) || 0
       const paddingDelta = (lastPaddingTop == null ? 0 : paddingTop - lastPaddingTop)
         + (lastPaddingBottom == null ? 0 : paddingBottom - lastPaddingBottom)
-      lastPaddingTop = paddingTop
-      lastPaddingBottom = paddingBottom
-      if (!shouldFollowRef.current || scrollAnimatingRef.current) { dbg('itemlist-RO skip', () => ({ follow: shouldFollowRef.current, animating: scrollAnimatingRef.current })); lastItemListH = itemListH; lastBodySnap = snapshotBodyHeights(scroller); otherResidual = 0; ledger = null; return }
-      const contentH = contentHeightOf(scroller)
+      const itemListDelta = lastItemListH == null ? null : itemListH - lastItemListH
+      const contentHeight = contentHeightOf(scroller)
+      const contentDelta = contentHeight - lastContentHeight
+      const foldAnimating = anyCollapseAnimatingInside(scroller)
+      const foldOwner = scrollStateRef.current.owner.kind === 'fold'
+        ? scrollStateRef.current.owner.token
+        : null
 
-      // Lockstep bottom-pinning while a collapse fold is in flight anywhere in
-      // this transcript (ToolGroupCard, the TaskList card, any AnimatedCollapse
-      // rendered inside the scroller).
-      //
-      // A fold animates its body height over ~240ms, so the content changes by
-      // a FRACTION of a pixel every frame while follow is still on. The paths
-      // below can't follow that: the micro-delta band skips ≤3px frames (most
-      // of the ease's tail) and hands them to the trailing pin — a one-shot
-      // write 250ms after the chain quiets, visibly late — and the
-      // settle-verify pass only corrects once the drift crosses
-      // BOTTOM_EPSILON_PX, which turns the whole animation into a ±2px
-      // sawtooth. Both measured live: expanding a ToolGroupCard while
-      // FOLLOWING wobbled the card below it ±2.5px per frame and bounced
-      // +2.5/−2.5px at animation end, while the same expansion AWAY from the
-      // bottom (no compensation running at all) was perfectly smooth.
-      //
-      // The compensation must ALSO be fractional, and it must NOT trust the
-      // DOM's scrollTop as its accumulator. An integer pin
-      // (`scrollTop = scrollHeight`) shimmers ±1px per frame: scrollHeight is
-      // rounded, so the distance-from-bottom left after each pin is a
-      // DIFFERENT sub-pixel residue every frame as the eased height advances.
-      // An incremental `scrollTop += Δ` looked like the fix and wasn't: the
-      // DOM floors scrollTop on write AND read (measured on this page, dpr=2:
-      // write x.5 → read x), so every frame's Δ fraction is lost off the
-      // floored read, the loss accumulates ~0.5px/frame, and the follow
-      // invariant's 2px threshold periodically snaps it back — a ±2.8px
-      // sawtooth mid-expand. Hence the LEDGER: the fractional target lives in
-      // a JS number (lossless), the DOM gets floored copies of it, and the
-      // DOM's ≤1px offset from the true bottom varies smoothly with the eased
-      // height instead of sawtoothing — sub-pixel drift, never accumulation.
-      // Growth accumulates on the ledger; shrink hands control to the
-      // browser's own clamp (see the branch below).
-      //
-      // This callback is the one compensation point that runs AFTER layout and
-      // BEFORE paint: the delta here is THIS frame's final geometry (the real
-      // ResizeObserver fires on every per-frame height step of the transition,
-      // sub-pixel included), so the content below the fold never moves in any
-      // painted frame.
-      //
-      // Deliberately placed BEFORE the delta checks, and deliberately
-      // transcript-wide: a fold's per-frame step is routinely <1px, so a
-      // delta gate would re-open the tail sawtooth, and while a fold animates
-      // ANY growth this transcript sees wants the same lockstep (an unrelated
-      // zero-delta fire degenerates to a no-op — scrollTop is unchanged).
-      if (anyCollapseAnimatingInside(scroller)) {
-        // The fold's height delta is read from the ANIMATING BODIES' per-body
-        // heights, not the item-list border box. The item-list height is
-        // polluted by Virtuoso's virtualization spacer (`paddingTop:
-        // offsetTop`), which updates asynchronously via React and lands in a
-        // different layout pass from the fold's per-frame height write —
-        // compensating from that delta over/under-shoots by the padding
-        // change on the frames where Virtuoso rebalances its window
-        // (measured live: 3–26px per-frame movement of the cards below a
-        // collapsing ToolGroupCard). The bodies' heights are the direct cause
-        // and change in the same layout pass as the transcript's boxes.
-        //
-        // `bodyHeightDelta` returns the sum of per-body height CHANGES
-        // (excluding bodies that just registered or just settled, whose full
-        // height is not a frame-to-frame change). On the first observation of
-        // a fold (no previous snapshot) it returns null — fall back to the
-        // item-list delta so the frame is still compensated.
-        const bodySnap = snapshotBodyHeights(scroller)
-        const previousBodySnap = lastBodySnap
-        const foldDelta = bodyHeightDelta(lastBodySnap, bodySnap)
-        lastBodySnap = bodySnap
-        // Keep the item-list baseline current for the non-fold path below.
-        const previousItemListH = lastItemListH
-        const itemDelta = lastItemListH == null ? null : itemListH - lastItemListH
-        lastItemListH = itemListH
-        const contentDelta = contentH - lastContentHeight
-        lastContentHeight = contentH
-        // Primary signal: the bodies' per-body height delta. Any other change
-        // in the real content bottom — another row, a margin, or a Virtuoso
-        // padding rebalance — gets one absolute alignment instead of being
-        // silently dropped from the incremental fold ledger.
-        const otherDelta = contentDelta - (foldDelta ?? 0)
-        otherResidual += otherDelta
-        let pendingPin = pendingFoldPinRef.current
-        if (Math.abs(otherResidual) >= 1) {
-          pendingFoldPinRef.current = 'next-ro'
-          pendingPin = 'next-ro'
-        }
-        if (pendingPin === 'next-ro') {
-          pendingFoldPinRef.current = null
-          otherResidual = 0
-        }
-        const fallbackDelta = itemDelta == null ? null : itemDelta - paddingDelta
-        const delta = pendingPin === 'next-ro' ? null : foldDelta ?? fallbackDelta
-        const domTop = scroller.scrollTop
-        const ledgerBefore = ledger
-        if (delta == null) {
-          // No fractional reference (first observation after a baseline
-          // reset): fall back to the integer pin for this frame.
-          pinToBottom(scroller, { reason: 'fold-lockstep', verify: pendingPin != null })
-          ledger = scroller.scrollTop
-        } else {
-          // Seed the ledger direction-aware. GROWTH: the browser does not
-          // move scrollTop on its own, so the ledger starts at the DOM value
-          // and the frame's delta stacks on top of it. SHRINK: the browser
-          // has ALREADY clamped scrollTop to the reduced max in this same
-          // layout pass (the clamp is what keeps the bottom pinned — adding
-          // the delta again double-scrolls, measured at 2× per frame), so
-          // the ledger starts FROM the clamped value.
-          if (ledger == null) ledger = delta < 0 ? domTop : domTop + delta
-          else ledger += delta
-          const max = scroller.scrollHeight - scroller.clientHeight
-          if (ledger > max) ledger = max
-          if (ledger < 0) ledger = 0
-          // Device-px half → scroll; residual half → transform. Together
-          // they hold the content below the fold EXACTLY still (see the
-          // ledger/transform comments above). The scroll half must land on the
-          // DEVICE grid (snapToDevicePx), not the CSS-px grid: the DOM stores
-          // scrollTop in device px (measured at dpr=1.5: writing 13659 held
-          // 20489/1.5), so a CSS-px-rounded write is re-quantized by the DOM
-          // and the residual lands on the cards below — the ±1/3px expand
-          // wobble of 2026-10-27. The transform half must then absorb what the
-          // DOM ACTUALLY held — its read-back value, not the value written:
-          // the browser clamps the write to its own fractional max
-          // (measured: write 18656 held 18655.33 at a fractional max), and a
-          // `written − ledger` transform leaves that clamp on the cards below.
-          const rounded = snapToDevicePx(ledger)
-          scroller.scrollTop = rounded
-          const target = entry.target as HTMLElement
-          const frac = scroller.scrollTop - ledger
-          target.style.transform = frac === 0 ? '' : `translateY(${frac}px)`
-          if (frac !== 0) transformEl = target
-        }
-        // TEMPORARY fold-jitter probe (investigation: tool-group expand shake
-        // re-reported 2026-10-27). Per-frame compensation values, so a
-        // reproduction in __scrollLogV2 shows which signal drove the frame
-        // (foldDelta vs the first-frame itemDelta fallback), how big the step
-        // was, and where the ledger/rounding left the DOM.
-        dbg('itemlist-RO fold-lockstep', () => ({
-          firstFrame: foldDelta == null,
-          deltaSource: pendingPin === 'next-ro' ? 'deferred-pin' : foldDelta != null ? 'body' : itemDelta != null ? 'itemDelta' : 'integer-pin',
-          foldDelta, itemDelta, delta, domTop,
-          otherDelta, otherResidual, paddingDelta, contentDelta,
-          ledgerBefore, ledger, scrollTopAfter: scroller.scrollTop,
-          previousItemListH, itemListH,
-          paddingTop: itemList.style.paddingTop || '0px',
-          paddingBottom: itemList.style.paddingBottom || '0px',
-          bodyHeights: Array.from(bodySnap, ([body, height]) => ({
-            foldId: traceFoldIdFor(body) ?? null,
-            height,
-            pinnedHeight: body.style.height || null,
-            usedHeight: body.offsetHeight,
-          })),
-          previousBodyHeights: previousBodySnap == null ? null : Array.from(previousBodySnap, ([body, height]) => ({
-            foldId: traceFoldIdFor(body) ?? null,
-            height,
-          })),
-          contentH,
+      if (foldAnimating) dispatch({ type: 'FOLD_OBSERVED' })
+      dispatch({ type: 'GEOMETRY_CHANGED' })
+      if ((foldAnimating && scrollStateRef.current.intent === 'follow') || foldOwner !== null) {
+        const token = foldOwner ?? startFoldOwner()
+        const frame: FoldFrame = {
+          bodyHeights: snapshotBodyHeights(scroller),
+          itemListDelta,
+          contentDelta,
+          paddingDelta,
+          itemListHeight: itemListH,
+          contentHeight,
+          scrollTop: scroller.scrollTop,
           scrollHeight: scroller.scrollHeight,
           clientHeight: scroller.clientHeight,
-          maxScrollTop: scroller.scrollHeight - scroller.clientHeight,
-          transform: (entry.target as HTMLElement).style.transform || null,
-        }))
-        // Arm the settle watcher on every fold frame: at settle it must clear
-        // BOTH the transform and the LEDGER (a ledger surviving the fold makes
-        // the next fold's first frame accumulate onto it instead of seeding
-        // from the DOM — a scroll jump), and only the watcher sees the fold
-        // end (RO deliveries stop). Arming is idempotent — a pending tick
-        // already polls until the fold quiets — so this is one rAF chain per
-        // fold, not the per-frame cancel/re-request churn it used to be.
-        settleFoldTransform()
-        return
+          devicePixelRatio: window.devicePixelRatio || 1,
+        }
+        dispatch({ type: 'FOLD_FRAME', token, frame })
+        if (foldAnimating && scrollStateRef.current.intent === 'follow') {
+          lastItemListH = itemListH
+          lastPaddingTop = paddingTop
+          lastPaddingBottom = paddingBottom
+          lastContentHeight = contentHeight
+          return
+        }
       }
-      lastItemListH = itemListH
-      lastBodySnap = null
-      otherResidual = 0
-      ledger = null
-      clearFoldTransform()
 
-      const delta = contentH - lastContentHeight
-      if (Math.abs(delta) < 1) { dbg('itemlist-RO noop', () => ({})); return }
-      // Baseline always tracks past this point, INCLUDING micro-deltas we
-      // skip below — otherwise three consecutive 2px wobbles re-read as a
-      // 6px delta and defeat the band.
-      lastContentHeight = contentH
-      // Micro-delta band: 1–3px height flutter (row re-measures settling,
-      // streaming line rounding) must not hard-write scrollTop. Each pin is
-      // an instant write that kills native momentum — measured live, a
-      // -3/-2/-1/-1 settling chain produced a pin per frame with the verify
-      // loop perpetually re-armed (the 吸附感 report). ≤3px of drift is
-      // invisible, and a real event (append, spacer commit, the user's next
-      // scroll — every scroll event re-checks the follow invariant) corrects
-      // any residue.
-      if (Math.abs(delta) <= ITEM_LIST_MICRO_DELTA_PX) {
-        dbg('itemlist-RO micro-skip', () => ({ delta }))
-        // The band skips the WRITE, not the correction: schedule the trailing
-        // exact pin (see scheduleTrailingMicroPin). Applies to negative
-        // deltas too — the check reads live geometry at fire time, so a
-        // clamp that already healed the shrink makes it a silent no-op.
+      lastItemListH = itemListH
+      lastPaddingTop = paddingTop
+      lastPaddingBottom = paddingBottom
+      if (scrollStateRef.current.intent !== 'follow' || scrollStateRef.current.owner.kind === 'follow') return
+      if (Math.abs(contentDelta) < 1) return
+      lastContentHeight = contentHeight
+      if (Math.abs(contentDelta) <= ITEM_LIST_MICRO_DELTA_PX) {
         scheduleTrailingMicroPin()
         return
       }
-      dbg('itemlist-RO pin', () => ({ delta }))
-      // Re-pin on shrink as well as growth while following. A group folding
-      // ABOVE the viewport reduces scrollHeight; with the viewport pinned to
-      // the old bottom, no scroll event fires to correct it (the browser only
-      // clamps when scrollTop exceeds the new max), so growth-only tracking
-      // would leave the viewport short of the new bottom and the appended
-      // boundary/new message below it un-scrolled-to.
       pinToBottom(scroller)
     })
-    const attach = () => {
-      if (cancelled) return
-      const scroller = scrollerRef.current
-      if (!scroller) { raf = requestAnimationFrame(attach); return }
-      const itemList = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
-      if (!itemList) { raf = requestAnimationFrame(attach); return }
-      lastContentHeight = contentHeightOf(scroller)
-      // NO rect-based seed for lastItemListH: the observation path reads
-      // borderBoxSize (layout box, transform-free) while getBoundingClientRect
-      // carries ancestor transforms — seeded mid-flight (panel-enter
-      // scale(0.98), a DnD FLIP), the first fold frame's itemDelta would read
-      // the transform's error (~2% of the list) as a huge shrink and mis-pin
-      // the ledger by tens of px. Leave it null: the first observation
-      // establishes the baseline, and a first fold frame takes the documented
-      // integer-pin fallback (one frame, no ledger) instead of a poisoned
-      // delta. `lastContentHeight` keeps its content-based seed — scrollHeight
-      // is transform-free.
-      lastItemListH = null
-      lastPaddingTop = null
-      lastPaddingBottom = null
-      otherResidual = 0
-      lastBodySnap = null
-      ro.observe(itemList)
-    }
-    attach()
+
+    const scroller = scrollerRef.current
+    const itemList = scroller?.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
+    if (!scroller || !itemList) return () => ro.disconnect()
+    lastContentHeight = contentHeightOf(scroller)
+    ro.observe(itemList)
     return () => {
       cancelled = true
-      armFoldSettleRef.current = () => {}
-      pendingFoldPinRef.current = null
-      cancelAnimationFrame(raf)
       ro.disconnect()
-      // A mid-fold teardown (transcript switch) must not leave the sub-pixel
-      // transform — or the settle watcher — behind on the unmounting list.
-      if (settleRaf != null) cancelAnimationFrame(settleRaf)
-      clearFoldTransform()
-      // The armed trailing correction belongs to THIS transcript's wobble
-      // chain: a transcriptRevealKey switch tears the observer down and must
-      // tear the correction down with it, or a wobble armed on the old
-      // transcript fires against the new one's freshly-reset scroller.
-      if (trailingMicroPinRef.current != null) {
-        clearTimeout(trailingMicroPinRef.current)
-        trailingMicroPinRef.current = null
-      }
     }
-  }, [transcriptRevealKey, pinToBottom, scheduleTrailingMicroPin])
+  }, [transcriptRevealKey, hasRows, pinToBottom, scheduleTrailingMicroPin, startFoldOwner, dispatch])
 
   // --- Visible top row ----------------------------------------------------
 
@@ -1399,9 +896,6 @@ export function useTranscriptScroll({
     onUserScrollIntentRef.current = onUserScrollIntent
   }, [onUserScrollIntent])
   const lastVisibleTopRef = useRef<number | null>(null)
-  const thumbDraggingRef = useRef(false)
-  const focusNavigationRef = useRef(false)
-  const focusResetRafRef = useRef<number | null>(null)
   const emitVisibleTop = useCallback(() => {
     const notify = onVisibleTopChangeRef.current
     if (!notify) return
@@ -1454,7 +948,7 @@ export function useTranscriptScroll({
       // whole gesture stays attributable to the user. Only upward events
       // re-arm, so our own downward pins and a downward gesture can't keep the
       // window alive.
-      if (userDriven && isScrollingUp && !seekActiveRef.current) userScrollIntentRef.current = Date.now()
+      if (userDriven && isScrollingUp && scrollStateRef.current.owner.kind !== 'seek') userScrollIntentRef.current = Date.now()
       // A genuine user push-away measures against the TRUE bottom
       // (scrollHeight). The spacer-aware `getDistanceFromBottom` subtracts the
       // task-list / live-bubble reserve, so an up-scroll that stays inside it
@@ -1489,21 +983,21 @@ export function useTranscriptScroll({
       // USER-driven upward move must not be swallowed. The rAF loop aborts on
       // that same move, and (with the follow invariant now enforcing the
       // bottom) dropping it would erase the user's nudge instead of leaving.
-      if (scrollAnimatingRef.current && !(userDriven && isScrollingUp)) return
-      dbg('scroll-handler', () => ({ isScrollingUp, userDriven, isUserLeave, following: shouldFollowRef.current, prevScrollTop, scrollTop: el.scrollTop, distTrue }))
+      if (scrollStateRef.current.owner.kind === 'follow' && !(userDriven && isScrollingUp)) return
+      dbg('scroll-handler', () => ({ isScrollingUp, userDriven, isUserLeave, following: scrollStateRef.current.intent === 'follow', prevScrollTop, scrollTop: el.scrollTop, distTrue }))
       if (isUserLeave) {
-        syncBottomGeometry(el, 'disable-now')
+        syncBottomGeometry(el, { type: 'USER_LEFT' })
       } else if (!isScrollingUp && distTrue <= BOTTOM_EPSILON_PX && !justReshowed()) {
         // The user actively scrolled back DOWN to the true bottom — the only
         // scroll-driven path that re-arms follow. A scrollTop drop caused by a
         // bottom-spacer COLLAPSE (task list finishes, clamp back to the new
         // max) must NOT re-latch an away user: the content moved, not them.
-        syncBottomGeometry(el, 'restore')
+        syncBottomGeometry(el, { type: 'USER_RETURNED_TO_TRUE_BOTTOM' })
       } else {
-        syncBottomGeometry(el, 'preserve')
+        syncBottomGeometry(el)
       }
     }
-    syncBottomGeometry(el, 'confirm-away')
+    confirmBottomGeometry(el)
     el.addEventListener('scroll', handler, { passive: true })
     // Scroll-intent listeners for the same element lifetime. `wheel` +
     // `touch*` cover mouse/trackpad/touch gestures on the transcript; the
@@ -1511,9 +1005,16 @@ export function useTranscriptScroll({
     // the parent), so its drag never reaches them and has to be caught at the
     // document — pointer events retarget to the captured thumb mid-drag, which
     // is what keeps the intent fresh for the whole drag.
-    const markUserScrollIntent = () => { userGestureSeqRef.current += 1; userScrollIntentRef.current = Date.now(); onUserScrollIntentRef.current?.() }
+    const markUserScrollIntent = () => {
+      userGestureSeqRef.current += 1
+      userScrollIntentRef.current = Date.now()
+      leaveOnUpwardGesture()
+      cancelContinuousOwner()
+      onUserScrollIntentRef.current?.()
+    }
     const markScrollDownIntent = () => {
       userGestureSeqRef.current += 1
+      cancelContinuousOwner()
       onUserScrollIntentRef.current?.()
       // A direction change retires the old upward gesture. Otherwise a fresh
       // downward input ends re-show suppression and immediately re-activates
@@ -1534,9 +1035,9 @@ export function useTranscriptScroll({
     // from dropping follow — there is no earlier content to go read.
     const leaveOnUpwardGesture = () => {
       const scroller = scrollerRef.current
-      if (!scroller || !shouldFollowRef.current) return
+      if (!scroller || scrollStateRef.current.intent !== 'follow') return
       if (scroller.scrollHeight - scroller.clientHeight <= BOTTOM_EPSILON_PX) return
-      syncBottomGeometry(scroller, 'disable-now')
+      syncBottomGeometry(scroller, { type: 'USER_LEFT' })
     }
     // True when a wheel with `deltaY` over `node` will be chained by the
     // browser up to THIS transcript. `node` may sit inside scroll containers
@@ -1578,7 +1079,6 @@ export function useTranscriptScroll({
       }
       if (e.deltaY === 0) return
       markUserScrollIntent()
-      leaveOnUpwardGesture()
     }
     // Scroll keys may target the scroller itself or a focused non-control
     // descendant (a Markdown link). Native scroll ownership keeps ArrowUp/Home
@@ -1597,11 +1097,7 @@ export function useTranscriptScroll({
         queueMicrotask(() => {
           if (!listenersActive || e.defaultPrevented) return
           focusNavigationRef.current = true
-          if (focusResetRafRef.current != null) cancelAnimationFrame(focusResetRafRef.current)
-          focusResetRafRef.current = requestAnimationFrame(() => {
-            focusNavigationRef.current = false
-            focusResetRafRef.current = null
-          })
+          dispatch({ type: 'FOCUS_RESET_REQUESTED' })
         })
         return
       }
@@ -1660,23 +1156,16 @@ export function useTranscriptScroll({
     // `.os-thumb` would let an unrelated drag re-open the false-leave this gate
     // exists to close. Pointer events retarget to the captured thumb mid-drag,
     // which is what keeps the intent fresh for the whole drag.
-    let thumbClearRaf: number | null = null
     const onPointerOnThumb = (e: PointerEvent) => {
       if ((e.buttons & 1) === 0) { // only the primary button can drag the thumb
         // The final movement's scroll event can arrive after pointerup. Keep
         // ownership through that event, then release on the next frame.
-        if (thumbDraggingRef.current && thumbClearRaf == null) {
-          thumbClearRaf = requestAnimationFrame(() => {
-            thumbDraggingRef.current = false
-            thumbClearRaf = null
-          })
+        if (thumbDraggingRef.current && !writer.isScheduled('thumb-clear')) {
+          dispatch({ type: 'THUMB_CLEAR_REQUESTED' })
         }
         return
       }
-      if (thumbClearRaf != null) {
-        cancelAnimationFrame(thumbClearRaf)
-        thumbClearRaf = null
-      }
+      dispatch({ type: 'THUMB_CLEAR_CANCELLED' })
       const target = e.target as HTMLElement | null
       const track = target?.closest?.('.os-track')
       thumbDraggingRef.current = Boolean(track && track.parentElement === el.parentElement)
@@ -1684,7 +1173,7 @@ export function useTranscriptScroll({
     const onThumbCaptureLost = () => {
       // pointerup's grace frame must survive the ensuing capture-loss event so
       // the final asynchronous scroll is still attributed.
-      if (thumbClearRaf == null) thumbDraggingRef.current = false
+      if (!writer.isScheduled('thumb-clear')) thumbDraggingRef.current = false
     }
     // Touch is direction-gated like the wheel: dragging the finger DOWN moves the
     // content up (revealing older messages), which is the leave-capable
@@ -1725,9 +1214,8 @@ export function useTranscriptScroll({
     document.addEventListener('lostpointercapture', onThumbCaptureLost, true)
     return () => {
       listenersActive = false
-      if (thumbClearRaf != null) cancelAnimationFrame(thumbClearRaf)
-      if (focusResetRafRef.current != null) cancelAnimationFrame(focusResetRafRef.current)
-      focusResetRafRef.current = null
+      dispatch({ type: 'THUMB_CLEAR_CANCELLED' })
+      dispatch({ type: 'FOCUS_RESET_CANCELLED' })
       thumbDraggingRef.current = false
       focusNavigationRef.current = false
       el.removeEventListener('scroll', handler)
@@ -1759,7 +1247,7 @@ export function useTranscriptScroll({
     // message needs NO re-bind. `rowCount` was the dep only so the effect
     // re-ran once the scroller actually exists (Virtuoso mounts it after the
     // first row) — the 0→1 transition, not every append.
-  }, [hasRows, syncBottomGeometry, emitVisibleTop, transcriptRevealKey])
+  }, [hasRows, syncBottomGeometry, confirmBottomGeometry, emitVisibleTop, transcriptRevealKey, cancelContinuousOwner, dispatch, writer, justReshowed])
 
   // Re-read the spacer-aware geometry when the spacer COMMITS a new height.
   //
@@ -1769,29 +1257,32 @@ export function useTranscriptScroll({
   // state. Split out of the listener effect above so the height churn of a
   // fold does not re-bind listeners.
   useEffect(() => {
-    syncBottomGeometry(scrollerRef.current, 'confirm-away')
-  }, [bottomStackHeight, syncBottomGeometry])
+    confirmBottomGeometry(scrollerRef.current)
+  }, [bottomStackHeight, confirmBottomGeometry])
 
   // Clean up the follow debounce timer on unmount.
   useEffect(() => () => {
     clearFollowTimer()
   }, [clearFollowTimer])
 
-  // Cancel any in-flight animated scroll (jump / seek) on unmount so a pending
-  // rAF callback can't fire after the scroller is gone.
-  useEffect(() => () => {
-    if (scrollAnimRafRef.current != null) {
-      cancelAnimationFrame(scrollAnimRafRef.current)
-      scrollAnimRafRef.current = null
+  // React StrictMode replays this effect's cleanup/setup in development. Setup
+  // reactivates the same writer, reattaches the current ref, and restores the
+  // reducer's attachment/visibility; a real unmount has no later setup, so
+  // disposal remains terminal and stale captured callbacks stay invalid through
+  // the attachment invalidation in dispose().
+  useEffect(() => {
+    const current = scrollerRef.current
+    writer.activate()
+    writer.attach(current, epochRef.current)
+    if (current) {
+      dispatch({ type: 'ELEMENT_ATTACHED', element: current })
+      dispatch({ type: 'VISIBILITY_CHANGED', visibility: panelVisibleRef.current === false ? 'hidden' : 'visible' })
     }
-    if (seekAnimRafRef.current != null) {
-      cancelAnimationFrame(seekAnimRafRef.current)
-      seekAnimRafRef.current = null
+    return () => {
+      dispatch({ type: 'UNMOUNTED' })
+      writer.dispose()
     }
-    seekActiveRef.current = false
-    scrollAnimatingRef.current = false
-    if (scrollerRef.current) delete scrollerRef.current.dataset.crwSeekActive
-  }, [])
+  }, [dispatch, writer])
 
   // --- Virtuoso wiring ----------------------------------------------------
 
@@ -1799,15 +1290,24 @@ export function useTranscriptScroll({
     const prev = scrollerRef.current
     if (prev && prev !== ref) prev.classList.remove('chat-virtuoso-scroller')
     if (ref && ref instanceof HTMLElement) {
+      if (attachedRevealKeyRef.current !== transcriptRevealKey) {
+        attachedRevealKeyRef.current = transcriptRevealKey
+        epochRef.current += 1
+        dispatch({ type: 'EPOCH_CHANGED', epoch: epochRef.current })
+      }
       ref.classList.add('chat-virtuoso-scroller')
       scrollerRef.current = ref
+      writer.attach(ref, epochRef.current)
+      dispatch({ type: 'ELEMENT_ATTACHED', element: ref })
       setOsScroller(ref)
-      syncBottomGeometry(ref, 'confirm-away')
+      confirmBottomGeometry(ref)
       return
     }
     scrollerRef.current = null
+    writer.attach(null)
+    dispatch({ type: 'ELEMENT_DETACHED' })
     setOsScroller(null)
-  }, [syncBottomGeometry, setOsScroller])
+  }, [dispatch, writer, transcriptRevealKey, confirmBottomGeometry, setOsScroller])
 
   // New settled message arrives → Virtuoso calls followOutput. We drive the
   // follow-scroll OURSELVES via `animateScrollToBottom` and return `false` so
@@ -1829,243 +1329,55 @@ export function useTranscriptScroll({
   // so this only affects settled-message appends — the standard chat-UI
   // snap-to-new-message.)
   const followOutput = useCallback((_atBottom: boolean) => {
-    if (!shouldFollowRef.current) return false as const
+    if (scrollStateRef.current.intent !== 'follow') return false as const
     animateScrollToBottom()
     return false as const
   }, [animateScrollToBottom])
 
   const atBottomStateChange = useCallback((reportedAtBottom: boolean) => {
-    // Prefer direct DOM geometry so follow-mode uses the same bottom
-    // definition. Fall back to Virtuoso's report if the scroller is not
-    // attached yet.
+    // Prefer direct DOM geometry so both measurements use the same bottom
+    // definition. Before attachment, Virtuoso's report is the only sample.
     const el = scrollerRef.current
     if (el) {
-      syncBottomGeometry(el, 'confirm-away')
+      confirmBottomGeometry(el)
       return
     }
-    syncBottomState(
-      reportedAtBottom,
-      reportedAtBottom ? 'restore' : 'disable-debounced',
-    )
-  }, [syncBottomGeometry, syncBottomState])
+    if (reportedAtBottom) {
+      clearFollowTimer()
+      setFollowing(true)
+      setBottomState(true)
+    } else if (!writer.isScheduled('follow-debounce')) {
+      dispatch({ type: 'FOLLOW_DEBOUNCE_REQUESTED', delayMs: FOLLOW_DEBOUNCE_MS })
+    }
+  }, [FOLLOW_DEBOUNCE_MS, clearFollowTimer, confirmBottomGeometry, dispatch, setBottomState, setFollowing, writer])
 
   const jumpToBottom = useCallback(() => {
-    // Animates smoothly to the real bottom via the rAF loop, so unlike native
-    // `behavior: 'smooth'` it can never land short when content grows
-    // mid-animation.
-    //
-    // Optimistically return to FOLLOWING before the animation lands, so the
-    // backstops stay armed for the duration and beyond:
-    //   - setFollowing(true)   -> followOutput tracks new appends
-    //   - setBottomState(true) -> atBottomRef=true arms the re-pin paths;
-    //                             also kept true by the ANIMATING guard
-    //   - clearFollowTimer()   -> cancel any pending disable-debounced timer
-    //                             from the prior scroll-up so it cannot flip
-    //                             follow back off mid-jump
     focusNavigationRef.current = false
-    if (focusResetRafRef.current != null) cancelAnimationFrame(focusResetRafRef.current)
-    focusResetRafRef.current = null
+    dispatch({ type: 'FOCUS_RESET_CANCELLED' })
     thumbDraggingRef.current = false
-    // eslint-disable-next-line react-hooks/immutability -- invalidates the previous seek's imperative rAF token
-    seekSeqRef.current += 1
-    if (seekAnimRafRef.current != null) {
-      cancelAnimationFrame(seekAnimRafRef.current)
-      // eslint-disable-next-line react-hooks/immutability -- jump-to-bottom takes imperative rAF ownership
-      seekAnimRafRef.current = null
-    }
-    // eslint-disable-next-line react-hooks/immutability -- clears the previous seek's gesture-attribution slot
-    seekActiveRef.current = false
-    if (scrollerRef.current) delete scrollerRef.current.dataset.crwSeekActive
     setFollowing(true)
     setBottomState(true)
     clearFollowTimer()
     onUserScrollIntentRef.current?.()
     scrollerRef.current?.dispatchEvent(new CustomEvent(TRANSCRIPT_SEEK_EVENT, { bubbles: true }))
     animateScrollToBottom()
-  }, [animateScrollToBottom, clearFollowTimer, setBottomState, setFollowing])
+  }, [animateScrollToBottom, clearFollowTimer, dispatch, setBottomState, setFollowing])
 
   const seekToIndex = useCallback((index: number, align: 'start' | 'center') => {
-    // Leave FOLLOWING so the programmatic scroll isn't yanked back by the
-    // bottom pin. Returning to FOLLOWING is the user's call — scrolling back to
-    // the bottom, or invoking jump-to-bottom.
     focusNavigationRef.current = false
-    if (focusResetRafRef.current != null) cancelAnimationFrame(focusResetRafRef.current)
-    focusResetRafRef.current = null
+    dispatch({ type: 'FOCUS_RESET_CANCELLED' })
     thumbDraggingRef.current = false
-    setFollowing(false)
-    // Drive the seek with our OWN rAF easing loop instead of Virtuoso's
-    // `scrollToIndex({ behavior: 'smooth' })`. Why not the native smooth scroll:
-    // mid-scroll row measurements (rows mounting as the viewport pans) fire
-    // `listRefresh`, and Virtuoso's initial-position latch re-issues the
-    // scrollToIndex a few frames later with the RECOMPUTED offset — which
-    // cancels the in-flight native smooth scroll and yanks the viewport back
-    // toward the launch point (measured: a 1044px up-seek from the bottom slid
-    // ~330px and was then dragged back 927px, reading as "the menu item did
-    // nothing"). The rAF loop owns the viewport until it lands: the target is
-    // re-read from the LIVE DOM every frame (rows carry `data-item-index` in
-    // offset space), so size corrections are absorbed instead of fighting the
-    // animation. A far target that's still virtualized away is NOT jumped to
-    // with an instant `behavior: 'auto'`: the loop extrapolates its position
-    // from the mounted rows (see `estimateTopInContent`) and eases toward that,
-    // swapping to the exact measurement once the target mounts — so every seek
-    // animates, near or far.
-    const el = scrollerRef.current
-    if (!el) {
-      virtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align })
-      return
-    }
-    // App's re-show offset hold must yield to EVERY programmatic seek, whether
-    // it came from the scroller, composer shortcut, search, or a header button.
-    el.dispatchEvent(new CustomEvent(TRANSCRIPT_SEEK_EVENT, { bubbles: true }))
-    // One animation writer at a time: cancel any in-flight seek/jump loop.
-    if (seekAnimRafRef.current != null) {
-      cancelAnimationFrame(seekAnimRafRef.current)
-      // eslint-disable-next-line react-hooks/immutability -- imperative rAF ownership is event-time state, not render state
-      seekAnimRafRef.current = null
-    }
-    if (scrollAnimRafRef.current != null) {
-      cancelAnimationFrame(scrollAnimRafRef.current)
-      scrollAnimRafRef.current = null
-      scrollAnimatingRef.current = false
-    }
-    // eslint-disable-next-line react-hooks/immutability -- monotonically identifies the imperative seek started by this event
-    const token = ++seekSeqRef.current
-    // The seek owns the viewport only until the USER takes it back. A gesture
-    // (wheel / touch / scroll key / overlay-thumb drag) stamped AFTER the seek
-    // began ends the loop outright — both the ease and the landed hold. Without
-    // this the hold's re-pin absorbs every wheel notch (and resets its own
-    // expiry on each correction, so continuous wheeling keeps it alive
-    // forever), and the ease fights the wheel for its remaining frames — the
-    // "点完 Scroll to next user message 后鼠标滚不动" report. Gestures stamped
-    // BEFORE the seek (the leave-wheel that parked the viewport, a click's own
-    // pointer events) don't abort: the comparison is strictly later-than in
-    // input-sequence order, so a gesture in the same Date.now() tick still counts.
-    // The seek's own scroll events can't trip this — the scroll handler's
-    // gesture-chaining restamp is suppressed while seekActiveRef is set (see
-    // seekActiveRef), and every real gesture stamps the upward or downward
-    // intent ref directly from its own listener.
-    const seekStartedGestureSeq = userGestureSeqRef.current
-    const userTookOver = () => userGestureSeqRef.current > seekStartedGestureSeq
-    const offsetIndexOf = (row: HTMLElement): number => {
-      const raw = row.dataset.itemIndex
-      return raw == null ? Number.NaN : Number.parseInt(raw, 10)
-    }
-    const contentTopOf = (row: HTMLElement): number =>
-      row.getBoundingClientRect().top + el.scrollTop - el.getBoundingClientRect().top
-    // Offset-space stamp of the row (data space + firstItemIndex), or null
-    // while the row isn't rendered.
-    const rowTopInContent = (): number | null => {
-      const offsetIndex = index + firstItemIndexRef.current
-      const row = el.querySelector<HTMLElement>(`[data-item-index="${offsetIndex}"]`)
-      if (!row) return null
-      return contentTopOf(row)
-    }
-    const rowHeight = (): number => {
-      const offsetIndex = index + firstItemIndexRef.current
-      return el.querySelector<HTMLElement>(`[data-item-index="${offsetIndex}"]`)?.getBoundingClientRect().height ?? 0
-    }
-    // Position for a target that is still virtualized away. Virtuoso renders
-    // only a window around the viewport (overscan 600px), so a step over a tall
-    // message leaves the target unmounted. The old code answered that with an
-    // INSTANT `scrollToIndex({ behavior: 'auto' })`, which is why a far
-    // prev/next snapped with no animation. Extrapolate from the mounted rows
-    // instead (their measured heights give a local average per row), so the
-    // ease always has a target to chase: as the viewport pans, the window
-    // follows, the target mounts, and `rowTopInContent` takes over with the
-    // exact position. Re-derived every frame, so a bad estimate only changes
-    // the speed, never the landing.
-    const estimateTopInContent = (): number | null => {
-      const target = index + firstItemIndexRef.current
-      const rows = el.querySelectorAll<HTMLElement>('[data-item-index]')
-      const n = rows.length
-      if (n === 0) return null
-      const first = rows[0]
-      const last = rows[n - 1]
-      const firstOff = offsetIndexOf(first)
-      const lastOff = offsetIndexOf(last)
-      const firstTop = contentTopOf(first)
-      const lastTop = contentTopOf(last)
-      const lastBottom = lastTop + last.getBoundingClientRect().height
-      const span = lastOff - firstOff + 1
-      const avgH = span > 0 ? (lastBottom - firstTop) / span : el.clientHeight
-      if (!(avgH > 0)) return null
-      if (target > lastOff) return lastBottom + avgH * (target - lastOff - 1)
-      if (target < firstOff) return firstTop - avgH * (firstOff - target)
-      return null
-    }
-    // Where the viewport top should park for the row to sit at `align`.
-    // Clamped to the reachable scroll range: a target near the tail (or a row
-    // taller/shorter than the viewport under 'center') can ask for a scrollTop
-    // past the max. The browser silently clamps `scrollTo`, so the loop would
-    // see `remaining` never fall under the snap threshold and re-issue the same
-    // clamped write forever. Clamping here turns that into `remaining === 0`,
-    // which lands and releases the loop.
-    const desiredTop = (): number | null => {
-      const top = rowTopInContent() ?? estimateTopInContent()
-      if (top == null) return null
-      const raw = align === 'center' ? top - (el.clientHeight - (rowHeight() || el.clientHeight)) / 2 : top
-      const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight)
-      return Math.max(0, Math.min(raw, maxScrollTop))
-    }
-    // Safety bound: extrapolating to a row that never mounts (pathological size
-    // tree) must not pin the rAF loop forever. On exhaustion fall back to
-    // Virtuoso's own jump so the click still does something.
-    let easeFrames = 600
-    // Cleared on EVERY exit of the loop (abort, supersede, fallback, hold
-    // expiry); stays set across the ease→hold hand-off. See seekActiveRef.
-    const endSeek = () => { seekActiveRef.current = false; delete el.dataset.crwSeekActive }
-    const step = () => {
-      seekAnimRafRef.current = null
-      if (token !== seekSeqRef.current || scrollerRef.current !== el) { endSeek(); return }
-      if (userTookOver()) { endSeek(); return }
-      const desired = desiredTop()
-      if (desired == null) {
-        // Nothing measurable at all (empty list): defer to Virtuoso.
-        endSeek()
-        virtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align })
-        return
-      }
-      const current = el.scrollTop
-      const remaining = desired - current
-      if (Math.abs(remaining) <= SEEK_SNAP_PX) {
-        el.scrollTo({ top: desired, behavior: 'auto' })
-        // Hold position for a few frames: Virtuoso re-measures late-mounting
-        // rows after the viewport stops, and a correction that shifts content
-        // would otherwise strand the row off-target. The hold re-checks the
-        // anchor and re-pins if the content moved under us.
-        let holds = SEEK_HOLD_FRAMES
-        const hold = () => {
-          seekAnimRafRef.current = null
-          if (token !== seekSeqRef.current || scrollerRef.current !== el) { endSeek(); return }
-          // User gesture after landing: release the anchor, same as mid-ease.
-          if (userTookOver()) { endSeek(); return }
-          const want = desiredTop()
-          if (want != null && Math.abs(el.scrollTop - want) > SEEK_SNAP_PX) {
-            el.scrollTo({ top: want, behavior: 'auto' })
-            holds = SEEK_HOLD_FRAMES
-          }
-          if (holds-- > 0) seekAnimRafRef.current = requestAnimationFrame(hold)
-          else endSeek()
-        }
-        seekAnimRafRef.current = requestAnimationFrame(hold)
-        return
-      }
-      if (easeFrames-- <= 0) {
-        endSeek()
-        virtuosoRef.current?.scrollToIndex({ index, behavior: 'auto', align })
-        return
-      }
-      // Ease: cover ~25% of the remaining distance per frame (~250-350ms).
-      el.scrollTo({ top: current + remaining * 0.25, behavior: 'auto' })
-      seekAnimRafRef.current = requestAnimationFrame(step)
-    }
-    // eslint-disable-next-line react-hooks/immutability -- marks event-owned rAF activity for gesture attribution
-    seekActiveRef.current = true
-    el.dataset.crwSeekActive = 'true'
-    seekAnimRafRef.current = requestAnimationFrame(step)
-    // Ref read (firstItemIndexRef.current) is live-by-design — a ref needs no dep.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setFollowing, virtuosoRef])
+    scrollerRef.current?.dispatchEvent(new CustomEvent(TRANSCRIPT_SEEK_EVENT, { bubbles: true }))
+    dispatch({ type: 'SEEK_REQUESTED', index, align })
+  }, [dispatch])
+
+  const restoreScroll = useCallback((target: number) => {
+    dispatch({ type: 'RESTORE_REQUESTED', target })
+  }, [dispatch])
+
+  const restoreScrollToIndex = useCallback((index: number, offset: number, fallbackTarget: number) => {
+    dispatch({ type: 'RESTORE_REQUESTED', target: fallbackTarget, reveal: { index, offset } })
+  }, [dispatch])
 
   return {
     following,
@@ -2074,6 +1386,8 @@ export function useTranscriptScroll({
     atBottomStateChange,
     jumpToBottom,
     seekToIndex,
+    restoreScroll,
+    restoreScrollToIndex,
     getVisibleTopIndex,
   }
 }
