@@ -445,16 +445,10 @@ body.resizing-col .app {
   animation: session-nav-dot-out var(--motion-duration-fast) var(--motion-ease-exit) forwards;
 }
 /* Exceptional status dots (working/dormant/ended/waiting/err) reuse the
-   sidebar's .session-status-dot palette, resized to the header tabs' 6px dot
-   rhythm (the sidebar renders them at 7px). One shared rule for BOTH compact
-   tab surfaces — the nav strip (this file's home) and the desktop titlebar
-   (styles/titlebar.css); keep them in lockstep by editing only here. The
-   dormant ring is the visible "slept" state on the tab surfaces. */
-.session-nav-tab .session-status-dot,
-.titlebar-tab .session-status-dot {
-  width: 6px;
-  height: 6px;
-}
+   sidebar's .session-status-dot palette AND its 6px geometry, so one session
+   status reads at one size and one pulse across the sidebar card, the nav
+   strip (this file's home), and the desktop titlebar. The dormant ring is the
+   visible "slept" state on every surface. */
 /* Status dots pop in / fade out like the unread badge (strip surface only —
    the titlebar tabs keep their own motion scope). */
 .session-nav-tab .session-status-dot {

@@ -34,7 +34,7 @@ const GROUPS = [
   {
     canonical: 'status-pulse',
     retired: ['msg-queued-pulse', 'msg-processing-pulse', 'session-nav-pulse', 'titlebar-tab-pulse'],
-    references: { 'chat.css': 2, 'layout.css': 1, 'titlebar.css': 1 },
+    references: { 'chat.css': 2, 'layout.css': 1, 'titlebar.css': 1, 'session-list.css': 1 },
   },
   {
     canonical: 'opacity-pulse-40',

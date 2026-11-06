@@ -1,7 +1,7 @@
-// Shared tail for the delete-confirmation dialogs of worktree-isolated
-// sessions. Used by BOTH sidebar delete entry points (SessionCard's hover
-// delete button and SessionContextMenu's "Delete session" item) so the
-// warning text can't drift between them.
+// Shared tail for the delete-confirmation dialog of worktree-isolated
+// sessions, used by SessionContextMenu's "Delete session" item. The warning
+// text lives here so it cannot drift between the two delete menu entries
+// (ordinary and permanent).
 //
 // The status probe (GET /sessions/:id/worktree-status, Task 8) must resolve
 // BEFORE the ConfirmDialog opens — appending the line after the fact would

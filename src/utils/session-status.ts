@@ -72,11 +72,7 @@ export type TabDotStatus = 'working' | 'dormant' | 'ended' | 'waiting' | 'err'
 
 /** Which status a header tab should surface, or null for none. Distilled
  *  through statusClass() — the shared pure fold behind the sidebar's status
- *  vocabulary — so a tab follows the same precedence as the sidebar chip.
- *  (SessionCard layers richer app-transient states on top: its 'resuming'
- *  comes from App's in-flight set, not SessionInfo, and its recovering
- *  session renders 'err' where statusClass says 'working' — a pre-existing
- *  divergence between card and fold, not one this function introduces.)
+ *  vocabulary — so a tab and a sidebar card follow the same precedence.
  *  Class names are the sidebar's `.session-status-dot.status-*` palette;
  *  statusClass's 'terminated' maps to that CSS vocabulary's 'ended' (same
  *  signal, the sidebar's class name). Resume-in-flight is folded by the
@@ -88,15 +84,38 @@ export function tabDotStatus(s: SessionInfo): TabDotStatus | null {
   return null
 }
 
-/** Tooltip for a compact header tab: the label, plus the status text only
- *  when it explains something ("Dormant", "Session ended: process killed").
- *  A plain live session's tooltip stays the bare label — "Live" adds nothing
- *  over the dot-free normal look. Gated on the statusClass fold (the stable
- *  vocabulary), not on statusLabel's wording, so rewording the label can't
- *  silently push '— <new text>' onto every healthy tab. */
+/** Compact model/message/viewer line shared by the hover text of every
+ *  session surface. The row no longer draws this metadata, so it travels with
+ *  the hover instead of disappearing. */
+function sessionMetaLine(s: SessionInfo): string {
+  const viewers = s.subscribers > 0
+    ? ` · ${s.subscribers} viewer${s.subscribers === 1 ? '' : 's'}`
+    : ''
+  return `${shortenModel(s.model)} · ${s.messageCount} msg${s.messageCount === 1 ? '' : 's'}${viewers}`
+}
+
+/** Multi-line hover detail for a session surface: the status the compact dot
+ *  stands for, an error that a higher-precedence status outranks, the working
+ *  directory, and the model/message/viewer line. Line order is the reading
+ *  order: state first, then where, then the counters. `statusText` lets a
+ *  caller fold in App-only state the SessionInfo does not carry (a resume in
+ *  flight), keeping the hover wording in step with the dot it explains. */
+export function sessionHoverDetails(s: SessionInfo, statusText = statusLabel(s)): string[] {
+  const lines = [statusText]
+  if (s.error != null && !statusText.includes(s.error)) lines.push(`Error: ${s.error}`)
+  if (s.cwd !== undefined && s.cwd !== '') lines.push(s.cwd)
+  lines.push(sessionMetaLine(s))
+  return lines
+}
+
+/** Tooltip for a compact header tab: the label, the status text when it
+ *  explains something (a plain live session adds none), then the same hover
+ *  detail the sidebar card shows. Newlines render as separate native-tooltip
+ *  lines. */
 export function tabTitle(label: string, s: SessionInfo): string {
-  if (statusClass(s) === 'live') return label
-  return `${label} — ${statusLabel(s)}`
+  const [status, ...rest] = sessionHoverDetails(s)
+  const lead = statusClass(s) === 'live' ? label : `${label} — ${status}`
+  return [lead, ...rest].join('\n')
 }
 
 /** Trim namespace prefixes and long version tails so a model name fits

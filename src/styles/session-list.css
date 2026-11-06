@@ -385,8 +385,8 @@
 .session-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-2-5);
+  gap: 0;
+  padding: var(--space-1-5) var(--space-2-5);
   /* Square by default — adjacent cards sit flush (no gap in
      .group-sessions / Virtuoso), so rounding is applied only at the ends
      of each contiguous run via .session-item-shell.list-first/.list-last. */
@@ -489,37 +489,6 @@
    (no dashed border anymore — cards have no real border). */
 .session-item.dormant { opacity: 0.75; }
 .session-item.resuming { cursor: progress; opacity: 0.5; }
-.session-resuming-spinner {
-  display: inline-block;
-  width: var(--size-10px);
-  height: var(--size-10px);
-  border: 1.5px solid var(--fg-muted);
-  /* Re-affirmed: the border shorthand above would otherwise stomp the
-     shared rule's accent top arc (zero-specificity :where group). */
-  border-top-color: var(--accent);
-  vertical-align: middle;
-  margin-right: var(--space-1);
-}
-
-/* Error summary line — truncated one-liner under the title, full text
-   available via the badge + this line's own tooltip. */
-.session-item-error {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--fs-sm);
-  color: var(--danger-text);
-  overflow: hidden;
-  white-space: nowrap;
-  margin-top: var(--space-0-5);
-}
-.session-item-error svg {
-  flex-shrink: 0;
-}
-.session-item-error > :last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 /* Per-panel permission overlay. Unlike the full-screen modal it used to
    be, this one only covers its own chat panel — the other 1-2 panels
@@ -1184,8 +1153,9 @@
      ring and a scale() — and ancestor `.session-item-title`'s overflow:hidden
      clips whatever overflows, so the top of the badge read as occluded even
      with the scale-based pulse. Opacity changes no geometry, so the badge
-     stays inside its box and can never be clipped. Same 0.4↔1 opacity language
-     as .session-status-dot.status-working, minus its (clipping) scale. */
+     stays inside its box and can never be clipped. Its 1.2s cadence is faster
+     than the working dot's 1.8s: a request waiting on the user is the more
+     urgent cue. */
   animation: opacity-pulse-40 1.2s ease-in-out infinite;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1199,7 +1169,18 @@
   50% { opacity: 1; transform: scale(1.1); }
 }
 .session-item-row { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); min-width: 0; }
-.session-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* The session label is the same text in the sidebar and the header tabs, so
+     it uses the tabs' --fs-sm step on both surfaces instead of inheriting the
+     14px body size here. The 20px line box sets the single-line row height
+     (6px card padding ×2 + 20px) and clears the 18px slot/mode badges. */
+  font-size: var(--fs-sm);
+  line-height: var(--size-20px);
+}
 /* Rename: dedicated full-width row so the input isn't squeezed next to
    badges. Hides the normal title row; takes its visual slot. */
 .session-item-rename-row {
@@ -1227,51 +1208,11 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
 }
 .session-item-id { font-family: var(--mono); font-size: var(--fs-sm); color: var(--fg-muted); }
-/* Opaque --fg-muted, NOT color-mix(... 80%, transparent). The 80% alpha
-   composited to 3.30:1 (light) / 3.93:1 (dark) on the .session-item surface
-   — below WCAG AA for normal text — while the opaque token is 4.82:1 /
-   5.33:1. This is the session list: the highest-traffic surface in the app.
-   The hierarchy it was reaching for still holds without the alpha, because
-   .session-item-model below is a mix TOWARD --fg and so stays the lighter,
-   louder datum of the two. */
-.session-item-meta { font-size: var(--fs-sm); color: var(--fg-muted); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The model is the most useful at-a-glance datum in the meta row — lift it
-   above the muted msg/viewer counts so the eye lands on it first. Derived
-   from theme tokens (no hardcoded hex) so light/dark both adapt. */
-.session-item-model { color: color-mix(in srgb, var(--fg) 65%, var(--fg-muted)); }
-.session-item-cwd {
-  display: flex;
-  gap: var(--space-1);
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-  font-family: var(--mono);
-  overflow: hidden;
-}
-.session-item-cwd > span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-/* Status chip — a coloured dot carries the primary signal, the short
-   label is a muted companion (kept so meaning never relies on colour
-   alone). No background fill, so the chip recedes and the title stays
-   the focal point of the card. */
-.session-item-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  flex-shrink: 0;
-  font-size: var(--fs-xs);
-  line-height: 1;
-  color: var(--fg-muted);
-}
-.session-status-label {
-  letter-spacing: 0.01em;
-}
 .session-status-dot {
-  width: 7px;
-  height: 7px;
+  /* Same 6px dot as the header tabs: one size wherever a session status is
+     rendered. */
+  width: 6px;
+  height: 6px;
   border-radius: var(--radius-circle);
   flex-shrink: 0;
   background: var(--fg-muted);
@@ -1280,23 +1221,18 @@
   transition: background var(--motion-duration-moderate) var(--motion-ease-standard),
               box-shadow var(--motion-duration-moderate) var(--motion-ease-standard);
 }
-/* live = healthy/running → semantic green */
-.session-status-dot.status-live { background: var(--ok); }
-.session-item-badge.status-live .session-status-label { color: var(--ok-text); }
-/* working = actively processing → accent, gently pulsing */
+/* working = actively processing → accent, breathing at the header tabs'
+   1.8s status-pulse rhythm (no scale; the pulse is opacity-only everywhere). */
 .session-status-dot.status-working {
   background: var(--accent);
-  animation: session-working-pulse 1s ease-in-out infinite;
+  animation: status-pulse 1.8s ease-in-out infinite;
 }
-.session-item-badge.status-working .session-status-label { color: var(--accent-text); }
 /* waiting = parent turn done but a background (async) subagent is still
    running → amber. Not the full working pulse — the main turn has ended and
    the user can still type — but distinctly not the green "live"/idle dot. */
 .session-status-dot.status-waiting { background: var(--warn); }
-.session-item-badge.status-waiting .session-status-label { color: var(--warn-text); }
 /* err → danger */
 .session-status-dot.status-err { background: var(--danger); }
-.session-item-badge.status-err .session-status-label { color: var(--danger-text); }
 /* dormant = not running → hollow muted ring */
 .session-status-dot.status-dormant {
   background: transparent;
@@ -1304,39 +1240,15 @@
 }
 /* ended = terminated → small solid muted dot (already the default bg) */
 .session-status-dot.status-ended { background: var(--fg-muted); }
-/* unread = the status chip collapses to a lone accent dot (no state text).
-   Slightly larger than the sibling 7px state dots so it reads as a badge on
-   its own at the row's right edge. */
+/* unread = the accent-bright badge the header tabs use for the same signal.
+   It inherits the shared 6px dot geometry. */
 .session-status-dot.status-unread {
-  width: var(--size-8px);
-  height: var(--size-8px);
-  background: var(--accent);
+  background: var(--accent-bright);
 }
 @media (prefers-reduced-motion: reduce) {
   .session-status-dot.status-working { animation: none; }
   .session-status-dot { transition: none; }
 }
-.session-item-delete {
-  opacity: 1;
-  background: transparent;
-  border: none;
-  color: var(--fg-muted);
-  padding: 0 var(--space-1);
-}
-/* Always-visible action cluster (sleep + delete) on the meta row. */
-.session-item-actions {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-.session-item-sleep {
-  opacity: 1;
-  background: transparent;
-  border: none;
-  color: var(--fg-muted);
-  padding: 0 var(--space-1);
-}
-.session-item-sleep:disabled { cursor: not-allowed; opacity: 0.4; }
 
 /* Background section (Appearance popover). Theme tokens only — no hex. */
 .appearance-bg {

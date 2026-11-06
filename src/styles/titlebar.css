@@ -192,9 +192,10 @@
   white-space: nowrap;
   min-width: 0;
 }
-/* The .titlebar-tab .session-status-dot size and the dormant-label dim are
-   shared with the nav strip's tabs — ONE rule lives in layout.css (selector
-   list over both surfaces); do not re-declare them here. */
+/* The header status dots take their 6px geometry from the shared
+   `.session-status-dot` base rule (styles/session-list.css). The dormant-label
+   dim is shared with the nav strip's tabs by the selector list in
+   styles/layout.css. Do not re-declare either here. */
 .titlebar-tab-close {
   display: inline-flex;
   align-items: center;

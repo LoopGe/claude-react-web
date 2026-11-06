@@ -527,21 +527,18 @@ export const SessionList = memo(function SessionList({
               isRenaming={renamingId === s.id}
               dragListeners={listeners}
               onSelect={onSelect}
-              onDelete={onDelete}
-              onSleep={onSleep}
               onContextMenu={handleCardContextMenu}
               renameDraft={renameDraft}
               onRenameDraftChange={handleRenameDraftChange}
               onCommitRename={commitRename}
               onCancelRename={cancelRename}
               onStartRename={startRename}
-              onAskConfirm={dialogs.askConfirm}
             />
           )}
         </SortableNode>
       )
     },
-    [isMobile, openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, renamingId, onSelect, onDelete, onSleep, handleCardContextMenu, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename, dialogs.askConfirm],
+    [isMobile, openIdSlotMap, openIdSet, focusedId, resumingIds, unread, deletingIds, renamingId, onSelect, handleCardContextMenu, onReorder, onReorderInGroup, renameDraft, handleRenameDraftChange, commitRename, cancelRename, startRename],
   )
 
   /** Resolve which ordered list a session belongs to and, when it lives in

@@ -2,17 +2,19 @@
 // can be wrapped in React.memo — prevents the entire list from re-rendering
 // when only a single card's props change (e.g. a session's `working` flag
 // flips during streaming).
+//
+// One line only: slot / pending badge, permission-mode glyph, title, and the
+// status dot shared with the header tabs. Everything else (cwd, model, message
+// and viewer counts, sleep/delete) is deliberately absent — the hover title
+// carries the full status explanation and the right-click menu carries the
+// actions, so the row stays scannable.
 
 import { memo, useEffect, useRef, useState } from 'react'
 import { usePresenceValue } from '../../hooks/useExitPresence'
-import { shortenPath } from '../../utils/paths'
-import { isWaiting, statusLabel } from '../../utils/session-status'
-import { sessionTitleOrFallback } from '../../utils/session-title'
-import { worktreeDeleteWarning } from './worktree-delete-warning'
+import { sessionHoverDetails, statusLabel, tabDotStatus } from '../../utils/session-status'
 import { cx } from '../../utils/cx'
 import type { SessionInfo } from '../../types'
 import { Tooltip } from '../Tooltip'
-import { IconX, IconFolder, IconAlertTriangle, IconMoon } from '../icons/ToolIcons'
 import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
 
 export interface SessionCardProps {
@@ -36,10 +38,6 @@ export interface SessionCardProps {
   dragListeners?: Record<string, unknown>
 
   onSelect: (id: string) => void
-  onDelete: (id: string) => void
-  /** Put a live, idle session into dormant state (release the SDK
-   *  subprocess) without deleting it. Reversible via resume. */
-  onSleep: (id: string) => void
   onContextMenu: (e: React.MouseEvent, id: string) => void
 
   /** Rename callbacks. The draft state and input ref live in SessionList
@@ -49,14 +47,6 @@ export interface SessionCardProps {
   onCommitRename: (id: string, title: string, previousTitle: string) => void
   onCancelRename: () => void
   onStartRename: (session: SessionInfo) => void
-  /** Trigger a custom confirmation dialog instead of window.confirm. */
-  onAskConfirm?: (config: {
-    title: string
-    message: React.ReactNode
-    confirmLabel: string
-    destructive?: boolean
-    onConfirm: () => void | Promise<void>
-  }) => void
 }
 
 export const SessionCard = memo(function SessionCard({
@@ -71,15 +61,12 @@ export const SessionCard = memo(function SessionCard({
   isRenaming,
   dragListeners,
   onSelect,
-  onDelete,
-  onSleep,
   onContextMenu,
   renameDraft,
   onRenameDraftChange,
   onCommitRename,
   onCancelRename,
   onStartRename,
-  onAskConfirm,
 }: SessionCardProps) {
   const renameInputRef = useRef<HTMLInputElement>(null)
 
@@ -123,15 +110,7 @@ export const SessionCard = memo(function SessionCard({
   }, [slotIn])
 
   const showSlot = presence.value != null
-
   const dormant = !s.running && !s.terminated
-  const working = s.running && s.working
-  // A running session whose parent turn has COMPLETED but which still has
-  // background (async) subagents in flight — the parent acked the launch,
-  // the main turn ended, but the subagent keeps producing until a
-  // task_notification lands. Show a distinct 'waiting' state instead of a
-  // plain green 'live' so the sidebar doesn't imply the session is idle.
-  const waiting = isWaiting(s)
   const pendingCount = s.pendingPermissionCount ?? 0
   // Slot-pill modifiers shared by the open pill and its exit clone, so the
   // pill doesn't restyle (filled↔hollow, amber) the instant it starts exiting.
@@ -142,45 +121,30 @@ export const SessionCard = memo(function SessionCard({
   useEffect(() => {
     if (isOpen) lastModsRef.current = slotMods
   }, [isOpen, slotMods])
-  // Single source of truth for the status chip — drives the dot colour,
-  // the short label, and the aria-label. A dormant session (!running &&
-  // !terminated) shows 'dormant' even when it carries a stale error (e.g. a
-  // spawn_failed whose binary is now fixed) — it's resumable, not dead, and
-  // the card body already renders `s.error` below. 'err' is reserved for a
-  // RUNNING session that has nonetheless errored.
-  const status: 'err' | 'ended' | 'resuming' | 'working' | 'waiting' | 'live' | 'dormant' =
-    s.terminated ? 'ended' : isResuming ? 'resuming' : working ? 'working' : waiting ? 'waiting' : s.running ? (s.error ? 'err' : 'live') : 'dormant'
-  const statusText: Record<typeof status, string> = {
-    err: 'err',
-    ended: 'ended',
-    resuming: 'resuming…',
-    working: 'working',
-    waiting: 'waiting',
-    live: 'live',
-    dormant: 'dormant',
-  }
-  const statusAria: Record<typeof status, string> = {
-    err: 'error',
-    ended: 'ended',
-    resuming: 'resuming',
-    working: 'working',
-    waiting: 'waiting on background subagent',
-    live: 'live',
-    dormant: 'dormant',
-  }
-  // Status-chip hover text: only meaningful when there's something to explain
-  // (an error, a background subagent still in flight, or a terminated reason).
-  // While unread the chip collapses to a lone dot, but this explanation is
-  // still surfaced via the dot's title/aria so no state info is lost.
-  const statusTitle = s.error
-    ?? (waiting
-      // A finished parent turn with a background subagent still in flight:
-      // explain the amber dot on hover ("Waiting for a background subagent")
-      // instead of leaving the title empty.
-      ? statusLabel(s)
-      : s.terminated && s.terminatedReason
-        ? statusLabel(s)
-        : '')
+
+  // Status presentation is the header tabs' fold, not a second vocabulary:
+  // tabDotStatus() folds a plain live session to null (dot-free = normal),
+  // crash recovery and resume to 'working', and a running-but-errored session
+  // to 'err'. A resume in flight is App state the fold cannot see, so it is
+  // layered on top exactly as the nav strip does. Precedence mirrors the
+  // header: working pulse > unread > the exceptional status dot.
+  const dotStatus = isResuming ? 'working' : tabDotStatus(s)
+  const dot = dotStatus === 'working' ? 'working' : hasUnread ? 'unread' : dotStatus
+  // The wording the row no longer prints stays reachable: title/aria on the
+  // dot. Appending the raw error covers the one state whose statusLabel branch
+  // outranks it (a session waiting on a background subagent that also errored).
+  const statusText = isResuming ? 'Resuming…' : statusLabel(s)
+  const dotTitle = s.error != null && !statusText.includes(s.error)
+    ? `${statusText} — ${s.error}`
+    : statusText
+  const dotAria = hasUnread ? `Unread, ${dotTitle}` : dotTitle
+  // The metadata the row no longer draws (status, error, cwd, model/counts)
+  // stays one hover away, matching the header tab's tooltip. Pass the resuming
+  // wording so the hover agrees with the pulse it explains.
+  const titleHover = [
+    ...sessionHoverDetails(s, isResuming ? 'Resuming…' : undefined),
+    'Double-click to rename',
+  ].join('\n')
   const permissionMode = s.permissionMode ?? 'default'
 
   return (
@@ -196,10 +160,8 @@ export const SessionCard = memo(function SessionCard({
         s.terminated ? 'terminated' : '',
         dormant ? 'dormant' : '',
         isResuming ? 'resuming' : '',
-        // Unread collapses the status chip to a lone accent dot in the title
-        // row's status slot (rendered below); the `unread` class additionally
-        // brightens the title (.session-item.unread strong) so the card reads
-        // at a glance.
+        // Unread additionally brightens the title (.session-item.unread strong)
+        // so the card reads at a glance.
         hasUnread ? 'unread' : '',
         isDragging ? 'dragging' : '',
         isDeleting ? 'deleting' : '',
@@ -241,195 +203,96 @@ export const SessionCard = memo(function SessionCard({
           />
         </div>
       ) : (
-      <div className="session-item-row">
-        <strong className="session-item-title">
-          {showSlot ? (
-            // A slot-number pill is on screen (open, or the exit frame right
-            // after closing). Open → the slot badge is the leading numeric
-            // badge. When it also has pending responses, fold the pending
-            // signal INTO the slot badge (amber fill + breathing, via the
-            // `pending` modifier) instead of rendering a second, visually
-            // duplicate square. The slot number stays — it still drives Ctrl+N
-            // focus; the pending count/label moves to the tooltip/aria (it
-            // mixes tool-permission requests and AskUserQuestion questions, so
-            // "awaiting your response" reads correctly for both).
-            isOpen ? (
-              <Tooltip
-                label={
-                  (isFocused
-                    ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
-                    : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`)
-                  + (pendingCount > 0
-                    ? ` · ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
-                    : '')
-                }
-                placement="right"
-              >
-                <span
-                  className={`session-item-slot${slotMods}${slotIn ? ' slot-in' : ''}`}
-                  aria-label={
-                    (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
+        <div className="session-item-row">
+          <strong className="session-item-title">
+            {showSlot ? (
+              // A slot-number pill is on screen (open, or the exit frame right
+              // after closing). Open → the slot badge is the leading numeric
+              // badge. When it also has pending responses, fold the pending
+              // signal INTO the slot badge (amber fill + breathing, via the
+              // `pending` modifier) instead of rendering a second, visually
+              // duplicate square. The slot number stays — it still drives Ctrl+N
+              // focus; the pending count/label moves to the tooltip/aria (it
+              // mixes tool-permission requests and AskUserQuestion questions, so
+              // "awaiting your response" reads correctly for both).
+              isOpen ? (
+                <Tooltip
+                  label={
+                    (isFocused
+                      ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
+                      : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`)
                     + (pendingCount > 0
-                      ? `, ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
+                      ? ` · ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
                       : '')
                   }
+                  placement="right"
                 >
-                  {slotIdx + 1}
+                  <span
+                    className={`session-item-slot${slotMods}${slotIn ? ' slot-in' : ''}`}
+                    aria-label={
+                      (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
+                      + (pendingCount > 0
+                        ? `, ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
+                        : '')
+                    }
+                  >
+                    {slotIdx + 1}
+                  </span>
+                </Tooltip>
+              ) : (
+                // Closing: keep the slot number mounted (usePresenceValue retains
+                // it) for the exit cycle so it contracts (`.slot-out`) and pulls
+                // the title back instead of vanishing. Uses the last OPEN frame's
+                // modifiers so it doesn't restyle mid-exit. Decorative.
+                <span className={`session-item-slot${lastModsRef.current} slot-out`} aria-hidden>
+                  {presence.value}
                 </span>
-              </Tooltip>
+              )
             ) : (
-              // Closing: keep the slot number mounted (usePresenceValue retains
-              // it) for the exit cycle so it contracts (`.slot-out`) and pulls
-              // the title back instead of vanishing. Uses the last OPEN frame's
-              // modifiers so it doesn't restyle mid-exit. Decorative.
-              <span className={`session-item-slot${lastModsRef.current} slot-out`} aria-hidden>
-                {presence.value}
-              </span>
-            )
-          ) : (
-            // Closed session has no slot badge to carry a pending signal, so
-            // keep the standalone count badge as the attention cue.
-            pendingCount > 0 && (
-              <Tooltip
-                label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
-                placement="right"
-              >
-                <span
-                  className="session-item-perm-badge"
-                  aria-label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
+              // Closed session has no slot badge to carry a pending signal, so
+              // keep the standalone count badge as the attention cue.
+              pendingCount > 0 && (
+                <Tooltip
+                  label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
+                  placement="right"
                 >
-                  {pendingCount > 9 ? '9+' : pendingCount}
-                </span>
-              </Tooltip>
-            )
-          )}
-          <Tooltip label={permissionModeLabel(permissionMode)} placement="right">
-            <span
-              className={`session-item-mode-badge mode-${permissionMode}`}
-              aria-label={`Permission mode: ${permissionModeLabel(permissionMode)}`}
-            >
-              <PermissionModeIcon mode={permissionMode} size={12} />
-            </span>
-          </Tooltip>
+                  <span
+                    className="session-item-perm-badge"
+                    aria-label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
+                  >
+                    {pendingCount > 9 ? '9+' : pendingCount}
+                  </span>
+                </Tooltip>
+              )
+            )}
+            <Tooltip label={permissionModeLabel(permissionMode)} placement="right">
+              <span
+                className={`session-item-mode-badge mode-${permissionMode}`}
+                aria-label={`Permission mode: ${permissionModeLabel(permissionMode)}`}
+              >
+                <PermissionModeIcon mode={permissionMode} size={12} />
+              </span>
+            </Tooltip>
             <span
               onDoubleClick={(e) => {
                 e.stopPropagation()
                 onStartRename(s)
               }}
-              title="Double-click to rename"
+              title={titleHover}
             >
               {s.title ?? <span className="session-item-id">{s.id.slice(0, 8)}</span>}
             </span>
-        </strong>
-        <span
-          className={`session-item-badge ${hasUnread ? 'status-unread' : `status-${status}`}`}
-          // A bare span's generic role ignores aria-label (see the removed
-          // leading-dot comment), so while unread — when the chip has no text
-          // content and only an aria-hidden dot — the badge needs role="img"
-          // for AT to announce the name.
-          role={hasUnread ? 'img' : undefined}
-          title={
-            hasUnread
-              ? (statusTitle ? `Unread · ${statusTitle}` : 'Unread')
-              : statusTitle
-          }
-          aria-label={
-            hasUnread
-              ? `Unread, ${statusAria[status]}`
-              : `Status: ${statusAria[status]}`
-          }
-        >
-          {hasUnread ? (
-            // Unread collapses the chip to a lone accent dot — no state text.
-            // The underlying state stays reachable via title/aria above.
-            <span className="session-status-dot status-unread" aria-hidden />
-          ) : status === 'resuming' ? (
-            <span className="session-resuming-spinner" aria-hidden />
-          ) : (
-            <span className={`session-status-dot status-${status}`} aria-hidden />
+          </strong>
+          {dot !== null && (
+            <span
+              className={`session-status-dot status-${dot}`}
+              role="img"
+              aria-label={dotAria}
+              title={dotAria}
+            />
           )}
-          {!hasUnread && <span className="session-status-label">{statusText[status]}</span>}
-        </span>
-      </div>
-      )}
-      {s.error && (
-        <div className="session-item-error" title={s.error}>
-          <IconAlertTriangle size={12} aria-hidden />
-          <span>{s.error}</span>
         </div>
       )}
-      <div className="session-item-cwd" title={s.cwd ?? ''}>
-        <IconFolder size={12} aria-hidden />
-        <span>{s.cwd ? shortenPath(s.cwd) : '(no cwd)'}</span>
-      </div>
-      <div className="session-item-row">
-        <span className="session-item-meta">
-          <span className="session-item-model">{s.model ?? 'default'}</span>
-          {' · '}{s.messageCount} msg{s.messageCount === 1 ? '' : 's'}
-          {s.subscribers > 0 && ` · ${s.subscribers} viewer${s.subscribers === 1 ? '' : 's'}`}
-        </span>
-        <span className="session-item-actions">
-          {/* Sleep (dormant) — only meaningful for an idle live session.
-              Working sessions are disabled with a hint; dormant/terminated
-              hide it (nothing to release). Reversible via resume, so no
-              confirmation needed (unlike Delete). */}
-          {s.phase === 'idle' || s.phase === 'working' ? (
-            <Tooltip
-              label={
-                s.phase === 'idle'
-                  ? 'Sleep — release resources (resumable)'
-                  : waiting
-                    ? 'Background subagent still running — wait for it to finish before sleeping'
-                    : 'Wait for the turn to finish before sleeping'
-              }
-              placement="left"
-            >
-              <button
-                className="session-item-sleep"
-                aria-label="Sleep session"
-                disabled={s.phase !== 'idle'}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  if (s.phase === 'idle') onSleep(s.id)
-                }}
-              >
-                <IconMoon size={12} />
-              </button>
-            </Tooltip>
-          ) : null}
-          <Tooltip label="Delete session" placement="left">
-            <button
-              className="session-item-delete"
-              aria-label="Delete session"
-              onClick={async (e) => {
-                e.stopPropagation()
-                if (onAskConfirm) {
-                  const title = sessionTitleOrFallback(s)
-                  onAskConfirm({
-                    title: 'Delete session?',
-                    message: (
-                      <>
-                        <p>Delete &ldquo;{title}&rdquo;? This permanently removes the conversation.</p>
-                        {/* Resolved before the dialog opens (async onClick) —
-                            an isolated session's uncommitted worktree changes
-                            die with the delete. */}
-                        {await worktreeDeleteWarning(s)}
-                      </>
-                    ),
-                    confirmLabel: 'Delete',
-                    destructive: true,
-                    onConfirm: () => onDelete(s.id),
-                  })
-                  return
-                }
-                onDelete(s.id)
-              }}
-            >
-              <IconX size={12} />
-            </button>
-          </Tooltip>
-        </span>
-      </div>
     </div>
   )
 })

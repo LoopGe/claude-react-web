@@ -4392,8 +4392,6 @@ export function App() {
             isDeleting={false}
             isRenaming={false}
             onSelect={dndNoop}
-            onDelete={dndNoop}
-            onSleep={dndNoop}
             onContextMenu={dndNoop}
             renameDraft=""
             onRenameDraftChange={dndNoop}

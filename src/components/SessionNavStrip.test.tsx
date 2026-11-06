@@ -138,7 +138,7 @@ describe('SessionNavStrip', () => {
 
   it('selects a session on tab click', () => {
     const { onSelect } = renderStrip(baseSections())
-    fireEvent.click(screen.getByTitle('Alpha'))
+    fireEvent.click(screen.getByRole('button', { name: 'Alpha' }))
     expect(onSelect).toHaveBeenCalledWith('s1')
   })
 
@@ -150,8 +150,8 @@ describe('SessionNavStrip', () => {
 
   it('marks the focused tab and active group chip as pressed', () => {
     renderStrip(baseSections(), { focusedId: 's2', activeGroupId: 'g1' })
-    expect(screen.getByTitle('Alpha').getAttribute('aria-pressed')).toBe('false')
-    expect(screen.getByTitle('Beta').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'Alpha' }).getAttribute('aria-pressed')).toBe('false')
+    expect(screen.getByRole('button', { name: 'Beta' }).getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByTitle('前端').getAttribute('aria-pressed')).toBe('true')
   })
 
@@ -267,7 +267,7 @@ describe('SessionNavStrip', () => {
     expect(container.querySelector<HTMLElement>('.session-nav-tab')!.classList.contains('dormant')).toBe(true)
   })
 
-  it('carries the status text in the tab tooltip', () => {
+  it('carries the status and the hidden metadata in the tab tooltip', () => {
     const sections: SidebarSection[] = [
       {
         kind: 'ungrouped',
@@ -278,9 +278,15 @@ describe('SessionNavStrip', () => {
       },
     ]
     renderStrip(sections)
-    expect(screen.getByTitle('Alpha — Dormant')).toBeTruthy()
+    const alpha = screen.getByRole('button', { name: 'Alpha' }).getAttribute('title') ?? ''
+    expect(alpha).toContain('Alpha — Dormant')
+    expect(alpha).toContain('/home/user/project')
+    expect(alpha).toContain('sonnet-4 · 5 msgs · 1 viewer')
     // A plain live session keeps the bare label — "Live" explains nothing.
-    expect(screen.getByTitle('Beta')).toBeTruthy()
+    const beta = screen.getByRole('button', { name: 'Beta' }).getAttribute('title') ?? ''
+    expect(beta.startsWith('Beta\n')).toBe(true)
+    expect(beta).not.toContain('—')
+    expect(beta).toContain('/home/user/project')
   })
 
   it('keeps the focused tab scrolled into view when focus changes', () => {
@@ -316,7 +322,7 @@ describe('SessionNavStrip', () => {
       expect(scrollIntoView).toHaveBeenCalledTimes(1)
       // The scrolled element is the newly-focused tab.
       const calledOn = spy.mock.instances[0] as unknown as HTMLElement
-      expect(calledOn.title).toBe('Three')
+      expect(calledOn.title.startsWith('Three\n')).toBe(true)
     } finally {
       spy.mockRestore()
     }
@@ -373,7 +379,7 @@ describe('SessionNavStrip', () => {
       { kind: 'ungrouped', sessions: [makeSession({ id: 'deadbeef-1234', title: undefined })] },
     ]
     renderStrip(sections)
-    expect(screen.getByTitle('deadbeef')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'deadbeef' })).toBeTruthy()
   })
 
   it('updates the fade vars when the strip scrolls', () => {
@@ -477,7 +483,7 @@ describe('SessionNavStrip drag', () => {
   it('starts a tab drag with the namespaced node and the routed payload', async () => {
     const onDragStart = vi.fn()
     renderDndStrip(baseSections(), onDragStart)
-    const tab = screen.getByTitle('Alpha')
+    const tab = screen.getByRole('button', { name: 'Alpha' })
     fireEvent.pointerDown(tab, {
       button: 0,
       pointerId: 1,
@@ -558,7 +564,7 @@ describe('SessionNavStrip drag', () => {
         />
       </DndContext>,
     )
-    fireEvent.click(screen.getByTitle('Alpha'))
+    fireEvent.click(screen.getByRole('button', { name: 'Alpha' }))
     expect(onSelect).toHaveBeenCalledWith('s1')
   })
 })
@@ -622,7 +628,7 @@ describe('SessionNavStrip context menus', () => {
   it('reports a session tab right-click with the event and session id', () => {
     const onSessionContextMenu = vi.fn()
     renderStrip(baseSections(), { onSessionContextMenu })
-    const tab = screen.getByTitle('Alpha')
+    const tab = screen.getByRole('button', { name: 'Alpha' })
     const ev = createEvent.contextMenu(tab, { clientX: 12, clientY: 34 })
     fireEvent(tab, ev)
     expect(onSessionContextMenu).toHaveBeenCalledTimes(1)
@@ -661,8 +667,8 @@ describe('SessionNavStrip context menus', () => {
   it('right-click does not select the session', () => {
     const onSelect = vi.fn()
     renderStrip(baseSections(), { onSelect, onSessionContextMenu: vi.fn() })
-    const ev = createEvent.contextMenu(screen.getByTitle('Alpha'))
-    fireEvent(screen.getByTitle('Alpha'), ev)
+    const ev = createEvent.contextMenu(screen.getByRole('button', { name: 'Alpha' }))
+    fireEvent(screen.getByRole('button', { name: 'Alpha' }), ev)
     expect(onSelect).not.toHaveBeenCalled()
   })
 

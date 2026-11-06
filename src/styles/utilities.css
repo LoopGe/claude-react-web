@@ -1249,7 +1249,6 @@ button.tool-group-failed-jump:focus-visible {
 :where(.spinner,
        .app-loading-spinner,
        .msg-sending-spinner,
-       .session-resuming-spinner,
        .plugin-popover[data-loading] .plugin-content-text::after,
        .composer-send-spinner,
        .glyph-spin,
@@ -1268,7 +1267,6 @@ button.tool-group-failed-jump:focus-visible {
 :where(.spinner,
        .app-loading-spinner,
        .msg-sending-spinner,
-       .session-resuming-spinner,
        .plugin-popover[data-loading] .plugin-content-text::after) {
   width: var(--size-14px);
   height: var(--size-14px);
@@ -1319,9 +1317,8 @@ button.tool-group-failed-jump:focus-visible {
  * We deliberately do NOT touch `animation-*` here. Several of the
  * stylesheet's keyframe animations are *load-bearing progress
  * indicators* (`.app-loading-spinner`, `.msg-sending-spinner`,
- * `.session-resuming-spinner`, `.session-working-pulse`,
- * `.working-bubble-pulse`, `.working-dot-bounce`, `.cursor-blink`,
- * `.recap-shimmer`). Forcing `animation-iteration-count: 1` with a
+ * `.session-working-pulse`, `.working-bubble-pulse`,
+ * `.working-dot-bounce`, `.cursor-blink`, `.recap-shimmer`). Forcing `animation-iteration-count: 1` with a
  * 0.01ms duration would freeze each one at its end frame — so a user
  * who opted into reduced-motion would see a static spinner that never
  * communicates whether work is in progress or stuck. That's worse
@@ -2725,8 +2722,6 @@ button.tool-group-failed-jump:focus-visible {
 
   /* Touch devices can't hover, so hover-revealed action buttons would be
      permanently invisible. Make them always visible at this breakpoint. */
-  .session-item-delete,
-  .session-item-sleep,
   .code-block:hover .code-block-copy,
   .code-block-copy,
   .git-file-actions {

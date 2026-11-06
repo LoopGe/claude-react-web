@@ -1,7 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SessionContextMenu, type SessionContextMenuProps } from './SessionContextMenu'
 import type { SessionInfo } from '../../types'
+
+vi.mock('../../hooks/useApi', () => ({
+  api: { get: vi.fn() },
+}))
+
+import { api } from '../../hooks/useApi'
 
 vi.stubGlobal('matchMedia', () => ({
   matches: false,
@@ -49,6 +55,61 @@ const baseProps: SessionContextMenuProps = {
 }
 
 type ConfirmConfig = NonNullable<SessionContextMenuProps['onAskConfirm']> extends (config: infer C) => void ? C : never
+
+beforeEach(() => {
+  vi.clearAllMocks()
+})
+
+describe('SessionContextMenu delete warning', () => {
+  const wtSession = () => ({
+    ...session,
+    worktree: { mainRepoPath: '/home/user/main-repo', branch: 'crw/abc12345', baseSha: 'deadbeef' },
+  } as SessionInfo)
+
+  const openDelete = async (s: SessionInfo) => {
+    const onAskConfirm = vi.fn()
+    render(<SessionContextMenu {...baseProps} session={s} onAskConfirm={onAskConfirm} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete session' }))
+    await waitFor(() => expect(onAskConfirm).toHaveBeenCalled())
+    return onAskConfirm.mock.calls[0][0] as ConfirmConfig
+  }
+
+  it('appends the dirty-worktree warning to the confirm message', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      available: true,
+      dirty: true,
+      branch: 'crw/abc12345',
+    })
+
+    const config = await openDelete(wtSession())
+
+    expect(api.get).toHaveBeenCalledWith('/sessions/sess-1/worktree-status')
+    render(<>{config.message}</>)
+    expect(screen.getByText(/uncommitted changes/)).toBeTruthy()
+    expect(screen.getByText(/crw\/abc12345/)).toBeTruthy()
+  })
+
+  it('omits the warning when the worktree is clean', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      available: true,
+      dirty: false,
+      branch: 'crw/abc12345',
+    })
+
+    const config = await openDelete(wtSession())
+
+    render(<>{config.message}</>)
+    expect(screen.queryByText(/uncommitted changes/)).toBeNull()
+  })
+
+  it('does not probe worktree status for a non-isolated session', async () => {
+    const config = await openDelete(session)
+
+    expect(api.get).not.toHaveBeenCalled()
+    render(<>{config.message}</>)
+    expect(screen.queryByText(/uncommitted changes/)).toBeNull()
+  })
+})
 
 describe('SessionContextMenu delete actions', () => {
   it('ordinary delete confirms without the transcript-deletion option', async () => {

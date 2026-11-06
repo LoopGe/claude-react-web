@@ -97,7 +97,7 @@ describe('DesktopTitlebarTabs status dots', () => {
     setup([makeSession({ id: 's1', title: 'Alpha', running: false })])
     expect(document.querySelectorAll('.titlebar-tab .session-status-dot.status-dormant')).toHaveLength(1)
     expect(document.querySelector<HTMLElement>('.titlebar-tab')!.classList.contains('dormant')).toBe(true)
-    expect(screen.getByTitle('Alpha — Dormant')).toBeTruthy()
+    expect(document.querySelector<HTMLElement>('.titlebar-tab')!.getAttribute('title')).toContain('Alpha — Dormant')
   })
 
   it('leaves a live idle tab dot-free', () => {

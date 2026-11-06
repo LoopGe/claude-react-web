@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isWaiting, statusClass, statusLabel, tabDotStatus, tabTitle } from './session-status'
+import { isWaiting, sessionHoverDetails, statusClass, statusLabel, tabDotStatus, tabTitle } from './session-status'
 import type { SessionInfo } from '../types'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -10,6 +10,9 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
     terminated: false,
     error: null,
     phase: 'idle',
+    model: 'test-model',
+    messageCount: 3,
+    subscribers: 0,
     ...overrides,
   } as SessionInfo
 }
@@ -127,18 +130,42 @@ describe('tabDotStatus', () => {
   })
 })
 
-describe('tabTitle', () => {
-  it('appends the status text after an em dash when it says something', () => {
-    expect(tabTitle('Alpha', makeSession({ running: false }))).toBe('Alpha — Dormant')
-    expect(tabTitle('Alpha', makeSession({ terminated: true, terminatedReason: 'process_killed' }))).toBe(
-      'Alpha — Session ended: process killed',
-    )
-    expect(tabTitle('Alpha', makeSession({ running: true, working: true }))).toBe('Alpha — Working on a turn')
+describe('sessionHoverDetails', () => {
+  it('leads with the status, then the working directory, then the counters', () => {
+    expect(
+      sessionHoverDetails(makeSession({ cwd: '/home/user/project', subscribers: 1 })),
+    ).toEqual(['Live', '/home/user/project', 'test-model · 3 msgs · 1 viewer'])
   })
 
-  it('keeps the bare label for a plain live session', () => {
-    // "Live" adds nothing over the pulse-free normal look — the tooltip
-    // stays the title exactly when there is nothing to explain.
-    expect(tabTitle('Alpha', makeSession({}))).toBe('Alpha')
+  it('keeps an error that a higher-precedence status outranks', () => {
+    expect(
+      sessionHoverDetails(makeSession({ backgroundSubagentCount: 1, error: 'boom' })),
+    ).toEqual(['Waiting for a background subagent', 'Error: boom', 'test-model · 3 msgs'])
+  })
+
+  it('omits the path line when the session has no cwd', () => {
+    expect(sessionHoverDetails(makeSession())).toEqual(['Live', 'test-model · 3 msgs'])
+  })
+})
+
+describe('tabTitle', () => {
+  it('appends the status text after an em dash when it says something', () => {
+    expect(tabTitle('Alpha', makeSession({ running: false }))).toBe(
+      'Alpha — Dormant\ntest-model · 3 msgs',
+    )
+    expect(tabTitle('Alpha', makeSession({ terminated: true, terminatedReason: 'process_killed' }))).toBe(
+      'Alpha — Session ended: process killed\ntest-model · 3 msgs',
+    )
+    expect(tabTitle('Alpha', makeSession({ running: true, working: true }))).toBe(
+      'Alpha — Working on a turn\ntest-model · 3 msgs',
+    )
+  })
+
+  it('keeps the bare label as the first line for a plain live session', () => {
+    // "Live" adds nothing over the pulse-free normal look, so the first line
+    // stays the title; the metadata still follows on its own line.
+    expect(tabTitle('Alpha', makeSession({ cwd: '/tmp/project' }))).toBe(
+      'Alpha\n/tmp/project\ntest-model · 3 msgs',
+    )
   })
 })

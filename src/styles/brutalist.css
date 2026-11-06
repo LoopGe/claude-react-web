@@ -103,12 +103,6 @@
   border-color: var(--border);
   box-shadow: 2px 2px 0 var(--bt-shadow-color);
 }
-/* The meta row self-colors to --fg-muted (unreadable on the yellow
-   sticker in dark) — inherit the sticker ink like the title does. */
-[data-skin="brutalist"] .session-item.open .session-item-meta {
-  color: var(--bt-on-yellow);
-}
-
 /* ── 3b. Badge sticker states (spec §7 role table) ──────────────────
    PLAN chip = orange sticker (white ink), model chip = yellow sticker
    (ink), fast-on = orange sticker (white ink). Other mode-* states keep

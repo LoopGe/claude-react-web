@@ -1,13 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, act, fireEvent, waitFor } from '@testing-library/react'
+import { render, act, fireEvent } from '@testing-library/react'
 import { SessionCard, type SessionCardProps } from './SessionCard'
 import type { SessionInfo } from '../../types'
-
-vi.mock('../../hooks/useApi', () => ({
-  api: { get: vi.fn(), post: vi.fn() },
-}))
-
-import { api } from '../../hooks/useApi'
 
 // jsdom doesn't implement window.matchMedia; usePresenceValue probes it on
 // each exit. Report "no reduced motion" so the animate-exit path is exercised
@@ -54,8 +48,6 @@ const baseProps: SessionCardProps = {
   isRenaming: false,
   renameDraft: '',
   onSelect: vi.fn(),
-  onDelete: vi.fn(),
-  onSleep: vi.fn(),
   onContextMenu: vi.fn(),
   onCommitRename: vi.fn(),
   onCancelRename: vi.fn(),
@@ -63,7 +55,11 @@ const baseProps: SessionCardProps = {
   onRenameDraftChange: vi.fn(),
 }
 
-describe('SessionCard', () => {
+function statusDot(container: HTMLElement): HTMLElement | null {
+  return container.querySelector('.session-status-dot')
+}
+
+describe('SessionCard single-line layout', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -73,97 +69,207 @@ describe('SessionCard', () => {
     expect(container.textContent).toContain('Test Session')
   })
 
-  it('renders cwd shortened path', () => {
+  it('does not render the cwd, model, message count, or viewer count', () => {
     const { container } = render(<SessionCard {...baseProps} />)
-    expect(container.textContent).toContain('project')
+    expect(container.textContent).not.toContain('project')
+    expect(container.textContent).not.toContain('sonnet')
+    expect(container.textContent).not.toContain('msgs')
+    expect(container.textContent).not.toContain('viewers')
+    expect(container.querySelector('.session-item-cwd')).toBeNull()
+    expect(container.querySelector('.session-item-meta')).toBeNull()
   })
 
-  it('renders "live" badge when running and not working', () => {
+  it('keeps the hidden metadata on the title hover', () => {
     const { container } = render(<SessionCard {...baseProps} />)
-    expect(container.textContent).toContain('live')
+    const hover = container.querySelector('.session-item-title > span[title]')?.getAttribute('title') ?? ''
+    expect(hover).toContain('/home/user/project')
+    expect(hover).toContain('sonnet-4')
+    expect(hover).toContain('5 msgs')
+    expect(hover).toContain('1 viewer')
+    expect(hover).toContain('Live')
+    expect(hover).toContain('Double-click to rename')
   })
 
-  it('renders "working" badge when running and working', () => {
-    const session = makeSession({ running: true, working: true })
-    const { container } = render(<SessionCard {...baseProps} session={session} />)
-    expect(container.textContent).toContain('working')
-  })
-
-  it('renders "waiting" badge when parent turn is done but a background subagent is in flight', () => {
-    const session = makeSession({ running: true, working: false, backgroundSubagentCount: 1, phase: 'working' })
-    const { container } = render(<SessionCard {...baseProps} session={session} />)
-    expect(container.textContent).toContain('waiting')
-    // Dot carries the amber 'waiting' class, not the green 'live'.
-    const dot = container.querySelector('.session-status-dot')
-    expect(dot?.classList.contains('status-waiting')).toBe(true)
-    expect(dot?.classList.contains('status-live')).toBe(false)
-  })
-
-  it('renders "live" badge when running with zero background subagents', () => {
-    const session = makeSession({ running: true, working: false, backgroundSubagentCount: 0 })
-    const { container } = render(<SessionCard {...baseProps} session={session} />)
-    expect(container.textContent).toContain('live')
-    const dot = container.querySelector('.session-status-dot')
-    expect(dot?.classList.contains('status-live')).toBe(true)
-  })
-
-  it('prefers the "waiting" badge over "err" while a background subagent is in flight', () => {
-    // Precedence must match statusClass(): working > waiting > err. A running
-    // session with background work is "waiting" even if it also carries an
-    // error — the error text still renders in the card body below.
-    const session = makeSession({ running: true, working: false, error: 'Something failed', backgroundSubagentCount: 1 })
-    const { container } = render(<SessionCard {...baseProps} session={session} />)
-    expect(container.textContent).toContain('waiting')
-    expect(container.textContent).not.toContain('err')
-    const dot = container.querySelector('.session-status-dot')
-    expect(dot?.classList.contains('status-waiting')).toBe(true)
-  })
-
-  it('surfaces the waiting status label in the badge title tooltip', () => {
-    const session = makeSession({ running: true, working: false, backgroundSubagentCount: 1 })
-    const { container } = render(<SessionCard {...baseProps} session={session} />)
-    const badge = container.querySelector('.session-item-badge')
-    expect(badge?.getAttribute('title')).toBe('Waiting for a background subagent')
-  })
-
-  it('renders error badge', () => {
-    const session = makeSession({ error: 'Something failed' })
-    const { container } = render(<SessionCard {...baseProps} session={session} />)
-    expect(container.textContent).toContain('err')
-  })
-
-  it('renders "ended" badge when terminated', () => {
-    const session = makeSession({ running: false, terminated: true })
-    const { container } = render(<SessionCard {...baseProps} session={session} />)
-    expect(container.textContent).toContain('ended')
-  })
-
-  it('sleep button calls onSleep for an idle session', () => {
-    const onSleep = vi.fn()
-    const session = makeSession({ phase: 'idle' })
-    const { container } = render(<SessionCard {...baseProps} session={session} onSleep={onSleep} />)
-    const btn = container.querySelector('.session-item-sleep') as HTMLButtonElement
-    expect(btn).not.toBeNull()
-    expect(btn.disabled).toBe(false)
-    fireEvent.click(btn)
-    expect(onSleep).toHaveBeenCalledWith(session.id)
-  })
-
-  it('sleep button is disabled when the session is working', () => {
-    const onSleep = vi.fn()
-    const session = makeSession({ running: true, working: true, phase: 'working' })
-    const { container } = render(<SessionCard {...baseProps} session={session} onSleep={onSleep} />)
-    const btn = container.querySelector('.session-item-sleep') as HTMLButtonElement
-    expect(btn).not.toBeNull()
-    expect(btn.disabled).toBe(true)
-    fireEvent.click(btn)
-    expect(onSleep).not.toHaveBeenCalled()
-  })
-
-  it('sleep button is hidden for a dormant session', () => {
-    const session = makeSession({ running: false, terminated: false, phase: 'dormant' })
-    const { container } = render(<SessionCard {...baseProps} session={session} />)
+  it('does not render the hover sleep or delete buttons', () => {
+    const { container } = render(<SessionCard {...baseProps} />)
     expect(container.querySelector('.session-item-sleep')).toBeNull()
+    expect(container.querySelector('.session-item-delete')).toBeNull()
+    expect(container.querySelector('.session-item-actions')).toBeNull()
+  })
+
+  it('does not render status wording in the row', () => {
+    const { container } = render(<SessionCard {...baseProps} />)
+    for (const word of ['live', 'working', 'waiting', 'dormant', 'ended', 'err', 'resuming']) {
+      expect(container.textContent?.toLowerCase()).not.toContain(word)
+    }
+    expect(container.querySelector('.session-item-status-label')).toBeNull()
+  })
+
+  it('keeps the permission mode badge', () => {
+    const { container } = render(<SessionCard {...baseProps} />)
+    const badge = container.querySelector('.session-item-mode-badge')
+    expect(badge).not.toBeNull()
+    expect(badge?.getAttribute('aria-label')).toBe('Permission mode: Default (ask)')
+  })
+})
+
+describe('SessionCard status dot matches the header fold', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('renders no dot for a plain live session', () => {
+    const { container } = render(<SessionCard {...baseProps} />)
+    expect(statusDot(container)).toBeNull()
+  })
+
+  it('renders the working dot for an active turn', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ working: true })} />,
+    )
+    expect(statusDot(container)?.classList.contains('status-working')).toBe(true)
+  })
+
+  it('renders the waiting dot when a background subagent is still running', () => {
+    const { container } = render(
+      <SessionCard
+        {...baseProps}
+        session={makeSession({ working: false, backgroundSubagentCount: 1 })}
+      />,
+    )
+    expect(statusDot(container)?.classList.contains('status-waiting')).toBe(true)
+  })
+
+  it('renders the err dot for a running session that errored', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ error: 'Something failed' })} />,
+    )
+    expect(statusDot(container)?.classList.contains('status-err')).toBe(true)
+  })
+
+  it('renders the ended dot for a terminated session', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ running: false, terminated: true })} />,
+    )
+    expect(statusDot(container)?.classList.contains('status-ended')).toBe(true)
+  })
+
+  it('renders the dormant ring for a session that is not running', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ running: false })} />,
+    )
+    expect(statusDot(container)?.classList.contains('status-dormant')).toBe(true)
+  })
+
+  it('renders the working dot while a resume is in flight', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ running: false })} isResuming />,
+    )
+    expect(statusDot(container)?.classList.contains('status-working')).toBe(true)
+  })
+
+  it('folds crash recovery into the working dot', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ recovering: true })} />,
+    )
+    expect(statusDot(container)?.classList.contains('status-working')).toBe(true)
+  })
+})
+
+describe('SessionCard unread and status precedence', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('shows the unread dot instead of the live state', () => {
+    const { container } = render(<SessionCard {...baseProps} hasUnread />)
+    expect(statusDot(container)?.classList.contains('status-unread')).toBe(true)
+  })
+
+  it('lets working win over unread', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} hasUnread session={makeSession({ working: true })} />,
+    )
+    expect(statusDot(container)?.classList.contains('status-working')).toBe(true)
+    expect(statusDot(container)?.classList.contains('status-unread')).toBe(false)
+  })
+
+  it('shows the unread dot instead of a dormant ring', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} hasUnread session={makeSession({ running: false })} />,
+    )
+    expect(statusDot(container)?.classList.contains('status-unread')).toBe(true)
+    expect(statusDot(container)?.classList.contains('status-dormant')).toBe(false)
+  })
+})
+
+describe('SessionCard status tooltip', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('carries the error text on the dot instead of a row', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ error: 'Something failed' })} />,
+    )
+    const dot = statusDot(container)
+    expect(dot?.getAttribute('title')).toContain('Something failed')
+    expect(dot?.getAttribute('aria-label')).toContain('Something failed')
+    expect(container.textContent).not.toContain('Something failed')
+  })
+
+  it('keeps the error reachable when waiting takes the dot', () => {
+    const { container } = render(
+      <SessionCard
+        {...baseProps}
+        session={makeSession({ working: false, backgroundSubagentCount: 1, error: 'Something failed' })}
+      />,
+    )
+    const dot = statusDot(container)
+    expect(dot?.classList.contains('status-waiting')).toBe(true)
+    expect(dot?.getAttribute('title')).toContain('background subagent')
+    expect(dot?.getAttribute('title')).toContain('Something failed')
+  })
+
+  it('explains the dormant state and its stale error on the dot', () => {
+    const { container } = render(
+      <SessionCard
+        {...baseProps}
+        session={makeSession({ running: false, error: 'spawn failed' })}
+      />,
+    )
+    const dot = statusDot(container)
+    expect(dot?.classList.contains('status-dormant')).toBe(true)
+    expect(dot?.getAttribute('title')).toContain('Resume failed')
+    expect(dot?.getAttribute('title')).toContain('spawn failed')
+  })
+
+  it('names unread alongside the state', () => {
+    const { container } = render(<SessionCard {...baseProps} hasUnread />)
+    expect(statusDot(container)?.getAttribute('aria-label')).toBe('Unread, Live')
+    expect(statusDot(container)?.getAttribute('title')).toBe('Unread, Live')
+  })
+
+  it('says resuming while a resume is in flight', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ running: false })} isResuming />,
+    )
+    expect(statusDot(container)?.getAttribute('title')).toBe('Resuming…')
+  })
+
+  it('keeps the resuming wording in the title hover', () => {
+    const { container } = render(
+      <SessionCard {...baseProps} session={makeSession({ running: false })} isResuming />,
+    )
+    const hover = container.querySelector('.session-item-title > span[title]')?.getAttribute('title') ?? ''
+    expect(hover.startsWith('Resuming…')).toBe(true)
+    expect(hover).not.toContain('Dormant')
+  })
+})
+
+describe('SessionCard interactions', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
   })
 
   it('applies focused class when isFocused', () => {
@@ -178,16 +284,6 @@ describe('SessionCard', () => {
     expect(card?.classList.contains('open')).toBe(true)
   })
 
-  it('renders a permission mode badge for default mode without card-level active styling', () => {
-    const { container } = render(<SessionCard {...baseProps} />)
-    const card = container.querySelector('.session-item')
-    const badge = container.querySelector('.session-item-mode-badge')
-    expect(card?.classList.contains('mode-default')).toBe(true)
-    expect(card?.classList.contains('mode-active')).toBe(false)
-    expect(badge).not.toBeNull()
-    expect(badge?.getAttribute('aria-label')).toBe('Permission mode: Default (ask)')
-  })
-
   it('calls onSelect when clicked', () => {
     const onSelect = vi.fn()
     const { container } = render(<SessionCard {...baseProps} onSelect={onSelect} />)
@@ -196,7 +292,7 @@ describe('SessionCard', () => {
     expect(onSelect).toHaveBeenCalledWith('abc12345-xxxx')
   })
 
-  it('does not call onSelect when resuming', () => {
+  it('does not call onSelect while resuming', () => {
     const onSelect = vi.fn()
     const { container } = render(
       <SessionCard {...baseProps} isResuming onSelect={onSelect} />,
@@ -206,16 +302,11 @@ describe('SessionCard', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
-  it('calls onDelete when delete button is clicked', () => {
-    const onDelete = vi.fn()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    const { container } = render(
-      <SessionCard {...baseProps} onDelete={onDelete} />,
-    )
-    const btn = container.querySelector('.session-item-delete')!
-    fireEvent.click(btn)
-    expect(onDelete).toHaveBeenCalledWith('abc12345-xxxx')
-    vi.restoreAllMocks()
+  it('opens the context menu on right click', () => {
+    const onContextMenu = vi.fn()
+    const { container } = render(<SessionCard {...baseProps} onContextMenu={onContextMenu} />)
+    fireEvent.contextMenu(container.querySelector('.session-item')!)
+    expect(onContextMenu).toHaveBeenCalled()
   })
 
   it('applies dragging class when isDragging', () => {
@@ -223,53 +314,14 @@ describe('SessionCard', () => {
     const card = container.querySelector('.session-item')
     expect(card?.classList.contains('dragging')).toBe(true)
   })
+})
 
-  it('replaces the status chip with an unread dot for an open session', () => {
-    // B design: unread collapses the right-hand status chip to a lone accent
-    // dot — no "live/working" text. The slot badge keeps its normal look.
-    const { container } = render(
-      <SessionCard {...baseProps} isOpen hasUnread slotIdx={1} />,
-    )
-    const slot = container.querySelector('.session-item-slot')
-    expect(slot?.textContent).toBe('2') // slotIdx + 1
-    expect(slot?.classList.contains('unread')).toBe(false)
-    // The leading inline dot is gone; the chip now carries status-unread.
-    expect(container.querySelector('.session-item-unread')).toBeNull()
-    const badge = container.querySelector('.session-item-badge')
-    expect(badge?.classList.contains('status-unread')).toBe(true)
-    expect(badge?.classList.contains('status-live')).toBe(false)
-    // Status text is hidden while unread; aria still names the state. The
-    // badge is role="img" so the aria-label reaches assistive tech (a bare
-    // span's generic role would ignore it).
-    expect(container.textContent).not.toContain('live')
-    expect(badge?.getAttribute('role')).toBe('img')
-    expect(badge?.getAttribute('aria-label')).toBe('Unread, live')
+describe('SessionCard open slot and pending badge', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
   })
 
-  it('replaces the dormant status chip with an unread dot for a closed session', () => {
-    const session = makeSession({ running: false }) // dormant
-    const { container } = render(<SessionCard {...baseProps} session={session} hasUnread />)
-    expect(container.querySelector('.session-item-slot')).toBeNull()
-    expect(container.querySelector('.session-item-unread')).toBeNull()
-    const badge = container.querySelector('.session-item-badge')
-    expect(badge?.classList.contains('status-unread')).toBe(true)
-    expect(badge?.classList.contains('status-dormant')).toBe(false)
-    expect(container.textContent).not.toContain('dormant')
-    expect(badge?.getAttribute('aria-label')).toBe('Unread, dormant')
-  })
-
-  it('keeps the status explanation reachable on the unread badge', () => {
-    // A waiting (background-subagent) session that is also unread: the visible
-    // chip is just the dot, but hover/AT still surface the amber state.
-    const session = makeSession({ running: true, working: false, backgroundSubagentCount: 1 })
-    const { container } = render(<SessionCard {...baseProps} session={session} hasUnread />)
-    const badge = container.querySelector('.session-item-badge')
-    expect(badge?.classList.contains('status-unread')).toBe(true)
-    expect(badge?.getAttribute('title')).toContain('background subagent')
-    expect(badge?.getAttribute('aria-label')).toBe('Unread, waiting on background subagent')
-  })
-
-  it('renders slot number when isOpen', () => {
+  it('renders the slot number when isOpen', () => {
     const { container } = render(
       <SessionCard {...baseProps} isOpen slotIdx={1} />,
     )
@@ -289,7 +341,7 @@ describe('SessionCard', () => {
     expect(slot?.classList.contains('slot-in')).toBe(true)
   })
 
-  it('does not replay the slot entrance when the card mounts already open (scroll remount / first load)', () => {
+  it('does not replay the slot entrance when the card mounts already open', () => {
     // Virtuoso unmounts off-screen cards and remounts them on scroll; a plain
     // CSS mount animation would replay every time a card scrolls back into
     // view. Only a genuine false→true isOpen transition should pop.
@@ -302,9 +354,6 @@ describe('SessionCard', () => {
   })
 
   it('drops the slot entrance class shortly after the pop', () => {
-    // `.slot-in` is cleared on a timer so a pending session's infinite amber
-    // breathing cue resumes right after the ~180ms entrance (and the fill-mode
-    // tail can't linger over later re-renders or suppress the pulse).
     vi.useFakeTimers()
     try {
       const { container, rerender } = render(
@@ -321,9 +370,6 @@ describe('SessionCard', () => {
   })
 
   it('keeps the slot pill mounted through the exit, then unmounts it', () => {
-    // Closing runs the reverse animation (`.slot-out`) so the pill contracts
-    // and pulls the title back instead of vanishing in place; it unmounts
-    // only after the exit cycle.
     vi.useFakeTimers()
     try {
       const { container, rerender } = render(
@@ -345,8 +391,6 @@ describe('SessionCard', () => {
   })
 
   it('keeps the last real slot number during the exit', () => {
-    // slotIdx drops to -1 the instant the session closes; the exit clone must
-    // keep showing the number it had while open, not "0".
     vi.useFakeTimers()
     try {
       const { container, rerender } = render(
@@ -363,11 +407,7 @@ describe('SessionCard', () => {
     }
   })
 
-  it('folds pending responses into the slot badge when open (no separate count badge)', () => {
-    // An open session with a pending count used to render a slot badge AND a
-    // visually identical perm-count badge side by side. They're merged into one:
-    // the slot badge carries a `pending` modifier (amber + breathing), and the
-    // count moves to its accessible label.
+  it('folds pending responses into the slot badge when open', () => {
     const { container } = render(
       <SessionCard
         {...baseProps}
@@ -377,17 +417,13 @@ describe('SessionCard', () => {
       />,
     )
     const slot = container.querySelector('.session-item-slot')
-    expect(slot?.textContent).toBe('2') // slotIdx + 1
+    expect(slot?.textContent).toBe('2')
     expect(slot?.classList.contains('pending')).toBe(true)
-    // No separate count badge alongside.
     expect(container.querySelector('.session-item-perm-badge')).toBeNull()
-    // Pending count surfaces in the slot badge's accessible label.
     expect(slot?.getAttribute('aria-label')).toContain('3 requests awaiting your response')
   })
 
   it('keeps the standalone count badge for a closed session with pending responses', () => {
-    // A closed session has no slot badge to carry the pending signal, so the
-    // standalone amber count badge is still rendered.
     const { container } = render(
       <SessionCard
         {...baseProps}
@@ -398,101 +434,5 @@ describe('SessionCard', () => {
     const badge = container.querySelector('.session-item-perm-badge')
     expect(badge?.textContent).toBe('3')
     expect(container.querySelector('.session-item-slot')).toBeNull()
-  })
-
-  it('folds pending into the slot badge while unread collapses the status chip', () => {
-    // Open + pending + unread: pending rides the slot badge (amber); unread
-    // collapses the right-hand status chip to the lone accent dot. The two
-    // signals live on opposite sides of the title row and don't collide.
-    const { container } = render(
-      <SessionCard
-        {...baseProps}
-        isOpen
-        slotIdx={1}
-        session={makeSession({ pendingPermissionCount: 2 })}
-        hasUnread
-      />,
-    )
-    const slot = container.querySelector('.session-item-slot')
-    expect(slot?.classList.contains('pending')).toBe(true)
-    expect(slot?.classList.contains('unread')).toBe(false)
-    expect(container.querySelector('.session-item-perm-badge')).toBeNull()
-    expect(container.querySelector('.session-item-unread')).toBeNull()
-    expect(container.querySelector('.session-item-badge.status-unread')).not.toBeNull()
-  })
-
-  it('keeps the pending amber styling even when the focused slot also has pending', () => {
-    const { container } = render(
-      <SessionCard
-        {...baseProps}
-        isOpen
-        isFocused
-        slotIdx={1}
-        session={makeSession({ pendingPermissionCount: 1 })}
-      />,
-    )
-    const slot = container.querySelector('.session-item-slot')
-    expect(slot?.classList.contains('pending')).toBe(true)
-    expect(slot?.classList.contains('focused')).toBe(true)
-  })
-})
-
-describe('SessionCard worktree delete warning', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
-  const wtSession = () =>
-    makeSession({
-      worktree: { mainRepoPath: '/home/user/main-repo', branch: 'crw/abc12345', baseSha: 'deadbeef' },
-    })
-
-  /** The confirm message is a ReactNode — mount it to assert its text. */
-  const messageText = (message: React.ReactNode) => {
-    const { container } = render(<>{message}</>)
-    return container.textContent
-  }
-
-  const clickDelete = async (root: HTMLElement, onAskConfirm: ReturnType<typeof vi.fn>) => {
-    fireEvent.click(root.querySelector('.session-item-delete')!)
-    await waitFor(() => expect(onAskConfirm).toHaveBeenCalled())
-  }
-
-  it('appends the dirty-worktree warning to the confirm message', async () => {
-    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-      available: true,
-      dirty: true,
-      branch: 'crw/abc12345',
-    })
-    const onAskConfirm = vi.fn()
-    const { container } = render(<SessionCard {...baseProps} session={wtSession()} onAskConfirm={onAskConfirm} />)
-    await clickDelete(container, onAskConfirm)
-
-    expect(api.get).toHaveBeenCalledWith('/sessions/abc12345-xxxx/worktree-status')
-    const text = messageText(onAskConfirm.mock.calls[0][0].message)
-    expect(text).toContain('uncommitted changes')
-    expect(text).toContain('crw/abc12345')
-  })
-
-  it('omits the warning when the worktree is clean', async () => {
-    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-      available: true,
-      dirty: false,
-      branch: 'crw/abc12345',
-    })
-    const onAskConfirm = vi.fn()
-    const { container } = render(<SessionCard {...baseProps} session={wtSession()} onAskConfirm={onAskConfirm} />)
-    await clickDelete(container, onAskConfirm)
-
-    expect(messageText(onAskConfirm.mock.calls[0][0].message)).not.toContain('uncommitted changes')
-  })
-
-  it('does not probe worktree status for a non-isolated session', async () => {
-    const onAskConfirm = vi.fn()
-    const { container } = render(<SessionCard {...baseProps} onAskConfirm={onAskConfirm} />)
-    await clickDelete(container, onAskConfirm)
-
-    expect(api.get).not.toHaveBeenCalled()
-    expect(messageText(onAskConfirm.mock.calls[0][0].message)).not.toContain('uncommitted changes')
   })
 })
