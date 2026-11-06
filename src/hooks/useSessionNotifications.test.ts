@@ -96,6 +96,32 @@ describe('useSessionNotifications — three-state dispatch', () => {
       expect(toastInfo).not.toHaveBeenCalled()
     })
 
+    it('uses the turn summary as the toast body when present', () => {
+      setFocus(true)
+      const { api } = setup('other')
+      api.seedWorkingState('s1', true)
+      api.maybeNotify(makeSession({ working: false, lastTurnSummary: '已修复滚动位置丢失的问题。' }))
+      expect(notify).not.toHaveBeenCalled()
+      expect(toastInfo).toHaveBeenCalledTimes(1)
+      const [msg, opts] = toastInfo.mock.calls[0]
+      expect(msg).toBe('已修复滚动位置丢失的问题。')
+      expect(opts.title).toContain('Session One')
+    })
+
+    it('prefers the error over a stale summary', () => {
+      setFocus(true)
+      const { api } = setup('other')
+      api.seedWorkingState('s1', true)
+      api.maybeNotify(makeSession({
+        working: false,
+        error: 'boom',
+        lastTurnSummary: '不应显示',
+      }))
+      expect(toastError).toHaveBeenCalledTimes(1)
+      expect(toastInfo).not.toHaveBeenCalled()
+      expect(toastError.mock.calls[0][0]).toBe('boom')
+    })
+
     it('fires an in-app toast (not desktop) when focused on a different session', () => {
       setFocus(true)
       const { api, handleSelect } = setup('other')
@@ -131,6 +157,25 @@ describe('useSessionNotifications — three-state dispatch', () => {
       api.maybeNotify(makeSession({ working: false }))
       expect(notify).toHaveBeenCalledTimes(1)
       expect(toastInfo).not.toHaveBeenCalled()
+    })
+
+    it('desktop notification body carries the turn summary', () => {
+      setFocus(false)
+      const { api } = setup('s1')
+      api.seedWorkingState('s1', true)
+      api.maybeNotify(makeSession({ working: false, lastTurnSummary: '已修复滚动位置丢失的问题。' }))
+      expect(notify).toHaveBeenCalledTimes(1)
+      expect(notify.mock.calls[0][0].body).toBe('已修复滚动位置丢失的问题。')
+    })
+
+    it('truncates a long summary in the desktop body to 160 code points', () => {
+      setFocus(false)
+      const { api } = setup('s1')
+      api.seedWorkingState('s1', true)
+      api.maybeNotify(makeSession({ working: false, lastTurnSummary: '字'.repeat(200) }))
+      const body = notify.mock.calls[0][0].body as string
+      expect(Array.from(body)).toHaveLength(161)
+      expect(body.endsWith('…')).toBe(true)
     })
 
     it('only fires on the falling edge (working true→false)', () => {

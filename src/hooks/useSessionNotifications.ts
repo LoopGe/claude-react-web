@@ -44,6 +44,11 @@ import type { CliNotification } from '../ws-types.js'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { clamp } from '../utils/clamp'
 import { DEFAULT_TOAST_DURATION_MS } from '../utils/notifications'
+import { truncateTurnSummary } from '../../shared/turn-summary.js'
+
+/** OS notification bodies are short-lived, two-line surfaces — keep the
+ *  summary tighter than the in-app toast's server-side budget. */
+const DESKTOP_SUMMARY_CHARS = 160
 
 /** How to surface an event, given window focus + which session is on
  *  screen. See the file header for the rationale behind each state. */
@@ -353,10 +358,14 @@ export function useSessionNotifications({
       if (mode === 'toast') {
         // User is in the page, just on another session — an in-app toast is
         // the right weight. Click jumps to the session (same handler as the
-        // desktop notification below).
+        // desktop notification below). The session name stays the headline;
+        // the turn summary (when the server sent one) is the body, so the
+        // user can tell what happened without switching panels.
         const onClick = () => handleSelectRef.current?.(s.id)
         if (s.error) {
           toastRef.current.error(s.error, { title, onClick })
+        } else if (s.lastTurnSummary) {
+          toastRef.current.info(s.lastTurnSummary, { title, onClick })
         } else {
           toastRef.current.info('Turn complete', { title, onClick })
         }
@@ -366,7 +375,9 @@ export function useSessionNotifications({
       // mode === 'desktop' — window not focused, fall back to the OS toast.
       notifyRef.current({
         title: `✓ ${title}`,
-        body: s.error ? `Errored: ${s.error}` : 'Turn complete',
+        body: s.error
+          ? `Errored: ${s.error}`
+          : truncateTurnSummary(s.lastTurnSummary, DESKTOP_SUMMARY_CHARS) ?? 'Turn complete',
         tag: s.id,
         // Status update — quiet to avoid sound spam when several
         // sessions complete back-to-back. Accepts the Windows-Action-

@@ -307,6 +307,17 @@ export interface SessionInfoBase<PM = string> {
   backgroundSubagentCount?: number
   /** Epoch ms of the last completed turn. Used to flag unread. */
   lastTurnAt?: number
+  /** One-line excerpt of the last completed turn's final reply — cleaned and
+   *  truncated server-side (`shared/turn-summary.ts`). Written on the
+   *  `result` frame before the session-update that flips `working` to false,
+   *  so the client's turn-complete toast / desktop notification can show it
+   *  without fetching history. Runtime-only (never persisted, not in
+   *  `SessionMeta`), so `infoFromMeta` leaves it undefined. The
+   *  unload()/sleep() transitions broadcast the detached session's live
+   *  `info(s)`, which may still carry the last completed turn's value; that is
+   *  harmless because no working→false edge is produced there (a turn in
+   *  flight cleared it when it started). */
+  lastTurnSummary?: string
   /** Snapshot of HEAD at session spawn time. Used by the GitPanel
    *  "This session" view to scope diffs to this conversation's
    *  duration. Undefined when cwd was not a git repo at spawn,

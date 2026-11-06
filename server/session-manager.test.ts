@@ -825,6 +825,19 @@ describe('SessionManager', () => {
     expect(after.lastTurnAt!).toBeGreaterThanOrEqual(before)
   })
 
+  it('send() clears the previous turn summary before the next turn starts', async () => {
+    const info = await sm.create({})
+    mockHandles[0].emit({ type: 'result', subtype: 'success', result: '上一轮回复' })
+    await tick()
+    expect(sm.get(info.id).lastTurnSummary).toBe('上一轮回复')
+
+    // A new user turn invalidates it: if this turn ends without a result
+    // (interrupt heal, local `!` exec, clean cancellation), the falling-edge
+    // toast must not re-announce the previous turn's reply.
+    sm.send(info.id, 'next')
+    expect(sm.get(info.id).lastTurnSummary).toBeUndefined()
+  })
+
   it('reports backgroundSubagentCount + a working phase while a background subagent is in flight', async () => {
     const info = await sm.create({ cwd: '/tmp/workspace' })
     expect(info.backgroundSubagentCount).toBe(0)

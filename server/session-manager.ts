@@ -3849,6 +3849,11 @@ export class SessionManager {
     // Invalidate the stored recap — a new message means it's stale.
     // The next idle window triggers a fresh generation.
     this.recapManager.invalidate(s.id)
+    // A new turn invalidates the previous turn's completion summary. If this
+    // turn ends WITHOUT a result frame (interrupt heal, local `!` command,
+    // clean query shutdown), the client's working→false edge would otherwise
+    // re-announce the previous reply in its toast.
+    s.lastTurnSummary = undefined
     // Guard against concurrent unload(): if the session was removed from
     // the map between the initial running check and here, persisting would
     // overwrite the terminal state written by unload().
@@ -8245,6 +8250,12 @@ export class SessionManager {
       backgroundSubagentCount: this.backgroundSubagentCount(s),
       pendingPermissionCount: s.pending.size,
       phase: this.phaseOf(s),
+      // Runtime-only: the turn-complete toast reads this from the
+      // session-update that flips `working` to false. Deliberately not in
+      // projectSharedSessionFields / infoFromMeta (never persisted). Cleared
+      // when a turn is dispatched or first observed, so a turn ending without
+      // a result cannot re-announce an unrelated reply.
+      lastTurnSummary: s.lastTurnSummary,
       recap: s.recap,
       skillOverride: s.skillOverride,
     }

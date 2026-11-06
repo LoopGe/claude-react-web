@@ -474,6 +474,16 @@ export interface Session {
   autoInterruptedAt?: number
   /** Timestamp of the last `result` message, used for the unread badge. */
   lastTurnAt?: number
+  /** One-line excerpt of the last completed turn's final reply, shown by the
+   *  client's turn-complete toast / desktop notification. Written by the pump
+   *  on the `result` frame BEFORE persist(), so the session-update that flips
+   *  `working` to false already carries it. Cleared when a new turn is
+   *  dispatched (`pushToSession`) or first observed by the pump for a
+   *  CLI-driven turn — so a turn that ends without a result (interrupt heal,
+   *  local `!` command, clean shutdown) cannot re-announce an unrelated
+   *  reply — and when a result carries no user-visible text (empty
+   *  background-task bookends, error results). Runtime-only: never persisted. */
+  lastTurnSummary?: string
   /** CLI crash context recorded by handleProcessExit when a subprocess exits
    *  non-cleanly (non-zero code / signal / killed). Acts as the discriminator
    *  that routes cleanupPump into the crash-recovery ladder instead of the

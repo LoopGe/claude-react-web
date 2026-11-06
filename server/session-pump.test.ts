@@ -2299,6 +2299,65 @@ function makePumpDeps(overrides: Partial<PumpDeps> = {}): PumpDeps {
   }
 }
 
+describe('pump: turn-complete summary', () => {
+  it('stores the result text on the session, cleaned for one-line display', async () => {
+    const { session } = makePumpSession([
+      { type: 'result', subtype: 'success', result: '  第一行\n\n第二行  ', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(session.lastTurnSummary).toBe('第一行 第二行')
+  })
+
+  it('truncates the summary to the default budget', async () => {
+    const { session } = makePumpSession([
+      { type: 'result', subtype: 'success', result: '字'.repeat(300), uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(Array.from(session.lastTurnSummary!)).toHaveLength(201)
+  })
+
+  it('writes the summary BEFORE persist so the session-update carries it', async () => {
+    const { session } = makePumpSession([
+      { type: 'result', subtype: 'success', result: '本轮回复', uuid: 'r1' } as unknown as SDKMessage,
+    ])
+    const seen: Array<string | undefined> = []
+    await pump(session, makePumpDeps({ persist: (s) => { seen.push(s.lastTurnSummary) } }))
+
+    // First persist is the result path (the cleanup tail persists again).
+    expect(seen[0]).toBe('本轮回复')
+  })
+
+  it('clears a previous summary when the next result has no text', async () => {
+    const { session } = makePumpSession([
+      { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['boom'], uuid: 'r2' } as unknown as SDKMessage,
+    ])
+    session.lastTurnSummary = '上一轮的回复'
+    await pump(session, makePumpDeps())
+
+    expect(session.lastTurnSummary).toBeUndefined()
+  })
+
+  it('clears a previous summary when a CLI-driven turn starts', async () => {
+    const { session } = makePumpSession([
+      {
+        type: 'assistant',
+        parent_tool_use_id: null,
+        uuid: 'a1',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
+      } as unknown as SDKMessage,
+    ])
+    session.lastTurnSummary = '上一轮的回复'
+    await pump(session, makePumpDeps())
+
+    // stampUnaccountedTurn is the only turn-start signal for a turn the CLI
+    // started itself (e.g. a task-notification injection); leaving the slot
+    // set would let it ride this turn's completion toast.
+    expect(session.lastTurnSummary).toBeUndefined()
+  })
+})
+
 describe('pump: compacting state tracking', () => {
   it('sets session.compacting on a status frame and broadcasts a session-update', async () => {
     const { session } = makePumpSession([

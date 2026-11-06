@@ -29,6 +29,7 @@ import type { CliNotification } from '../shared/ws-protocol.js'
 import { MAX_TERMINAL_TASKS, isTerminalTaskStatus, normalizeTaskType, type TaskRecordUi, type TaskResourceLink } from '../shared/tasks.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame, localCommandOf } from '../shared/results.js'
+import { summarizeTurnResult } from '../shared/turn-summary.js'
 import { isTaskNotificationUserMessage, parseTaskNotificationInjection, userMessageText } from '../shared/user-frames.js'
 import { isGenuineUserInputFrame, taskToolUseId } from '../shared/task-list.js'
 
@@ -50,6 +51,9 @@ const log = createLogger('pump')
  *  Callers gate on `session.pendingTurns === 0` (never double-fires, never
  *  lowers the count). */
 function stampUnaccountedTurn(session: Session, deps: PumpDeps): void {
+  // A CLI-started turn invalidates the previous turn's completion summary:
+  // this turn's completion toast must describe THIS turn, not the last one.
+  session.lastTurnSummary = undefined
   session.pendingTurns = 1
   session.workingSince = Date.now()
   session.turnActive = true
@@ -1610,6 +1614,13 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // `result` BEFORE calling iter.next() for the next turn, so the
         // queued item is still in our Pushable when we observe `result`.
         if (msg.type === 'result') {
+          // One-line excerpt of this turn's final reply for the client's
+          // turn-complete toast / desktop notification. Written BEFORE the
+          // persist() below, so the session-update that flips `working` to
+          // false already carries it. Missing/blank text (empty background
+          // bookends, error results) clears the slot rather than letting the
+          // previous turn's summary ride this turn's toast.
+          session.lastTurnSummary = summarizeTurnResult((msg as { result?: unknown }).result)
           // The frame's uuid anchors the turn's changed-files card; undefined
           // only for frames the non-empty guard below rejects anyway.
           let resultFrameUuid: string | undefined
