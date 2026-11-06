@@ -1423,11 +1423,11 @@ body.resizing-col .app {
   color: var(--danger-text);
 }
 /* Git chip on header row 2 — right-aligned so it sits opposite the cwd
-   path and no longer competes with the row-1 badges. The Tooltip wrapper
-   (`.tt-wrap`, inline-flex) is the direct flex item of row 2, so the auto
-   margin goes on it rather than on the badge button. `:has` matches the
-   existing `.tt-wrap:has(> .git-branch-row)` pattern in git-panel.css. */
-.chat-panel-header-row2 > .tt-wrap:has(> .chat-panel-git-badge) {
+   path and no longer competes with the row-1 badges. The hover now lives in
+   a portalled HoverPopover, so the badge button itself is the direct flex
+   item of row 2 (there is no `.tt-wrap` wrapper any more) and the auto
+   margin goes on it. */
+.chat-panel-header-row2 > .chat-panel-git-badge {
   margin-left: auto;
 }
 /* The shared .chat-panel-git-badge rule (11px font × 1.35 line-height +
