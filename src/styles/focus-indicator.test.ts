@@ -161,6 +161,7 @@ const LOAD_ORDER = [
   'file-viewer.css',
   'resource-modal.css',
   'utilities.css',
+  'hover-popover.css',
   'titlebar.css',
   'glass.css',
   'brutalist.css',

@@ -12,10 +12,11 @@
 // inside `.git-file-actions` (the whole div is omitted when `actions` is
 // undefined — read-only rows pass nothing).
 
-import { memo, useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { FullDiffViewer } from './FullDiffViewer'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { DiffView } from './DiffView'
+import { HoverPopover } from './HoverPopover'
 import { IconChevronDown, IconChevronRight } from './icons/ToolIcons'
 import { gitStatusTitle } from '../utils/git-status'
 import type { GitDiff } from '../../shared/git-types'
@@ -64,6 +65,9 @@ export const GitFileRow: React.MemoExoticComponent<(props: GitFileRowProps) => R
   actions,
 }: GitFileRowProps) {
   const [open, setOpen] = useState(false)
+  // Full path on hover: the row clips long paths. Short status glyph hints
+  // stay native `title`s — only the identifier moves to HoverPopover.
+  const pathRef = useRef<HTMLButtonElement>(null)
   // Pending-open: the user clicked to open but the diff fetch is still in
   // flight. We defer flipping `open` until the fetch resolves so the
   // AnimatedCollapse runs ONE animation from 0 → final-diff-height instead
@@ -142,12 +146,12 @@ export const GitFileRow: React.MemoExoticComponent<(props: GitFileRowProps) => R
     <div className={`git-file-row ${open ? 'open' : ''} ${selected ? 'selected' : ''}`}>
       <div className="git-file-row-line" onClick={() => onSelect?.()}>
         <button
+          ref={pathRef}
           type="button"
           className="git-file-row-toggle"
           aria-busy={pendingOpen || undefined}
           aria-expanded={open}
           onClick={handleToggle}
-          title={renamedFrom ? `${renamedFrom} → ${path}` : path}
         >
           <span className={`git-file-status status-${status}`} title={gitStatusTitle(status)}>{status}</span>
           <span className="git-file-path">
@@ -168,6 +172,11 @@ export const GitFileRow: React.MemoExoticComponent<(props: GitFileRowProps) => R
           )}
           <span className="git-file-arrow">{(open || pendingOpen) ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}</span>
         </button>
+        <HoverPopover triggerRef={pathRef} side="bottom" align="start">
+          <div className="hover-pop-stack">
+            <div className="hover-pop-path">{renamedFrom ? `${renamedFrom} → ${path}` : path}</div>
+          </div>
+        </HoverPopover>
         {actions != null && (
           <div className="git-file-actions">{actions}</div>
         )}

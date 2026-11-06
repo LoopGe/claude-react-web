@@ -11,8 +11,9 @@
 // what keeps the row shell identical to the worktree rows while dropping
 // every write affordance.
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { GitFileRow } from './GitFileRow'
+import { HoverPopover } from './HoverPopover'
 import {
   useCachedCommitFiles,
   useGitCommitDiffFile,
@@ -70,6 +71,9 @@ export function CommitRow({
   // from the fetched commit detail — /log omits the body, so the detail is
   // where the real message body comes from.
   const bodyText = body || data?.commit.body || ''
+  // The abbreviated hash is the row's identifier; its full form is a hover
+  // away. Other short hints in the git panel stay native `title`s.
+  const hashRef = useRef<HTMLElement>(null)
 
   return (
     // The row header is an activatable control: focusable, Enter/Space
@@ -102,7 +106,12 @@ export function CommitRow({
         }
       }}
     >
-      <code className="git-commit-hash" title={hash}>{hash.slice(0, 7)}</code>
+      <code ref={hashRef} className="git-commit-hash">{hash.slice(0, 7)}</code>
+      <HoverPopover triggerRef={hashRef} side="bottom" align="start">
+        <div className="hover-pop-stack">
+          <div className="hover-pop-path">{hash}</div>
+        </div>
+      </HoverPopover>
       <span className="git-commit-subject">{subject}</span>
       <span className="git-commit-meta">
         {author} · {formatRelativeFromMs(date)}

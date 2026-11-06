@@ -1,7 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useState } from 'react'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 import type { GitCommitResponse, GitDiff, GitRangeFile } from '../../shared/git-types'
+
+vi.stubGlobal('matchMedia', () => ({
+  matches: false,
+  media: '',
+  onchange: null,
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  addListener: () => {},
+  removeListener: () => {},
+  dispatchEvent: () => false,
+}))
 
 // CommitRow drives its file list through useCachedCommitFiles → useGitCommitFiles
 // and each row's diff through useGitCommitDiffFile; both go through api.get.
@@ -94,6 +105,24 @@ describe('CommitRow', () => {
     // nodes — so no element's text is the composite '+beta'. Assert the add
     // line's body, which is the half of '+beta' the row renders as text.
     expect(await screen.findByText('beta')).toBeTruthy()
+  })
+
+  it('shows the full hash on hover and drops the native title', () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = renderRow()
+      const hash = container.querySelector('.git-commit-hash') as HTMLElement
+      expect(hash.getAttribute('title')).toBeNull()
+      fireEvent.pointerEnter(hash)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      const pop = document.querySelector('.hover-pop')
+      expect(pop?.getAttribute('role')).toBe('tooltip')
+      expect(pop?.textContent).toContain(HASH)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('shows the empty copy for a commit with no file changes', async () => {
