@@ -4,8 +4,10 @@ Status: implemented
 
 ## Problem
 
-Uploaded files were written to `<cwd>/claude-web-uploads/<timestamped name>` at
-intake and referenced by that path in the registry. Three problems followed:
+Uploaded files were written under `<cwd>/claude-web-uploads/` — later under the
+shared `<stateDir>/claude-web-uploads/` after ingestion was unified — with a
+timestamped name, and referenced by that path in the registry. Three problems
+followed:
 
 - The transcript and the SDK handle text embed the upload path, so moving or
   re-publishing a file silently broke old messages.

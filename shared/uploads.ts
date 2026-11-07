@@ -9,7 +9,8 @@ import type { FileAttachmentRef } from './attachments'
  *  provenance (the uploading session's cwd, or the stateDir for common
  *  uploads). Entries published by the content-addressed store live under
  *  `<stateDir>/claude-web-attachments/v1/files/<digest>/<name>`; legacy
- *  entries live under their session's `<cwd>/claude-web-uploads/`.
+ *  entries live under their session's `<cwd>/claude-web-uploads/` or, for
+ *  pre-v1 unified uploads, the shared `<stateDir>/claude-web-uploads/`.
  *  `origin: 'common'` marks uploads made from the manager dialog with no
  *  session attached. `sessionTitle` is a provenance snapshot taken at upload
  *  time — a deleted session must not take the record with it. `sessionId` is
