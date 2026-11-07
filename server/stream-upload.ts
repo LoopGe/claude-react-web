@@ -2,7 +2,9 @@
 // file in memory. Shared by the global background upload and the unified
 // upload route. Each part is written to `<final>.<index>.part` and atomically
 // renamed on success, so a truncated upload never becomes visible at a
-// servable path.
+// servable path. Callers with their own publication path (the
+// content-addressed attachment store) pass `sink` instead of `place` and
+// receive the part stream directly.
 //
 // These routes must NOT be wrapped in Hono's `bodyLimit`: in the chunked case
 // it reads the entire body into memory before calling next() (see
@@ -39,7 +41,20 @@ export interface StreamUploadOptions {
   maxFiles?: number
   /** mime → ext allow-list. Omitted = accept any type. */
   accept?: Record<string, string>
-  place: (args: PlaceArgs) => { tmp: string; final: string; name: string }
+  /** Write the part to caller-chosen paths; the stream owns the temp file. */
+  place?: (args: PlaceArgs) => { tmp: string; final: string; name: string }
+  /** Consume the part for publication elsewhere. Never handed more than
+   *  `maxFileBytes`, so the sink cannot publish an over-limit file. */
+  sink?: (part: SinkPart) => Promise<SavedUpload>
+}
+
+/** One file part handed to a `sink`. */
+export interface SinkPart {
+  filename: string
+  mimeType: string
+  index: number
+  /** Raw part bytes, bounded by `maxFileBytes`; consumed by the sink. */
+  data: AsyncIterable<Uint8Array>
 }
 
 export type UploadFailure =
@@ -71,10 +86,40 @@ interface Pending {
   digest: string
 }
 
+/** The part bytes a sink may see: at most `limit` of them. The rest of the
+ *  part is drained so the parser can advance, then the iteration fails.
+ *  `destroyOnReturn: false` keeps a sink that stops early from destroying the
+ *  part stream, which would leave busboy waiting on a read that never comes;
+ *  streamUploads resumes the stream once the sink settles. */
+async function* boundedChunks(
+  stream: Readable,
+  filename: string,
+  limit: number,
+): AsyncIterable<Uint8Array> {
+  let size = 0
+  let overflowed = false
+  for await (const chunk of stream.iterator({ destroyOnReturn: false })) {
+    if (overflowed) continue
+    size += chunk.byteLength
+    if (size > limit) {
+      overflowed = true
+      continue
+    }
+    yield chunk
+  }
+  if (overflowed) throw new UploadError({ kind: 'too-large', filename, limit })
+}
+
 export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload[]> {
+  if ((o.place === undefined) === (o.sink === undefined)) {
+    throw new TypeError('streamUploads requires exactly one of place or sink')
+  }
+  const place = o.place
+  const sink = o.sink
   const maxFiles = o.maxFiles ?? 1
   const temps: string[] = []
   const pending: Pending[] = []
+  const saved: SavedUpload[] = []
   const writes: Promise<void>[] = []
   let failure: UploadFailure | null = null
   let index = 0
@@ -84,7 +129,13 @@ export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload
     // Browsers send raw UTF-8 filenames in multipart Content-Disposition;
     // busboy's default latin1 charset turns them into mojibake.
     defParamCharset: 'utf8',
-    limits: { fileSize: o.maxFileBytes, files: maxFiles },
+    limits: {
+      // A sink counts bytes itself, so busboy must let one byte past the
+      // limit through for the overflow to be visible at all. Place mode
+      // relies on busboy's own truncation instead.
+      fileSize: sink ? o.maxFileBytes + 1 : o.maxFileBytes,
+      files: maxFiles,
+    },
   })
 
   bb.on('file', (_field, stream, info) => {
@@ -99,7 +150,27 @@ export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload
       return
     }
 
-    const dest = o.place({ filename: info.filename, mimeType: info.mimeType, index: i })
+    if (sink) {
+      const settled = sink({
+        filename: info.filename,
+        mimeType: info.mimeType,
+        index: i,
+        data: boundedChunks(stream, info.filename, o.maxFileBytes),
+      }).then(
+        (upload) => { saved.push(upload) },
+        (e: unknown) => {
+          if (e instanceof UploadError) failure = e.failure
+          else failure ??= { kind: 'parse', message: e instanceof Error ? e.message : String(e) }
+        },
+      )
+      // A sink that never consumed (or stopped early) leaves the part unread;
+      // drain it so the parser reaches the closing boundary instead of
+      // stalling on backpressure.
+      writes.push(settled.finally(() => stream.resume()))
+      return
+    }
+
+    const dest = place!({ filename: info.filename, mimeType: info.mimeType, index: i })
     temps.push(dest.tmp)
     const ws = createWriteStream(dest.tmp)
     const hash = createHash('sha256')
@@ -147,6 +218,7 @@ export async function streamUploads(o: StreamUploadOptions): Promise<SavedUpload
     for (const t of temps) await unlink(t).catch(() => {})
     throw new UploadError(failure)
   }
+  if (sink) return saved
   for (const p of pending) await rename(p.tmp, p.final)
   return pending.map((p) => ({
     path: p.final,

@@ -122,6 +122,97 @@ describe('streamUploads', () => {
     expect(isStreamingUploadPath('/api/background/files/x.png')).toBe(false)
   })
 
+  it('hands streamed chunks to a sink and returns its SavedUpload', async () => {
+    const { body, contentType } = form([{ body: 'hello', filename: 'a.txt', type: 'text/plain' }])
+    const chunks: string[] = []
+    const saved = await streamUploads({
+      body, contentType, maxFileBytes: 1024,
+      sink: async (part) => {
+        for await (const chunk of part.data) chunks.push(Buffer.from(chunk).toString())
+        return { path: '/alias/a.txt', name: part.filename, filename: part.filename, mimeType: part.mimeType, size: 5, digest: 'a'.repeat(64) }
+      },
+    })
+    expect(chunks.join('')).toBe('hello')
+    expect(saved).toEqual([{ path: '/alias/a.txt', name: 'a.txt', filename: 'a.txt', mimeType: 'text/plain', size: 5, digest: 'a'.repeat(64) }])
+  })
+
+  it('rejects an over-limit sink stream before the sink resolves', async () => {
+    const { body, contentType } = form([{ body: '12345', filename: 'a.txt', type: 'text/plain' }])
+    await expect(streamUploads({
+      body, contentType, maxFileBytes: 3,
+      sink: async (part) => { let bytes = 0; for await (const chunk of part.data) bytes += chunk.byteLength; return { path: 'x', name: 'a', filename: 'a', mimeType: 'text/plain', size: bytes, digest: 'a'.repeat(64) } },
+    })).rejects.toMatchObject({ failure: { kind: 'too-large' } })
+  })
+
+  it('accepts a sink file whose size equals the limit', async () => {
+    const { body, contentType } = form([{ body: 'abc', filename: 'a.txt', type: 'text/plain' }])
+    const saved = await streamUploads({
+      body, contentType, maxFileBytes: 3,
+      sink: async (part) => { let bytes = 0; for await (const chunk of part.data) bytes += chunk.byteLength; return { path: 'x', name: part.filename, filename: part.filename, mimeType: part.mimeType, size: bytes, digest: 'a'.repeat(64) } },
+    })
+    expect(saved).toMatchObject([{ size: 3 }])
+  })
+
+  it('rejects without hanging when the client aborts mid-sink', async () => {
+    const enc = new TextEncoder()
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode('--x\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\n\r\n'))
+        c.error(new Error('client aborted'))
+      },
+    })
+    await expect(
+      streamUploads({
+        body, contentType: 'multipart/form-data; boundary=x', maxFileBytes: 1_000_000,
+        sink: async (part) => {
+          for await (const chunk of part.data) void chunk
+          return { path: 'x', name: part.filename, filename: part.filename, mimeType: part.mimeType, size: 0, digest: 'a'.repeat(64) }
+        },
+      }),
+    ).rejects.toBeInstanceOf(UploadError)
+  })
+
+  it('rejects without hanging when the sink fails before reading the part', async () => {
+    const { body, contentType } = form([{ body: 'x'.repeat(500_000), filename: 'a.bin', type: 'application/octet-stream' }])
+    await expect(
+      streamUploads({
+        body, contentType, maxFileBytes: 1_000_000,
+        sink: async () => { throw new Error('cannot publish') },
+      }),
+    ).rejects.toBeInstanceOf(UploadError)
+  }, 3000)
+
+  it('rejects without hanging when the sink throws mid-stream', async () => {
+    const { body, contentType } = form([{ body: 'x'.repeat(500_000), filename: 'a.bin', type: 'application/octet-stream' }])
+    await expect(
+      streamUploads({
+        body, contentType, maxFileBytes: 1_000_000,
+        sink: async (part) => {
+          for await (const chunk of part.data) throw new Error(`stop at ${chunk.byteLength}`)
+          return { path: 'x', name: 'a', filename: 'a', mimeType: 'text/plain', size: 0, digest: 'a'.repeat(64) }
+        },
+      }),
+    ).rejects.toBeInstanceOf(UploadError)
+  }, 3000)
+
+  it('requires exactly one of place or sink', async () => {
+    const a = form([{ body: 'hello', filename: 'a.txt', type: 'text/plain' }])
+    await expect(
+      streamUploads({ body: a.body, contentType: a.contentType, maxFileBytes: 1024 }),
+    ).rejects.toThrow('streamUploads requires exactly one of place or sink')
+
+    const b = form([{ body: 'hello', filename: 'a.txt', type: 'text/plain' }])
+    await expect(
+      streamUploads({
+        body: b.body,
+        contentType: b.contentType,
+        maxFileBytes: 1024,
+        place,
+        sink: async () => ({ path: 'x', name: 'a', filename: 'a', mimeType: 'text/plain', size: 0, digest: 'a'.repeat(64) }),
+      }),
+    ).rejects.toThrow(TypeError)
+  })
+
   it('decodes raw UTF-8 filenames as UTF-8, not latin1', async () => {
     // Browsers send raw UTF-8 bytes in multipart Content-Disposition. Busboy's
     // latin1 default would surface them as mojibake ("ææå¾…").
