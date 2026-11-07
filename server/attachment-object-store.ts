@@ -14,11 +14,16 @@ import { dirname, join } from 'node:path'
 import {
   aliasPathOf,
   attachmentRoot,
+  isInsideAttachmentRoot,
   objectPathOf,
   sanitizeStoredName,
 } from './attachment-paths.js'
 
 export type AttachmentStoreErrorCode = 'too-large' | 'write-failed' | 'corrupt' | 'missing'
+
+/** A digest is a bare lowercase sha256 — the object file name and the first
+ *  path segment of every alias. Anything else could escape the store root. */
+const DIGEST_PATTERN = /^[a-f0-9]{64}$/
 
 export class AttachmentStoreError extends Error {
   constructor(
@@ -78,15 +83,20 @@ export class AttachmentObjectStore {
     const { chunks, maxBytes, signal } = input
     const name = sanitizeStoredName(input.name)
     const tmpPath = join(this.root, 'tmp', randomUUID())
+    let objectPath: string | undefined
+    let aliasPath: string | undefined
+    let createdObject = false
+    let createdAlias = false
 
     try {
       await this.ensureDirectory(join(this.root, 'tmp'))
       const { digest, size } = await this.writeTempFile(tmpPath, chunks, maxBytes, signal)
 
-      const objectPath = objectPathOf(this.root, digest)
+      objectPath = objectPathOf(this.root, digest)
       await this.ensureDirectory(dirname(objectPath))
       try {
         await fs.link(tmpPath, objectPath)
+        createdObject = true
       } catch (err) {
         if (errorCode(err) !== 'EEXIST') throw err
         // A concurrent publication won the race; the stored object must be
@@ -100,10 +110,11 @@ export class AttachmentObjectStore {
 
       await fs.chmod(objectPath, 0o400)
 
-      const aliasPath = aliasPathOf(this.root, digest, name)
+      aliasPath = aliasPathOf(this.root, digest, name)
       await this.ensureDirectory(dirname(aliasPath))
       try {
         await fs.link(objectPath, aliasPath)
+        createdAlias = true
       } catch (err) {
         if (errorCode(err) !== 'EEXIST') throw err
         await this.verifyFile({ path: aliasPath, digest, size, signal })
@@ -114,6 +125,13 @@ export class AttachmentObjectStore {
       return { digest, objectPath, aliasPath, name, size }
     } catch (err) {
       await fs.unlink(tmpPath).catch(() => {})
+      // Best-effort cleanup of links this call landed: a failed publication
+      // must not leave an orphan alias or object behind. Only entries this
+      // call created are removed (an EEXIST hit is somebody else's file), and
+      // cleanup errors are swallowed — the original failure is what the
+      // caller needs to see.
+      if (createdAlias && aliasPath !== undefined) await fs.unlink(aliasPath).catch(() => {})
+      if (createdObject && objectPath !== undefined) await fs.unlink(objectPath).catch(() => {})
       if (err instanceof AttachmentStoreError) throw err
       throw new AttachmentStoreError('write-failed', `failed to publish attachment: ${errorMessage(err)}`, { cause: err })
     }
@@ -148,14 +166,23 @@ export class AttachmentObjectStore {
     }
   }
 
-  /** Remove one published name. Missing files are a no-op. */
+  /** Remove one published name. Missing files are a no-op. Store-internal:
+   *  `path` is an alias this store published, so it must resolve inside the
+   *  store root — a hand-edited registry path must never reach `unlink`. */
   async removeAlias(path: string): Promise<void> {
+    if (!isInsideAttachmentRoot(this.root, path)) {
+      throw new Error(`refusing to remove an alias outside the attachment store root: ${path}`)
+    }
     await this.unlinkIfExists(path)
   }
 
   /** Remove a stored object by digest. Missing files are a no-op; callers
-   *  must ensure no alias still references it. */
+   *  must ensure no alias still references it. Store-internal: the digest
+   *  must be a bare lowercase sha256 so it cannot escape the store root. */
   async removeObject(digest: string): Promise<void> {
+    if (!DIGEST_PATTERN.test(digest)) {
+      throw new Error(`invalid attachment digest: ${digest}`)
+    }
     await this.unlinkIfExists(objectPathOf(this.root, digest))
   }
 

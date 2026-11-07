@@ -110,4 +110,14 @@ describe('AttachmentObjectStore', () => {
       await store.removeObject(published.digest)
     } finally { cleanup(dir) }
   })
+
+  it('refuses a malformed digest instead of escaping the store root', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const store = new AttachmentObjectStore(dir)
+      await expect(store.removeObject('../../x')).rejects.toThrow(/digest/)
+      await expect(store.removeObject('A'.repeat(64))).rejects.toThrow(/digest/)
+      await expect(store.removeAlias(join(dir, 'outside.txt'))).rejects.toThrow(/store root/)
+    } finally { cleanup(dir) }
+  })
 })

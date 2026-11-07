@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest'
-import { aliasPathOf, ATTACHMENT_STORE_SUBDIR, attachmentRoot, objectPathOf, sanitizeStoredName } from './attachment-paths.js'
+import { afterEach, describe, expect, it } from 'vitest'
+import {
+  aliasPathOf,
+  ATTACHMENT_STORE_SUBDIR,
+  attachmentRoot,
+  isInsideAttachmentRoot,
+  objectPathOf,
+  sameStoredPath,
+  sanitizeStoredName,
+} from './attachment-paths.js'
 
 const norm = (p: string) => p.replaceAll('\\', '/')
 
@@ -17,5 +25,65 @@ describe('attachment paths', () => {
     expect(sanitizeStoredName('C:\\tmp\\a.txt')).toBe('a.txt')
     expect(sanitizeStoredName('../../x')).toBe('x')
     expect(sanitizeStoredName('')).toBe('upload')
+  })
+  it('re-trims trailing dots and spaces exposed by the 200-char cut', () => {
+    // The dot/space is mid-name, so the pre-slice trim leaves it in place;
+    // it only becomes trailing after the 200-char cut.
+    expect(sanitizeStoredName(`${'a'.repeat(199)}.b`)).toBe('a'.repeat(199))
+    expect(sanitizeStoredName(`${'a'.repeat(199)} b`)).toBe('a'.repeat(199))
+    expect(sanitizeStoredName(`${'a'.repeat(200)}.b`)).toBe('a'.repeat(200))
+    // A name that is nothing but trimmed characters still falls back.
+    expect(sanitizeStoredName('.'.repeat(220))).toBe('upload')
+  })
+  it('prefixes Windows reserved device stems', () => {
+    expect(sanitizeStoredName('CON')).toBe('_CON')
+    expect(sanitizeStoredName('CON.txt')).toBe('_CON.txt')
+    expect(sanitizeStoredName('NUL')).toBe('_NUL')
+    expect(sanitizeStoredName('com1.tar.gz')).toBe('_com1.tar.gz')
+    expect(sanitizeStoredName('lpt9.log')).toBe('_lpt9.log')
+    // Only a full reserved stem is a device name.
+    expect(sanitizeStoredName('console.txt')).toBe('console.txt')
+    expect(sanitizeStoredName('com0.txt')).toBe('com0.txt')
+  })
+})
+
+describe('sameStoredPath', () => {
+  const originalPlatform = process.platform
+  const on = (platform: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true })
+  }
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+  })
+
+  it('folds case on win32 and darwin', () => {
+    on('win32')
+    expect(sameStoredPath('C:\\state\\files\\A.txt', 'C:\\state\\files\\a.txt')).toBe(true)
+    on('darwin')
+    expect(sameStoredPath('/state/files/A.txt', '/state/files/a.txt')).toBe(true)
+  })
+
+  it('compares exactly elsewhere', () => {
+    on('linux')
+    expect(sameStoredPath('/state/files/a.txt', '/state/files/a.txt')).toBe(true)
+    expect(sameStoredPath('/state/files/A.txt', '/state/files/a.txt')).toBe(false)
+  })
+
+  it('normalizes path separators before comparing', () => {
+    on('win32')
+    expect(sameStoredPath('C:\\state\\files\\a.txt', 'C:/state/files/a.txt')).toBe(true)
+  })
+})
+
+describe('isInsideAttachmentRoot', () => {
+  it('accepts paths below the store root only', () => {
+    const root = attachmentRoot('C:/state')
+    expect(isInsideAttachmentRoot(root, `${root}/files/${'a'.repeat(64)}/a.txt`)).toBe(true)
+    expect(isInsideAttachmentRoot(root, root)).toBe(false)
+    expect(isInsideAttachmentRoot(root, `${root}-evil/files/a.txt`)).toBe(false)
+    expect(isInsideAttachmentRoot(root, 'C:/state/claude-web-uploads/a.txt')).toBe(false)
+    // A leaf that merely starts with dots is still a child, not an escape.
+    expect(isInsideAttachmentRoot(root, `${root}/..foo`)).toBe(true)
+    expect(isInsideAttachmentRoot(root, `${root}/../outside.txt`)).toBe(false)
   })
 })

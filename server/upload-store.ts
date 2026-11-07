@@ -223,7 +223,9 @@ export class UploadStore extends JsonFileStore<UploadEntry> {
 
   /** Fill in `digest` for legacy entries that predate content addressing.
    *  Each file is streamed through sha256 (at most 4 at a time); entries
-   *  whose bytes are gone are skipped, never thrown. Returns how many
+   *  whose bytes are gone are skipped, never thrown. A per-entry read error
+   *  (EISDIR, EACCES, a locked file) is logged and skips that entry, so one
+   *  bad registry row cannot turn boot into a fatal exit. Returns how many
    *  entries gained a digest. */
   async backfillDigests(): Promise<number> {
     const pending = this.list().filter((entry) => entry.digest === undefined)
@@ -232,7 +234,15 @@ export class UploadStore extends JsonFileStore<UploadEntry> {
     const worker = async (): Promise<void> => {
       while (next < pending.length) {
         const entry = pending[next++]
-        const digest = await digestOfFile(entry.path)
+        let digest: string | undefined
+        try {
+          digest = await digestOfFile(entry.path)
+        } catch (err) {
+          log.warn(
+            `digest backfill skipped ${entry.path}: ${err instanceof Error ? err.message : String(err)}`,
+          )
+          continue
+        }
         if (digest === undefined) continue
         this.upsert({ ...entry, digest })
         updated++

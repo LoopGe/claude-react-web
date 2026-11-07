@@ -205,6 +205,53 @@ describe('uploads routes', () => {
       expect(store.list().map((e) => e.sessionId).sort()).toEqual(['s1', 's2'])
     })
 
+    it('records separate entries for the same bytes under different names', async () => {
+      const a = (await (await post('s1', 'hello', 'a.txt')).json()) as Uploads
+      const b = (await (await post('s1', 'hello', 'b.txt')).json()) as Uploads
+      expect(a.uploads[0].id).not.toBe(b.uploads[0].id)
+      expect(a.uploads[0].path).not.toBe(b.uploads[0].path)
+      expect(a.uploads[0].digest).toBe(b.uploads[0].digest)
+      expect(store.list()).toHaveLength(2)
+
+      const content = await app.request(`/uploads/${b.uploads[0].id}/content`)
+      expect(content.status).toBe(200)
+      expect(await content.text()).toBe('hello')
+    })
+
+    it('does not reuse a session-owned entry for a common upload', async () => {
+      const owned = (await (await post('s1', 'hello', 'a.txt')).json()) as Uploads
+      const form = new FormData()
+      form.append('file', new File(['hello'], 'a.txt', { type: 'text/plain' }))
+      const res = await app.request('/uploads', { method: 'POST', body: form })
+      expect(res.status).toBe(200)
+      const common = (await res.json()) as Uploads
+      expect(common.uploads[0].id).not.toBe(owned.uploads[0].id)
+      expect(store.list()).toHaveLength(2)
+      expect(store.getById(common.uploads[0].id)?.origin).toBe('common')
+    })
+
+    it('folds case-variant names into one entry on case-insensitive platforms', async () => {
+      const a = (await (await post('s1', 'hello', 'a.txt')).json()) as Uploads
+      const b = (await (await post('s1', 'hello', 'A.txt')).json()) as Uploads
+      const caseInsensitive = process.platform === 'win32' || process.platform === 'darwin'
+      if (caseInsensitive) {
+        // The filesystem resolves both names to one file, so the same-session
+        // dedupe must keep a single entry rather than record a second one that
+        // would later delete the shared alias out from under its peer.
+        expect(b.uploads[0].id).toBe(a.uploads[0].id)
+        expect(store.list()).toHaveLength(1)
+        expect(store.list()[0].path).toBe(a.uploads[0].path)
+        return
+      }
+      expect(b.uploads[0].id).not.toBe(a.uploads[0].id)
+      expect(b.uploads[0].path).not.toBe(a.uploads[0].path)
+      expect(store.list()).toHaveLength(2)
+      expect((await app.request(`/uploads/${a.uploads[0].id}`, { method: 'DELETE' })).status).toBe(200)
+      const content = await app.request(`/uploads/${b.uploads[0].id}/content`)
+      expect(content.status).toBe(200)
+      expect(await content.text()).toBe('hello')
+    })
+
     it('cleans up files published before a later part fails', async () => {
       const alias = join(stateDir, 'claude-web-attachments', 'v1', 'files', 'a.txt')
       const objects = {

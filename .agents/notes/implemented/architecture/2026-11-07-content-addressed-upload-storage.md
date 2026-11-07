@@ -96,6 +96,9 @@ a tampered small file a proper error status.
 - Legacy entries without a digest are served unverified until `backfillDigests`
   hashes them; an entry whose bytes are gone stays unverifiable and
   unbackfillable.
+- A missing object behind an entry larger than 8 MiB streams a 200 response
+  whose body aborts, rather than a clean 404: the status line is already sent
+  by the time the first read fails. A stat pre-check is deferred.
 - Deleting one entry no longer deletes shared bytes: object and alias removal
   is reference-counted by scanning the registry, which is intentionally small.
   `DELETE /uploads/by-path` removes every entry for a path.

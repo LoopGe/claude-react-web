@@ -16,6 +16,7 @@ import { createLogger } from '../log.js'
 import { UploadStore } from '../upload-store.js'
 import { uploadEntryPathContained } from '../upload-path.js'
 import { canReferenceUpload } from '../upload-policy.js'
+import { attachmentRoot, isInsideAttachmentRoot, sameStoredPath } from '../attachment-paths.js'
 import {
   AttachmentObjectStore,
   AttachmentStoreError,
@@ -51,10 +52,12 @@ async function fileExists(path: string): Promise<boolean> {
  *  `sha256:<digest>` reference resolves through `getById` to this entry's
  *  concrete id before removal. Aliases (`path`) and objects (`digest`) are
  *  shared whenever the same bytes were uploaded by more than one owner, so
- *  each is unlinked only after its last reference is gone. A legacy entry
- *  (`digest` undefined) predates content addressing: its bytes live at the
- *  recorded path and no object indexes them. Missing files are tolerated —
- *  an out-of-band delete leaves nothing to unlink. */
+ *  each is unlinked only after its last reference is gone. Paths compare
+ *  through `sameStoredPath` — on a case-insensitive filesystem two spellings
+ *  are one file, and the alias is shared. A legacy entry (`digest` undefined,
+ *  or a digest backfilled onto a pre-v1 path) lives outside the store and is
+ *  a plain unlink. Missing files are tolerated — an out-of-band delete leaves
+ *  nothing to unlink. */
 async function removeUploadEntry(
   store: UploadStore,
   objects: AttachmentObjectStore,
@@ -62,14 +65,23 @@ async function removeUploadEntry(
 ): Promise<void> {
   store.removeById(entry.id)
   const remaining = store.list()
-  const aliasStillReferenced = remaining.some((e) => e.path === entry.path)
+  const aliasStillReferenced = remaining.some((e) => sameStoredPath(e.path, entry.path))
 
   if (entry.digest === undefined) {
     if (!aliasStillReferenced) await unlinkIfExists(entry.path)
     return
   }
 
-  if (!aliasStillReferenced) await objects.removeAlias(entry.path)
+  if (!aliasStillReferenced) {
+    // Only a v1 publication has an alias under the store root; a backfilled
+    // legacy entry keeps its recorded path, which `removeAlias` (store-only)
+    // would refuse.
+    if (isInsideAttachmentRoot(attachmentRoot(store.getDir()), entry.path)) {
+      await objects.removeAlias(entry.path)
+    } else {
+      await unlinkIfExists(entry.path)
+    }
+  }
   if (!remaining.some((e) => e.digest === entry.digest)) await objects.removeObject(entry.digest)
 }
 
@@ -93,7 +105,7 @@ async function rollbackPublished(
 ): Promise<void> {
   const entries = store.list()
   for (const object of published) {
-    if (!entries.some((entry) => entry.path === object.aliasPath)) {
+    if (!entries.some((entry) => sameStoredPath(entry.path, object.aliasPath))) {
       await objects.removeAlias(object.aliasPath)
     }
     if (!entries.some((entry) => entry.digest === object.digest)) {
@@ -228,14 +240,19 @@ export function buildUploadRouter(
       // Dedupe by published alias: bytes and name identify the file on disk,
       // while the entry id stays per owner. A session re-uploading the same
       // file keeps its original id; a different session gets its own entry
-      // (same alias, shared object).
+      // (same alias, shared object). Paths compare through `sameStoredPath`
+      // so a case-variant spelling on Windows/macOS is the same file. A
+      // common upload (no session) is no one's to borrow: it only reuses a
+      // common or ownerless entry, never a session-owned one.
       const entries = files.map((file): UploadEntry => {
         const existing = uploadStore
           .getByDigest(file.digest)
           .find(
             (entry) =>
-              entry.path === file.path &&
-              (sessionId === undefined || canReferenceUpload(entry, sessionId)),
+              sameStoredPath(entry.path, file.path) &&
+              (sessionId === undefined
+                ? entry.origin === 'common' || entry.sessionId === undefined
+                : canReferenceUpload(entry, sessionId)),
           )
         if (existing !== undefined) return existing
         const entry: UploadEntry = {
@@ -399,8 +416,8 @@ export function buildUploadRouter(
       if (!entry) {
         return c.json({ error: 'upload entry not found' }, 404)
       }
-      // Dual-branch validation: path must be under the entry's cwd upload dir
-      // OR under the shared stateDir upload dir.
+      // Validated against all three roots: the entry's own cwd upload dir,
+      // the shared stateDir upload dir, and the attachment store.
       if (!uploadEntryPathContained(entry, stateDir)) {
         return c.json({ error: 'invalid upload path' }, 400)
       }

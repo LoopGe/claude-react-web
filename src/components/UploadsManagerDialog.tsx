@@ -1,6 +1,6 @@
 // Uploads Manager dialog — app-level inventory of composer file uploads.
 //
-// Lists every recorded upload (path-keyed registry on the server) with
+// Lists every recorded upload (id-keyed registry on the server) with
 // provenance (cwd tail + session title snapshot), per-row Copy path /
 // Delete, a "Clean missing entries" batch action, and client-derived
 // usage stats. Fetch-on-open via useUploads — no WS subscription.

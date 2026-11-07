@@ -357,6 +357,26 @@ describe('UploadStore', () => {
       expect(store.getById('u1')?.digest).toBeUndefined()
     })
 
+    it('isolates a per-entry read error and keeps hashing the rest', async () => {
+      const updir = join(dir, 'claude-web-uploads')
+      mkdirSync(updir, { recursive: true })
+      const good = join(updir, 'good.txt')
+      writeFileSync(good, 'hello')
+      // A directory entry recorded by a hand edit / stale registry: reading it
+      // fails with EISDIR, which must not abort the whole backfill.
+      const bad = join(updir, 'a-directory')
+      mkdirSync(bad)
+      store.record([
+        legacyEntry(good, { id: 'good', name: 'good.txt', size: 5 }),
+        legacyEntry(bad, { id: 'bad', name: 'a-directory' }),
+      ])
+
+      await expect(store.backfillDigests()).resolves.toBe(1)
+
+      expect(store.getById('good')?.digest).toBe(createHash('sha256').update('hello').digest('hex'))
+      expect(store.getById('bad')?.digest).toBeUndefined()
+    })
+
     it('leaves entries that already have a digest alone', async () => {
       const updir = join(dir, 'claude-web-uploads')
       mkdirSync(updir, { recursive: true })
