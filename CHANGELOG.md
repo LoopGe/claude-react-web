@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-07
+
 A large `0.x` minor release on top of `0.7.3`: daemon auto-start, mid-turn
 steering, per-session worktree isolation, per-turn file snapshots with offline
 rewind, remote skill installs, structured file attachments, the Uploads
@@ -378,6 +380,7 @@ cuts streaming re-render cost and cold-load latency.
 - Build still produces a single `dist/cli.mjs` (ESM, Node 20+) serving both the
   Hono API and the built React client.
 
+[0.8.0]: https://github.com/LoopGe/claude-react-web/releases/tag/v0.8.0
 [0.7.1]: https://github.com/LoopGe/claude-react-web/releases/tag/0.7.1
 [0.7.0]: https://github.com/LoopGe/claude-react-web/releases/tag/0.7.0
 [0.6.0]: https://github.com/LoopGe/claude-react-web/releases/tag/0.6.0
