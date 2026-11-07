@@ -391,6 +391,110 @@ describe('uploads routes', () => {
     })
   })
 
+  describe('DELETE reference safety', () => {
+    /** Upload `body` as `name` through the router and return its entry. */
+    const upload = async (body: string, name: string, sessionId?: string) => {
+      const form = new FormData()
+      form.append('file', new File([body], name, { type: 'text/plain' }))
+      const query = sessionId === undefined ? '' : `?sessionId=${sessionId}`
+      const res = await app.request(`/uploads${query}`, { method: 'POST', body: form })
+      expect(res.status).toBe(200)
+      return store.list().at(-1)!
+    }
+
+    const deleteById = (id: string) => app.request(`/uploads/${id}`, { method: 'DELETE' })
+    const deleteByPath = (path: string) =>
+      app.request('/uploads/by-path', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path }),
+      })
+    const objectPath = (digest: string) =>
+      join(stateDir, 'claude-web-attachments', 'v1', 'objects', digest.slice(0, 2), digest)
+
+    it('keeps the shared object while another entry still references it', async () => {
+      // Same bytes and name from two sessions: two entries over one alias
+      // and one object.
+      const a = await upload('shared', 'a.txt', 's1')
+      const b = await upload('shared', 'a.txt', 's2')
+      expect(b.id).not.toBe(a.id)
+      expect(b.path).toBe(a.path)
+      expect(b.digest).toBe(a.digest)
+
+      const res = await deleteById(a.id)
+      expect(res.status).toBe(200)
+      expect(existsSync(b.path)).toBe(true)
+      const content = await app.request(`/uploads/${b.id}/content`)
+      expect(content.status).toBe(200)
+      expect(await content.text()).toBe('shared')
+    })
+
+    it('removes the object when the last reference is deleted', async () => {
+      const entry = await upload('only', 'only.txt')
+      expect(existsSync(entry.path)).toBe(true)
+      expect(existsSync(objectPath(entry.digest!))).toBe(true)
+
+      const res = await deleteById(entry.id)
+      expect(res.status).toBe(200)
+      expect(existsSync(entry.path)).toBe(false)
+      expect(existsSync(objectPath(entry.digest!))).toBe(false)
+    })
+
+    it('removes the object only after the last of two shared references goes', async () => {
+      const a = await upload('twice', 't.txt', 's1')
+      const b = await upload('twice', 't.txt', 's2')
+
+      await deleteById(a.id)
+      expect(existsSync(b.path)).toBe(true)
+      expect(existsSync(objectPath(a.digest!))).toBe(true)
+
+      await deleteById(b.id)
+      expect(existsSync(b.path)).toBe(false)
+      expect(existsSync(objectPath(a.digest!))).toBe(false)
+    })
+
+    it('deletes a legacy entry and its file', async () => {
+      const legacyPath = join(stateDir, 'claude-web-uploads', 'old.txt')
+      mkdirSync(join(stateDir, 'claude-web-uploads'), { recursive: true })
+      writeFileSync(legacyPath, 'old')
+      store.record([{ id: 'legacy', path: legacyPath, cwd: stateDir, name: 'old.txt', size: 3, uploadedAt: 1, sessionTitle: '' }])
+      const res = await deleteById('legacy')
+      expect(res.status).toBe(200)
+      expect(existsSync(legacyPath)).toBe(false)
+      expect(store.getById('legacy')).toBeUndefined()
+    })
+
+    it('tolerates a missing file when the entry is deleted', async () => {
+      const entry = await upload('gone', 'gone.txt')
+      // Published aliases are read-only; clear the attribute to delete.
+      chmodSync(entry.path, 0o600)
+      rmSync(entry.path)
+
+      const res = await deleteById(entry.id)
+      expect(res.status).toBe(200)
+      expect(store.getById(entry.id)).toBeUndefined()
+    })
+
+    it('by-path drops every entry sharing the alias, then the file', async () => {
+      const a = await upload('shared', 'a.txt', 's1')
+      await upload('shared', 'a.txt', 's2')
+      expect(store.list()).toHaveLength(2)
+
+      expect((await deleteByPath(a.path)).status).toBe(200)
+      expect(store.list()).toEqual([])
+      expect(existsSync(a.path)).toBe(false)
+      expect(existsSync(objectPath(a.digest!))).toBe(false)
+    })
+
+    it('by-path 400s an entry whose path escapes both upload dirs', async () => {
+      const outside = join(sessionCwd, 'secret.txt')
+      store.record([{ id: 'bad', path: outside, cwd: sessionCwd, name: 'secret.txt', size: 1, uploadedAt: 1, sessionTitle: 'S' }])
+
+      expect((await deleteByPath(outside)).status).toBe(400)
+      expect(store.getById('bad')).toBeDefined()
+    })
+  })
+
   describe('GET /uploads/:id/content', () => {
     /** Upload one file through the router and return its registry entry. */
     const uploadFile = async (body: string, name: string) => {

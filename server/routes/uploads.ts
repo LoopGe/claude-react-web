@@ -46,6 +46,42 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+/** Remove one registry entry, then the bytes behind it only when no OTHER
+ *  entry still references them. The id is the registry key, so a
+ *  `sha256:<digest>` reference resolves through `getById` to this entry's
+ *  concrete id before removal. Aliases (`path`) and objects (`digest`) are
+ *  shared whenever the same bytes were uploaded by more than one owner, so
+ *  each is unlinked only after its last reference is gone. A legacy entry
+ *  (`digest` undefined) predates content addressing: its bytes live at the
+ *  recorded path and no object indexes them. Missing files are tolerated —
+ *  an out-of-band delete leaves nothing to unlink. */
+async function removeUploadEntry(
+  store: UploadStore,
+  objects: AttachmentObjectStore,
+  entry: UploadEntry,
+): Promise<void> {
+  store.removeById(entry.id)
+  const remaining = store.list()
+  const aliasStillReferenced = remaining.some((e) => e.path === entry.path)
+
+  if (entry.digest === undefined) {
+    if (!aliasStillReferenced) await unlinkIfExists(entry.path)
+    return
+  }
+
+  if (!aliasStillReferenced) await objects.removeAlias(entry.path)
+  if (!remaining.some((e) => e.digest === entry.digest)) await objects.removeObject(entry.digest)
+}
+
+/** Unlink a file, tolerating the already-gone case. */
+async function unlinkIfExists(path: string): Promise<void> {
+  try {
+    await unlink(path)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+  }
+}
+
 /** Undo publications from a batch that failed mid-stream, so a later part's
  *  failure cannot leave an alias or object no registry entry references.
  *  Reference checks mirror the delete routes; aliases/objects still held by
@@ -323,34 +359,40 @@ export function buildUploadRouter(
       return new Response(body, { headers })
     })
 
-    // Delete by path key — unlinks the file and drops the entry.
+    // Delete every registry entry for a path key, unlinking the alias and
+    // object only once no entry remains. Paths are shared when the same
+    // published file was recorded under several ids, so dropping one entry
+    // must not delete bytes another entry still serves.
     // REGISTERED BEFORE DELETE /uploads/:id so Hono matches it first.
     app.delete('/uploads/by-path', async (c) => {
       const body = await safeJson<{ path?: unknown }>(c.req)
       if (typeof body.path !== 'string') {
         return c.json({ error: 'path must be a string' }, 400)
       }
-      const entry = uploadStore.getByPath(body.path)
-      if (!entry) {
+      const entries = uploadStore.list().filter((entry) => entry.path === body.path)
+      if (entries.length === 0) {
         return c.json({ error: 'upload entry not found' }, 404)
       }
-      try {
-        await unlink(entry.path)
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-          log.error(`delete upload by-path path=${entry.path} error=${(e as Error).message}`)
-          return c.json({ error: (e as Error).message }, 500)
-        }
-        // ENOENT tolerated — file already gone, just drop the entry.
+      // Validate every entry before deleting anything, so a hand-edited
+      // registry row can't half-apply the request.
+      if (!entries.every((entry) => uploadEntryPathContained(entry, stateDir))) {
+        return c.json({ error: 'invalid upload path' }, 400)
       }
-      uploadStore.removeByPath(body.path)
+      try {
+        for (const entry of entries) {
+          await removeUploadEntry(uploadStore, objectStore, entry)
+        }
+      } catch (e) {
+        log.error(`delete upload by-path path=${body.path} error=${(e as Error).message}`)
+        return c.json({ error: (e as Error).message }, 500)
+      }
       log.info(`delete upload by-path path=${body.path}`)
       return c.json({ ok: true })
     })
 
     // Delete by registry id: validate the entry path lives inside the
-    // entry's own upload dir OR the shared upload dir, unlink (unless
-    // already gone), drop the entry.
+    // entry's own upload dir, the shared upload dir, or the attachment
+    // store, then drop the entry and any bytes no longer referenced.
     app.delete('/uploads/:id', async (c) => {
       const id = c.req.param('id')
       const entry = uploadStore.getById(id)
@@ -363,15 +405,11 @@ export function buildUploadRouter(
         return c.json({ error: 'invalid upload path' }, 400)
       }
       try {
-        await unlink(entry.path)
+        await removeUploadEntry(uploadStore, objectStore, entry)
       } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-          log.error(`delete upload id=${id} error=${(e as Error).message}`)
-          return c.json({ error: (e as Error).message }, 500)
-        }
-        // Already gone (out-of-band deletion) — just drop the entry.
+        log.error(`delete upload id=${id} error=${(e as Error).message}`)
+        return c.json({ error: (e as Error).message }, 500)
       }
-      uploadStore.removeById(id)
       log.info(`delete upload id=${id}`)
       return c.json({ ok: true })
     })
