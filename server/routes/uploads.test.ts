@@ -8,7 +8,8 @@ import { chmodSync, rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } 
 import { join } from 'node:path'
 import { createErrorHandler, HttpError } from '../errors.js'
 import { __setConfigForTest, config as serverConfig } from '../config.js'
-import { buildUploadRouter } from './uploads.js'
+import { buildUploadRouter, VERIFY_BEFORE_SERVE_MAX_BYTES } from './uploads.js'
+import { AttachmentStoreError } from '../attachment-object-store.js'
 import { UploadStore, UPLOAD_SUBDIR } from '../upload-store.js'
 import { tempDir } from '../__test-utils__/index.js'
 import type { SessionManager } from '../session-manager.js'
@@ -391,6 +392,15 @@ describe('uploads routes', () => {
   })
 
   describe('GET /uploads/:id/content', () => {
+    /** Upload one file through the router and return its registry entry. */
+    const uploadFile = async (body: string, name: string) => {
+      const form = new FormData()
+      form.append('file', new File([body], name, { type: 'text/plain' }))
+      const res = await app.request('/uploads', { method: 'POST', body: form })
+      expect(res.status).toBe(200)
+      return store.list()[0]
+    }
+
     it('serves a text file inline with the derived content type', async () => {
       const updir = join(stateDir, UPLOAD_SUBDIR)
       mkdirSync(updir, { recursive: true })
@@ -483,6 +493,71 @@ describe('uploads routes', () => {
       store.record([{ id: 'g', path, cwd: stateDir, name: 'gone.txt', size: 1, uploadedAt: 1, sessionTitle: '' }])
       rmSync(path)
       expect((await app.request('/uploads/g/content')).status).toBe(404)
+    })
+
+    it('declares Content-Length only after verifying a small file', async () => {
+      const entry = await uploadFile('hello', 'a.txt')
+      const res = await app.request(`/uploads/${entry.id}/content`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-length')).toBe('5')
+      expect(await res.text()).toBe('hello')
+    })
+
+    it('500s a corrupted small upload instead of serving wrong bytes', async () => {
+      const entry = await uploadFile('hello', 'a.txt')
+      // Published aliases are read-only; clear the attribute to tamper.
+      chmodSync(entry.path, 0o600)
+      writeFileSync(entry.path, 'tampered')
+
+      const res = await app.request(`/uploads/${entry.id}/content`)
+      expect(res.status).toBe(500)
+      expect(await res.json()).toEqual({ error: 'uploaded file failed integrity verification' })
+    })
+
+    it('404s a missing upload object', async () => {
+      const entry = await uploadFile('hello', 'a.txt')
+      // Published aliases are read-only; clear the attribute to delete.
+      chmodSync(entry.path, 0o600)
+      rmSync(entry.path)
+
+      const res = await app.request(`/uploads/${entry.id}/content`)
+      expect(res.status).toBe(404)
+    })
+
+    it('still serves a legacy entry without a digest', async () => {
+      const legacyDir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(legacyDir, { recursive: true })
+      const legacyPath = join(legacyDir, 'old.txt')
+      writeFileSync(legacyPath, 'old')
+      store.record([{ id: 'legacy', path: legacyPath, cwd: stateDir, name: 'old.txt', size: 3, uploadedAt: 1, sessionTitle: '' }])
+
+      const res = await app.request('/uploads/legacy/content')
+      expect(res.status).toBe(200)
+      expect(await res.text()).toBe('old')
+    })
+
+    it('streams a large file through the verified reader and aborts on corruption', async () => {
+      const updir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(updir, { recursive: true })
+      const path = join(updir, 'big.bin')
+      store.record([{
+        id: 'big', path, cwd: stateDir, name: 'big.bin',
+        size: VERIFY_BEFORE_SERVE_MAX_BYTES + 1, uploadedAt: 1, sessionTitle: '', digest: 'a'.repeat(64),
+      }])
+      const objects = {
+        readVerified: async function* () {
+          yield new TextEncoder().encode('ok')
+          throw new AttachmentStoreError('corrupt', 'tampered')
+        },
+      }
+      const bigApp = buildUploadRouter(makeSm(sessionCwd), store, objects as never)
+
+      const res = await bigApp.request('/uploads/big/content')
+      // Headers are sent before the digest is known, so the failure can only
+      // abort the body — never a 4xx/5xx status line.
+      expect(res.status).toBe(200)
+      expect(res.headers.get('content-length')).toBeNull()
+      await expect(res.text()).rejects.toThrow(/tampered/)
     })
   })
 })

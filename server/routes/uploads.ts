@@ -27,6 +27,11 @@ import { safeJson } from './index.js'
 
 const log = createLogger('uploads')
 
+/** Files at or below this size are fully verified before the response starts,
+ *  so a tampered file can still be answered with a proper 4xx/5xx. Larger
+ *  files are streamed through the verified reader instead (never buffered). */
+export const VERIFY_BEFORE_SERVE_MAX_BYTES = 8 * 1024 * 1024
+
 /** Live on-disk existence check for a registry entry. Only a clean ENOENT
  *  reports missing — any other stat error reports present (and logs), so a
  *  transient FS hiccup never invites deleting a healthy file. */
@@ -58,6 +63,21 @@ async function rollbackPublished(
     if (!entries.some((entry) => entry.digest === object.digest)) {
       await objects.removeObject(object.digest)
     }
+  }
+}
+
+/** Response headers for a recorded upload's content. RFC 6266: an ASCII
+ *  fallback for old clients + RFC 5987 for the real (possibly non-ASCII)
+ *  name. encodeURIComponent leaves the ' delimiter unescaped, which would
+ *  end the ext-value early — encode it explicitly. */
+function contentHeaders(entry: UploadEntry, download: boolean): Record<string, string> {
+  const asciiName = entry.name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
+  const encodedName = encodeURIComponent(entry.name).replace(/'/g, '%27')
+  return {
+    'Content-Type': uploadMimeType(entry.name),
+    'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-store',
   }
 }
 
@@ -227,34 +247,80 @@ export function buildUploadRouter(
       if (!uploadEntryPathContained(entry, stateDir)) {
         return c.json({ error: 'invalid upload path' }, 400)
       }
-      // Existence check only — no Content-Length: a concurrent rewrite of
-      // the file between this stat and the stream below would otherwise
-      // declare a length the body no longer matches. Chunked transfer is
-      // always correct.
-      try {
-        await stat(entry.path)
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
-          return c.json({ error: 'file missing' }, 404)
-        }
-        throw e
-      }
       const download = c.req.query('download') === '1'
-      // RFC 6266: an ASCII fallback for old clients + RFC 5987 for the
-      // real (possibly non-ASCII) name. encodeURIComponent leaves the '
-      // delimiter unescaped, which would end the ext-value early — encode
-      // it explicitly.
-      const asciiName = entry.name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_')
-      const encodedName = encodeURIComponent(entry.name).replace(/'/g, '%27')
-      const body = Readable.toWeb(createReadStream(entry.path)) as ReadableStream<Uint8Array>
-      return new Response(body, {
-        headers: {
-          'Content-Type': uploadMimeType(entry.name),
-          'Content-Disposition': `${download ? 'attachment' : 'inline'}; filename="${asciiName}"; filename*=UTF-8''${encodedName}`,
-          'X-Content-Type-Options': 'nosniff',
-          'Cache-Control': 'no-store',
+      const headers = contentHeaders(entry, download)
+
+      // Legacy entry predating content addressing (digest not backfilled
+      // yet): serve it as recorded. Existence check only — no Content-Length,
+      // since a concurrent rewrite between this stat and the stream would
+      // declare a length the body no longer matches. Chunked is always
+      // correct.
+      if (entry.digest === undefined) {
+        try {
+          await stat(entry.path)
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+            return c.json({ error: 'file missing' }, 404)
+          }
+          throw e
+        }
+        const body = Readable.toWeb(createReadStream(entry.path)) as ReadableStream<Uint8Array>
+        return new Response(body, { headers })
+      }
+
+      const { digest } = entry
+
+      // Small file: verify the whole file before sending anything, so a
+      // tampered or missing object maps to a proper status instead of a
+      // half-served body. Only once verification passes is Content-Length
+      // declared — the length is a fact about the verified bytes.
+      if (entry.size <= VERIFY_BEFORE_SERVE_MAX_BYTES) {
+        try {
+          await objectStore.verifyFile({ path: entry.path, digest, size: entry.size })
+        } catch (err) {
+          if (err instanceof AttachmentStoreError && err.code === 'missing') {
+            return c.json({ error: 'file missing' }, 404)
+          }
+          if (err instanceof AttachmentStoreError && err.code === 'corrupt') {
+            log.error(`integrity verification failed for ${entry.path}`)
+            return c.json({ error: 'uploaded file failed integrity verification' }, 500)
+          }
+          throw err
+        }
+        const body = Readable.toWeb(createReadStream(entry.path)) as ReadableStream<Uint8Array>
+        return new Response(body, {
+          headers: { ...headers, 'Content-Length': String(entry.size) },
+        })
+      }
+
+      // Large file: verifying first would mean buffering it whole. Hash
+      // while streaming instead. The status line is already sent, so a
+      // digest/length failure can no longer become a 4xx/5xx — it errors
+      // the response body, aborting the transfer client-side before the
+      // tampered bytes are trusted.
+      const chunks = objectStore
+        .readVerified({ path: entry.path, digest, size: entry.size })
+        [Symbol.asyncIterator]()
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const next = await chunks.next()
+            if (next.done) controller.close()
+            else controller.enqueue(next.value)
+          } catch (err) {
+            if (err instanceof AttachmentStoreError && err.code === 'corrupt') {
+              log.error(`integrity verification failed for ${entry.path}`)
+            }
+            controller.error(err)
+          }
+        },
+        // A client that disconnects mid-download must not leave the verified
+        // reader (and its fs read stream) open.
+        async cancel() {
+          await chunks.return?.()
         },
       })
+      return new Response(body, { headers })
     })
 
     // Delete by path key — unlinks the file and drops the entry.
