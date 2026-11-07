@@ -1,21 +1,27 @@
 // Upload routes: upload, delete, and (since the Uploads Manager) list
-// uploaded files. Every UI upload is recorded in the UploadStore registry
-// so the manager dialog can list/audit/delete it — including uploads
-// whose session has since been deleted (orphans). All uploads land in
-// the shared `<stateDir>/claude-web-uploads/` directory.
+// uploaded files. Every UI upload is published into the content-addressed
+// attachment store (`<stateDir>/claude-web-attachments/v1/`) and recorded in
+// the UploadStore registry so the manager dialog can list/audit/delete it —
+// including uploads whose session has since been deleted (orphans).
 
 import { Hono } from 'hono'
-import { mkdir, unlink, stat } from 'node:fs/promises'
+import { unlink, stat } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { Readable } from 'node:stream'
-import { resolve as resolvePath, join } from 'node:path'
+import { resolve as resolvePath } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { SessionManager } from '../session-manager.js'
 import { config as serverConfig } from '../config.js'
 import { createLogger } from '../log.js'
-import { UploadStore, UPLOAD_SUBDIR } from '../upload-store.js'
+import { UploadStore } from '../upload-store.js'
 import { uploadEntryPathContained } from '../upload-path.js'
-import { streamUploads, UploadError, type SavedUpload } from '../stream-upload.js'
+import { canReferenceUpload } from '../upload-policy.js'
+import {
+  AttachmentObjectStore,
+  AttachmentStoreError,
+  type PublishedAttachment,
+} from '../attachment-object-store.js'
+import { streamUploads, UploadError, type UploadFailure, type SavedUpload } from '../stream-upload.js'
 import { uploadMimeType, type UploadEntry } from '../../shared/uploads.js'
 import { safeJson } from './index.js'
 
@@ -35,14 +41,54 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore): Hono {
+/** Undo publications from a batch that failed mid-stream, so a later part's
+ *  failure cannot leave an alias or object no registry entry references.
+ *  Reference checks mirror the delete routes; aliases/objects still held by
+ *  an earlier upload stay put. */
+async function rollbackPublished(
+  objects: AttachmentObjectStore,
+  store: UploadStore,
+  published: readonly PublishedAttachment[],
+): Promise<void> {
+  const entries = store.list()
+  for (const object of published) {
+    if (!entries.some((entry) => entry.path === object.aliasPath)) {
+      await objects.removeAlias(object.aliasPath)
+    }
+    if (!entries.some((entry) => entry.digest === object.digest)) {
+      await objects.removeObject(object.digest)
+    }
+  }
+}
+
+/** The `UploadFailure` behind a rejected batch, or undefined when the
+ *  rejection came from the object store (reported as a server error).
+ *  `streamUploads` collapses every sink rejection into a generic parse
+ *  failure, so the store's own error — captured on the sink's promise —
+ *  decides. An over-limit part reaches the store as an `UploadError` while it
+ *  consumes the part, which the store wraps as the cause of its write error. */
+function uploadFailureOf(error: unknown, storeError: unknown): UploadFailure | undefined {
+  if (storeError !== undefined) {
+    return storeError instanceof AttachmentStoreError && storeError.cause instanceof UploadError
+      ? storeError.cause.failure
+      : undefined
+  }
+  return error instanceof UploadError ? error.failure : undefined
+}
+
+export function buildUploadRouter(
+  sm: SessionManager,
+  uploadStore?: UploadStore,
+  objects?: AttachmentObjectStore,
+): Hono {
   const app = new Hono()
 
   // ── Uploads Manager routes (only mounted when a store is wired) ──
   if (uploadStore) {
     const stateDir = uploadStore.getDir()
+    const objectStore = objects ?? new AttachmentObjectStore(stateDir)
 
-    // Upload one or more files into the shared upload directory.
+    // Upload one or more files into the content-addressed attachment store.
     app.post('/uploads', async (c) => {
       const sessionId = c.req.query('sessionId')
       let cwd: string
@@ -66,9 +112,9 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
       }
       if (!c.req.raw.body) return c.json({ error: 'no files in request' }, 400)
 
-      const uploadDir = resolvePath(stateDir, UPLOAD_SUBDIR)
-      await mkdir(uploadDir, { recursive: true })
       const now = Date.now()
+      const published: PublishedAttachment[] = []
+      let storeError: unknown
 
       let files: SavedUpload[]
       try {
@@ -77,19 +123,44 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
           contentType,
           maxFileBytes: serverConfig.maxUploadBytes,
           maxFiles: 20,
-          place: ({ filename, index }) => {
-            const baseName = filename.split(/[\\/]/).pop() || 'upload'
-            const safeName = baseName.replace(/[\0/\\]/g, '_').slice(0, 200) || 'upload'
-            const destName = `${now}-${safeName}`
-            return { tmp: join(uploadDir, `${destName}.${index}.part`), final: join(uploadDir, destName), name: safeName }
+          sink: async ({ filename, mimeType, data }) => {
+            let object: PublishedAttachment
+            try {
+              object = await objectStore.publishStream({
+                chunks: data,
+                name: filename,
+                maxBytes: serverConfig.maxUploadBytes,
+              })
+            } catch (e) {
+              storeError ??= e
+              throw e
+            }
+            published.push(object)
+            return {
+              path: object.aliasPath,
+              name: object.name,
+              filename,
+              mimeType,
+              size: object.size,
+              digest: object.digest,
+            }
           },
         })
       } catch (e) {
-        if (!(e instanceof UploadError)) throw e
-        const f = e.failure
-        if (f.kind === 'too-large') {
+        await rollbackPublished(objectStore, uploadStore, published)
+        const failure = uploadFailureOf(e, storeError)
+        // Neither an upload failure nor a store error: a programming error in
+        // streamUploads, which must surface instead of becoming a 500 body.
+        if (failure === undefined && storeError === undefined) throw e
+        if (failure === undefined) {
+          log.error(
+            `upload store failure: ${storeError instanceof Error ? storeError.message : String(storeError)}`,
+          )
+          return c.json({ error: 'failed to store upload' }, 500)
+        }
+        if (failure.kind === 'too-large') {
           return c.json(
-            { error: `file ${f.filename} exceeds ${f.limit} bytes` },
+            { error: `file ${failure.filename} exceeds ${failure.limit} bytes` },
             413 as 400 | 404 | 410 | 500,
           )
         }
@@ -98,23 +169,34 @@ export function buildUploadRouter(sm: SessionManager, uploadStore?: UploadStore)
 
       if (files.length === 0) return c.json({ error: 'no files in request' }, 400)
 
-      const entries: UploadEntry[] = files.map((f) => ({
-        id: randomUUID(),
-        path: f.path,
-        cwd: resolvePath(cwd),
-        name: f.name,
-        size: f.size,
-        uploadedAt: now,
-        sessionTitle,
-        ...(origin ? { origin } : {}),
-        ...(sessionId ? { sessionId } : {}),
-        ...(f.digest ? { digest: f.digest } : {}),
-      }))
-      try {
-        uploadStore.record(entries)
-      } catch (e) {
-        log.warn(`upload registry record failed: ${(e as Error).message}`)
-      }
+      // Dedupe by published alias: bytes and name identify the file on disk,
+      // while the entry id stays per owner. A session re-uploading the same
+      // file keeps its original id; a different session gets its own entry
+      // (same alias, shared object).
+      const entries = files.map((file): UploadEntry => {
+        const existing = uploadStore
+          .getByDigest(file.digest)
+          .find(
+            (entry) =>
+              entry.path === file.path &&
+              (sessionId === undefined || canReferenceUpload(entry, sessionId)),
+          )
+        if (existing !== undefined) return existing
+        const entry: UploadEntry = {
+          id: randomUUID(),
+          path: file.path,
+          cwd: resolvePath(cwd),
+          name: file.name,
+          size: file.size,
+          uploadedAt: now,
+          sessionTitle,
+          ...(origin ? { origin } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          digest: file.digest,
+        }
+        uploadStore.record([entry])
+        return entry
+      })
       const saved = entries.map((e) => ({
         id: e.id,
         path: e.path,

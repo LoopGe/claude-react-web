@@ -2,9 +2,9 @@
 // (GET /uploads, DELETE /uploads/:id, DELETE /uploads/by-path), path-escape
 // validation, and provenance tracking.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Hono } from 'hono'
-import { rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { chmodSync, rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createErrorHandler, HttpError } from '../errors.js'
 import { __setConfigForTest, config as serverConfig } from '../config.js'
@@ -25,6 +25,30 @@ function makeApp(sm: SessionManager, store?: UploadStore) {
   return app
 }
 
+/** Published aliases/objects are 0o400, and Windows refuses to delete a
+ *  read-only file, so clear the attribute before removing the tree. */
+function cleanup(dir: string): void {
+  if (!existsSync(dir)) return
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) cleanup(path)
+    else chmodSync(path, 0o600)
+  }
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+}
+
+/** Every regular file under `dir` (recursive); [] when it does not exist. */
+function filesUnder(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  const out: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) out.push(...filesUnder(path))
+    else out.push(path)
+  }
+  return out
+}
+
 describe('uploads routes', () => {
   let sessionCwd: string
   let stateDir: string
@@ -38,8 +62,8 @@ describe('uploads routes', () => {
     app = makeApp(makeSm(sessionCwd), store)
   })
   afterEach(() => {
-    rmSync(sessionCwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-    rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    cleanup(sessionCwd)
+    cleanup(stateDir)
   })
 
   describe('POST /uploads without sessionId', () => {
@@ -57,8 +81,8 @@ describe('uploads routes', () => {
       expect(body.uploads[0].id).toEqual(expect.any(String))
       expect(body.uploads[0].digest).toMatch(/^[a-f0-9]{64}$/)
 
-      // File lands under <stateDir>/claude-web-uploads/
-      const expectedDir = join(stateDir, UPLOAD_SUBDIR)
+      // File lands under <stateDir>/claude-web-attachments/v1/files/
+      const expectedDir = join(stateDir, 'claude-web-attachments')
       expect(body.uploads[0].path).toContain(expectedDir)
 
       const entries = store.list()
@@ -88,9 +112,8 @@ describe('uploads routes', () => {
         form.append('file', new File([new Uint8Array(50)], 'big.bin'))
         const res = await app.request('/uploads', { method: 'POST', body: form })
         expect(res.status).toBe(413)
-        const dir = join(stateDir, UPLOAD_SUBDIR)
-        const leftover = existsSync(dir) ? readdirSync(dir) : []
-        expect(leftover.filter((f) => f.endsWith('.part'))).toEqual([])
+        expect(store.list()).toEqual([])
+        expect(filesUnder(join(stateDir, 'claude-web-attachments'))).toEqual([])
       } finally {
         __setConfigForTest({ maxUploadBytes: before })
       }
@@ -122,8 +145,8 @@ describe('uploads routes', () => {
       const body = (await res.json()) as { uploads: Array<{ path: string; name: string }> }
       expect(body.uploads).toHaveLength(1)
 
-      // File still lands under <stateDir>/claude-web-uploads/
-      const expectedDir = join(stateDir, UPLOAD_SUBDIR)
+      // File still lands under <stateDir>/claude-web-attachments/
+      const expectedDir = join(stateDir, 'claude-web-attachments')
       expect(body.uploads[0].path).toContain(expectedDir)
 
       const entries = store.list()
@@ -151,6 +174,79 @@ describe('uploads routes', () => {
       form.append('file', new File(['hello'], 'a.txt', { type: 'text/plain' }))
       const res = await throwingApp.request('/uploads?sessionId=unknown', { method: 'POST', body: form })
       expect(res.status).toBe(404)
+    })
+  })
+
+  describe('POST /uploads content addressing', () => {
+    const post = (sessionId: string, body: string, name: string) => {
+      const form = new FormData()
+      form.append('file', new File([body], name, { type: 'text/plain' }))
+      return app.request(`/uploads?sessionId=${sessionId}`, { method: 'POST', body: form })
+    }
+    type Uploads = { uploads: Array<{ id: string; path: string; digest: string }> }
+
+    it('returns a v1 alias path and digest, and dedupes same-bytes/same-name uploads', async () => {
+      const first = (await (await post('s1', 'hello', 'a.txt')).json()) as Uploads
+      const second = (await (await post('s1', 'hello', 'a.txt')).json()) as Uploads
+      expect(first.uploads[0].path).toContain('claude-web-attachments')
+      expect(first.uploads[0].digest).toMatch(/^[a-f0-9]{64}$/)
+      expect(second.uploads[0].id).toBe(first.uploads[0].id)
+      expect(second.uploads[0].path).toBe(first.uploads[0].path)
+      expect(store.list()).toHaveLength(1)
+    })
+
+    it('gives a different session its own id for the same bytes and name', async () => {
+      const a = (await (await post('s1', 'hello', 'a.txt')).json()) as Uploads
+      const b = (await (await post('s2', 'hello', 'a.txt')).json()) as Uploads
+      expect(a.uploads[0].id).not.toBe(b.uploads[0].id)
+      expect(a.uploads[0].path).toBe(b.uploads[0].path)
+      expect(a.uploads[0].digest).toBe(b.uploads[0].digest)
+      expect(store.list().map((e) => e.sessionId).sort()).toEqual(['s1', 's2'])
+    })
+
+    it('cleans up files published before a later part fails', async () => {
+      const alias = join(stateDir, 'claude-web-attachments', 'v1', 'files', 'a.txt')
+      const objects = {
+        publishStream: vi.fn()
+          .mockResolvedValueOnce({ digest: 'a'.repeat(64), objectPath: 'o1', aliasPath: alias, name: 'a.txt', size: 1 })
+          .mockRejectedValueOnce(new Error('boom')),
+        removeAlias: vi.fn(),
+        removeObject: vi.fn(),
+      }
+      const app2 = buildUploadRouter(makeSm(sessionCwd), store, objects as never)
+      const form = new FormData()
+      form.append('file', new File(['a'], 'a.txt'))
+      form.append('file', new File(['b'], 'b.txt'))
+      const res = await app2.request('/uploads', { method: 'POST', body: form })
+      expect(res.status).toBe(500)
+      expect(objects.removeAlias).toHaveBeenCalledWith(alias)
+      expect(objects.removeObject).toHaveBeenCalledWith('a'.repeat(64))
+      expect(store.list()).toEqual([])
+    })
+
+    it('keeps an alias and object an earlier upload still references on rollback', async () => {
+      const alias = join(stateDir, 'claude-web-attachments', 'v1', 'files', 'ab', 'a.txt')
+      const digest = 'b'.repeat(64)
+      // A previous upload already recorded this exact alias/object.
+      store.record([
+        { id: 'prior', path: alias, cwd: stateDir, name: 'a.txt', size: 1, uploadedAt: 1, sessionTitle: '', digest },
+      ])
+      const objects = {
+        publishStream: vi.fn()
+          .mockResolvedValueOnce({ digest, objectPath: 'o1', aliasPath: alias, name: 'a.txt', size: 1 })
+          .mockRejectedValueOnce(new Error('boom')),
+        removeAlias: vi.fn(),
+        removeObject: vi.fn(),
+      }
+      const app2 = buildUploadRouter(makeSm(sessionCwd), store, objects as never)
+      const form = new FormData()
+      form.append('file', new File(['a'], 'a.txt'))
+      form.append('file', new File(['b'], 'b.txt'))
+      const res = await app2.request('/uploads', { method: 'POST', body: form })
+      expect(res.status).toBe(500)
+      expect(objects.removeAlias).not.toHaveBeenCalled()
+      expect(objects.removeObject).not.toHaveBeenCalled()
+      expect(store.getById('prior')).toBeDefined()
     })
   })
 
