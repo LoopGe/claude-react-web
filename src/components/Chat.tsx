@@ -435,9 +435,6 @@ interface Props {
   /** Active skin, forwarded to <TodoChecklist> so its pending / in-progress
    *  markers can switch to square checkboxes under the High-Contrast skin. */
   skin?: Skin
-  /** Open the uploads manager dialog (App-owned state). Called when the user
-   *  picks or drops files via the Composer. */
-  onOpenUploads?: () => void
 }
 
 interface SendMessageResponse {
@@ -473,7 +470,6 @@ export const Chat = memo(function Chat({
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
-  onOpenUploads,
 }: Props) {
   // Lazy init reads the persisted draft for THIS session from sessionStorage.
   // The parent remounts Chat on session switch (<Chat key={session.id}>), so
@@ -866,7 +862,6 @@ export const Chat = memo(function Chat({
   const addPastedImages = pastedImages.addImages
   const fileDrafts = useFileDrafts(session.id)
   const addFilesToDraft = fileDrafts.addFiles
-  const openUploads = useCallback(() => { onOpenUploads?.() }, [onOpenUploads])
   // The draft's image half. The text half survives unmounts via
   // sessionStorage (readDraft/writeDraft above); the image half survives via
   // the IDB side store — restored here on mount, debounced-written on every
@@ -1119,6 +1114,9 @@ export const Chat = memo(function Chat({
     permissions.pending.length > 0 ||
     elicitations.pending.length > 0 ||
     dialogs.pending.length > 0
+  // One gate for the composer controls and file intake: a terminated session,
+  // a pending interactive request, or an in-flight handoff blocks new turns.
+  const composerDisabled = session.terminated || interactivePending || !!handoffing
   // Drop persisted draft entries once a question resolves so questionDrafts
   // doesn't accumulate stale ids over a long session. The corresponding
   // minimize state is derived on read (see `minimizedQ` above), so we no
@@ -1311,15 +1309,17 @@ export const Chat = memo(function Chat({
   // then surface the hook's first refusal. Toast the RETURNED message (not the
   // state value) so dropping the same oversized file twice still reports.
   const intakeImages = useCallback(async (images: readonly File[]) => {
+    if (composerDisabled) return
     invalidateHistoryImages()
     const error = await addPastedImages(images)
     if (error !== null) toast.error(error)
-  }, [invalidateHistoryImages, addPastedImages, toast])
+  }, [composerDisabled, invalidateHistoryImages, addPastedImages, toast])
   // File drafts cap themselves; surface a dropped-file refusal.
   const addDraftFiles = useCallback((files: readonly File[]) => {
+    if (composerDisabled) return
     const error = addFilesToDraft(files)
     if (error !== null) toast.info(error)
-  }, [addFilesToDraft, toast])
+  }, [composerDisabled, addFilesToDraft, toast])
   const [searchQuery, setSearchQuery] = useState('')
   const debouncedQuery = useDebouncedValue(searchQuery, 200)
   // Raw state; the value consumers see (`searchActiveIdx`, below) is
@@ -1527,12 +1527,14 @@ export const Chat = memo(function Chat({
   const onDragOver = useCallback(
     (e: React.DragEvent) => {
       // Needed for drop to fire. Only visually highlight when actual files
-      // are being dragged ?ignore text selections etc.
-      if (!e.dataTransfer.types.includes('Files')) return
+      // are being dragged (ignore text selections etc.) AND intake is open —
+      // the drop handler refuses while the composer is disabled, so the
+      // highlight must not promise a target.
+      if (composerDisabled || !e.dataTransfer.types.includes('Files')) return
       e.preventDefault()
       setDragOver(true)
     },
-    [],
+    [composerDisabled],
   )
 
   const onDragLeave = useCallback(
@@ -1548,6 +1550,9 @@ export const Chat = memo(function Chat({
 
   const onFilesPicked = useCallback(
     (files: File[]) => {
+      // The paperclip is disabled in these states; drop/paste must honor the
+      // same gate instead of starting an upload the user cannot send.
+      if (composerDisabled) return
       // One intake rule for drag + paperclip: supported images join the inline
       // draft (paste already goes there), everything else becomes an upload
       // draft chip. The uploads manager is a separate audit surface now.
@@ -1556,7 +1561,7 @@ export const Chat = memo(function Chat({
         addFiles: addDraftFiles,
       })
     },
-    [intakeImages, addDraftFiles],
+    [composerDisabled, intakeImages, addDraftFiles],
   )
 
   const onDrop = useCallback(
@@ -1677,7 +1682,7 @@ export const Chat = memo(function Chat({
       toast.info('Attachments are still processing')
       return
     }
-    if (fileDrafts.files.some((file) => file.status === 'error')) {
+    if (fileDrafts.failed) {
       toast.info('Some attachments failed to upload. Retry or remove them before sending.')
       return
     }
@@ -1949,7 +1954,7 @@ export const Chat = memo(function Chat({
       toast.info('File attachments cannot be scheduled yet')
       return
     }
-    if (fileDrafts.files.some((file) => file.status === 'error')) {
+    if (fileDrafts.failed) {
       toast.info('Some attachments failed to upload. Retry or remove them before scheduling.')
       return
     }
@@ -2510,7 +2515,7 @@ export const Chat = memo(function Chat({
               input={input}
               setInput={setInput}
               sending={sending}
-              disabled={session.terminated || interactivePending || !!handoffing}
+              disabled={composerDisabled}
               terminated={session.terminated}
               terminatedReason={session.terminatedReason}
               canRetryResume={session.canRetryResume}
@@ -2532,7 +2537,6 @@ export const Chat = memo(function Chat({
               files={fileDrafts.files}
               onRemoveFile={fileDrafts.removeFile}
               onRetryFile={fileDrafts.retryFile}
-              onOpenUploads={openUploads}
               onPasteImages={intakeImages}
               onPasteFiles={addDraftFiles}
               onRemovePastedImage={onRemovePastedImage}

@@ -26,7 +26,7 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useCountUp } from '../hooks/useCountUp'
-import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo, IconFolder } from './icons/ToolIcons'
+import { IconPaperclip, IconX, IconScissors, IconCopy, IconDownload, IconPencil, IconSettings, IconArrowUp, IconSquare, IconLoader, IconFileText, IconClock, IconAlertTriangle, IconListTodo } from './icons/ToolIcons'
 import type { ScheduledSendsApi } from '../hooks/useScheduledSends'
 import { SchedulePicker } from './SchedulePicker'
 import { HoverHint } from './HoverHint'
@@ -90,8 +90,6 @@ interface Props {
   files: readonly DraftFile[]
   onRemoveFile: (key: string) => void
   onRetryFile: (key: string) => void
-  /** Opens the uploads manager (audit/preview surface, no longer the intake). */
-  onOpenUploads: () => void
   onPasteImages: (files: readonly File[]) => void | Promise<void>
   /** Non-image clipboard files (PDF, archive, unsupported raster image…). */
   onPasteFiles: (files: readonly File[]) => void | Promise<void>
@@ -194,7 +192,6 @@ export const Composer = memo(function Composer({
   files,
   onRemoveFile,
   onRetryFile,
-  onOpenUploads,
   onPasteFiles,
   onPasteImages,
   onRemovePastedImage,
@@ -677,9 +674,14 @@ export const Composer = memo(function Composer({
   const pendingScheduled = scheduled?.schedules.filter((s) => s.status === 'pending') ?? []
   const failedScheduled = scheduled?.schedules.filter((s) => s.status === 'failed') ?? []
   const filesPending = files.some((file) => file.status === 'uploading')
+  const filesFailed = files.some((file) => file.status === 'error')
+  const hasFiles = files.length > 0
   const attachmentsPending = imagesPending || filesPending
+  // `!`/local-command submissions are routed before Chat.send's attachment
+  // guard, so a failed file must not disable them.
+  const commandLike = /^[!/]/.test(input.trim())
   const canSchedule =
-    !disabled && !attachmentsPending && (input.trim() !== '' || pastedImages.length > 0)
+    !disabled && !attachmentsPending && !hasFiles && (input.trim() !== '' || pastedImages.length > 0)
 
   const confirmScheduled = useCallback((fireAtMs: number) => {
     setScheduleAnchor(null)
@@ -687,8 +689,15 @@ export const Composer = memo(function Composer({
   }, [onSendScheduled])
 
   const canSend =
-    !disabled && !sending && !attachmentsPending
+    !disabled && !sending && !attachmentsPending && (!filesFailed || commandLike)
     && (input.trim() !== '' || pastedImages.length > 0 || files.some((file) => file.status === 'ready'))
+  const blockedReason = canInterrupt
+    ? null
+    : attachmentsPending
+      ? 'Attachments are still processing'
+      : filesFailed && !commandLike
+        ? 'Some attachments failed to upload'
+        : null
 
   if (terminated) {
     const reasonText =
@@ -1028,17 +1037,6 @@ export const Composer = memo(function Composer({
             <IconPaperclip size={18} />
           </button>
         </HoverHint>
-        <HoverHint label="Manage uploads" side="top">
-          <button
-            className="btn btn-icon"
-            type="button"
-            onClick={onOpenUploads}
-            disabled={disabled}
-            aria-label="Manage uploads"
-          >
-            <IconFolder size={18} />
-          </button>
-        </HoverHint>
         {onOpenTasks && (
           <HoverHint label={tasksTitle} side="top">
             <button
@@ -1101,7 +1099,7 @@ export const Composer = memo(function Composer({
           label={
             canInterrupt
               ? `Interrupt the current turn${queueNote} (Alt+B backgrounds it)`
-              : attachmentsPending ? 'Attachments are still processing' : 'Send message (Enter)'
+              : blockedReason ?? 'Send message (Enter)'
           }
           side="top"
         >
@@ -1113,7 +1111,7 @@ export const Composer = memo(function Composer({
             aria-label={
             canInterrupt
               ? `Interrupt the current turn${queueNote}`
-              : attachmentsPending ? 'Attachments are still processing' : 'Send message'
+              : blockedReason ?? 'Send message'
           }
         >
           {(sending || attachmentsPending) && !canInterrupt ? (

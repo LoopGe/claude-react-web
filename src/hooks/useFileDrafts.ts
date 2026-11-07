@@ -25,6 +25,8 @@ export interface UseFileDrafts {
   readonly files: DraftFile[]
   /** True while any draft is still uploading; the composer blocks send. */
   readonly pending: boolean
+  /** True when at least one draft failed to upload. */
+  readonly failed: boolean
   /** Ready refs in draft order, ready to become FileBlocks. */
   readonly ready: FileAttachmentRef[]
   /** Queue files; returns a user-facing error when the cap drops some. */
@@ -216,10 +218,11 @@ export function useFileDrafts(sessionId: string): UseFileDrafts {
   }, [sessionId])
 
   const pending = files.some((file) => file.status === 'uploading')
+  const failed = files.some((file) => file.status === 'error')
   const ready = files.flatMap((file) => file.status === 'ready' && file.upload !== undefined ? [file.upload] : [])
 
   return useMemo(
-    () => ({ files, pending, ready, addFiles, removeFile, retryFile, clearFiles }),
-    [files, pending, ready, addFiles, removeFile, retryFile, clearFiles],
+    () => ({ files, pending, failed, ready, addFiles, removeFile, retryFile, clearFiles }),
+    [files, pending, failed, ready, addFiles, removeFile, retryFile, clearFiles],
   )
 }

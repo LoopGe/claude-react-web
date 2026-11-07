@@ -95,7 +95,6 @@ const defaultProps = {
   files: [] as never[],
   onRemoveFile: noop,
   onRetryFile: noop,
-  onOpenUploads: noop,
   onPasteImages: noopAsync,
   onPasteFiles: noopAsync,
   onRemovePastedImage: noop,
@@ -150,10 +149,23 @@ describe('Composer', () => {
     const { container } = render(
       <Composer
         {...defaultProps}
+        input="hello"
         files={[{ key: 'a', status: 'error', loaded: 0, total: 1, error: 'boom' }]}
       />,
     )
     expect(container.querySelector('.composer-send')?.hasAttribute('disabled')).toBe(true)
+    expect(container.querySelector('[aria-label="Some attachments failed to upload"]')).not.toBeNull()
+  })
+
+  it('keeps command-like submissions sendable despite a failed file', () => {
+    const { container } = render(
+      <Composer
+        {...defaultProps}
+        input="!ls"
+        files={[{ key: 'a', status: 'error', loaded: 0, total: 1, error: 'boom' }]}
+      />,
+    )
+    expect(container.querySelector('.composer-send')?.hasAttribute('disabled')).toBe(false)
   })
 
   it('disables the send control while intake is decoding', () => {
