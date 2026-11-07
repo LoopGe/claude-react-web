@@ -34,6 +34,7 @@ import {
   useId,
 } from 'react'
 import { AnimatedCollapse } from '../AnimatedCollapse'
+import { HoverHint } from '../HoverHint'
 import { useRevealClass } from '../../hooks/useRevealClass'
 import { BlockView } from './blocks'
 import { useToolStatuses } from '../../hooks/usePlanStatus'
@@ -417,23 +418,26 @@ function ToolGroupCardInner({
   }
 
   const badge = summary.anyRunning ? (
-    <span className="tool-status tool-status-running" title="A tool in this group is still running.">
-      <IconLoader size={12} />
-      <span className="tool-status-label">running</span>
-    </span>
+    <HoverHint label="A tool in this group is still running." side="top">
+      <span className="tool-status tool-status-running">
+        <IconLoader size={12} />
+        <span className="tool-status-label">running</span>
+      </span>
+    </HoverHint>
   ) : summary.anyError ? (
     // Clickable: knowing the group failed is only half an answer when the body
     // holds a dozen cards. This takes the user to the one that did.
-    <button
-      type="button"
-      className="tool-status tool-status-error tool-group-failed-jump"
-      title="A tool in this group failed — show it."
-      aria-label="Show the tool call that failed"
-      onClick={revealFirstError}
-    >
-      <IconAlertCircle size={12} />
-      <span className="tool-status-label">failed</span>
-    </button>
+    <HoverHint label="A tool in this group failed — show it." side="top">
+      <button
+        type="button"
+        className="tool-status tool-status-error tool-group-failed-jump"
+        aria-label="Show the tool call that failed"
+        onClick={revealFirstError}
+      >
+        <IconAlertCircle size={12} />
+        <span className="tool-status-label">failed</span>
+      </button>
+    </HoverHint>
   ) : null
 
   return (
@@ -445,6 +449,7 @@ function ToolGroupCardInner({
       {/* Two targets, so a real <button> for each rather than one role=button
           row with a nested control (invalid, and it would swallow the jump). */}
       <div className="tool-group-summary-inner">
+        <HoverHint label={summary.fullSummary} side="top" disabled={!summary.fullSummary}>
         <button
           type="button"
           className="tool-group-toggle"
@@ -455,7 +460,6 @@ function ToolGroupCardInner({
           // Hover on the WHOLE title row (not just the names text) surfaces
           // the full summary — a nowrap ellipsis line whose tail the budget
           // may have dropped. AT gets the same list via aria-label above.
-          title={summary.fullSummary}
         >
           <span className="tool-group-chevron" aria-hidden>
             {open ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
@@ -489,6 +493,7 @@ function ToolGroupCardInner({
             {summary.overflow > 0 ? ` +${summary.overflow}` : ''}
           </span>
         </button>
+        </HoverHint>
         {badge}
       </div>
       {/* Animated height fold. unmountOnExit=false keeps children mounted so

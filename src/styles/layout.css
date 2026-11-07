@@ -762,21 +762,10 @@ body.resizing-col .app {
   min-width: 0;
   flex-shrink: 1;
 }
-/* The title is wrapped in a Tooltip (`.tt-wrap`, inline-flex) whenever the
-   tooltip is enabled — which, since the label leads with the title text
-   (falling back to the id prefix), is effectively EVERY session: the
-   wrapper, not the title span, is the row-1 flex item. A flex item's
-   default min-width:auto floors it at the full nowrap title width, so a
-   long title could never shrink: row 1 overflowed and pushed the mode/model
-   chips past the panel edge, while the ellipsis on .chat-panel-title never
-   engaged (the span wasn't the flex item, and overflow doesn't apply to
-   inline elements). Floor the wrapper at 0 so the inner title — which
-   carries overflow:hidden + text-overflow:ellipsis — absorbs the shrink;
-   every other chip keeps its min-content floor, so only the title
-   truncates. */
-.chat-panel-header-row1 > .tt-wrap:has(> .chat-panel-title) {
-  min-width: 0;
-}
+/* The title span is the row-1 flex item now that its hover lives in a
+   portalled HoverHint (no `.tt-wrap` wrapper). Its own rule above carries
+   min-width:0 + overflow:hidden + ellipsis, so a long title still absorbs
+   the shrink while every other chip keeps its min-content floor. */
 /* (The old click-to-regenerate title affordance — .clickable / .regenerating /
    .chat-panel-title-spinner — went away with the AI auto-title feature.) */
 

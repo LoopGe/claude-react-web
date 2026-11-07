@@ -4,6 +4,7 @@
 
 import { memo } from 'react'
 import { ToolCard } from '../ToolCard'
+import { HoverHint } from '../HoverHint'
 import { IconSearch } from '../icons/ToolIcons'
 import { formatJson } from '../../utils/format'
 import type { ToolViewProps } from './shared'
@@ -43,8 +44,16 @@ export const GrepToolView = memo(function GrepToolView({ input, toolUseId, searc
       {outputMode && outputMode !== 'files_with_matches' && (
         <span className="tool-chip">{outputMode}</span>
       )}
-      {caseInsensitive && <span className="tool-chip" title="Case insensitive">-i</span>}
-      {multiline && <span className="tool-chip" title="Multiline mode">multiline</span>}
+      {caseInsensitive && (
+        <HoverHint label="Case insensitive" side="top">
+          <span className="tool-chip">-i</span>
+        </HoverHint>
+      )}
+      {multiline && (
+        <HoverHint label="Multiline mode" side="top">
+          <span className="tool-chip">multiline</span>
+        </HoverHint>
+      )}
       {context != null
         ? <span className="tool-chip">±{context}</span>
         : (before != null || after != null) && (

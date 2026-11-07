@@ -824,16 +824,9 @@
   font-size: var(--fs-sm);
   white-space: nowrap;
 }
-/* Each branch row is wrapped in a `.tt-wrap` (Tooltip) span, which is
-   `inline-flex` and shrink-to-fit by default. That collapses the row's
-   `width: 100%` to content width, so rows of differing name lengths
-   render at different widths and look staggered. Promote only the
-   tooltip wrapper that holds a branch row to a full-width flex container
-   so the row fills the panel and aligns into a clean column. */
-.git-panel-section-body .tt-wrap:has(> .git-branch-row) {
-  display: flex;
-  width: 100%;
-}
+/* Branch rows are direct flex items now (their hint is a portalled
+   HoverHint), and `.git-branch-row` itself carries display:flex +
+   width:100%, so they fill the panel without a wrapper rule. */
 
 /* Stash rows — three-column grid (ref, message, actions). */
 .git-stash-row {

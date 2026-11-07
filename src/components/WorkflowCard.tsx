@@ -15,6 +15,7 @@ import { memo } from 'react'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
 import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
 import { ElapsedTimer } from './ElapsedTimer'
+import { HoverHint } from './HoverHint'
 import { ToolResultSection } from './ToolCard'
 import {
   IconCheck,
@@ -106,17 +107,18 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
         </span>
       </button>
       {remote && sessionUrl && (
-        <a
-          className="workflow-card-remote-link"
-          href={sessionUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          title={`Open remote session — ${sessionUrl}`}
-        >
-          <IconExternalLink size={12} />
-          <span>Open remote session</span>
-        </a>
+        <HoverHint label={`Open remote session — ${sessionUrl}`} side="top">
+          <a
+            className="workflow-card-remote-link"
+            href={sessionUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <IconExternalLink size={12} />
+            <span>Open remote session</span>
+          </a>
+        </HoverHint>
       )}
       {result && <ToolResultSection result={result} entering={resultEntering} />}
     </div>

@@ -3,6 +3,7 @@
 // Extracted from ToolUseBlock.tsx for modularity.
 
 import { ToolCard } from '../ToolCard'
+import { HoverHint } from '../HoverHint'
 import { IconExternalLink, IconGlobe } from '../icons/ToolIcons'
 import { formatJson } from '../../utils/format'
 import { truncate } from '../../utils/text'
@@ -28,26 +29,31 @@ export function WebFetchToolView({ input, toolUseId, searchQuery, activeMatchIdx
 
   const safe = isSafeUrl(url)
   const titleNode = safe ? (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="web-tool-url"
-      title={url}
-      onClick={(e) => e.stopPropagation()}
-    >
-      {url}
-      <IconExternalLink size={12} />
-    </a>
+    <HoverHint label={url} side="top">
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="web-tool-url"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {url}
+        <IconExternalLink size={12} />
+      </a>
+    </HoverHint>
   ) : (
     <>
-      <code className="web-tool-url" title={url}>{url}</code>
-      <span
-        className="tool-chip"
-        title="URL scheme is not in the http/https/mailto/ftp allowlist; rendered as plain text to avoid javascript: / data: URL execution."
+      <HoverHint label={url} side="top">
+        <code className="web-tool-url">{url}</code>
+      </HoverHint>
+      <HoverHint
+        label="URL scheme is not in the http/https/mailto/ftp allowlist; rendered as plain text to avoid javascript: / data: URL execution."
+        side="top"
       >
-        unsafe scheme
-      </span>
+        <span className="tool-chip">
+          unsafe scheme
+        </span>
+      </HoverHint>
     </>
   )
 

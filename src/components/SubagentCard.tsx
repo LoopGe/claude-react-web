@@ -11,6 +11,7 @@ import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useBackgroundTool } from '../hooks/useBackgroundTool'
 import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
 import { ElapsedTimer } from './ElapsedTimer'
+import { HoverHint } from './HoverHint'
 import { BackgroundToolButton, ToolResultSection } from './ToolCard'
 import { GridClipEnter } from './GridClipEnter'
 import { AnimatedDetails } from './AnimatedCollapse'
@@ -101,12 +102,16 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
             {statusIcon}
           </span>
           {isAsync != null && (
-            <span
-              className={`subagent-card-mode subagent-card-mode-${isAsync ? 'async' : 'sync'}`}
-              title={isAsync ? 'Background/async — the subagent runs independently and the result returns immediately' : 'Synchronous — the parent agent waits for this subagent to finish'}
+            <HoverHint
+              label={isAsync
+                ? 'Background/async — the subagent runs independently and the result returns immediately'
+                : 'Synchronous — the parent agent waits for this subagent to finish'}
+              side="top"
             >
-              {isAsync ? 'async' : 'sync'}
-            </span>
+              <span className={`subagent-card-mode subagent-card-mode-${isAsync ? 'async' : 'sync'}`}>
+                {isAsync ? 'async' : 'sync'}
+              </span>
+            </HoverHint>
           )}
           <ElapsedTimer
             startedAt={startedAt}
@@ -149,9 +154,11 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
           state, so a finished card doesn't show stale progress text. */}
       {showProgress && (
         <GridClipEnter entering={progressEntering}>
-          <div className="subagent-card-progress" title={record?.progressSummary ?? ''}>
-            {record?.progressSummary}
-          </div>
+          <HoverHint label={record?.progressSummary ?? ''} side="top" disabled={!record?.progressSummary}>
+            <div className="subagent-card-progress">
+              {record?.progressSummary}
+            </div>
+          </HoverHint>
         </GridClipEnter>
       )}
       {/* Structured child-call list: which internal tools the subagent ran,
@@ -320,16 +327,19 @@ const SubagentChildRow = memo(function SubagentChildRow({
   return (
     <li className={`subagent-child-row subagent-child-row-${statusClass}`}>
       <GridClipEnter entering={entering}>
-        <button
-          type="button"
-          className="subagent-child-row-head"
-          onClick={canExpand ? () => setExpanded((v) => !v) : undefined}
-          disabled={!canExpand}
-          aria-expanded={canExpand ? expanded : undefined}
-          aria-busy={isRunning || undefined}
-          title={canExpand ? (expanded ? 'Collapse result' : 'Show result') : call.toolName}
-          data-expanded={expanded}
+        <HoverHint
+          label={canExpand ? (expanded ? 'Collapse result' : 'Show result') : call.toolName}
+          side="top"
         >
+          <button
+            type="button"
+            className="subagent-child-row-head"
+            onClick={canExpand ? () => setExpanded((v) => !v) : undefined}
+            disabled={!canExpand}
+            aria-expanded={canExpand ? expanded : undefined}
+            aria-busy={isRunning || undefined}
+            data-expanded={expanded}
+          >
           <span
             className={`subagent-child-dot subagent-child-dot-${statusClass}${isRunning && pulse ? ' subagent-child-dot-pulse' : ''}`}
             aria-hidden
@@ -340,6 +350,7 @@ const SubagentChildRow = memo(function SubagentChildRow({
             <span className="subagent-child-chevron" aria-hidden><IconChevronRight size={11} /></span>
           )}
         </button>
+        </HoverHint>
       </GridClipEnter>
       {canExpand && expanded && call.result && (
         <div className="subagent-child-result">

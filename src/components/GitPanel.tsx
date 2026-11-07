@@ -31,7 +31,7 @@ import { GitFileRow } from './GitFileRow'
 import { CommitRow } from './GitCommitRows'
 import { isWriteKeyInert } from './git-keyboard'
 import { AnimatedDetails } from './AnimatedCollapse'
-import { Tooltip } from './Tooltip'
+import { HoverHint } from './HoverHint'
 import { IconX, IconSparkles, IconChevronRight, IconCheck, IconAlertTriangle, IconRefresh, IconLoader, IconGitBranch, IconArrowUp, IconArrowDown, IconRotateCcw, IconSearch } from './icons/ToolIcons'
 import { Skeleton } from './Skeleton'
 import { useToast } from '../hooks/useToast'
@@ -44,7 +44,6 @@ import type {
   GitRangeFile,
   GitStatusResponse,
 } from '../../shared/git-types'
-import { gitStatusTitle } from '../utils/git-status'
 import { formatError } from '../utils/format-error'
 
 interface Props {
@@ -214,12 +213,12 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         <header className="git-panel-header">
           <span className="git-panel-branch"><IconGitBranch size={13} /> git</span>
           <span className="git-panel-spacer" />
-          <Tooltip label="Refresh" placement="bottom">
+          <HoverHint label="Refresh" side="bottom">
             <button className="git-panel-icon-btn" onClick={onRefresh} aria-label="Refresh"><IconRefresh size={14} /></button>
-          </Tooltip>
-          <Tooltip label="Close" placement="bottom">
+          </HoverHint>
+          <HoverHint label="Close" side="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
-          </Tooltip>
+          </HoverHint>
         </header>
         <div className="git-panel-empty">
           <p className="git-panel-error">{error}</p>
@@ -235,9 +234,9 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         <header className="git-panel-header">
           <span className="git-panel-branch"><IconGitBranch size={13} /> git</span>
           <span className="git-panel-spacer" />
-          <Tooltip label="Close" placement="bottom">
+          <HoverHint label="Close" side="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
-          </Tooltip>
+          </HoverHint>
         </header>
         <div className="git-panel-empty">
           <p>Not a git repository.</p>
@@ -252,9 +251,9 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         <header className="git-panel-header">
           <span className="git-panel-branch"><IconGitBranch size={13} /> …</span>
           <span className="git-panel-spacer" />
-          <Tooltip label="Close" placement="bottom">
+          <HoverHint label="Close" side="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
-          </Tooltip>
+          </HoverHint>
         </header>
         <div className="git-panel-empty">
           <p>Loading git status…</p>
@@ -391,25 +390,25 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
   return (
     <aside className="git-panel" role="region" aria-label="Git" ref={panelRef} tabIndex={-1} onKeyDown={handleKeyDown}>
       <header className="git-panel-header">
-        <Tooltip label={status.upstream ? `tracking ${status.upstream}` : 'no upstream'} placement="bottom">
+        <HoverHint label={status.upstream ? `tracking ${status.upstream}` : 'no upstream'} side="bottom">
           <span className="git-panel-branch">
             <IconGitBranch size={13} /> {status.detached ? 'detached' : (status.branch ?? 'unknown')}
           </span>
-        </Tooltip>
+        </HoverHint>
         {(status.upstream || status.ahead > 0 || status.behind > 0) && (
           <span className="git-panel-sync-group">
             {(status.ahead > 0 || status.behind > 0) && (
-              <Tooltip label={`${status.ahead} ahead · ${status.behind} behind`} placement="bottom">
+              <HoverHint label={`${status.ahead} ahead · ${status.behind} behind`} side="bottom">
                 <span className="git-panel-syncs">
                   {status.ahead > 0 && <span className="git-panel-sync-up"><IconArrowUp size={11} />{status.ahead}</span>}
                   {status.behind > 0 && <span className="git-panel-sync-down"><IconArrowDown size={11} />{status.behind}</span>}
                 </span>
-              </Tooltip>
+              </HoverHint>
             )}
             {status.upstream && (
               <span className="git-panel-sync-actions">
                 {status.behind > 0 && (
-                  <Tooltip label="Pull (fast-forward only)" placement="bottom">
+                  <HoverHint label="Pull (fast-forward only)" side="bottom">
                     <button
                       className="git-panel-icon-btn"
                       disabled={writeOps.busyOps.has('pull') || writeOps.busyOps.has('push')}
@@ -424,10 +423,10 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
                     >
                       <IconArrowDown size={13} />
                     </button>
-                  </Tooltip>
+                  </HoverHint>
                 )}
                 {status.ahead > 0 && (
-                  <Tooltip label="Push to remote" placement="bottom">
+                  <HoverHint label="Push to remote" side="bottom">
                     <button
                       className="git-panel-icon-btn"
                       disabled={writeOps.busyOps.has('pull') || writeOps.busyOps.has('push')}
@@ -439,7 +438,7 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
                     >
                       <IconArrowUp size={13} />
                     </button>
-                  </Tooltip>
+                  </HoverHint>
                 )}
               </span>
             )}
@@ -447,17 +446,17 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
         )}
         <span className="git-panel-spacer" />
         {(totals.insertions > 0 || totals.deletions > 0) && (
-          <Tooltip
+          <HoverHint
             label={`${totals.insertions} insertion${totals.insertions === 1 ? '' : 's'}, ${totals.deletions} deletion${totals.deletions === 1 ? '' : 's'} across all changes`}
-            placement="bottom"
+            side="bottom"
           >
             <span className="git-panel-total-changes">
               {totals.insertions > 0 && <span className="git-file-additions">+{totals.insertions}</span>}
               {totals.deletions > 0 && <span className="git-file-deletions">−{totals.deletions}</span>}
             </span>
-          </Tooltip>
+          </HoverHint>
         )}
-        <Tooltip label={loading ? 'Refreshing…' : 'Refresh'} placement="bottom">
+        <HoverHint label={loading ? 'Refreshing…' : 'Refresh'} side="bottom">
           <button
             className="git-panel-icon-btn"
             onClick={onRefresh}
@@ -466,10 +465,10 @@ export const GitPanel = memo(function GitPanel({ sessionId, cwd, status, loading
           >
             {loading ? <IconLoader size={14} className="git-panel-spin" /> : <IconRefresh size={14} />}
           </button>
-        </Tooltip>
-        <Tooltip label="Close" placement="bottom">
+        </HoverHint>
+        <HoverHint label="Close" side="bottom">
           <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
-        </Tooltip>
+        </HoverHint>
       </header>
 
       {totalFiles > 0 && (
@@ -840,16 +839,16 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
       staged={staged}
       actions={(
         <>
-          <Tooltip label="View file content" placement="left">
+          <HoverHint label="View file content" side="left">
             <button
               type="button"
               className="git-action-btn"
               aria-label="View file content"
               onClick={(e) => { e.stopPropagation(); onOpenFile(file.path) }}
             ><IconSearch size={13} /></button>
-          </Tooltip>
+          </HoverHint>
           {staged ? (
-            <Tooltip label="Unstage" placement="left">
+            <HoverHint label="Unstage" side="left">
               <button
                 type="button"
                 className="git-action-btn"
@@ -859,10 +858,10 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
                   try { await writeOps.unstage([file.path]) } catch (e) { onError('Unstage', (e as Error).message) }
                 }}
               >−</button>
-            </Tooltip>
+            </HoverHint>
           ) : (
             <>
-              <Tooltip label="Stage" placement="left">
+              <HoverHint label="Stage" side="left">
                 <button
                   type="button"
                   className="git-action-btn"
@@ -872,8 +871,8 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
                     try { await writeOps.stage([file.path]) } catch (e) { onError('Stage', (e as Error).message) }
                   }}
                 >+</button>
-              </Tooltip>
-              <Tooltip label="Discard changes" placement="left">
+              </HoverHint>
+              <HoverHint label="Discard changes" side="left">
                 <button
                   type="button"
                   className="git-action-btn danger"
@@ -896,7 +895,7 @@ const FileRow = memo(function FileRow({ file, cwd, staged, selected, selectIndex
                 >
                   <IconRotateCcw size={12} />
                 </button>
-              </Tooltip>
+              </HoverHint>
             </>
           )}
         </>
@@ -935,22 +934,24 @@ function UntrackedRow({ file, selected, selectIndex, onSelect, writeOps, onError
   return (
     <div className={`git-file-row untracked ${selected ? 'selected' : ''}`}>
       <div className="git-file-row-line" onClick={() => onSelect(selectIndex)}>
-        <span className="git-file-row-toggle untracked-static" title={file.path}>
-          <span className="git-file-status status-?" title={gitStatusTitle('?')}>?</span>
-          <span className="git-file-path">
-            {file.path}
+        <HoverHint label={`Untracked file · ${file.path}`} side="bottom" align="start">
+          <span className="git-file-row-toggle untracked-static">
+            <span className="git-file-status status-?">?</span>
+            <span className="git-file-path">
+              {file.path}
+            </span>
           </span>
-        </span>
+        </HoverHint>
         <div className="git-file-actions">
-          <Tooltip label="View file content" placement="left">
+          <HoverHint label="View file content" side="left">
             <button
               type="button"
               className="git-action-btn"
               aria-label="View file content"
               onClick={(e) => { e.stopPropagation(); onOpenFile(file.path) }}
             ><IconSearch size={13} /></button>
-          </Tooltip>
-          <Tooltip label="Stage" placement="left">
+          </HoverHint>
+          <HoverHint label="Stage" side="left">
             <button
               type="button"
               className="git-action-btn"
@@ -960,8 +961,8 @@ function UntrackedRow({ file, selected, selectIndex, onSelect, writeOps, onError
                 try { await writeOps.stage([file.path]) } catch (e) { onError('Stage', (e as Error).message) }
               }}
             >+</button>
-          </Tooltip>
-          <Tooltip label="Delete from disk" placement="left">
+          </HoverHint>
+          <HoverHint label="Delete from disk" side="left">
           <button
             type="button"
             className="git-action-btn danger"
@@ -985,7 +986,7 @@ function UntrackedRow({ file, selected, selectIndex, onSelect, writeOps, onError
               )
             }
           ><IconX size={14} /></button>
-          </Tooltip>
+          </HoverHint>
         </div>
       </div>
     </div>
@@ -1073,19 +1074,23 @@ function CommitBar({
         }}
       />
       <div className="git-commit-actions">
-        <button
-          type="button"
-          className="btn"
-          disabled={generateBusy || busy || !hasStaged}
-          onClick={(e) => { e.preventDefault(); void doGenerate() }}
-          title={
+        <HoverHint
+          label={
             hasStaged
               ? 'Generate a Conventional Commit message from the staged diff'
               : 'Stage some changes first to generate a commit message'
           }
+          side="top"
         >
-          {generateBusy ? '…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconSparkles size={12} /> Generate</span>}
-        </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={generateBusy || busy || !hasStaged}
+            onClick={(e) => { e.preventDefault(); void doGenerate() }}
+          >
+            {generateBusy ? '…' : <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><IconSparkles size={12} /> Generate</span>}
+          </button>
+        </HoverHint>
         {canAmend && (
           <button
             type="button"
@@ -1263,10 +1268,10 @@ function BranchesSection({ cwd, sessionId, currentBranch, writeOps, onError, ask
           const isCurrent = b.name === currentBranch
           const busy = writeOps.busyOps.has(`checkout:${b.name}`)
           return (
-            <Tooltip
+            <HoverHint
               key={b.name}
               label={b.upstream ? `tracks ${b.upstream}` : 'no upstream'}
-              placement="top"
+              side="top"
             >
               <button
                 type="button"
@@ -1278,7 +1283,7 @@ function BranchesSection({ cwd, sessionId, currentBranch, writeOps, onError, ask
                 <span className="git-branch-name">{b.name}</span>
                 {b.upstream && <span className="git-branch-upstream">→ {b.upstream}</span>}
               </button>
-            </Tooltip>
+            </HoverHint>
           )
         })}
       </div>
@@ -1341,7 +1346,7 @@ function StashesSection({ cwd, sessionId, writeOps, onError, askConfirm }: Stash
               <code className="git-stash-ref">{s.ref}</code>
               <span className="git-stash-message">{s.message}</span>
               <div className="git-stash-actions">
-                <Tooltip label="Pop (apply and remove)" placement="left">
+                <HoverHint label="Pop (apply and remove)" side="left">
                   <button
                     className="git-action-btn"
                     disabled={popBusy || dropBusy}
@@ -1351,8 +1356,8 @@ function StashesSection({ cwd, sessionId, writeOps, onError, askConfirm }: Stash
                     }}
                     aria-label="Pop stash"
                   >pop</button>
-                </Tooltip>
-                <Tooltip label="Drop (delete)" placement="left">
+                </HoverHint>
+                <HoverHint label="Drop (delete)" side="left">
                   <button
                     className="git-action-btn danger"
                     disabled={popBusy || dropBusy}
@@ -1375,7 +1380,7 @@ function StashesSection({ cwd, sessionId, writeOps, onError, askConfirm }: Stash
                     }
                     aria-label="Drop stash"
                   >drop</button>
-                </Tooltip>
+                </HoverHint>
               </div>
             </div>
           )

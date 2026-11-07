@@ -14,7 +14,6 @@ import { usePresenceValue } from '../../hooks/useExitPresence'
 import { statusLabel, tabDotStatus } from '../../utils/session-status'
 import { cx } from '../../utils/cx'
 import type { SessionInfo } from '../../types'
-import { Tooltip } from '../Tooltip'
 import { HoverPopover } from '../HoverPopover'
 import { SessionHoverContent } from './SessionHoverContent'
 import { PermissionModeIcon, permissionModeLabel } from '../permission-mode-display'
@@ -217,29 +216,17 @@ export const SessionCard = memo(function SessionCard({
               // mixes tool-permission requests and AskUserQuestion questions, so
               // "awaiting your response" reads correctly for both).
               isOpen ? (
-                <Tooltip
-                  label={
-                    (isFocused
-                      ? `Focused (slot ${slotIdx + 1}) · Ctrl+${slotIdx + 1} to refocus`
-                      : `Open in slot ${slotIdx + 1} · Ctrl+${slotIdx + 1} to focus`)
+                <span
+                  className={`session-item-slot${slotMods}${slotIn ? ' slot-in' : ''}`}
+                  aria-label={
+                    (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
                     + (pendingCount > 0
-                      ? ` · ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
+                      ? `, ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
                       : '')
                   }
-                  placement="right"
                 >
-                  <span
-                    className={`session-item-slot${slotMods}${slotIn ? ' slot-in' : ''}`}
-                    aria-label={
-                      (isFocused ? `focused slot ${slotIdx + 1}` : `open slot ${slotIdx + 1}`)
-                      + (pendingCount > 0
-                        ? `, ${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`
-                        : '')
-                    }
-                  >
-                    {slotIdx + 1}
-                  </span>
-                </Tooltip>
+                  {slotIdx + 1}
+                </span>
               ) : (
                 // Closing: keep the slot number mounted (usePresenceValue retains
                 // it) for the exit cycle so it contracts (`.slot-out`) and pulls
@@ -253,27 +240,20 @@ export const SessionCard = memo(function SessionCard({
               // Closed session has no slot badge to carry a pending signal, so
               // keep the standalone count badge as the attention cue.
               pendingCount > 0 && (
-                <Tooltip
-                  label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
-                  placement="right"
+                <span
+                  className="session-item-perm-badge"
+                  aria-label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
                 >
-                  <span
-                    className="session-item-perm-badge"
-                    aria-label={`${pendingCount} request${pendingCount === 1 ? '' : 's'} awaiting your response`}
-                  >
-                    {pendingCount > 9 ? '9+' : pendingCount}
-                  </span>
-                </Tooltip>
+                  {pendingCount > 9 ? '9+' : pendingCount}
+                </span>
               )
             )}
-            <Tooltip label={permissionModeLabel(permissionMode)} placement="right">
-              <span
-                className={`session-item-mode-badge mode-${permissionMode}`}
-                aria-label={`Permission mode: ${permissionModeLabel(permissionMode)}`}
-              >
-                <PermissionModeIcon mode={permissionMode} size={12} />
-              </span>
-            </Tooltip>
+            <span
+              className={`session-item-mode-badge mode-${permissionMode}`}
+              aria-label={`Permission mode: ${permissionModeLabel(permissionMode)}`}
+            >
+              <PermissionModeIcon mode={permissionMode} size={12} />
+            </span>
             <span
               onDoubleClick={(e) => {
                 e.stopPropagation()
@@ -300,7 +280,11 @@ export const SessionCard = memo(function SessionCard({
         disabled={isRenaming || isDragging || isDeleting}
         closeKey={focusKey}
       >
-        <SessionHoverContent session={s} statusText={isResuming ? 'Resuming…' : undefined} />
+        <SessionHoverContent
+          session={s}
+          statusText={isResuming ? 'Resuming…' : undefined}
+          slot={isOpen ? { index: slotIdx + 1, focused: isFocused } : null}
+        />
       </HoverPopover>
     </>
   )

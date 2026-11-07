@@ -13,6 +13,7 @@ describe('hover popover sizing', () => {
     expect(rule!.decls['min-width']).toBeUndefined()
     expect(rule!.decls['width']).toBe('max-content')
     expect(rule!.decls['max-width']).toBe('320px')
+    expect(rule!.decls['overflow-wrap']).toBe('anywhere')
   })
 
   it('has one value-pill class shared by every hover card', () => {

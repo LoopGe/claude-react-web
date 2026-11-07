@@ -4827,6 +4827,20 @@ describe('system error divider', () => {
     vi.useRealTimers()
   })
 
+  /** Hover a divider long enough for HoverHint's dwell and return the card text. */
+  function hoverText(el: Element): string {
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerEnter(el)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      return document.querySelector('.hover-pop')?.textContent ?? ''
+    } finally {
+      vi.useRealTimers()
+    }
+  }
+
   it('renders a 429 system error as a red error divider with canned rate-limit copy', () => {
     const items = toItems([
       makeMsg('system', {
@@ -4875,8 +4889,9 @@ describe('system error divider', () => {
     expect(meta?.textContent).toContain('resend')
     expect(meta?.textContent).not.toContain('mid-response')
 
-    // Raw SDK text preserved in the title tooltip for debugging.
-    expect(divider?.getAttribute('title')).toBe(raw)
+    // Raw SDK text preserved in the hover card for debugging.
+    expect(divider?.getAttribute('title')).toBeNull()
+    expect(hoverText(divider!)).toContain('Connection closed mid-response')
   })
 
   it('renders a live-stream API error (no isApiErrorMessage flag, error=server_error) as an interrupted divider', () => {
@@ -4898,7 +4913,8 @@ describe('system error divider', () => {
     expect(container.querySelector('.msg.assistant')).toBeNull()
     // The server_error header label must NOT leak through.
     expect(container.textContent).not.toContain('server_error')
-    expect(divider?.getAttribute('title')).toBe(raw)
+    expect(divider?.getAttribute('title')).toBeNull()
+    expect(hoverText(divider!)).toContain('Connection closed mid-response')
   })
 
   it('does NOT mis-render a normal assistant reply that merely quotes "connection closed mid-response"', () => {
@@ -4941,10 +4957,11 @@ describe('system error divider', () => {
     expect(mark?.textContent).toContain('error')
 
     // Meta carries the raw text (may be ellipsis-truncated in the DOM, but
-    // textContent holds the full string); title holds it verbatim too.
+    // textContent holds the full string); the hover card holds it verbatim too.
     const meta = divider?.querySelector('.result-meta')
     expect(meta?.textContent).toContain('API error 500')
-    expect(divider?.getAttribute('title')).toBe(raw)
+    expect(divider?.getAttribute('title')).toBeNull()
+    expect(hoverText(divider!)).toContain('API error 500')
   })
 
   it('falls back to "unknown error" when msg.error is missing', () => {

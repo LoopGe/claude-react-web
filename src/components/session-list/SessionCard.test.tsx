@@ -120,9 +120,12 @@ describe('SessionCard single-line layout', () => {
       expect(hover?.textContent).toContain('sonnet-4')
       expect(hover?.textContent).toContain('5 msgs')
       expect(hover?.textContent).toContain('1 viewer')
-      // Each meta value is a pill (model · messages · viewers).
-      expect(hover?.querySelectorAll('.hover-pop-value')).toHaveLength(3)
+      // Each meta value plus the permission mode is a pill (model · messages ·
+      // viewers · mode).
+      expect(hover?.querySelectorAll('.hover-pop-value')).toHaveLength(4)
       expect(hover?.textContent).toContain('Live')
+      // The badge hints folded into the card (no nested Tooltip bubbles).
+      expect(hover?.textContent).toContain('Permission mode: Default (ask)')
       // The row itself no longer carries the native title.
       expect(container.querySelector('.session-item-title > span[title]')).toBeNull()
     } finally {
@@ -141,6 +144,29 @@ describe('SessionCard single-line layout', () => {
       expect(document.querySelector('.hover-pop')).not.toBeNull()
       rerender(<SessionCard {...baseProps} focusKey="s2" />)
       expect(document.querySelector('.hover-pop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the open slot and pending requests in the hover card', () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(
+        <SessionCard
+          {...baseProps}
+          isOpen
+          slotIdx={1}
+          session={makeSession({ pendingPermissionCount: 2 })}
+        />,
+      )
+      fireEvent.pointerEnter(container.querySelector('.session-item')!)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      const hover = document.querySelector<HTMLElement>('.hover-pop')
+      expect(hover?.textContent).toContain('Slot 2 · open')
+      expect(hover?.textContent).toContain('2 requests awaiting your response')
     } finally {
       vi.useRealTimers()
     }

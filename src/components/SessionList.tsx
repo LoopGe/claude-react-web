@@ -19,6 +19,7 @@ import { buildGroupContextMenuItems } from './session-list/groupMenuItems'
 import { SessionCard } from './session-list/SessionCard'
 import { DialogHosts } from './DialogHosts'
 import { HoverHint } from './HoverHint'
+import { HoverValue } from './HoverPopover'
 import { useDialogHosts } from '../hooks/useDialogHosts'
 import { ContextMenu } from './ContextMenu'
 import type { SessionDeleteHandler } from './session-delete-menu'
@@ -647,15 +648,16 @@ export const SessionList = memo(function SessionList({
             tabIndex={sessions.length > 3 || filter ? 0 : -1}
           />
           {filter && (
-            <button
-              type="button"
-              className="session-filter-clear"
-              onClick={() => setFilter('')}
-              aria-label="Clear filter"
-              title="Clear"
-            >
-              <IconX size={12} />
-            </button>
+            <HoverHint label="Clear" side="bottom" align="end">
+              <button
+                type="button"
+                className="session-filter-clear"
+                onClick={() => setFilter('')}
+                aria-label="Clear filter"
+              >
+                <IconX size={12} />
+              </button>
+            </HoverHint>
           )}
         </div>
         {/* Group pills — horizontal row of clickable group chips. These are a
@@ -752,14 +754,15 @@ export const SessionList = memo(function SessionList({
               }}
             />
           ) : (
-            <button
-              type="button"
-              className="group-pill group-pill-new"
-              onClick={() => setShowNewGroupInput(true)}
-              title="Create a new session group"
-            >
-              + Group
-            </button>
+            <HoverHint label="Create a new session group" side="bottom" align="start">
+              <button
+                type="button"
+                className="group-pill group-pill-new"
+                onClick={() => setShowNewGroupInput(true)}
+              >
+                + Group
+              </button>
+            </HoverHint>
           )}
         </div>
       </div>
@@ -795,16 +798,43 @@ export const SessionList = memo(function SessionList({
               let groupUnread = 0
               let groupPending = 0
               let groupWaiting = 0
-              if (collapsed) {
-                for (const s of sec.sessions) {
-                  if (unread?.[s.id]) groupUnread += 1
-                  groupPending += s.pendingPermissionCount ?? 0
-                  // Waiting mirrors the per-card status dot: the parent turn
-                  // finished but background (async) subagents are still running.
-                  // Shared isWaiting() keeps this in lockstep with the card.
-                  if (isWaiting(s)) groupWaiting += 1
-                }
+              // Computed even when expanded: the hover card and the collapsed
+              // badges share one source (the badges only render while collapsed).
+              for (const s of sec.sessions) {
+                if (unread?.[s.id]) groupUnread += 1
+                groupPending += s.pendingPermissionCount ?? 0
+                // Waiting mirrors the per-card status dot: the parent turn
+                // finished but background (async) subagents are still running.
+                // Shared isWaiting() keeps this in lockstep with the card.
+                if (isWaiting(s)) groupWaiting += 1
               }
+              const groupHover = (
+                <div className="hover-pop-stack">
+                  <div>
+                    {isMobile
+                      ? `${collapsed ? 'Expand' : 'Collapse'} ${sec.group.name}`
+                      : `Activate ${sec.group.name}`}
+                  </div>
+                  <div>
+                    <HoverValue>{sec.sessions.length}</HoverValue> session{sec.sessions.length === 1 ? '' : 's'}
+                  </div>
+                  {groupPending > 0 && (
+                    <div>
+                      <HoverValue>{groupPending}</HoverValue> pending permission{groupPending === 1 ? '' : 's'}
+                    </div>
+                  )}
+                  {groupWaiting > 0 && (
+                    <div>
+                      <HoverValue>{groupWaiting}</HoverValue> session{groupWaiting === 1 ? '' : 's'} waiting for background subagents
+                    </div>
+                  )}
+                  {groupUnread > 0 && (
+                    <div>
+                      <HoverValue>{groupUnread}</HoverValue> unread update{groupUnread === 1 ? '' : 's'}
+                    </div>
+                  )}
+                </div>
+              )
               const groupBodyId = `group-body-${sec.group.id}`
               return (
                 // The whole section is the sortable node (live-displaces when
@@ -837,11 +867,7 @@ export const SessionList = memo(function SessionList({
                   {({ isDragging: groupDragging, isOverDrop, setActivatorNodeRef, listeners }) => (
                     <>
                   <HoverHint
-                    label={
-                      isMobile
-                        ? `${collapsed ? 'Expand' : 'Collapse'} ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
-                        : `Activate ${sec.group.name} · ${sec.sessions.length} session${sec.sessions.length === 1 ? '' : 's'}`
-                    }
+                    label={groupHover}
                     side="right"
                     align="start"
                   >
@@ -904,7 +930,6 @@ export const SessionList = memo(function SessionList({
                     {collapsed && groupPending > 0 && (
                       <span
                         className="group-header-badge group-header-badge-pending"
-                        title={`${groupPending} pending permission${groupPending === 1 ? '' : 's'} inside ${sec.group.name}`}
                         aria-label={`${groupPending} pending permission${groupPending === 1 ? '' : 's'}`}
                       >
                         {groupPending}
@@ -913,7 +938,6 @@ export const SessionList = memo(function SessionList({
                     {collapsed && groupWaiting > 0 && (
                       <span
                         className="group-header-badge group-header-badge-waiting"
-                        title={`${groupWaiting} session${groupWaiting === 1 ? '' : 's'} waiting for background subagents`}
                         aria-label={`${groupWaiting} waiting for background subagents`}
                       >
                         {groupWaiting}
@@ -922,7 +946,6 @@ export const SessionList = memo(function SessionList({
                     {collapsed && groupUnread > 0 && (
                       <span
                         className="group-header-badge group-header-badge-unread"
-                        title={`${groupUnread} session${groupUnread === 1 ? ' has' : 's have'} unread updates`}
                         aria-label={`${groupUnread} unread`}
                       >
                         {groupUnread}

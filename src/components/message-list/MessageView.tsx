@@ -23,6 +23,7 @@ import { useResultConsumed } from './result-consumed-context'
 import { blockRendersContent, willRenderEmpty } from './rendering'
 import { splitUserBlocks } from '../../utils/file-blocks'
 import { UserFileAttachments } from './UserFileAttachments'
+import { HoverHint } from '../HoverHint'
 import { FoldableBody } from './FoldableBody'
 import { userBodyFoldKey } from './fold-key'
 import {
@@ -410,54 +411,68 @@ export const MessageView = memo(function MessageView({
           <span><IconUser size={12} /> you</span>
           <MessageTimestamp ms={msg.receivedAt} />
           {sending && (
-            <span
-              className="msg-sending-indicator"
-              title="Sending - waiting for the server to acknowledge"
-              aria-label="Sending"
-            >
-              <span className="msg-sending-spinner" aria-hidden />
-              <span className="msg-sending-label">sending</span>
-            </span>
+            <HoverHint label="Sending - waiting for the server to acknowledge" side="top">
+              <span
+                className="msg-sending-indicator"
+                aria-label="Sending"
+              >
+                <span className="msg-sending-spinner" aria-hidden />
+                <span className="msg-sending-label">sending</span>
+              </span>
+            </HoverHint>
           )}
           {showQueued && (
-            <span
-              className="msg-queued-indicator"
-              title="Queued - the assistant is finishing the current turn; this message will be picked up next"
-              aria-label="Queued, waiting for the current turn to finish"
+            <HoverHint
+              label="Queued - the assistant is finishing the current turn; this message will be picked up next"
+              side="top"
             >
-              <span className="msg-queued-dot" aria-hidden />
-              <span className="msg-queued-label">queued</span>
-            </span>
+              <span
+                className="msg-queued-indicator"
+                aria-label="Queued, waiting for the current turn to finish"
+              >
+                <span className="msg-queued-dot" aria-hidden />
+                <span className="msg-queued-label">queued</span>
+              </span>
+            </HoverHint>
           )}
           {showInjectingChip && (
-            <span
-              className="msg-queued-indicator msg-steered-indicator"
-              title="Injecting - this message will be delivered into the current turn at the next tool boundary"
-              aria-label="Injecting into the current turn"
+            <HoverHint
+              label="Injecting - this message will be delivered into the current turn at the next tool boundary"
+              side="top"
             >
-              <span className="msg-queued-dot" aria-hidden />
-              <span className="msg-queued-label">injecting</span>
-            </span>
+              <span
+                className="msg-queued-indicator msg-steered-indicator"
+                aria-label="Injecting into the current turn"
+              >
+                <span className="msg-queued-dot" aria-hidden />
+                <span className="msg-queued-label">injecting</span>
+              </span>
+            </HoverHint>
           )}
           {showInjectedChip && (
-            <span
-              className="msg-queued-indicator msg-steered-indicator"
-              title="Injected - this message was delivered into the turn that was running when it was sent"
-              aria-label="Injected into the current turn"
+            <HoverHint
+              label="Injected - this message was delivered into the turn that was running when it was sent"
+              side="top"
             >
-              <span className="msg-queued-dot" aria-hidden />
-              <span className="msg-queued-label">injected</span>
-            </span>
+              <span
+                className="msg-queued-indicator msg-steered-indicator"
+                aria-label="Injected into the current turn"
+              >
+                <span className="msg-queued-dot" aria-hidden />
+                <span className="msg-queued-label">injected</span>
+              </span>
+            </HoverHint>
           )}
           {showProcessing && (
-            <span
-              className="msg-processing-indicator"
-              title="Processing - the model is working on this message"
-              aria-label="Processing"
-            >
-              <span className="msg-processing-dot" aria-hidden />
-              <span className="msg-processing-label">processing</span>
-            </span>
+            <HoverHint label="Processing - the model is working on this message" side="top">
+              <span
+                className="msg-processing-indicator"
+                aria-label="Processing"
+              >
+                <span className="msg-processing-dot" aria-hidden />
+                <span className="msg-processing-label">processing</span>
+              </span>
+            </HoverHint>
           )}
         </div>
         )}
@@ -531,14 +546,15 @@ export const MessageView = memo(function MessageView({
         /connection closed mid-response/i.test(apiErrText)
       if (isDisconnected) {
         return (
-          <div
-            className="msg result interrupted"
-            title={apiErrText}
-            aria-label="connection interrupted"
-          >
-            <span className="result-mark" aria-hidden="true">!</span>
-            <span className="result-meta">connection interrupted · reply may be incomplete, resend to continue</span>
-          </div>
+          <HoverHint label={apiErrText} side="top" disabled={!apiErrText}>
+            <div
+              className="msg result interrupted"
+              aria-label="connection interrupted"
+            >
+              <span className="result-mark" aria-hidden="true">!</span>
+              <span className="result-meta">connection interrupted · reply may be incomplete, resend to continue</span>
+            </div>
+          </HoverHint>
         )
       }
     }
@@ -601,9 +617,11 @@ export const MessageView = memo(function MessageView({
                   <span>{isSubagent ? 'subagent' : 'assistant'}</span>
                   <MessageTimestamp ms={msg.receivedAt} />
                   {msg.error && !modelNotFound && (
-                    <span className="msg-header-error" title={msg.error as string}>
-                      {ASSISTANT_ERROR_LABELS[msg.error as string] ?? (msg.error as string)}
-                    </span>
+                    <HoverHint label={msg.error as string} side="top">
+                      <span className="msg-header-error">
+                        {ASSISTANT_ERROR_LABELS[msg.error as string] ?? (msg.error as string)}
+                      </span>
+                    </HoverHint>
                   )}
                 </div>
               )}
@@ -632,9 +650,11 @@ export const MessageView = memo(function MessageView({
           <span>{isSubagent ? 'subagent' : 'assistant'}</span>
           <MessageTimestamp ms={msg.receivedAt} />
           {msg.error && !modelNotFound && (
-            <span className="msg-header-error" title={msg.error as string}>
-              {ASSISTANT_ERROR_LABELS[msg.error as string] ?? (msg.error as string)}
-            </span>
+            <HoverHint label={msg.error as string} side="top">
+              <span className="msg-header-error">
+                {ASSISTANT_ERROR_LABELS[msg.error as string] ?? (msg.error as string)}
+              </span>
+            </HoverHint>
           )}
         </div>
         )}
@@ -728,9 +748,11 @@ export const MessageView = memo(function MessageView({
           <span className="result-mark" aria-hidden="true">{isInterrupted ? '!' : 'ok'}</span>
           {meta && <span className="result-meta">{meta}</span>}
           {startupReason && (
-            <span className="result-meta" title={startupReason}>
-              startup failed: {STARTUP_FAILURE_LABELS[startupReason] ?? startupReason}
-            </span>
+            <HoverHint label={startupReason} side="top">
+              <span className="result-meta">
+                startup failed: {STARTUP_FAILURE_LABELS[startupReason] ?? startupReason}
+              </span>
+            </HoverHint>
           )}
         </div>
         <TurnChangesCard sessionId={sessionId} resultUuid={String(msg.uuid ?? '')} />
@@ -744,10 +766,12 @@ export const MessageView = memo(function MessageView({
       return <RateLimitErrorDivider title="too many requests — message saved, send again" />
     }
     return (
-      <div className="msg result error" title={raw} aria-label="system error">
-        <span className="result-mark" aria-hidden="true">✕ error</span>
-        <span className="result-meta">{raw}</span>
-      </div>
+      <HoverHint label={raw} side="top">
+        <div className="msg result error" aria-label="system error">
+          <span className="result-mark" aria-hidden="true">✕ error</span>
+          <span className="result-meta">{raw}</span>
+        </div>
+      </HoverHint>
     )
   }
 

@@ -48,6 +48,11 @@ export interface AnchorPositionOptions {
    *  deliberately does not (pinned by its offscreen test); new surfaces want
    *  the clamp. Default false. */
   clampAfterFlip?: boolean
+  /** False while the surface is not mounted. HoverPopover portals only on
+   *  open, and a dense list can mount hundreds of closed hints; skipping the
+   *  listener/observer setup then keeps scroll cost at zero for them.
+   *  Default true. */
+  active?: boolean
 }
 
 export interface AnchorPositionResult {
@@ -115,7 +120,7 @@ function sameRect(a: DOMRect | null, b: DOMRect | null): boolean {
  */
 export function useAnchorPosition(
   triggerRef: RefObject<HTMLElement | null>,
-  { side, align, gap = 6, margin = 8, fallbackRect = null, clampAfterFlip = false }: AnchorPositionOptions,
+  { side, align, gap = 6, margin = 8, fallbackRect = null, clampAfterFlip = false, active = true }: AnchorPositionOptions,
 ): AnchorPositionResult {
   const ref = useRef<HTMLDivElement | null>(null)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
@@ -125,6 +130,7 @@ export function useAnchorPosition(
   const measureRef = useRef<() => void>(() => {})
 
   useLayoutEffect(() => {
+    if (!active) return
     // Define the measurer even when the surface has not mounted yet:
     // HoverPopover portals only while open, and calls remeasure() after that
     // mount. The mount-time pass here is a no-op; the caller's is not.
@@ -207,7 +213,7 @@ export function useAnchorPosition(
       window.removeEventListener('scroll', measure, true)
       ro?.disconnect()
     }
-  }, [triggerRef, side, align, gap, margin, fallbackRect, clampAfterFlip])
+  }, [active, triggerRef, side, align, gap, margin, fallbackRect, clampAfterFlip])
 
   const remeasure = useCallback(() => measureRef.current(), [])
 

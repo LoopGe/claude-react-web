@@ -19,4 +19,15 @@ describe('chat panel header row 2 alignment', () => {
     expect(rule, 'the direct-child git badge rule must exist').toBeTruthy()
     expect(rule!.decls['margin-left']).toBe('auto')
   })
+
+  it('keeps the panel title shrinkable as the direct flex item', () => {
+    const title = parseBlocks(readCss('layout.css'))
+      .filter((b) => b.sel === '.chat-panel-title')
+      .pop()
+    expect(title, '.chat-panel-title must exist').toBeTruthy()
+    expect(title!.decls['min-width']).toBe('0')
+    expect(title!.decls['flex-shrink']).toBe('1')
+    // The Tooltip wrapper is gone; its flex-item workaround must not linger.
+    expect(readCss('layout.css')).not.toContain('.tt-wrap:has(> .chat-panel-title)')
+  })
 })

@@ -1103,25 +1103,9 @@
 .session-item-slot.slot-out {
   animation: session-slot-out var(--motion-duration-base) var(--motion-ease-exit) both;
   overflow: hidden;
-  /* The exit clone is a bare span — the open pill lives inside a Tooltip
-     `.tt-wrap` that forces `vertical-align: top`. Match that alignment so the
-     transient 18px clone doesn't grow the title line box (row-height bump)
-     while it's on screen. */
-  vertical-align: top;
-}
-/* Numeric badges in the title row are wrapped in a Tooltip `.tt-wrap`
-   (inline-flex, default baseline). A badge's 10px digit gives that
-   wrapper a low baseline, so baseline alignment pushes the pill below
-   the 14px title line box (~18.3px) and makes the card taller when the
-   badge appears (open cards ~2px, pending-permission cards ~1.7px).
-   Aligning the wrapper to the line-box top keeps the pill inside the
-   line height (16–18px < 18.3px), so card height is identical whether
-   or not the badge is present. The mode badge is left at baseline — its
-   SVG-derived baseline already sits inside the line box. Uses :has() to
-   touch only these two numeric wrappers, matching the existing
-   `.tt-wrap:has(...)` pattern elsewhere in the app. */
-.session-item-title > .tt-wrap:has(> .session-item-slot, > .session-item-perm-badge) {
-  vertical-align: top;
+  /* Match the open pill's alignment: both are bare spans now (the Tooltip
+     wrapper is gone), so a top-aligned clone would jump ~1.8px mid-exit. */
+  vertical-align: middle;
 }
 /* Unread cards brighten their title via this rule. */
 .session-item.unread strong { color: var(--fg); }
@@ -1138,7 +1122,7 @@
   height: var(--size-18px);
   padding: 0 var(--space-1);
   /* Rounded-square family shared with .session-item-slot (the other numeric
-     title-row badge it aligns with via `.session-item-title > .tt-wrap:has(…)`). */
+     title-row badge); both are middle-aligned bare spans. */
   border-radius: var(--radius-xs);
   background: var(--warn);
   color: var(--bg);

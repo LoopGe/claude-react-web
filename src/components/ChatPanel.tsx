@@ -14,7 +14,6 @@ import { ContextMenu } from './ContextMenu'
 import type { SessionDeleteHandler } from './session-delete-menu'
 import { DialogHosts } from './DialogHosts'
 import { WorktreeIsolationBadge } from './WorktreeIsolationBadge'
-import { Tooltip } from './Tooltip'
 import { HoverHint } from './HoverHint'
 import { ChatPanelGitChip } from './ChatPanelGitChip'
 import { ChatPanelWorktreeChip } from './ChatPanelWorktreeChip'
@@ -981,36 +980,35 @@ export const ChatPanel = memo(function ChatPanel({
         {...(isMobile ? {} : pointerOnlyListeners(panelDrag.listeners))}
       >
         <div className="chat-panel-header-row1">
-        <Tooltip label={`Slot ${slot} · Ctrl/Cmd+${slot} to focus`} placement="bottom" align="start">
+        <HoverHint label={`Slot ${slot} · Ctrl/Cmd+${slot} to focus`} side="bottom" align="start">
           <span
             className={`chat-panel-slot ${focused ? 'focused' : ''} ${showSlotHints ? 'key-hint' : ''}`}
             aria-label={`slot ${slot}`}
           >
             {slot}
           </span>
-        </Tooltip>
+        </HoverHint>
         {hasUnread && !focused && (
-          <Tooltip label="New turn completed while this panel wasn't focused" placement="bottom" align="start">
+          <HoverHint label="New turn completed while this panel wasn't focused" side="bottom" align="start">
             <span
               className="chat-panel-unread"
               role="img"
               aria-label="unread"
             />
-          </Tooltip>
+          </HoverHint>
         )}
-        <Tooltip
+        <HoverHint
           // Full session title first: the header truncates long titles, so
           // hover is the only way to read the whole name. The cwd follows.
-          // The bubble wraps within max-width, so a long title stays inside.
           label={
             sessionTitleOrFallback(session)
             + (session.cwd ? ` · ${session.cwd}` : '')
           }
-          placement="bottom"
+          side="bottom"
           align="start"
         >
           <span className="chat-panel-title">{sessionTitleOrFallback(session)}</span>
-        </Tooltip>
+        </HoverHint>
         <div className="chat-panel-meta">
           <HoverHint
             label={

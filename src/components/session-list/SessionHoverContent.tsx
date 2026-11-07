@@ -8,17 +8,22 @@
 
 import { sessionHoverModel } from '../../utils/session-status'
 import { HoverValue } from '../HoverPopover'
+import { permissionModeLabel } from '../permission-mode-display'
 import type { SessionInfo } from '../../types'
 
 export function SessionHoverContent({
   session,
   statusText,
+  slot,
 }: {
   session: SessionInfo
   /** App-only state the SessionInfo does not carry (a resume in flight). */
   statusText?: string
+  /** The sidebar card's open-panel slot; omitted on header-tab surfaces. */
+  slot?: { index: number; focused: boolean } | null
 }) {
   const model = sessionHoverModel(session, statusText)
+  const pending = session.pendingPermissionCount ?? 0
   return (
     <div className="hover-pop-stack">
       <div className="hover-pop-status">{model.status}</div>
@@ -35,6 +40,20 @@ export function SessionHoverContent({
           </>
         )}
       </div>
+      {slot != null && (
+        <div>
+          Slot <HoverValue>{slot.index}</HoverValue> · {slot.focused ? 'focused' : 'open'}
+          {` · Ctrl+${slot.index} to ${slot.focused ? 'refocus' : 'focus'}`}
+        </div>
+      )}
+      <div>
+        Permission mode: <HoverValue>{permissionModeLabel(session.permissionMode ?? 'default')}</HoverValue>
+      </div>
+      {pending > 0 && (
+        <div>
+          <HoverValue>{pending}</HoverValue> request{pending === 1 ? '' : 's'} awaiting your response
+        </div>
+      )}
     </div>
   )
 }

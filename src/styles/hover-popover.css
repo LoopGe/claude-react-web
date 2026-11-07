@@ -25,6 +25,9 @@
   color: var(--fg);
   font-size: var(--fs-sm);
   line-height: 1.45;
+  /* Long unbroken tokens (Windows paths, URLs, minified names) must wrap
+     inside max-width: `anywhere` (not break-word) also lowers min-content. */
+  overflow-wrap: anywhere;
   pointer-events: none;
 }
 

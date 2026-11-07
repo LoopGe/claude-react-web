@@ -23,6 +23,7 @@ import { useToast } from '../hooks/useToast'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useCountUp } from '../hooks/useCountUp'
 import { ElapsedTimer } from './ElapsedTimer'
+import { HoverHint } from './HoverHint'
 import { formatElapsed } from '../utils/format'
 import type { TaskRecordUi } from '../types'
 import { isSubagentTask, isTerminalTaskStatus } from '../../shared/tasks.js'
@@ -124,12 +125,14 @@ export const TasksPanel = memo(function TasksPanel({
         <span className="tasks-panel-count">
           {animatedActive > 0 ? `${animatedActive} running` : 'idle'}
           {ambientActive > 0 && (
-            <span
-              className="tasks-panel-count-ambient"
-              title="Housekeeping tasks the CLI runs itself — listed here, excluded from activity counts"
+            <HoverHint
+              label="Housekeeping tasks the CLI runs itself — listed here, excluded from activity counts"
+              side="top"
             >
-              {` +${ambientActive} ambient`}
-            </span>
+              <span className="tasks-panel-count-ambient">
+                {` +${ambientActive} ambient`}
+              </span>
+            </HoverHint>
           )}
         </span>
         <span className="tasks-panel-spacer" />
@@ -210,13 +213,21 @@ const TaskRow = memo(function TaskRow({
       <span className="tasks-row-icon">
         <TaskStatusIcon status={task.status} />
       </span>
-      <span className="tasks-row-type" title={task.subagentType ?? task.workflowName ?? task.taskType}>
-        <TaskTypeIcon task={task} />
-      </span>
-      <span className="tasks-row-main">
-        <span className="tasks-row-desc" title={task.description}>
-          {task.description || task.taskId}
+      <HoverHint
+        label={task.subagentType ?? task.workflowName ?? task.taskType}
+        side="top"
+        disabled={!(task.subagentType ?? task.workflowName ?? task.taskType)}
+      >
+        <span className="tasks-row-type">
+          <TaskTypeIcon task={task} />
         </span>
+      </HoverHint>
+      <span className="tasks-row-main">
+        <HoverHint label={task.description} side="top" disabled={!task.description}>
+          <span className="tasks-row-desc">
+            {task.description || task.taskId}
+          </span>
+        </HoverHint>
         {(task.subagentType || task.workflowName || task.taskType) && (
           <span className="tasks-row-meta">
             {[task.subagentType ?? task.workflowName ?? task.taskType, task.isBackgrounded ? 'background' : null, task.skipTranscript || task.ambient ? 'ambient' : null, task.reason === 'worker_restart' ? 'worker restarted' : null]
@@ -226,12 +237,18 @@ const TaskRow = memo(function TaskRow({
         )}
         {task.progressSummary && <span className="tasks-row-summary">{task.progressSummary}</span>}
         {task.resourceLinks && task.resourceLinks.length > 0 && (
-          <span
-            className="tasks-row-summary"
-            title={task.resourceLinks.map((r) => r.uri).join('\n')}
+          <HoverHint
+            label={(
+              <div className="hover-pop-stack">
+                {task.resourceLinks.map((r) => <div key={r.uri}>{r.uri}</div>)}
+              </div>
+            )}
+            side="top"
           >
-            {task.resourceLinks.map((r) => r.title ?? r.name).join(', ')}
-          </span>
+            <span className="tasks-row-summary">
+              {task.resourceLinks.map((r) => r.title ?? r.name).join(', ')}
+            </span>
+          </HoverHint>
         )}
         {resultBody !== null && resultOpen && <TaskResultBlock result={resultBody} />}
       </span>
@@ -246,26 +263,28 @@ const TaskRow = memo(function TaskRow({
         </span>
       )}
       {openResource && (
-        <button
-          type="button"
-          className="tasks-row-open"
-          title={`Open preview: ${task.description || task.taskId}`}
-          aria-label="Open task preview"
-          onClick={() => openResource(sessionId, taskResource(sessionId, task.taskId))}
-        >
-          <IconEye size={12} />
-        </button>
+        <HoverHint label={`Open preview: ${task.description || task.taskId}`} side="top">
+          <button
+            type="button"
+            className="tasks-row-open"
+            aria-label="Open task preview"
+            onClick={() => openResource(sessionId, taskResource(sessionId, task.taskId))}
+          >
+            <IconEye size={12} />
+          </button>
+        </HoverHint>
       )}
       {canViewTranscript && onViewTranscript && (
-        <button
-          type="button"
-          className="tasks-row-view"
-          title={`View on-disk transcript: ${task.description || task.taskId}`}
-          aria-label="View subagent transcript"
-          onClick={() => onViewTranscript(task)}
-        >
-          <IconFileText size={12} />
-        </button>
+        <HoverHint label={`View on-disk transcript: ${task.description || task.taskId}`} side="top">
+          <button
+            type="button"
+            className="tasks-row-view"
+            aria-label="View subagent transcript"
+            onClick={() => onViewTranscript(task)}
+          >
+            <IconFileText size={12} />
+          </button>
+        </HoverHint>
       )}
       {resultBody !== null && (
         <button
@@ -278,15 +297,16 @@ const TaskRow = memo(function TaskRow({
         </button>
       )}
       {!terminal && (
-        <button
-          type="button"
-          className="tasks-row-stop"
-          disabled={stopping}
-          title={`Stop ${task.description || task.taskId}`}
-          onClick={() => onStop(task.taskId)}
-        >
-          {stopping ? <IconLoader size={12} className="tasks-row-spin" /> : <IconX size={12} />}
-        </button>
+        <HoverHint label={`Stop ${task.description || task.taskId}`} side="top">
+          <button
+            type="button"
+            className="tasks-row-stop"
+            disabled={stopping}
+            onClick={() => onStop(task.taskId)}
+          >
+            {stopping ? <IconLoader size={12} className="tasks-row-spin" /> : <IconX size={12} />}
+          </button>
+        </HoverHint>
       )}
     </div>
   )

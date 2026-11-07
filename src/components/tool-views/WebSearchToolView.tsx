@@ -3,6 +3,7 @@
 // Extracted from ToolUseBlock.tsx for modularity.
 
 import { ToolCard } from '../ToolCard'
+import { HoverHint } from '../HoverHint'
 import { IconSearch } from '../icons/ToolIcons'
 import { formatJson } from '../../utils/format'
 import type { ToolViewProps } from './shared'
@@ -29,14 +30,18 @@ export function WebSearchToolView({ input, toolUseId, searchQuery, activeMatchId
   const chips = (
     <>
       {allowed.length > 0 && (
-        <span className="tool-chip tool-chip-accent" title="Allowed domains">
-          only: {allowed.join(', ')}
-        </span>
+        <HoverHint label="Allowed domains" side="top">
+          <span className="tool-chip tool-chip-accent">
+            only: {allowed.join(', ')}
+          </span>
+        </HoverHint>
       )}
       {blocked.length > 0 && (
-        <span className="tool-chip" title="Blocked domains">
-          block: {blocked.join(', ')}
-        </span>
+        <HoverHint label="Blocked domains" side="top">
+          <span className="tool-chip">
+            block: {blocked.join(', ')}
+          </span>
+        </HoverHint>
       )}
     </>
   )

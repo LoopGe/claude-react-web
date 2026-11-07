@@ -84,6 +84,9 @@ export function HoverPopover({
     side,
     align,
     clampAfterFlip: true,
+    // Closed hints mount by the hundred in dense lists; only the open one
+    // should register scroll/resize observers.
+    active: open,
   })
 
   const openTimer = useRef<number | null>(null)
@@ -173,19 +176,8 @@ export function HoverPopover({
     }
   }, [armClose, armOpen, cancelClose, cancelOpen, disabled, ref, triggerRef])
 
-  // The portal mounts after `open` flips, so the hook's mount-time measure saw
-  // no element. Measure and observe the surface once it exists: live content
-  // (a session's status/error lines) can grow while the card is open, and the
-  // viewport clamp must follow the new height.
-  useLayoutEffect(() => {
-    if (!open) return
-    const el = ref.current
-    if (el === null) return
-    remeasure()
-    const ro = new ResizeObserver(() => remeasure())
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [open, ref, remeasure])
+  // The hook observes the surface while `active` (== open) and re-measures on
+  // content growth; nothing to attach here.
 
   // A dialog opened by keyboard focus must receive focus; a pointer hover must
   // not steal it from the page.

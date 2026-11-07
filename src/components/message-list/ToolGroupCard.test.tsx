@@ -450,12 +450,24 @@ describe('ToolGroupCard', () => {
     expect(
       Array.from(container.querySelectorAll('.tool-group-entry-target')).map((e) => e.textContent),
     ).toEqual(['MessageList.tsx', '\u201cuseWsHub\u201d'])
-    // Hover and AT see the same list as the eye. `title` sits on the whole
-    // toggle button (the full hovered title), the accessible name on it too.
-    expect(container.querySelector('.tool-group-toggle')?.getAttribute('title'))
-      .toContain('MessageList.tsx')
+    // Hover and AT see the same list as the eye. The full summary moved from the
+    // toggle's native `title` to the shared hover card; the accessible name
+    // still carries it directly.
+    expect(container.querySelector('.tool-group-toggle')?.getAttribute('title')).toBeNull()
     expect(container.querySelector('.tool-group-toggle')?.getAttribute('aria-label'))
       .toContain('\u201cuseWsHub\u201d')
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerEnter(container.querySelector('.tool-group-toggle')!)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      const pop = document.querySelector('.hover-pop')
+      expect(pop?.textContent).toContain('MessageList.tsx')
+      expect(pop?.textContent).toContain('useWsHub')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('folds repeat calls of one tool behind the first target', () => {
