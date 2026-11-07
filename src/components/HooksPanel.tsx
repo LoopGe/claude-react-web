@@ -13,6 +13,7 @@ import {
 import { AnimatedDetails } from './AnimatedCollapse'
 import { EmptyState } from './EmptyState'
 import { IconZap, IconClock } from './icons/ToolIcons'
+import { HoverHint } from './HoverHint'
 import { formatError } from '../utils/format-error'
 
 // ── Event categories ──────────────────────────────────────────────────
@@ -271,9 +272,11 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
                 <div className="hooks-config-head">
                   <span className="hooks-event-tag">{event}</span>
                   {matcher.matcher && (
-                    <span className="hooks-matcher" title={matcher.matcher}>
-                      {matcher.matcher}
-                    </span>
+                    <HoverHint label={matcher.matcher} side="bottom" align="start">
+                      <span className="hooks-matcher">
+                        {matcher.matcher}
+                      </span>
+                    </HoverHint>
                   )}
                   <span style={{ display: 'flex', gap: 3, flex: 1 }}>
                     {matcher.hooks.map((hook, hi) => (
@@ -281,14 +284,15 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
                     ))}
                   </span>
                   <div className="hooks-config-actions">
-                    <button
-                      className="btn btn-xs"
-                      onClick={() => removeMatcher(event, matcherIdx)}
-                      disabled={disabled || saving}
-                      title="Remove this matcher"
-                    >
-                      Remove
-                    </button>
+                    <HoverHint label="Remove this matcher" side="top">
+                      <button
+                        className="btn btn-xs"
+                        onClick={() => removeMatcher(event, matcherIdx)}
+                        disabled={disabled || saving}
+                      >
+                        Remove
+                      </button>
+                    </HoverHint>
                   </div>
                 </div>
                 <div className="hooks-config-detail">
@@ -379,17 +383,21 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
                     const config = parsedConfig ?? {}
                     const hasHooks = totalHookCount(config[event]) > 0
                     return (
-                      <button
+                      <HoverHint
                         key={event}
-                        type="button"
-                        className={`hooks-event-badge${hasHooks ? ' active' : ''}`}
-                        onClick={() => toggleEvent(event)}
-                        disabled={disabled || saving}
-                        aria-pressed={hasHooks}
-                        title={hasHooks ? `Click to remove ${event}` : `Click to add ${event}`}
+                        label={hasHooks ? `Click to remove ${event}` : `Click to add ${event}`}
+                        side="top"
                       >
-                        {event}
-                      </button>
+                        <button
+                          type="button"
+                          className={`hooks-event-badge${hasHooks ? ' active' : ''}`}
+                          onClick={() => toggleEvent(event)}
+                          disabled={disabled || saving}
+                          aria-pressed={hasHooks}
+                        >
+                          {event}
+                        </button>
+                      </HoverHint>
                     )
                   })}
                 </div>
@@ -465,9 +473,11 @@ export function HooksPanel({ session, disabled, onSessionUpdate }: Props) {
                 </pre>
               )}
               {run.hookInput && (
-                <pre className="hooks-activity-input" title="in-process hook input">
-                  {run.hookInput}
-                </pre>
+                <HoverHint label="in-process hook input" side="top" align="start">
+                  <pre className="hooks-activity-input">
+                    {run.hookInput}
+                  </pre>
+                </HoverHint>
               )}
             </div>
           )

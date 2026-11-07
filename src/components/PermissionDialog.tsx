@@ -15,6 +15,7 @@ import type { PlanTargetMode } from '../hooks/usePermissionChannel'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { Overlay } from './Overlay'
+import { HoverHint } from './HoverHint'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { IconClipboardList, IconLock, IconX } from './icons/ToolIcons'
 
@@ -224,10 +225,15 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
               // `source: 'sdk'` is an in-process server this host registered;
               // every other source (user/project/plugin/dynamic/…) is config
               // authored elsewhere, so its name is untrusted display text.
-              <div className="perm-sub" title={`MCP server: ${request.mcpServer.name} (${request.mcpServer.source})`}>
-                via {request.mcpServer.name}
-                {request.mcpServer.source === 'sdk' ? ' (in-process)' : ` (${request.mcpServer.source})`}
-              </div>
+              <HoverHint
+                label={`MCP server: ${request.mcpServer.name} (${request.mcpServer.source})`}
+                side="top"
+              >
+                <div className="perm-sub">
+                  via {request.mcpServer.name}
+                  {request.mcpServer.source === 'sdk' ? ' (in-process)' : ` (${request.mcpServer.source})`}
+                </div>
+              </HoverHint>
             )}
             <InputPreview input={request.input} />
           </>
@@ -259,16 +265,16 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
                   const isPrimary = rowIdx === 0 && i === 0
                   const matchesCurrent = opt.mode === currentMode
                   return (
-                    <button
-                      key={opt.mode}
-                      className={`btn ${isPrimary ? 'btn-primary' : ''}`}
-                      onClick={() => click({ behavior: 'allow', persistForSession: false, planTargetMode: opt.mode })}
-                      disabled={busy}
-                      style={{ flex: 1 }}
-                      title={opt.title}
-                    >
-                      {opt.label}{matchesCurrent ? ' (current)' : ''}
-                    </button>
+                    <HoverHint key={opt.mode} label={opt.title} side="top" disabled={!opt.title}>
+                        <button
+                          className={`btn ${isPrimary ? 'btn-primary' : ''}`}
+                          onClick={() => click({ behavior: 'allow', persistForSession: false, planTargetMode: opt.mode })}
+                          disabled={busy}
+                          style={{ flex: 1 }}
+                        >
+                          {opt.label}{matchesCurrent ? ' (current)' : ''}
+                        </button>
+                      </HoverHint>
                   )
                 })}
               </div>
@@ -283,24 +289,29 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
               aria-label="Plan feedback"
             />
             <div style={{ display: 'flex', gap: 8 }}>
-              <button
-                className="btn"
-                onClick={() => click({ behavior: 'deny', message: `Plan denied by user. Feedback: ${feedback.trim()}` })}
-                disabled={busy || feedback.trim().length === 0}
-                style={{ flex: 1 }}
-                title="Send this feedback to Claude — it keeps planning in this turn"
+              <HoverHint
+                label="Send this feedback to Claude — it keeps planning in this turn"
+                side="top"
               >
-                Send feedback
-              </button>
-              <button
-                className="btn btn-danger"
-                onClick={() => click({ behavior: 'deny', message: PLAN_STOP_MESSAGE, interrupt: true })}
-                disabled={busy}
-                style={{ flex: 1 }}
-                title="Stop this turn and return to the input box"
-              >
-                Stop & take over
-              </button>
+                <button
+                  className="btn"
+                  onClick={() => click({ behavior: 'deny', message: `Plan denied by user. Feedback: ${feedback.trim()}` })}
+                  disabled={busy || feedback.trim().length === 0}
+                  style={{ flex: 1 }}
+                >
+                  Send feedback
+                </button>
+              </HoverHint>
+              <HoverHint label="Stop this turn and return to the input box" side="top">
+                <button
+                  className="btn btn-danger"
+                  onClick={() => click({ behavior: 'deny', message: PLAN_STOP_MESSAGE, interrupt: true })}
+                  disabled={busy}
+                  style={{ flex: 1 }}
+                >
+                  Stop & take over
+                </button>
+              </HoverHint>
             </div>
             <span className="hint" style={{ textAlign: 'center' }}>
               Approving exits plan mode and lets Claude execute in the chosen
@@ -325,15 +336,19 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
                 Allow once
               </button>
               {hasSuggestions && (
-                <button
-                  className="btn"
-                  onClick={() => click({ behavior: 'allow', persistForSession: true })}
-                  disabled={busy}
-                  style={{ flex: 1 }}
-                  title="Apply the SDK's suggested allow rule for the rest of this session"
+                <HoverHint
+                  label="Apply the SDK's suggested allow rule for the rest of this session"
+                  side="top"
                 >
-                  Allow for session
-                </button>
+                  <button
+                    className="btn"
+                    onClick={() => click({ behavior: 'allow', persistForSession: true })}
+                    disabled={busy}
+                    style={{ flex: 1 }}
+                  >
+                    Allow for session
+                  </button>
+                </HoverHint>
               )}
               <button
                 ref={denyRef}

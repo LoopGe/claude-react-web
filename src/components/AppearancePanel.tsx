@@ -28,6 +28,7 @@ import { TEXT_SPACING_LABELS, TEXT_SPACING_PRESETS } from '../../shared/text-spa
 import { FONT_SIZE_LABELS, FONT_SIZE_PRESETS } from '../../shared/font-size'
 import { ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/animation-speed'
 import { AccentSwatchGrid } from './AccentPicker'
+import { HoverHint } from './HoverHint'
 import { BackgroundPicker } from './BackgroundPicker'
 import { Switch } from './Switch'
 import { HoverPopover } from './HoverPopover'
@@ -267,18 +268,18 @@ function AppearancePopover({
         <div className="appearance-heading">Mode</div>
         <div className="appearance-mode-row" role="radiogroup" aria-label="Colour mode">
           {MODE_OPTIONS.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              className={`appearance-mode-btn${mode === o.value ? ' active' : ''}`}
-              onClick={() => onMode(o.value)}
-              role="radio"
-              aria-checked={mode === o.value}
-              title={o.label}
-            >
-              {o.icon}
-              <span>{o.label}</span>
-            </button>
+            <HoverHint key={o.value} label={o.label} side="top">
+              <button
+                type="button"
+                className={`appearance-mode-btn${mode === o.value ? ' active' : ''}`}
+                onClick={() => onMode(o.value)}
+                role="radio"
+                aria-checked={mode === o.value}
+              >
+                {o.icon}
+                <span>{o.label}</span>
+              </button>
+            </HoverHint>
           ))}
         </div>
       </div>

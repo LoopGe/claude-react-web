@@ -14,6 +14,8 @@ describe('hover popover sizing', () => {
     expect(rule!.decls['width']).toBe('max-content')
     expect(rule!.decls['max-width']).toBe('320px')
     expect(rule!.decls['overflow-wrap']).toBe('anywhere')
+    // Portalled cards must clear a modal (2000) / setup page (10000) owner.
+    expect(rule!.decls['z-index']).toBe('var(--z-tooltip)')
   })
 
   it('has one value-pill class shared by every hover card', () => {

@@ -10,7 +10,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Markdown } from '../../Markdown'
 import { AnsiText } from '../../AnsiText'
-import { Tooltip } from '../../Tooltip'
+import { HoverHint } from '../../HoverHint'
 import type { SdkMessage } from '../../../types'
 import { formatClockTime, formatFullTimestamp, formatTokens } from '../../../utils/format'
 import { IconSquare } from '../../icons/ToolIcons'
@@ -23,11 +23,11 @@ import { extractTag } from '../rendering'
 export function MessageTimestamp({ ms }: { ms: number | undefined }) {
   if (ms == null) return null
   return (
-    <Tooltip label={formatFullTimestamp(ms)} placement="top">
+    <HoverHint label={formatFullTimestamp(ms)} side="top">
       <time className="msg-timestamp" dateTime={new Date(ms).toISOString()}>
         {formatClockTime(ms)}
       </time>
-    </Tooltip>
+    </HoverHint>
   )
 }
 
@@ -99,16 +99,17 @@ export function BashMessage({ text, sending, onAbort, searchQuery, activeMatchIn
           <span className="bash-msg-pending" aria-label="running">
             <span className="msg-sending-spinner" aria-hidden />
             {onAbort && (
-              <button
-                type="button"
-                className="bash-msg-abort"
-                onClick={onAbort}
-                aria-label="Stop command"
-                title="Stop command (Ctrl+C)"
-              >
-                <IconSquare size={11} />
-                <span>Stop</span>
-              </button>
+              <HoverHint label="Stop command (Ctrl+C)" side="top">
+                <button
+                  type="button"
+                  className="bash-msg-abort"
+                  onClick={onAbort}
+                  aria-label="Stop command"
+                >
+                  <IconSquare size={11} />
+                  <span>Stop</span>
+                </button>
+              </HoverHint>
             )}
           </span>
         )}
@@ -198,15 +199,17 @@ export function CompactBoundary({ msg }: { msg: SdkMessage }) {
  *    • assistant messages with `error: 'rate_limit'` (hard account-level 429
  *      that the SDK did NOT auto-retry — the auto-retry path surfaces as the
  *      transient `api_retry` retry label in the WorkingBubble instead).
- *  `title` carries the raw error text for debugging (hover); each caller
+ *  `title` carries the raw error text for the hover card; each caller
  *  decides what that should be (the system path uses the canned copy; the
  *  assistant path uses the extracted body, falling back to the `error` enum). */
 export function RateLimitErrorDivider({ title }: { title: string }) {
   return (
-    <div className="msg result error" title={title} aria-label="rate limit error">
-      <span className="result-mark" aria-hidden="true">✕ rate limited</span>
-      <span className="result-meta">too many requests — message saved, send again</span>
-    </div>
+    <HoverHint label={title} side="top">
+      <div className="msg result error" aria-label="rate limit error">
+        <span className="result-mark" aria-hidden="true">✕ rate limited</span>
+        <span className="result-meta">too many requests — message saved, send again</span>
+      </div>
+    </HoverHint>
   )
 }
 
@@ -256,10 +259,12 @@ export function PermissionDeniedView({ msg }: { msg: SdkMessage }) {
   return (
     <div className="msg result permission-denied" aria-label="tool call denied">
       <span className="result-mark" aria-hidden="true">✕ denied</span>
-      <span className="result-meta" title={detail ?? undefined}>
-        {tool}
-        {reasonParts ? ` — ${reasonParts}` : ''}
-      </span>
+      <HoverHint label={detail} side="top" disabled={!detail}>
+        <span className="result-meta">
+          {tool}
+          {reasonParts ? ` — ${reasonParts}` : ''}
+        </span>
+      </HoverHint>
     </div>
   )
 }
@@ -323,7 +328,9 @@ export function ModelRefusalFallbackView({ msg }: { msg: SdkMessage }) {
       </div>
       {body && <div className="refusal-fallback-body">{body}</div>}
       {explanation && (
-        <div className="refusal-fallback-detail" title={explanation}>{explanation}</div>
+        <HoverHint label={explanation} side="top" align="start">
+          <div className="refusal-fallback-detail">{explanation}</div>
+        </HoverHint>
       )}
     </div>
   )
@@ -357,7 +364,9 @@ export function ModelRefusalNoFallbackView({ msg }: { msg: SdkMessage }) {
       </div>
       {body && <div className="refusal-fallback-body">{body}</div>}
       {explanation && (
-        <div className="refusal-fallback-detail" title={explanation}>{explanation}</div>
+        <HoverHint label={explanation} side="top" align="start">
+          <div className="refusal-fallback-detail">{explanation}</div>
+        </HoverHint>
       )}
     </div>
   )
@@ -387,7 +396,9 @@ export function PluginInstallView({ msg }: { msg: SdkMessage }) {
         {name && <span className="plugin-install-name">{name}</span>}
       </div>
       {error && (
-        <div className="plugin-install-error" title={error}>{error}</div>
+        <HoverHint label={error} side="top" align="start">
+          <div className="plugin-install-error">{error}</div>
+        </HoverHint>
       )}
     </div>
   )
@@ -461,7 +472,8 @@ function MemoryRecallEntry({ entry }: { entry: { path: string; scope: string; co
     )
   }
   return (
-    <li className="memory-recall-entry" title={path}>
+    <HoverHint label={path} side="top" align="start">
+      <li className="memory-recall-entry">
       <div className="memory-recall-entry-head">
         <span className="memory-recall-name">{label || path}</span>
         {scope && <span className={`memory-recall-scope memory-recall-scope--${scope}`}>{scope}</span>}
@@ -472,6 +484,7 @@ function MemoryRecallEntry({ entry }: { entry: { path: string; scope: string; co
         </div>
       )}
     </li>
+    </HoverHint>
   )
 }
 

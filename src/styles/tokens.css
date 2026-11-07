@@ -336,6 +336,11 @@
   --z-modal: 2000;
   --z-toast: 9000;
   --z-top: 10000;
+  /* Portalled hover cards outlive the owning surface's stacking context: a
+     tooltip used to be a DOM descendant of its modal (2000) or the setup page
+     (10000), so it painted inside that layer. `HoverPopover` portals to
+     <body>, where it must clear the highest surface it can be triggered from. */
+  --z-tooltip: 10001;
   --drawer-shadow: -8px 0 24px rgba(0, 0, 0, 0.35);  /* side drawers */
   --toast-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   --tooltip-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);

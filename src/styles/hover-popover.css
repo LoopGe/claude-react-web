@@ -10,7 +10,7 @@
 
 .hover-pop {
   position: fixed;
-  z-index: var(--z-popover);
+  z-index: var(--z-tooltip);
   /* Size to the text: a short hint ("Attach files") must not sit in a
      160px-minimum box with empty space on the right. Long cards wrap at
      max-width. */

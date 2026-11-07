@@ -60,6 +60,17 @@ describe('HoverHint', () => {
     expect(childRef.current).toBeInstanceOf(HTMLButtonElement)
   })
 
+  it('falls back to a native title for a disabled trigger', () => {
+    const { container } = render(
+      <HoverHint label="Why disabled">
+        <button type="button" disabled>Trigger</button>
+      </HoverHint>,
+    )
+    // Disabled controls receive no pointer/focus events, so the card cannot
+    // open; the native title keeps the explanation reachable.
+    expect(container.querySelector('button')?.getAttribute('title')).toBe('Why disabled')
+  })
+
   it('renders nothing while disabled', () => {
     vi.useFakeTimers()
     try {

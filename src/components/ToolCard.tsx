@@ -20,6 +20,7 @@ import {
   IconLoader,
 } from './icons/ToolIcons'
 import { AnimatedDetails } from './AnimatedCollapse'
+import { HoverHint } from './HoverHint'
 import { tweenGridTrack } from '../utils/grid-track-tween'
 import { useToolResult, useResolvedToolStatus, useToolStatus } from '../hooks/usePlanStatus'
 import { useEnterOnArrival } from '../hooks/useEnterOnArrival'
@@ -62,15 +63,16 @@ export function CopyButton({
   const { copied, copy } = useCopy()
 
   return (
-    <button
-      type="button"
-      className={`tool-copy-btn${copied ? ' copied' : ''} ${className}`.trim()}
-      onClick={() => { void copy(getValue) }}
-      title={copied ? 'Copied!' : label}
-      aria-label={copied ? 'Copied' : label}
-    >
-      {copied ? <IconCheck size={size} /> : <IconCopy size={size} />}
-    </button>
+    <HoverHint label={copied ? 'Copied!' : label} side="top">
+      <button
+        type="button"
+        className={`tool-copy-btn${copied ? ' copied' : ''} ${className}`.trim()}
+        onClick={() => { void copy(getValue) }}
+        aria-label={copied ? 'Copied' : label}
+      >
+        {copied ? <IconCheck size={size} /> : <IconCopy size={size} />}
+      </button>
+    </HoverHint>
   )
 }
 
@@ -107,15 +109,16 @@ const ToolStatusBadgeResolved = memo(function ToolStatusBadgeResolved({
   const Icon =
     status === 'success' ? IconCheck : status === 'error' ? IconAlertCircle : IconLoader
   return (
-    <span
-      className={`tool-status tool-status-${status}${compact ? ' tool-status-compact' : ''}`}
-      title={STATUS_TITLE[status]}
-      aria-live="polite"
-      aria-label={`Tool status: ${STATUS_LABEL[status]}`}
-    >
-      <Icon size={compact ? 11 : 12} />
-      {!compact && <span className="tool-status-label">{STATUS_LABEL[status]}</span>}
-    </span>
+    <HoverHint label={STATUS_TITLE[status]} side="top">
+      <span
+        className={`tool-status tool-status-${status}${compact ? ' tool-status-compact' : ''}`}
+        aria-live="polite"
+        aria-label={`Tool status: ${STATUS_LABEL[status]}`}
+      >
+        <Icon size={compact ? 11 : 12} />
+        {!compact && <span className="tool-status-label">{STATUS_LABEL[status]}</span>}
+      </span>
+    </HoverHint>
   )
 })
 
@@ -176,16 +179,17 @@ export function BackgroundToolButton({
   ariaLabel: string
 }) {
   return (
-    <button
-      type="button"
-      className="tool-card-bg-btn"
-      onClick={onClick}
-      title={title}
-      aria-label={ariaLabel}
-    >
-      <IconArrowDown size={12} />
-      <span>background</span>
-    </button>
+    <HoverHint label={title} side="top">
+      <button
+        type="button"
+        className="tool-card-bg-btn"
+        onClick={onClick}
+        aria-label={ariaLabel}
+      >
+        <IconArrowDown size={12} />
+        <span>background</span>
+      </button>
+    </HoverHint>
   )
 }
 

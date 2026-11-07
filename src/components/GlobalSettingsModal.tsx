@@ -10,6 +10,7 @@ import { IconX, IconCheck, IconChevronDown, IconRefresh, IconSparkles, IconTermi
 import { EmptyState } from './EmptyState'
 import { ErrorBoundary } from './ErrorBoundary'
 import { Skeleton } from './Skeleton'
+import { HoverHint } from './HoverHint'
 import { buildUpgradeCommand } from '../utils/upgrade-command'
 import { DEFAULT_MODAL_APPEARANCE, appearanceFromFullConfig, type ModalAppearancePrefs, type FullServerConfig } from '../types/config'
 import { ProfilesSettingsTab } from './ProfilesSettingsTab'
@@ -1153,9 +1154,11 @@ function SkillsTab({
                       <span className="settings-skill-name">{skill.name}</span>
                       <span className="settings-card-badge">{skill.scope}</span>
                       {projectName && (
-                        <span className="settings-card-badge settings-skill-project-badge" title={projectRoot ?? undefined}>
-                          {projectName}
-                        </span>
+                        <HoverHint label={projectRoot} side="top" disabled={!projectRoot}>
+                          <span className="settings-card-badge settings-skill-project-badge">
+                            {projectName}
+                          </span>
+                        </HoverHint>
                       )}
                       {!skill.valid && <span className="settings-card-badge warn">invalid</span>}
                       <span className="settings-skill-desc">{skill.description || skill.errors[0] || 'No description'}</span>
@@ -1163,7 +1166,9 @@ function SkillsTab({
                     </button>
                     {skill.source && (
                       <div className="settings-skill-update-row">
-                        <span className="settings-skill-source" title={skill.source.source}>{skill.source.source}</span>
+                        <HoverHint label={skill.source.source} side="top">
+                          <span className="settings-skill-source">{skill.source.source}</span>
+                        </HoverHint>
                         {status?.hasUpdate && (
                           <>
                             <span className="settings-card-badge warn">Update available</span>
@@ -1323,13 +1328,14 @@ function FirstPartyCard({ info, enabled, onToggle }: {
           <button className="btn" onClick={() => setToolsOpen(!toolsOpen)} disabled={info.tools.length === 0}>
             List tools
           </button>
-          <button
-            className="btn settings-first-party-toggle"
-            onClick={() => onToggle(info.name, !enabled)}
-            title={enabled ? 'Disable' : 'Enable'}
-          >
-            {enabled ? 'ON' : 'OFF'}
-          </button>
+          <HoverHint label={enabled ? 'Disable' : 'Enable'} side="top">
+            <button
+              className="btn settings-first-party-toggle"
+              onClick={() => onToggle(info.name, !enabled)}
+            >
+              {enabled ? 'ON' : 'OFF'}
+            </button>
+          </HoverHint>
         </div>
       </div>
       {info.description && <div className="settings-card-note">{info.description}</div>}
@@ -1477,13 +1483,14 @@ function McpCard({
               Clear auth
             </button>
           )}
-          <button
-            className="btn"
-            onClick={() => onToggle(server.name, server.enabled === false)}
-            title={server.enabled !== false ? 'Disable' : 'Enable'}
-          >
-            {server.enabled !== false ? 'ON' : 'OFF'}
-          </button>
+          <HoverHint label={server.enabled !== false ? 'Disable' : 'Enable'} side="top">
+            <button
+              className="btn"
+              onClick={() => onToggle(server.name, server.enabled === false)}
+            >
+              {server.enabled !== false ? 'ON' : 'OFF'}
+            </button>
+          </HoverHint>
           <button className="btn" onClick={() => onEdit(server)}>
             Edit
           </button>
@@ -1507,11 +1514,16 @@ function McpCard({
         </div>
       </div>
       {(server.command || server.url) && (
-        <div className="settings-card-path settings-mcp-path" title={server.type === 'stdio' ? `${server.command} ${(server.args ?? []).join(' ')}` : server.url}>
-          {server.type === 'stdio'
-            ? `${server.command} ${(server.args ?? []).join(' ')}`
-            : server.url}
-        </div>
+        <HoverHint
+          label={server.type === 'stdio' ? `${server.command} ${(server.args ?? []).join(' ')}` : server.url}
+          side="top"
+        >
+          <div className="settings-card-path settings-mcp-path">
+            {server.type === 'stdio'
+              ? `${server.command} ${(server.args ?? []).join(' ')}`
+              : server.url}
+          </div>
+        </HoverHint>
       )}
       {testResult && (
         <div className={`settings-mcp-result status-${testResult.status}`}>
@@ -2107,28 +2119,37 @@ function AboutTab({
         </div>
       )}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button
-          className="btn"
-          // Probe the CURRENTLY-TYPED registry, not the saved value — the
-          // user may be editing the field and wants to validate the new URL
-          // before committing it with Save. We no longer gate on the saved
-          // `disabled` snapshot; instead we gate on the live input being
-          // empty (probing an empty registry just yields `disabled` again).
-          onClick={() => onRefresh?.(registry)}
-          disabled={refreshing || !onRefresh || !registry.trim() || updating}
-          title={!registry.trim() ? 'Enter a registry URL above first.' : undefined}
+        <HoverHint
+          label="Enter a registry URL above first."
+          side="top"
+          disabled={!!registry.trim()}
         >
-          {refreshing ? 'Checking...' : 'Check now'}
-        </button>
-        {canUpdateInApp && (
           <button
-            className="btn btn-primary"
-            onClick={() => void runUpdate()}
-            disabled={updating || refreshing}
-            title="Run `npm i -g <package>@latest` on the server, then restart to apply."
+            className="btn"
+            // Probe the CURRENTLY-TYPED registry, not the saved value — the
+            // user may be editing the field and wants to validate the new URL
+            // before committing it with Save. We no longer gate on the saved
+            // `disabled` snapshot; instead we gate on the live input being
+            // empty (probing an empty registry just yields `disabled` again).
+            onClick={() => onRefresh?.(registry)}
+            disabled={refreshing || !onRefresh || !registry.trim() || updating}
           >
-            {updating ? 'Updating...' : 'Update now'}
+            {refreshing ? 'Checking...' : 'Check now'}
           </button>
+        </HoverHint>
+        {canUpdateInApp && (
+          <HoverHint
+            label="Run `npm i -g <package>@latest` on the server, then restart to apply."
+            side="top"
+          >
+            <button
+              className="btn btn-primary"
+              onClick={() => void runUpdate()}
+              disabled={updating || refreshing}
+            >
+              {updating ? 'Updating...' : 'Update now'}
+            </button>
+          </HoverHint>
         )}
         {onOpenResetConfig && (
           <button
@@ -2147,19 +2168,20 @@ function AboutTab({
           the copy-command is the recovery path that works from a terminal
           even when the app is bricked. */}
       <div>
-        <button
-          className="btn"
-          style={{ width: '100%', justifyContent: 'space-between' }}
-          onClick={() => setSwitcherOpen((v) => !v)}
-          aria-expanded={switcherOpen}
-          title="Install or roll back to a specific published version."
-        >
-          <span>Switch version</span>
-          <IconChevronDown
+        <HoverHint label="Install or roll back to a specific published version." side="top">
+          <button
+            className="btn"
+            style={{ width: '100%', justifyContent: 'space-between' }}
+            onClick={() => setSwitcherOpen((v) => !v)}
+            aria-expanded={switcherOpen}
+          >
+            <span>Switch version</span>
+            <IconChevronDown
             size={14}
             style={{ transition: 'transform 0.15s', transform: switcherOpen ? 'rotate(180deg)' : 'none' }}
           />
         </button>
+        </HoverHint>
         {switcherOpen && (
           // Plain block (not a .settings-group-body), so spacing between the
           // Field / Install button / error strips comes from this flex gap —
@@ -2219,25 +2241,28 @@ function AboutTab({
                       })}
                     </select>
                     {onFetchVersions && (
-                      <button
-                        className="btn"
-                        onClick={() => onFetchVersions(true)}
-                        disabled={versionsLoading}
-                        title="Force a fresh fetch of the published-versions list."
-                      >
-                        <IconRefresh size={14} />
-                      </button>
+                      <HoverHint label="Force a fresh fetch of the published-versions list." side="top">
+                        <button
+                          className="btn"
+                          onClick={() => onFetchVersions(true)}
+                          disabled={versionsLoading}
+                          aria-label="Force a fresh fetch of the published-versions list"
+                        >
+                          <IconRefresh size={14} />
+                        </button>
+                      </HoverHint>
                     )}
                   </div>
                 </Field>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => void runInstallVersion()}
-                  disabled={!canInstallVersion}
-                  title="Install the selected version, then restart to apply."
-                >
-                  {updating ? 'Installing...' : `Install ${effectivePicked || ''}`.trim()}
-                </button>
+                <HoverHint label="Install the selected version, then restart to apply." side="top">
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => void runInstallVersion()}
+                    disabled={!canInstallVersion}
+                  >
+                    {updating ? 'Installing...' : `Install ${effectivePicked || ''}`.trim()}
+                  </button>
+                </HoverHint>
                 {versionsError && (
                   <div className="modal-error">
                     Could not load versions: {versionsError}

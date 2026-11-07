@@ -9,6 +9,7 @@ import { SubagentConversationBody } from './SubagentConversationBody'
 import { TranscriptDrawerShell } from './TranscriptDrawerShell'
 import { ElapsedTimer } from './ElapsedTimer'
 import { IconX, IconArrowLeft, IconEye } from './icons/ToolIcons'
+import { HoverHint } from './HoverHint'
 import { subagentResource } from '../../shared/resource-address'
 import { useOptionalOpenResource } from '../resources/context'
 import type {
@@ -161,16 +162,20 @@ export const SubagentOverlay = memo(function SubagentOverlay({
       onExited={onExited}
       header={
         <div className="subagent-overlay-header">
-          <button
-            type="button"
-            className="subagent-overlay-back"
-            onClick={stack.length > 1 ? onPop : onClose}
-            disabled={isExiting}
-            title={stack.length > 1 ? 'Back to outer subagent' : 'Back to conversation'}
-            aria-label="Back"
+          <HoverHint
+            label={stack.length > 1 ? 'Back to outer subagent' : 'Back to conversation'}
+            side="top"
           >
-            <IconArrowLeft size={14} />
-          </button>
+            <button
+              type="button"
+              className="subagent-overlay-back"
+              onClick={stack.length > 1 ? onPop : onClose}
+              disabled={isExiting}
+              aria-label="Back"
+            >
+              <IconArrowLeft size={14} />
+            </button>
+          </HoverHint>
           <div className="subagent-overlay-title">
             {stack.length > 1 && (
               <span className="subagent-overlay-breadcrumb truncate">
@@ -192,12 +197,15 @@ export const SubagentOverlay = memo(function SubagentOverlay({
               (current.status === 'running' ||
                 current.status === 'background' ||
                 current.status === 'pending') && (
-                <span className="subagent-overlay-progress" title={current.progressSummary}>
-                  {current.progressSummary}
-                </span>
+                <HoverHint label={current.progressSummary} side="top" align="start">
+                  <span className="subagent-overlay-progress">
+                    {current.progressSummary}
+                  </span>
+                </HoverHint>
               )}
           </div>
           {openResource && (
+          <HoverHint label="Open in resource preview" side="top">
           <button
             type="button"
             className="subagent-overlay-open"
@@ -206,24 +214,14 @@ export const SubagentOverlay = memo(function SubagentOverlay({
               onClose()
             }}
             disabled={isExiting}
-            title="Open in resource preview"
             aria-label="Open in resource preview"
           >
             <IconEye size={14} />
           </button>
+        </HoverHint>
         )}
-          <button
-            type="button"
-            className="subagent-overlay-close"
-            onClick={() => {
-              const st = current?.status
-              if (onDismiss && (st === 'running' || st === 'background' || st === 'pending')) {
-                onDismiss(currentId)
-              }
-              onClose()
-            }}
-            disabled={isExiting}
-            title={
+          <HoverHint
+            label={
               current &&
               (current.status === 'running' ||
                 current.status === 'background' ||
@@ -232,18 +230,32 @@ export const SubagentOverlay = memo(function SubagentOverlay({
                 ? 'Dismiss and close'
                 : 'Close (Esc)'
             }
-            aria-label={
-              current &&
-              (current.status === 'running' ||
-                current.status === 'background' ||
-                current.status === 'pending') &&
-              onDismiss
-                ? 'Dismiss and close'
-                : 'Close'
-            }
+            side="top"
           >
-            <IconX size={14} />
-          </button>
+            <button
+              type="button"
+              className="subagent-overlay-close"
+              onClick={() => {
+                const st = current?.status
+                if (onDismiss && (st === 'running' || st === 'background' || st === 'pending')) {
+                  onDismiss(currentId)
+                }
+                onClose()
+              }}
+              disabled={isExiting}
+              aria-label={
+                current &&
+                (current.status === 'running' ||
+                  current.status === 'background' ||
+                  current.status === 'pending') &&
+                onDismiss
+                  ? 'Dismiss and close'
+                  : 'Close'
+              }
+            >
+              <IconX size={14} />
+            </button>
+          </HoverHint>
         </div>
       }
     >

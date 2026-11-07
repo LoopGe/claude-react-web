@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, apiRequest } from '../hooks/useApi'
 import { IconAlertTriangle } from './icons/ToolIcons'
+import { HoverHint } from './HoverHint'
 import type {
   AppPluginMarketplaceInfo,
   AppPluginMarketplacePlugin,
@@ -390,19 +391,23 @@ export function AppPluginMarketplaceSection() {
               bulk reconcile is the only way to apply that in one click, so it
               stays available — gaining the primary styling and the count only
               when a marketplace is actually behind. */}
-          <button
-            className={`btn${updateableCount > 0 ? ' btn-primary' : ''}`}
-            onClick={() => void handleUpdateAll()}
-            // Also blocked while any ROW sync is in flight: the bulk loop pulls
-            // the same clone dirs, and two concurrent `git pull --ff-only` runs
-            // there collide on .git/index.lock.
-            disabled={bulkBusy || updatingIds.size > 0}
-            title="Sync every marketplace from upstream, then reinstall the plugins that changed"
+          <HoverHint
+            label="Sync every marketplace from upstream, then reinstall the plugins that changed"
+            side="top"
           >
-            {bulkBusy
-              ? (bulkProgress ?? 'Updating…')
-              : updateableCount > 0 ? `Update all (${updateableCount})` : 'Update all'}
-          </button>
+            <button
+              className={`btn${updateableCount > 0 ? ' btn-primary' : ''}`}
+              onClick={() => void handleUpdateAll()}
+              // Also blocked while any ROW sync is in flight: the bulk loop pulls
+              // the same clone dirs, and two concurrent `git pull --ff-only` runs
+              // there collide on .git/index.lock.
+              disabled={bulkBusy || updatingIds.size > 0}
+            >
+              {bulkBusy
+                ? (bulkProgress ?? 'Updating…')
+                : updateableCount > 0 ? `Update all (${updateableCount})` : 'Update all'}
+            </button>
+          </HoverHint>
           {!bulkBusy && updateableCount === 0 && (
             // `checking` outranks the error, exactly as in the Claude panel:
             // mid-check the honest line is "checking", and it also removes the
@@ -417,26 +422,31 @@ export function AppPluginMarketplaceSection() {
                     (network / timeout), or the server responded with
                     per-marketplace errors (it was up, upstreams were not).
                     Both are recoverable with Retry. */}
-                <span
-                  className="marketplace-update-error"
-                  title={updateCheckError
+                <HoverHint
+                  label={updateCheckError
                     ? `Couldn't check for updates: ${updateCheckError}`
                     : 'Some marketplaces could not be checked against their upstream'}
-                  aria-label={updateCheckError
-                    ? `Couldn't check for updates: ${updateCheckError}`
-                    : 'Some marketplaces could not be checked against their upstream'}
+                  side="top"
                 >
-                  <IconAlertTriangle size={12} />
-                  {updateCheckError ? "Couldn't check for updates" : "Some marketplaces couldn't be checked"}
-                </span>
-                <button
-                  className="btn"
-                  style={{ padding: '1px 8px', fontSize: 'var(--fs-xs)' }}
-                  onClick={() => void fetchUpdates()}
-                  title="Retry the update check"
-                >
-                  Retry
-                </button>
+                  <span
+                    className="marketplace-update-error"
+                    aria-label={updateCheckError
+                      ? `Couldn't check for updates: ${updateCheckError}`
+                      : 'Some marketplaces could not be checked against their upstream'}
+                  >
+                    <IconAlertTriangle size={12} />
+                    {updateCheckError ? "Couldn't check for updates" : "Some marketplaces couldn't be checked"}
+                  </span>
+                </HoverHint>
+                <HoverHint label="Retry the update check" side="top">
+                  <button
+                    className="btn"
+                    style={{ padding: '1px 8px', fontSize: 'var(--fs-xs)' }}
+                    onClick={() => void fetchUpdates()}
+                  >
+                    Retry
+                  </button>
+                </HoverHint>
               </>
             ) : (
               <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok-text)' }}>All marketplaces up to date</span>

@@ -4860,8 +4860,9 @@ describe('system error divider', () => {
     const meta = divider?.querySelector('.result-meta')
     expect(meta?.textContent).toContain('send again')
 
-    // Full message preserved in the title tooltip.
-    expect(divider?.getAttribute('title')).toContain('send again')
+    // Full message preserved in the hover card.
+    expect(divider?.getAttribute('title')).toBeNull()
+    expect(hoverText(divider!)).toContain('send again')
   })
 
   it('renders a synthetic isApiErrorMessage assistant message as an interrupted-style divider', () => {
@@ -5003,9 +5004,10 @@ describe('system error divider', () => {
     const meta = divider?.querySelector('.result-meta')
     expect(meta?.textContent).toContain('send again')
 
-    // Raw SDK text preserved in the title tooltip; the raw 429 body must NOT
+    // Raw SDK text preserved in the hover card; the raw 429 body must NOT
     // leak into the visible meta.
-    expect(divider?.getAttribute('title')).toBe(raw)
+    expect(divider?.getAttribute('title')).toBeNull()
+    expect(hoverText(divider!)).toContain('Request rejected')
     expect(meta?.textContent).not.toContain('Request rejected')
   })
 
@@ -5024,7 +5026,8 @@ describe('system error divider', () => {
 
     const divider = container.querySelector('.msg.result.error')
     expect(divider).toBeTruthy()
-    expect(divider?.getAttribute('title')).toBe('rate_limit')
+    expect(divider?.getAttribute('title')).toBeNull()
+    expect(hoverText(divider!)).toContain('rate_limit')
     // Still the canned resend guidance, not an empty meta.
     const meta = divider?.querySelector('.result-meta')
     expect(meta?.textContent).toContain('send again')
@@ -5156,6 +5159,18 @@ describe('local_command_output rendering', () => {
 })
 
 describe('memory_recall rendering', () => {
+  function memoryHoverText(el: Element): string {
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerEnter(el)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      return document.querySelector('.hover-pop')?.textContent ?? ''
+    } finally {
+      vi.useRealTimers()
+    }
+  }
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useRealTimers()
@@ -5178,10 +5193,10 @@ describe('memory_recall rendering', () => {
     expect(card?.textContent).toContain('selected files')
     const name = card?.querySelector('.memory-recall-name')
     expect(name?.textContent).toBe('prefs.md')
-    // Full path available on hover via title.
-    expect(card?.querySelector('.memory-recall-entry')?.getAttribute('title')).toBe(
-      '/home/u/.claude/projects/x/memory/prefs.md',
-    )
+    // Full path available on hover.
+    const entry = card?.querySelector('.memory-recall-entry')!
+    expect(entry.getAttribute('title')).toBeNull()
+    expect(memoryHoverText(entry)).toBe('/home/u/.claude/projects/x/memory/prefs.md')
     expect(card?.querySelector('.memory-recall-scope')?.textContent).toBe('personal')
     expect(card?.querySelector('.memory-recall-body strong')).toBeTruthy()
   })
@@ -5201,8 +5216,9 @@ describe('memory_recall rendering', () => {
     expect(card?.querySelector('.memory-recall-name')?.textContent).toBe('coding-style.md')
     // Path-only entries have no body element.
     expect(card?.querySelector('.memory-recall-body')).toBeNull()
-    // Windows backslash path kept whole in the hover title.
-    expect(card?.querySelector('.memory-recall-entry')?.getAttribute('title')).toBe('C:\\mem\\coding-style.md')
+    // Windows backslash path kept whole in the hover card.
+    expect(card?.querySelector('.memory-recall-entry')?.getAttribute('title')).toBeNull()
+    expect(memoryHoverText(card!.querySelector('.memory-recall-entry')!)).toBe('C:\\mem\\coding-style.md')
   })
 
   it('renders the synthesize-mode sentinel as a synthesized card, never as a path', () => {

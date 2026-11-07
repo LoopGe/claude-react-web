@@ -39,9 +39,15 @@ export function HoverHint<T extends HTMLElement = HTMLElement>({
   // Merge instead of overwrite: dnd-kit's activator ref must keep working.
   // useMergedRef owns the `.current` writes (module-level, stable callback).
   const mergedRef = useMergedRef(ref, childRef)
+  // Disabled form controls are not pointer/focus event targets, so the card
+  // can never open on them. Keep the native title as the fallback for exactly
+  // that state — it is the behavior the old `title` attribute had, and it
+  // keeps the "why is this disabled" explanation reachable.
+  const childDisabled = (children.props as { disabled?: boolean }).disabled === true
+  const fallbackTitle = childDisabled && typeof label === 'string' ? { title: label } : {}
   return (
     <>
-      {cloneElement(children, { ref: mergedRef })}
+      {cloneElement(children, { ...fallbackTitle, ref: mergedRef })}
       <HoverPopover
         triggerRef={ref}
         side={side}

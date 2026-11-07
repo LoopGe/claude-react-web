@@ -11,6 +11,7 @@ import { memo, useEffect, useRef } from 'react'
 import type { CSSProperties } from 'react'
 import { ACCENT_COLORS, isPresetAccent } from '../theme'
 import { useRecentColors } from '../hooks/useRecentColors'
+import { HoverHint } from './HoverHint'
 
 // --- Custom-colour swatch ---------------------------------------------------
 
@@ -42,20 +43,21 @@ function CustomColorSwatch({ onChange, onCommitColor }: CustomColorSwatchProps) 
   }, [onCommitColor])
 
   return (
-    <label
-      className="accent-swatch accent-swatch-custom"
-      style={{ '--swatch': 'transparent', '--swatch-strong': 'var(--fg)' } as CSSProperties}
-      aria-label="Add a custom colour"
-      title="Add a custom colour"
-    >
-      <input
-        ref={inputRef}
-        type="color"
-        defaultValue={ACCENT_COLORS[0].accent}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <span className="accent-swatch-custom-plus" aria-hidden>+</span>
-    </label>
+    <HoverHint label="Add a custom colour" side="top">
+      <label
+        className="accent-swatch accent-swatch-custom"
+        style={{ '--swatch': 'transparent', '--swatch-strong': 'var(--fg)' } as CSSProperties}
+        aria-label="Add a custom colour"
+      >
+        <input
+          ref={inputRef}
+          type="color"
+          defaultValue={ACCENT_COLORS[0].accent}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <span className="accent-swatch-custom-plus" aria-hidden>+</span>
+      </label>
+    </HoverHint>
   )
 }
 
@@ -91,6 +93,7 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
   return (
     <div className="accent-picker" role="radiogroup" aria-label={ariaLabel}>
       {allowDefault && (
+        <HoverHint label="Use global accent" side="top">
         <button
           type="button"
           className={`accent-swatch accent-swatch-default${value === undefined ? ' active' : ''}`}
@@ -98,21 +101,21 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
           role="radio"
           aria-checked={value === undefined}
           aria-label="Use global accent"
-          title="Use global accent"
         />
+      </HoverHint>
       )}
       {ACCENT_COLORS.map((c) => (
-        <button
-          key={c.accent}
-          type="button"
-          className={`accent-swatch${value === c.accent ? ' active' : ''}`}
-          style={{ '--swatch': c.accent, '--swatch-strong': c.strong } as CSSProperties}
-          onClick={() => onChange(c.accent)}
-          role="radio"
-          aria-checked={value === c.accent}
-          aria-label={c.name}
-          title={c.name}
-        />
+        <HoverHint key={c.accent} label={c.name} side="top">
+          <button
+            type="button"
+            className={`accent-swatch${value === c.accent ? ' active' : ''}`}
+            style={{ '--swatch': c.accent, '--swatch-strong': c.strong } as CSSProperties}
+            onClick={() => onChange(c.accent)}
+            role="radio"
+            aria-checked={value === c.accent}
+            aria-label={c.name}
+          />
+        </HoverHint>
       ))}
       <CustomColorSwatch onChange={onChange} onCommitColor={addRecent} />
 
@@ -124,8 +127,8 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
           {displayRecents.map((hex) => {
             const active = activeCustom === hex.toLowerCase()
             return (
+              <HoverHint key={hex} label={hex} side="top">
               <button
-                key={hex}
                 type="button"
                 className={`accent-swatch${active ? ' active' : ''}`}
                 style={{ '--swatch': hex, '--swatch-strong': hex } as CSSProperties}
@@ -136,8 +139,8 @@ export const AccentSwatchGrid = memo(function AccentSwatchGrid({
                 role="radio"
                 aria-checked={active}
                 aria-label={`Recent colour ${hex}`}
-                title={hex}
               />
+            </HoverHint>
             )
           })}
         </>

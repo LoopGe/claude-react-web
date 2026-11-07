@@ -11,6 +11,7 @@ import { api } from '../hooks/useApi'
 import type { MpListItem, MpPluginInfo, MpParseWarning, MpUpdateStatus } from '../types'
 import { IconX, IconChevronDown, IconChevronRight, IconAlertTriangle } from './icons/ToolIcons'
 import { MarketplaceUpdateButton } from './MarketplaceUpdateButton'
+import { HoverHint } from './HoverHint'
 import { CHECK_UPDATES_TIMEOUT_MS, MARKETPLACE_PULL_TIMEOUT_MS } from '../marketplace-update'
 import { AnimatedCollapse } from './AnimatedCollapse'
 
@@ -483,16 +484,17 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
                 marketplace still reports an update, the Update-all button is
                 the actionable recovery even if a re-probe just failed. */}
             {bulkBusy || updateableCount > 0 ? (
+            <HoverHint label="Refresh every marketplace that has an update available" side="top">
             <button
               className="btn btn-primary"
               onClick={() => void handleUpdateAll()}
               disabled={bulkBusy}
-              title="Refresh every marketplace that has an update available"
             >
               {bulkBusy
                 ? (bulkProgress ? `Updating ${bulkProgress.done}/${bulkProgress.total}…` : 'Updating…')
                 : `Update all (${updateableCount})`}
             </button>
+          </HoverHint>
           ) : checking ? (
             <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--fg-muted)' }}>Checking for updates…</span>
           ) : updateCheckError || anyCheckError ? (
@@ -501,26 +503,31 @@ export function MarketplaceTab({ onPluginToggled }: MarketplaceTabProps = {}) {
                   check errors (server reachable, upstreams down) both land
                   here with a Retry. Per-marketplace errors otherwise render a
                   blank status line with no in-mount way back to a re-check. */}
-              <span
-                className="marketplace-update-error"
-                title={updateCheckError
+              <HoverHint
+                label={updateCheckError
                   ? `Couldn't check for updates: ${updateCheckError}`
                   : 'Some marketplaces could not be checked against their upstream'}
-                aria-label={updateCheckError
-                  ? `Couldn't check for updates: ${updateCheckError}`
-                  : 'Some marketplaces could not be checked against their upstream'}
+                side="top"
               >
-                <IconAlertTriangle size={12} />
-                {updateCheckError ? "Couldn't check for updates" : "Some marketplaces couldn't be checked"}
-              </span>
-              <button
-                className="btn"
-                style={{ padding: '1px 8px', fontSize: 'var(--fs-xs)' }}
-                onClick={() => void handleRetryCheck()}
-                title="Retry the update check"
-              >
-                Retry
-              </button>
+                <span
+                  className="marketplace-update-error"
+                  aria-label={updateCheckError
+                    ? `Couldn't check for updates: ${updateCheckError}`
+                    : 'Some marketplaces could not be checked against their upstream'}
+                >
+                  <IconAlertTriangle size={12} />
+                  {updateCheckError ? "Couldn't check for updates" : "Some marketplaces couldn't be checked"}
+                </span>
+              </HoverHint>
+              <HoverHint label="Retry the update check" side="top">
+                <button
+                  className="btn"
+                  style={{ padding: '1px 8px', fontSize: 'var(--fs-xs)' }}
+                  onClick={() => void handleRetryCheck()}
+                >
+                  Retry
+                </button>
+              </HoverHint>
             </>
           ) : (
             <span style={{ fontSize: 'var(--fs-sm)', color: 'var(--ok-text)' }}>All marketplaces up to date</span>
@@ -613,16 +620,17 @@ function MarketplaceCard({
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: 'var(--bg)',
       }}>
-        <button
-          className="btn"
-          style={{ padding: '0 6px', fontSize: 'var(--fs-xs)', lineHeight: '20px', minWidth: 22 }}
-          onClick={onToggleExpand}
-          title={expanded ? 'Collapse' : 'Expand'}
-          aria-label={expanded ? 'Collapse' : 'Expand'}
-          aria-expanded={expanded}
-        >
-          {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
-        </button>
+        <HoverHint label={expanded ? 'Collapse' : 'Expand'} side="top">
+          <button
+            className="btn"
+            style={{ padding: '0 6px', fontSize: 'var(--fs-xs)', lineHeight: '20px', minWidth: 22 }}
+            onClick={onToggleExpand}
+            aria-label={expanded ? 'Collapse' : 'Expand'}
+            aria-expanded={expanded}
+          >
+            {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+          </button>
+        </HoverHint>
         <div style={{ flex: 1, overflow: 'hidden' }}>
           <div style={{ fontWeight: 500, fontSize: 'var(--fs-base)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {item.displayName}
@@ -635,19 +643,23 @@ function MarketplaceCard({
             {item.source.branch || item.source.ref ? ` @ ${item.source.branch || item.source.ref}` : ''}
           </div>
         </div>
-        <span
-          style={{
-            fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)', background: 'var(--bg-elev-2)',
-            padding: '1px 6px', borderRadius: 'var(--radius-3xs)', flexShrink: 0,
-          }}
-          title={`${item.enabledCount} enabled of ${item.pluginCount} plugin${item.pluginCount === 1 ? '' : 's'}`}
+        <HoverHint
+          label={`${item.enabledCount} enabled of ${item.pluginCount} plugin${item.pluginCount === 1 ? '' : 's'}`}
+          side="top"
         >
-          {item.enabledCount > 0 && (
-            <span style={{ color: 'var(--ok-text)' }}>{item.enabledCount}</span>
-          )}
-          {item.enabledCount > 0 ? ' / ' : ''}
+          <span
+            style={{
+              fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)', background: 'var(--bg-elev-2)',
+              padding: '1px 6px', borderRadius: 'var(--radius-3xs)', flexShrink: 0,
+            }}
+          >
+            {item.enabledCount > 0 && (
+              <span style={{ color: 'var(--ok-text)' }}>{item.enabledCount}</span>
+            )}
+            {item.enabledCount > 0 ? ' / ' : ''}
           {item.pluginCount} plugin{item.pluginCount === 1 ? '' : 's'}
         </span>
+        </HoverHint>
         <MarketplaceUpdateButton
           hasUpdate={updateStatus?.hasUpdate === true}
           // `busy` is this card's own pull (busyId === item.id) — a bulk run
@@ -770,14 +782,18 @@ function MarketplaceCard({
               {(() => {
                 const toggling = togglingPlugins.has(`${item.id}:${p.name}`)
                 return (
-                  <button
-                    className="btn"
-                    onClick={() => onTogglePlugin(p.name, !p.enabled)}
-                    disabled={toggling}
-                    title={p.enabled ? 'Disable for new and live sessions' : 'Enable for new and live sessions'}
+                  <HoverHint
+                    label={p.enabled ? 'Disable for new and live sessions' : 'Enable for new and live sessions'}
+                    side="top"
                   >
-                    {toggling ? '…' : p.enabled ? 'ON' : 'OFF'}
-                  </button>
+                    <button
+                      className="btn"
+                      onClick={() => onTogglePlugin(p.name, !p.enabled)}
+                      disabled={toggling}
+                    >
+                      {toggling ? '…' : p.enabled ? 'ON' : 'OFF'}
+                    </button>
+                  </HoverHint>
                 )
               })()}
             </div>

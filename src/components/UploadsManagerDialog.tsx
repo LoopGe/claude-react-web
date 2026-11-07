@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Overlay } from './Overlay'
 import { ConfirmDialog } from './ConfirmDialog'
+import { HoverHint } from './HoverHint'
 import { UploadPreview } from './UploadPreview'
 import { useToast } from '../hooks/useToast'
 import { writeClipboard } from '../hooks/useCopy'
@@ -195,21 +196,24 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
         <h3>
           <IconFolderSearch size={16} aria-hidden /> Uploaded files
         </h3>
-        <span className="uploads-stats truncate" title={statsText}>
-          {statsText}
-        </span>
+        <HoverHint label={statsText} side="bottom">
+          <span className="uploads-stats truncate">
+            {statsText}
+          </span>
+        </HoverHint>
         {/* Paperclip: dialog-level action, so it lives in the header next
             to Close rather than in the toolbar row (where the conditional
             "Clean missing entries" button pushed it into the middle). */}
-        <button
-          type="button"
-          className="btn btn-icon"
-          title="Upload files"
-          aria-label="Upload files"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <IconPaperclip size={16} />
-        </button>
+        <HoverHint label="Upload files" side="bottom">
+          <button
+            type="button"
+            className="btn btn-icon"
+            aria-label="Upload files"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <IconPaperclip size={16} />
+          </button>
+        </HoverHint>
         <button type="button" className="btn btn-icon" onClick={onClose} aria-label="Close">
           <IconX size={16} />
         </button>
@@ -311,46 +315,51 @@ export function UploadsManagerDialog({ open = true, onClose }: Props) {
                     {!u.exists && <span className="uploads-missing-badge">missing</span>}
                     {u.origin === 'common' && <span className="uploads-common-badge">common</span>}
                   </span>
-                  <span className="uploads-meta truncate" title={u.path}>
-                    {u.origin === 'common'
-                      ? `${formatBytes(u.size)} · ${formatRelativeTime(new Date(u.uploadedAt).toISOString())}`
-                      : <>
-                          {formatBytes(u.size)} · {cwdTail(u.cwd)}
-                          {u.sessionTitle ? ` · ${u.sessionTitle}` : ''} ·{' '}
-                          {formatRelativeTime(new Date(u.uploadedAt).toISOString())}
-                        </>
-                    }
-                  </span>
+                  <HoverHint label={u.path} side="top" align="start">
+                    <span className="uploads-meta truncate">
+                      {u.origin === 'common'
+                        ? `${formatBytes(u.size)} · ${formatRelativeTime(new Date(u.uploadedAt).toISOString())}`
+                        : <>
+                            {formatBytes(u.size)} · {cwdTail(u.cwd)}
+                            {u.sessionTitle ? ` · ${u.sessionTitle}` : ''} ·{' '}
+                            {formatRelativeTime(new Date(u.uploadedAt).toISOString())}
+                          </>
+                      }
+                    </span>
+                  </HoverHint>
                 </div>
                 <div className="uploads-row-actions">
-                  <button
-                    type="button"
-                    className="btn btn-icon"
-                    title="View file"
-                    aria-label="View file"
-                    disabled={!u.exists}
-                    onClick={() => setPreviewTarget(u)}
-                  >
-                    <IconEye size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-icon"
-                    title="Copy absolute path"
-                    aria-label="Copy path"
-                    onClick={() => void copyPath(u)}
-                  >
-                    <IconCopy size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-icon"
-                    title="Delete file"
-                    aria-label="Delete file"
-                    onClick={() => setDeleteTarget(u)}
-                  >
-                    <IconTrash size={14} />
-                  </button>
+                  <HoverHint label="View file" side="left">
+                    <button
+                      type="button"
+                      className="btn btn-icon"
+                      aria-label="View file"
+                      disabled={!u.exists}
+                      onClick={() => setPreviewTarget(u)}
+                    >
+                      <IconEye size={14} />
+                    </button>
+                  </HoverHint>
+                  <HoverHint label="Copy absolute path" side="left">
+                    <button
+                      type="button"
+                      className="btn btn-icon"
+                      aria-label="Copy path"
+                      onClick={() => void copyPath(u)}
+                    >
+                      <IconCopy size={14} />
+                    </button>
+                  </HoverHint>
+                  <HoverHint label="Delete file" side="left">
+                    <button
+                      type="button"
+                      className="btn btn-icon"
+                      aria-label="Delete file"
+                      onClick={() => setDeleteTarget(u)}
+                    >
+                      <IconTrash size={14} />
+                    </button>
+                  </HoverHint>
                 </div>
               </div>
             ))}

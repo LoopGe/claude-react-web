@@ -18,6 +18,7 @@ import { prepareFlip } from '../utils/flip'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { useProfiles } from '../hooks/useProfiles'
 import { useProfileListDnd, type ProfileModelRow } from '../hooks/useProfileListDnd'
+import { HoverHint } from './HoverHint'
 import { useAppDndSensors } from '../dnd/sensors'
 import { dndData } from '../dnd/payload'
 import { DragGhost } from '../dnd/DragGhost'
@@ -577,30 +578,44 @@ function ProfileCard({
           {profile.isActive && <StatusBadge tone="accent">Active</StatusBadge>}
         </button>
         <div className="settings-mcp-actions">
-          <button className="btn" onClick={() => void handleTest()} disabled={testing || saving || !canTest}
-            title={!canTest ? 'Enter a token first' : 'Send a minimal request to verify the token and URL'}>
-            {testing ? 'Testing...' : 'Test connection'}
-          </button>
-          <button
-            className="btn"
-            onClick={() => void onActivate()}
-            disabled={profile.isActive || saving}
-            title={profile.isActive ? 'Already active' : 'Make this the active profile'}
+          <HoverHint
+            label={!canTest ? 'Enter a token first' : 'Send a minimal request to verify the token and URL'}
+            side="top"
           >
-            Set active
-          </button>
+            <button className="btn" onClick={() => void handleTest()} disabled={testing || saving || !canTest}>
+              {testing ? 'Testing...' : 'Test connection'}
+            </button>
+          </HoverHint>
+          <HoverHint
+            label={profile.isActive ? 'Already active' : 'Make this the active profile'}
+            side="top"
+          >
+            <button
+              className="btn"
+              onClick={() => void onActivate()}
+              disabled={profile.isActive || saving}
+            >
+              Set active
+            </button>
+          </HoverHint>
           <button className="btn btn-primary" onClick={() => void handleSave()} disabled={saving}>
             {saving ? 'Saving...' : 'Save'}
           </button>
           {!confirmDelete ? (
-            <button
-              className="btn btn-danger"
-              onClick={() => setConfirmDelete(true)}
-              disabled={deleteDisabled}
-              title={deleteDisabled ? (profile.isActive ? 'Cannot delete the active profile' : 'Cannot delete the last profile') : 'Delete this profile'}
+            <HoverHint
+              label={deleteDisabled
+                ? (profile.isActive ? 'Cannot delete the active profile' : 'Cannot delete the last profile')
+                : 'Delete this profile'}
+              side="top"
             >
-              Delete
-            </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => setConfirmDelete(true)}
+                disabled={deleteDisabled}
+              >
+                Delete
+              </button>
+            </HoverHint>
           ) : (
             <div className="settings-mcp-confirm">
               <button
@@ -696,13 +711,14 @@ function ProfileCard({
               <div className="settings-model-list">
                 {modelList.length > 1 && (
                   <div className="settings-model-list-toolbar">
-                    <button
-                      className="btn btn-xs settings-model-sort-btn"
-                      onClick={sortModels}
-                      title="Sort alphabetically (A→Z)"
-                    >
-                      A→Z
-                    </button>
+                    <HoverHint label="Sort alphabetically (A→Z)" side="top">
+                      <button
+                        className="btn btn-xs settings-model-sort-btn"
+                        onClick={sortModels}
+                      >
+                        A→Z
+                      </button>
+                    </HoverHint>
                   </div>
                 )}
                 <SortableContext items={modelList.map((r) => r.uid)} strategy={verticalListSortingStrategy}>
@@ -721,24 +737,29 @@ function ProfileCard({
                       <>
                         {/* Rank doubles as the drag grip — buttons inside the row
                             must stay clickable without a 1px drift starting a drag. */}
-                        <span
-                          ref={setActivatorNodeRef}
-                          className={`settings-model-rank${canDragModels ? ' settings-model-grip' : ''}`}
-                          title={
+                        <HoverHint
+                          label={
                             canDragModels
                               ? (i === 0 ? 'Default model · Drag to reorder' : 'Drag to reorder')
                               : (i === 0 ? 'Default model' : undefined)
                           }
-                          {...attributes}
-                          {...listeners}
+                          side="top"
+                          disabled={!canDragModels && i !== 0}
                         >
-                          {i === 0 ? 'Default' : i + 1}
-                        </span>
-                        <input
-                          className="input settings-model-input"
-                          value={shown}
-                          title={shown}
-                          onChange={(e) => setEditDraft({ uid: row.uid, value: e.target.value })}
+                          <span
+                            ref={setActivatorNodeRef}
+                            className={`settings-model-rank${canDragModels ? ' settings-model-grip' : ''}`}
+                            {...attributes}
+                            {...listeners}
+                          >
+                            {i === 0 ? 'Default' : i + 1}
+                          </span>
+                        </HoverHint>
+                        <HoverHint label={shown} side="top">
+                          <input
+                            className="input settings-model-input"
+                            value={shown}
+                            onChange={(e) => setEditDraft({ uid: row.uid, value: e.target.value })}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
                               // Enter confirms an in-flight IME composition —
@@ -772,34 +793,38 @@ function ProfileCard({
                           }}
                           aria-label={`Model ID ${i + 1}: ${row.id}`}
                         />
+                        </HoverHint>
                         <div className="settings-model-move" role="group" aria-label="Move model priority">
-                          <button
-                            className="btn-icon-sm settings-model-action"
-                            onClick={() => moveModel(i, -1)}
-                            disabled={i === 0}
-                            title="Move up"
-                            aria-label="Move up"
-                          >
-                            <IconArrowUp size={12} />
-                          </button>
-                          <button
-                            className="btn-icon-sm settings-model-action"
-                            onClick={() => moveModel(i, 1)}
-                            disabled={i === modelList.length - 1}
-                            title="Move down"
-                            aria-label="Move down"
-                          >
-                            <IconArrowDown size={12} />
-                          </button>
+                          <HoverHint label="Move up" side="top">
+                            <button
+                              className="btn-icon-sm settings-model-action"
+                              onClick={() => moveModel(i, -1)}
+                              disabled={i === 0}
+                              aria-label="Move up"
+                            >
+                              <IconArrowUp size={12} />
+                            </button>
+                          </HoverHint>
+                          <HoverHint label="Move down" side="top">
+                            <button
+                              className="btn-icon-sm settings-model-action"
+                              onClick={() => moveModel(i, 1)}
+                              disabled={i === modelList.length - 1}
+                              aria-label="Move down"
+                            >
+                              <IconArrowDown size={12} />
+                            </button>
+                          </HoverHint>
                         </div>
-                        <button
-                          className="btn-icon-sm settings-model-action danger"
-                          onClick={() => removeModel(row.uid)}
-                          title="Remove"
-                          aria-label="Remove"
-                        >
-                          <IconX size={12} />
-                        </button>
+                        <HoverHint label="Remove" side="top">
+                          <button
+                            className="btn-icon-sm settings-model-action danger"
+                            onClick={() => removeModel(row.uid)}
+                            aria-label="Remove"
+                          >
+                            <IconX size={12} />
+                          </button>
+                        </HoverHint>
                       </>
                     )}
                   </SortableItem>
@@ -917,15 +942,16 @@ function ProfileCard({
                         {/* Rank doubles as the drag grip — the rest of the card
                             is form fields, so making the whole card draggable
                             would swallow text-selection inside the inputs. */}
-                        <span
-                          ref={setActivatorNodeRef}
-                          className={`settings-model-rank${canDragGroups ? ' settings-model-grip' : ''}`}
-                          title={canDragGroups ? 'Drag to reorder' : 'Group'}
-                          {...attributes}
-                          {...listeners}
-                        >
-                          {i + 1}
-                        </span>
+                        <HoverHint label={canDragGroups ? 'Drag to reorder' : 'Group'} side="top">
+                          <span
+                            ref={setActivatorNodeRef}
+                            className={`settings-model-rank${canDragGroups ? ' settings-model-grip' : ''}`}
+                            {...attributes}
+                            {...listeners}
+                          >
+                            {i + 1}
+                          </span>
+                        </HoverHint>
                         <input
                           className="input settings-model-input"
                           value={g.name}
@@ -933,33 +959,36 @@ function ProfileCard({
                           aria-label="Group name"
                         />
                         <div className="settings-model-move" role="group" aria-label="Move group priority">
-                          <button
-                            className="btn-icon-sm settings-model-action"
-                            onClick={() => moveModelGroup(i, -1)}
-                            disabled={i === 0}
-                            title="Move up"
-                            aria-label="Move up"
-                          >
-                            <IconArrowUp size={12} />
-                          </button>
-                          <button
-                            className="btn-icon-sm settings-model-action"
-                            onClick={() => moveModelGroup(i, 1)}
-                            disabled={i === modelGroups.length - 1}
-                            title="Move down"
-                            aria-label="Move down"
-                          >
-                            <IconArrowDown size={12} />
-                          </button>
+                          <HoverHint label="Move up" side="top">
+                            <button
+                              className="btn-icon-sm settings-model-action"
+                              onClick={() => moveModelGroup(i, -1)}
+                              disabled={i === 0}
+                              aria-label="Move up"
+                            >
+                              <IconArrowUp size={12} />
+                            </button>
+                          </HoverHint>
+                          <HoverHint label="Move down" side="top">
+                            <button
+                              className="btn-icon-sm settings-model-action"
+                              onClick={() => moveModelGroup(i, 1)}
+                              disabled={i === modelGroups.length - 1}
+                              aria-label="Move down"
+                            >
+                              <IconArrowDown size={12} />
+                            </button>
+                          </HoverHint>
                         </div>
-                        <button
-                          className="btn-icon-sm settings-model-action danger"
-                          onClick={() => removeModelGroup(g.id)}
-                          title="Remove"
-                          aria-label="Remove"
-                        >
-                          <IconX size={12} />
-                        </button>
+                        <HoverHint label="Remove" side="top">
+                          <button
+                            className="btn-icon-sm settings-model-action danger"
+                            onClick={() => removeModelGroup(g.id)}
+                            aria-label="Remove"
+                          >
+                            <IconX size={12} />
+                          </button>
+                        </HoverHint>
                       </div>
                       <div className="settings-model-group-slots">
                         {slots.map((slot) => (

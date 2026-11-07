@@ -1,11 +1,11 @@
 // UsagePanel's per-model "cache" cell — SDK 0.3.311 splits cache WRITES by
 // TTL (cacheCreationEphemeral5mInputTokens / …1hInputTokens, both optional
 // subsets of cacheCreationInputTokens). The cell keeps showing the combined
-// read+write total; when either sub-field is present it gains a `title`
-// tooltip carrying the breakdown. Entries without the sub-fields (older CLIs)
-// must render exactly as before — no title.
+// read+write total; when either sub-field is present its hover card carries
+// the breakdown. Entries without the sub-fields (older CLIs) must render
+// exactly as before — no hover card.
 import { describe, expect, it, vi } from 'vitest'
-import { render } from '@testing-library/react'
+import { act, fireEvent, render } from '@testing-library/react'
 import { UsagePanel } from './UsagePanel'
 import type { SessionUsageData } from '../../shared/usage'
 
@@ -39,6 +39,20 @@ function cacheCell(container: HTMLElement): HTMLTableCellElement {
   return cells[4] as HTMLTableCellElement
 }
 
+/** Hover the cell long enough for HoverHint's dwell and return the card text. */
+function cacheTooltipText(cell: Element): string {
+  vi.useFakeTimers()
+  try {
+    fireEvent.pointerEnter(cell)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    return document.querySelector('.hover-pop')?.textContent ?? ''
+  } finally {
+    vi.useRealTimers()
+  }
+}
+
 describe('UsagePanel cache-write TTL split', () => {
   it('shows a 5m/1h breakdown tooltip when the sub-fields are present', () => {
     const { container } = renderPanel(
@@ -55,7 +69,7 @@ describe('UsagePanel cache-write TTL split', () => {
     const cell = cacheCell(container)
     // Combined number unchanged: read 40000 + write 6000 = 46000.
     expect(cell.textContent).toMatch(/46/)
-    const title = cell.getAttribute('title') ?? ''
+    const title = cacheTooltipText(cell)
     expect(title).toContain('read')
     expect(title).toContain('write')
     expect(title).toContain('5m')
@@ -76,7 +90,7 @@ describe('UsagePanel cache-write TTL split', () => {
         costUSD: 0.01,
       }),
     )
-    const title = cacheCell(container).getAttribute('title') ?? ''
+    const title = cacheTooltipText(cacheCell(container))
     expect(title).toContain('read')
     expect(title).toContain('write')
     expect(title).not.toContain('5m')
@@ -93,7 +107,7 @@ describe('UsagePanel cache-write TTL split', () => {
         costUSD: 0.01,
       }),
     )
-    const title = cacheCell(container).getAttribute('title') ?? ''
+    const title = cacheTooltipText(cacheCell(container))
     expect(title).toContain('5m')
     expect(title).not.toContain('1h')
     expect(title).not.toContain(' 0')
@@ -108,7 +122,7 @@ describe('UsagePanel cache-write TTL split', () => {
         costUSD: 0.01,
       }),
     )
-    const title = cacheCell(container).getAttribute('title') ?? ''
+    const title = cacheTooltipText(cacheCell(container))
     expect(title).toContain('read')
     expect(title).not.toContain('write')
   })
@@ -117,7 +131,18 @@ describe('UsagePanel cache-write TTL split', () => {
     const { container } = renderPanel(
       dataWithModel({ inputTokens: 1000, outputTokens: 2000, cacheReadInputTokens: 0, costUSD: 0.01 }),
     )
-    expect(cacheCell(container).getAttribute('title')).toBeNull()
+    const cell = cacheCell(container)
+    expect(cell.getAttribute('title')).toBeNull()
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerEnter(cell)
+      act(() => {
+        vi.advanceTimersByTime(500)
+      })
+      expect(document.querySelector('.hover-pop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('adds no tooltip when the entry carries no cache fields (older CLIs)', () => {

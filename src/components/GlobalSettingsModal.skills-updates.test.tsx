@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ToastProvider } from './ToastProvider'
 import { GlobalSettingsModal } from './GlobalSettingsModal'
 import { api } from '../hooks/useApi'
@@ -94,7 +94,18 @@ describe('GlobalSettingsModal Skills update checks', () => {
     await waitFor(() => expect(screen.getByText('find-skills')).toBeTruthy())
 
     const badge = screen.getByText('claude-react-web')
-    expect(badge.getAttribute('title')).toBe('/Users/loop/Codes/claude-react-web')
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerEnter(badge)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(document.querySelector('.hover-pop')?.textContent).toContain(
+        '/Users/loop/Codes/claude-react-web',
+      )
+    } finally {
+      vi.useRealTimers()
+    }
     // User-scope rows carry no project badge.
     const userRow = rowOf('home-skill', 'user')
     expect(userRow.textContent).not.toContain('claude-react-web')

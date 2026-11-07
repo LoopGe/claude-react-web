@@ -7,6 +7,7 @@ import { notificationTooltip } from '../utils/notifications'
 import { cx } from '../utils/cx'
 import { isDesktopHost } from '../host-capabilities'
 import { SetupWebImport } from './SetupWebImport'
+import { HoverHint } from './HoverHint'
 import { IconBell, IconBellOff, IconX, IconCheck } from './icons/ToolIcons'
 import { Switch } from './Switch'
 import {
@@ -841,15 +842,16 @@ export function SetupPage({ onConfigured }: Props) {
                       autoCorrect="off"
                       spellCheck={false}
                     />
-                    <button
-                      type="button"
-                      onClick={() => setShowToken(!showToken)}
-                      style={styles.toggleBtn}
-                      title={showToken ? 'Hide token' : 'Show token'}
-                      aria-pressed={showToken}
-                    >
-                      {showToken ? 'Hide' : 'Show'}
-                    </button>
+                    <HoverHint label={showToken ? 'Hide token' : 'Show token'} side="top">
+                      <button
+                        type="button"
+                        onClick={() => setShowToken(!showToken)}
+                        style={styles.toggleBtn}
+                        aria-pressed={showToken}
+                      >
+                        {showToken ? 'Hide' : 'Show'}
+                      </button>
+                    </HoverHint>
                   </div>
                   {tokenPrefilled && (
                     <p className="setup-prefilled-hint">
@@ -955,16 +957,17 @@ export function SetupPage({ onConfigured }: Props) {
                         >
                           {m}
                         </code>
-                        <button
-                          type="button"
-                          className="btn"
-                          style={styles.smallIconBtn}
-                          onClick={() => removeModel(m)}
-                          title="Remove"
-                          aria-label={`Remove ${m}`}
-                        >
-                          <IconX size={12} />
-                        </button>
+                        <HoverHint label="Remove" side="top">
+                          <button
+                            type="button"
+                            className="btn"
+                            style={styles.smallIconBtn}
+                            onClick={() => removeModel(m)}
+                            aria-label={`Remove ${m}`}
+                          >
+                            <IconX size={12} />
+                          </button>
+                        </HoverHint>
                       </div>
                     ))}
                     <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
@@ -1237,15 +1240,18 @@ export function SetupPage({ onConfigured }: Props) {
                     Notifications are blocked. Enable them in your browser's site settings, then reload.
                   </p>
                 ) : (
-                  <button
-                    type="button"
-                    className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
-                    onClick={() => void notifications.toggle()}
-                    title={notificationTooltip(notifications.permission, notifications.enabled)}
-                    disabled={notifications.permission === 'unsupported'}
-                    aria-label="Toggle desktop notifications"
-                    style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  <HoverHint
+                    label={notificationTooltip(notifications.permission, notifications.enabled)}
+                    side="top"
                   >
+                    <button
+                      type="button"
+                      className={`btn btn-icon ${notifications.enabled ? 'active' : ''}`}
+                      onClick={() => void notifications.toggle()}
+                      disabled={notifications.permission === 'unsupported'}
+                      aria-label="Toggle desktop notifications"
+                      style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                    >
                     {notifications.enabled ? (
                       <>
                         <IconBell size={14} /> Enabled
@@ -1256,6 +1262,7 @@ export function SetupPage({ onConfigured }: Props) {
                       </>
                     )}
                   </button>
+                </HoverHint>
                 )}
                 <p className="setup-hint">You can toggle this anytime from the bell icon in the header.</p>
               </div>
@@ -1290,18 +1297,23 @@ export function SetupPage({ onConfigured }: Props) {
                   spellCheck={false}
                 />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 2 }}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setProbedRegistry(updateRegistry.trim())
-                      updateProbe.refresh(updateRegistry)
-                    }}
-                    disabled={updateProbe.refreshing || !updateRegistry.trim()}
-                    style={styles.secondaryBtn}
-                    title={!updateRegistry.trim() ? 'Enter a registry URL first.' : undefined}
+                  <HoverHint
+                    label="Enter a registry URL first."
+                    side="top"
+                    disabled={!!updateRegistry.trim()}
                   >
-                    {updateProbe.refreshing ? 'Checking…' : 'Check now'}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProbedRegistry(updateRegistry.trim())
+                        updateProbe.refresh(updateRegistry)
+                      }}
+                      disabled={updateProbe.refreshing || !updateRegistry.trim()}
+                      style={styles.secondaryBtn}
+                    >
+                      {updateProbe.refreshing ? 'Checking…' : 'Check now'}
+                    </button>
+                  </HoverHint>
                   {/* Only show a result when it describes the value currently
                    *  in the box (probedRegistry === the trimmed input). */}
                   {probedRegistry !== null &&

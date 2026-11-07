@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { DirectoryPicker } from '../DirectoryPicker'
+import { HoverHint } from '../HoverHint'
 import { ProjectPicker } from './ProjectPicker'
 import { FieldPicker } from '../FieldPicker'
 import type { FieldPickerOption } from '../FieldPicker'
@@ -943,28 +944,30 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                             />
                             <span style={{ flex: 1 }}>{srv.name}</span>
                             {globallyOff && (
-                              <span
-                                style={{ fontSize: 'var(--fs-2xs)', color: 'var(--fg-muted)' }}
-                                title="Globally disabled — opt in by checking the box"
-                              >
-                                off
-                              </span>
+                              <HoverHint label="Globally disabled — opt in by checking the box" side="top">
+                                <span
+                                  style={{ fontSize: 'var(--fs-2xs)', color: 'var(--fg-muted)' }}
+                                >
+                                  off
+                                </span>
+                              </HoverHint>
                             )}
                             <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--fg-muted)' }}>{srv.type}</span>
-                            <button
-                              className="btn"
-                              style={{ fontSize: 'var(--fs-2xs)', padding: '1px 5px' }}
-                              onClick={(e) => {
-                                e.preventDefault()
-                                e.stopPropagation()
-                                setMcpInstallerEdit(srv)
-                                setShowMcpInstaller(true)
-                              }}
-                              title="Edit server"
-                              aria-label="Edit server"
-                            >
-                              <IconPencil size={12} />
-                            </button>
+                            <HoverHint label="Edit server" side="top">
+                              <button
+                                className="btn"
+                                style={{ fontSize: 'var(--fs-2xs)', padding: '1px 5px' }}
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  setMcpInstallerEdit(srv)
+                                  setShowMcpInstaller(true)
+                                }}
+                                aria-label="Edit server"
+                              >
+                                <IconPencil size={12} />
+                              </button>
+                            </HoverHint>
                           </label>
                         )
                       })}
@@ -1067,19 +1070,20 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                             setEnvRows(next)
                           }}
                         />
-                        <button
-                          type="button"
-                          className="btn btn-icon"
-                          style={{ fontSize: 'var(--fs-xs)', padding: '2px 6px' }}
-                          onClick={() => {
-                            const next = envRows.filter((r) => r.id !== row.id)
-                            setEnvRows(next)
-                          }}
-                          title="Remove variable"
-                          aria-label="Remove variable"
-                        >
-                          <IconX size={12} />
-                        </button>
+                        <HoverHint label="Remove variable" side="top">
+                          <button
+                            type="button"
+                            className="btn btn-icon"
+                            style={{ fontSize: 'var(--fs-xs)', padding: '2px 6px' }}
+                            onClick={() => {
+                              const next = envRows.filter((r) => r.id !== row.id)
+                              setEnvRows(next)
+                            }}
+                            aria-label="Remove variable"
+                          >
+                            <IconX size={12} />
+                          </button>
+                        </HoverHint>
                       </div>
                     ))}
                   </div>

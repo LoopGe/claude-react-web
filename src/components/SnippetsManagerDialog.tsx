@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { IconPencil, IconTrash, IconArrowUp, IconArrowDown } from './icons/ToolIcons'
 import type { ComposerSnippet, ComposerSnippetsApi } from '../hooks/useComposerSnippets'
 import { Overlay } from './Overlay'
+import { HoverHint } from './HoverHint'
 
 interface Props {
   open?: boolean
@@ -170,47 +171,53 @@ export function SnippetsManagerDialog({ open = true, api, onClose }: Props) {
                   <>
                     <div className="snippet-meta">
                       <div className="snippet-label">{s.label}</div>
-                      <div className="snippet-preview" title={s.content}>{s.content}</div>
+                      <HoverHint label={s.content} side="top" align="start">
+                        <div className="snippet-preview">{s.content}</div>
+                      </HoverHint>
                     </div>
                     <div className="snippet-actions">
-                      <button
-                        type="button"
-                        className="btn btn-icon"
-                        title="Move up"
-                        aria-label="Move up"
-                        disabled={i === 0}
-                        onClick={() => api.move(i, -1)}
-                      >
-                        <IconArrowUp size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-icon"
-                        title="Move down"
-                        aria-label="Move down"
-                        disabled={i === api.snippets.length - 1}
-                        onClick={() => api.move(i, 1)}
-                      >
-                        <IconArrowDown size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-icon"
-                        title="Edit"
-                        aria-label="Edit"
-                        onClick={() => startEdit(s)}
-                      >
-                        <IconPencil size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-icon btn-danger"
-                        title="Delete"
-                        aria-label="Delete"
-                        onClick={() => api.remove(s.id)}
-                      >
-                        <IconTrash size={14} />
-                      </button>
+                      <HoverHint label="Move up" side="top">
+                        <button
+                          type="button"
+                          className="btn btn-icon"
+                          aria-label="Move up"
+                          disabled={i === 0}
+                          onClick={() => api.move(i, -1)}
+                        >
+                          <IconArrowUp size={12} />
+                        </button>
+                      </HoverHint>
+                      <HoverHint label="Move down" side="top">
+                        <button
+                          type="button"
+                          className="btn btn-icon"
+                          aria-label="Move down"
+                          disabled={i === api.snippets.length - 1}
+                          onClick={() => api.move(i, 1)}
+                        >
+                          <IconArrowDown size={12} />
+                        </button>
+                      </HoverHint>
+                      <HoverHint label="Edit" side="top">
+                        <button
+                          type="button"
+                          className="btn btn-icon"
+                          aria-label="Edit"
+                          onClick={() => startEdit(s)}
+                        >
+                          <IconPencil size={14} />
+                        </button>
+                      </HoverHint>
+                      <HoverHint label="Delete" side="top">
+                        <button
+                          type="button"
+                          className="btn btn-icon btn-danger"
+                          aria-label="Delete"
+                          onClick={() => api.remove(s.id)}
+                        >
+                          <IconTrash size={14} />
+                        </button>
+                      </HoverHint>
                     </div>
                   </>
                 )}

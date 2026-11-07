@@ -17,6 +17,7 @@ import { StatusBadge, type StatusTone } from './StatusBadge'
 import { AppPluginMarketplaceSection } from './AppPluginMarketplaceSection'
 import { DirectoryPicker } from './DirectoryPicker'
 import { IconFolder } from './icons/ToolIcons'
+import { HoverHint } from './HoverHint'
 import type { AppPluginClientInfo } from '../../shared/app-plugins/runtime-state.js'
 import type { NormalisedPermission, AppPluginPermission, PermissionSpec } from '../../shared/app-plugins/permissions.js'
 import { ALL_PERMISSIONS } from '../../shared/app-plugins/permissions.js'
@@ -120,9 +121,11 @@ export function AppPluginsTab({ saveAllRef }: { saveAllRef?: MutableRefObject<((
               onChange={(e) => setInstallPath(e.target.value)}
               aria-label="Plugin directory path"
             />
-            <button className="btn" onClick={() => setShowDirPicker(true)} disabled={busy} title="Browse">
-              <IconFolder size={14} /> Browse
-            </button>
+            <HoverHint label="Browse" side="top">
+              <button className="btn" onClick={() => setShowDirPicker(true)} disabled={busy}>
+                <IconFolder size={14} /> Browse
+              </button>
+            </HoverHint>
             <button className="btn btn-primary" disabled={busy || !installPath.trim()} onClick={install}>
               {busy ? 'Installing…' : 'Install'}
             </button>

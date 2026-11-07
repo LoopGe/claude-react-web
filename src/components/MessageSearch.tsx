@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { IconX } from './icons/ToolIcons'
+import { HoverHint } from './HoverHint'
 import { useExitPresence } from '../hooks/useExitPresence'
 
 interface Props {
@@ -145,25 +146,31 @@ export function MessageSearch({ open, onClose, onNavigate, totalResults, onQuery
       <span className="message-search-count">
         {totalResults > 0 ? `${currentIdx + 1}/${totalResults}` : query ? '0 results' : ''}
       </span>
-      <button
-        className="btn message-search-nav"
-        onClick={goPrev}
-        disabled={totalResults === 0}
-        title="Previous result (Shift+Enter)"
-      >
-        ↑
-      </button>
-      <button
-        className="btn message-search-nav"
-        onClick={goNext}
-        disabled={totalResults === 0}
-        title="Next result (Enter)"
-      >
-        ↓
-      </button>
-      <button className="btn message-search-close" onClick={onClose} title="Close (Esc)" aria-label="Close">
-        <IconX size={12} />
-      </button>
+      <HoverHint label="Previous result (Shift+Enter)" side="top">
+        <button
+          className="btn message-search-nav"
+          onClick={goPrev}
+          disabled={totalResults === 0}
+          aria-label="Previous result"
+        >
+          ↑
+        </button>
+      </HoverHint>
+      <HoverHint label="Next result (Enter)" side="top">
+        <button
+          className="btn message-search-nav"
+          onClick={goNext}
+          disabled={totalResults === 0}
+          aria-label="Next result"
+        >
+          ↓
+        </button>
+      </HoverHint>
+      <HoverHint label="Close (Esc)" side="top">
+        <button className="btn message-search-close" onClick={onClose} aria-label="Close">
+          <IconX size={12} />
+        </button>
+      </HoverHint>
     </div>
   )
 }

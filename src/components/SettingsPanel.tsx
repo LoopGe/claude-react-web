@@ -8,6 +8,7 @@ import type { ApiError } from '../transport/types'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
+import { HoverHint } from './HoverHint'
 import { measureSettingsPanelBodyHeight } from '../utils/settings-panel-measure'
 import { useToast, apiErrorToastOpts } from '../hooks/useToast'
 import { parseTaskBudgetInput } from '../../shared/session-info'
@@ -1160,13 +1161,19 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           <span className="settings-group-desc">Read-only values fixed when the session was created.</span>
         </div>
         <SettingsRow stack title="Session ID">
-          <div className="settings-readonly-value mono" title={session.id}>{session.id}</div>
+          <HoverHint label={session.id} side="top">
+            <div className="settings-readonly-value mono">{session.id}</div>
+          </HoverHint>
         </SettingsRow>
         <SettingsRow stack title="CWD">
-          <div className="settings-readonly-value mono" title={session.cwd ?? '—'}>{session.cwd ?? '—'}</div>
+          <HoverHint label={session.cwd ?? '—'} side="top">
+            <div className="settings-readonly-value mono">{session.cwd ?? '—'}</div>
+          </HoverHint>
         </SettingsRow>
         <SettingsRow stack title="Created">
-          <div className="settings-readonly-value" title={new Date(session.createdAt).toLocaleString()}>{new Date(session.createdAt).toLocaleString()}</div>
+          <HoverHint label={new Date(session.createdAt).toLocaleString()} side="top">
+            <div className="settings-readonly-value">{new Date(session.createdAt).toLocaleString()}</div>
+          </HoverHint>
         </SettingsRow>
       </section>
 
@@ -2396,12 +2403,17 @@ function PluginCard({
   return (
     <div className="settings-card">
       <div className="settings-card-head">
-        <span
-          className="settings-card-dot"
-          style={{ '--dot': dotColor } as CSSProperties}
-          data-follow={followGlobal || undefined}
-          title={followGlobal ? 'Follows the marketplace enable state' : undefined}
-        />
+        <HoverHint
+          label="Follows the marketplace enable state"
+          side="top"
+          disabled={!followGlobal}
+        >
+          <span
+            className="settings-card-dot"
+            style={{ '--dot': dotColor } as CSSProperties}
+            data-follow={followGlobal || undefined}
+          />
+        </HoverHint>
         <span className="settings-card-name">{name}</span>
         {plugin?.source && (
           <span className="settings-card-badge">{plugin.source}</span>
@@ -2533,14 +2545,15 @@ function FirstPartyStatusCard({
             <IconLoader size={12} className="settings-card-spin" />
           </span>
         ) : (
-          <button
-            className="btn btn-xs"
-            onClick={() => onToggle(!enabled)}
-            disabled={inert}
-            title={enabled ? 'Disable' : 'Enable'}
-          >
-            {enabled ? 'Disable' : 'Enable'}
-          </button>
+          <HoverHint label={enabled ? 'Disable' : 'Enable'} side="top">
+            <button
+              className="btn btn-xs"
+              onClick={() => onToggle(!enabled)}
+              disabled={inert}
+            >
+              {enabled ? 'Disable' : 'Enable'}
+            </button>
+          </HoverHint>
         )}
         {tool.tools.length > 0 && (
           <button
@@ -2645,17 +2658,23 @@ export function McpServerCard({
         <span className="settings-card-name">
           {server.name}
           {isGlobal && (
-            <span className="settings-card-badge global" title="From the global MCP config library">global</span>
+            <HoverHint label="From the global MCP config library" side="top">
+              <span className="settings-card-badge global">global</span>
+            </HoverHint>
           )}
           {sourceBadge && (
-            <span className={sourceBadge.className} title={sourceBadge.title}>{sourceBadge.text}</span>
+            <HoverHint label={sourceBadge.title} side="top" disabled={!sourceBadge.title}>
+              <span className={sourceBadge.className}>{sourceBadge.text}</span>
+            </HoverHint>
           )}
           {provenanceKnown && !isGlobal && !server.source && (
             // No global-membership and no SDK-reported scope: the card can
             // only come from a session-inline injection (dynamic set or an
             // agent definition's inline servers). By-elimination, but a
             // deterministic bucket — see the partition memo above.
-            <span className="settings-card-badge session" title="Injected for this session only — not persisted">session</span>
+            <HoverHint label="Injected for this session only — not persisted" side="top">
+              <span className="settings-card-badge session">session</span>
+            </HoverHint>
           )}
         </span>
         {server.tools && (

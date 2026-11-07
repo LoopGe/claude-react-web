@@ -10,6 +10,7 @@
 import { memo, useEffect } from 'react'
 import { useCountUp } from '../hooks/useCountUp'
 import { IconLoader } from './icons/ToolIcons'
+import { HoverHint } from './HoverHint'
 import { formatTokens, formatElapsed } from '../utils/format'
 import {
   USAGE_WINDOW_KEYS,
@@ -209,10 +210,17 @@ export const UsagePanel = memo(function UsagePanel({
               <h3 className="usage-section-title">Account</h3>
               <div className="usage-account-rows">
                 {accountRows.map((row) => (
-                  <div className="usage-account-row" key={row.label} title={row.title ?? row.value}>
-                    <span className="usage-account-label">{row.label}</span>
-                    <span className="usage-account-value">{row.value}</span>
-                  </div>
+                  <HoverHint
+                    key={row.label}
+                    label={row.title ?? row.value}
+                    side="top"
+                    disabled={!(row.title ?? row.value)}
+                  >
+                    <div className="usage-account-row">
+                      <span className="usage-account-label">{row.label}</span>
+                      <span className="usage-account-value">{row.value}</span>
+                    </div>
+                  </HoverHint>
                 ))}
               </div>
             </section>
@@ -226,12 +234,22 @@ export const UsagePanel = memo(function UsagePanel({
                   <span className="usage-cost-caption">session total</span>
                 </div>
                 <div className="usage-totals">
-                  {wallDur && <span title="Wall-clock session duration">{wallDur} total</span>}
-                  {apiDur && <span title="Time spent on API calls">{apiDur} api</span>}
+                  {wallDur && (
+                    <HoverHint label="Wall-clock session duration" side="top">
+                      <span>{wallDur} total</span>
+                    </HoverHint>
+                  )}
+                  {apiDur && (
+                    <HoverHint label="Time spent on API calls" side="top">
+                      <span>{apiDur} api</span>
+                    </HoverHint>
+                  )}
                   {added != null && removed != null && (
-                    <span title="Lines added / removed this session">
-                      +{added} −{removed} lines
-                    </span>
+                    <HoverHint label="Lines added / removed this session" side="top">
+                      <span>
+                        +{added} −{removed} lines
+                      </span>
+                    </HoverHint>
                   )}
                 </div>
               </section>
@@ -245,7 +263,9 @@ export const UsagePanel = memo(function UsagePanel({
                         <th>model</th>
                         <th>in</th>
                         <th>out</th>
-                        <th title="thinking tokens (subset of out)">think</th>
+                        <HoverHint label="thinking tokens (subset of out)" side="top">
+                          <th>think</th>
+                        </HoverHint>
                         <th>cache</th>
                         <th>cost</th>
                       </tr>
@@ -268,15 +288,19 @@ export const UsagePanel = memo(function UsagePanel({
                         const mCost = fmtCost(m.costUSD)
                         return (
                           <tr key={model}>
-                            <td className="usage-model-name" title={model}>
-                              {model}
-                            </td>
+                            <HoverHint label={model} side="top">
+                              <td className="usage-model-name">
+                                {model}
+                              </td>
+                            </HoverHint>
                             <td>{inTok != null ? formatTokens(inTok) : '—'}</td>
                             <td>{outTok != null ? formatTokens(outTok) : '—'}</td>
                             <td>{thinkTok != null ? formatTokens(thinkTok) : '—'}</td>
-                            <td title={cacheTok > 0 && cacheTitle ? cacheTitle : undefined}>
-                              {cacheTok > 0 ? formatTokens(cacheTok) : '—'}
-                            </td>
+                            <HoverHint label={cacheTitle} side="top" disabled={!(cacheTok > 0 && cacheTitle)}>
+                              <td>
+                                {cacheTok > 0 ? formatTokens(cacheTok) : '—'}
+                              </td>
+                            </HoverHint>
                             <td>{mCost ?? '—'}</td>
                           </tr>
                         )

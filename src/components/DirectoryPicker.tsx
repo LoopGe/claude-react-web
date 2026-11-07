@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../hooks/useApi'
 import { useAutoHeightTransition } from '../hooks/useAutoHeightTransition'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
+import { HoverHint } from './HoverHint'
 import { useMergedRef } from '../utils/mergedRef'
 import { buildCrumbs } from '../utils/paths'
 import { IconFolder, IconX } from './icons/ToolIcons'
@@ -181,22 +182,24 @@ export function DirectoryPicker({
         </div>
 
         <div className="modal-toolbar">
-          <button
-            className="btn"
-            onClick={() => home && void loadList(home.home, showHidden)}
-            disabled={!home || creating}
-            title="Home directory"
-          >
-            Home
-          </button>
-          <button
-            className="btn"
-            onClick={() => home && void loadList(home.cwd, showHidden)}
-            disabled={!home || creating}
-            title="Server working directory"
-          >
-            Server CWD
-          </button>
+          <HoverHint label="Home directory" side="top">
+            <button
+              className="btn"
+              onClick={() => home && void loadList(home.home, showHidden)}
+              disabled={!home || creating}
+            >
+              Home
+            </button>
+          </HoverHint>
+          <HoverHint label="Server working directory" side="top">
+            <button
+              className="btn"
+              onClick={() => home && void loadList(home.cwd, showHidden)}
+              disabled={!home || creating}
+            >
+              Server CWD
+            </button>
+          </HoverHint>
           <button
             className="btn"
             onClick={() => list?.parent && void loadList(list.parent, showHidden)}
@@ -211,14 +214,15 @@ export function DirectoryPicker({
             }} />
             Hidden
           </label>
-          <button
-            className="btn"
-            onClick={() => { setShowCreateRow(true); setCreateName('') }}
-            disabled={loading || !list || creating}
-            title="Create a new folder here"
-          >
-            + New folder
-          </button>
+          <HoverHint label="Create a new folder here" side="top">
+            <button
+              className="btn"
+              onClick={() => { setShowCreateRow(true); setCreateName('') }}
+              disabled={loading || !list || creating}
+            >
+              + New folder
+            </button>
+          </HoverHint>
         </div>
 
         <div className="modal-path">
