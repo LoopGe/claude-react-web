@@ -28,9 +28,20 @@ const text = (r: { content: Array<{ type: string; text?: string }> }) => r.conte
 beforeEach(() => vi.clearAllMocks())
 
 describe('marketplace-tools', () => {
-  it('declares its read-only set as a subset of the built tools', () => {
-    const names = new Set(buildMarketplaceTools(asHost).map((t) => t.name))
-    expect([...MARKETPLACE_READ_ONLY_TOOLS].every((n) => names.has(n))).toBe(true)
+  it('pins the read-only set and the per-tool annotations exactly', () => {
+    expect([...MARKETPLACE_READ_ONLY_TOOLS].sort()).toEqual(['check_updates', 'list', 'plugins'])
+    const tools = buildMarketplaceTools(asHost)
+    const readOnlyHintOf = (name: string) => {
+      const def = tools.find((t) => t.name === name)
+      if (!def) throw new Error(`no tool ${name}`)
+      return def.annotations?.readOnlyHint
+    }
+    for (const name of ['list', 'plugins', 'check_updates']) {
+      expect(readOnlyHintOf(name)).toBe(true)
+    }
+    for (const name of ['add', 'set_plugin_enabled']) {
+      expect(readOnlyHintOf(name) ?? false).toBe(false)
+    }
   })
 
   it('add forwards url/ref to the host', async () => {
