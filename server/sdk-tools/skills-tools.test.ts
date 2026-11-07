@@ -25,9 +25,20 @@ afterEach(() => {
 })
 
 describe('skills-tools', () => {
-  it('declares its read-only set as a subset of the built tools', () => {
-    const names = new Set(buildSkillsTools(host, projectDir).map((t) => t.name))
-    expect([...SKILLS_READ_ONLY_TOOLS].every((n) => names.has(n))).toBe(true)
+  it('pins the read-only set and the per-tool annotations exactly', () => {
+    expect([...SKILLS_READ_ONLY_TOOLS].sort()).toEqual(['get', 'list', 'validate'])
+    const tools = buildSkillsTools(host, projectDir)
+    const readOnlyHintOf = (name: string) => {
+      const def = tools.find((t) => t.name === name)
+      if (!def) throw new Error(`no tool ${name}`)
+      return def.annotations?.readOnlyHint
+    }
+    for (const name of ['get', 'list', 'validate']) {
+      expect(readOnlyHintOf(name)).toBe(true)
+    }
+    for (const name of ['create', 'update', 'delete']) {
+      expect(readOnlyHintOf(name) ?? false).toBe(false)
+    }
   })
 
   it('creates a project skill and reloads the project cwd', async () => {

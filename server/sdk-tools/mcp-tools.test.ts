@@ -23,9 +23,20 @@ const text = (r: { content: Array<{ type: string; text?: string }> }) => r.conte
 beforeEach(() => vi.clearAllMocks())
 
 describe('mcp-tools', () => {
-  it('declares its read-only set as a subset of the built tools', () => {
-    const names = new Set(buildMcpTools(host).map((t) => t.name))
-    expect([...MCP_READ_ONLY_TOOLS].every((n) => names.has(n))).toBe(true)
+  it('pins the read-only set and the per-tool annotations exactly', () => {
+    expect([...MCP_READ_ONLY_TOOLS].sort()).toEqual(['get', 'list'])
+    const tools = buildMcpTools(host)
+    const readOnlyHintOf = (name: string) => {
+      const def = tools.find((t) => t.name === name)
+      if (!def) throw new Error(`no tool ${name}`)
+      return def.annotations?.readOnlyHint
+    }
+    for (const name of ['get', 'list']) {
+      expect(readOnlyHintOf(name)).toBe(true)
+    }
+    for (const name of ['add', 'update', 'remove', 'set_enabled', 'test']) {
+      expect(readOnlyHintOf(name) ?? false).toBe(false)
+    }
   })
 
   it('add requires a session id', async () => {
@@ -41,6 +52,15 @@ describe('mcp-tools', () => {
     expect(host.create).toHaveBeenCalled()
     expect(host.attach).toHaveBeenCalledWith('s1', 'pw')
     expect(text(res)).toContain('"added"')
+  })
+
+  it('add trims the name before touching the store or the session', async () => {
+    host.get.mockReturnValue(null)
+    host.create.mockReturnValue({ name: 'pw' })
+    await call('add', { name: ' pw ', command: 'node' }, 's1')
+    expect(host.get).toHaveBeenCalledWith('pw')
+    expect(host.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'pw' }))
+    expect(host.attach).toHaveBeenCalledWith('s1', 'pw')
   })
 
   it('add refuses an existing name without overwrite', async () => {

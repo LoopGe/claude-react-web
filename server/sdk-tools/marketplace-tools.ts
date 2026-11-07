@@ -77,7 +77,7 @@ export function buildMarketplaceTools(host: MarketplaceToolsHost): SdkMcpToolDef
     ),
     tool(
       'check_updates',
-      'Check every marketplace upstream for new commits (git ls-remote against the stored SHA). Per-marketplace failures are isolated and reported on that entry. Read-only: nothing is fetched or written.',
+      'Check every marketplace upstream for new commits (git ls-remote against the stored SHA). Per-marketplace failures are isolated and reported on that entry. Read-only: no store or disk writes; only `git ls-remote`.',
       {},
       async () => guard(async () => json({ updates: await host.checkUpdates() })),
       { annotations: readOnly },

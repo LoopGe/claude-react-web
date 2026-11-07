@@ -217,10 +217,12 @@ export class SessionMcpManager {
 
     // Inline = dynamic entries that are NOT defined in the global store; they
     // must survive the replace-semantics setMcpServers call. Without a store
-    // every dynamic entry is inline.
+    // every dynamic entry is inline. The plan's target is excluded even when
+    // the store no longer defines it (remove, or a disabled record the
+    // caller wants gone): re-carrying it as inline would undo the detach.
     const inline: Record<string, unknown> = {}
     for (const [n, cfg] of Object.entries(dynamic)) {
-      if (!this.deps.mcpStore?.get(n)) inline[n] = cfg
+      if (n !== name && !this.deps.mcpStore?.get(n)) inline[n] = cfg
     }
 
     const merged = await this.mergeMcpServersAsync(next.names, inline)

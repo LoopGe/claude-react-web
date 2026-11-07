@@ -103,21 +103,25 @@ export function buildMcpTools(host: McpToolsHost, ctx?: FirstPartyToolBuildConte
       'Create a global MCP server and attach it to this session by default. Fails if the name already exists unless overwrite is true (then the stored config is merged, not replaced). Set attachToSession false to only save the config.',
       {
         ...SERVER_FIELDS,
-        overwrite: z.boolean().optional().describe('replace an existing server of the same name (merge semantics)'),
+        overwrite: z.boolean().optional().describe("update an existing server's config (merge semantics)"),
         attachToSession: z.boolean().optional().describe('attach to the calling session; defaults to true'),
       },
       async (a) =>
         guard(async () => {
           if (!sessionId) throw new Error(NO_SESSION_ERROR)
-          const { overwrite, attachToSession, ...input } = a
-          const existing = host.get(input.name)
+          const { overwrite, attachToSession, ...fields } = a
+          // The store trims names, so normalize once here: every host call and
+          // the result must address the same key regardless of whitespace.
+          const name = a.name.trim()
+          const input = { ...fields, name }
+          const existing = host.get(name)
           if (existing && overwrite !== true) {
             throw new Error(
-              `MCP server "${input.name}" already exists; pass overwrite: true to update its config instead`,
+              `MCP server "${name}" already exists; pass overwrite: true to update its config instead`,
             )
           }
-          const saved = existing ? host.update(input.name, input) : host.create(input)
-          const attach = attachToSession === false ? null : await host.attach(sessionId, input.name)
+          const saved = existing ? host.update(name, input) : host.create(input)
+          const attach = attachToSession === false ? null : await host.attach(sessionId, name)
           return json({ saved, attach })
         }),
     ),
