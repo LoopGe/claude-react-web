@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 A large `0.x` minor release on top of `0.7.3`: daemon auto-start, mid-turn
 steering, per-session worktree isolation, per-turn file snapshots with offline
-rewind, remote skill installs, the Uploads Manager, an Electron desktop host,
-keep-alive panels and a rebuilt seq-windowed transcript.
+rewind, remote skill installs, structured file attachments, the Uploads
+Manager, an Electron desktop host, keep-alive panels and a rebuilt
+seq-windowed transcript.
 
 ### Added
 
@@ -20,6 +21,7 @@ keep-alive panels and a rebuilt seq-windowed transcript.
 - **Per-turn file changes** — snapshot sidecar, changed-files card, diff review and offline rewind.
 - **Skills** — remote search/install from skills.sh and GitHub, plus update checks.
 - **Uploads Manager** — unified upload store and dialog with progress and previews.
+- **File attachments** — non-image files upload as composer chips and travel as structured file blocks (≤20 per message), rendering the same chip from live and disk transcripts.
 - **Desktop host** — Electron app, custom titlebar, desktop menus and web-build import.
 - **Keep-alive panels** — session switches preserve scroll, Virtuoso and WS subscriptions.
 - **Streaming** — overlay/inline modes, left-to-right reveal and in-place draft cards.
