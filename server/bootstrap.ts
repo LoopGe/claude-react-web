@@ -27,6 +27,7 @@ import { seedBuiltinMarketplace } from './app-plugins/builtin-marketplace.js'
 import { resolveClaudeBinary } from './claude-binary.js'
 import { enableDevMode, isDevRuntime } from './dev-mode.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
+import { registerConfigToolServers } from './sdk-tools/config-tools.js'
 import { cleanupCliLogs } from './cli-diagnostics.js'
 import { join } from 'node:path'
 import type { ProviderRegistry } from './providers/registry.js'
@@ -148,6 +149,12 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
     autoResume: true,
     crashRecovery: true,
   })
+
+  // The config-management tool servers (skills / MCP / marketplace) are
+  // production features, not dev tooling: register them as soon as the
+  // SessionManager and the two global stores exist, so every session spawned
+  // afterwards — new or resumed — injects them.
+  registerConfigToolServers({ registry: firstPartyRegistry, sm: sessionManager, mcpStore, mpStore })
 
   // The runtime signal alone (not the --dev/--no-dev tool override) decides
   // whether the Vite dev origins are trusted: `npm run dev` always proxies
