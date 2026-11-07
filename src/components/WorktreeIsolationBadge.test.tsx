@@ -41,6 +41,7 @@ describe('WorktreeIsolationBadge', () => {
       expect(pop.textContent).toContain('Isolated worktree')
       expect(pop.textContent).toContain('Main repo: /home/user/main-repo')
       expect(pop.textContent).toContain('Branch: crw/abc12345')
+      expect(pop.querySelector('.hover-pop-value')?.textContent).toBe('crw/abc12345')
     } finally {
       vi.useRealTimers()
     }

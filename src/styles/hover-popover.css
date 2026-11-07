@@ -61,7 +61,8 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Value pill (branch names, ids, counts) — the git-chip .tt-hl language. */
+/* Value pill (branch names, models, counts, hashes): the one emphasized-value
+   style across every hover card. */
 .hover-pop-value {
   padding: 0 var(--space-1);
   border-radius: var(--radius-3xs);

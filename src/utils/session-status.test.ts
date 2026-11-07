@@ -138,7 +138,7 @@ describe('sessionHoverModel', () => {
       status: 'Live',
       error: null,
       cwd: '/home/user/project',
-      meta: 'test-model · 3 msgs · 1 viewer',
+      meta: { model: 'test-model', messages: '3 msgs', viewers: '1 viewer' },
     })
   })
 
@@ -149,7 +149,7 @@ describe('sessionHoverModel', () => {
       status: 'Waiting for a background subagent',
       error: 'boom',
       cwd: null,
-      meta: 'test-model · 3 msgs',
+      meta: { model: 'test-model', messages: '3 msgs', viewers: null },
     })
   })
 

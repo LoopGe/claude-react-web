@@ -8,12 +8,12 @@ import { useRef } from 'react'
 import { cx } from '../utils/cx'
 import { gitChipText } from '../utils/git-chip'
 import { IconGitBranch } from './icons/ToolIcons'
-import { HoverPopover } from './HoverPopover'
+import { HoverPopover, HoverValue } from './HoverPopover'
 import type { GitStatus } from '../../shared/git-types'
 
-/** One <div> per line. Values use `.tt-hl`, the shared value-pill style. */
+/** One <div> per line. Values use the shared HoverValue pill. */
 function gitChipTitle(s: GitStatus) {
-  const hl = (text: string) => <span className="tt-hl">{text}</span>
+  const hl = (text: string) => <HoverValue>{text}</HoverValue>
   const lines = [
     <>Branch: {hl(s.detached ? 'detached HEAD' : (s.branch ?? 'unknown'))}</>,
     s.upstream ? <>Upstream: {hl(s.upstream)}</> : 'No upstream configured',

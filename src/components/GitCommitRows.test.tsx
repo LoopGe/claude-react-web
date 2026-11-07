@@ -122,6 +122,7 @@ describe('CommitRow', () => {
       const pop = document.querySelector('.hover-pop')
       expect(pop?.getAttribute('role')).toBe('tooltip')
       expect(pop?.textContent).toContain(HASH)
+      expect(pop?.querySelector('.hover-pop-value')?.textContent).toBe(HASH)
     } finally {
       vi.useRealTimers()
     }

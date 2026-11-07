@@ -272,3 +272,9 @@ export function HoverPopover({
     document.body,
   )
 }
+
+/** Inline value pill for hover-card content: branch names, models, counts,
+ *  hashes. The one styling home for emphasized values (the former `.tt-hl`). */
+export function HoverValue({ children }: { children: ReactNode }) {
+  return <span className="hover-pop-value">{children}</span>
+}

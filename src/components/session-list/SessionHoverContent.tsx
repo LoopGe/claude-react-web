@@ -7,6 +7,7 @@
 // hovered; the surfaces only choose the trigger and placement.
 
 import { sessionHoverModel } from '../../utils/session-status'
+import { HoverValue } from '../HoverPopover'
 import type { SessionInfo } from '../../types'
 
 export function SessionHoverContent({
@@ -23,7 +24,17 @@ export function SessionHoverContent({
       <div className="hover-pop-status">{model.status}</div>
       {model.error !== null && <div className="hover-pop-error">Error: {model.error}</div>}
       {model.cwd !== null && <div className="hover-pop-path">{model.cwd}</div>}
-      <div className="hover-pop-meta">{model.meta}</div>
+      <div className="hover-pop-meta">
+        <HoverValue>{model.meta.model}</HoverValue>
+        {' · '}
+        <HoverValue>{model.meta.messages}</HoverValue>
+        {model.meta.viewers !== null && (
+          <>
+            {' · '}
+            <HoverValue>{model.meta.viewers}</HoverValue>
+          </>
+        )}
+      </div>
     </div>
   )
 }

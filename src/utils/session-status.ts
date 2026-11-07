@@ -84,14 +84,23 @@ export function tabDotStatus(s: SessionInfo): TabDotStatus | null {
   return null
 }
 
-/** Compact model/message/viewer line shared by the hover text of every
- *  session surface. The row no longer draws this metadata, so it travels with
- *  the hover instead of disappearing. */
-function sessionMetaLine(s: SessionInfo): string {
-  const viewers = s.subscribers > 0
-    ? ` · ${s.subscribers} viewer${s.subscribers === 1 ? '' : 's'}`
-    : ''
-  return `${shortenModel(s.model)} · ${s.messageCount} msg${s.messageCount === 1 ? '' : 's'}${viewers}`
+/** Structured model/count line shared by the hover text of every session
+ *  surface. Parts stay separate so the renderer can pill each value; the
+ *  hover card must not re-split a joined string. */
+export interface SessionHoverMeta {
+  model: string
+  messages: string
+  viewers: string | null
+}
+
+function sessionMetaParts(s: SessionInfo): SessionHoverMeta {
+  return {
+    model: shortenModel(s.model),
+    messages: `${s.messageCount} msg${s.messageCount === 1 ? '' : 's'}`,
+    viewers: s.subscribers > 0
+      ? `${s.subscribers} viewer${s.subscribers === 1 ? '' : 's'}`
+      : null,
+  }
 }
 
 /** Structured hover detail for a session surface. `statusText` lets a caller
@@ -103,7 +112,7 @@ export interface SessionHoverModel {
   status: string
   error: string | null
   cwd: string | null
-  meta: string
+  meta: SessionHoverMeta
 }
 
 export function sessionHoverModel(s: SessionInfo, statusText = statusLabel(s)): SessionHoverModel {
@@ -111,7 +120,7 @@ export function sessionHoverModel(s: SessionInfo, statusText = statusLabel(s)): 
     status: statusText,
     error: s.error != null && !statusText.includes(s.error) ? s.error : null,
     cwd: s.cwd !== undefined && s.cwd !== '' ? s.cwd : null,
-    meta: sessionMetaLine(s),
+    meta: sessionMetaParts(s),
   }
 }
 

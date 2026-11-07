@@ -14,4 +14,14 @@ describe('hover popover sizing', () => {
     expect(rule!.decls['width']).toBe('max-content')
     expect(rule!.decls['max-width']).toBe('320px')
   })
+
+  it('has one value-pill class shared by every hover card', () => {
+    const rule = parseBlocks(readCss('hover-popover.css')).find(
+      (b) => b.sel === '.hover-pop-value',
+    )
+    expect(rule, '.hover-pop-value must exist').toBeTruthy()
+    expect(rule!.decls['font-family']).toBe('var(--mono)')
+    // The old tooltip-scoped duplicate must not come back.
+    expect(readCss('utilities.css')).not.toContain('.tt-hl')
+  })
 })

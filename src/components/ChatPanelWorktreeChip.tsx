@@ -9,16 +9,31 @@
 import { useRef } from 'react'
 import { cx } from '../utils/cx'
 import { IconGitFork } from './icons/ToolIcons'
-import { HoverPopover } from './HoverPopover'
+import { HoverPopover, HoverValue } from './HoverPopover'
 import type { GitStatus } from '../../shared/git-types'
 
 function worktreeChipTitle(match: GitStatus['linkedWorktrees'][number] | null) {
-  const lines = match
-    ? ['Agent isolated in worktree', `Worktree: ${match.path}`, `Branch: ${match.branch ?? 'detached'}`]
-    : ['Agent isolated in worktree', 'Git worktree not yet confirmed']
-  if (match?.locked) lines.push(`Locked: ${match.lockMessage ?? 'yes'}`)
-  lines.push('Click to view worktree changes')
-  return lines.map((line, i) => <div key={i}>{line}</div>)
+  return [
+    <div key="title">Agent isolated in worktree</div>,
+    ...(match
+      ? [
+          <div key="path">
+            Worktree: <span className="hover-pop-path">{match.path}</span>
+          </div>,
+          <div key="branch">
+            Branch: <HoverValue>{match.branch ?? 'detached'}</HoverValue>
+          </div>,
+        ]
+      : [<div key="unconfirmed">Git worktree not yet confirmed</div>]),
+    ...(match?.locked
+      ? [
+          <div key="locked">
+            Locked: <HoverValue>{match.lockMessage ?? 'yes'}</HoverValue>
+          </div>,
+        ]
+      : []),
+    <div key="hint">Click to view worktree changes</div>,
+  ]
 }
 
 export function ChatPanelWorktreeChip({

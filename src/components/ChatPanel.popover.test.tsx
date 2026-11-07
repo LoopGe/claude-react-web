@@ -64,6 +64,8 @@ describe('ChatPanelGitChip', () => {
     expect(pop.textContent).toContain('Upstream: origin/main')
     expect(pop.textContent).toContain('Sync: 1 ahead, 2 behind')
     expect(pop.textContent).toContain('State: dirty')
+    // Identifiers are emphasized with the shared value pill.
+    expect(pop.querySelectorAll('.hover-pop-value').length).toBeGreaterThan(0)
 
     fireEvent.click(chip)
     expect(onOpen).toHaveBeenCalledTimes(1)

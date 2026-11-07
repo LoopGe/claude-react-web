@@ -8,14 +8,13 @@
 // affordance.
 
 import { useRef } from 'react'
-import { HoverPopover } from './HoverPopover'
+import { HoverPopover, HoverValue } from './HoverPopover'
 import { IconGitFork } from './icons/ToolIcons'
 import type { WorktreeInfo } from '../../shared/session-info'
 
 export function WorktreeIsolationBadge({ worktree }: { worktree: WorktreeInfo }) {
   const ref = useRef<HTMLSpanElement>(null)
-  // One line per <div>; the shared card stacks them.
-  const lines = ['Isolated worktree', `Main repo: ${worktree.mainRepoPath}`, `Branch: ${worktree.branch}`]
+  const aria = `Isolated worktree. Main repo: ${worktree.mainRepoPath}. Branch: ${worktree.branch}`
   return (
     <>
       {/* The badge is not focusable, so the hover card alone would leave the
@@ -24,14 +23,20 @@ export function WorktreeIsolationBadge({ worktree }: { worktree: WorktreeInfo })
         ref={ref}
         className="chat-panel-worktree-badge"
         role="img"
-        aria-label={lines.join('. ')}
+        aria-label={aria}
       >
         <IconGitFork size={12} className="chat-panel-worktree-badge-icon" aria-hidden />
         <span className="chat-panel-worktree-badge-value">worktree</span>
       </span>
       <HoverPopover triggerRef={ref} side="bottom" align="start">
         <div className="hover-pop-stack">
-          {lines.map((line, i) => <div key={i}>{line}</div>)}
+          <div>Isolated worktree</div>
+          <div>
+            Main repo: <span className="hover-pop-path">{worktree.mainRepoPath}</span>
+          </div>
+          <div>
+            Branch: <HoverValue>{worktree.branch}</HoverValue>
+          </div>
         </div>
       </HoverPopover>
     </>

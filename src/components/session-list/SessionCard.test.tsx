@@ -120,6 +120,8 @@ describe('SessionCard single-line layout', () => {
       expect(hover?.textContent).toContain('sonnet-4')
       expect(hover?.textContent).toContain('5 msgs')
       expect(hover?.textContent).toContain('1 viewer')
+      // Each meta value is a pill (model · messages · viewers).
+      expect(hover?.querySelectorAll('.hover-pop-value')).toHaveLength(3)
       expect(hover?.textContent).toContain('Live')
       // The row itself no longer carries the native title.
       expect(container.querySelector('.session-item-title > span[title]')).toBeNull()

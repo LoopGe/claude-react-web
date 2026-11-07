@@ -13,7 +13,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { GitFileRow } from './GitFileRow'
-import { HoverPopover } from './HoverPopover'
+import { HoverPopover, HoverValue } from './HoverPopover'
 import {
   useCachedCommitFiles,
   useGitCommitDiffFile,
@@ -109,7 +109,7 @@ export function CommitRow({
       <code ref={hashRef} className="git-commit-hash" aria-label={hash}>{hash.slice(0, 7)}</code>
       <HoverPopover triggerRef={hashRef} side="bottom" align="start">
         <div className="hover-pop-stack">
-          <div className="hover-pop-path">{hash}</div>
+          <HoverValue>{hash}</HoverValue>
         </div>
       </HoverPopover>
       <span className="git-commit-subject">{subject}</span>

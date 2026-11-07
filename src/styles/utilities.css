@@ -1448,17 +1448,6 @@ button.tool-group-failed-jump:focus-visible {
   visibility: visible;
   transform: translateY(0);
 }
-/* Inline value highlight inside a bubble (e.g. the branch name in the git
-   chip tooltip): a small tinted pill that separates the value from its
-   label. Mono font so refs/hashes/paths read as identifiers. Colours go
-   through theme vars only, so light/dark both work with no extra rule. */
-.tt-hl {
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-3xs);
-  background: var(--bg-elev-2);
-  color: var(--accent-text);
-  font-family: var(--mono);
-}
 /* Hover tooltips delay ~150ms so rapid mouse traversal doesn't flash
    bubbles; keyboard focus (focus-within) shows them instantly. Source order
    matters: :focus-within is after :hover so a focused-and-hovered trigger
