@@ -5194,9 +5194,10 @@ describe('memory_recall rendering', () => {
     const name = card?.querySelector('.memory-recall-name')
     expect(name?.textContent).toBe('prefs.md')
     // Full path available on hover.
-    const entry = card?.querySelector('.memory-recall-entry')!
-    expect(entry.getAttribute('title')).toBeNull()
-    expect(memoryHoverText(entry)).toBe('/home/u/.claude/projects/x/memory/prefs.md')
+    const entry = card?.querySelector<HTMLElement>('.memory-recall-entry')
+    expect(entry).toBeTruthy()
+    expect(entry!.getAttribute('title')).toBeNull()
+    expect(memoryHoverText(entry!)).toBe('/home/u/.claude/projects/x/memory/prefs.md')
     expect(card?.querySelector('.memory-recall-scope')?.textContent).toBe('personal')
     expect(card?.querySelector('.memory-recall-body strong')).toBeTruthy()
   })
