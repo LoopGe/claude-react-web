@@ -123,6 +123,43 @@ describe('POST /sessions/:id/messages', () => {
     }
   })
 
+  it('rejects a file block owned by another session and allows a common upload', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'crw-files-'))
+    try {
+      const uploadDir = join(stateDir, UPLOAD_SUBDIR)
+      mkdirSync(uploadDir, { recursive: true })
+      const path = join(uploadDir, 'a.txt')
+      writeFileSync(path, 'hi')
+      const { app, sm } = makeFileApp({
+        id: 'u1', path, cwd: stateDir, name: 'a.txt', size: 2,
+        uploadedAt: 1, sessionTitle: '', sessionId: 's1',
+      })
+      const res = await app.request('/sessions/s2/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: [{ type: 'file', attachment: { id: 'u1', name: 'a.txt', size: 2 } }] }),
+      })
+      expect(res.status).toBe(400)
+      expect(sm.sendContent).not.toHaveBeenCalled()
+
+      // The same registry row without an owner (a common manager upload) is
+      // referenceable by any session.
+      const common = makeFileApp({
+        id: 'u1', path, cwd: stateDir, name: 'a.txt', size: 2,
+        uploadedAt: 1, sessionTitle: '', origin: 'common',
+      })
+      const allowed = await common.app.request('/sessions/s2/messages', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: [{ type: 'file', attachment: { id: 'u1', name: 'a.txt', size: 2 } }] }),
+      })
+      expect(allowed.status).toBe(200)
+      expect(common.sm.sendContent).toHaveBeenCalledTimes(1)
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+    }
+  })
+
   it('400s when the recorded file is missing on disk', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'crw-files-'))
     try {

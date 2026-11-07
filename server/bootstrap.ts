@@ -167,6 +167,11 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
     log.info(`backfilled ${commonBackfilled} common upload ${commonBackfilled === 1 ? 'entry' : 'entries'} from shared directory`)
   }
 
+  const digested = await uploadStore.backfillDigests()
+  if (digested > 0) {
+    log.info(`backfilled digests for ${digested} upload ${digested === 1 ? 'entry' : 'entries'}`)
+  }
+
   const appPluginStore = new AppPluginStore({ stateDir })
   const appPluginMarketplaceStore = new AppPluginMarketplaceStore({ stateDir })
   await appPluginMarketplaceStore.load()

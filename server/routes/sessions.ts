@@ -11,6 +11,7 @@ import { safeJson, safeJsonOptional, safeJsonValue } from './index.js'
 import type { MpStore } from '../mp-store.js'
 import type { UploadEntry, UploadStore } from '../upload-store.js'
 import { uploadEntryPathContained } from '../upload-path.js'
+import { canReferenceUpload } from '../upload-policy.js'
 import { uploadRefOf } from '../../shared/uploads.js'
 import { isFileBlock } from '../../shared/attachments.js'
 import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from '../agent-definition-store.js'
@@ -324,7 +325,7 @@ async function resolveFileBlocks(
     if (entry === undefined) {
       throw new HttpError(400, `unknown upload: ${block.attachment.id}`)
     }
-    if (entry.sessionId !== undefined && entry.sessionId !== sessionId && entry.origin !== 'common') {
+    if (!canReferenceUpload(entry, sessionId)) {
       throw new HttpError(400, `upload does not belong to session ${sessionId}`)
     }
     if (!uploadEntryPathContained(entry, stateDir)) {

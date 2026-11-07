@@ -3,17 +3,18 @@
 
 import type { FileAttachmentRef } from './attachments'
 
-/** One recorded upload. `path` is the unique key (dest names embed a
- *  millisecond timestamp, so same-cwd collisions cannot occur); `id`
- *  exists for routes and UI keys. `cwd` is display provenance (the
- *  uploading session's cwd, or the stateDir for common uploads); files
- *  recorded after unification always live under
- *  `<stateDir>/claude-web-uploads/`, legacy entries under their session's
- *  `<cwd>/claude-web-uploads/`. `origin: 'common'` marks uploads made from
- *  the manager dialog with no session attached. `sessionTitle` is a
- *  provenance snapshot taken at upload time — a deleted session must not
- *  take the record with it. `sessionId` is the owning session (absent for
- *  common uploads and legacy entries); `digest` is the sha256 of the bytes. */
+/** One recorded upload. `id` (a per-upload UUID) is the registry key and the
+ *  reference id; `path` is where the bytes live and is NOT unique — the same
+ *  published file can be recorded under one id per session. `cwd` is display
+ *  provenance (the uploading session's cwd, or the stateDir for common
+ *  uploads). Entries published by the content-addressed store live under
+ *  `<stateDir>/claude-web-attachments/v1/files/<digest>/<name>`; legacy
+ *  entries live under their session's `<cwd>/claude-web-uploads/`.
+ *  `origin: 'common'` marks uploads made from the manager dialog with no
+ *  session attached. `sessionTitle` is a provenance snapshot taken at upload
+ *  time — a deleted session must not take the record with it. `sessionId` is
+ *  the owning session (absent for common uploads and legacy entries);
+ *  `digest` is the sha256 of the bytes, the content-addressed object key. */
 export interface UploadEntry {
   id: string
   path: string
