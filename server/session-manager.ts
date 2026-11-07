@@ -5770,6 +5770,18 @@ export class SessionManager {
     return this.opLock.run(id, () => this.mcp.setMcpServers(id, servers))
   }
 
+  /** Attach one globally configured MCP server to the calling session. See
+   *  SessionMcpManager.attachGlobalMcpServer. */
+  async attachGlobalMcpServer(id: string, name: string) {
+    return this.opLock.run(id, () => this.mcp.attachGlobalMcpServer(id, name))
+  }
+
+  /** Detach one globally configured MCP server from the calling session. See
+   *  SessionMcpManager.detachGlobalMcpServer. */
+  async detachGlobalMcpServer(id: string, name: string) {
+    return this.opLock.run(id, () => this.mcp.detachGlobalMcpServer(id, name))
+  }
+
   /** Pin (or clear, mode:null) a per-MCP-server permission-mode override on a
    *  live session. See SessionMcpManager.setMcpPermissionModeOverride. */
   async setMcpPermissionModeOverride(
@@ -8563,7 +8575,7 @@ export class SessionManager {
    *    setProfile        — nests setModel / setModelGroup / restart (re-entrant)
    *    setModel, setModelGroup, setPermissionMode, setThinking, setPrefs,
    *    setCliDebug, setFirstPartyTool (setAppTools nests it), setMcpServers,
-   *    setSkillOverride
+   *    attachGlobalMcpServer, detachGlobalMcpServer, setSkillOverride
    *    applyFlagSettingAndPersist — the sole persist path of setAgent,
    *                        applySettings, applyHooks, setFastMode,
    *                        setMemorySettings, setSandbox, setEffortLevel,

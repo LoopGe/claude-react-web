@@ -20,8 +20,10 @@
 //   - injectAll's call site inside spawn() (still calls into this module)
 //   - Persisting mcpServerNames as part of the Session/SessionMeta shape
 
+import type { McpSetServersResult } from '@anthropic-ai/claude-agent-sdk'
 import type { FirstPartyToolDef } from '../shared/first-party.js'
 import { HttpError, type ControlWrapOpts } from './errors.js'
+import { planAttachGlobalMcpServer, planDetachGlobalMcpServer, type AttachPlan, type AttachPlanInput } from './mcp-attach.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
 import { LEGACY_GIT_TOOLS_SERVER_NAME, migrateLegacyGitToolsKey } from '../shared/first-party.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
@@ -32,6 +34,16 @@ import type { ProviderCapabilities, ProviderSessionHandle } from './providers/ty
 import { createLogger } from './log.js'
 
 const log = createLogger('mcp-manager')
+
+/** Outcome of an attach/detach on the calling session. `alreadyAttached` is
+ *  the session's membership state BEFORE the operation: attach no-ops when it
+ *  was already true, detach no-ops when it was already false. */
+export interface McpAttachResult {
+  alreadyAttached: boolean
+  added: string[]
+  removed: string[]
+  errors: Record<string, string>
+}
 
 /** Callbacks the MCP manager needs from its owner (SessionManager). Kept
  *  minimal and generic (no SessionManager import) so this module stays
@@ -128,8 +140,14 @@ export class SessionMcpManager {
     )(serverName, enabled)
   }
 
-  /** Add/remove MCP servers on a live session via the SDK's setMcpServers API. */
-  async setMcpServers(id: string, servers: Record<string, unknown>) {
+  /** Add/remove MCP servers on a live session via the SDK's setMcpServers API.
+   *  `stampNames: false` leaves `mcpServerNames` untouched so a session that
+   *  inherits the global enabled set is not pinned to today's snapshot. */
+  async setMcpServers(
+    id: string,
+    servers: Record<string, unknown>,
+    opts?: { stampNames?: boolean },
+  ) {
     const s = this.deps.requireLive(id)
     const handle = s.handle
     // Inject first-party servers so a live setMcpServers (replace semantics)
@@ -153,12 +171,68 @@ export class SessionMcpManager {
     // client's "available" computation stays in sync and an immediate
     // first-party toggle can re-run injection. Both keep the user-configured
     // set (pre-injection) — first-party servers are surfaced separately.
-    s.mcpServerNames = Object.keys(servers)
+    if (opts?.stampNames !== false) s.mcpServerNames = Object.keys(servers)
     s.dynamicMcpServers = servers
     this.deps.writeStore(s)
     this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(s) })
 
     return result
+  }
+
+  /** Attach one globally configured MCP server to the calling session. An
+   *  inheriting session (`mcpServerNames === undefined`) stays inheriting —
+   *  the attach only reaches the live SDK set, never the pinned list. */
+  async attachGlobalMcpServer(id: string, name: string): Promise<McpAttachResult> {
+    return this.applyGlobalMembershipPlan(id, name, planAttachGlobalMcpServer, 'attach')
+  }
+
+  /** Detach one globally configured MCP server from the calling session,
+   *  leaving every other server (global or inline) connected. */
+  async detachGlobalMcpServer(id: string, name: string): Promise<McpAttachResult> {
+    return this.applyGlobalMembershipPlan(id, name, planDetachGlobalMcpServer, 'detach')
+  }
+
+  /** Shared attach/detach body: plan the session's next set from its current
+   *  names, preserve inline (session-only) entries, then re-apply through
+   *  setMcpServers. A no-op when the session already has the desired state. */
+  private async applyGlobalMembershipPlan(
+    id: string,
+    name: string,
+    plan: (input: AttachPlanInput) => AttachPlan,
+    action: 'attach' | 'detach',
+  ): Promise<McpAttachResult> {
+    const s = this.deps.requireLive(id)
+    const dynamic = s.dynamicMcpServers ?? {}
+    const next = plan({
+      sessionNames: s.mcpServerNames,
+      runtimeNames: Object.keys(dynamic),
+      globalEnabledNames: Object.keys(this.deps.mcpStore?.toSdkConfig() ?? {}),
+      name,
+    })
+    // attach is idempotent once live; detach is a no-op when nothing is live.
+    const alreadySatisfied = action === 'attach' ? next.alreadyAttached : !next.alreadyAttached
+    if (alreadySatisfied) {
+      return { alreadyAttached: next.alreadyAttached, added: [], removed: [], errors: {} }
+    }
+
+    // Inline = dynamic entries that are NOT defined in the global store; they
+    // must survive the replace-semantics setMcpServers call. Without a store
+    // every dynamic entry is inline.
+    const inline: Record<string, unknown> = {}
+    for (const [n, cfg] of Object.entries(dynamic)) {
+      if (!this.deps.mcpStore?.get(n)) inline[n] = cfg
+    }
+
+    const merged = await this.mergeMcpServersAsync(next.names, inline)
+    const result = (await this.setMcpServers(id, merged ?? {}, { stampNames: next.stampNames })) as
+      | McpSetServersResult
+      | undefined
+    return {
+      alreadyAttached: next.alreadyAttached,
+      added: result?.added ?? [],
+      removed: result?.removed ?? [],
+      errors: result?.errors ?? {},
+    }
   }
 
   /** Pin (or clear, mode:null) a per-MCP-server permission-mode override on a
