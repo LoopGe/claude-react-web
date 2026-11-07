@@ -8475,7 +8475,12 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const info = await sm.create({ cwd: TEST_CWD })
     const mcpServers = mockHandles[0].options.mcpServers as Record<string, unknown>
     expect(mcpServers['git-tools']).toBeDefined()
-    expect(mockInjectAll).toHaveBeenCalledWith(TEST_CWD, expect.any(Function), expect.any(Function))
+    expect(mockInjectAll).toHaveBeenCalledWith(
+      TEST_CWD,
+      expect.any(Function),
+      expect.any(Function),
+      { sessionId: info.id },
+    )
     expect(info.mcpServerNames ?? []).not.toContain('git-tools')
   })
 

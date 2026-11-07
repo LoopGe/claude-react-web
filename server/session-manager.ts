@@ -5635,7 +5635,7 @@ export class SessionManager {
    *     applyFlagSettings is write-only — no state read-back exists). The
    *     base list resolves the spawn contract: `undefined` = the global
    *     enabled list at toggle time, an explicit array = the pinned subset.
-   *     The global-ripple path (applyToggleToLiveSessions) passes no flag —
+   *     The global-ripple path (applyPluginToggleToLiveSessions) passes no flag —
    *     pinning every live session to the toggle-time global state would
    *     freeze them against future global changes; their next spawn picks up
    *     the global state via spawn-time injection instead.
