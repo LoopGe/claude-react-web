@@ -5635,7 +5635,7 @@ export class SessionManager {
    *     applyFlagSettings is write-only — no state read-back exists). The
    *     base list resolves the spawn contract: `undefined` = the global
    *     enabled list at toggle time, an explicit array = the pinned subset.
-   *     The global-ripple path (applyToggleToLiveSessions) passes no flag —
+   *     The global-ripple path (applyPluginToggleToLiveSessions) passes no flag —
    *     pinning every live session to the toggle-time global state would
    *     freeze them against future global changes; their next spawn picks up
    *     the global state via spawn-time injection instead.
@@ -5768,6 +5768,18 @@ export class SessionManager {
     // Locked: persists the session's mcpServerNames, which clear / fork /
     // resume read to rebuild the next spawn's MCP set.
     return this.opLock.run(id, () => this.mcp.setMcpServers(id, servers))
+  }
+
+  /** Attach one globally configured MCP server to the calling session. See
+   *  SessionMcpManager.attachGlobalMcpServer. */
+  async attachGlobalMcpServer(id: string, name: string) {
+    return this.opLock.run(id, () => this.mcp.attachGlobalMcpServer(id, name))
+  }
+
+  /** Detach one globally configured MCP server from the calling session. See
+   *  SessionMcpManager.detachGlobalMcpServer. */
+  async detachGlobalMcpServer(id: string, name: string) {
+    return this.opLock.run(id, () => this.mcp.detachGlobalMcpServer(id, name))
   }
 
   /** Pin (or clear, mode:null) a per-MCP-server permission-mode override on a
@@ -8563,7 +8575,7 @@ export class SessionManager {
    *    setProfile        — nests setModel / setModelGroup / restart (re-entrant)
    *    setModel, setModelGroup, setPermissionMode, setThinking, setPrefs,
    *    setCliDebug, setFirstPartyTool (setAppTools nests it), setMcpServers,
-   *    setSkillOverride
+   *    attachGlobalMcpServer, detachGlobalMcpServer, setSkillOverride
    *    applyFlagSettingAndPersist — the sole persist path of setAgent,
    *                        applySettings, applyHooks, setFastMode,
    *                        setMemorySettings, setSandbox, setEffortLevel,

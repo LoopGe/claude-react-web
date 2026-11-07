@@ -7,7 +7,7 @@
 
 import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { gitAppTools } from './app-tools.js'
-import type { FirstPartyToolServer } from './types.js'
+import type { FirstPartyToolBuildContext, FirstPartyToolServer } from './types.js'
 import type { FirstPartyToolDef, FirstPartyToolServerInfo } from '../../shared/first-party.js'
 
 export class FirstPartyToolRegistry {
@@ -31,13 +31,16 @@ export class FirstPartyToolRegistry {
   /** Build every enabled (and cwd-satisfied) first-party server into an
    *  mcpServers map. `enabled` is a resolver the session-manager injects
    *  (session override ?? global config ?? server.defaultEnabled); a server
-   *  with `requiresCwd` is skipped when `cwd` is null. Returns undefined when
-   *  nothing is injected. Per-server build failures are reported via
-   *  `onError` and that server is skipped (others still inject). */
+   *  with `requiresCwd` is skipped when `cwd` is null. `ctx` is forwarded to
+   *  every `buildTools` (the session id lets a builder reach its own session).
+   *  Returns undefined when nothing is injected. Per-server build failures
+   *  are reported via `onError` and that server is skipped (others still
+   *  inject). */
   injectAll(
     cwd: string | null,
     enabled: (name: string) => boolean,
     onError?: (name: string, message: string) => void,
+    ctx?: FirstPartyToolBuildContext,
   ): Record<string, unknown> | undefined {
     let result: Record<string, unknown> | undefined
     for (const s of this.servers.values()) {
@@ -47,7 +50,7 @@ export class FirstPartyToolRegistry {
         const server = createSdkMcpServer({
           name: s.name,
           version: '1.0.0',
-          tools: s.buildTools(cwd),
+          tools: s.buildTools(cwd, ctx),
         })
         result ??= {}
         result[s.name] = server
@@ -86,7 +89,8 @@ export class FirstPartyToolRegistry {
    *  analog of a normal MCP server's `listTools()`. In-process servers have
    *  no live connection to probe, so the listing is built straight from the
    *  registered `buildTools` definitions (metadata-only: handlers are never
-   *  invoked, and the contract lets `buildTools` accept a null cwd). A
+   *  invoked, and the contract lets `buildTools` accept a null cwd). No build
+   *  context is passed — listing must not require a session. A
    *  per-server build failure is reported on that server's `error` with an
    *  empty tool list; other servers still list. */
   listToolDefs(): Array<FirstPartyToolServerInfo> {

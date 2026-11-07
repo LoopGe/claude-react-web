@@ -24,6 +24,12 @@ import {
   type MaskedMcpServer,
 } from './mcp-config.js'
 import { HttpError, createErrorHandler } from './errors.js'
+import {
+  createMcpServer,
+  removeMcpServer,
+  setMcpServerEnabled,
+  updateMcpServer,
+} from './mcp-ops.js'
 import { claudeUserConfigPath } from './claude-config-dir.js'
 import { safeJson } from './routes/index.js'
 import type { McpImportPreviewServer, McpImportResult } from '../shared/mcp-types'
@@ -391,87 +397,38 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   // Create a new server
   app.post('/', async (c) => {
     const body = await safeJson<McpServerInput>(c.req)
-    if (!body.name || !body.name.trim()) throw new HttpError(400, 'name is required')
-    if (store.get(body.name.trim())) throw new HttpError(409, `MCP server "${body.name}" already exists; use PUT to update`)
-
-    const errors = validateMcpServer(body)
-    if (errors.length > 0) throw new HttpError(400, errors.join('; '))
-
-    const now = Date.now()
-    const server: StoredMcpServer = {
-      name: body.name.trim(),
-      type: body.type ?? 'stdio',
-      command: body.command,
-      args: body.args,
-      env: body.env,
-      url: body.url,
-      headers: body.headers,
-      alwaysLoad: body.alwaysLoad,
-      enabled: body.enabled ?? true,
-      createdAt: now,
-      updatedAt: now,
-    }
-    store.upsert(server)
+    const server = createMcpServer(store, body)
     return c.json({ server: maskSecrets(server) }, 201)
   })
 
   // Update an existing server (env/headers merge, not replace)
   app.put('/:name', async (c) => {
     const name = c.req.param('name')
-    const existing = store.get(name)
-    if (!existing) throw new HttpError(404, `MCP server "${name}" not found`)
-
+    // Existence is checked before body parsing so an unknown name answers 404
+    // even when the body is malformed — the pre-extraction precedence.
+    if (!store.get(name)) throw new HttpError(404, `MCP server "${name}" not found`)
     const body = await safeJson<Partial<McpServerInput>>(c.req)
-
-    // Merge fields — env/headers are merged (not replaced) to prevent
-    // accidental secret deletion when the user only wanted to change args.
-    const updated: StoredMcpServer = {
-      ...existing,
-      type: body.type ?? existing.type,
-      updatedAt: Date.now(),
-    }
-    if (body.command !== undefined) updated.command = body.command
-    if (body.args !== undefined) updated.args = body.args
-    if (body.url !== undefined) updated.url = body.url
-    if (body.alwaysLoad !== undefined) updated.alwaysLoad = body.alwaysLoad
-    if (body.enabled !== undefined) updated.enabled = body.enabled
-
-    // Merge env: new keys added, existing keys kept unless overwritten
-    if (body.env) {
-      updated.env = { ...(existing.env ?? {}), ...body.env }
-    }
-    // Merge headers: same strategy
-    if (body.headers) {
-      updated.headers = { ...(existing.headers ?? {}), ...body.headers }
-    }
-
-    const errors = validateMcpServer(updated)
-    if (errors.length > 0) throw new HttpError(400, errors.join('; '))
-
-    store.upsert(updated)
-    return c.json({ server: maskSecrets(updated) })
+    const server = updateMcpServer(store, name, body)
+    return c.json({ server: maskSecrets(server) })
   })
 
   // Delete a server
   app.delete('/:name', (c) => {
     const name = c.req.param('name')
-    if (!store.get(name)) throw new HttpError(404, `MCP server "${name}" not found`)
-    store.remove(name)
+    removeMcpServer(store, name)
     return c.json({ ok: true })
   })
 
   // Toggle enabled/disabled
   app.post('/:name/toggle', async (c) => {
     const name = c.req.param('name')
-    const existing = store.get(name)
-    if (!existing) throw new HttpError(404, `MCP server "${name}" not found`)
-
+    // Existence is checked before body parsing so an unknown name answers 404
+    // even when the body is malformed — the pre-extraction precedence.
+    if (!store.get(name)) throw new HttpError(404, `MCP server "${name}" not found`)
     const body = await safeJson<{ enabled: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled must be a boolean')
-
-    const updated: StoredMcpServer = { ...existing, enabled: body.enabled, updatedAt: Date.now() }
-    store.upsert(updated)
-    return c.json({ server: maskSecrets(updated) })
+    const server = setMcpServerEnabled(store, name, body.enabled)
+    return c.json({ server: maskSecrets(server) })
   })
 
   // Start OAuth for a remote MCP server. The frontend opens authorizationUrl.

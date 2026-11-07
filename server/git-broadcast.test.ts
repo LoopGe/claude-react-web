@@ -5,6 +5,7 @@ import {
   cancelGitBroadcast,
 } from './git-broadcast.js'
 import type { SessionBroadcaster } from './session-types.js'
+import { firstPartyRegistry } from './sdk-tools/registry.js'
 import { GIT_BROADCAST_MAX_WAIT_MS } from './constants.js'
 
 // ── Pure detection helper ────────────────────────────────────────────
@@ -30,6 +31,21 @@ describe('mutatingToolUseId', () => {
 
   it('does NOT treat read-only first-party tools as mutating', () => {
     expect(mutatingToolUseId({ type: 'tool_use', name: 'mcp__git-tools__git_status', id: 'tu_gr' })).toBeNull()
+  })
+
+  it('picks up first-party servers registered after module load', () => {
+    // Bootstrap registers the config tool servers long after this module is
+    // imported, so the mutating set must be computed per call, not at load.
+    const server = 'late-registered-test-server'
+    firstPartyRegistry.register({
+      name: server,
+      description: 'test fixture',
+      defaultEnabled: false,
+      requiresCwd: false,
+      buildTools: () => [],
+      mutatingToolNames: new Set(['touch']),
+    })
+    expect(mutatingToolUseId({ type: 'tool_use', name: `mcp__${server}__touch`, id: 'x' })).toBe('x')
   })
 
   it('returns the id for EnterWorktree / ExitWorktree blocks (worktree-change seam)', () => {

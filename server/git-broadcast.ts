@@ -137,11 +137,12 @@ const WORKTREE_CHANGE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'ExitWorktree',
 ])
 
-const ALL_MUTATING_TOOL_NAMES: ReadonlySet<string> = new Set([
-  ...MUTATING_TOOL_NAMES,
-  ...WORKTREE_CHANGE_TOOL_NAMES,
-  ...firstPartyRegistry.mutatingToolFqns(),
-])
+/** Built-in ∪ worktree ∪ first-party FQNs, computed per call: servers register
+ *  at bootstrap, after this module is imported, so a module-load snapshot
+ *  would miss them. */
+function allMutatingToolNames(): ReadonlySet<string> {
+  return new Set([...MUTATING_TOOL_NAMES, ...WORKTREE_CHANGE_TOOL_NAMES, ...firstPartyRegistry.mutatingToolFqns()])
+}
 
 interface ToolUseLike {
   type?: string
@@ -160,7 +161,7 @@ export function mutatingToolUseId(block: unknown): string | null {
   if (!block || typeof block !== 'object') return null
   const b = block as ToolUseLike
   if (b.type !== 'tool_use') return null
-  if (typeof b.name !== 'string' || !ALL_MUTATING_TOOL_NAMES.has(b.name)) return null
+  if (typeof b.name !== 'string' || !allMutatingToolNames().has(b.name)) return null
   if (typeof b.id !== 'string') return null
   // A provably read-only shell command can't change git state. Missing /
   // non-string input fails closed (isReadOnlyBash → false → broadcast).
