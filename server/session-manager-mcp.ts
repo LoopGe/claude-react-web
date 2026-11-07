@@ -216,6 +216,7 @@ export class SessionMcpManager {
         s.firstPartyErrors = { ...(s.firstPartyErrors ?? {}), [name]: message }
         log.error(`[session ${s.id}] first-party server ${name} build failed: ${message}`)
       },
+      { sessionId: s.id },
     )
     if (!injected) return servers
     return { ...(servers ?? {}), ...injected }

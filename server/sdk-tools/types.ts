@@ -6,6 +6,11 @@
 
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 
+export interface FirstPartyToolBuildContext {
+  /** Present when built for a real session; absent for metadata listing. */
+  sessionId?: string
+}
+
 export interface FirstPartyToolServer {
   /** MCP server name — tools surface as `mcp__{name}__{tool}`. */
   name: string
@@ -16,8 +21,9 @@ export interface FirstPartyToolServer {
   /** When true, the server is injected only for sessions that have a cwd. */
   requiresCwd: boolean
   /** Build the SDK tool definitions bound to the session cwd (null when the
-   *  session has no cwd — a non-requiresCwd server may still use it). */
-  buildTools(cwd: string | null): SdkMcpToolDefinition<any>[]
+   *  session has no cwd — a non-requiresCwd server may still use it). `ctx`
+   *  carries per-session facts; it is absent for metadata listing. */
+  buildTools(cwd: string | null, ctx?: FirstPartyToolBuildContext): SdkMcpToolDefinition<any>[]
   /** BARE tool names (no `mcp__{name}__` prefix) that are read-only. */
   readOnlyToolNames?: ReadonlySet<string>
   /** BARE tool names that mutate the worktree / filesystem. */

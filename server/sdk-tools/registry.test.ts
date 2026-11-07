@@ -55,7 +55,7 @@ describe('FirstPartyToolRegistry', () => {
     // With cwd: needs-cwd injected too; disabled still skipped.
     map = r.injectAll('/repo', enabled)
     expect(Object.keys(map!)).toEqual(['needs-cwd', 'no-cwd-needed'])
-    expect(built).toHaveBeenCalledWith('/repo')
+    expect(built).toHaveBeenCalledWith('/repo', undefined)
   })
 
   it('injectAll reports per-server build failures via onError and skips only that server', () => {
@@ -67,6 +67,17 @@ describe('FirstPartyToolRegistry', () => {
     const map = r.injectAll('/repo', () => true, onError)
     expect(onError).toHaveBeenCalledWith('bad', 'boom')
     expect(map).toEqual({ good: expect.anything() })
+  })
+
+  it('injectAll forwards the build context to buildTools; listToolDefs omits it', () => {
+    const r = new FirstPartyToolRegistry()
+    const built = vi.fn(() => [])
+    r.register({ ...makeServer('ctx'), buildTools: built })
+    r.injectAll('/repo', () => true, undefined, { sessionId: 's1' })
+    expect(built).toHaveBeenCalledWith('/repo', { sessionId: 's1' })
+    built.mockClear()
+    r.listToolDefs()
+    expect(built).toHaveBeenCalledWith(null)
   })
 
   it('the singleton registers the git-tools server', () => {
