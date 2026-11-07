@@ -404,6 +404,9 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   // Update an existing server (env/headers merge, not replace)
   app.put('/:name', async (c) => {
     const name = c.req.param('name')
+    // Existence is checked before body parsing so an unknown name answers 404
+    // even when the body is malformed — the pre-extraction precedence.
+    if (!store.get(name)) throw new HttpError(404, `MCP server "${name}" not found`)
     const body = await safeJson<Partial<McpServerInput>>(c.req)
     const server = updateMcpServer(store, name, body)
     return c.json({ server: maskSecrets(server) })
@@ -419,6 +422,9 @@ export function buildMcpConfigRouter(store: McpConfigStore): Hono {
   // Toggle enabled/disabled
   app.post('/:name/toggle', async (c) => {
     const name = c.req.param('name')
+    // Existence is checked before body parsing so an unknown name answers 404
+    // even when the body is malformed — the pre-extraction precedence.
+    if (!store.get(name)) throw new HttpError(404, `MCP server "${name}" not found`)
     const body = await safeJson<{ enabled: boolean }>(c.req)
     if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'enabled must be a boolean')
     const server = setMcpServerEnabled(store, name, body.enabled)

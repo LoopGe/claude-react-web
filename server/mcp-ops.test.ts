@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { rmSync } from 'node:fs'
 import { McpConfigStore } from './mcp-config.js'
 import { createMcpServer, updateMcpServer, removeMcpServer, setMcpServerEnabled } from './mcp-ops.js'
-import { tempDir } from './__test-utils__/index.js'
+import { tempDir, rmRf } from './__test-utils__/index.js'
 
 describe('mcp-ops', () => {
   let dir: string
@@ -12,7 +11,7 @@ describe('mcp-ops', () => {
     store = new McpConfigStore({ stateDir: dir })
     await store.load()
   })
-  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+  afterEach(() => rmRf(dir))
 
   it('create validates and defaults type/enabled', () => {
     const s = createMcpServer(store, { name: 'pw', command: 'node', args: ['x.js'] })
