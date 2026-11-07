@@ -36,8 +36,9 @@ Settings' first-party section:
   re-discovers the change.
 - **`mcp-tools`** — `list` / `get` / `add` / `update` / `remove` /
   `set_enabled` / `test` over the global MCP store. `add` and
-  `set_enabled(true)` also attach the server to the calling session;
-  `remove` and `set_enabled(false)` detach it.
+  `set_enabled(true)` attach the server to the calling session by default
+  (`attachToSession: false` opts out); `remove` and `set_enabled(false)`
+  detach it.
 - **`marketplace-tools`** — `list` / `plugins` / `add` / `check_updates` /
   `set_plugin_enabled` for the Claude plugin marketplace. Enabling a plugin is
   installing it, and the flag is pushed to every live session.
@@ -108,7 +109,11 @@ server) and `applyFlagSettings`:
 - `applyFlagSettings` resolved in about 20 ms;
 - after the handler returned, the model could see and call the new server's
   tool (`mcp__spike-echo__echo` → `ECHO:hello`) in its **next assistant request
-  within the same user turn**.
+  within the same user turn**. One run instead had the model pre-judge the tool
+  as invisible and skip the attempt; the successful runs came after the prompt
+  forced a trial first, so same-turn visibility was established by those
+  forced-attempt runs — the CLI's schema had refreshed and the model's prior
+  was the variable.
 
 The SDK source also confirms that `setMcpServers` only settings-diffs a
 same-name SDK server — it does not reconnect or replace the instance currently
@@ -168,5 +173,6 @@ session's tool mutate another session's MCP set. Threading the id through
   deliberately excluded from the read-only set because it spawns or connects
   to the server.
 - Deferred to a later phase: skills remote search/install, marketplace
-  `refresh` / `remove`, and in-session MCP OAuth (the tools return guidance to
-  finish authorization in Settings instead).
+  `refresh` / `remove`, and in-session MCP OAuth. `mcp-tools.test` reports a
+  `needs-auth` status; completing authorization remains a Settings/browser
+  flow.
