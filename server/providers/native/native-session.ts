@@ -73,6 +73,10 @@ export class NativeSession implements ProviderSessionHandle {
   /** Conversation state sent to the API on every turn (mutated in place by runTurn). */
   private readonly history: unknown[] = []
   private model: string
+  /** Live permission mode: setPermissionMode keeps it current for the lifetime
+   *  of the session — the spawn-time opts value is only the starting point, so
+   *  a bypass-spawned session can be downgraded mid-flight. */
+  private permissionMode: string
   /** Synchronous pump guard: set before the async pumpLoop starts, so a
    *  second enqueueUserMessage while the first turn is still being scheduled
    *  cannot start a second concurrent pump. */
@@ -86,6 +90,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.output = createPushable<AgentMessage>(`native-session[${opts.id}]`)
     this.ctx = defaultFrameContext(opts.id)
     this.model = opts.model ?? DEFAULT_MODEL
+    this.permissionMode = opts.permissionMode ?? 'default'
     // History-only context snapshot (user-role, per the DSH design): NEVER
     // emitted as a frame — user frames carry only tool_result content (the
     // frame contract), and the manager's echo filter would drop or double-
@@ -117,13 +122,22 @@ export class NativeSession implements ProviderSessionHandle {
     return this._closed
   }
 
-  private requestPermission: LoopDeps['requestPermission'] = async (toolName, input) => {
-    if (this.opts.permissionMode === 'bypassPermissions' || !this.opts.canUseTool) {
-      return { allowed: true, input }
+  private requestPermission: LoopDeps['requestPermission'] = async (toolName, input, toolUseId, signal) => {
+    // Guard against an abort that fired while the previous tool executed: an
+    // already-aborted signal never fires the broker's abort listener, so
+    // without this check the permission promise could never settle and the
+    // turn would park forever.
+    if (signal.aborted) return { allowed: false, input, message: 'aborted' }
+    // Live mode, not the spawn-time opts value: a bypass session downgraded
+    // to default must stop auto-allowing.
+    if (this.permissionMode === 'bypassPermissions') return { allowed: true, input }
+    // Fail closed: without a handler there is nothing to ask.
+    if (!this.opts.canUseTool) {
+      return { allowed: false, input, message: 'no permission handler registered for this session' }
     }
-    // Only ever invoked from inside a turn, where turnAbort is live.
     const result = (await this.opts.canUseTool(toolName, input, {
-      signal: AbortSignal.any([this.sessionAbort.signal, this.turnAbort!.signal]),
+      signal,
+      toolUseID: toolUseId,
     })) as { behavior?: string; updatedInput?: Record<string, unknown>; message?: string }
     if (result?.behavior === 'allow') {
       return { allowed: true, input: result.updatedInput ?? input }
@@ -245,12 +259,18 @@ export class NativeSession implements ProviderSessionHandle {
     if (model) this.model = model
   }
 
+  async setPermissionMode(mode: string): Promise<void> {
+    this.permissionMode = mode
+  }
+
+  /** Wire shape consumed by the host's reconcile probe
+   *  (liteContextUsageFromSdkUsage in session-pump.ts): { totalTokens,
+   *  maxTokens, model }. */
   async getContextUsage(): Promise<unknown> {
-    const used = this.lastUsage.input_tokens + this.lastUsage.output_tokens
     return {
-      ...this.lastUsage,
-      context_window: CONTEXT_WINDOW,
-      used_percentage: Math.min(100, (used / CONTEXT_WINDOW) * 100),
+      totalTokens: this.lastUsage.input_tokens + this.lastUsage.output_tokens,
+      maxTokens: CONTEXT_WINDOW,
+      model: this.model,
     }
   }
 

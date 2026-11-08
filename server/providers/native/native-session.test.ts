@@ -111,8 +111,66 @@ describe('NativeSession', () => {
     await vi.waitFor(() => {
       expect(frames.some((f) => f.type === 'result')).toBe(true)
     })
-    const usage = (await session.getContextUsage?.()) as { input_tokens: number }
-    expect(usage.input_tokens).toBe(10)
+    const usage = (await session.getContextUsage?.()) as { totalTokens: number; maxTokens: number; model: string }
+    // Wire shape consumed by liteContextUsageFromSdkUsage (session-pump.ts):
+    // { totalTokens, maxTokens, model } — the scripted turn has input 10 + output 5.
+    expect(usage.totalTokens).toBe(15)
+    expect(usage.maxTokens).toBe(200_000)
+    expect(typeof usage.model).toBe('string')
+    await session.destroy()
+  })
+
+  it('interrupt during tool processing does not park the turn: next tool skipped, exactly one interrupted result', async () => {
+    const provider = new NativeProvider()
+    // One response carrying TWO tool_use blocks — the abort lands while the
+    // first tool is being processed, so the second must never execute.
+    const twoToolScript: CanonicalEvent[] = [
+      { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+      { kind: 'block_start', index: 0, block: { type: 'tool_use', id: 't1', name: 'Read' } },
+      { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: '{"file_path":"package.json"}' } },
+      { kind: 'block_end', index: 0 },
+      { kind: 'block_start', index: 1, block: { type: 'tool_use', id: 't2', name: 'Read' } },
+      { kind: 'block_delta', index: 1, delta: { type: 'tool_input', json: '{"file_path":"does-not-exist.txt"}' } },
+      { kind: 'block_end', index: 1 },
+      { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+    ]
+    // The seam honors the signal like the real network streamer (fetch
+    // rejects on abort): a post-abort stream call throws immediately.
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
+      if (req.signal.aborted) throw req.signal.reason ?? new Error('aborted')
+      for (const ev of twoToolScript) yield ev
+    }
+    const canUseToolCalls: string[] = []
+    let session: ReturnType<NativeProvider['createSession']> | null = null
+    session = provider.createSession({
+      id: 's4',
+      cwd: process.cwd(),
+      canUseTool: async (toolName: unknown) => {
+        canUseToolCalls.push(toolName as string)
+        // Abort the turn while the FIRST tool's permission resolves — the
+        // second tool's permission must never be requested.
+        void session?.interrupt?.()
+        return { behavior: 'allow', updatedInput: { file_path: 'package.json' } }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session!.messages) frames.push(f as Frame)
+    })()
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => {
+      const results = frames.filter((f) => f.type === 'result')
+      expect(results).toHaveLength(1)
+      expect(results[0].result).toBe('interrupted by user')
+      expect(results[0].is_error).toBe(true)
+    })
+    // Only the FIRST tool ever reached the permission handler.
+    expect(canUseToolCalls).toEqual(['Read'])
+    // Every tool_use is answered (t1 ran, t2 got the synthetic aborted
+    // result) — the next turn's API request stays valid. tool_result frames
+    // are one-per-result: collect them all in order.
+    const toolResults = frames.filter((f) => f.type === 'user').map((f) => (f as Frame).message.content[0] as { tool_use_id: string })
+    expect(toolResults.map((r) => r.tool_use_id)).toEqual(['t1', 't2'])
     await session.destroy()
   })
 

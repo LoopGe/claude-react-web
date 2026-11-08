@@ -9,7 +9,7 @@ export interface LoopDeps {
   tools: ToolDef[]
   /** The session's working directory; every ToolContext is built from it. */
   cwd: string
-  requestPermission(toolName: string, input: Record<string, unknown>): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string }>
+  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string }>
   emit(frame: AgentMessage): void
   system: string
 }
@@ -108,12 +108,17 @@ export async function runTurn(
     }
     const results: unknown[] = []
     for (const call of toolUses) {
+      // Abort during a previous tool's execution (or its permission): do NOT
+      // run any further tool — an already-aborted signal would park the
+      // permission request forever. Results gathered so far still get their
+      // tool_result frames and history push below.
+      if (signal.aborted) break
       const tool = toolByName.get(call.name)
       if (!tool) {
         results.push({ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: `unknown tool: ${call.name}` }], is_error: true })
         continue
       }
-      const decision = await deps.requestPermission(call.name, call.input)
+      const decision = await deps.requestPermission(call.name, call.input, call.id, signal)
       if (!decision.allowed) {
         results.push({ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: decision.message ?? 'permission denied' }], is_error: true })
         continue
@@ -129,6 +134,13 @@ export async function runTurn(
         runFailed = true
       }
       results.push({ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text }], is_error: runFailed })
+    }
+    // An abort mid-response leaves tool_use blocks unanswered. The API
+    // requires every tool_use to be matched by a tool_result in the next user
+    // message, so skipped calls get a synthetic error result — otherwise the
+    // turn after the interrupt would fail on invalid history.
+    for (const call of toolUses.slice(results.length)) {
+      results.push({ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: 'aborted' }], is_error: true })
     }
     // tool_result frames are built with the caller's frameCtx, so they carry
     // the REAL session id.
