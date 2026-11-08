@@ -31,11 +31,11 @@ describe('parseSseStream', () => {
   })
 
   it('skips comments, CRLF line endings and [DONE]-style empty data', async () => {
-    const events = await collect(streamOf(': keep-alive\r\n\r\nevent: ping\r\ndata: {}\r\n\r\n'))
+    const events = await collect(streamOf([': keep-alive\r\n\r\nevent: ping\r\ndata: {}\r\n\r\n']))
     expect(events).toEqual([{ event: 'ping', data: {} }])
   })
 
   it('throws on a non-JSON data line', async () => {
-    await expect(collect(streamOf('event: x\ndata: not-json\n\n'))).rejects.toThrow('invalid sse data')
+    await expect(collect(streamOf(['event: x\ndata: not-json\n\n']))).rejects.toThrow('invalid sse data')
   })
 })
