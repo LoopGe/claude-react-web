@@ -1,0 +1,100 @@
+// server/providers/native/frames.ts
+import type { AgentMessage } from '../../agent-message.js'
+
+// The SDKMessage union does not carry the frame fields uniformly (e.g.
+// SDKResultSuccess has no parent_tool_use_id, most members have no `message`),
+// so the read side is widened to a Record intersection — every produced object
+// is still structurally an SDK message and assignable to AgentMessage.
+export type Frame = AgentMessage & Record<string, any>
+
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string; signature?: string }
+  | { type: 'redacted_thinking'; data: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+
+export interface Usage {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
+export interface FrameContext {
+  sessionId: string
+  uuid(): string
+}
+
+export function defaultFrameContext(sessionId: string): FrameContext {
+  return { sessionId, uuid: () => crypto.randomUUID() }
+}
+
+function base(ctx: FrameContext, type: string): Record<string, unknown> {
+  return { type, session_id: ctx.sessionId, uuid: ctx.uuid(), parent_tool_use_id: null }
+}
+
+export function assistantFrame(
+  ctx: FrameContext,
+  opts: { model: string; content: ContentBlock[]; stopReason: string | null; usage: Usage },
+): Frame {
+  return {
+    ...base(ctx, 'assistant'),
+    message: {
+      id: `msg_${crypto.randomUUID()}`,
+      type: 'assistant',
+      role: 'assistant',
+      model: opts.model,
+      content: opts.content,
+      stop_reason: opts.stopReason,
+      usage: opts.usage,
+    },
+  } as AgentMessage
+}
+
+export function toolResultFrame(ctx: FrameContext, toolUseId: string, text: string, isError: boolean): Frame {
+  return {
+    ...base(ctx, 'user'),
+    message: {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: [{ type: 'text', text }],
+        is_error: isError,
+      }],
+    },
+  } as AgentMessage
+}
+
+export function apiRetryFrame(
+  ctx: FrameContext,
+  info: { attempt: number; maxRetries: number; delayMs: number },
+): Frame {
+  return {
+    ...base(ctx, 'system'),
+    subtype: 'api_retry',
+    attempt: info.attempt,
+    max_retries: info.maxRetries,
+    retry_delay_ms: info.delayMs,
+  } as AgentMessage
+}
+
+export function resultFrame(
+  ctx: FrameContext,
+  opts: { result: string; usage: Usage; numTurns: number; durationMs: number; isError: boolean },
+): Frame {
+  return {
+    ...base(ctx, 'result'),
+    subtype: opts.isError ? 'error_during_execution' : 'success',
+    runtime: 'native',
+    result: opts.result,
+    usage: opts.usage,
+    num_turns: opts.numTurns,
+    duration_ms: opts.durationMs,
+    is_error: opts.isError,
+  } as unknown as AgentMessage
+}
+
+export function streamEventFrame(ctx: FrameContext, event: unknown): Frame {
+  return { ...base(ctx, 'stream_event'), event } as AgentMessage
+}
