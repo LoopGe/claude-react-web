@@ -6,9 +6,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { usePastedImages } from './usePastedImages'
-import { getMaxPastedImageBytes } from './config-store'
+import { getMaxPastedImageBytes, setMaxPastedImageBytes } from './config-store'
 import type { PastedImage } from '../types'
-import type { NormalizedImage } from '../utils/image-normalize'
+import { ImageNormalizeError, type NormalizedImage } from '../utils/image-normalize'
 
 const prepareMock = vi.hoisted(() => vi.fn())
 vi.mock('../utils/image-normalize', async (importOriginal) => {
@@ -186,6 +186,43 @@ describe('usePastedImages.addImages', () => {
     expect(result.current.error).toMatch(/Image too large/)
     expect(prepareMock).toHaveBeenCalledTimes(1)
     expect(prepareMock.mock.calls[0]?.[0]).toMatchObject({ name: 'ok.png' })
+  })
+
+  it('refuses one corrupt file without dropping the rest of the batch', async () => {
+    const originalMax = getMaxPastedImageBytes()
+    setMaxPastedImageBytes(10)
+    try {
+      const { result } = renderHook(() => usePastedImages())
+      const bad = new File([new Uint8Array(5)], 'bad.png', { type: 'image/png' })
+      const good = new File([new Uint8Array(5)], 'good.png', { type: 'image/png' })
+      prepareMock
+        .mockRejectedValueOnce(new ImageNormalizeError('bad image'))
+        .mockResolvedValueOnce(normalizedFor(good))
+      await act(async () => { await result.current.addImages([bad, good]) })
+      expect(result.current.images).toHaveLength(1)
+      expect(result.current.images[0]?.data).toBe('NORMALIZED')
+      expect(result.current.error).toBe('bad image')
+      expect(result.current.pending).toBe(false)
+
+      // The failed file's source reservation is released: the next 5-byte
+      // file still fits the 10-byte aggregate cap.
+      const later = new File([new Uint8Array(5)], 'later.png', { type: 'image/png' })
+      prepareMock.mockResolvedValueOnce(normalizedFor(later))
+      await act(async () => { await result.current.addImages([later]) })
+      expect(result.current.images).toHaveLength(2)
+    } finally {
+      setMaxPastedImageBytes(originalMax)
+    }
+  })
+
+  it('wraps a non-normalize error with a user-facing message', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    prepareMock.mockRejectedValueOnce(new Error('boom'))
+    await act(async () => {
+      await result.current.addImages([new File(['x'], 'x.png', { type: 'image/png' })])
+    })
+    expect(result.current.error).toBe('Could not process image: boom')
+    expect(result.current.images).toEqual([])
   })
 
   it('skips an unsupported image type without dropping the rest of the batch', async () => {
