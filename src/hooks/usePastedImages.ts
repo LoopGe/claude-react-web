@@ -4,9 +4,9 @@ import { formatBytes } from '../utils/format'
 import { isSupportedImageMediaType } from '../../shared/image-media'
 import { randomId } from '../utils/uuid'
 import { getMaxPastedImageBytes } from './config-store'
+import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_MESSAGE } from '../../shared/upload-limits'
 import type { PastedImage } from '../types'
 
-const MAX_PER_IMAGE = 10 * 1024 * 1024 // 10 MB
 /** Concurrent decodes inside one intake batch. */
 const DECODE_CONCURRENCY = 2
 
@@ -67,11 +67,20 @@ export function usePastedImages(): UsePastedImages {
   // runs. Releasing it at decode completion would let the very next call in
   // the same task compute its total from a stale imagesRef.
   const pendingReleaseRef = useRef(0)
+  // Count reservations use the same lifecycle as the byte reservation:
+  // accepted-but-not-yet-committed images stay counted across overlapping
+  // batches, and committed images move into imagesRef on the next render.
+  const reservedCountRef = useRef(0)
+  const pendingReleaseCountRef = useRef(0)
   useEffect(() => {
     imagesRef.current = images
     if (pendingReleaseRef.current !== 0) {
       reservedBytesRef.current -= pendingReleaseRef.current
       pendingReleaseRef.current = 0
+    }
+    if (pendingReleaseCountRef.current !== 0) {
+      reservedCountRef.current -= pendingReleaseCountRef.current
+      pendingReleaseCountRef.current = 0
     }
   }, [images])
   // Generation counter bumped on every clear(). An add captures the
@@ -145,6 +154,7 @@ export function usePastedImages(): UsePastedImages {
     // batches that have not committed yet.
     const accepted: File[] = []
     let total = imagesRef.current.reduce((sum, img) => sum + img.size, 0) + reservedBytesRef.current
+    let totalCount = imagesRef.current.length + reservedCountRef.current
     const maxTotal = getMaxPastedImageBytes()
     let failure: string | null = null
     const refuse = (message: string): void => {
@@ -157,8 +167,12 @@ export function usePastedImages(): UsePastedImages {
         refuse(`Unsupported image type: ${file.type || 'unknown'}. Use JPEG, PNG, GIF, or WebP.`)
         continue
       }
-      if (file.size > MAX_PER_IMAGE) {
-        refuse(`Image too large (${formatBytes(file.size)}). Max ${formatBytes(MAX_PER_IMAGE)} per image.`)
+      if (totalCount >= MAX_IMAGES_PER_MESSAGE) {
+        refuse(`Too many images. Max ${MAX_IMAGES_PER_MESSAGE} per message.`)
+        continue
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        refuse(`Image too large (${formatBytes(file.size)}). Max ${formatBytes(MAX_IMAGE_BYTES)} per image.`)
         continue
       }
       if (total + file.size > maxTotal) {
@@ -166,12 +180,14 @@ export function usePastedImages(): UsePastedImages {
         continue
       }
       total += file.size
+      totalCount += 1
       accepted.push(file)
     }
     if (accepted.length === 0) return failure
 
     const acceptedBytes = accepted.reduce((sum, file) => sum + file.size, 0)
     reservedBytesRef.current += acceptedBytes
+    reservedCountRef.current += accepted.length
     setPendingBatches((count) => count + 1)
     const generation = clearGenerationRef.current
     // Decode at most two images at a time: one drop can carry many
@@ -181,6 +197,7 @@ export function usePastedImages(): UsePastedImages {
     // Their bytes move from the reservation to `pendingReleaseRef` at commit;
     // the imagesRef sync effect drains them once the commit is visible.
     let committedBytes = 0
+    let committedCount = 0
     try {
       for (let index = 0; index < accepted.length; index += DECODE_CONCURRENCY) {
         if (clearGenerationRef.current !== generation) break
@@ -206,7 +223,9 @@ export function usePastedImages(): UsePastedImages {
             continue
           }
           pendingReleaseRef.current += entry.file.size
+          pendingReleaseCountRef.current += 1
           committedBytes += entry.file.size
+          committedCount += 1
           bumpMutations('add')
           setImages((prev) => [...prev, {
             id: randomId(),
@@ -220,9 +239,10 @@ export function usePastedImages(): UsePastedImages {
         }
       }
     } finally {
-      // Release the bytes that never reached a commit; committed bytes are
-      // released by the imagesRef sync effect.
+      // Release the bytes/count that never reached a commit; committed ones
+      // are released by the imagesRef sync effect.
       reservedBytesRef.current -= acceptedBytes - committedBytes
+      reservedCountRef.current -= accepted.length - committedCount
       setPendingBatches((count) => count - 1)
     }
     return failure

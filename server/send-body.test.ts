@@ -73,4 +73,27 @@ describe('validateSendBody', () => {
     const v = validateSendBody({ content: [{ type: 'image', source: { type: 'base64', data: 'A'.repeat(28_000_001), media_type: 'image/png' } }] })
     expect(v).toEqual({ ok: false, status: 413, error: 'total image payload too large' })
   })
+
+  it('rejects more than 20 images in one message', () => {
+    const content = Array.from({ length: 21 }, () => ({
+      type: 'image',
+      source: { type: 'base64', data: 'AAAA', media_type: 'image/png' },
+    }))
+    expect(validateSendBody({ content })).toEqual({
+      ok: false,
+      status: 400,
+      error: 'at most 20 images per message',
+    })
+  })
+
+  it('rejects one image above the per-image byte limit', () => {
+    const data = Buffer.alloc(10 * 1024 * 1024 + 1).toString('base64')
+    expect(validateSendBody({
+      content: [{ type: 'image', source: { type: 'base64', data, media_type: 'image/png' } }],
+    })).toEqual({
+      ok: false,
+      status: 413,
+      error: 'image #1 exceeds 10485760 bytes',
+    })
+  })
 })

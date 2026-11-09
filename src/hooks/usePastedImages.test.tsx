@@ -345,6 +345,19 @@ describe('usePastedImages.addImages', () => {
       unstubDecodeGlobals()
     }
   })
+
+  it('caps images per message', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    stubDecodeGlobals()
+    try {
+      const files = Array.from({ length: 21 }, (_, i) => new File(['x'], `${i}.png`, { type: 'image/png' }))
+      await act(async () => { await result.current.addImages(files) })
+      expect(result.current.error ?? '').toMatch(/too many images/i)
+      expect(result.current.images).toHaveLength(20)
+    } finally {
+      unstubDecodeGlobals()
+    }
+  })
 })
 
 describe('usePastedImages.pending', () => {

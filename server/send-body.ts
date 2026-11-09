@@ -1,7 +1,12 @@
 import type { ScheduledSendBody, ScheduledSendContentBlock } from '../shared/scheduled-send.js'
 import { isSupportedImageMediaType } from '../shared/image-media.js'
 import { isFileBlock } from '../shared/attachments.js'
-import { MAX_FILES_PER_MESSAGE, MAX_MESSAGE_BASE64 } from '../shared/upload-limits.js'
+import {
+  MAX_FILES_PER_MESSAGE,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGES_PER_MESSAGE,
+  MAX_MESSAGE_BASE64,
+} from '../shared/upload-limits.js'
 
 export { MAX_FILES_PER_MESSAGE, MAX_MESSAGE_BASE64 }
 
@@ -16,6 +21,8 @@ export function validateSendBody(raw: { text?: unknown; content?: unknown }): Se
   if (Array.isArray(raw.content) && raw.content.length > 0) {
     let totalBase64 = 0
     let fileCount = 0
+    let imageCount = 0
+    const images: Array<{ data: string; mediaType: string }> = []
     for (const block of raw.content) {
       const b = block as Record<string, unknown>
       if (b.type === 'image') {
@@ -26,6 +33,11 @@ export function validateSendBody(raw: { text?: unknown; content?: unknown }): Se
         if (!isSupportedImageMediaType(source.media_type as string)) {
           return { ok: false, status: 400, error: `unsupported image type: ${source.media_type}` }
         }
+        imageCount += 1
+        if (imageCount > MAX_IMAGES_PER_MESSAGE) {
+          return { ok: false, status: 400, error: `at most ${MAX_IMAGES_PER_MESSAGE} images per message` }
+        }
+        images.push({ data: source.data as string, mediaType: source.media_type as string })
         totalBase64 += (source.data as string).length
       } else if (b.type === 'file') {
         if (!isFileBlock(block)) {
@@ -41,6 +53,11 @@ export function validateSendBody(raw: { text?: unknown; content?: unknown }): Se
     }
     if (totalBase64 > MAX_MESSAGE_BASE64) {
       return { ok: false, status: 413, error: 'total image payload too large' }
+    }
+    for (const [index, image] of images.entries()) {
+      if (Buffer.byteLength(image.data, 'base64') > MAX_IMAGE_BYTES) {
+        return { ok: false, status: 413, error: `image #${index + 1} exceeds ${MAX_IMAGE_BYTES} bytes` }
+      }
     }
     return { ok: true, body: { content: raw.content as ScheduledSendContentBlock[] } }
   }
