@@ -471,14 +471,25 @@ export interface Block {
 
 // ── Image Paste ──────────────────────────────────────────────────
 
+/** Facts about the source image before client-side normalization. */
+export interface PastedImageOriginal {
+  mediaType: SupportedImageMediaType
+  width: number
+  height: number
+  size: number
+}
+
 export interface PastedImage {
   id: string
   data: string
   mediaType: SupportedImageMediaType
   width: number
   height: number
+  /** Normalized encoded byte length (what will be sent). */
   size: number
   previewUrl: string
+  /** Source facts, present when the image was normalized on intake. */
+  original?: PastedImageOriginal
 }
 
 // ── MCP Server Status ─────────────────────────────────────────────

@@ -1,8 +1,8 @@
-/** Convert a File to a base64 string (data-URL prefix stripped) using
+/** Convert a Blob/File to a base64 string (data-URL prefix stripped) using
  *  FileReader, which avoids the O(n) string concatenation that blocked the
- *  main thread. Shared by the composer's pasted images and the Skills tab's
- *  folder import. */
-export function fileToBase64(file: File): Promise<string> {
+ *  main thread. Shared by the composer's normalized images and the Skills
+ *  tab's folder import. */
+export function fileToBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => {
