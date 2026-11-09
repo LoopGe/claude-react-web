@@ -1009,6 +1009,7 @@ export class SessionManager {
       mcpStore: this.mcpStore,
       onProcessExit: (info) => this.handleProcessExit(info),
       logsDir: join(this.store.getDir(), 'logs'),
+      stateDir: this.store.getDir(),
     })
     this.defaultProvider = opts.defaultProvider ?? 'claude'
     // Stuck-session monitor — periodic GC tick with auto-interrupt.
@@ -2671,8 +2672,10 @@ export class SessionManager {
     //    otherwise Windows EPERM/EBUSY on a still-locked jsonl.
     if (opts?.deleteOriginal) {
       await this.unload(id, { terminated: true, reason: 'discarded', removeFromStore: true })
-      await deleteTranscriptFile(id)
-      jsonlPageCache.invalidate(id)
+      const providerName = metaX?.provider ?? this.defaultProvider
+      const deletesViaProvider = Boolean(this.providers.get(providerName).deleteTranscript)
+      await this.deleteProviderTranscript(providerName, id, { single: true })
+      if (!deletesViaProvider) jsonlPageCache.invalidate(id)
       // The transcript is gone — its seq sidecar must go too (a stale
       // sidecar surviving the jsonl would rehydrate seqs for messages
       // that no longer exist).
@@ -3492,6 +3495,11 @@ export class SessionManager {
       // supportedDialogKinds is non-empty, so the two always travel together.
       onUserDialog: fullOpts.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
       supportedDialogKinds: (fullOpts as { supportedDialogKinds?: string[] }).supportedDialogKinds,
+      // Side Chats carry the same developer instructions the claude provider
+      // receives through Options.systemPrompt.append (set in sideChatOpts),
+      // but the native provider builds its prompt in-process and has no SDK
+      // options — so it gets the text through this provider-level field.
+      systemPromptAppend: (fullOpts as { parentId?: string }).parentId ? SIDE_DEVELOPER_INSTRUCTIONS : undefined,
       providerExtras: { sdkOptions, modelGroupId: session.modelGroupId },
     })
     session.handle = handle
@@ -7364,6 +7372,17 @@ export class SessionManager {
     if (!this.permanentDeleteCounts.has(id)) this.deletedSessionIds.delete(id)
   }
 
+  /** Remove a session's provider-side transcript. Providers that own their
+   *  storage (the native log directory) expose `deleteTranscript`; the
+   *  claude provider does not, so it keeps using the JSONL helpers and the
+   *  caller keeps invalidating the JSONL page cache. `single` selects
+   *  deleteTranscriptFile vs deleteTranscriptFiles on the claude fallback. */
+  private async deleteProviderTranscript(providerName: string, id: string, opts: { single: boolean }): Promise<boolean> {
+    const provider = this.providers.get(providerName)
+    if (provider.deleteTranscript) return provider.deleteTranscript(id)
+    return opts.single ? deleteTranscriptFile(id) : deleteTranscriptFiles(id)
+  }
+
   /** Delete a session for good: close its Query AND erase its persistence
    *  entry. The SDK transcript stays on disk unless deleteTranscript is true. */
   async delete(id: string, opts?: { deleteTranscript?: boolean }): Promise<void> {
@@ -7380,7 +7399,13 @@ export class SessionManager {
       // Read the meta BEFORE store.remove drops the entry — the worktree
       // info must survive long enough to drive the cleanup below.
       const meta = this.store?.get(id)
-      if (opts?.deleteTranscript) {
+      // Resolve the provider BEFORE the strict probe: a provider that owns
+      // its transcript storage (native) deletes it below via its own method,
+      // so the claude-specific findTranscriptFile probe must not run for it.
+      const providerName = meta?.provider ?? this.defaultProvider
+      const provider = this.providers.get(providerName)
+      const deletesViaProvider = Boolean(provider.deleteTranscript)
+      if (opts?.deleteTranscript && !deletesViaProvider) {
         try {
           await findTranscriptFile(id, { strict: true })
         } catch (err) {
@@ -7442,8 +7467,8 @@ export class SessionManager {
           await this.snapshots.delete(id)
           // Delete the CLI transcript before any app-owned data. If this fails,
           // the retained sidecars still support a meaningful rollback/retry.
-          deletedTranscript = await deleteTranscriptFiles(id)
-          jsonlPageCache.invalidate(id)
+          deletedTranscript = await this.deleteProviderTranscript(providerName, id, { single: false })
+          if (!deletesViaProvider) jsonlPageCache.invalidate(id)
           // Permanent deletion must not leave app sidecars behind or hide their
           // filesystem failures behind best-effort logging.
           const removals = await Promise.allSettled([
@@ -7462,7 +7487,9 @@ export class SessionManager {
           let canRestore = !this.completedPermanentDeletes.has(id)
           if (canRestore && deletedTranscript) {
             try {
-              canRestore = Boolean(await findTranscriptFile(id, { strict: true }))
+              canRestore = meta && provider.hasTranscript
+                ? await provider.hasTranscript(meta)
+                : Boolean(await findTranscriptFile(id, { strict: true }))
             } catch {
               canRestore = false
             }
@@ -8961,6 +8988,7 @@ export class SessionManager {
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onUserDialog: session.onUserDialog as ((...args: unknown[]) => Promise<unknown>) | undefined,
       supportedDialogKinds: session.onUserDialog ? [...SUPPORTED_DIALOG_KINDS] : undefined,
+      systemPromptAppend: session.parentId ? SIDE_DEVELOPER_INSTRUCTIONS : undefined,
       providerExtras: { sdkOptions },
     })
     // Re-enqueue recovered turns onto the fresh handle, oldest first.

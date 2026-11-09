@@ -15,11 +15,15 @@ export interface DefaultProvidersOptions {
   /** Directory for session-scoped CLI diagnostic logs. Passed through to
    *  ClaudeProvider for stderr tee + SDK debug log files. */
   logsDir?: string
+  /** App state directory. The native provider keeps its session logs under
+   *  `<stateDir>/native-sessions/`; omitted falls back to the default
+   *  state-dir resolution. */
+  stateDir?: string
 }
 
 export function createDefaultProviders(opts: DefaultProvidersOptions = {}): ProviderRegistry {
   const registry = new ProviderRegistry()
   registry.register(new ClaudeProvider(opts))
-  registry.register(new NativeProvider())
+  registry.register(new NativeProvider({ stateDir: opts.stateDir }))
   return registry
 }

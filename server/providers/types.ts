@@ -103,6 +103,11 @@ export interface CreateSessionOptions {
    *  (~every 30s per subagent, served from the prompt cache — cheap). */
   agentProgressSummaries?: boolean
   providerExtras?: Record<string, unknown>
+  /** Extra text appended to the provider's own system prompt (e.g. the Side
+   *  Chat developer instructions). Introduced for the native provider, whose
+   *  prompt is built in-process; the claude provider gets the same text via
+   *  `providerExtras.sdkOptions.systemPrompt.append` and ignores this key. */
+  systemPromptAppend?: string
   /** The resolved provider profile for this session. Threaded from the
    *  session-manager so the provider can use profile-scoped credentials
    *  and model lists without re-resolving. */
@@ -316,6 +321,11 @@ export interface AgentProvider {
   readHistoryPage?(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage>
   readHistoryEntries?(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]>
   hasTranscript?(meta: SessionMeta): Promise<boolean>
+  /** Delete this provider's on-disk transcript for `id`. Returns whether a
+   *  transcript was removed. Providers that manage their own storage
+   *  implement this so SessionManager can stay provider-agnostic; when
+   *  absent the manager falls back to the claude JSONL helpers. */
+  deleteTranscript?(id: string): Promise<boolean>
   /** Rename a session by appending a custom-title entry to its provider-side
    *  (on-disk) transcript (SDK renameSession), so the title survives a resume
    *  performed outside this app — the CLI transcript title takes precedence
