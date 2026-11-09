@@ -33,6 +33,12 @@ describe('session log format', () => {
       message: { id: 'msg_1', model: 'm' },
     })
   })
+  it('rejects an empty session/compact field', () => {
+    const compact = { seq: 0, type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: 't' }
+    for (const field of ['text', 'context', 'uuid', 'timestamp'] as const) {
+      expect(() => parseEventLine({ ...compact, [field]: '' }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
+    }
+  })
   it('rejects an unknown event type', () => {
     expect(() => parseEventLine({ seq: 0, type: 'mystery' }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
   })

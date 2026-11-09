@@ -70,6 +70,44 @@ describe('native history reader', () => {
     const entries = await readNativeHistoryEntries(dir, 's1')
     expect(JSON.stringify(entries)).not.toContain('pre-compact')
   })
+  it('repairs an interrupted post-compact turn but not pre-compact tools', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'assistant', uuid: 'a0', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'pre', name: 'Read', input: {} }] } } as never)
+    push({ type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:01.000Z' } as never)
+    push({ type: 'assistant', uuid: 'a1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'post', name: 'Read', input: {} }] } } as never)
+    await log.flush(); await log.close()
+
+    const entries = await readNativeHistoryEntries(dir, 's1')
+    expect(entries.filter((e) => (e.message as { type?: string }).type === 'assistant').map((e) => (e.message as { uuid: string }).uuid)).toEqual(['a1'])
+    const toolResultIds = entries.flatMap((entry) => {
+      const content = (entry.message as { message?: { content?: unknown } }).message?.content
+      if (!Array.isArray(content)) return []
+      return (content as Array<{ type?: string; tool_use_id?: string; is_error?: boolean }>)
+        .filter((block) => block.type === 'tool_result' && block.is_error === true)
+        .map((block) => block.tool_use_id)
+    })
+    expect(toolResultIds).toEqual(['post'])
+  })
+  it('floors at the last compact when several exist', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'user', uuid: 'p1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'pre-compact' }] } } as never)
+    push({ type: 'session/compact', text: 'FIRST SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:01.000Z' } as never)
+    push({ type: 'user', uuid: 'm1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'user', content: [{ type: 'text', text: 'middle' }] } } as never)
+    push({ type: 'session/compact', text: 'SECOND SUMMARY', context: 'CTX', uuid: 'c2', timestamp: '2026-11-09T00:00:03.000Z' } as never)
+    push({ type: 'user', uuid: 'u3', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:04.000Z', message: { role: 'user', content: [{ type: 'text', text: 'post-compact' }] } } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    expect(pageText(page)).not.toContain('FIRST SUMMARY')
+    expect(pageText(page)).not.toContain('middle')
+    expect(pageText(page)).toContain('SECOND SUMMARY')
+    expect(pageText(page)).toContain('post-compact')
+    expect(JSON.stringify(await readNativeHistoryEntries(dir, 's1'))).not.toContain('FIRST SUMMARY')
+  })
   it('returns an empty page for a missing log', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
     expect(await readNativeHistoryPage(dir, 'nope', { limit: 10 })).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })

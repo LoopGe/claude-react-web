@@ -6,6 +6,7 @@ import type { RawLine } from '../../../history-reader.js'
 const lost = { seq: 0, type: 'session/context', text: 'ctx' } as const
 const user = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `u${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
 const assistant = (seq: number, content: unknown[]): NativeLogEvent => ({ seq, type: 'assistant', uuid: `a${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content } })
+const compact = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'session/compact', text, context: 'CTX', uuid: `c${seq}`, timestamp: 't' })
 const result = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'user', uuid: `r${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'ok' }], is_error: false }] } })
 
 describe('replay', () => {
@@ -33,6 +34,19 @@ describe('replay', () => {
     expect(messages).toHaveLength(3) // context, summary, new user
     expect(JSON.stringify(messages)).not.toContain('old reply')
     expect(JSON.stringify(messages)).toContain('SUMMARY')
+  })
+  it('uses the LAST compact when several exist', () => {
+    const events = [
+      user(0, 'old'),
+      compact(1, 'FIRST SUMMARY'),
+      user(2, 'middle'),
+      compact(3, 'SECOND SUMMARY'),
+      user(4, 'new'),
+    ]
+    const json = JSON.stringify(historyFromEvents(events))
+    expect(json).toContain('SECOND SUMMARY')
+    expect(json).not.toContain('FIRST SUMMARY')
+    expect(json).not.toContain('middle')
   })
   it('synthesizes a result for every unanswered tool_use', () => {
     const events = [user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }])]
