@@ -735,6 +735,101 @@ describe('NativeSession', () => {
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
+  it('compacts in place: resets model history and appends a compact event', async () => {
+    const dir = await tempDir('native-inplace-')
+    const provider = providerWithStreamer([textTurn('first reply'), textTurn('after')], dir)
+    const session = provider.createSession({ id: 'inplace', cwd: dir })
+    // `compactInPlace` is provider-specific (not on ProviderSessionHandle yet),
+    // so reach it through the same narrow cast the internals reads use.
+    const compactable = session as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+    }
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('OLD-PROMPT') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first reply')).toBe(true))
+    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+
+    const compactEvent = logOf(session).events.find((e) => e.type === 'session/compact') as unknown as {
+      text: string
+      context: string
+      uuid: string
+      timestamp: string
+    }
+    expect(compactEvent).toMatchObject({
+      text: 'SUMMARY',
+      uuid: 'c1',
+      timestamp: '2026-11-09T00:00:00.000Z',
+    })
+    expect(compactEvent.context).toContain('Working directory')
+    // The model history now starts from the captured context + summary; the
+    // pre-compact conversation is gone from what the next request sends.
+    const history = (session as unknown as { history: unknown[] }).history
+    expect(history).toEqual([
+      { role: 'user', content: [{ type: 'text', text: compactEvent.context }] },
+      { role: 'user', content: [{ type: 'text', text: 'SUMMARY' }] },
+    ])
+    expect(JSON.stringify(history)).not.toContain('OLD-PROMPT')
+    // The context bar resets; the per-model billing totals do not.
+    const usage = (await session.getContextUsage?.()) as { totalTokens: number }
+    expect(usage.totalTokens).toBe(0)
+
+    // A subsequent turn runs from the compacted history; the log stays
+    // append-only (old events plus the compact boundary plus the new turn).
+    session.enqueueUserMessage(userMsg('next') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'after')).toBe(true))
+    await vi.waitFor(() => expect(logOf(session).events.filter((e) => e.type === 'turn/end')).toHaveLength(2))
+    expect(userTexts(session)).toEqual(['OLD-PROMPT', 'next'])
+    expect(logOf(session).events.some((e) => e.type === 'session/compact')).toBe(true)
+    const afterHistory = JSON.stringify((session as unknown as { history: unknown[] }).history)
+    expect(afterHistory).toContain('SUMMARY')
+    expect(afterHistory).toContain('next')
+    expect(afterHistory).toContain('after')
+    expect(afterHistory).not.toContain('OLD-PROMPT')
+    await session.destroy()
+  })
+
+  it('refuses to compact while a turn is in flight or input is queued', async () => {
+    const dir = await tempDir('native-inplace-refuse-')
+    const provider = new NativeProvider({ stateDir: dir })
+    let streamStarted!: () => void
+    const started = new Promise<void>((resolve) => { streamStarted = resolve })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
+      streamStarted()
+      await new Promise<never>((_, reject) => {
+        req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true })
+      })
+      yield // unreachable
+    }
+    const session = provider.createSession({ id: 'refuse', cwd: dir })
+    const compactable = session as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+    }
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    const opts = { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' }
+    session.enqueueUserMessage(userMsg('first') as never)
+    session.enqueueUserMessage(userMsg('second') as never)
+    await started
+    // In flight AND one queued message.
+    expect(session.queueDepth).toBe(1)
+    await expect(compactable.compactInPlace('SUMMARY', opts)).rejects.toThrow()
+    // Drain the queue: the in-flight turn alone must still refuse.
+    session.clearQueuedInput()
+    expect(session.queueDepth).toBe(0)
+    await expect(compactable.compactInPlace('SUMMARY', opts)).rejects.toThrow()
+    // Nothing was appended by the refused calls.
+    expect(logOf(session).events.some((e) => e.type === 'session/compact')).toBe(false)
+
+    await session.interrupt?.()
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result')).toBe(true))
+    await session.destroy()
+    // A closed session refuses too.
+    await expect(compactable.compactInPlace('SUMMARY', opts)).rejects.toThrow()
+  })
+
   it('refuses to resume a corrupt log', async () => {
     const dir = await tempDir('native-corrupt-')
     const provider = new NativeProvider({ stateDir: dir })

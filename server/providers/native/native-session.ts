@@ -585,6 +585,38 @@ export class NativeSession implements ProviderSessionHandle {
     this.history.push({ role: 'user', content: message.message.content })
   }
 
+  /** Compact the conversation in place (P1.1 auto-compact): append the
+   *  append-only `session/compact` boundary, then restart the model history
+   *  from the captured context snapshot plus the summary. Only legal while the
+   *  session is idle — the manager treats a throw as "not now" and skips this
+   *  attempt. Emits NO frames: the manager owns the client-facing divider.
+   *  `lastUsage` resets so the context bar starts from zero while
+   *  `usageByModel` keeps the cumulative billing totals. A failed flush throws
+   *  before any in-memory state changes, leaving the session exactly as it was. */
+  async compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void> {
+    if (this._closed) throw new Error('session is closed')
+    if (this.turnAbort !== null) throw new Error('a turn is in flight')
+    if (this.input.length > 0) throw new Error('input is queued')
+    const context = contextSnapshot(this.opts.cwd)
+    this.log.append({
+      type: 'session/compact',
+      text: summary,
+      context,
+      uuid: opts.uuid,
+      timestamp: opts.timestamp,
+    })
+    await this.log.flush()
+    // History is a readonly array mutated in place; splice keeps every holder
+    // of the reference (the pump loop) looking at the compacted conversation.
+    this.history.splice(
+      0,
+      this.history.length,
+      { role: 'user', content: [{ type: 'text', text: context }] },
+      { role: 'user', content: [{ type: 'text', text: summary }] },
+    )
+    this.lastUsage = { input_tokens: 0, output_tokens: 0 }
+  }
+
   clearQueuedInput(): number {
     return this.input.splice(0).length
   }
