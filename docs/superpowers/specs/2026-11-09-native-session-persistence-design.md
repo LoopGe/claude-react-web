@@ -271,3 +271,43 @@ native 标记事件（不渲染）：
 ## 17. Builder check 结论
 
 独立 builder check 提出的 7 个问题已在本版全部落定：用户事件写盘时点（§7）、tool_result 形状（§6.3/§8）、损坏日志的暴露路径（§9/§11/§13）、`timestamp` 归一化（§6.3/§8）、compact seed 持久化（§3/§6.3/§7）、fork 的 context（§9/§10）、writer 与 spawn 顺序（§7）。没有需要用户额外拍板的开放问题。
+
+## P1.1 — Context efficiency
+
+P1.1 在持久化之上补两件事：跨 turn 复用稳定的 prompt 前缀（prompt caching），以及不换 session id 的上下文压缩。
+
+### Prompt caching
+
+- `buildRequestBody` 在三个稳定前缀边界加 `cache_control: { type: 'ephemeral' }`：`system` 块、最后一个 tool 定义、请求最后一条消息的最后一个 content block（字符串 content 改写成带 `cache_control` 的 text block）。
+- 只克隆最后一条消息/块与 tools 数组，不修改调用方持有的 history/tools。
+- 始终开启，没有配置开关。
+- 接受的限制：拒绝 `cache_control` 的 Anthropic 兼容网关会让该 turn 失败。不为兼容而静默降级。
+
+### `session/compact` 日志事件
+
+```json
+{"seq":5,"type":"session/compact","text":"<summary>","context":"<system-reminder>...</system-reminder>","uuid":"...","timestamp":"..."}
+```
+
+- `text`：摘要正文；`context`：压缩时刻重新抓取的 `<system-reminder>` 快照；`uuid`：与客户端 compact boundary 帧共享的身份；`timestamp` / `seq`：与其他事件一致。
+- 它是 replay 与 reader 的地板：`historyFromEvents` 从**最后一条** `session/compact` 重建模型历史（先 `context` 再 `text`），reader 从同一事件生成的 summary 行开始返回可渲染内容——因此分页 / 搜索 / 侧聊前缀只看到压缩后的对话。
+- 日志仍然只追加：压缩是加一条事件，不重写、不截断已提交事件。
+
+### 原地压缩（同 id）
+
+- 不换 session id、不 respawn。`NativeSession.compactInPlace` 追加 compact 事件、替换自己的模型 history、把 `lastUsage` 清零，不产出帧；manager 重置同 id 的 transcript 管线，广播 `session-cleared`，再推送 boundary + summary 两帧。
+- manager 重置清单：history ring；transcript seq sidecar（**seq generation 继续 +1，不回零**——客户端在 `session-cleared` 上以 `generation + 1` 作为 stale floor）；`promptUuids`；`steeredInFlight`；`withdrawnUuids`；`pendingSnapshotAnchors`；`lastContextUsage`；prompt-uuid / steered / turn-anchor / result-frame 四个 sidecar。
+- 保留：后台 task 记录与文件快照锚点（压缩不丢任务、不丢 rewind 锚点）。
+
+### 触发规则
+
+- 只在 `phaseOf === 'idle'` 时触发；turn 在跑或输入仍在队列里时不触发。
+- 阈值：`Options.settings.autoCompactWindow` 显式给出时用它，否则 `floor(maxTokens × nativeAutoCompactRatio)`（配置默认 `0.8`，夹在 `(0, 1]`）。
+- `nativeAutoCompact: false` 整体关闭。
+- 同一 session 同时最多一个压缩在跑（`autoCompacting`）；await 摘要之后重新检查 session 身份与 idle，避免与用户 turn 竞争。
+- `summarizeForCompact` 返回空串时跳过（不为空历史伪造摘要）。
+
+### Usage
+
+- `usageByModel` 跨压缩保持累计（计费不因压缩丢失）。
+- context-window 的 usage 从压缩后的对话重新开始（ContextBar 在压缩后回到低位）。

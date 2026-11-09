@@ -345,4 +345,82 @@ describe('native provider persistence through SessionManager', () => {
     expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1)
     expect(s.history.filter((m) => m.subtype === 'compact_boundary')).toHaveLength(1)
   }, 20000)
+
+  it('restart + resume rebuilds the conversation from the compact summary', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-autocompact-resume-'))
+    dirs.push(dir)
+
+    const first = await makeFixture(dir)
+    const info = await first.sm.create({
+      cwd: dir,
+      model: 'test-model',
+      provider: 'native',
+      title: 'auto-compact-resume',
+      // Same spawn channel as the test above: 1 token crosses the window.
+      settings: { autoCompactWindow: 1 },
+    } as unknown as Parameters<typeof first.sm.create>[0])
+    await sendTurn(first.sm, info.id)
+    // The pre-compact turn must be durable in the append-only log. The floored
+    // page reader below can no longer see it once `session/compact` lands, so
+    // gate on the raw events (which survive compaction) instead.
+    await vi.waitFor(() => {
+      const log = loadNativeSessionLogSync(dir, info.id)!
+      expect(JSON.stringify(log.events)).toContain(REPLY)
+    }, { timeout: 5000 })
+
+    await vi.waitFor(() => {
+      expect(hasCompactBoundary(liveSession(first.sm, info.id).history)).toBe(true)
+    }, { timeout: 5000 })
+
+    // The durable surface is floored at the compact event: only the summary is
+    // still readable, and search no longer reaches the pre-compact turn.
+    const page = await first.provider.readHistoryPage(info.id, { limit: 20 })
+    expect(pageText(page)).toContain('MOCK SUMMARY')
+    expect(pageText(page)).not.toContain(PROMPT)
+    expect(pageText(page)).not.toContain(REPLY)
+    const hits = await first.sm.searchMessages(REPLY, { sessionId: info.id })
+    expect(hits.length).toBe(0)
+
+    await first.sm.shutdown()
+
+    // `autoCompactWindow: 1` is persisted in SessionMeta and re-applied on
+    // resume, so the post-compact turn below would compact AGAIN (usage 10 ≥ 1)
+    // and floor the very reply this test asserts. Auto-compaction itself is
+    // proven by the test above; this one is about resume, so the window is
+    // raised for the resumed phase (multi-compact continuity is deliberately
+    // out of scope).
+    const second = await makeFixture(dir)
+    armStream(second.provider, 'post-compact-reply')
+    const resumed = await second.sm.resume(info.id)
+    expect(resumed.id).toBe(info.id)
+    sessionIds.push({ sm: second.sm, id: info.id })
+    ;(liveSession(second.sm, info.id) as unknown as { autoCompactWindow?: number })
+      .autoCompactWindow = Number.MAX_SAFE_INTEGER
+
+    const resumedPage = await second.sm.getHistoryPage(info.id, { limit: 10 })
+    expect(pageText(resumedPage)).toContain('MOCK SUMMARY')
+    expect(pageText(resumedPage)).not.toContain(PROMPT)
+    expect(pageText(resumedPage)).not.toContain(REPLY)
+
+    // The resumed live handle's model history is what the next turn actually
+    // sends. `historyFromEvents` must have restarted it at the last
+    // `session/compact` event (context + summary), not replayed the old turn.
+    const live = (second.sm as unknown as {
+      sessions: Map<string, { handle: { history: unknown[] } }>
+    }).sessions.get(info.id)
+    expect(live).toBeDefined()
+    const modelHistory = JSON.stringify(live!.handle.history)
+    expect(modelHistory).toContain('MOCK SUMMARY')
+    expect(modelHistory).not.toContain(PROMPT)
+    expect(modelHistory).not.toContain(REPLY)
+
+    // A post-compact turn continues from that floor: its reply is readable and
+    // the pre-compact content still never resurfaces.
+    await sendTurn(second.sm, info.id, 'post-compact-prompt')
+    await waitForPersistedTurn(second.provider, info.id, 'post-compact-reply')
+    const afterPage = await second.sm.getHistoryPage(info.id, { limit: 10 })
+    expect(pageText(afterPage)).toContain('post-compact-reply')
+    expect(pageText(afterPage)).not.toContain(PROMPT)
+    expect(pageText(afterPage)).not.toContain(REPLY)
+  }, 30000)
 })
