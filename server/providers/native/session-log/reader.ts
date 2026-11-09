@@ -80,12 +80,16 @@ function findLastCompact(text: string, id: string, path: string): NativeCompactE
   while (end >= 0) {
     const start = text.lastIndexOf('\n', end - 1) + 1
     const line = text.slice(start, end)
-    if (line.includes('session/compact')) {
-      const raw = JSON.parse(line) as { seq?: unknown }
-      const event = parseEventLine(raw, typeof raw.seq === 'number' ? raw.seq : -1, id, path)
-      if (event.type === 'session/compact') return event
-    }
     end = start - 1
+    if (!line.includes('session/compact')) continue
+    const raw = JSON.parse(line) as { seq?: unknown }
+    // The header is not an event, and its `cwd` can contain the literal
+    // substring (a directory named `session/compact`). Events always carry a
+    // numeric seq; skip anything else rather than feeding the header to the
+    // event parser.
+    if (typeof raw.seq !== 'number') continue
+    const event = parseEventLine(raw, raw.seq, id, path)
+    if (event.type === 'session/compact') return event
   }
   return null
 }

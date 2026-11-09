@@ -113,4 +113,16 @@ describe('native history reader', () => {
     expect(await readNativeHistoryPage(dir, 'nope', { limit: 10 })).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })
     expect(await readNativeHistoryEntries(dir, 'nope')).toEqual([])
   })
+  it('ignores a header whose cwd contains the compact event name', async () => {
+    // The boundary scan pre-filters on the literal substring; a project
+    // directory literally named `session/compact` must not make the header
+    // look like an event (it has no seq and would throw).
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/work/session/compact', resume: false })
+    log.append({ type: 'user', uuid: 'u1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'hello' }] } } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    expect(pageText(page)).toContain('hello')
+  })
 })

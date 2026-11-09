@@ -210,6 +210,44 @@ Must be a non-negative integer.
 
 ---
 
+### `nativeAutoCompact`
+
+| | |
+|---|---|
+| Type | `boolean` |
+| Default | `true` |
+
+Enable the **native provider's** in-place auto-compact. When an idle native session's context crosses the auto-compact window, the host summarizes the conversation and resets the model history in place (same session id; the log gains an append-only `session/compact` boundary). The `claude` provider compacts through the CLI instead, so this flag only affects `provider: 'native'` sessions.
+
+```json
+{
+  "nativeAutoCompact": false
+}
+```
+
+Read at trigger time, so a restart is not required.
+
+---
+
+### `nativeAutoCompactRatio`
+
+| | |
+|---|---|
+| Type | `number` |
+| Default | `0.8` |
+
+Fraction of the context window at which the native auto-compact trigger fires when the session has no explicit `autoCompactWindow`: it compacts once `totalTokens >= maxTokens × ratio`.
+
+```json
+{
+  "nativeAutoCompactRatio": 0.8
+}
+```
+
+Must be greater than `0`; values above `1` are clamped to `1`. A value of `0` (or any non-positive number) is ignored and the default `0.8` applies.
+
+---
+
 ### `maxGroupPanels`
 
 | | |

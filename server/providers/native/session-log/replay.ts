@@ -133,7 +133,13 @@ function collectOpenToolUses(
   events: readonly NativeLogEvent[],
 ): OpenToolUse[] {
   const open: OpenToolUse[] = []
-  for (const event of events) {
+  // The repair scope must match the replay/reader floor. A tool_use before the
+  // last compact is superseded along with the rest of the pre-compact
+  // conversation; appending its synthetic tool_result after the boundary would
+  // inject an ORPHAN tool_result into a history that no longer contains the
+  // tool_use, which the API rejects.
+  for (let i = lastCompactIndex(events) + 1; i < events.length; i++) {
+    const event = events[i]
     if (event.type === 'assistant') {
       for (const block of blocksOf(event.message.content)) {
         if (block.type === 'tool_use' && typeof block.id === 'string') {

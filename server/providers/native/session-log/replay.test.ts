@@ -56,6 +56,17 @@ describe('replay', () => {
   it('returns no synthetic events for a complete turn', () => {
     expect(repairInterruptedTurn([user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]), result(2, 't1')]).synthetic).toEqual([])
   })
+  it('ignores an unanswered tool_use before the last compact', () => {
+    // The replay floor supersedes the pre-compact conversation, so repairing
+    // an open tool_use there would inject an orphan tool_result into the
+    // compacted history (the API rejects it).
+    const events = [
+      assistant(0, [{ type: 'tool_use', id: 'pre', name: 'Read', input: {} }]),
+      compact(1, 'SUMMARY'),
+      user(2, 'new'),
+    ]
+    expect(repairInterruptedTurn(events).synthetic).toEqual([])
+  })
 })
 
 describe('repairRenderableLines', () => {

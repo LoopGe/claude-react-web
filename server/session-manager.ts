@@ -4766,14 +4766,16 @@ export class SessionManager {
       const prevGeneration = this.transcriptStores.get(s.id)?.store.generation ?? 0
       await compactInPlace.call(s.handle, summary, { uuid, timestamp })
       await this.removeTranscriptState(s.id)
-      this.getOrCreateTranscript(s.id).store.continueGeneration(prevGeneration)
-      s.history = []
-      s.subagentHistory = []
-      s.promptUuids = []
-      s.steeredInFlight.clear()
-      s.withdrawnUuids = []
-      s.pendingSnapshotAnchors = undefined
-      s.lastContextUsage = undefined
+      // Establish the fresh seq space now, but keep the OLD generation visible
+      // until the synchronous reset block below: a panel that opens while the
+      // sidecar removals run must adopt the old generation, so its
+      // `session-cleared` floor (local + 1) matches the generation the server
+      // reports from then on. Publishing `prev + 1` here instead wedges such a
+      // tab one generation ahead. `reconciled` is set because this seq space is
+      // defined by the two frames below, not by a disk backfill (which would
+      // collide with the boundary uuid).
+      const fresh = this.getOrCreateTranscript(s.id)
+      fresh.reconciled = true
       const sidecarResets: Array<[string, () => Promise<void>]> = [
         ['prompt-uuid', () => this.promptUuidStore.remove(s.id)],
         ['steered', () => this.steeredStore.remove(s.id)],
@@ -4787,6 +4789,18 @@ export class SessionManager {
           log.warn(`[session ${s.id}] auto-compact: ${label} sidecar reset failed:`, err)
         }
       }
+      // One synchronous block from here: publish the new generation, restart
+      // the seq space, wipe the in-memory state, signal, push the new frames.
+      // No await may be introduced between these statements — a client that
+      // samples the generation in between would arm a floor one too high.
+      fresh.store.continueGeneration(prevGeneration)
+      s.history = []
+      s.subagentHistory = []
+      s.promptUuids = []
+      s.steeredInFlight.clear()
+      s.withdrawnUuids = []
+      s.pendingSnapshotAnchors = undefined
+      s.lastContextUsage = undefined
       this.broadcastSessionCleared(s.id)
       this.pushCompactFrames(s, summary, uuid, timestamp, preTokens)
       log.info(

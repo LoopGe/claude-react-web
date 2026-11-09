@@ -283,6 +283,29 @@ describe('config', () => {
     expect(config.maxGroupPanels).toBe(2)
   })
 
+  it('exports sensible native auto-compact defaults', () => {
+    expect(config.nativeAutoCompact).toBe(true)
+    expect(config.nativeAutoCompactRatio).toBe(0.8)
+  })
+
+  it('loadConfig applies nativeAutoCompact and clamps the ratio to (0, 1]', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeAutoCompact: false, nativeAutoCompactRatio: 1.5 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.nativeAutoCompact).toBe(false)
+    expect(config.nativeAutoCompactRatio).toBe(1)
+  })
+
+  it('loadConfig falls back to the default ratio for a non-positive value', async () => {
+    // Same revert-to-default semantics as maxGroupPanels: an explicit 0 means
+    // "no override", which falls back to the hardcoded 0.8 — it must not leave
+    // a previously loaded ratio in place.
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeAutoCompactRatio: 0 }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.nativeAutoCompactRatio).toBe(0.8)
+  })
+
   it('loadConfig reverts maxGroupPanels to default when config.json sets it to 0', async () => {
     // Same revert-to-default semantics as modelList: an explicit zero
     // means "no override", which falls back to the hardcoded default
