@@ -132,9 +132,9 @@ native 标记事件（不渲染）：
 
 - `enqueueUserMessage`：只入内存队列，记录 `receivedAt = Date.now()`（`WeakMap<message, number>`）。不写盘。这样 `cancelQueued` / `messages-withdrawn` 的 queued turn 从未落盘，不需要 provider 侧的撤回/删除 API。
 - `pumpLoop` 取到下一条消息、开始 API 调用**之前**：写 `user` 事件（`timestamp` 取记录的 `receivedAt`；`consumedAt` 不需要单独字段，reader 由 timestamp 派生），然后 `flush`。
-- 模型响应 finalize：写 `assistant` 事件；在**执行工具之前** `flush`，保证崩溃后能判断“调用已发出、结果未知”。
+- 模型响应 finalize：写 `assistant` 事件，并**记住这次 `flush` 的 promise**；`requestPermission`（loop 的执行工具前唯一 seam）在调用权限处理/执行工具**之前 await 它**，保证崩溃后能判断“调用已发出、结果未知”。flush 失败会在该 await 处抛出，成为本轮 turn 的 error。
 - 每个 tool_result：写 `user` 事件；同一轮工具全部结束后 `flush`。
-- turn 结束：写 `turn/end` 并 `flush`。
+- turn 结束：写 `turn/end` 并 `flush`。只有 `completed` 携带本 turn 的 usage；`interrupted` / `error` 不携带（否则 `restoreUsage` 求和时会重复累计上一 turn 的 usage）。
 - interrupt/abort/destroy：写 `turn/end {interrupted}` 并 `flush`。
 - `sendControlMessage`（compact seed）：直接写 `isCompactSummary` user 事件 + `flush`，并加入 `history`。
 
@@ -178,10 +178,11 @@ native 标记事件（不渲染）：
 
 1. 校验头部/版本/`seq`；截断未提交尾部。**损坏或未知版本在这里抛错，不降级为空会话。**
 2. 重建 `history`：`session/context` → user 消息（按出现顺序全部放入；fork 会有两条，后一条是子会话 cwd）；wire 事件 → `{ role, content }`；thinking 块按现有规则剥离；native 标记跳过。
-3. **崩溃修复**：若最后事件是 assistant 且存在未回答的 `tool_use`，追加合成错误 tool_result（`is_error: true`）并写 `turn/end {interrupted}`；若已有 `turn/end` 则不重复。
-   - resume 路径：修复事件**持久化**。
+3. **崩溃修复**：若存在未回答的 `tool_use`，先追加合成错误 tool_result（`is_error: true`），再追加 `turn/end { interrupted }`，把被崩溃打断的 turn 明确收尾。
+   - resume 路径：修复事件（合成结果 + `turn/end`）**持久化**。
+   - 运行中的 turn 若在 assistant 已写入后抛错（assistant flush 失败或权限处理抛错），同一套合成结果会**立即写入日志与内存 history**（复用 `repairInterruptedTurn`）；只补内存会让重启后把结果补到后续 turn 之后，造成 history 永久非法。
    - 只读读取（冷会话的 `readHistoryEntries`）：在内存中补同样的 closers，不写盘。
-4. 恢复 `lastUsage` / `totalUsage`（取最后一个 `turn/end.usage` 或 assistant usage）。
+4. 恢复 `lastUsage` / `totalUsage`：`totalUsage` 只累计带 usage 的 `turn/end`（`completed` 才有）；`lastUsage` 取最后一个带 usage 的 `turn/end`，若日志里一个都没有，回退到最后一个 assistant `message.usage`（usage-less 的 `turn/end {forked}` 不参与、也不重置）。
 5. 先推 `system/init`，再进入正常输入队列。
 6. 不重放历史帧；客户端 transcript 由 manager 的 ring seed 提供。
 7. **构造函数不无条件加新 context**：fresh 才生成；resume 复用已存的 context；fork 见 §10。
@@ -194,7 +195,7 @@ native 标记事件（不渲染）：
 
 1. 读取源日志。
 2. `resumeSessionAt` 给出时：找到该 uuid 的事件（assistant turn anchor），**包含**它及其之前的所有事件作为前缀；找不到则明确报错。未给出时：复制完整前缀。
-3. 写新头部：`isSeeded: true`、`inheritedEventCount = 前缀事件数`；复制前缀（`seq` 在子日志内重新连续编号）；追加 `session/end-seed`。
+3. 写新头部：`isSeeded: true`、`inheritedEventCount = 前缀事件数`；复制前缀（`seq` 在子日志内重新连续编号，`session_id` 改写为子会话 id）；追加 `session/end-seed`。
 4. 修复 seed 中未闭合的 turn：补错误 tool_result + `turn/end {forked}`（子会话自有事件，在 seed 标记之后）。
 5. 追加一条**子会话自己的** `session/context` 事件（cwd 取 fork 的实际 cwd，例如 worktree → mainRepoPath 后的目录）；继承前缀里的旧 context 保留。
 6. 用 seed + 修复事件 + 新 context 重建 `history`。
@@ -260,8 +261,12 @@ native 标记事件（不渲染）：
 - v1 不做压缩/迁移链；未知版本 fail closed。
 - 崩溃修复在 resume 时持久化，冷读时仅内存补齐。`RepairResult.synthetic` 是日志输入而非事件：不带 `seq`，由调用方分配（resume 直接 append；fork seed 构建器在复制前缀后自行编号）。
 - clear 沿用 manager 的“新 id 新会话”语义，旧日志保留待 GC；同 id fresh spawn 遇到已有日志以 `kind:'exists'` 拒绝，不轮转、不覆盖。
-- writer 以 takeover 语义兼容 `spawn()` 先建后 destroy 的顺序；registry 键是解析后的日志路径，接管会丢弃旧 writer 的未 flush 缓冲与后续 append，但一次**已提交**的写入仍可能落盘（已文档化）。
+- writer 以 takeover 语义兼容 `spawn()` 先建后 destroy 的顺序；registry 键是解析后的日志路径，接管会丢弃旧 writer 的未 flush 缓冲与后续 append。truncate 只针对**本次读取快照自身**观察到的未提交尾部（`totalBytes > completeBytes`），不重新 stat，因此接管窗口内旧 writer 已提交的完整行**不会被截断**；该行对新 writer 不可见（已文档化），若新 writer 继续 append，其 seq 可能与这行冲突并在下次加载时以 `corrupt` 暴露——跨进程锁不在本期，这是接受的残留窗口（优先暴露而非静默丢数据）。
 - 删除经 `AgentProvider.deleteTranscript?` + manager 的 `deleteProviderTranscript` 分派；`discard` 先 `unload({ awaitDestroy: true })` 再删除日志目录。
+- resume 的崩溃修复除了合成 tool_result，还追加 `turn/end { interrupted }`；运行中的 turn 在 assistant 已写入后抛错时同样立即持久化合成结果（只补内存会在重启后产生非法顺序）。`totalUsage` 只累计 `completed` turn 的 usage；`lastUsage` 无带 usage 的 `turn/end` 时回退到最后一个 assistant `message.usage`。`turn/end` 只在 `completed` 携带本 turn usage，`interrupted`/`error` 不带；fork 构造时即按复制前缀恢复 usage，与重启后一致。
+- fork 的复制前缀把 `session_id` 改写为子会话 id（含合成修复事件），子日志不再声称携带源会话的事件；源快照只读不改。
+- fresh 会话的初始 `session/context` 走 `NativeSessionLog.open` 的 seed 路径，与头部一起在 open 时同步落盘；不在后台 fire-and-forget，崩溃早于首个 turn 时仍有工作目录上下文。
+- fresh native 会话在首个 turn 之前就已存在日志，因此无 turn 的 native 会话 `hasTranscript` 为 true（claude 在这种情况下会让侧聊 410）。接受此差异：空但合法的日志本身就是可恢复的 native 会话。
 
 ## 17. Builder check 结论
 

@@ -1,11 +1,24 @@
 // log.test.ts
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NativeSessionLog, deleteNativeSessionLog, hasNativeSessionLog, loadNativeSessionLogSync } from './log.js'
 import { NativeSessionStorageError } from './errors.js'
 import { nativeSessionLogPath } from './paths.js'
+
+// Hold the bytes a resume READ returns while the on-disk file keeps growing.
+// This reproduces the same-id takeover race deterministically: the previous
+// writer commits a complete line after the new writer's read but before it
+// decides whether to truncate a torn tail.
+const fsRead = vi.hoisted(() => ({ stale: null as Buffer | null }))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('node:fs')
+  return {
+    ...actual,
+    readFileSync: ((path: string) => fsRead.stale ?? actual.readFileSync(path)) as typeof actual.readFileSync,
+  }
+})
 
 let dir: string
 afterEach(async () => { if (dir) await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) })
@@ -43,6 +56,73 @@ describe('NativeSessionLog', () => {
     } finally {
       await reopened.close()
     }
+  })
+  it('does not truncate a complete line committed after the resume snapshot read', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('u1'))
+    await log.flush()
+    await log.close()
+    const path = nativeSessionLogPath(stateDir, 's1')
+
+    // The bytes a new writer's READ sees (T1). It ends on a newline, so that
+    // read reports no torn tail.
+    const snapshotBytes = await readFile(path)
+    // The previous writer commits one more COMPLETE line after that read. A
+    // re-stat would now see more bytes than the snapshot's completeBytes.
+    await writeFile(path, JSON.stringify({ seq: 1, type: 'session/end-seed' }) + '\n', { flag: 'a' })
+    const sizeAfterCommit = (await stat(path)).size
+
+    fsRead.stale = snapshotBytes
+    let resumed: NativeSessionLog | undefined
+    try {
+      resumed = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: true })
+    } finally {
+      fsRead.stale = null
+    }
+    // The snapshot's own totalBytes == completeBytes, so nothing is truncated:
+    // the committed line survives instead of being silently dropped. The
+    // snapshot itself saw only the pre-commit event — proving the stale read
+    // was used (otherwise this assertion would see both events).
+    expect(resumed.events).toHaveLength(1)
+    expect((await stat(path)).size).toBe(sizeAfterCommit)
+    expect(await readFile(path, 'utf8')).toContain('"type":"session/end-seed"')
+    await resumed.close()
+  })
+  it('re-buffers the unwritten suffix when a write fails mid-flush', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('u1'))
+    let calls = 0
+    const written: Buffer[] = []
+    const handle = {
+      write: async (chunk: Buffer, offset: number, length: number) => {
+        calls++
+        // First call: a partial write lands, then the next call fails — the
+        // re-buffer must resume at the exact byte offset, not replay or drop.
+        if (calls === 1) {
+          const n = Math.min(5, length)
+          written.push(Buffer.from(chunk.subarray(offset, offset + n)))
+          return { bytesWritten: n, buffer: chunk }
+        }
+        if (calls === 2) throw new Error('transient write failure')
+        written.push(Buffer.from(chunk.subarray(offset, offset + length)))
+        return { bytesWritten: length, buffer: chunk }
+      },
+      sync: async () => undefined,
+    }
+    // The handle is created lazily; inject a fake one so the failure happens
+    // INSIDE writePending (not before it, where the buffer trivially survives).
+    ;(log as unknown as { ensureHandle: () => Promise<unknown> }).ensureHandle = async () => handle
+
+    await expect(log.flush()).rejects.toThrow('transient write failure')
+    // The events are already in `events`, so the retried flush must deliver
+    // the SAME bytes rather than leaving a seq gap or mangled text on disk.
+    await log.flush()
+    const persisted = Buffer.concat(written).toString('utf8')
+    expect(persisted).toContain('"uuid":"u1"')
+    expect(persisted).not.toContain('�')
+    await log.close()
   })
   it('refuses a fresh open over an existing log', async () => {
     const stateDir = await fresh()

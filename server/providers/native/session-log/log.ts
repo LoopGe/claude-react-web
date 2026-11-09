@@ -15,9 +15,12 @@
 //
 // Residual takeover window: a write that was already submitted when takeover
 // happened can still land. The new writer loads the file before that write
-// completes, so that one chunk is not visible to it on load.
+// completes, so that one chunk is not visible to it on load. It is left in
+// place rather than truncated: a resume only truncates a torn tail its own
+// read observed, so a complete line committed by the previous writer survives
+// (dropping it would be silent data loss).
 
-import { mkdirSync, readFileSync, statSync, truncateSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, truncateSync, writeFileSync } from 'node:fs'
 import { open as openFile, readFile, rm, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -38,6 +41,11 @@ export interface NativeSessionLogSnapshot {
   path: string
   /** Byte offset just past the last complete line; a torn tail starts here. */
   completeBytes: number
+  /** Total bytes read into this snapshot (the whole file at read time).
+   *  `totalBytes > completeBytes` means the read ended in a torn tail; the
+   *  truncation decision compares these two values from the SAME read so a
+   *  line another writer commits after the read is never truncated. */
+  totalBytes: number
 }
 
 export interface NativeSeed {
@@ -85,7 +93,7 @@ function parseLogBuffer(buffer: Buffer, sessionId: string, path: string): Native
     .map((line, index) =>
       parseEventLine(parseLine(line, index + 2, sessionId, path), index, sessionId, path),
     )
-  return { header, events, path, completeBytes }
+  return { header, events, path, completeBytes, totalBytes: buffer.length }
 }
 
 function serializeLog(header: NativeSessionHeader, events: NativeLogEvent[]): string {
@@ -151,7 +159,10 @@ export class NativeSessionLog {
   readonly path: string
 
   private readonly registryKey: string
-  private pending: string[] = []
+  // Buffered as raw UTF-8 bytes, not strings: a write that fails mid-codepoint
+// must be re-buffered byte-for-byte, and decoding a split sequence would
+// replace it with U+FFFD.
+  private pending: Buffer[] = []
   private handle: FileHandle | null = null
   private flushChain: Promise<void> = Promise.resolve()
   private closePromise: Promise<void> | null = null
@@ -187,7 +198,11 @@ export class NativeSessionLog {
           path,
         )
       }
-      if (statSync(path).size > snapshot.completeBytes) truncateSync(path, snapshot.completeBytes)
+      // Only a torn tail this read actually saw is truncated. Re-stating the
+      // file here would race the previous writer: in the same-id takeover
+      // `spawn()` performs, it can flush a COMPLETE line between the read and
+      // the stat, and truncating to `completeBytes` would silently destroy it.
+      if (snapshot.totalBytes > snapshot.completeBytes) truncateSync(path, snapshot.completeBytes)
       header = snapshot.header
       events = snapshot.events
     } else {
@@ -230,7 +245,7 @@ export class NativeSessionLog {
     this.events.push(event)
     // A superseded or closed writer must never buffer again: its file belongs
     // to another writer, or its own handle is about to be destroyed.
-    if (!this.superseded && !this.closed) this.pending.push(serializeEvent(event) + '\n')
+    if (!this.superseded && !this.closed) this.pending.push(Buffer.from(serializeEvent(event) + '\n', 'utf8'))
     return event
   }
 
@@ -268,13 +283,24 @@ export class NativeSessionLog {
     // lines in place so a retried flush can still write them.
     const handle = await this.ensureHandle()
     if (this.superseded) return
-    const chunk = Buffer.from(this.pending.join(''), 'utf8')
+    const chunk = Buffer.concat(this.pending)
     this.pending = []
     let offset = 0
-    while (offset < chunk.length) {
-      const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset)
-      if (bytesWritten === 0) throw new Error(`session log write made no progress: ${this.path}`)
-      offset += bytesWritten
+    try {
+      while (offset < chunk.length) {
+        const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset)
+        if (bytesWritten === 0) throw new Error(`session log write made no progress: ${this.path}`)
+        offset += bytesWritten
+      }
+    } catch (err) {
+      // The events are already in `events`, so a later append's `seq` counts
+      // them. Re-buffer exactly the bytes that did not reach the file: drop
+      // them and the on-disk chain develops a seq gap, which the next load
+      // rejects as corrupt. A `sync` failure is NOT re-buffered — those bytes
+      // were written, and replaying them would duplicate lines.
+      const unwritten = chunk.subarray(offset)
+      if (unwritten.length > 0) this.pending.unshift(unwritten)
+      throw err
     }
     await handle.sync()
   }

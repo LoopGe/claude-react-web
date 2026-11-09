@@ -58,6 +58,15 @@ function flushInBackground(sessionLog: NativeSessionLog, sessionId: string, what
   void sessionLog.flush().catch((err) => log.warn(`[${sessionId}] failed to flush ${what}:`, err))
 }
 
+/** Narrow an assistant event's opaque `message.usage` to the counter pair the
+ *  session tracks. Old / partial logs may omit it or carry another shape. */
+function usageOf(value: unknown): Usage | null {
+  if (typeof value !== 'object' || value === null) return null
+  const usage = value as { input_tokens?: unknown; output_tokens?: unknown }
+  if (typeof usage.input_tokens !== 'number' || typeof usage.output_tokens !== 'number') return null
+  return { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens }
+}
+
 export interface NativeSessionOptions {
   id: string
   cwd: string
@@ -101,6 +110,10 @@ export class NativeSession implements ProviderSessionHandle {
   /** Arrival time per queued turn — written to the log when the pump consumes
    *  the message, never at enqueue time (a drained turn must not persist). */
   private readonly receivedAt = new WeakMap<AgentUserMessage, number>()
+  /** Flush of the most recent assistant event. `requestPermission` awaits it
+   *  before any tool runs, so a crash is always recoverable as "call sent,
+   *  result unknown" — never "tool ran but its call was never durable". */
+  private assistantFlush: Promise<void> | null = null
   /** Session-level abort (abort()/destroy()). Never aborted by a mere interrupt. */
   private readonly sessionAbort = new AbortController()
   /** Per-turn abort, replaced by pumpLoop for every turn. */
@@ -148,29 +161,45 @@ export class NativeSession implements ProviderSessionHandle {
     } as unknown as AgentMessage)
   }
 
-  /** Fresh session: the log is created here, and its opening `session/context`
-   *  is the first model message (history-only, per the DSH design — never a
-   *  frame). An existing log for this id is left untouched: `open` throws
-   *  `kind: 'exists'`. */
+  /** Fresh session: the log is created here, with its opening `session/context`
+   *  written through the seed path so the header AND the context are durable
+   *  synchronously at open (a crash before the first turn must still leave a
+   *  log that carries the working directory). The context is the first model
+   *  message — history-only, per the DSH design, never a frame. An existing
+   *  log for this id is left untouched: `open` throws `kind: 'exists'`. */
   private openFreshLog(opts: NativeSessionOptions): NativeSessionLog {
-    const log = NativeSessionLog.open({ stateDir: opts.stateDir, id: opts.id, cwd: opts.cwd, resume: false })
-    const context = log.append({ type: 'session/context', text: contextSnapshot(opts.cwd) })
+    const context: NativeLogEvent = {
+      seq: 0,
+      type: 'session/context',
+      text: contextSnapshot(opts.cwd),
+    }
+    const log = NativeSessionLog.open({
+      stateDir: opts.stateDir,
+      id: opts.id,
+      cwd: opts.cwd,
+      resume: false,
+      seed: { events: [context], inheritedEventCount: 0, isSeeded: false },
+    })
     this.history.push(...historyFromEvents([context]))
-    flushInBackground(log, opts.id, 'session context')
     return log
   }
 
   /** Resume: rebuild model history from the persisted events, repairing any
    *  tool_use a crash left unanswered (the API rejects invalid tool history).
-   *  The synthetic results are appended so they survive the next restart too. */
+   *  The synthetic results are appended so they survive the next restart too,
+   *  and the repaired turn is durably closed with `turn/end { interrupted }`. */
   private openResumeLog(opts: NativeSessionOptions): NativeSessionLog {
     const log = NativeSessionLog.open({ stateDir: opts.stateDir, id: opts.id, cwd: opts.cwd, resume: true })
     const events = log.events.slice()
     const { synthetic } = repairInterruptedTurn(events)
-    for (const event of synthetic) log.append(event)
-    if (synthetic.length > 0) flushInBackground(log, opts.id, 'interrupted-turn repair')
+    if (synthetic.length > 0) {
+      for (const event of synthetic) log.append(event)
+      log.append({ type: 'turn/end', reason: 'interrupted' })
+      flushInBackground(log, opts.id, 'interrupted-turn repair')
+    }
     // `append` mutated log.events, so this is the original prefix plus the
-    // synthetic results (now seq-numbered).
+    // synthetic results (now seq-numbered). `turn/end` is bookkeeping and is
+    // skipped by `historyFromEvents`.
     this.history.push(...historyFromEvents(log.events))
     this.restoreUsage(events)
     return log
@@ -204,22 +233,44 @@ export class NativeSession implements ProviderSessionHandle {
       seed,
     })
     this.history.push(...historyFromEvents(seed.events))
+    // Match what a restart of this child would see: its copied prefix's
+    // usage-bearing `turn/end` events define last/total (the `{forked}` close
+    // carries none and is skipped). Without this the fork reports 0 until the
+    // next restart, then jumps to the inherited numbers.
+    this.restoreUsage(seed.events)
     return log
   }
 
   /** Restore the usage counters from `turn/end` events. A seeded fork's
    *  `turn/end { reason: 'forked' }` carries no usage and is skipped, so it
-   *  neither resets `lastUsage` nor contributes to `totalUsage`. */
+   *  neither resets `lastUsage` nor contributes to `totalUsage`. When the log
+   *  has no usage-bearing `turn/end` at all (an older / interrupted log), the
+   *  last assistant usage is the fallback for `lastUsage`; `totalUsage` stays
+   *  the sum of completed turns — see spec §9. */
   private restoreUsage(events: readonly NativeLogEvent[]): void {
     let last: Usage = { input_tokens: 0, output_tokens: 0 }
     let total: Usage = { input_tokens: 0, output_tokens: 0 }
+    let lastAssistant: Usage | null = null
+    let sawUsageEnd = false
     for (const event of events) {
+      if (event.type === 'assistant') {
+        lastAssistant = usageOf(event.message.usage) ?? lastAssistant
+        continue
+      }
       if (event.type !== 'turn/end' || !event.usage) continue
+      sawUsageEnd = true
       last = { input_tokens: event.usage.input_tokens, output_tokens: event.usage.output_tokens }
       total = {
         input_tokens: total.input_tokens + event.usage.input_tokens,
         output_tokens: total.output_tokens + event.usage.output_tokens,
       }
+    }
+    // With no turn/end record the last assistant usage is the only durable
+    // reading available for LAST usage. `totalUsage` deliberately stays the
+    // sum of completed turns only: adding the fallback to the total would make
+    // it drop after a restart, once a real turn/end exists to sum instead.
+    if (!sawUsageEnd && lastAssistant) {
+      last = { ...lastAssistant }
     }
     this.lastUsage = last
     this.totalUsage = total
@@ -245,6 +296,17 @@ export class NativeSession implements ProviderSessionHandle {
     // already-aborted signal never fires the broker's abort listener, so
     // without this check the permission promise could never settle and the
     // turn would park forever.
+    if (signal.aborted) return { allowed: false, input, message: 'aborted' }
+    // Pre-tool durability barrier (spec §7): the assistant event announcing
+    // this call must be on disk before ANY tool runs, so a crash is always
+    // recognizable as "call sent, result unknown". A rejected flush throws
+    // here and surfaces as the turn's error through the pump catch. This is
+    // the loop's single pre-tool seam, so it covers bypass / deny paths too.
+    if (this.assistantFlush) await this.assistantFlush
+    // An interrupt/destroy can land while the flush is in flight. Re-check
+    // before handing the signal to the broker: its abort listener never fires
+    // for an already-aborted signal, so the permission would park forever —
+    // and bypass mode would run the tool after the user stopped the turn.
     if (signal.aborted) return { allowed: false, input, message: 'aborted' }
     // Live mode, not the spawn-time opts value: a bypass session downgraded
     // to default must stop auto-allowing.
@@ -300,7 +362,13 @@ export class NativeSession implements ProviderSessionHandle {
         timestamp: new Date().toISOString(),
         message: f.message,
       })
-      flushInBackground(this.log, this.opts.id, 'assistant frame')
+      // Keep the flush promise so `requestPermission` can await it before any
+      // tool executes. The catch keeps a text-only turn (which never reaches
+      // requestPermission) from producing an unhandled rejection; a tool turn
+      // re-awaits the same promise and surfaces the failure as its error.
+      const flush = this.log.flush()
+      this.assistantFlush = flush
+      void flush.catch((err) => log.warn(`[${this.opts.id}] failed to flush assistant frame:`, err))
     } else if (f.type === 'user' && f.parent_tool_use_id === null) {
       this.log.append({
         type: 'user',
@@ -314,6 +382,22 @@ export class NativeSession implements ProviderSessionHandle {
     }
   }
 
+  /** A turn that throws after its assistant message entered the log (a failed
+   *  pre-tool flush, or a throwing permission handler) leaves `tool_use` ids
+   *  unanswered. Append the same synthetic results the resume repair uses so
+   *  BOTH the live history and the durable log are closed: a memory-only
+   *  repair would make a later restart place the results after later turns,
+   *  producing permanently invalid history. */
+  private repairUnansweredToolUses(): void {
+    const { synthetic } = repairInterruptedTurn(this.log.events)
+    if (synthetic.length === 0) return
+    for (const event of synthetic) this.log.append(event)
+    this.history.push({
+      role: 'user',
+      content: synthetic.flatMap((event) => event.message.content),
+    })
+  }
+
   private async pumpLoop(): Promise<void> {
     while (!this._closed && this.input.length > 0) {
       const next = this.input.shift() as AgentUserMessage
@@ -325,7 +409,10 @@ export class NativeSession implements ProviderSessionHandle {
       this.turnAbort = turnAbort
       const turnSignal = AbortSignal.any([this.sessionAbort.signal, turnAbort.signal])
       let endReason: NativeTurnEndReason = 'error'
-      let endUsage = this.lastUsage
+      // Only a completed turn carries this turn's usage. An interrupted /
+      // errored turn has no usage of its own — stamping the PREVIOUS turn's
+      // `lastUsage` here would make `restoreUsage` sum it again after restart.
+      let endUsage: Usage | undefined
       try {
         // The turn is consumed now, so it is part of the conversation: write it
         // (and wait for the write) before the model sees it. A queued turn that
@@ -369,6 +456,10 @@ export class NativeSession implements ProviderSessionHandle {
         endReason = 'completed'
         endUsage = res.usage
       } catch (err) {
+        // The assistant message may already be in `history` with unanswered
+        // tool calls (the failure can land at the pre-tool barrier); close
+        // them before the next request is built.
+        this.repairUnansweredToolUses()
         // The other half of the single result-emission point: classify an
         // interrupt (this turn's abort, session still alive) vs a real error,
         // so interrupt() never double-emits and the client sees exactly one
@@ -384,7 +475,6 @@ export class NativeSession implements ProviderSessionHandle {
           isError: true,
         }))
         endReason = interrupted ? 'interrupted' : 'error'
-        endUsage = this.lastUsage
       } finally {
         this.turnAbort = null
       }
@@ -392,7 +482,12 @@ export class NativeSession implements ProviderSessionHandle {
       // failure here must log rather than land in the catch above, which
       // would emit a second terminal result and a second turn/end.
       try {
-        this.log.append({ type: 'turn/end', reason: endReason, usage: endUsage })
+        const turnEnd: { type: 'turn/end'; reason: NativeTurnEndReason; usage?: Usage } = {
+          type: 'turn/end',
+          reason: endReason,
+        }
+        if (endUsage) turnEnd.usage = endUsage
+        this.log.append(turnEnd)
         await this.log.flush()
       } catch (err) {
         log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)

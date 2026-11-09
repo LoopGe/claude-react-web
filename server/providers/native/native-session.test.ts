@@ -307,6 +307,39 @@ describe('NativeSession', () => {
     await resumed.destroy()
   })
 
+  it('restores usage from the last assistant message when no turn/end carries usage', async () => {
+    const dir = await tempDir('native-usage-')
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'usage', cwd: dir, resume: false })
+    seed.append({ type: 'session/context', text: 'ctx' })
+    seed.append({ type: 'user', uuid: 'u', session_id: 'usage', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } })
+    seed.append({ type: 'assistant', uuid: 'a', session_id: 'usage', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 7, output_tokens: 3 } } })
+    // A seeded fork's usage-less close must not reset the fallback.
+    seed.append({ type: 'turn/end', reason: 'forked' })
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir })
+    const resumed = provider.createSession({ id: 'usage', cwd: dir, resume: 'usage' })
+    expect(await resumed.getUsage?.()).toEqual({
+      last: { input_tokens: 7, output_tokens: 3 },
+      // totalUsage counts completed turns only: there is no usage-bearing
+      // turn/end here, so it stays 0 (the fallback is last-usage only).
+      total: { input_tokens: 0, output_tokens: 0 },
+    })
+    await resumed.destroy()
+  })
+
+  it('writes the fresh session context synchronously at open', async () => {
+    const dir = await tempDir('native-context-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'ctx', cwd: dir })
+    // No turn ran and no flush was awaited: the header + context are already
+    // on disk, so a crash before the first turn still leaves usable context.
+    const raw = readFileSync(nativeSessionLogPath(dir, 'ctx'), 'utf8')
+    expect(raw).toContain('"type":"session/context"')
+    expect(raw).toContain('Working directory')
+    await session.destroy()
+  })
+
   it('survives a persistence flush failure without double-emitting', async () => {
     const dir = await tempDir('native-flush-')
     const provider = providerWithStreamer([textTurn('hello')], dir)
@@ -343,6 +376,88 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
     expect((frames.find((f) => f.type === 'result') as Frame).result).toBe('disk full')
     expect(internals.log.events.filter((e) => e.type === 'turn/end')).toHaveLength(1)
+    await session.destroy()
+  })
+
+  it('waits for the assistant event to be durable before a tool can run', async () => {
+    const dir = await tempDir('native-durable-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const scripts = [toolTurn('t1'), textTurn('done')]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const canUseToolCalls: string[] = []
+    const session = provider.createSession({
+      id: 'durable',
+      cwd: dir,
+      canUseTool: async () => {
+        canUseToolCalls.push('called')
+        return { behavior: 'allow', updatedInput: { file_path: 'package.json' } }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    const internals = session as unknown as {
+      log: { flush: () => Promise<void>; events: LogEventLike[] }
+      assistantFlush: Promise<void> | null
+    }
+    const sessionLog = internals.log
+    const originalFlush = sessionLog.flush.bind(sessionLog)
+    let releaseAssistant!: () => void
+    const gate = new Promise<void>((resolve) => { releaseAssistant = resolve })
+    let flushCalls = 0
+    // Call 1 is the pump's pre-run user-turn write (awaited before the model
+    // sees the prompt); every later call is the assistant event's flush, which
+    // this test holds open.
+    sessionLog.flush = () => (++flushCalls === 1 ? originalFlush() : gate)
+
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => expect(flushCalls).toBeGreaterThanOrEqual(2))
+    expect(internals.assistantFlush).not.toBeNull()
+    // The assistant frame's flush is still pending: the tool must NOT start.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(canUseToolCalls).toEqual([])
+
+    releaseAssistant()
+    await vi.waitFor(() => expect(canUseToolCalls).toHaveLength(1))
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+    await session.destroy()
+  })
+
+  it('repairs the live history when a failed assistant flush aborts a tool turn', async () => {
+    const dir = await tempDir('native-history-repair-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const scripts = [toolTurn('t1'), textTurn('recovered')]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const session = provider.createSession({
+      id: 'history-repair',
+      cwd: dir,
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: { file_path: 'package.json' } }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    const internals = session as unknown as {
+      log: { flush: () => Promise<void> }
+      history: unknown[]
+    }
+    const sessionLog = internals.log
+    const originalFlush = sessionLog.flush.bind(sessionLog)
+    let flushCalls = 0
+    // Call 1 is the user-turn write; call 2 is the assistant barrier, which is
+    // made to fail before any tool runs.
+    sessionLog.flush = () => (++flushCalls === 2 ? Promise.reject(new Error('assistant flush failed')) : originalFlush())
+
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+    expect((frames.find((f) => f.type === 'result') as Frame).result).toBe('assistant flush failed')
+    // The turn died with the assistant tool_use already persisted; the repair
+    // must answer it in BOTH the live history and the log so a later restart
+    // does not append the result after the next turn.
+    expect(JSON.stringify(internals.history)).toContain('tool result missing')
+    expect(JSON.stringify(logOf(session).events)).toContain('tool result missing')
     await session.destroy()
   })
 
@@ -403,12 +518,36 @@ describe('NativeSession', () => {
     const synthetic = logOf(resumed).events.find((e) => JSON.stringify(e).includes('tool result missing'))
     expect(synthetic).toBeDefined()
     expect(JSON.stringify(synthetic)).toContain('t1')
+    // The live turn-error repair already persisted the result, so resume reads
+    // it back instead of appending a second copy at the log tail.
+    expect(logOf(resumed).events.filter((e) => JSON.stringify(e).includes('tool result missing'))).toHaveLength(1)
     const history = (resumed as unknown as { history: unknown[] }).history
     expect(JSON.stringify(history)).toContain('tool result missing')
     await resumed.destroy()
 
     const snapshot = loadNativeSessionLogSync(dir, 'repair')!
     expect(snapshot.events.some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
+  })
+
+  it('appends synthetic results and an interrupted turn/end when resuming an open turn', async () => {
+    const dir = await tempDir('native-open-turn-')
+    // Simulate a hard crash: the log ends with an unanswered tool_use and no
+    // turn/end, exactly what a process death mid-tool leaves behind.
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'open', cwd: dir, resume: false })
+    seed.append({ type: 'session/context', text: 'ctx' })
+    seed.append({ type: 'user', uuid: 'u', session_id: 'open', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } })
+    seed.append({ type: 'assistant', uuid: 'a', session_id: 'open', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } })
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir })
+    const resumed = provider.createSession({ id: 'open', cwd: dir, resume: 'open' })
+    expect(logOf(resumed).events.some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
+    expect(logOf(resumed).events.some((e) => e.type === 'turn/end' && e.reason === 'interrupted')).toBe(true)
+    await resumed.destroy()
+
+    const snapshot = loadNativeSessionLogSync(dir, 'open')!
+    expect(snapshot.events.some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
+    expect(snapshot.events.some((e) => e.type === 'turn/end' && e.reason === 'interrupted')).toBe(true)
   })
 
   it('forks from the source log and writes a seeded child log', async () => {
@@ -436,6 +575,17 @@ describe('NativeSession', () => {
     const history = (forked as unknown as { history: unknown[] }).history
     expect(history[0]).toMatchObject({ role: 'user' })
     expect(JSON.stringify(history)).toContain('source reply')
+    // Copied events are re-owned by the child (never the source id).
+    expect(
+      log.events
+        .filter((e) => JSON.stringify(e).includes('"session_id"'))
+        .every((e) => JSON.stringify(e).includes('"session_id":"child"')),
+    ).toBe(true)
+    // Usage is restored from the copied prefix, matching a restart of the child.
+    expect(await forked.getUsage?.()).toEqual({
+      last: { input_tokens: 10, output_tokens: 5 },
+      total: { input_tokens: 10, output_tokens: 5 },
+    })
     await forked.destroy()
 
     const child = loadNativeSessionLogSync(dir, 'child')!

@@ -9,7 +9,7 @@ const source = {
     { seq: 1, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
     { seq: 2, type: 'assistant', uuid: 'a1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] } },
   ],
-  path: '/p', completeBytes: 0,
+  path: '/p', completeBytes: 0, totalBytes: 0,
 } as never
 
 describe('buildForkSeed', () => {
@@ -26,6 +26,15 @@ describe('buildForkSeed', () => {
   })
   it('copies the full prefix when no boundary is given', () => {
     expect(buildForkSeed({ source, sourceId: 'src', newId: 'dst', cwd: '/new' }).inheritedEventCount).toBe(3)
+  })
+  it('rewrites session_id to the child id and leaves the source snapshot untouched', () => {
+    const before = JSON.stringify(source)
+    const seed = buildForkSeed({ source, sourceId: 'src', newId: 'dst', cwd: '/new' })
+    const withSessionId = seed.events.filter((e) => 'session_id' in e) as Array<{ session_id: string }>
+    // Copied prefix AND the synthetic tool_result closure are the child's.
+    expect(withSessionId.length).toBeGreaterThan(0)
+    expect(withSessionId.every((e) => e.session_id === 'dst')).toBe(true)
+    expect(JSON.stringify(source)).toBe(before)
   })
   it('rejects an unknown boundary uuid', () => {
     expect(() => buildForkSeed({ source, sourceId: 'src', newId: 'dst', cwd: '/new', resumeSessionAt: 'nope' })).toThrow(/fork boundary/)
