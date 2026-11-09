@@ -47,6 +47,20 @@ describe('NativeSessionLog', () => {
     expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((e) => e.type)).toEqual(['user', 'session/end-seed'])
     await a.close(); await b.close()
   })
+  it('keeps writers for the same id in different state dirs independent', async () => {
+    const stateDirA = await fresh()
+    const stateDirB = await mkdtemp(join(tmpdir(), 'native-log-'))
+    try {
+      const a = NativeSessionLog.open({ stateDir: stateDirA, id: 's1', cwd: '/repo', resume: false })
+      const b = NativeSessionLog.open({ stateDir: stateDirB, id: 's1', cwd: '/repo', resume: false })
+      a.append(userEvent('u1'))
+      await a.flush()
+      expect(loadNativeSessionLogSync(stateDirA, 's1')!.events.map((e) => e.type)).toEqual(['user'])
+      await a.close(); await b.close()
+    } finally {
+      await rm(stateDirB, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
+  })
   it('reports existence without parsing and deletes the directory', async () => {
     const stateDir = await fresh()
     const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })

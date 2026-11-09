@@ -5,10 +5,12 @@
 // buffered and flushed explicitly; `flush` writes and fsyncs through a single
 // serialized chain so concurrent callers cannot interleave.
 //
-// A module-level registry owns one live writer per session id. Opening a new
-// writer (resume, fork seed, fresh create) supersedes the previous one: its
-// unflushed buffer is dropped and later appends stay in memory only, so a
-// stale writer can never append after a newer one has taken over the file.
+// A module-level registry owns one live writer per log path. Opening a new
+// writer for the same path (resume, fork seed, fresh create) supersedes the
+// previous one: its unflushed buffer is dropped and later appends stay in
+// memory only, so a stale writer can never append after a newer one has taken
+// over the file. The key is the fully resolved path, not the session id, so
+// the same id under different state dirs cannot supersede across dirs.
 
 import { mkdirSync, readFileSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import { open as openFile, readFile, rm, stat } from 'node:fs/promises'
@@ -142,20 +144,14 @@ export class NativeSessionLog {
   readonly events: NativeLogEvent[]
   readonly path: string
 
-  private readonly sessionId: string
   private pending: string[] = []
   private handle: FileHandle | null = null
   private flushChain: Promise<void> = Promise.resolve()
   private closePromise: Promise<void> | null = null
   private superseded = false
+  private closed = false
 
-  private constructor(
-    sessionId: string,
-    header: NativeSessionHeader,
-    events: NativeLogEvent[],
-    path: string,
-  ) {
-    this.sessionId = sessionId
+  private constructor(header: NativeSessionHeader, events: NativeLogEvent[], path: string) {
     this.header = header
     this.events = events
     this.path = path
@@ -208,27 +204,24 @@ export class NativeSessionLog {
       }
     }
 
-    const previous = writers.get(id)
+    const previous = writers.get(path)
     if (previous) previous.markSuperseded()
-    const log = new NativeSessionLog(id, header, events, path)
-    writers.set(id, log)
+    const log = new NativeSessionLog(header, events, path)
+    writers.set(path, log)
     return log
   }
 
   append(input: NativeEventInput): NativeLogEvent {
     const event = { ...input, seq: this.events.length } as NativeLogEvent
     this.events.push(event)
-    if (!this.superseded) this.pending.push(serializeEvent(event) + '\n')
+    // A superseded or closed writer must never buffer again: its file belongs
+    // to another writer, or its own handle is about to be destroyed.
+    if (!this.superseded && !this.closed) this.pending.push(serializeEvent(event) + '\n')
     return event
   }
 
   flush(): Promise<void> {
-    const run = this.flushChain.then(() => this.writePending())
-    this.flushChain = run.then(
-      () => undefined,
-      () => undefined,
-    )
-    return run
+    return this.enqueueFlush(false)
   }
 
   close(): Promise<void> {
@@ -236,15 +229,31 @@ export class NativeSessionLog {
     return this.closePromise
   }
 
-  private async writePending(): Promise<void> {
+  private enqueueFlush(allowClosed: boolean): Promise<void> {
+    const run = this.flushChain.then(() => this.writePending(allowClosed))
+    this.flushChain = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async writePending(allowClosed: boolean): Promise<void> {
+    // Re-checked after this flush acquired its slot in the write chain: a
+    // takeover that happened while an earlier flush ran must not let this
+    // writer's stale buffer reach the file. A closed writer (that is not the
+    // close's own final flush) leaves its pending buffer alone — the close
+    // flush queued right behind this one writes it.
     if (this.superseded) {
       this.pending = []
       return
     }
+    if (this.closed && !allowClosed) return
     if (this.pending.length === 0) return
     const chunk = this.pending.join('')
     this.pending = []
     const handle = await this.ensureHandle()
+    if (this.superseded) return
     await handle.write(chunk)
     await handle.sync()
   }
@@ -255,13 +264,14 @@ export class NativeSessionLog {
   }
 
   private async doClose(): Promise<void> {
-    await this.flush()
+    this.closed = true
+    await this.enqueueFlush(true)
     if (this.handle) {
       const handle = this.handle
       this.handle = null
       await handle.close()
     }
-    if (writers.get(this.sessionId) === this) writers.delete(this.sessionId)
+    if (writers.get(this.path) === this) writers.delete(this.path)
   }
 
   private markSuperseded(): void {
