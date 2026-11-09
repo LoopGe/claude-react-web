@@ -478,7 +478,7 @@ The toolbar `Theme` button opens the appearance popover:
 
 - **Theme (skin)**: `Default` (flat, high contrast), `Glow` (soft depth & glow), `Anthropic` (warm paper & terracotta), `High Contrast` (pure B/W, square corners, a11y), `Soft High Contrast`;
 - **Mode**: `Light` / `Dark` / `System`;
-- **Display**: `Transcript spacing`, `Message text density`, `Font size`, `Animation speed` — each saves immediately (global, no Save button);
+- **Display**: `Transcript spacing`, `Message text density`, `Font size`, `Animation speed` — each saves immediately (global, no Save button). `Animation speed` offers `Slow`, `Standard`, `Fast` and `Off`; `Off` suppresses decorative motion app-wide (including dialogs and popovers) while progress indicators such as spinners and working dots keep moving;
 - **Accent**: the swatch grid (the Anthropic, High Contrast and Soft High Contrast skins lock it, showing `Locked to Anthropic terracotta` and friends);
 - **Background**: available only on some skins — `None`/`Image`/`Video`, by URL or local upload, with `Opacity` / `Blur` / `Content` sliders.
 

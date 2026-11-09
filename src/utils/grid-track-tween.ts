@@ -1,6 +1,6 @@
 import { easeStandard } from './cubic-bezier'
 import { snapToDevicePx } from './pixel-grid'
-import { prefersReducedMotion } from './reduced-motion'
+import { motionSuppressed } from './reduced-motion'
 import { revealDurationMs } from './reveal-duration'
 
 /** Drive a collapsing/expanding grid track from rAF, writing WHOLE-PIXEL
@@ -39,7 +39,7 @@ import { revealDurationMs } from './reveal-duration'
  *  run it on unmount or a row recycled mid-reveal keeps an inline track. */
 export function tweenGridTrack(el: HTMLElement, inner: HTMLElement): () => void {
   // The preference is served by leaving the CSS base track (`1fr`) in place.
-  if (prefersReducedMotion()) return () => {}
+  if (motionSuppressed()) return () => {}
 
   const naturalScroll = inner.scrollHeight
   // offsetHeight is the border box; scrollHeight is content + padding only, so

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { FullDiffViewer, FULL_DIFF_CHUNK_CHARS } from './FullDiffViewer'
 
-// Overlay pulls useExitPresence/prefersReducedMotion → matchMedia, which
+// Overlay pulls useExitPresence/motionSuppressed → matchMedia, which
 // happy-dom lacks. Same stub Overlay.test.tsx uses.
 
 beforeEach(() => {

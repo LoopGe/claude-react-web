@@ -18,7 +18,7 @@
 
 import { useLayoutEffect, useRef, type RefObject } from 'react'
 import type { StreamSegment } from '../utils/stream-segments'
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 import { revealDurationMs } from '../utils/reveal-duration'
 
 /** Where the previous flush left the caret, in the masked element's own
@@ -252,7 +252,7 @@ export function useStreamingReveal(ref: RefObject<HTMLElement | null>, text: str
       })
     }
 
-    if (!text || prefersReducedMotion()) {
+    if (!text || motionSuppressed()) {
       clear()
       prevRef.current = null
       prevTextRef.current = text

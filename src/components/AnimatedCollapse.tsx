@@ -1,4 +1,4 @@
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 import { isRendered } from '../utils/rendered'
 import { snapToDevicePx } from '../utils/pixel-grid'
 import { easeStandard } from '../utils/cubic-bezier'
@@ -283,7 +283,7 @@ export function AnimatedCollapse({
 
     cleanupAnimation()
 
-    const reducedMotion = prefersReducedMotion()
+    const reducedMotion = motionSuppressed()
     if (reducedMotion || Math.abs(from - to) < 2) {
       if (nextOpen) finishOpen(to)
       else finishClosed()

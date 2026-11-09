@@ -132,6 +132,11 @@ describe('globalPrefsFromConfig', () => {
     expect(prefs.streamingRenderMode).toBe('overlay')
   })
 
+  it('preserves the off animation-speed preset', () => {
+    const prefs = globalPrefsFromConfig({ animationSpeed: 'off' })
+    expect(prefs.animationSpeed).toBe('off')
+  })
+
   it('passes firstPartyTools through by reference when present', () => {
     const fpt = { 'git-tools': { enabled: false } }
     const prefs = globalPrefsFromConfig({ firstPartyTools: fpt })

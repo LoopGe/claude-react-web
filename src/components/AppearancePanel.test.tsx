@@ -157,6 +157,30 @@ describe('AppearancePanel display presets', () => {
     expect(onDisplayPrefChange).toHaveBeenNthCalledWith(4, { animationSpeed: 'slow' })
   })
 
+  it('offers Off as the fourth animation-speed option and emits it', async () => {
+    const onDisplayPrefChange = vi.fn()
+    render(
+      <AppearancePanel
+        skin="default"
+        mode="dark"
+        accentColor="#7b8cde"
+        onSkin={() => {}}
+        onMode={() => {}}
+        onAccent={() => {}}
+        background={noBg}
+        onBackgroundChange={() => {}}
+        displayPrefs={DISPLAY_PREFS}
+        onDisplayPrefChange={onDisplayPrefChange}
+      />,
+    )
+    await openPanel()
+
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
+      .getByRole('radio', { name: 'Off' }))
+
+    expect(onDisplayPrefChange).toHaveBeenCalledWith({ animationSpeed: 'off' })
+  })
+
   it('does not emit a patch when the already-active option is clicked', async () => {
     const onDisplayPrefChange = vi.fn()
     render(

@@ -527,6 +527,13 @@ describe('config', () => {
     expect(config.animationSpeed).toBe('fast')
   })
 
+  it('honors the off animationSpeed preset', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ animationSpeed: 'off' }))
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    await loadConfig(dir)
+    expect(config.animationSpeed).toBe('off')
+  })
+
   it('ignores an invalid animationSpeed value', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ animationSpeed: '2x' }))
     vi.spyOn(console, 'log').mockImplementation(() => {})

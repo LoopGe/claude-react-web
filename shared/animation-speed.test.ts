@@ -11,7 +11,15 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { MOTION_DURATION_TOKENS } from './animation-speed'
+import {
+  ANIMATION_SPEED_LABELS,
+  ANIMATION_SPEED_PRESETS,
+  ANIMATION_SPEED_SCALE,
+  MOTION_DURATION_TOKENS,
+  OFF_MOTION_DURATION_MS,
+  isAnimationSpeedPreset,
+  resolveMotionDurationMs,
+} from './animation-speed'
 
 const tokensCss = readFileSync(join(process.cwd(), 'src/styles', 'tokens.css'), 'utf8')
 
@@ -38,5 +46,35 @@ describe('MOTION_DURATION_TOKENS stays in sync with tokens.css', () => {
     for (const { token, baseMs } of MOTION_DURATION_TOKENS) {
       expect(rootTokenValue(token), token).toBe(`${baseMs}ms`)
     }
+  })
+})
+
+describe('Off preset', () => {
+  it('sits last in the display order', () => {
+    expect(ANIMATION_SPEED_PRESETS).toEqual(['slow', 'standard', 'fast', 'off'])
+  })
+
+  it('has a label and no scale entry (Off uses the near-zero sentinel)', () => {
+    expect(ANIMATION_SPEED_LABELS.off).toBe('Off')
+    expect(ANIMATION_SPEED_SCALE).not.toHaveProperty('off')
+  })
+
+  it('is accepted by the runtime guard used for config.json', () => {
+    expect(isAnimationSpeedPreset('off')).toBe(true)
+  })
+})
+
+describe('resolveMotionDurationMs', () => {
+  it('scales a base duration for the three motion presets', () => {
+    expect(resolveMotionDurationMs(180, 'standard')).toBe(180)
+    expect(resolveMotionDurationMs(180, 'slow')).toBe(270)
+    expect(resolveMotionDurationMs(180, 'fast')).toBe(108)
+  })
+
+  it('returns the near-zero sentinel for Off, not 0', () => {
+    // 0ms transitions never fire transitionend; the existing reduced-motion
+    // CSS already uses 0.01ms for the same reason.
+    expect(OFF_MOTION_DURATION_MS).toBe(0.01)
+    expect(resolveMotionDurationMs(180, 'off')).toBe(0.01)
   })
 })

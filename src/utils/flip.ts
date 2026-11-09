@@ -19,10 +19,10 @@
 // Mirrors the reduced-motion gate and the 180ms / cubic-bezier(.2,.8,.2,1)
 // curve used by the session-card FLIP so the motion language stays uniform.
 
-import { prefersReducedMotion } from './reduced-motion'
+import { motionSuppressed } from './reduced-motion'
 
 export function prepareFlip(selector: string, keyAttr: string): () => void {
-  if (prefersReducedMotion()) return () => {}
+  if (motionSuppressed()) return () => {}
   const before = new Map<string, DOMRect>()
   for (const el of document.querySelectorAll<HTMLElement>(selector)) {
     const id = el.getAttribute(keyAttr)

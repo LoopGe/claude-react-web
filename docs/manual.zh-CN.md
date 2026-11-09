@@ -478,7 +478,7 @@ Tasks 面板分两组：正在跑的（带 `Stop <描述>` 停止按钮）和 `F
 
 - **Theme（皮肤）**：`Default`（扁平高对比）、`Glow`（柔和发光）、`Anthropic`（暖纸+赤陶色）、`High Contrast`（纯黑白、直角、无障碍）、`Soft High Contrast`；
 - **Mode**：`Light` / `Dark` / `System`；
-- **Display**：`Transcript spacing`、`Message text density`、`Font size`、`Animation speed`，改动即时保存（全局生效，无 Save 按钮）；
+- **Display**：`Transcript spacing`、`Message text density`、`Font size`、`Animation speed`，改动即时保存（全局生效，无 Save 按钮）。`Animation speed` 提供 `Slow`、`Standard`、`Fast`、`Off` 四档；`Off` 会关闭全站的装饰性动效（含弹窗和 popover），但 spinner、working 圆点等进度指示仍会继续运动；
 - **Accent**：强调色色板（Anthropic / 高对比 / 柔和高对比三种皮肤会锁色，显示 `Locked to Anthropic terracotta` 之类）；
 - **Background**：仅部分皮肤可用，支持 `None`/`Image`/`Video`、URL 或本地上传，并带 `Opacity` / `Blur` / `Content` 三个滑杆。
 

@@ -4,6 +4,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useCountUp } from './useCountUp'
+import { setAppMotionOff } from '../utils/reduced-motion'
 
 const REDUCE_QUERY = '(prefers-reduced-motion: reduce)'
 
@@ -29,7 +30,10 @@ function installMutableMatchMedia(initial: boolean): (next: boolean) => void {
   const handlers = new Set<(e: { matches: boolean }) => void>()
   vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => {
     return {
-      matches: query === REDUCE_QUERY && matches,
+      // A real MediaQueryList reports `matches` live, not as a snapshot from
+      // the call — a snapshot would leave the cached listener reading a stale
+      // value after `setReduced` (same contract as BackgroundVideo's stub).
+      get matches() { return query === REDUCE_QUERY && matches },
       media: query,
       onchange: null,
       addEventListener: (
@@ -52,6 +56,7 @@ function installMutableMatchMedia(initial: boolean): (next: boolean) => void {
 }
 
 afterEach(() => {
+  setAppMotionOff(false)
   vi.restoreAllMocks()
   vi.useRealTimers()
 })
@@ -71,6 +76,37 @@ describe('useCountUp', () => {
     expect(result.current).toBe(0)
     rerender({ t: 100 })
     // No frames to run — the new value is the displayed value immediately.
+    expect(result.current).toBe(100)
+  })
+
+  it('snaps under the in-app Off preset even when the OS prefers motion', () => {
+    mockReduceMotion(false)
+    const { result, rerender } = renderHook(({ t }) => useCountUp(t, 300), {
+      initialProps: { t: 0 },
+    })
+    rerender({ t: 100 })
+
+    act(() => setAppMotionOff(true))
+    expect(result.current).toBe(100)
+  })
+
+  it('does not jump backwards when the Off preset is cleared mid-tween', () => {
+    mockReduceMotion(false)
+    vi.useFakeTimers()
+    const { result, rerender } = renderHook(({ t }) => useCountUp(t, 300), {
+      initialProps: { t: 0 },
+    })
+    rerender({ t: 100 })
+    act(() => vi.advanceTimersByTime(150))
+    expect(result.current).toBeGreaterThan(0)
+    expect(result.current).toBeLessThan(100)
+
+    act(() => setAppMotionOff(true))
+    expect(result.current).toBe(100)
+
+    act(() => setAppMotionOff(false))
+    // Stay at the snapped destination: re-rendering the stale mid-tween value
+    // would read as a backwards jump before the new tween starts.
     expect(result.current).toBe(100)
   })
 

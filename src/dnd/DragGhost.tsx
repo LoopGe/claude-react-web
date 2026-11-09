@@ -15,7 +15,7 @@
 
 import { useEffect, type CSSProperties, type ReactNode } from 'react'
 import { motion, useMotionValue, useSpring } from 'motion/react'
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 import { tiltFromVelocity } from './payload'
 
 /** Spring for the tilt — stiff enough to track a flick, damped enough not
@@ -37,7 +37,7 @@ export function DragGhost({ children, className, style, tilt = true }: {
   const tiltSpring = useSpring(tiltRaw, TILT_SPRING)
 
   useEffect(() => {
-    if (!tilt || prefersReducedMotion()) return
+    if (!tilt || motionSuppressed()) return
     let lastX: number | null = null
     let lastT = 0
     // Decay loop: when the pointer stops moving, ease the tilt back to 0

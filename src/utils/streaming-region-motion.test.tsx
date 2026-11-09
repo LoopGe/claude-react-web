@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useStreamingRegionMotion } from './transitions'
+import { setAppMotionOff } from './reduced-motion'
+
+afterEach(() => setAppMotionOff(false))
 
 // Pins the JS half of the streaming region's exit contract (the presence /
 // unmount half lives in MessageList.test.tsx; the CSS half — the mount-only
@@ -29,16 +32,12 @@ const STAGGER = {
   height: { duration: 0.16, ease: [0.22, 1, 0.36, 1], delay: 0.09 },
 }
 
-// useReducedMotion is mocked (not left to happy-dom's matchMedia) so the
-// reduced-motion branch — a hand-maintained duplicate of the normal variants —
-// gets the same pinning. Without this, dropping the height:'auto' restore
-// there fails nothing and a duration-0 exit interrupted by a same-key
-// re-entry strands inline height: 0 for the rest of the turn.
-const reduceState = vi.hoisted(() => ({ reduce: false }))
-vi.mock('motion/react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('motion/react')>()
-  return { ...actual, useReducedMotion: () => reduceState.reduce }
-})
+// The reduced branch is driven through the app-level motion gate (the same
+// path the Animation speed = Off preset takes), so the hand-maintained
+// duplicate of the normal variants gets the same pinning. Without this,
+// dropping the height:'auto' restore there fails nothing and a duration-0
+// exit interrupted by a same-key re-entry strands inline height: 0 for the
+// rest of the turn.
 
 describe('useStreamingRegionMotion exit stagger', () => {
   it('exits with the staggered fade-then-collapse shape (ease-ENTER height, 90ms delay)', () => {
@@ -59,19 +58,15 @@ describe('useStreamingRegionMotion exit stagger', () => {
     expect(animate.y).toBe(0)
   })
 
-  it('reduced-motion branch snaps instantly and restores height on re-entry', () => {
-    reduceState.reduce = true
-    try {
-      const { result } = renderHook(() => useStreamingRegionMotion())
-      const { animate, exit } = result.current.region
-      expect(exit.height).toBe(0)
-      expect(exit.transition).toEqual({ duration: 0 })
-      // The restore: without height:'auto' here, an interrupted duration-0
-      // exit strands the exit-applied inline height: 0.
-      expect(animate.height).toBe('auto')
-      expect(animate.transition).toEqual({ duration: 0 })
-    } finally {
-      reduceState.reduce = false
-    }
+  it('suppressed-motion branch snaps instantly and restores height on re-entry', () => {
+    setAppMotionOff(true)
+    const { result } = renderHook(() => useStreamingRegionMotion())
+    const { animate, exit } = result.current.region
+    expect(exit.height).toBe(0)
+    expect(exit.transition).toEqual({ duration: 0 })
+    // The restore: without height:'auto' here, an interrupted duration-0
+    // exit strands the exit-applied inline height: 0.
+    expect(animate.height).toBe('auto')
+    expect(animate.transition).toEqual({ duration: 0 })
   })
 })

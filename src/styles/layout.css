@@ -521,7 +521,7 @@ body.resizing-col .app {
 /* Every motion on this surface dies in one place — LAST in the section on
    purpose: equal-specificity kills only win over the rules ABOVE them, so
    this block must follow every animated/transitioned session-nav rule. The
-   WAAPI mount pop is gated in the component (prefersReducedMotion) instead.
+   WAAPI mount pop is gated in the component (motionSuppressed) instead.
    Dot pops and fades, the working breath and its fade-out, the strip exit,
    the edge-fade ease, and the state transitions (dragging dim, dormant dim,
    delete collapse) all stop here. */

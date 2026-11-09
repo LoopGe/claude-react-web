@@ -26,7 +26,7 @@
 // The flip between the rest states TWEENS (explicit height pin → transition
 // → land): see the height-tween block below for why the direct class flip
 // read as a flicker against the transcript's scroll system.
-import { prefersReducedMotion } from '../../utils/reduced-motion'
+import { motionSuppressed } from '../../utils/reduced-motion'
 import { isRendered } from '../../utils/rendered'
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { IconChevronDown } from '../icons/ToolIcons'
@@ -266,7 +266,7 @@ export function FoldableBody({ expanded, forceOpen = false, onToggle, children }
     const to = open ? natural : FOLD_MAX_PX
     // Reduced motion, or nothing to grow into: no pin, no transition — the
     // class flip alone does the work.
-    if (natural <= FOLD_MAX_PX || prefersReducedMotion()) {
+    if (natural <= FOLD_MAX_PX || motionSuppressed()) {
       landRest(el)
       return
     }

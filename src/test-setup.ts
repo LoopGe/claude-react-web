@@ -79,6 +79,12 @@ if (typeof document !== 'undefined' && typeof ResizeObserver === 'undefined') {
 
 afterEach(async () => {
   if (typeof document === 'undefined') return
+  // The motion gate is module state; a DOM test that selects the Off preset
+  // must not leak suppression into every later test in the same file. Imported
+  // dynamically with RTL: the module pulls React, and this setup file runs for
+  // every node-env test too.
+  const { setAppMotionOff } = await import('./utils/reduced-motion')
+  setAppMotionOff(false)
   const { cleanup } = await import('@testing-library/react')
   cleanup()
 })

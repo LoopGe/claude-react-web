@@ -11,7 +11,7 @@ import { __resetForTests, getEscapeStackCount, useEscapeStack } from '../hooks/u
 // native MouseEvent dispatch (fireEvent.mouseDown on the backdrop trips the
 // focus-trap focusin→refocus chain into a jsdom stack overflow), and Escape via
 // fireEvent.keyDown. matchMedia is stubbed for the exit-presence close path
-// (prefersReducedMotion) and for motion mode (useReducedMotion at mount).
+// (motionSuppressed) and for motion mode (useReducedMotion at mount).
 
 beforeEach(() => {
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }))

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 
 /**
  * Transcript settle on recap close (drives the `transcript-settle-up`
@@ -38,7 +38,7 @@ export function useRecapSettle(
     // (animation:none means no animationend ever removes it) — and if the
     // OS-level setting is later switched off, the stale class would play
     // the nudge spontaneously, the exact motion the setting suppresses.
-    if (prefersReducedMotion()) return
+    if (motionSuppressed()) return
     cancelAnimationFrame(rafRef.current)
     setSettleActive(false)
     // Re-add the class two frames later so the keyframe restarts even when a

@@ -47,7 +47,7 @@ import { BottomCardMotion } from './BottomCardMotion'
 import { shouldMountWorkingBubble } from '../utils/task-actions'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { buildOutgoingBody } from '../utils/message-body'
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 import { computeWaiting } from '../session-store/normalize'
 import { hasTranscriptBackground } from '../session-store/sidechain-index'
 
@@ -247,7 +247,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   // When the user prefers reduced motion, CSS animations are disabled
   // (animation: none) so onAnimationEnd never fires. Skip straight to
   // the final callback so the drawer doesn't get stuck.
-  const reduceMotion = prefersReducedMotion()
+  const reduceMotion = motionSuppressed()
 
   useEffect(() => {
     if (isCollapsing && reduceMotion) onCollapse()

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, cleanup, act } from '@testing-library/react'
 import { BackgroundVideo } from './BackgroundVideo'
+import { setAppMotionOff } from '../utils/reduced-motion'
 
 const SRC = '/api/background/files/3f2a1b4c-5d6e-7f80-91a2-b3c4d5e6f708.mp4'
 
@@ -41,6 +42,7 @@ describe('BackgroundVideo', () => {
 
   afterEach(() => {
     cleanup()
+    setAppMotionOff(false)
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -102,6 +104,19 @@ describe('BackgroundVideo', () => {
     expect(pause).toHaveBeenCalledTimes(1)
 
     act(() => { media.set(false) })
+    expect(play).toHaveBeenCalledTimes(1)
+  })
+
+  it('pauses for the in-app Off preset and resumes when it clears', () => {
+    stubReducedMotion(false)
+    render(<BackgroundVideo src={SRC} />)
+    pause.mockClear()
+    play.mockClear()
+
+    act(() => setAppMotionOff(true))
+    expect(pause).toHaveBeenCalledTimes(1)
+
+    act(() => setAppMotionOff(false))
     expect(play).toHaveBeenCalledTimes(1)
   })
 

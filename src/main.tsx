@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { MotionConfig } from 'motion/react'
+import { RootMotionConfig } from './components/RootMotionConfig'
 import { App } from './App'
 import { ToastHost } from './components/ToastHost'
 import { ToastProvider } from './components/ToastProvider'
@@ -81,13 +81,7 @@ ReactDOM.createRoot(document.getElementById('root')!, rootCallbacks).render(
         stack that names the culprit. Sits above every provider so provider
         render errors are caught too. */}
     <RootErrorBoundary>
-      {/* reducedMotion="user" makes motion respect prefers-reduced-motion.
-          Migrated components pair it with the useMotionTransition() helper
-          (src/utils/transitions.ts), which forces duration:0 so opacity
-          snaps too. Unmigrated components keep their own CSS/hook
-          reduced-motion guards. See the helper's docstring for why this is
-          needed. */}
-      <MotionConfig reducedMotion="user">
+      <RootMotionConfig>
         <ToastProvider>
           <WsHubProvider>
             <PluginRegistryProvider>
@@ -104,7 +98,7 @@ ReactDOM.createRoot(document.getElementById('root')!, rootCallbacks).render(
           </WsHubProvider>
           <ToastHost />
         </ToastProvider>
-      </MotionConfig>
+      </RootMotionConfig>
     </RootErrorBoundary>
   </React.StrictMode>,
 )

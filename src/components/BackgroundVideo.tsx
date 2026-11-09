@@ -6,9 +6,7 @@
 // only owns playback.
 
 import { useEffect, useRef, useState } from 'react'
-import { prefersReducedMotion } from '../utils/reduced-motion'
-
-const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)'
+import { useMotionSuppressed } from '../utils/reduced-motion'
 
 function isHidden(): boolean {
   return typeof document !== 'undefined' && document.hidden
@@ -16,22 +14,15 @@ function isHidden(): boolean {
 
 export function BackgroundVideo({ src }: { src: string }) {
   const ref = useRef<HTMLVideoElement>(null)
-  const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion)
+  // Reactive suppression: the OS preference OR the in-app Animation speed =
+  // Off preset. A user who turns either on while the app is open should not
+  // have to reload to stop the wallpaper moving.
+  const reducedMotion = useMotionSuppressed()
   // Seeded from the current state rather than only from the event: this element
   // can mount into a tab that is *already* hidden (another tab applied a
   // wallpaper over the cross-tab storage feed), and that fires no
   // visibilitychange to react to.
   const [hidden, setHidden] = useState(isHidden)
-
-  // Honour the OS setting live — a user who turns on "reduce motion" while the
-  // app is open should not have to reload to stop the wallpaper moving.
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const mql = window.matchMedia(REDUCED_MOTION_QUERY)
-    const onChange = () => setReducedMotion(mql.matches)
-    mql.addEventListener('change', onChange)
-    return () => mql.removeEventListener('change', onChange)
-  }, [])
 
   useEffect(() => {
     const onVisibility = () => setHidden(document.hidden)

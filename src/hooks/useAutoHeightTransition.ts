@@ -1,4 +1,4 @@
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { anyCollapseMotionInside, claimCollapseMotionInside } from '../components/collapse-animation'
 import { isRendered } from '../utils/rendered'
@@ -68,7 +68,7 @@ export function useAutoHeightTransition<T extends HTMLElement>(
     cleanupRef.current = null
     lastTargetHeightRef.current = nextHeight
 
-    const reducedMotion = prefersReducedMotion()
+    const reducedMotion = motionSuppressed()
     if (reducedMotion || Math.abs(startHeight - nextHeight) < 2) {
       pendingTargetHeightRef.current = null
       animatingRef.current = false

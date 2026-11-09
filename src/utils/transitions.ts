@@ -12,7 +12,7 @@
  *   exit   -> --motion-duration-fast (120ms), --motion-ease-exit
  */
 
-import { useReducedMotion } from 'motion/react'
+import { useMotionSuppressed } from './reduced-motion'
 
 export const ENTER_TRANSITION = { duration: 0.18, ease: [0.22, 1, 0.36, 1] as const }
 export const EXIT_TRANSITION = { duration: 0.12, ease: [0.4, 0, 1, 1] as const }
@@ -36,16 +36,16 @@ export const MENU_ENTER_TRANSITION = { duration: 0.12, ease: [0.22, 1, 0.36, 1] 
 export const OVERLAY_CARD_EXIT_TRANSITION = { duration: 0.18, ease: [0.4, 0, 1, 1] as const }
 
 /**
- * Snap to `duration: 0` when the user prefers reduced motion, restoring the
- * codebase's pre-motion "snap everything" behavior (old CSS reduced-motion
- * blocks forced 0.01ms). Pass the normal transition; get back either it or
+ * Snap to `duration: 0` when motion is suppressed — the OS reduced-motion
+ * preference OR the in-app Animation speed = Off preset (`useMotionSuppressed`
+ * folds both). Pass the normal transition; get back either it or
  * `{ duration: 0 }`. Complements MotionConfig reducedMotion="user", which
  * covers transform keys (x/y/scale); this additionally zeroes opacity.
  */
 export function useMotionTransition<T extends { duration: number; ease: readonly number[] }>(
   normal: T,
 ) {
-  return useReducedMotion() ? { duration: 0 } : normal
+  return useMotionSuppressed() ? { duration: 0 } : normal
 }
 
 /**
@@ -152,7 +152,7 @@ const TOP_STACK_GAP_PX = 8
  * Reduced motion snaps everything to 0.
  */
 export function useTopCardMotion() {
-  const reduce = useReducedMotion()
+  const reduce = useMotionSuppressed()
   if (reduce) {
     return {
       card: {
@@ -260,7 +260,7 @@ const STAGGERED_COLLAPSE_EXIT_TRANSITION = {
  * bottom-card-motion.test.tsx.
  */
 export function useBottomCardMotion() {
-  const reduce = useReducedMotion()
+  const reduce = useMotionSuppressed()
   if (reduce) {
     return {
       card: {
@@ -324,7 +324,7 @@ export function useBottomCardMotion() {
  * useTopCardMotion.
  */
 export function useStreamingRegionMotion() {
-  const reduce = useReducedMotion()
+  const reduce = useMotionSuppressed()
   if (reduce) {
     return {
       region: {

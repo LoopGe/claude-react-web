@@ -39,7 +39,7 @@ import { CreateMenuButton } from './CreateMenuButton'
 import type { PromptRequest } from '../hooks/useDialogHosts'
 import { useExitRetention } from '../hooks/useExitRetention'
 import { NAV_ITEM_ID_ATTR } from '../utils/flip'
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 
 interface Props {
   sections: SidebarSection[]
@@ -401,7 +401,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
         // Smooth only on this programmatic pull — NOT via CSS
         // scroll-behavior, which would make dnd-kit's per-frame edge
         // auto-scroll (scrollBy) restart a glide every frame and lag.
-        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+        behavior: motionSuppressed() ? 'auto' : 'smooth',
       })
   }, [focusedId])
 
@@ -421,7 +421,7 @@ export const SessionNavStrip = memo(function SessionNavStrip({
   useLayoutEffect(() => {
     const root = rootRef.current
     if (!root) return
-    const reduced = prefersReducedMotion()
+    const reduced = motionSuppressed()
     for (const slot of root.querySelectorAll<HTMLElement>(`[${NAV_ITEM_ID_ATTR}]`)) {
       const id = slot.getAttribute(NAV_ITEM_ID_ATTR)
       if (!id || poppedIds.current.has(id)) continue

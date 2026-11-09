@@ -28,7 +28,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type AnimationEvent, type RefObject } from 'react'
 import { shouldArmEnterAnimation } from '../../utils/enter-animation'
-import { prefersReducedMotion } from '../../utils/reduced-motion'
+import { motionSuppressed } from '../../utils/reduced-motion'
 import type { TranscriptRow } from './transcript-rows'
 
 /** Entrance-animation gate tunables.
@@ -586,7 +586,7 @@ export function useTranscriptAnimations({
       // transition instead of overlapping two opacity/transform writers.
       if (revealOpen || isTranscriptRevealPending) return
       state.lastHiddenAt = null
-      if (prefersReducedMotion()) return
+      if (motionSuppressed()) return
       if (state.raf != null) cancelAnimationFrame(state.raf)
       const styles = getComputedStyle(document.documentElement)
       const duration = parseFloat(styles.getPropertyValue('--motion-duration-moderate')) || 240

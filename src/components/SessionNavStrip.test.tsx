@@ -913,7 +913,14 @@ describe('first-sight mount pop', () => {
 
   it('records first sight even under reduced motion, so toggling motion on never pops old tabs', () => {
     let reduced = true
-    vi.stubGlobal('matchMedia', () => ({ matches: reduced, addEventListener() {}, removeEventListener() {} }))
+    // A real MediaQueryList reports `matches` live, not as a snapshot taken when
+    // the object was created — the motion gate caches the MQL while subscribed,
+    // so a snapshot would never observe `reduced = false`.
+    vi.stubGlobal('matchMedia', () => ({
+      get matches() { return reduced },
+      addEventListener() {},
+      removeEventListener() {},
+    }))
     const one: SidebarSection[] = [{ kind: 'ungrouped', sessions: [makeSession({ id: 's1' })] }]
     const two: SidebarSection[] = [
       { kind: 'ungrouped', sessions: [makeSession({ id: 's1' }), makeSession({ id: 's2' })] },

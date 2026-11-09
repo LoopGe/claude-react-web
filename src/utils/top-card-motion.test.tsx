@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useTopCardMotion } from './transitions'
+import { setAppMotionOff } from './reduced-motion'
+
+afterEach(() => setAppMotionOff(false))
 
 // Pins the JS half of the recap exit-collapse contract (the CSS half lives in
 // src/styles/recap-collapse-residual.test.tsx). The exit collapses
@@ -15,15 +18,11 @@ import { useTopCardMotion } from './transitions'
 
 const HEIGHT_TIMING = { duration: 0.2, ease: [0.22, 1, 0.36, 1], delay: 0.09 }
 
-// useReducedMotion is mocked (not left to happy-dom's matchMedia) so the
-// reduced-motion branch — a hand-maintained duplicate of the normal variants —
-// gets the same residual-key pinning. Without this, dropping or mistyping the
-// keys there fails nothing and re-breaks the last frame under reduced motion.
-const reduceState = vi.hoisted(() => ({ reduce: false }))
-vi.mock('motion/react', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('motion/react')>()
-  return { ...actual, useReducedMotion: () => reduceState.reduce }
-})
+// The reduced branch is driven through the app-level motion gate (the same
+// path the Animation speed = Off preset takes), so the hand-maintained
+// duplicate of the normal variants gets the same residual-key pinning.
+// Without this, dropping or mistyping the keys there fails nothing and
+// re-breaks the last frame under suppressed motion.
 
 describe('useTopCardMotion collapse residuals', () => {
   it('exit zeroes the shell border and cancels the stack gap on the height timing', () => {
@@ -48,19 +47,15 @@ describe('useTopCardMotion collapse residuals', () => {
     expect(animate.marginBottom).toBe(0)
   })
 
-  it('reduced-motion branch carries the same residual keys (instant)', () => {
-    reduceState.reduce = true
-    try {
-      const { result } = renderHook(() => useTopCardMotion())
-      const { animate, exit } = result.current.card
-      expect(exit.height).toBe(0)
-      expect(exit.borderWidth).toBe(0)
-      expect(exit.marginBottom).toBe(-8)
-      expect(animate.height).toBe('auto')
-      expect(animate.borderWidth).toBe(2)
-      expect(animate.marginBottom).toBe(0)
-    } finally {
-      reduceState.reduce = false
-    }
+  it('suppressed-motion branch carries the same residual keys (instant)', () => {
+    setAppMotionOff(true)
+    const { result } = renderHook(() => useTopCardMotion())
+    const { animate, exit } = result.current.card
+    expect(exit.height).toBe(0)
+    expect(exit.borderWidth).toBe(0)
+    expect(exit.marginBottom).toBe(-8)
+    expect(animate.height).toBe('auto')
+    expect(animate.borderWidth).toBe(2)
+    expect(animate.marginBottom).toBe(0)
   })
 })

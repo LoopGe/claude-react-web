@@ -1,16 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
-import { prefersReducedMotion } from '../utils/reduced-motion'
-
-/** Resolve a MediaQueryList for the reduced-motion query, or null when
- *  matchMedia is unavailable (jsdom test env, SSR, very old browsers). Used
- *  for the reactive change-listener below; one-shot checks go through the
- *  shared prefersReducedMotion() util. */
-function getMotionMql(): MediaQueryList | null {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    return null
-  }
-  return window.matchMedia('(prefers-reduced-motion: reduce)')
-}
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useMotionSuppressed } from '../utils/reduced-motion'
 
 /**
  * Animate a live number toward a changing `target`, returning the current
@@ -21,8 +10,9 @@ function getMotionMql(): MediaQueryList | null {
  * chase instead of jumping or strobing.
  *
  * - Renders `target` immediately on first mount (no entrance animation).
- * - Honors `prefers-reduced-motion: reduce` by snapping straight to the
- *   target (deterministic final state, no frames).
+ * - Honors motion suppression (OS reduced-motion OR the in-app Animation
+ *   speed = Off preset) by snapping straight to the target (deterministic
+ *   final state, no frames).
  * - `durationMs` is the tween length per retarget; pass shorter values for
  *   high-frequency (e.g. tok/s) readouts.
  *
@@ -30,39 +20,48 @@ function getMotionMql(): MediaQueryList | null {
  */
 export function useCountUp(target: number, durationMs = 400): number {
   const [value, setValue] = useState(target)
-  // Track reduced-motion reactively (initial from matchMedia, updated on OS
-  // change) so the returned value snaps to `target` the moment the user's
-  // preference swings rather than waiting for the next tween.
-  const [reduced, setReduced] = useState(prefersReducedMotion)
+  // Reactive suppression (OS preference OR the in-app Off preset) so the
+  // returned value snaps to `target` the moment either source flips rather
+  // than waiting for the next tween.
+  const reduced = useMotionSuppressed()
   const valueRef = useRef(target)
   const targetRef = useRef(target)
   const fromRef = useRef(target)
   const rafRef = useRef<number | null>(null)
+  const wasReducedRef = useRef(reduced)
 
-  useEffect(() => {
-    const mql = getMotionMql()
-    if (!mql) return
-    const handler = (e: { matches: boolean }) => setReduced(e.matches)
-    mql.addEventListener('change', handler)
-    return () => mql.removeEventListener('change', handler)
-  }, [])
+  // Sync state to the destination on the suppression FALLING edge, before
+  // paint. While suppressed the render returns `target`, so `value` can stay
+  // stale without being visible; but when suppression clears without a target
+  // change the next render would read that stale mid-tween value and show a
+  // backwards jump before the resumed tween starts. Doing it only at the edge
+  // keeps the suppressed path render-free (no setState per target update).
+  useLayoutEffect(() => {
+    if (wasReducedRef.current && !reduced) {
+      setValue(target)
+    }
+    wasReducedRef.current = reduced
+  }, [reduced, target])
 
   useEffect(() => {
     if (reduced) {
-      // Reduced motion: no animation. The render-time `reduced ? target :
-      // value` returns the destination while this is armed. Do NOT touch the
-      // refs here — the render branch already hides them, and overwriting
-      // them would corrupt the resume when reduced flips back off.
+      // Suppressed: no animation. The render-time `reduced ? target : value`
+      // returns the destination while this is armed. Pin the refs so the tween
+      // resumes from the destination instead of a stale mid-tween position.
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
       rafRef.current = null
+      valueRef.current = target
+      targetRef.current = target
+      fromRef.current = target
       return
     }
 
-    // Resume-when-settled guard. The naive `target === targetRef.current`
-    // would early-return after a reduced→normal swing even though the
-    // displayed `value` never caught up to the pinned target (the reduced
-    // branch stops tweens). Requiring valueRef to actually be at the target
-    // re-arms the tween in that case.
+    // Settled guard. `targetRef` alone is not enough: a durationMs change
+    // re-runs this effect while the value is still mid-tween, and the effect
+    // cleanup has already cancelled the rAF — early-returning there would
+    // strand the displayed value partway. Requiring valueRef to actually be
+    // at the target keeps that case arming a fresh tween. (The suppression
+    // edge pins valueRef to the target, so it exits here in the settled case.)
     if (target === targetRef.current && valueRef.current === target) return
     // Retarget: keep gliding from the current displayed value toward the
     // newest target (don't hop back to a stale starting point).

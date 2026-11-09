@@ -1394,6 +1394,122 @@ button.tool-group-failed-jump:focus-visible {
   }
 }
 
+/* ── In-app Animation speed = Off ────────────────────────────────────
+ *
+ * Mirrors the reduced-motion behavior above for users who suppress motion
+ * in-app instead of at the OS level. Two other channels already cover most
+ * of it: App writes every --motion-duration-* token as 0.01ms, and the motion
+ * gate (src/utils/reduced-motion.ts) snaps the JS / framer-motion animations.
+ * This block covers what neither can reach:
+ *   - delays (token durations never touch them),
+ *   - animations whose durations are hardcoded,
+ *   - a few rules that must restore a static rest state.
+ *
+ * Progress indicators follow their reduced-motion counterparts exactly: the
+ * working-dot bounce, cursor blink and the recap loading shimmer keep moving;
+ * the handoff spinner, the env loading dot, the subagent child-dot pulse and
+ * the skeleton shimmer stop at their static rest states. When a new
+ * reduced-motion block suppresses a HARDCODED animation, mirror that selector
+ * here.
+ */
+[data-motion="off"] *,
+[data-motion="off"] *::before,
+[data-motion="off"] *::after {
+  transition-duration: 0.01ms !important;
+  transition-delay: 0s !important;
+  animation-delay: 0s !important;
+  scroll-behavior: auto !important;
+}
+/* Decorative entrance/state animations with hardcoded durations (everything
+   token-driven already snaps to 0.01ms). */
+[data-motion="off"] .handoff-veil-spinner,
+[data-motion="off"] .chat-empty-env-dot[data-status="loading"],
+[data-motion="off"] .streaming-msg,
+[data-motion="off"] .subagent-child-dot-pulse,
+[data-motion="off"] .chat-panel-slot.key-hint,
+[data-motion="off"] .chat-panel-git-badge,
+[data-motion="off"] .group-pill-hint,
+[data-motion="off"] .session-item-slot.pending,
+[data-motion="off"] .session-item-perm-badge,
+[data-motion="off"] .session-status-dot.status-working,
+[data-motion="off"] .titlebar-tab.working,
+[data-motion="off"] .working-bar,
+[data-motion="off"] .working-bar-label,
+[data-motion="off"] .subagent-swarm,
+[data-motion="off"] .skeleton-row,
+[data-motion="off"] .session-nav-strip,
+[data-motion="off"] .session-nav-strip.exiting,
+[data-motion="off"] .session-nav-tab.working,
+[data-motion="off"] .session-nav-tab.working.exiting,
+[data-motion="off"] .session-nav-dot,
+[data-motion="off"] .session-nav-dot.exiting,
+[data-motion="off"] .session-nav-unread,
+[data-motion="off"] .session-nav-unread.exiting,
+[data-motion="off"] .session-nav-tab .session-status-dot,
+[data-motion="off"] .session-nav-tab .session-status-dot.exiting {
+  animation: none;
+}
+[data-motion="off"] .session-nav-strip,
+[data-motion="off"] .session-nav-tab,
+[data-motion="off"] .session-nav-chip,
+[data-motion="off"] .session-nav-slot,
+[data-motion="off"] .session-nav-label,
+[data-motion="off"] .titlebar-tab-label,
+[data-motion="off"] .session-status-dot {
+  transition: none;
+}
+[data-motion="off"] .session-nav-slot.deleting > .session-nav-tab { transform: none; }
+[data-motion="off"] .side-chat-expand-tab-dot { animation: none; opacity: 1; }
+[data-motion="off"] .skeleton-row { background: var(--bg-elev-2); }
+/* Clearing/exit states use `both`/`forwards` fills; at 0.01ms they would
+   retain their final frame instead of reverting to rest like `animation:
+   none`. Keep the reduced-motion rest state. */
+[data-motion="off"] .chat-messages.chat-messages-clearing,
+[data-motion="off"] .todo-panel.todo-panel-clearing,
+[data-motion="off"] .monitor-bar.monitor-bar-clearing,
+[data-motion="off"] .recap-window.recap-window-clearing,
+[data-motion="off"] .pinned-user-message.pinned-user-message-clearing {
+  animation: none;
+}
+/* Todo / monitor shimmer progress states get their static accent fallback. */
+[data-motion="off"] .todo-panel-working .todo-in_progress .todo-icon,
+[data-motion="off"] .inline-todo-in_progress .inline-todo-icon,
+[data-motion="off"] .monitor-icon {
+  animation: none;
+  transform: translateY(-0.5px);
+}
+[data-motion="off"] .todo-panel-working .todo-in_progress .todo-text-shimmer,
+[data-motion="off"] .todo-panel-working .dock-rotor .todo-text-shimmer,
+[data-motion="off"] .inline-todo-in_progress .inline-todo-text-shimmer {
+  animation: none;
+  background: none;
+  -webkit-text-fill-color: var(--accent-text);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+[data-motion="off"] .inline-todo-completed .inline-todo-text-shimmer { animation: none; }
+[data-motion="off"] .monitor-text-shimmer {
+  animation: none;
+  background: none;
+  -webkit-text-fill-color: var(--fg);
+  color: var(--fg);
+}
+[data-motion="off"] .todo-completed.todo-strike-anim .todo-text-shimmer::after {
+  animation: none;
+  transform: scaleX(1);
+}
+/* Toasts carry their own duration variable and a JS-timed countdown wash. */
+[data-motion="off"] .toast-host { --toast-move: 0.01ms; }
+[data-motion="off"] .toast-shell { transition: none; }
+[data-motion="off"] .toast { animation: none; }
+[data-motion="off"] .toast-progress { display: none; }
+/* The transcript reveal's pending class holds the hidden start state; with
+   the animation snapped it must be released to the rest state. */
+[data-motion="off"] .chat-messages.chat-messages-reveal-pending {
+  opacity: 1;
+  transform: none;
+}
+
 /* ── Tooltip primitive ─────────────────────────────────────────────
  *
  * Replaces native `title=""` for elements that need:

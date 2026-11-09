@@ -13,7 +13,7 @@
 // (deps semantics), so pass primitives.
 
 import { useEffect, useState } from 'react'
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 
 /** The hold window, in ms — MUST track `--motion-duration-fast` in tokens.css
  *  (the duration the dot / wash CSS exits run at). Pin-tested against the
@@ -45,7 +45,7 @@ export function useExitRetention<T>(value: T | null, ms = EXIT_WINDOW_MS): { sho
   // immediate: live -> live swaps, live -> null arms the hold, reduced motion
   // clears on the spot.
   if (!Object.is(snapshot.prev, value)) {
-    if (value !== null || prefersReducedMotion()) {
+    if (value !== null || motionSuppressed()) {
       setSnapshot({ prev: value, shown: value, exiting: false })
     } else {
       setSnapshot({ prev: value, shown: snapshot.shown, exiting: snapshot.shown !== null })

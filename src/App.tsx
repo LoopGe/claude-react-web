@@ -23,7 +23,11 @@ import { SessionCard } from './components/session-list/SessionCard'
 import { api } from './hooks/useApi'
 import { ImageViewerProvider } from './hooks/useImageViewer'
 import { sessionTitleOrFallback } from './utils/session-title'
-import { prefersReducedMotion } from './utils/reduced-motion'
+import {
+  motionSuppressed,
+  setAppMotionOff,
+  useOsPrefersReducedMotion,
+} from './utils/reduced-motion'
 import { DndContext, pointerWithin, rectIntersection, useDroppable, type Collision, type CollisionDetection, type DragEndEvent, type DragMoveEvent, type DragOverEvent, type DragStartEvent, type UniqueIdentifier } from '@dnd-kit/core'
 import { useAppDndSensors } from './dnd/sensors'
 import type { DragPayload, PanelGhostSnapshot } from './dnd/payload'
@@ -133,7 +137,7 @@ import { fetchConfig, markConfigStale, patchConfigCache, peekConfig, subscribeMo
 import { ROW_GAP_PX } from '../shared/row-gap'
 import { TEXT_SPACING_CSS } from '../shared/text-spacing'
 import { FONT_SIZE_SCALE } from '../shared/font-size'
-import { ANIMATION_SPEED_SCALE, MOTION_DURATION_TOKENS } from '../shared/animation-speed'
+import { applyAnimationSpeedToDocument } from './utils/motion-preference-dom'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { evictFromGroups, inheritGroupId, inheritSidebarOrderId, joinGroupOfSource, placeInGroupId } from './utils/session-slot'
@@ -379,25 +383,26 @@ export function App() {
     document.documentElement.style.setProperty('--fs-scale', String(FONT_SIZE_SCALE[globalPrefs.fontSize]))
   }, [globalPrefs.fontSize])
 
-  // Apply the global animation speed by writing the final scaled duration to
-  // each --motion-duration-* token inline on <html>. Written as a plain
-  // 'NNNms' (not calc()) so BOTH CSS transitions and the JS readers that
-  // parse the token numerically (MessageList panel-unhide sweep,
-  // useRevealClass) observe the same value. Standard = 1 (the shipped
-  // default = unchanged).
+  // Apply the global animation speed to the CSS tokens plus the Off marker
+  // (`data-motion="off"`) the stylesheet uses for its hardcoded-animation
+  // suppressors. The tokens are written as plain `NNNms` (not calc()) so BOTH
+  // CSS transitions and the JS readers that parse the token numerically
+  // (MessageList panel-unhide sweep, useRevealClass) observe the same value.
   //
-  // Skipped under prefers-reduced-motion: the OS-level opt-out is stronger
-  // than an aesthetic speed preference, and a 'slow' choice must never
-  // lengthen motion for a vestibular user. Elements with their own
-  // @media (prefers-reduced-motion) block already snap independently; the
-  // rest keep their base durations (the pre-feature behavior).
-  useEffect(() => {
-    if (prefersReducedMotion()) return
-    const scale = ANIMATION_SPEED_SCALE[globalPrefs.animationSpeed]
-    for (const { token, baseMs } of MOTION_DURATION_TOKENS) {
-      document.documentElement.style.setProperty(token, `${Math.round(baseMs * scale)}ms`)
-    }
-  }, [globalPrefs.animationSpeed])
+  // Skipped under the OS reduced-motion preference: that opt-out already owns
+  // the stylesheet through its media queries, and a 'slow' choice must never
+  // lengthen motion for a vestibular user. The app-level Off preset still
+  // writes (0.01ms can never lengthen motion) so the tokens stay correct if
+  // the OS query clears mid-session.
+  // Reactive: when the OS query clears while a paced preset is selected, the
+  // effect must run again to replace whatever tokens were last written (and
+  // drop a stale data-motion marker) — a one-shot probe would leave the app
+  // stuck at the old durations.
+  const osReducedMotion = useOsPrefersReducedMotion()
+  useLayoutEffect(() => {
+    if (osReducedMotion && globalPrefs.animationSpeed !== 'off') return
+    applyAnimationSpeedToDocument(globalPrefs.animationSpeed)
+  }, [globalPrefs.animationSpeed, osReducedMotion])
 
   const {
     settingsOpenFor,
@@ -654,6 +659,9 @@ export function App() {
     if (r.maxUploadBytes != null) setMaxUploadBytes(r.maxUploadBytes)
     if (r.maxPastedImageBytes != null) setMaxPastedImageBytes(r.maxPastedImageBytes)
     const nextPrefs = globalPrefsFromConfig(r)
+    // Mirror the Off preset into the motion gate BEFORE the state update, so
+    // render-phase reads in the same commit already see it.
+    setAppMotionOff(nextPrefs.animationSpeed === 'off')
     // Keep object identity when nothing changed — every store notify runs
     // this, and a fresh literal would re-render App + all panels for nothing.
     setGlobalPrefs((prev) => (prev && sameGlobalPrefs(prev, nextPrefs) ? prev : nextPrefs))
@@ -1479,7 +1487,7 @@ export function App() {
       // the two surfaces show the same list at once, so the swap must not snap
       // one and fade the other.
       const xEls = navSurfaceEls(oldId)
-      if (xEls.length > 0 && !prefersReducedMotion()) {
+      if (xEls.length > 0 && !motionSuppressed()) {
         try {
           const anims = xEls.map((el) =>
             el.animate(
@@ -1566,7 +1574,7 @@ export function App() {
       // `fill: 'backwards'` applies the transparent start keyframe in the same
       // frame the row mounts (before the browser paints), so there's no
       // opacity-1 flash. Both nav rows fade, matching the X fade-out above.
-      if (!prefersReducedMotion()) {
+      if (!motionSuppressed()) {
         for (const yEl of navSurfaceEls(newId)) {
           yEl.animate(
             [{ opacity: 0 }, { opacity: 1 }],
@@ -2775,7 +2783,7 @@ export function App() {
   // instant width jump. Height is captured too for symmetry but in
   // practice all panels are full-height so scaleY stays at 1.
   const animatePanels = useCallback((...ids: string[]) => {
-    if (prefersReducedMotion()) return
+    if (motionSuppressed()) return
     const bodyEl = bodyRef.current
     if (!bodyEl) return
     const bodyR = bodyEl.getBoundingClientRect()
@@ -2882,7 +2890,7 @@ export function App() {
   // Detect the preference and immediately clear any closing panels.
   useEffect(() => {
     if (closingPanels.length === 0) return
-    if (prefersReducedMotion()) {
+    if (motionSuppressed()) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- when the user prefers reduced motion, onAnimationEnd never fires (CSS sets animation:none), so closing-panel ghosts would leak forever; clearing them here is the documented escape hatch for that media-query case, not a cascading-render anti-pattern.
       setClosingPanels([])
     }
@@ -2914,7 +2922,7 @@ export function App() {
     // interrupted mid-flight by another hide replays on its next show —
     // self-consistent for rapid switching.
     const cachedSet = new Set(panelCache)
-    const motionEnabled = !prefersReducedMotion()
+    const motionEnabled = !motionSuppressed()
     for (const id of openIds) {
       if (!prevSet.has(id)) {
         panelShowEpochsRef.current.set(id, nextPanelShowEpoch(panelShowEpochsRef.current.get(id)))
@@ -4860,6 +4868,10 @@ export function App() {
    *  notify cannot re-apply the pre-save body. On failure it re-reads the
    *  server truth rather than keeping a rejected value. */
   const applyDisplayPrefPatch = useCallback((patch: Partial<DisplayPresetPrefs>) => {
+    // Same-commit sync for the motion gate; see the config subscription.
+    if (patch.animationSpeed !== undefined) {
+      setAppMotionOff(patch.animationSpeed === 'off')
+    }
     setGlobalPrefs((prev) => {
       const next = { ...prev, ...patch }
       // Preserve identity when the patch is already reflected (e.g. a

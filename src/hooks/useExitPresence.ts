@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { prefersReducedMotion } from '../utils/reduced-motion'
+import { motionSuppressed } from '../utils/reduced-motion'
 
 const DEFAULT_EXIT_MS = 180
 
@@ -41,7 +41,7 @@ export function usePresenceValue<T>(value: T | null | undefined | false, duratio
 
     setPresence((current) => {
       if (current.value == null) return current.isExiting ? { value: null, isExiting: false } : current
-      if (prefersReducedMotion()) return { value: null, isExiting: false }
+      if (motionSuppressed()) return { value: null, isExiting: false }
 
       timerRef.current = setTimeout(() => {
         timerRef.current = null

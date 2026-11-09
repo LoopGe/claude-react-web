@@ -10,7 +10,7 @@ import { useCallback, useId, useLayoutEffect, useState } from 'react'
 import { countsLabel, type TurnChangedFile } from '../../../shared/turn-changes.js'
 import { useEnterOnArrival } from '../../hooks/useEnterOnArrival'
 import { useTurnChanges } from '../../hooks/useTurnChanges'
-import { prefersReducedMotion } from '../../utils/reduced-motion'
+import { motionSuppressed } from '../../utils/reduced-motion'
 import { revealDurationMs } from '../../utils/reveal-duration'
 import { AnimatedCollapse } from '../AnimatedCollapse'
 import { useTurnChangesContext } from './turn-changes-context'
@@ -85,7 +85,7 @@ export function TurnChangesCard({ sessionId, resultUuid }: { sessionId?: string;
      render-phase update cannot do */
   useLayoutEffect(() => {
     if (!summaryArrived || arrivalReady) return
-    if (prefersReducedMotion()) {
+    if (motionSuppressed()) {
       setArrivalReady(true)
       return
     }

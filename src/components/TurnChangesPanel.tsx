@@ -10,7 +10,7 @@ import type { TurnDiffPayload, TurnDiffViewMode } from '../../shared/turn-change
 import { countsLabel } from '../../shared/turn-changes.js'
 import { api } from '../hooks/useApi'
 import { useTurnChanges, useTurnDiff } from '../hooks/useTurnChanges'
-import { ENTER_TRANSITION } from '../utils/transitions'
+import { ENTER_TRANSITION, useMotionTransition } from '../utils/transitions'
 import { TurnDiffView } from './TurnDiffView'
 import { FullDiffViewer } from './FullDiffViewer'
 import { FieldPicker } from './FieldPicker'
@@ -25,6 +25,9 @@ export interface TurnChangesPanelProps {
 }
 
 export function TurnChangesPanel({ sessionId, resultUuid, initialIndex, onClose }: TurnChangesPanelProps) {
+  // Per-key diff switch: snap under suppressed motion (OS preference or the
+  // in-app Off preset) like every other migrated motion surface.
+  const enterTransition = useMotionTransition(ENTER_TRANSITION)
   // Up to 3 chat panels can host this overlay at once — the picker's trigger /
   // menu / option ids must be unique per instance.
   const pickerId = useId()
@@ -96,7 +99,7 @@ export function TurnChangesPanel({ sessionId, resultUuid, initialIndex, onClose 
           className="turn-review-diff-anim"
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={ENTER_TRANSITION}
+          transition={enterTransition}
         >
           {diffLoading ? (
             <span className="turn-changes-note">Loading comparison…</span>
