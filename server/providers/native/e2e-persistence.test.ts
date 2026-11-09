@@ -157,6 +157,31 @@ describe('native provider persistence through SessionManager', () => {
     expect(modelHistory).toContain(REPLY)
   }, 20000)
 
+  it('pairs native prompt uuids at consumption so the list stays bounded', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-uuids-'))
+    dirs.push(dir)
+
+    const { sm } = await makeFixture(dir)
+    const id = await createAndSend(sm, dir)
+    sessionIds.push({ sm, id })
+    // A second turn (idle direct hand-off) exercises the same pairing path.
+    await sendTurn(sm, id)
+
+    const live = (sm as unknown as {
+      sessions: Map<string, {
+        promptUuids?: Array<{ u: string; v?: string }>
+        turnActive?: boolean
+      }>
+    }).sessions.get(id)!
+    // The native provider never emits a top-level user echo, so without
+    // pairing-at-consumption every sent prompt would remain unpaired forever
+    // and the array would grow without bound.
+    expect(live.promptUuids).toHaveLength(2)
+    expect(live.promptUuids!.every((e) => e.v != null)).toBe(true)
+    // The result cleared the turn-active flag (it was set at consumption).
+    expect(live.turnActive).toBe(false)
+  }, 20000)
+
   it('fork creates a child with its own seeded native log carrying the source turn', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sm-native-fork-'))
     dirs.push(dir)

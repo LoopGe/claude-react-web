@@ -139,14 +139,21 @@ export const UsagePanel = memo(function UsagePanel({
   }, [sessionId, available])
 
   const totals = data?.session
+  // A provider that reports tokens but no pricing (the native provider) sets
+  // cost_available:false. Show an explicit dash instead of a misleading $0.
+  const costAvailable = data?.cost_available !== false
   // Animate the session-total cost readout toward its latest value (glide,
   // not jump) when the number is present and meaningful.
   const costNum =
-    typeof totals?.total_cost_usd === 'number' && Number.isFinite(totals.total_cost_usd)
+    costAvailable && typeof totals?.total_cost_usd === 'number' && Number.isFinite(totals.total_cost_usd)
       ? totals.total_cost_usd
       : null
   const animatedCostNum = useCountUp(costNum ?? 0, 500)
-  const animatedCost = costNum !== null && costNum > 0 ? `$${animatedCostNum.toFixed(4)}` : '$0.0000'
+  const animatedCost = !costAvailable
+    ? '—'
+    : costNum !== null && costNum > 0
+      ? `$${animatedCostNum.toFixed(4)}`
+      : '$0.0000'
   const apiDur = typeof totals?.total_api_duration_ms === 'number' ? formatElapsed(totals.total_api_duration_ms) : null
   const wallDur = typeof totals?.total_duration_ms === 'number' ? formatElapsed(totals.total_duration_ms) : null
   const added = fmtNum(totals?.total_lines_added)
@@ -230,7 +237,9 @@ export const UsagePanel = memo(function UsagePanel({
             <>
               <section className="usage-section">
                 <div className="usage-cost-row">
+                  <HoverHint label="This provider does not report cost" side="top" disabled={costAvailable}>
                   <span className="usage-cost">{animatedCost}</span>
+                </HoverHint>
                   <span className="usage-cost-caption">session total</span>
                 </div>
                 <div className="usage-totals">

@@ -130,6 +130,13 @@ export interface ProviderInterruptReceipt {
 
 export interface ProviderSessionHandle {
   readonly provider?: string
+  /** False when the provider never replays a top-level user prompt through its
+   *  message stream (the native provider persists the app-minted uuid itself).
+   *  The manager pairs a sent prompt's uuid at consumption instead of waiting
+   *  for an SDK echo, so `promptUuids` stays bounded and `cancelQueued` still
+   *  withdraws only turns the provider has not consumed. Undefined = legacy
+   *  echo behavior (claude). */
+  readonly echoesUserPrompts?: boolean
   readonly messages: AsyncIterable<AgentMessage>
   enqueueUserMessage(message: AgentUserMessage): void
   /** Enqueue a provider control command without treating it as a visible

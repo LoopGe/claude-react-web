@@ -62,9 +62,37 @@ function flushInBackground(sessionLog: NativeSessionLog, sessionId: string, what
  *  session tracks. Old / partial logs may omit it or carry another shape. */
 function usageOf(value: unknown): Usage | null {
   if (typeof value !== 'object' || value === null) return null
-  const usage = value as { input_tokens?: unknown; output_tokens?: unknown }
+  const usage = value as {
+    input_tokens?: unknown
+    output_tokens?: unknown
+    cache_read_input_tokens?: unknown
+    cache_creation_input_tokens?: unknown
+  }
   if (typeof usage.input_tokens !== 'number' || typeof usage.output_tokens !== 'number') return null
-  return { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens }
+  return {
+    input_tokens: usage.input_tokens,
+    output_tokens: usage.output_tokens,
+    ...(typeof usage.cache_read_input_tokens === 'number'
+      ? { cache_read_input_tokens: usage.cache_read_input_tokens }
+      : {}),
+    ...(typeof usage.cache_creation_input_tokens === 'number'
+      ? { cache_creation_input_tokens: usage.cache_creation_input_tokens }
+      : {}),
+  }
+}
+
+/** Field-wise sum of two usage readings (cache fields only appear when at
+ *  least one side carries them). */
+function addUsage(a: Usage, b: Usage): Usage {
+  const sum = (x?: number, y?: number): number => (x ?? 0) + (y ?? 0)
+  const cacheRead = sum(a.cache_read_input_tokens, b.cache_read_input_tokens)
+  const cacheCreate = sum(a.cache_creation_input_tokens, b.cache_creation_input_tokens)
+  return {
+    input_tokens: sum(a.input_tokens, b.input_tokens),
+    output_tokens: sum(a.output_tokens, b.output_tokens),
+    ...(cacheRead !== 0 ? { cache_read_input_tokens: cacheRead } : {}),
+    ...(cacheCreate !== 0 ? { cache_creation_input_tokens: cacheCreate } : {}),
+  }
 }
 
 export interface NativeSessionOptions {
@@ -100,6 +128,10 @@ export interface NativeSessionOptions {
 
 export class NativeSession implements ProviderSessionHandle {
   readonly provider = 'native'
+  /** The native loop never replays a top-level user prompt through its message
+   *  stream (only tool_result user frames), so the manager pairs prompt uuids
+   *  at consumption instead of waiting for an SDK echo. */
+  readonly echoesUserPrompts = false
 
   private readonly output: Pushable<AgentMessage>
   private readonly input: AgentUserMessage[] = []
@@ -130,7 +162,10 @@ export class NativeSession implements ProviderSessionHandle {
    *  cannot start a second concurrent pump. */
   private pumping = false
   private lastUsage: Usage = { input_tokens: 0, output_tokens: 0 }
-  private totalUsage: Usage = { input_tokens: 0, output_tokens: 0 }
+  /** Per-model totals for the /usage panel. Accumulated from every persisted
+   *  assistant frame (one per API round), which keeps the live value identical
+   *  to what a restart rebuilds from the log. */
+  private readonly usageByModel = new Map<string, Usage>()
   private _closed = false
 
   constructor(private readonly opts: NativeSessionOptions) {
@@ -241,39 +276,35 @@ export class NativeSession implements ProviderSessionHandle {
     return log
   }
 
-  /** Restore the usage counters from `turn/end` events. A seeded fork's
-   *  `turn/end { reason: 'forked' }` carries no usage and is skipped, so it
-   *  neither resets `lastUsage` nor contributes to `totalUsage`. When the log
-   *  has no usage-bearing `turn/end` at all (an older / interrupted log), the
-   *  last assistant usage is the fallback for `lastUsage`; `totalUsage` stays
-   *  the sum of completed turns — see spec §9. */
+  /** Restore the usage reading and per-model totals from the log. The LAST
+ *  reading prefers the final assistant frame because it carries the cache
+ *  buckets the context bar needs; a usage-bearing `turn/end` (which only has
+ *  input/output) is the fallback. The per-model totals sum every persisted
+ *  assistant frame — one per API round — which is exactly what the live path
+ *  accumulates in `persistFrame`. */
   private restoreUsage(events: readonly NativeLogEvent[]): void {
-    let last: Usage = { input_tokens: 0, output_tokens: 0 }
-    let total: Usage = { input_tokens: 0, output_tokens: 0 }
     let lastAssistant: Usage | null = null
-    let sawUsageEnd = false
+    let lastEnd: Usage | null = null
+    this.usageByModel.clear()
     for (const event of events) {
       if (event.type === 'assistant') {
-        lastAssistant = usageOf(event.message.usage) ?? lastAssistant
+        const usage = usageOf(event.message.usage)
+        if (usage) {
+          lastAssistant = usage
+          const model = typeof event.message.model === 'string' && event.message.model
+            ? event.message.model
+            : this.model
+          this.usageByModel.set(
+            model,
+            addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage),
+          )
+        }
         continue
       }
       if (event.type !== 'turn/end' || !event.usage) continue
-      sawUsageEnd = true
-      last = { input_tokens: event.usage.input_tokens, output_tokens: event.usage.output_tokens }
-      total = {
-        input_tokens: total.input_tokens + event.usage.input_tokens,
-        output_tokens: total.output_tokens + event.usage.output_tokens,
-      }
+      lastEnd = { input_tokens: event.usage.input_tokens, output_tokens: event.usage.output_tokens }
     }
-    // With no turn/end record the last assistant usage is the only durable
-    // reading available for LAST usage. `totalUsage` deliberately stays the
-    // sum of completed turns only: adding the fallback to the total would make
-    // it drop after a restart, once a real turn/end exists to sum instead.
-    if (!sawUsageEnd && lastAssistant) {
-      last = { ...lastAssistant }
-    }
-    this.lastUsage = last
-    this.totalUsage = total
+    this.lastUsage = lastAssistant ?? lastEnd ?? { input_tokens: 0, output_tokens: 0 }
   }
 
   readonly abortSignal = this.sessionAbort.signal
@@ -369,6 +400,17 @@ export class NativeSession implements ProviderSessionHandle {
       const flush = this.log.flush()
       this.assistantFlush = flush
       void flush.catch((err) => log.warn(`[${this.opts.id}] failed to flush assistant frame:`, err))
+      // One assistant frame = one API round. Summing here (rather than from
+      // the turn's final usage) keeps the live per-model totals identical to
+      // what `restoreUsage` rebuilds from the log.
+      const usage = usageOf(f.message.usage)
+      if (usage) {
+        const model = typeof f.message.model === 'string' && f.message.model ? f.message.model : this.model
+        this.usageByModel.set(
+          model,
+          addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage),
+        )
+      }
     } else if (f.type === 'user' && f.parent_tool_use_id === null) {
       this.log.append({
         type: 'user',
@@ -391,7 +433,22 @@ export class NativeSession implements ProviderSessionHandle {
   private repairUnansweredToolUses(): void {
     const { synthetic } = repairInterruptedTurn(this.log.events)
     if (synthetic.length === 0) return
-    for (const event of synthetic) this.log.append(event)
+    for (const event of synthetic) {
+      this.log.append(event)
+      // The live ring/UI must see the same synthetic result the disk replay
+      // will show, with the SAME uuid so the seq store and a later restart do
+      // not render it twice. Push directly (not through emit: the log append
+      // above already happened).
+      // Reuse the persisted event's message verbatim so the live frame and
+      // the disk replay are identical by construction (same uuid AND shape).
+      this.output.push({
+        type: 'user',
+        uuid: event.uuid,
+        session_id: this.opts.id,
+        parent_tool_use_id: null,
+        message: event.message,
+      } as unknown as AgentMessage)
+    }
     this.history.push({
       role: 'user',
       content: synthetic.flatMap((event) => event.message.content),
@@ -447,12 +504,10 @@ export class NativeSession implements ProviderSessionHandle {
           turnSignal,
         )
         // Success-path result frame was already emitted by runTurn; only the
-        // usage accounting happens here.
+        // LAST-reading accounting happens here. Per-model totals are summed
+        // from the persisted assistant frames in `persistFrame`, so the live
+        // value and a restart's rebuild are identical.
         this.lastUsage = res.usage
-        this.totalUsage = {
-          input_tokens: this.totalUsage.input_tokens + res.usage.input_tokens,
-          output_tokens: this.totalUsage.output_tokens + res.usage.output_tokens,
-        }
         endReason = 'completed'
         endUsage = res.usage
       } catch (err) {
@@ -538,11 +593,14 @@ export class NativeSession implements ProviderSessionHandle {
     return this.input.splice(0)
   }
 
-  async interrupt(): Promise<ProviderInterruptReceipt | void> {
-    // Drop queued turns (cancelQueued semantics), then abort the in-flight
-    // turn. NO frame emission here — the pumpLoop catch emits the single
+  async interrupt(opts?: { cancelQueued?: boolean }): Promise<ProviderInterruptReceipt | void> {
+    // A plain interrupt stops the current turn but leaves queued user turns
+    // for the next one — the manager's contract (and claude's Query.interrupt
+    // behavior). Only `cancelQueued` drops them; the manager has already
+    // drained its host queue and will broadcast the withdrawal.
+    if (opts?.cancelQueued) this.input.splice(0)
+    // NO frame emission here — the pumpLoop catch emits the single
     // 'interrupted by user' result frame.
-    this.input.splice(0)
     this.turnAbort?.abort(new Error('interrupted by user'))
   }
 
@@ -558,15 +616,45 @@ export class NativeSession implements ProviderSessionHandle {
    *  (liteContextUsageFromSdkUsage in session-pump.ts): { totalTokens,
    *  maxTokens, model }. */
   async getContextUsage(): Promise<unknown> {
+    // Match the pump's mid-turn formula: prompt tokens = input + cache reads
+    // + cache writes. Output is not part of the window the next request sends.
+    const usage = this.lastUsage
     return {
-      totalTokens: this.lastUsage.input_tokens + this.lastUsage.output_tokens,
+      totalTokens:
+        usage.input_tokens
+        + (usage.cache_read_input_tokens ?? 0)
+        + (usage.cache_creation_input_tokens ?? 0),
       maxTokens: CONTEXT_WINDOW,
       model: this.model,
     }
   }
 
   async getUsage(): Promise<unknown> {
-    return { last: this.lastUsage, total: this.totalUsage }
+    const modelUsage: Record<string, {
+      inputTokens: number
+      outputTokens: number
+      cacheReadInputTokens?: number
+      cacheCreationInputTokens?: number
+    }> = {}
+    for (const [model, usage] of this.usageByModel) {
+      modelUsage[model] = {
+        inputTokens: usage.input_tokens,
+        outputTokens: usage.output_tokens,
+        ...(usage.cache_read_input_tokens !== undefined
+          ? { cacheReadInputTokens: usage.cache_read_input_tokens }
+          : {}),
+        ...(usage.cache_creation_input_tokens !== undefined
+          ? { cacheCreationInputTokens: usage.cache_creation_input_tokens }
+          : {}),
+      }
+    }
+    // The native provider has no pricing table: report real token/model data
+    // and let the panel render cost as unavailable instead of $0.
+    return {
+      session: { model_usage: modelUsage },
+      rate_limits_available: false,
+      cost_available: false,
+    }
   }
 
   async reloadSkills(): Promise<unknown> {

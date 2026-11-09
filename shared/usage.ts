@@ -69,6 +69,10 @@ export interface SessionUsageData {
   subscription_type?: 'pro' | 'max' | 'team' | 'enterprise' | null
   rate_limits_available?: boolean
   rate_limits?: UsageRateLimits | null
+  /** False when the provider reports tokens but no cost (e.g. the native
+   *  provider has no pricing table). The panel renders `—` instead of a
+   *  misleading `$0.0000`. Undefined keeps the legacy CLI behavior. */
+  cost_available?: boolean
   behaviors?: Record<string, unknown>
 }
 

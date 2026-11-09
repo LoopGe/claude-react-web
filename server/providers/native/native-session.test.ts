@@ -137,8 +137,13 @@ describe('NativeSession', () => {
     const dir = await tempDir('native-session-')
     const provider = new NativeProvider({ stateDir: dir })
     // Streamer that hangs until its signal aborts — the seam the real
-    // defaultStream honors too (fetch rejects on abort).
+    // defaultStream honors too (fetch rejects on abort). `streamStarted`
+    // replaces a fixed sleep: the turn is in flight exactly when the pump
+    // calls the streamer, which is stable under parallel test load.
+    let streamStarted!: () => void
+    const started = new Promise<void>((resolve) => { streamStarted = resolve })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
+      streamStarted()
       await new Promise<never>((_, reject) => {
         req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true })
       })
@@ -150,8 +155,8 @@ describe('NativeSession', () => {
       for await (const f of session.messages) frames.push(f as Frame)
     })()
     session.enqueueUserMessage(userMsg('one') as never)
-    // Give the turn a moment to start (no result may have landed yet).
-    await new Promise((r) => setTimeout(r, 20))
+    // Wait for the turn to actually start (no result may have landed yet).
+    await started
     expect(frames.filter((f) => f.type === 'result')).toHaveLength(0)
     await session.interrupt?.()
     await vi.waitFor(() => {
@@ -188,9 +193,9 @@ describe('NativeSession', () => {
       expect(frames.some((f) => f.type === 'result')).toBe(true)
     })
     const usage = (await session.getContextUsage?.()) as { totalTokens: number; maxTokens: number; model: string }
-    // Wire shape consumed by liteContextUsageFromSdkUsage (session-pump.ts):
-    // { totalTokens, maxTokens, model } — the scripted turn has input 10 + output 5.
-    expect(usage.totalTokens).toBe(15)
+    // { totalTokens, maxTokens, model } — prompt tokens are input + cache
+    // (the scripted turn has input 10, no cache; output does not count).
+    expect(usage.totalTokens).toBe(10)
     expect(usage.maxTokens).toBe(200_000)
     expect(typeof usage.model).toBe('string')
     await session.destroy()
@@ -320,10 +325,13 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({ stateDir: dir })
     const resumed = provider.createSession({ id: 'usage', cwd: dir, resume: 'usage' })
     expect(await resumed.getUsage?.()).toEqual({
-      last: { input_tokens: 7, output_tokens: 3 },
-      // totalUsage counts completed turns only: there is no usage-bearing
-      // turn/end here, so it stays 0 (the fallback is last-usage only).
-      total: { input_tokens: 0, output_tokens: 0 },
+      session: {
+        model_usage: {
+          'claude-sonnet-4-5': { inputTokens: 7, outputTokens: 3 },
+        },
+      },
+      rate_limits_available: false,
+      cost_available: false,
     })
     await resumed.destroy()
   })
@@ -458,6 +466,11 @@ describe('NativeSession', () => {
     // does not append the result after the next turn.
     expect(JSON.stringify(internals.history)).toContain('tool result missing')
     expect(JSON.stringify(logOf(session).events)).toContain('tool result missing')
+    // The live stream must carry the same synthetic result the disk replay
+    // will show, with the SAME uuid (no duplicate repair bubble on restart).
+    const syntheticEvent = logOf(session).events.find((e) => JSON.stringify(e).includes('tool result missing')) as unknown as { uuid: string }
+    const syntheticFrame = frames.find((f) => f.type === 'user' && JSON.stringify(f).includes('tool result missing'))!
+    expect(syntheticFrame.uuid).toBe(syntheticEvent.uuid)
     await session.destroy()
   })
 
@@ -484,11 +497,78 @@ describe('NativeSession', () => {
     await vi.waitFor(() => {
       expect((session as unknown as { turnAbort: unknown }).turnAbort).not.toBeNull()
     })
-    await session.interrupt?.()
+    await session.interrupt?.({ cancelQueued: true })
     await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
     expect(userTexts(session)).toEqual(['first'])
     expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
     await session.destroy()
+  })
+
+  it('a plain interrupt keeps the queued turn for the next turn', async () => {
+    const dir = await tempDir('native-keep-queued-')
+    const provider = new NativeProvider({ stateDir: dir })
+    let streamStarted!: () => void
+    const started = new Promise<void>((resolve) => { streamStarted = resolve })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
+      streamStarted()
+      if (req.signal.aborted) throw req.signal.reason ?? new Error('aborted')
+      await new Promise<never>((_, reject) => {
+        req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true })
+      })
+      yield // unreachable
+    }
+    const session = provider.createSession({ id: 'keep', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('first') as never)
+    await started
+    session.enqueueUserMessage(userMsg('second') as never)
+    // The next turn gets a normal script; the plain interrupt must leave it
+    // queued rather than splicing the input queue.
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of textTurn('second-done')) yield ev
+    }
+    await session.interrupt?.()
+    await vi.waitFor(() => {
+      const results = frames.filter((f) => f.type === 'result')
+      expect(results).toHaveLength(2)
+      expect(results[1].result).toBe('second-done')
+    })
+    expect(userTexts(session)).toEqual(['first', 'second'])
+    await session.destroy()
+  })
+
+  it('reports identical per-model usage live and after resume (multi-round turn)', async () => {
+    const dir = await tempDir('native-usage-parity-')
+    const provider = providerWithStreamer([toolTurn('t1'), textTurn('done')], dir)
+    const session = provider.createSession({
+      id: 'usage-parity',
+      cwd: dir,
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: { file_path: 'package.json' } }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'done')).toBe(true))
+    const live = await session.getUsage?.()
+    // Concrete totals for the two scripted rounds (10+10 input, 5+5 output):
+    // equality alone would let a last-round-only regression pass on both sides.
+    expect(live).toEqual({
+      session: {
+        model_usage: {
+          'claude-sonnet-4-5': { inputTokens: 20, outputTokens: 10 },
+        },
+      },
+      rate_limits_available: false,
+      cost_available: false,
+    })
+    await session.destroy()
+
+    const resumed = provider.createSession({ id: 'usage-parity', cwd: dir, resume: 'usage-parity' })
+    // The live total must sum BOTH assistant rounds; a restart rebuilds from
+    // the same persisted frames and must produce the same shape.
+    expect(await resumed.getUsage?.()).toEqual(live)
+    await resumed.destroy()
   })
 
   it('repairs an interrupted tool turn on resume', async () => {
@@ -583,8 +663,13 @@ describe('NativeSession', () => {
     ).toBe(true)
     // Usage is restored from the copied prefix, matching a restart of the child.
     expect(await forked.getUsage?.()).toEqual({
-      last: { input_tokens: 10, output_tokens: 5 },
-      total: { input_tokens: 10, output_tokens: 5 },
+      session: {
+        model_usage: {
+          'claude-sonnet-4-5': { inputTokens: 10, outputTokens: 5 },
+        },
+      },
+      rate_limits_available: false,
+      cost_available: false,
     })
     await forked.destroy()
 

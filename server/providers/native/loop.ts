@@ -1,7 +1,7 @@
 // server/providers/native/loop.ts
 import type { AgentMessage } from '../../agent-message.js'
 import { assistantFrame, resultFrame, streamEventFrame, toolResultFrame, type ContentBlock, type FrameContext, type Usage } from './frames.js'
-import type { CanonicalEvent } from './canonical.js'
+import type { CanonicalEvent, CanonicalUsagePartial } from './canonical.js'
 import type { ToolDef } from './tools/types.js'
 
 export interface LoopDeps {
@@ -46,13 +46,17 @@ export async function runTurn(
   for (;;) {
     const blocks: AggBlock[] = []
     let stopReason: string | null = null
+    // Per-API-round usage: each assistant frame reports only the usage of the
+    // round that produced it. Carrying fields over from the previous round
+    // would double-count cache buckets when an adapter omits them.
+    let roundUsage: Usage = { input_tokens: 0, output_tokens: 0 }
     for await (const ev of deps.stream({
       model, system: deps.system, tools: deps.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema })),
       messages: history, signal,
     })) {
       switch (ev.kind) {
         case 'message_start': {
-          if (ev.usage?.input_tokens !== undefined) usage = { ...usage, input_tokens: ev.usage.input_tokens }
+          roundUsage = mergeUsage(roundUsage, ev.usage)
           break
         }
         case 'block_start': {
@@ -77,7 +81,7 @@ export async function runTurn(
         }
         case 'message_end': {
           stopReason = ev.stopReason
-          usage = { ...usage, output_tokens: ev.usage?.output_tokens ?? usage.output_tokens }
+          roundUsage = mergeUsage(roundUsage, ev.usage)
           break
         }
         default:
@@ -89,12 +93,13 @@ export async function runTurn(
       deps.emit(streamEventFrame(ctx, ev.raw ?? ev))
     }
     numTurns++
+    usage = roundUsage
     const content: ContentBlock[] = blocks.map((b) =>
       b.type === 'tool_use'
         ? { type: 'tool_use', id: b.id, name: b.name, input: parseJsonInput(b.json) }
         : b,
     )
-    deps.emit(assistantFrame(ctx, { model, content, stopReason, usage }))
+    deps.emit(assistantFrame(ctx, { model, content, stopReason, usage: roundUsage }))
     // Strip thinking blocks from what goes back to the API: P1 does not
     // enable extended thinking and never aggregates signature_delta, so a
     // re-sent thinking block would be unsigned and the API rejects unsigned
@@ -160,5 +165,23 @@ function parseJsonInput(json: string): Record<string, unknown> {
     return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
   } catch {
     return {}
+  }
+}
+
+/** Merge a protocol usage partial into the turn's running totals. Cache
+ *  fields are carried through so the /usage panel can show them; absent
+ *  fields leave the prior reading untouched. */
+function mergeUsage(base: Usage, partial: CanonicalUsagePartial | undefined): Usage {
+  if (!partial) return base
+  return {
+    ...base,
+    ...(typeof partial.input_tokens === 'number' ? { input_tokens: partial.input_tokens } : {}),
+    ...(typeof partial.output_tokens === 'number' ? { output_tokens: partial.output_tokens } : {}),
+    ...(typeof partial.cache_read_input_tokens === 'number'
+      ? { cache_read_input_tokens: partial.cache_read_input_tokens }
+      : {}),
+    ...(typeof partial.cache_creation_input_tokens === 'number'
+      ? { cache_creation_input_tokens: partial.cache_creation_input_tokens }
+      : {}),
   }
 }

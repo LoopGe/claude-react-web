@@ -153,3 +153,16 @@ describe('UsagePanel cache-write TTL split', () => {
     expect(cell.getAttribute('title')).toBeNull()
   })
 })
+
+describe('UsagePanel cost availability', () => {
+  it('shows a dash, not $0.0000, when the provider reports no cost', () => {
+    const { container } = renderPanel({
+      session: { model_usage: { 'native-model': { inputTokens: 1000, outputTokens: 2000 } } },
+      rate_limits_available: false,
+      cost_available: false,
+    })
+    expect(container.querySelector('.usage-cost')?.textContent).toBe('—')
+    expect(container.textContent).not.toContain('$0.0000')
+    expect(container.textContent).toContain('native-model')
+  })
+})
