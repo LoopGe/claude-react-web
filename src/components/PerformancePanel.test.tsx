@@ -89,6 +89,19 @@ describe('PerformancePanel', () => {
     expect(container.textContent).toContain('2')
   })
 
+  it('renders ring image gauges and image payload counters', () => {
+    hookData = {
+      ...sample,
+      gauges: { ...sample.gauges, session_ring_image_base64_bytes: 2 * 1024 * 1024, session_ring_images: 3 },
+      counters: { ...sample.counters, user_message_images: 4, user_message_image_base64_bytes: 5000 },
+    }
+    const { container } = render(<PerformancePanel />)
+    expect(container.textContent).toContain('ring image bytes')
+    expect(container.textContent).toContain('2.0 MB')
+    expect(container.textContent).toContain('user_message_images')
+    expect(container.textContent).toContain('user_message_image_base64_bytes')
+  })
+
   it('shows the error card on failure', () => {
     hookError = 'boom'
     hookData = null

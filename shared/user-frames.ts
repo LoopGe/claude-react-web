@@ -49,6 +49,37 @@ export function userMessageText(msg: UserFrameShape): string {
     .join('\n')
 }
 
+/** Image blocks and their base64 payload length in one content value. */
+export interface ImagePayload {
+  images: number
+  bytes: number
+}
+
+/** Count image blocks and their base64 payload length. Defensive against
+ *  string content and odd shapes; `bytes` is the base64 character count,
+ *  which is also the wire/ring byte cost for ASCII base64. */
+export function imagePayloadOfContent(content: unknown): ImagePayload {
+  if (!Array.isArray(content)) return { images: 0, bytes: 0 }
+  let images = 0
+  let bytes = 0
+  for (const block of content) {
+    if (block === null || typeof block !== 'object') continue
+    const b = block as { type?: unknown; source?: unknown }
+    if (b.type !== 'image') continue
+    const source = b.source as { data?: unknown } | undefined
+    if (typeof source?.data !== 'string') continue
+    images += 1
+    bytes += source.data.length
+  }
+  return { images, bytes }
+}
+
+/** Count image blocks in one `{ message: { content } }` SDK message. */
+export function imagePayloadOfMessage(message: unknown): ImagePayload {
+  const content = (message as { message?: { content?: unknown } } | null | undefined)?.message?.content
+  return imagePayloadOfContent(content)
+}
+
 /** True when a `user` message carries at least one `tool_result` content
  *  block. The load-bearing frame-shape fact: SDK 0.3.143 delivers
  *  MAIN-THREAD tool_results as user frames with `parent_tool_use_id: null`

@@ -52,6 +52,9 @@ import { DRAFT_WRITE_DEBOUNCE_MS } from '../constants/storageKeys'
 import type { PastedImage } from '../types'
 import type { ImageMutations } from './usePastedImages'
 
+/** Log a large draft so image-heavy IDB drafts are visible in devtools. */
+const DRAFT_IMAGE_LOG_THRESHOLD = 1_000_000
+
 /** Injectable seams for tests. Production uses the IDB side store and the
  *  decode cache; the tests pin orchestration (timing, guards, write-back)
  *  with synchronous fakes — the real IDB round-trip is covered by
@@ -160,6 +163,12 @@ export function useDraftImages(
       return
     }
     const persisted = images.map(toPersistedImage)
+    const base64Bytes = persisted.reduce((sum, image) => sum + image.data.length, 0)
+    if (base64Bytes >= DRAFT_IMAGE_LOG_THRESHOLD) {
+      console.debug(
+        `[draft-images] session=${sessionId} images=${persisted.length} base64Bytes=${base64Bytes}`,
+      )
+    }
     // The restored set landing unchanged: byte-identical to what was just
     // read from IDB — re-putting it would write the full multi-MB payload
     // on every panel open. One-shot: consumed here, so the next genuine

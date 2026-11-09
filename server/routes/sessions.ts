@@ -29,8 +29,25 @@ import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
 import { worktreeIsDirty } from '../git.js'
 import { worktreePathOf } from '../session-worktree.js'
 import { readSubagentTranscript } from '../subagent-transcripts.js'
+import { imagePayloadOfMessage } from '../../shared/user-frames.js'
+import { metrics } from '../metrics.js'
 
 const log = createLogger('http')
+
+/** Cumulative base64 image payload of one history page. */
+function recordHistoryPageImages(messages: readonly unknown[]): void {
+  let images = 0
+  let bytes = 0
+  for (const message of messages) {
+    const payload = imagePayloadOfMessage(message)
+    images += payload.images
+    bytes += payload.bytes
+  }
+  if (images > 0) {
+    metrics.count('history_page_images', undefined, images)
+    metrics.count('history_page_image_base64_bytes', undefined, bytes)
+  }
+}
 
 /** Validate an optional string-array field (e.g. `enabledMcpServers`,
  *  `enabledPlugins`). Returns an error string if present-but-malformed, or
@@ -675,8 +692,10 @@ export function buildSessionRouter(
       beforeSeq = Math.min(before, head.headSeq)
     }
     const page = await sm.getTranscriptWindow(id, beforeSeq, limit)
+    const messages = page.messages.map((m) => ({ ...(m.msg as object), seq: m.seq }))
+    recordHistoryPageImages(messages)
     return c.json({
-      messages: page.messages.map((m) => ({ ...(m.msg as object), seq: m.seq })),
+      messages,
       totalCount: page.totalCount,
       startIndex: page.startIndex,
       hasMore: page.hasMore,
@@ -711,6 +730,7 @@ export function buildSessionRouter(
     if (before !== undefined && before > page.headSeq) {
       throw new HttpError(400, `before (${before}) is beyond headSeq (${page.headSeq})`)
     }
+    recordHistoryPageImages(page.messages.map((m) => m.msg))
     return c.json(page)
   })
 

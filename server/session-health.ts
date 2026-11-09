@@ -33,6 +33,9 @@ export interface HealthMonitorDeps {
   /** Fire-and-forget orphan-worktree sweep, invoked once per GC tick.
    *  Optional — absent when there is no state dir. */
   sweepOrphanWorktrees?: () => void
+  /** Optional measurement hook, invoked once per GC tick. Kept here so
+   *  diagnostics ride the existing timer instead of adding another one. */
+  onGcTick?: () => void
 }
 
 export class SessionHealthMonitor {
@@ -66,6 +69,8 @@ export class SessionHealthMonitor {
     // Orphan worktree GC rides the same tick — fire-and-forget, once per
     // tick (the sweep itself is best-effort and never throws).
     this.deps.sweepOrphanWorktrees?.()
+    // Measurement rides the same tick (ring image payload, etc.).
+    this.deps.onGcTick?.()
   }
 
   /** Detect sessions that have made no progress for too long and try to

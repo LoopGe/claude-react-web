@@ -24,6 +24,8 @@ import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import type { SubagentTranscriptHub } from './subagent-transcript-hub.js'
 import { createLogger } from './log.js'
+import { metrics } from './metrics.js'
+import { imagePayloadOfMessage } from '../shared/user-frames.js'
 import type {
   WsClientFrame,
   WsGitSnapshot,
@@ -108,6 +110,11 @@ function messageFrameJson(
     // broadcasting MUST invalidate messageFrameJsonCache (or re-derive the
     // generation per serialization), or cached frames would carry a stale
     // generation and clients would misjudge the seq-space handshake.
+    const imagePayload = imagePayloadOfMessage(message)
+    if (imagePayload.images > 0) {
+      metrics.count('ws_message_images', undefined, imagePayload.images)
+      metrics.count('ws_message_image_base64_bytes', undefined, imagePayload.bytes)
+    }
     json = JSON.stringify(
       seq === undefined
         ? { kind: 'message', sessionId, message }

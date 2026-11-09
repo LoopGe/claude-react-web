@@ -155,6 +155,27 @@ describe('useDraftImages persistence', () => {
     expect(put).toHaveBeenCalledWith('s1', [{ ...persist('AAAA'), original }])
   })
 
+  it('logs large draft image payloads for measurement', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const put = vi.fn()
+      const { rerender } = renderDraft(mutRef().ref, vi.fn(), {
+        get: async () => [],
+        put,
+        del: vi.fn(),
+        build: async () => [],
+        debounceMs: 5,
+      })
+      rerender({ images: [{ ...pimg('HUGE'), data: 'A'.repeat(1_000_001) }] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5)
+      })
+      expect(debug).toHaveBeenCalledWith(expect.stringContaining('base64Bytes=1000001'))
+    } finally {
+      debug.mockRestore()
+    }
+  })
+
   it('deletes the record immediately when the images are cleared (send consumed the draft)', async () => {
     const put = vi.fn()
     const del = vi.fn()

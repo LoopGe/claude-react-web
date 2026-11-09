@@ -50,7 +50,7 @@ import {
   extractToolProfile,
   type SessionToolProfile,
 } from '../shared/tool-profile.js'
-import { taskNotificationToolUseId } from '../shared/user-frames.js'
+import { imagePayloadOfContent, taskNotificationToolUseId } from '../shared/user-frames.js'
 import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted } from './ws-protocol.js'
 import type { TurnChangesPayload, TurnDiffOptions, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
 import { toolTargetPaths } from './snapshot/tool-targets.js'
@@ -58,6 +58,7 @@ import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.j
 import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
+import { ringImagePayload } from './ring-metrics.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
@@ -1020,6 +1021,7 @@ export class SessionManager {
       workingStuckMs: opts.workingStuckMs ?? defaultConfig.workingStuckMs,
       unload: (id, opts) => this.unload(id, opts),
       sweepOrphanWorktrees: () => this.sweepOrphansTick(),
+      onGcTick: () => this.recordRingImageMetrics(),
     })
 
     // RecapManager — owns the lifecycle (pending — ready/error) for the
@@ -3629,6 +3631,11 @@ export class SessionManager {
       session_id: s.id,
     }
     const blockSummary = content.map((b) => b.type).join('+')
+    const imagePayload = imagePayloadOfContent(content)
+    if (imagePayload.images > 0) {
+      metrics.count('user_message_images', undefined, imagePayload.images)
+      metrics.count('user_message_image_base64_bytes', undefined, imagePayload.bytes)
+    }
     log.debug(
       `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
       `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
@@ -6989,6 +6996,14 @@ export class SessionManager {
     void sweepOrphanWorktrees(store.getDir(), { claimedDirs, log }).then((n) => {
       if (n > 0) log.info(`[worktree-gc] swept ${n} orphaned worktree dir(s)`)
     })
+  }
+
+  /** Record retained image payload across both rings. The health monitor's
+   *  60s tick calls this, so the measurement adds no timer of its own. */
+  private recordRingImageMetrics(): void {
+    const { images, bytes } = ringImagePayload(this.sessions.values())
+    metrics.gauge('session_ring_images', images)
+    metrics.gauge('session_ring_image_base64_bytes', bytes)
   }
 
   // ---------------------------------------------------------------------------

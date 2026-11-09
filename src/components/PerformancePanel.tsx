@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMetrics } from '../hooks/useMetrics'
 import { Skeleton } from './Skeleton'
 import { PerfSparkline } from './PerfSparkline'
-import { formatElapsed } from '../utils/format'
+import { formatBytes, formatElapsed } from '../utils/format'
 import type { MetricsBucketSnapshot, MetricsHistogramSnapshot, MetricsSnapshot } from '../../shared/metrics.js'
 
 /** Millisecond formatting: integers once large, one decimal below. */
@@ -177,6 +177,14 @@ export function PerformancePanel() {
 
   const eventLoop = pickPrefix(data, ['event_loop_block_ms'])
   const ws = pickPrefix(data, ['ws_fanout_ms', 'pump_next_gap_ms', 'replay_build_ms', 'replay_messages', 'ws_frames_sent'])
+  const imagePayloads = pickPrefix(data, [
+    'user_message_images',
+    'user_message_image_base64_bytes',
+    'ws_message_images',
+    'ws_message_image_base64_bytes',
+    'history_page_images',
+    'history_page_image_base64_bytes',
+  ])
   const http = pickPrefix(data, ['http_request_ms']).sort((a, b) => (b.h?.p95 ?? 0) - (a.h?.p95 ?? 0))
   const sessions = pickPrefix(data, ['session_spawn_ms', 'interrupt_ms', 'sdk_control_ms', 'auto_classify_ms', 'anthropic_api_ms'])
 
@@ -203,6 +211,8 @@ export function PerformancePanel() {
             <span>sessions_active <b>{data.gauges['sessions_active'] ?? 0}</b></span>
             <span>ws_connections <b>{data.gauges['ws_connections'] ?? 0}</b></span>
             <span>permissions_pending <b>{data.gauges['permissions_pending'] ?? 0}</b></span>
+            <span>ring image bytes <b>{formatBytes(data.gauges['session_ring_image_base64_bytes'] ?? 0)}</b></span>
+            <span>ring images <b>{data.gauges['session_ring_images'] ?? 0}</b></span>
           </div>
         </section>
 
@@ -220,6 +230,14 @@ export function PerformancePanel() {
             <span className="settings-group-desc">Fanout cost, pump cadence, replay size/time, frame volume.</span>
           </div>
           <HistTable entries={ws} history={history} />
+        </section>
+
+        <section className="settings-group">
+          <div className="settings-group-head">
+            <h4>Image payloads</h4>
+            <span className="settings-group-desc">Cumulative image counts and base64 payload bytes for composer sends, live message frames, and history pages since process start. The ring gauges above show what is retained now.</span>
+          </div>
+          <HistTable entries={imagePayloads} history={history} />
         </section>
 
         <section className="settings-group">

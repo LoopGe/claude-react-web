@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { classifyTaskNotificationInjection, parseTaskNotificationInjection } from './user-frames'
+import {
+  classifyTaskNotificationInjection,
+  imagePayloadOfContent,
+  imagePayloadOfMessage,
+  parseTaskNotificationInjection,
+} from './user-frames'
 
 const msg = (text: string) =>
   ({ type: 'user', message: { content: [{ type: 'text', text }] } }) as Parameters<
@@ -103,5 +108,34 @@ describe('classifyTaskNotificationInjection', () => {
 
   it('returns null for a non-notification frame', () => {
     expect(classifyTaskNotificationInjection(msg('plain user text'))).toBeNull()
+  })
+})
+
+describe('imagePayloadOfContent', () => {
+  it('counts image blocks and their base64 payload length', () => {
+    expect(imagePayloadOfContent([
+      { type: 'text', text: 'look' },
+      { type: 'image', source: { type: 'base64', data: 'AAAA' } },
+      { type: 'image', source: { type: 'base64', data: 'BBBBBB' } },
+    ])).toEqual({ images: 2, bytes: 10 })
+  })
+
+  it('returns zeros for non-array or image-less content', () => {
+    expect(imagePayloadOfContent('text')).toEqual({ images: 0, bytes: 0 })
+    expect(imagePayloadOfContent([{ type: 'text', text: 'x' }])).toEqual({ images: 0, bytes: 0 })
+    expect(imagePayloadOfContent([{ type: 'image', source: { type: 'url', url: 'x' } }])).toEqual({ images: 0, bytes: 0 })
+  })
+})
+
+describe('imagePayloadOfMessage', () => {
+  it('reads the SDK message wrapper', () => {
+    expect(imagePayloadOfMessage({
+      message: { content: [{ type: 'image', source: { type: 'base64', data: '12345678' } }] },
+    })).toEqual({ images: 1, bytes: 8 })
+  })
+
+  it('tolerates a missing or string content', () => {
+    expect(imagePayloadOfMessage(null)).toEqual({ images: 0, bytes: 0 })
+    expect(imagePayloadOfMessage({ message: { content: 'text' } })).toEqual({ images: 0, bytes: 0 })
   })
 })
