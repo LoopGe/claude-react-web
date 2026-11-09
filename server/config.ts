@@ -98,6 +98,16 @@ interface ConfigFile {
    *  Range 2–5. Renamed from `maxOpenPanels` to reflect that the grid is
    *  group-centric (a group fans out that many panels). */
   maxGroupPanels?: number
+  /** Enable the native provider's in-place auto-compact: when an idle session
+   *  crosses the auto-compact window, summarize + reset its model history in
+   *  place (same session id, append-only log boundary). The claude provider
+   *  has no in-place compaction path, so this only affects native sessions.
+   *  Default: true. */
+  nativeAutoCompact?: boolean
+  /** Fraction of the context window at which the native auto-compact trigger
+   *  fires when the session has no explicit `autoCompactWindow`
+   *  (`totalTokens >= maxTokens * ratio`). Range (0, 1]. Default: 0.8. */
+  nativeAutoCompactRatio?: number
   /** LEGACY alias for `maxGroupPanels` — still read so existing config.json
    *  files keep working; `maxGroupPanels` wins when both are present. */
   maxOpenPanels?: number
@@ -241,6 +251,12 @@ export interface ServerConfig {
   readonly subagentHistoryCap: number
   /** Forward subagent text/thinking — see ConfigFile.forwardSubagentText. */
   readonly forwardSubagentText: boolean
+  /** Enable the native provider's in-place auto-compact — see
+   *  ConfigFile.nativeAutoCompact. Default: true. */
+  readonly nativeAutoCompact: boolean
+  /** Native auto-compact threshold ratio — see
+   *  ConfigFile.nativeAutoCompactRatio. Range (0, 1]. Default: 0.8. */
+  readonly nativeAutoCompactRatio: number
   readonly workingStuckMs: number
   readonly maxGroupPanels: number
   /** Undefined until config.json is loaded and `authToken` is populated.
@@ -352,6 +368,8 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   historyCap: 500,
   subagentHistoryCap: 300,
   forwardSubagentText: true,
+  nativeAutoCompact: true,
+  nativeAutoCompactRatio: 0.8,
   workingStuckMs: 60 * 60 * 1000,
   maxGroupPanels: 3,
   authToken: undefined,
@@ -615,6 +633,23 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
   if (typeof file_.forwardSubagentText === 'boolean') {
     ;(merged as { forwardSubagentText: boolean }).forwardSubagentText = file_.forwardSubagentText
     log.info(`forwardSubagentText: ${merged.forwardSubagentText}`)
+  }
+
+  if (typeof file_.nativeAutoCompact === 'boolean') {
+    ;(merged as { nativeAutoCompact: boolean }).nativeAutoCompact = file_.nativeAutoCompact
+    log.info(`nativeAutoCompact: ${merged.nativeAutoCompact}`)
+  }
+
+  // Ratio is a fraction of the context window; values above 1 are clamped to
+  // 1, non-positive/non-finite values fall back to the default.
+  if (
+    typeof file_.nativeAutoCompactRatio === 'number'
+    && Number.isFinite(file_.nativeAutoCompactRatio)
+    && file_.nativeAutoCompactRatio > 0
+  ) {
+    ;(merged as { nativeAutoCompactRatio: number }).nativeAutoCompactRatio =
+      Math.min(1, file_.nativeAutoCompactRatio)
+    log.info(`nativeAutoCompactRatio: ${merged.nativeAutoCompactRatio}`)
   }
 
   // maxGroupPanels (canonical) wins over the legacy `maxOpenPanels` alias.

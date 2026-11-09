@@ -18,10 +18,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
+import { summarizeForCompact } from '../../compact-summary.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
-import { hasNativeSessionLog } from './session-log/log.js'
+import { hasNativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import type { CanonicalEvent } from './canonical.js'
+
+// Auto-compact (P1.1 Task 4) summarizes through the shared LLM helper. The
+// manager imports `./compact-summary.js`, which resolves to this same module —
+// stub it so the test never calls a real endpoint.
+vi.mock('../../compact-summary.js', () => ({
+  summarizeForCompact: vi.fn(async () => 'MOCK SUMMARY'),
+}))
 
 const PROMPT = 'persisted-prompt-marker'
 const REPLY = 'persisted-reply-marker'
@@ -119,6 +127,16 @@ async function waitForPersistedTurn(
 
 function pageText(page: { messages: unknown[] }): string {
   return JSON.stringify(page.messages)
+}
+
+/** Narrow read of the manager's live session map (private by design). */
+function liveSession(sm: SessionManager, id: string): { history: Array<Record<string, unknown>> } {
+  return (sm as unknown as { sessions: Map<string, { history: Array<Record<string, unknown>> }> })
+    .sessions.get(id)!
+}
+
+function hasCompactBoundary(history: Array<Record<string, unknown>>): boolean {
+  return history.some((m) => m.subtype === 'compact_boundary')
 }
 
 describe('native provider persistence through SessionManager', () => {
@@ -278,5 +296,49 @@ describe('native provider persistence through SessionManager', () => {
     const sourcePage = await provider.readHistoryPage(sourceId, { limit: 10 })
     expect(pageText(sourcePage)).toContain(PROMPT)
     expect(pageText(sourcePage)).toContain(REPLY)
+  }, 20000)
+
+  it('auto-compacts an idle native session above the window and resets the transcript', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-autocompact-'))
+    dirs.push(dir)
+    vi.mocked(summarizeForCompact).mockClear()
+
+    const { sm } = await makeFixture(dir)
+    const info = await sm.create({
+      cwd: dir,
+      model: 'test-model',
+      provider: 'native',
+      title: 'auto-compact',
+      // `autoCompactWindow` rides Options.settings (the only spawn channel);
+      // 1 token makes the post-turn usage cross it deterministically.
+      settings: { autoCompactWindow: 1 },
+    } as unknown as Parameters<typeof sm.create>[0])
+    sessionIds.push({ sm, id: info.id })
+    await sendTurn(sm, info.id)
+
+    // The trigger is fire-and-forget behind setImmediate + an async summary,
+    // so wait for the ring divider rather than a fixed tick.
+    await vi.waitFor(() => {
+      expect(hasCompactBoundary(liveSession(sm, info.id).history)).toBe(true)
+    }, { timeout: 5000 })
+
+    expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1)
+    const s = liveSession(sm, info.id)
+    expect(JSON.stringify(s.history)).toContain('MOCK SUMMARY')
+    // The pre-compact turn is gone from the ring and from the disk page.
+    expect(JSON.stringify(s.history)).not.toContain(PROMPT)
+    expect(JSON.stringify(s.history)).not.toContain(REPLY)
+
+    const log = loadNativeSessionLogSync(dir, info.id)!
+    expect(log.events.some((e) => e.type === 'session/compact')).toBe(true)
+    const page = await sm.getHistoryPage(info.id, { limit: 10 })
+    expect(JSON.stringify(page)).not.toContain(PROMPT)
+
+    // An idle re-check (the same call the trigger makes) must not compact a
+    // second time without a new turn.
+    await (sm as unknown as { maybeAutoCompact(x: unknown): Promise<void> })
+      .maybeAutoCompact(s as unknown)
+    expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1)
+    expect(s.history.filter((m) => m.subtype === 'compact_boundary')).toHaveLength(1)
   }, 20000)
 })

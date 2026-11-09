@@ -84,6 +84,7 @@ function makeFakeSession(overrides: Partial<Session> = {}): Session {
     running: true,
     terminated: false,
     pendingTurns: 0,
+    autoCompacting: false,
     ...overrides,
   }
 }

@@ -359,6 +359,11 @@ export interface Session {
    *  re-reports it via a later status frame after respawn. Cleared at turn
    *  end as a lifecycle bound (compaction is a mid-turn phenomenon). */
   compacting?: boolean
+  /** True while the manager's native in-place auto-compact
+   *  (maybeAutoCompact) is running for this session. Guards against a second
+   *  trigger racing the first (two results settling back-to-back). Runtime-only
+   *  — never persisted, reset to false in the trigger's finally. */
+  autoCompacting: boolean
   /** Plugin load failures reported by the CLI on `system/init` (SDK 0.3.295
    *  `plugin_errors`). Latest-wins per init frame — the key is omitted when
    *  the load was clean, so an init frame without it CLEARS the list. Not

@@ -3250,6 +3250,7 @@ export class SessionManager {
       // line without one) so the mergedHistory sort stays a total order.
       history: seedMain.slice(-this.historyCap),
       subagentHistory: seedSub.slice(-this.subagentHistoryCap),
+      autoCompacting: false,
       contextUsageSubscribers: new Set(),
       lastContextUsage: undefined,
       lastSdkAutoCompact: undefined,
@@ -4709,6 +4710,136 @@ export class SessionManager {
       try { sub.push(seed) } catch { /* dropped */ }
     }
     s.lastActivityAt = Date.now() // restart the idle clock on Y
+  }
+
+  /** Native auto-compact (P1.1): when an IDLE session has crossed its
+   *  auto-compact window, summarize the conversation and reset the model
+   *  history IN PLACE — same session id, append-only `session/compact`
+   *  boundary, no fresh subprocess. Replaces the CLI's own compaction for the
+   *  native provider, whose transcript lives in the host log rather than a
+   *  CLI-managed JSONL.
+   *
+   *  Fire-and-forget from `onTurnSettling` (via setImmediate, so the pump has
+   *  already cleared `turnActive` / decremented `pendingTurns`). Every guard
+   *  is a cheap early return: config off, provider without the capability,
+   *  not idle, or a prior trigger still in flight. After the summary await the
+   *  identity + phase are re-checked — a user turn can start during the LLM
+   *  round-trip, and the provider refuses a compact while a turn is in flight
+   *  or input is queued. `autoCompacting` is released in `finally` on every
+   *  path.
+   *
+   *  Manager state is reset to match the provider's restarted history: the
+   *  ring, prompt-uuid pairing, steering in-flight map, withdrawal window,
+   *  deferred snapshot anchors and the cached context usage all describe the
+   *  pre-compact conversation. The durable seq sidecar is deleted BEFORE the
+   *  new compact frames are recorded, so their seqs restart at 0. Background
+   *  task records and file snapshots survive (the provider's compaction does
+   *  not touch them). The client resets its transcript on the
+   *  `session-cleared` signal, then paints the new divider + summary. */
+  private async maybeAutoCompact(s: Session): Promise<void> {
+    if (!defaultConfig.nativeAutoCompact) return
+    const compactInPlace = s.handle.compactInPlace
+    if (!compactInPlace) return
+    if (this.phaseOf(s) !== 'idle') return
+    if (s.autoCompacting) return
+    s.autoCompacting = true
+    try {
+      const usage = this.getCachedContextUsage(s.id) ?? s.lastContextUsage
+      if (!usage) return
+      const threshold = s.autoCompactWindow
+        ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
+      if (usage.totalTokens < threshold) return
+      const summary = await summarizeForCompact(this.mergedHistory(s), this.auxTargetFor(s.id, 'recap'))
+      if (!summary) return
+      // A user turn (or a load/clear/delete) can win the summarization window.
+      // Re-check identity and phase before touching anything.
+      if (this.sessions.get(s.id) !== s || this.phaseOf(s) !== 'idle') return
+      const preTokens = usage.totalTokens
+      const uuid = randomUUID()
+      const timestamp = new Date().toISOString()
+      await compactInPlace.call(s.handle, summary, { uuid, timestamp })
+      await this.removeTranscriptState(s.id)
+      s.history = []
+      s.subagentHistory = []
+      s.promptUuids = []
+      s.steeredInFlight.clear()
+      s.withdrawnUuids = []
+      s.pendingSnapshotAnchors = undefined
+      s.lastContextUsage = undefined
+      const sidecarResets: Array<[string, () => Promise<void>]> = [
+        ['prompt-uuid', () => this.promptUuidStore.remove(s.id)],
+        ['steered', () => this.steeredStore.remove(s.id)],
+        ['turn-anchor', () => this.turnAnchorStore.remove(s.id)],
+        ['result-frame', () => this.resultFrameStore.remove(s.id)],
+      ]
+      for (const [label, remove] of sidecarResets) {
+        try {
+          await remove()
+        } catch (err) {
+          log.warn(`[session ${s.id}] auto-compact: ${label} sidecar reset failed:`, err)
+        }
+      }
+      this.broadcastSessionCleared(s.id)
+      this.pushCompactFrames(s, summary, uuid, timestamp, preTokens)
+      log.info(
+        `[session ${s.id}] auto-compact: reset transcript in place ` +
+        `(pre_tokens=${preTokens}, threshold=${threshold})`,
+      )
+    } finally {
+      s.autoCompacting = false
+    }
+  }
+
+  /** Push the client-facing half of an in-place auto-compact: the synthetic
+   *  `system/compact_boundary` divider followed by the user-role summary.
+   *  Push-only — unlike `seedCompactSummary` this must NOT call
+   *  `sendControlMessage`: the provider's `compactInPlace` already replaced
+   *  its model history, so the summary is UI/ring content only. The boundary
+   *  MUST precede the summary (the client derives `isCompactSummary` from the
+   *  previous transcript item), and `uuid` is the provider log's compact-event
+   *  uuid so the frame and the durable boundary share an identity. */
+  private pushCompactFrames(
+    s: Session,
+    summary: string,
+    uuid: ReturnType<typeof randomUUID>,
+    timestamp: string,
+    preTokens: number,
+  ): void {
+    const boundary: import('@anthropic-ai/claude-agent-sdk').SDKCompactBoundaryMessage = {
+      type: 'system',
+      subtype: 'compact_boundary',
+      uuid,
+      session_id: s.id,
+      compact_metadata: {
+        trigger: 'auto',
+        pre_tokens: preTokens,
+      },
+    }
+    stampReceivedAt(boundary)
+    pushBounded(s.history, boundary, this.historyCap)
+    this.recordTranscriptFor(s.id, boundary)
+    for (const sub of s.subscribers.values()) {
+      try { sub.push(boundary) } catch { /* dropped */ }
+    }
+
+    const seed: SDKUserMessage & { isCompactSummary: true } = {
+      type: 'user',
+      message: { role: 'user', content: summary },
+      parent_tool_use_id: null,
+      isSynthetic: true,
+      isCompactSummary: true,
+      shouldQuery: false,
+      uuid: randomUUID(),
+      session_id: s.id,
+    }
+    stampReceivedAt(seed)
+    pushBounded(s.history, seed, this.historyCap)
+    this.recordTranscriptFor(s.id, seed)
+    for (const sub of s.subscribers.values()) {
+      try { sub.push(seed) } catch { /* dropped */ }
+    }
+    s.lastActivityAt = Date.now()
+    log.info(`[session ${s.id}] auto-compact: pushed compact frames at ${timestamp}`)
   }
 
   /** Put a live, idle session into dormant state to release its resources
@@ -8492,7 +8623,18 @@ export class SessionManager {
       this.cachedPumpDeps = {
         historyCap: this.historyCap,
         subagentHistoryCap: this.subagentHistoryCap,
-        onTurnSettling: (s, empty) => this.drainAndRequeueSteered(s, empty),
+        onTurnSettling: (s, empty) => {
+          this.drainAndRequeueSteered(s, empty)
+          // Native in-place auto-compact trigger. Deferred to the next macrotask
+          // so the pump has finished clearing `turnActive` / `pendingTurns` /
+          // `workingSince` — phaseOf must read 'idle'. Fire-and-forget: a
+          // failed compact is logged and the session keeps running.
+          setImmediate(() => {
+            void this.maybeAutoCompact(s).catch((err) => {
+              log.warn(`[session ${s.id}] auto-compact failed:`, err)
+            })
+          })
+        },
         persist: (s) => this.persist(s),
         denyPendingPermissions: (s) => {
           this.permBroker.denyAll(s)
