@@ -4766,14 +4766,15 @@ export class SessionManager {
       const prevGeneration = this.transcriptStores.get(s.id)?.store.generation ?? 0
       await compactInPlace.call(s.handle, summary, { uuid, timestamp })
       await this.removeTranscriptState(s.id)
-      // Establish the fresh seq space now, but keep the OLD generation visible
-      // until the synchronous reset block below: a panel that opens while the
-      // sidecar removals run must adopt the old generation, so its
-      // `session-cleared` floor (local + 1) matches the generation the server
-      // reports from then on. Publishing `prev + 1` here instead wedges such a
-      // tab one generation ahead. `reconciled` is set because this seq space is
-      // defined by the two frames below, not by a disk backfill (which would
-      // collide with the boundary uuid).
+      // Establish the fresh seq space now, but do NOT publish the new
+      // generation yet: a panel that reads while the sidecar removals run must
+      // not adopt a generation ahead of the final one (its `session-cleared`
+      // floor is local + 1, so adopting `prev + 1` early would arm `prev + 2`
+      // and wedge the tab). The fresh store reports 0, which is never ahead of
+      // the final `prev + 1`; the floor is a MINIMUM, so 0 re-anchors safely.
+      // `reconciled` is set because this seq space is defined by the two
+      // frames below, not by a disk backfill (which would collide with the
+      // boundary uuid).
       const fresh = this.getOrCreateTranscript(s.id)
       fresh.reconciled = true
       const sidecarResets: Array<[string, () => Promise<void>]> = [
