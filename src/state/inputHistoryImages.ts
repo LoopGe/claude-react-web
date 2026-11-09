@@ -13,7 +13,7 @@
 // one store, no schema-evolution risk.
 
 import { openDB, type IDBPDatabase } from 'idb'
-import type { PastedImage } from '../types'
+import type { PastedImage, PastedImageOriginal } from '../types'
 import type { SupportedImageMediaType } from '../../shared/image-media'
 
 const DB_NAME = 'claude-web-history'
@@ -29,6 +29,8 @@ export interface PersistedImage {
   width: number
   height: number
   size: number
+  /** Source facts for a normalized image; absent on pre-normalization records. */
+  original?: PastedImageOriginal
 }
 
 interface ImageRecord {
@@ -220,5 +222,6 @@ export function toPersistedImage(img: PastedImage): PersistedImage {
     width: img.width,
     height: img.height,
     size: img.size,
+    ...(img.original === undefined ? {} : { original: img.original }),
   }
 }

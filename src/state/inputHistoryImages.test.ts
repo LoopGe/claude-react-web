@@ -34,6 +34,15 @@ describe('inputHistoryImages', () => {
     ])
   })
 
+  it('round-trips the original-image facts', async () => {
+    const withOriginal = {
+      ...img(),
+      original: { mediaType: 'image/png' as const, width: 4000, height: 3000, size: 9_000_000 },
+    }
+    await putImages('e1', [withOriginal])
+    expect(await getImages('e1')).toEqual([withOriginal])
+  })
+
   it('returns [] for an unknown id', async () => {
     await putImages('e1', [img()])
     expect(await getImages('nope')).toEqual([])

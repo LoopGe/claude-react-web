@@ -131,6 +131,30 @@ describe('useDraftImages persistence', () => {
     expect(put).toHaveBeenCalledWith('s1', [persist('AAAA'), persist('BBBB')])
   })
 
+  it('writes when only the original-image facts change', async () => {
+    const put = vi.fn()
+    const { rerender } = renderDraft(mutRef().ref, vi.fn(), {
+      get: async () => [],
+      put,
+      del: vi.fn(),
+      build: async () => [],
+      debounceMs: 5,
+    })
+    rerender({ images: [pimg('AAAA')] })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5)
+    })
+    expect(put).toHaveBeenCalledWith('s1', [persist('AAAA')])
+
+    put.mockClear()
+    const original = { mediaType: 'image/png' as const, width: 4000, height: 3000, size: 9_000_000 }
+    rerender({ images: [{ ...pimg('AAAA'), original }] })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5)
+    })
+    expect(put).toHaveBeenCalledWith('s1', [{ ...persist('AAAA'), original }])
+  })
+
   it('deletes the record immediately when the images are cleared (send consumed the draft)', async () => {
     const put = vi.fn()
     const del = vi.fn()
@@ -412,6 +436,28 @@ describe('useDraftImages restore', () => {
       rerender({ images: built })
     })
     // Long enough for the 5ms debounce to fire IF one was scheduled.
+    await act(async () => {
+      await sleep(25)
+    })
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('does not re-write when the original-image facts are unchanged', async () => {
+    const original = { mediaType: 'image/png' as const, width: 4000, height: 3000, size: 9_000_000 }
+    const apply = vi.fn()
+    const put = vi.fn()
+    const built = [{ ...pimg('DDDD'), original }]
+    const { rerender } = renderDraft(mutRef().ref, apply, {
+      get: async () => [{ ...persist('DDDD'), original }],
+      put,
+      del: vi.fn(),
+      build: vi.fn(async () => built),
+      debounceMs: 5,
+    })
+    await waitFor(() => expect(apply).toHaveBeenCalledWith(built))
+    await act(async () => {
+      rerender({ images: built })
+    })
     await act(async () => {
       await sleep(25)
     })

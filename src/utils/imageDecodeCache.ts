@@ -126,6 +126,7 @@ export async function buildPastedImages(
         width: p.width,
         height: p.height,
         size: p.size,
+        ...(p.original === undefined ? {} : { original: p.original }),
         // Composer-owned URL, minted fresh from the cached Blob.
         previewUrl: URL.createObjectURL(entry.blob),
       }

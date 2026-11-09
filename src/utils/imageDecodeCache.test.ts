@@ -71,6 +71,12 @@ describe('imageDecodeCache', () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain('data:image/png;base64,AAAA')
   })
 
+  it('restores the original-image facts', async () => {
+    const original = { mediaType: 'image/png' as const, width: 4000, height: 3000, size: 9_000_000 }
+    const out = await buildPastedImages([{ ...persisted('AAAA'), original }])
+    expect(out[0]?.original).toEqual(original)
+  })
+
   it('a cache hit reuses the decoded Blob without re-fetching (fresh URL)', async () => {
     const fetchMock = stubFetch()
     const first = await buildPastedImages([persisted()])

@@ -66,6 +66,17 @@ export interface DraftImagesDeps {
   debounceMs?: number
 }
 
+function sameOriginal(
+  a?: PersistedImage['original'],
+  b?: PersistedImage['original'],
+): boolean {
+  if (a === undefined || b === undefined) return a === b
+  return a.mediaType === b.mediaType
+    && a.width === b.width
+    && a.height === b.height
+    && a.size === b.size
+}
+
 /** Payload equality on the persisted shape (the runtime-only `id` and
  *  `previewUrl` are excluded — a restored set differs from its stash only in
  *  those). String compares on `data` are memcmp-fast. */
@@ -78,6 +89,7 @@ function persistedEquals(a: PersistedImage[], b: PersistedImage[]): boolean {
       || a[i].width !== b[i].width
       || a[i].height !== b[i].height
       || a[i].size !== b[i].size
+      || !sameOriginal(a[i].original, b[i].original)
     ) return false
   }
   return true
