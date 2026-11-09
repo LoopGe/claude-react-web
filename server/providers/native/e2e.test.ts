@@ -40,7 +40,10 @@ afterEach(async () => {
   for (const sm of managers) await sm.shutdown()
   managers.length = 0
   await new Promise((r) => setTimeout(r, 80)) // let in-flight sidecar writes land before rmdir
-  for (const d of dirs) await rm(d, { recursive: true, force: true })
+  // maxRetries absorbs the Windows EBUSY from a fire-and-forget git anchor
+  // probe (captureGitHead) still holding the temp dir as its cwd; the child
+  // exits within ~150 ms.
+  for (const d of dirs) await rm(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   dirs.length = 0
 })
 

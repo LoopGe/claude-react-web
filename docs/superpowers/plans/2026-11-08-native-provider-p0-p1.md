@@ -23,7 +23,7 @@
 - `git add`/`commit` only the files the task lists. Commit messages: conventional, no scope creep.
 - The `claude` provider must remain the DEFAULT and untouched: no edits to anything under `server/providers/claude/`.
 - Tools run inside the session `cwd`; every tool executor receives an absolute `cwd` and must resolve user paths against it.
-- Never spawn git through a shell and never run the Bash tool via `execFile`-only policies meant for git — the Bash tool is inherently a shell tool (`spawn('/bin/bash', ['-c', cmd])`); the git-routes shell ban does not apply here.
+- Never spawn git through a shell and never run the Bash tool via `execFile`-only policies meant for git — the Bash tool is inherently a shell tool (POSIX: `spawn('/bin/bash', ['-c', cmd])`; Windows: the resolved Git Bash executable, see Task 7's `tools/shell.ts`); the git-routes shell ban does not apply here.
 
 ---
 
@@ -1151,19 +1151,31 @@ git commit -m "feat(native): Write and Edit tools"
 ### Task 7: Bash tool
 
 **Files:**
+- Create: `server/providers/native/tools/shell.ts` (platform shell resolution: `/bin/bash` on POSIX, Git Bash on Windows)
 - Create: `server/providers/native/tools/bash.ts`
+- Test: `server/providers/native/tools/shell.test.ts`
 - Test: `server/providers/native/tools/bash.test.ts`
 
 **Interfaces:**
 - Consumes: `ToolDef`, `ToolInputError` from Task 5.
 - Produces: `const bashTool: ToolDef<{ command: string; timeout_ms?: number }>`
-  - Spawns `/bin/bash -c <command>` with `cwd` = session cwd, `signal` wired to the child's kill.
-  - `timeout_ms` default 120_000, max 600_000 — on expiry the child is killed and the result is an error text `command timed out after <N>ms` with `is_error: true`.
+  - Spawns `resolveBashShell() -c <command>` with `cwd` = session cwd, `signal` wired to the child's kill. On Windows the shell is Git Bash (env override `CLAUDE_CODE_GIT_BASH_PATH`, then the standard Git for Windows install roots); WSL's `bash` on PATH is deliberately not used.
+  - `timeout_ms` default 120_000, max 600_000 — on expiry the process tree is killed (`taskkill /T /F` on Windows, `SIGKILL` elsewhere) and the call settles immediately with `command timed out after <N>ms` and `is_error: true`.
   - stdout+stderr are interleaved in arrival order (two `on('data')` listeners can't interleave reliably — use one pipe each appended into separate buffers, joined `stdout + '\n' + stderr`; ordering fidelity is a known P3 gap).
   - Output capped at 30_000 chars: head 25_000 + `\n...[truncated]...\n` + tail 5_000.
   - Successful results append the DSH exit marker `\n[exit code: N]` (0 included) — the tool guidance tells the model to check it.
   - Non-zero exit is NOT an error result (the model should see the output and react) — `is_error` stays false unless the command timed out or could not spawn.
   - Guidance: `'Check the [exit code: N] marker on every bash result; investigate failures before moving on.'`
+
+> **Implemented (review round):** the shipped tool differs from the Step 3
+> sketch below in four ways, all required on Windows: the shell comes from
+> `shell.ts`; output bytes are decoded once with `decodeShellBytes`
+> (`server/shell-encoding.ts`) instead of per-chunk `String(d)`; accumulation
+> is bounded to head/tail byte windows so a flooding command cannot grow the
+> heap; and the timeout/abort path kills the process tree and settles without
+> waiting for `close` (the killed tree's stdio pipes can outlive it). The
+> Windows spawn also sets `windowsHide: true`. The sketch is the original
+> POSIX version; use the shipped `bash.ts` as the reference.
 
 - [ ] **Step 1: Write the failing test**
 
