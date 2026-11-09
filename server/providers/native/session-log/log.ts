@@ -5,16 +5,22 @@
 // buffered and flushed explicitly; `flush` writes and fsyncs through a single
 // serialized chain so concurrent callers cannot interleave.
 //
-// A module-level registry owns one live writer per log path. Opening a new
-// writer for the same path (resume, fork seed, fresh create) supersedes the
-// previous one: its unflushed buffer is dropped and later appends stay in
-// memory only, so a stale writer can never append after a newer one has taken
-// over the file. The key is the fully resolved path, not the session id, so
-// the same id under different state dirs cannot supersede across dirs.
+// A module-level registry owns one live writer per resolved log path. Opening
+// a new writer for the same path (resume, fork seed, fresh create) supersedes
+// the previous one: its unflushed buffer is dropped and later appends stay in
+// memory only, so a stale writer cannot append after a newer one has taken
+// over. The registry key goes through `resolve()` so different spellings of
+// the same directory share it; the same session id under different state dirs
+// never does.
+//
+// Residual takeover window: a write that was already submitted when takeover
+// happened can still land. The new writer loads the file before that write
+// completes, so that one chunk is not visible to it on load.
 
 import { mkdirSync, readFileSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import { open as openFile, readFile, rm, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { NativeSessionStorageError } from './errors.js'
 import {
   NATIVE_SESSION_LOG_VERSION,
@@ -144,6 +150,7 @@ export class NativeSessionLog {
   readonly events: NativeLogEvent[]
   readonly path: string
 
+  private readonly registryKey: string
   private pending: string[] = []
   private handle: FileHandle | null = null
   private flushChain: Promise<void> = Promise.resolve()
@@ -151,10 +158,16 @@ export class NativeSessionLog {
   private superseded = false
   private closed = false
 
-  private constructor(header: NativeSessionHeader, events: NativeLogEvent[], path: string) {
+  private constructor(
+    header: NativeSessionHeader,
+    events: NativeLogEvent[],
+    path: string,
+    registryKey: string,
+  ) {
     this.header = header
     this.events = events
     this.path = path
+    this.registryKey = registryKey
   }
 
   static open(opts: OpenNativeSessionLogOptions): NativeSessionLog {
@@ -204,10 +217,11 @@ export class NativeSessionLog {
       }
     }
 
-    const previous = writers.get(path)
+    const registryKey = resolve(path)
+    const previous = writers.get(registryKey)
     if (previous) previous.markSuperseded()
-    const log = new NativeSessionLog(header, events, path)
-    writers.set(path, log)
+    const log = new NativeSessionLog(header, events, path, registryKey)
+    writers.set(registryKey, log)
     return log
   }
 
@@ -240,21 +254,28 @@ export class NativeSessionLog {
 
   private async writePending(allowClosed: boolean): Promise<void> {
     // Re-checked after this flush acquired its slot in the write chain: a
-    // takeover that happened while an earlier flush ran must not let this
-    // writer's stale buffer reach the file. A closed writer (that is not the
-    // close's own final flush) leaves its pending buffer alone — the close
-    // flush queued right behind this one writes it.
+    // takeover or close that happened while an earlier flush ran must not let
+    // this writer capture its buffer for writing. This cannot cover a write
+    // that was already submitted when takeover happened; that chunk can still
+    // land (see the module header).
     if (this.superseded) {
       this.pending = []
       return
     }
     if (this.closed && !allowClosed) return
     if (this.pending.length === 0) return
-    const chunk = this.pending.join('')
-    this.pending = []
+    // Open before taking the buffer: a rejected `open` must leave the pending
+    // lines in place so a retried flush can still write them.
     const handle = await this.ensureHandle()
     if (this.superseded) return
-    await handle.write(chunk)
+    const chunk = Buffer.from(this.pending.join(''), 'utf8')
+    this.pending = []
+    let offset = 0
+    while (offset < chunk.length) {
+      const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset)
+      if (bytesWritten === 0) throw new Error(`session log write made no progress: ${this.path}`)
+      offset += bytesWritten
+    }
     await handle.sync()
   }
 
@@ -265,13 +286,16 @@ export class NativeSessionLog {
 
   private async doClose(): Promise<void> {
     this.closed = true
-    await this.enqueueFlush(true)
-    if (this.handle) {
-      const handle = this.handle
-      this.handle = null
-      await handle.close()
+    try {
+      await this.enqueueFlush(true)
+    } finally {
+      if (this.handle) {
+        const handle = this.handle
+        this.handle = null
+        await handle.close()
+      }
+      if (writers.get(this.registryKey) === this) writers.delete(this.registryKey)
     }
-    if (writers.get(this.path) === this) writers.delete(this.path)
   }
 
   private markSuperseded(): void {
