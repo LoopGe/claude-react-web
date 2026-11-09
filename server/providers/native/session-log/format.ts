@@ -47,6 +47,8 @@ export interface NativeAssistantEvent {
   message: {
     role: 'assistant'
     content: unknown[]
+    id?: string
+    model?: string
     stop_reason?: string | null
     usage?: unknown
   }
@@ -171,7 +173,7 @@ export function parseEventLine(
         session_id: requireString(raw, 'session_id', sessionId, path),
         parent_tool_use_id: null,
         timestamp: requireString(raw, 'timestamp', sessionId, path),
-        message: { role: 'user', content: message.content as unknown[] },
+        message: message as unknown as NativeUserEvent['message'],
       }
       if (raw.isCompactSummary !== undefined) {
         if (raw.isCompactSummary !== true) corrupt(sessionId, path, 'user event isCompactSummary must be true')
@@ -192,15 +194,11 @@ export function parseEventLine(
         session_id: requireString(raw, 'session_id', sessionId, path),
         parent_tool_use_id: null,
         timestamp: requireString(raw, 'timestamp', sessionId, path),
-        message: { role: 'assistant', content: message.content as unknown[] },
+        message: message as unknown as NativeAssistantEvent['message'],
       }
-      if (message.stop_reason !== undefined) {
-        if (message.stop_reason !== null && typeof message.stop_reason !== 'string') {
-          corrupt(sessionId, path, 'assistant event message.stop_reason must be a string or null')
-        }
-        event.message.stop_reason = message.stop_reason
+      if (message.stop_reason !== undefined && message.stop_reason !== null && typeof message.stop_reason !== 'string') {
+        corrupt(sessionId, path, 'assistant event message.stop_reason must be a string or null')
       }
-      if (message.usage !== undefined) event.message.usage = message.usage
       return event
     }
 

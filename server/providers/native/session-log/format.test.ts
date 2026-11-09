@@ -18,7 +18,7 @@ describe('session log format', () => {
   it('accepts each known event and enforces contiguous seq', () => {
     const events = [
       { seq: 0, type: 'user', uuid: 'u', session_id: 's1', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [] } },
-      { seq: 1, type: 'assistant', uuid: 'a', session_id: 's1', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [] } },
+      { seq: 1, type: 'assistant', uuid: 'a', session_id: 's1', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [], id: 'msg_1', model: 'm' } },
       { seq: 2, type: 'session/context', text: 'ctx' },
       { seq: 3, type: 'turn/end', reason: 'completed' },
       { seq: 4, type: 'session/end-seed' },
@@ -28,6 +28,9 @@ describe('session log format', () => {
       expect(JSON.parse(serializeEvent(e as never))).toEqual(e)
     }
     expect(() => parseEventLine(events[1], 0, 's1', 'p')).toThrow(/seq/)
+    expect(parseEventLine(events[1], 1, 's1', 'p')).toMatchObject({
+      message: { id: 'msg_1', model: 'm' },
+    })
   })
   it('rejects an unknown event type', () => {
     expect(() => parseEventLine({ seq: 0, type: 'mystery' }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
