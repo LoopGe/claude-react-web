@@ -26,6 +26,8 @@ import { createLogger } from './log.js'
 
 const log = createLogger('process-monitor')
 
+const IS_WIN32 = process.platform === 'win32'
+
 export interface ProcessExitInfo {
   sessionId: string
   code: number | null
@@ -93,18 +95,30 @@ interface Entry {
   stdinErrorHandler: ((err: Error) => void) | null
   stdoutErrorHandler: ((err: Error) => void) | null
   safetyTimer: NodeJS.Timeout | null
+  /** Second-leg timer of the destroy escalation (SIGKILL tree). Null unless
+   *  the safety timer has fired and the tree is still alive. */
+  escalationTimer: NodeJS.Timeout | null
+  /** Process-group id of the spawned CLI. Equal to the child pid because the
+   *  POSIX spawn is detached (the child leads its own group). Undefined on
+   *  Windows, where tree signalling degrades to direct-PID kills. */
+  pgid: number | undefined
   resolved: boolean
 }
 
 /** Default process spawner — mirrors what the SDK does internally when no
  *  `spawnClaudeCodeProcess` override is provided. Uses Node's
- *  `child_process.spawn` with the command/args/cwd/env from SpawnOptions. */
+ *  `child_process.spawn` with the command/args/cwd/env from SpawnOptions.
+ *  On POSIX the child is spawned `detached`, making it the leader of its OWN
+ *  process group (pgid == pid): every teardown signal can then reach the
+ *  whole CLI tree via the negative-pgid group signal instead of only the
+ *  direct child (see signalTree). Windows has no POSIX groups — the child
+ *  stays attached and tree termination degrades to direct-PID kills. */
 function defaultSpawnFn(opts: SpawnOptions): SpawnedProcess {
   const child = spawn(opts.command, opts.args, {
     cwd: opts.cwd,
     env: opts.env,
     stdio: ['pipe', 'pipe', 'pipe'],
-    detached: false,
+    detached: !IS_WIN32,
   })
   return child as unknown as SpawnedProcess
 }
@@ -116,20 +130,43 @@ function defaultSpawnFn(opts: SpawnOptions): SpawnedProcess {
  *  can't hang forever if the child wedges and never emits 'exit'. */
 const EXIT_SAFETY_MS = 15_000
 
+/** Gap between the destroy-escalation legs: SIGTERM tree first, then — if
+ *  the child ignored it and is still alive — SIGKILL tree. Mirrors DSH's
+ *  subprocess-local teardown ladder. */
+const ESCALATE_MS = 2_000
+
+/** Process-exit sweep closures, one per live ProcessMonitor that has spawned
+ *  at least one child. A single module-level 'exit' hook runs them all
+ *  synchronously on host exit: every unresolved tracked tree gets a group
+ *  SIGTERM (no timers/promises are possible in an exit hook). This mirrors
+ *  the SDK's own killAll child sweep, but reaches the whole tree. */
+const processExitSweeps = new Set<() => void>()
+let exitHookInstalled = false
+function installProcessExitHook(): void {
+  if (exitHookInstalled) return
+  exitHookInstalled = true
+  process.on('exit', () => {
+    for (const sweep of processExitSweeps) sweep()
+  })
+}
+
 export class ProcessMonitor {
   private entries = new Map<MonitoredSpawn, Entry>()
   private readonly onExit: (info: ProcessExitInfo) => void
   /** Safety-window used by the destroy-time timer. Injectable so tests can
    *  exercise the timer path without waiting 15s. Defaults to EXIT_SAFETY_MS. */
   private readonly safetyMs: number
+  /** Gap between the destroy-escalation legs. Injectable for tests. */
+  private readonly escalateMs: number
   /** Optional per-line stderr callback. Called with (sessionId, line) for
    *  every captured stderr line, in addition to the existing log.warn.
    *  Used by the claude provider to tee stderr into session-scoped log files. */
   private readonly stderrSink?: (sessionId: string, line: string) => void
 
-  constructor(onExit: (info: ProcessExitInfo) => void, opts?: { safetyMs?: number; stderrSink?: (sessionId: string, line: string) => void }) {
+  constructor(onExit: (info: ProcessExitInfo) => void, opts?: { safetyMs?: number; escalateMs?: number; stderrSink?: (sessionId: string, line: string) => void }) {
     this.onExit = onExit
     this.safetyMs = opts?.safetyMs ?? EXIT_SAFETY_MS
+    this.escalateMs = opts?.escalateMs ?? ESCALATE_MS
     this.stderrSink = opts?.stderrSink
   }
 
@@ -160,6 +197,8 @@ export class ProcessMonitor {
       stdinErrorHandler: null,
       stdoutErrorHandler: null,
       safetyTimer: null,
+      escalationTimer: null,
+      pgid: undefined,
       resolved: false,
     })
     return reg
@@ -185,7 +224,15 @@ export class ProcessMonitor {
     if (entry) {
       reg.spawned = true
       entry.process = process as unknown as ChildProcess
+      // POSIX spawns are detached, so the child leads its own process group:
+      // pgid == pid. Group teardown (signalTree / sweepForProcessExit) keys
+      // off this. Windows has no groups — pgid stays undefined.
+      const pid = (process as unknown as ChildProcess).pid
+      if (!IS_WIN32 && pid) entry.pgid = pid
     }
+    installProcessExitHook()
+    processExitSweeps.add(this.processExitSweep)
+    this.sweepRegistered = true
 
     // DIAGNOSTIC: capture the CLI subprocess's stderr. The SDK surfaces a
     // generic "Claude Code process exited with code N" but discards the
@@ -316,6 +363,59 @@ export class ProcessMonitor {
     return process
   }
 
+  /** Signal one tracked tree. POSIX delivers to the whole process group via
+   *  the negative pgid (the detached child leads it, so CLI-spawned foreground
+   *  descendants die with it); a failed group signal (ESRCH — group already
+   *  gone, or EPERM) falls back to the direct child. Windows has no process
+   *  groups: only the direct child can be killed, so CLI-spawned descendants
+   *  that outlive it are NOT covered here — containment is weaker and the
+   *  escape hatch is the CLI's own graceful shutdown, which we preserve by
+   *  escalating SIGTERM before SIGKILL. Never throws: delivery races exit. */
+  private signalTree(entry: Entry, sig: NodeJS.Signals): void {
+    const child = entry.process
+    const pid = child?.pid
+    if (!child || !pid) return
+    if (entry.pgid !== undefined) {
+      try {
+        process.kill(-entry.pgid, sig)
+        return
+      } catch {
+        // Group gone (already exited) or signal refused — try the direct pid.
+      }
+    }
+    try {
+      child.kill(sig)
+    } catch {
+      // Already exited.
+    }
+  }
+
+  /** Synchronous teardown of every live tree this monitor tracks. This is the
+   *  body of the module-level `process.on('exit')` hook: the host is dying and
+   *  won't get another scheduler tick, so only sync kill syscalls are possible
+   *  (no timers, no awaits). The SIGTERM gives each CLI a chance to run its own
+   *  graceful shutdown — including killing ITS background task trees — even
+   *  though nothing will ever SIGKILL-escalate behind this signal. */
+  sweepForProcessExit(): void {
+    for (const entry of this.entries.values()) {
+      if (entry.resolved) continue
+      this.signalTree(entry, 'SIGTERM')
+    }
+  }
+  private readonly processExitSweep = (): void => this.sweepForProcessExit()
+  /** Whether this monitor's sweep currently sits in the module-level exit
+   *  registry. True from the first spawn until every tracked tree has
+   *  settled — a retired monitor must not be retained for the process
+   *  lifetime. */
+  private sweepRegistered = false
+  /** Drop this monitor's exit-sweep registration when nothing is tracked. */
+  private releaseSweepIfIdle(): void {
+    if (this.entries.size === 0 && this.sweepRegistered) {
+      processExitSweeps.delete(this.processExitSweep)
+      this.sweepRegistered = false
+    }
+  }
+
   /** Resolve a tracked entry's `exited` promise exactly once, detach the
    *  child's listeners, and surface the exit to the SessionManager unless the
    *  close was intentional (destroy-driven: clear / auto-resume / unload set
@@ -328,6 +428,10 @@ export class ProcessMonitor {
     if (entry.safetyTimer) {
       clearTimeout(entry.safetyTimer)
       entry.safetyTimer = null
+    }
+    if (entry.escalationTimer) {
+      clearTimeout(entry.escalationTimer)
+      entry.escalationTimer = null
     }
     // Detach listeners so a lingering ChildProcess reference can't re-fire.
     if (entry.process && entry.exitHandler) entry.process.off('exit', entry.exitHandler)
@@ -349,6 +453,30 @@ export class ProcessMonitor {
     entry.resolveRealExit(info)
     entry.resolveExit(info)
     this.entries.delete(reg)
+    this.releaseSweepIfIdle()
+    // Leftover group-mates, CRASH PATH ONLY: the CLI may die before its own
+    // foreground children (a crash, or an escalation leg that killed only
+    // the direct child). Once the direct child is gone nobody owns those
+    // descendants — probe the group and SIGTERM any survivor so it cannot
+    // reparent into an unmanaged orphan (the 3080-orphan class). An
+    // INTENTIONAL exit skips this: the CLI already ran its own graceful
+    // shutdown, and what it leaves in its group may be an intentionally
+    // backgrounded service (`nohup server &`) that must survive. The
+    // probe-then-signal window is microscopic, so pgid reuse hitting an
+    // unrelated group is not a realistic race; the signal is SIGTERM rather
+    // than SIGKILL for the same reason.
+    if (entry.pgid !== undefined && !reg.intentional) {
+      try {
+        process.kill(-entry.pgid, 0)
+        log.warn(
+          `CLI exited but process group ${entry.pgid} still has members — ` +
+          `SIGTERM to leftovers [${entry.sessionId}]`,
+        )
+        process.kill(-entry.pgid, 'SIGTERM')
+      } catch {
+        // Group empty or already gone — the normal clean-exit path.
+      }
+    }
     // Only surface to SessionManager when the exit was NOT an intentional
     // close. `unregister()` sets `reg.intentional = true` before the SDK's
     // graceful-close path kills the child, so a destroy-driven exit (clear,
@@ -389,6 +517,7 @@ export class ProcessMonitor {
         entry.resolveExit({ sessionId: reg.sessionId, code: null, signal: null, killed: false })
       }
       this.entries.delete(reg)
+      this.releaseSweepIfIdle()
       return
     }
     // A real process is (or was) running: keep the entry so its real 'exit'
@@ -430,6 +559,21 @@ export class ProcessMonitor {
         killed: entry.process?.killed ?? false,
         exitSafetyTimeout: true,
       })
+      // The SDK's graceful close has had its full window and the child is
+      // still alive — stop waiting passively and tear the TREE down: group
+      // SIGTERM first (lets the CLI run its own graceful shutdown, including
+      // killing its background task trees), then a group SIGKILL for a child
+      // that ignored it. The real 'exit' handler still owns finalization, so
+      // realExited settles with the actual signal.
+      log.warn(`escalating teardown for session ${reg.sessionId}: SIGTERM to process group ${entry.pgid ?? 'n/a'}`)
+      this.signalTree(entry, 'SIGTERM')
+      entry.escalationTimer = setTimeout(() => {
+        entry.escalationTimer = null
+        if (entry.resolved) return
+        log.warn(`session ${reg.sessionId} survived SIGTERM — SIGKILL to process group ${entry.pgid ?? 'n/a'}`)
+        this.signalTree(entry, 'SIGKILL')
+      }, this.escalateMs)
+      ;(entry.escalationTimer as { unref?: () => void }).unref?.()
     }, this.safetyMs)
     ;(entry.safetyTimer as { unref?: () => void }).unref?.()
   }

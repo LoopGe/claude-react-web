@@ -8272,6 +8272,23 @@ export class SessionManager {
     // will want to resume on next launch. Only Query-ended sessions stay
     // terminated (that flag was already set by the pump's finally block).
     await Promise.all(ids.map((id) => this.unload(id)))
+    // Await the real CLI process exits before resolving. unload() registered
+    // each handle's processRealExit into closingHandles; a pump ending only
+    // proves the message stream closed, not that the subprocess is gone —
+    // and the CLI's own graceful shutdown (which kills ITS background task
+    // trees) needs the SIGTERM-to-exit window to actually run. 8s covers the
+    // SDK's full graceful-close ladder (stdin EOF → 2s grace → SIGTERM → 5s
+    // SIGKILL) before we proceed. Residual boundary, knowingly adopted: a
+    // child still alive after this wait gets ONE group SIGTERM from the
+    // process-exit sweep when the host actually exits, and no escalation can
+    // run behind it (nothing executes after the exit hook) — the same
+    // external-supervisor boundary deepseek-harness declares for SIGKILL of
+    // the host itself.
+    if (this.closingHandles.size > 0) {
+      const exits: Promise<unknown>[] = []
+      for (const set of this.closingHandles.values()) exits.push(...set)
+      await raceWithFallback(Promise.allSettled(exits), 8000, undefined)
+    }
     // Await remaining pump tasks so SDK subprocesses exit cleanly.
     // unload() without terminate doesn't await the pump (GC speed), but
     // on shutdown we want a clean exit — give each pump up to 5 s.

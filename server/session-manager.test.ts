@@ -2653,6 +2653,29 @@ describe('SessionManager', () => {
     }
   })
 
+  it('shutdown awaits the real CLI process exit before resolving (bounded quiescence)', async () => {
+    // The mocked SDK's pump drains immediately, so today's shutdown (pump
+    // await only) resolves while the CLI's real exit is still pending — this
+    // test pins the new contract: shutdown also waits on closingHandles'
+    // real-exit promises before resolving.
+    let releaseExit!: () => void
+    const exitGate = new Promise<ProcessExitInfo>((resolve) => {
+      releaseExit = () => resolve({ sessionId: 'shutdown-exit', code: 0, signal: null, killed: false })
+    })
+    const exitSpy = vi.spyOn(ClaudeSessionHandle.prototype, 'processRealExit', 'get').mockReturnValue(exitGate)
+    try {
+      await sm.create({})
+      let settled = false
+      const stopping = sm.shutdown().then(() => { settled = true })
+      await new Promise((r) => setTimeout(r, 80))
+      expect(settled).toBe(false)
+      releaseExit()
+      await stopping
+    } finally {
+      exitSpy.mockRestore()
+    }
+  })
+
   it('permanent delete tolerates an undefined provider exit payload', async () => {
     const handle = {
       processExited: Promise.resolve(),

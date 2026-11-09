@@ -286,6 +286,13 @@ async function runServer(args: CliArgs): Promise<void> {
   }
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
+  // Terminal close delivers SIGHUP to the foreground group only. The CLI
+  // subprocesses are spawned detached (their own process groups), so unlike
+  // the pre-detached world they will NOT die with this group — without this
+  // handler a closed terminal would orphan every live CLI tree (default
+  // signal death runs no 'exit' handlers, so the process-exit sweep never
+  // fires). Route it through the same graceful path.
+  process.on('SIGHUP', () => void shutdown('SIGHUP'))
   // POST /api/daemon/stop rides this seam: it writes the daemon stop marker
   // (server-bridge) and then reuses the exact same graceful path as SIGTERM.
   registerShutdownRequest(() => shutdown('daemon-stop'))
