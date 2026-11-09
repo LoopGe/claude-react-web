@@ -2837,6 +2837,18 @@ button.chat-empty-env-chip:hover {
   /* The thumb is the viewer trigger; the ✕ sibling stays the remove affordance. */
   cursor: zoom-in;
 }
+.image-preview-compressed {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg) 76%, transparent);
+  color: var(--fg);
+  font-size: var(--fs-xs);
+  line-height: 1.2;
+  pointer-events: none;
+}
 .image-preview-remove {
   position: absolute;
   top: 2px;

@@ -75,4 +75,20 @@ describe('ComposerImagePreviews', () => {
     expect(() => fireEvent.click(container.querySelector('.image-preview-card img') as HTMLImageElement)).not.toThrow()
     expect(document.body.querySelector('img.lightbox-img')).toBeNull()
   })
+
+  it('shows a Compressed badge when the image was downscaled', () => {
+    const downscaled: PastedImage = {
+      ...pasted('p1', 'blob:mock-1'),
+      original: { mediaType: 'image/png', width: 4000, height: 3000, size: 9_000_000 },
+    }
+    const { container } = setup([downscaled])
+    const badge = container.querySelector('.image-preview-compressed')
+    expect(badge).not.toBeNull()
+    expect(badge?.getAttribute('title')).toContain('4000×3000')
+  })
+
+  it('omits the badge when the normalized image did not shrink', () => {
+    const { container } = setup([pasted('p1', 'blob:mock-1')])
+    expect(container.querySelector('.image-preview-compressed')).toBeNull()
+  })
 })

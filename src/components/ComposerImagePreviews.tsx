@@ -1,4 +1,5 @@
 import { useImageViewerTrigger, type ViewerImage } from '../hooks/image-viewer-context'
+import { formatBytes } from '../utils/format'
 import { IconX } from './icons/ToolIcons'
 import type { PastedImage } from '../types'
 
@@ -54,12 +55,28 @@ function ComposerImageThumb({
   group: readonly ViewerImage[]
 }) {
   const trigger = useImageViewerTrigger(group, index)
+  const original = img.original !== undefined
+    && (img.original.width !== img.width
+      || img.original.height !== img.height
+      || img.original.size > img.size)
+    ? img.original
+    : undefined
   return (
-    <img
-      src={img.previewUrl}
-      alt="Pasted image"
-      aria-label={`Preview image ${index + 1}`}
-      {...trigger}
-    />
+    <>
+      <img
+        src={img.previewUrl}
+        alt="Pasted image"
+        aria-label={`Preview image ${index + 1}`}
+        {...trigger}
+      />
+      {original && (
+        <span
+          className="image-preview-compressed"
+          title={`Original ${original.width}×${original.height} (${formatBytes(original.size)})`}
+        >
+          Compressed
+        </span>
+      )}
+    </>
   )
 }
