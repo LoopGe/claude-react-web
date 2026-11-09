@@ -69,6 +69,18 @@ function userMsg(text: string) {
   }
 }
 
+/** The manager's primary send path (and `seedCompactSummary`) hand the
+ *  provider `content: text` as a bare string, not a block array. */
+function stringUserMsg(text: string) {
+  return {
+    type: 'user' as const,
+    message: { role: 'user' as const, content: text },
+    parent_tool_use_id: null,
+    session_id: '',
+    uuid: 'u1',
+  }
+}
+
 interface LogEventLike {
   type: string
   reason?: string
@@ -272,6 +284,68 @@ describe('NativeSession', () => {
     await resumed.destroy()
   })
 
+  it('normalizes string-content user turns so resume works', async () => {
+    const dir = await tempDir('native-string-')
+    const provider = providerWithStreamer([textTurn('first'), textTurn('second')], dir)
+    const session = provider.createSession({ id: 'string', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(stringUserMsg('hello string') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first')).toBe(true))
+    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    const persisted = logOf(session).events.find((e) => e.type === 'user')
+    expect(persisted?.message?.content).toEqual([{ type: 'text', text: 'hello string' }])
+    await session.destroy()
+
+    // Before normalization this threw `corrupt` (the parser rejects a bare
+    // string content); the reply turn proves the rebuilt history is valid.
+    const resumed = provider.createSession({ id: 'string', cwd: dir, resume: 'string' })
+    const resumedFrames: Frame[] = []
+    void (async () => { for await (const f of resumed.messages) resumedFrames.push(f as Frame) })()
+    resumed.enqueueUserMessage(userMsg('next') as never)
+    await vi.waitFor(() => expect(resumedFrames.some((f) => f.type === 'result' && f.result === 'second')).toBe(true))
+    await resumed.destroy()
+  })
+
+  it('survives a persistence flush failure without double-emitting', async () => {
+    const dir = await tempDir('native-flush-')
+    const provider = providerWithStreamer([textTurn('hello')], dir)
+    const session = provider.createSession({ id: 'flush', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    const internals = session as unknown as {
+      pumpLoop: () => Promise<void>
+      log: { flush: () => Promise<void>; events: LogEventLike[] }
+    }
+    // `enqueueUserMessage` discards the pump promise; capture it so the test
+    // can assert the pump resolves instead of rejecting on a write failure.
+    const originalPump = internals.pumpLoop.bind(session)
+    let pumpPromise: Promise<void> | null = null
+    internals.pumpLoop = () => {
+      pumpPromise = originalPump()
+      return pumpPromise
+    }
+    // Fail the turn's pre-run user write exactly once.
+    const sessionLog = internals.log
+    const originalFlush = sessionLog.flush.bind(sessionLog)
+    let rejectNext = true
+    sessionLog.flush = () => {
+      if (rejectNext) {
+        rejectNext = false
+        return Promise.reject(new Error('disk full'))
+      }
+      return originalFlush()
+    }
+
+    session.enqueueUserMessage(userMsg('hi') as never)
+    await expect(pumpPromise!).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+    expect((frames.find((f) => f.type === 'result') as Frame).result).toBe('disk full')
+    expect(internals.log.events.filter((e) => e.type === 'turn/end')).toHaveLength(1)
+    await session.destroy()
+  })
+
   it('does not persist a queued turn that is never consumed', async () => {
     const dir = await tempDir('native-queued-')
     const provider = new NativeProvider({ stateDir: dir })
@@ -290,8 +364,8 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('first') as never)
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(session.queueDepth).toBe(1))
-    // The pump persists the consumed turn (awaited flush) before it arms the
-    // per-turn abort controller; interrupt() is a no-op until then.
+    // The pump arms the per-turn abort controller before persisting the
+    // consumed turn; wait until it is armed so interrupt() targets a live turn.
     await vi.waitFor(() => {
       expect((session as unknown as { turnAbort: unknown }).turnAbort).not.toBeNull()
     })
@@ -369,13 +443,15 @@ describe('NativeSession', () => {
     expect(child.header.isSeeded).toBe(true)
   })
 
-  it('persists the compact control seed', async () => {
+  it('persists the compact control seed, normalizing string content', async () => {
     const dir = await tempDir('native-compact-')
     const provider = new NativeProvider({ stateDir: dir })
     const session = provider.createSession({ id: 'compact', cwd: dir })
-    session.sendControlMessage(userMsg('compact summary') as never)
+    // seedCompactSummary sends a string-content message.
+    session.sendControlMessage(stringUserMsg('compact summary') as never)
     const compact = logOf(session).events.find((e) => JSON.stringify(e).includes('compact summary'))
     expect(compact).toMatchObject({ type: 'user', isCompactSummary: true })
+    expect(compact?.message?.content).toEqual([{ type: 'text', text: 'compact summary' }])
     const history = (session as unknown as { history: unknown[] }).history
     expect(JSON.stringify(history)).toContain('compact summary')
     await session.destroy()
@@ -383,6 +459,9 @@ describe('NativeSession', () => {
     const snapshot = loadNativeSessionLogSync(dir, 'compact')!
     const persisted = snapshot.events.find((e) => JSON.stringify(e).includes('compact summary'))
     expect(persisted).toMatchObject({ type: 'user', isCompactSummary: true })
+    expect(persisted?.type === 'user' ? persisted.message.content : undefined).toEqual([
+      { type: 'text', text: 'compact summary' },
+    ])
   })
 
   it('refuses to resume a corrupt log', async () => {

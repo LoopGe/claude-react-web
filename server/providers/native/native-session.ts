@@ -30,7 +30,7 @@ import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
-import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeLogEvent, NativeTurnEndReason } from './session-log/format.js'
 import type { ToolDef } from './tools/types.js'
 
 const log = createLogger('native')
@@ -38,6 +38,25 @@ const log = createLogger('native')
 const DEFAULT_MODEL = 'claude-sonnet-4-5'
 const DEFAULT_MAX_TOKENS = 16384
 const CONTEXT_WINDOW = 200_000
+
+/** The log format requires a persisted user event's content to be a block
+ *  array (the parser rejects a bare string as corrupt). The manager's primary
+ *  send path and `seedCompactSummary` both send `content: text` as a string,
+ *  so normalize on the way to disk only — the in-memory history keeps the
+ *  caller's shape. */
+function persistedUserMessage(message: { content: unknown }): { role: 'user'; content: unknown[] } {
+  const content = message.content
+  return {
+    role: 'user',
+    content: typeof content === 'string' ? [{ type: 'text', text: content }] : (content as unknown[]),
+  }
+}
+
+/** Fire-and-forget flush: a persistence failure must never become an
+ *  unhandled rejection or a second terminal frame, but it must be visible. */
+function flushInBackground(sessionLog: NativeSessionLog, sessionId: string, what: string): void {
+  void sessionLog.flush().catch((err) => log.warn(`[${sessionId}] failed to flush ${what}:`, err))
+}
 
 export interface NativeSessionOptions {
   id: string
@@ -137,7 +156,7 @@ export class NativeSession implements ProviderSessionHandle {
     const log = NativeSessionLog.open({ stateDir: opts.stateDir, id: opts.id, cwd: opts.cwd, resume: false })
     const context = log.append({ type: 'session/context', text: contextSnapshot(opts.cwd) })
     this.history.push(...historyFromEvents([context]))
-    void log.flush()
+    flushInBackground(log, opts.id, 'session context')
     return log
   }
 
@@ -149,7 +168,7 @@ export class NativeSession implements ProviderSessionHandle {
     const events = log.events.slice()
     const { synthetic } = repairInterruptedTurn(events)
     for (const event of synthetic) log.append(event)
-    if (synthetic.length > 0) void log.flush()
+    if (synthetic.length > 0) flushInBackground(log, opts.id, 'interrupted-turn repair')
     // `append` mutated log.events, so this is the original prefix plus the
     // synthetic results (now seq-numbered).
     this.history.push(...historyFromEvents(log.events))
@@ -281,7 +300,7 @@ export class NativeSession implements ProviderSessionHandle {
         timestamp: new Date().toISOString(),
         message: f.message,
       })
-      void this.log.flush()
+      flushInBackground(this.log, this.opts.id, 'assistant frame')
     } else if (f.type === 'user' && f.parent_tool_use_id === null) {
       this.log.append({
         type: 'user',
@@ -289,9 +308,9 @@ export class NativeSession implements ProviderSessionHandle {
         session_id: this.opts.id,
         parent_tool_use_id: null,
         timestamp: new Date().toISOString(),
-        message: f.message as unknown as { role: 'user'; content: unknown[] },
+        message: persistedUserMessage(f.message),
       })
-      void this.log.flush()
+      flushInBackground(this.log, this.opts.id, 'tool result')
     }
   }
 
@@ -305,19 +324,23 @@ export class NativeSession implements ProviderSessionHandle {
       const turnAbort = new AbortController()
       this.turnAbort = turnAbort
       const turnSignal = AbortSignal.any([this.sessionAbort.signal, turnAbort.signal])
-      // The turn is consumed now, so it is now part of the conversation: write
-      // it (and wait for the write) before the model sees it. A queued turn
-      // that gets drained without ever reaching this point is never persisted.
-      this.log.append({
-        type: 'user',
-        uuid: next.uuid!,
-        session_id: this.opts.id,
-        parent_tool_use_id: null,
-        timestamp: new Date(this.receivedAt.get(next)!).toISOString(),
-        message: next.message as unknown as { role: 'user'; content: unknown[] },
-      })
-      await this.log.flush()
+      let endReason: NativeTurnEndReason = 'error'
+      let endUsage = this.lastUsage
       try {
+        // The turn is consumed now, so it is part of the conversation: write it
+        // (and wait for the write) before the model sees it. A queued turn that
+        // gets drained without reaching this point is never persisted. Inside
+        // the try so a rejected write is classified as this turn's failure
+        // instead of rejecting the pump.
+        this.log.append({
+          type: 'user',
+          uuid: next.uuid!,
+          session_id: this.opts.id,
+          parent_tool_use_id: null,
+          timestamp: new Date(this.receivedAt.get(next)!).toISOString(),
+          message: persistedUserMessage(next.message),
+        })
+        await this.log.flush()
         const res = await runTurn(
           {
             stream: (req) => this.streamFor(req),
@@ -343,8 +366,8 @@ export class NativeSession implements ProviderSessionHandle {
           input_tokens: this.totalUsage.input_tokens + res.usage.input_tokens,
           output_tokens: this.totalUsage.output_tokens + res.usage.output_tokens,
         }
-        this.log.append({ type: 'turn/end', reason: 'completed', usage: res.usage })
-        await this.log.flush()
+        endReason = 'completed'
+        endUsage = res.usage
       } catch (err) {
         // The other half of the single result-emission point: classify an
         // interrupt (this turn's abort, session still alive) vs a real error,
@@ -360,14 +383,19 @@ export class NativeSession implements ProviderSessionHandle {
           durationMs: 0,
           isError: true,
         }))
-        this.log.append({
-          type: 'turn/end',
-          reason: interrupted ? 'interrupted' : 'error',
-          usage: this.lastUsage,
-        })
-        await this.log.flush()
+        endReason = interrupted ? 'interrupted' : 'error'
+        endUsage = this.lastUsage
       } finally {
         this.turnAbort = null
+      }
+      // Exactly one turn/end per turn, OUTSIDE the turn try/catch: a flush
+      // failure here must log rather than land in the catch above, which
+      // would emit a second terminal result and a second turn/end.
+      try {
+        this.log.append({ type: 'turn/end', reason: endReason, usage: endUsage })
+        await this.log.flush()
+      } catch (err) {
+        log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)
       }
     }
   }
@@ -400,10 +428,10 @@ export class NativeSession implements ProviderSessionHandle {
       session_id: this.opts.id,
       parent_tool_use_id: null,
       timestamp: new Date().toISOString(),
-      message: message.message as unknown as { role: 'user'; content: unknown[] },
+      message: persistedUserMessage(message.message),
       isCompactSummary: true,
     })
-    void this.log.flush()
+    flushInBackground(this.log, this.opts.id, 'compact summary')
     this.history.push({ role: 'user', content: message.message.content })
   }
 
