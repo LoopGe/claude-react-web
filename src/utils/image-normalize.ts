@@ -13,7 +13,7 @@ import {
   NORMALIZED_IMAGE_QUALITIES,
   normalizedImageDimensions,
 } from '../../shared/image-normalize'
-import { MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS } from '../../shared/upload-limits'
+import { MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS } from '../../shared/upload-limits'
 import type { PastedImageOriginal } from '../types'
 import { fileToBase64 } from './file-to-base64'
 
@@ -32,6 +32,7 @@ export interface LoadedImage {
 }
 
 interface Canvas2DLike {
+  imageSmoothingQuality: 'low' | 'medium' | 'high'
   drawImage(image: CanvasImageSource, dx: number, dy: number, dw: number, dh: number): void
   getImageData(sx: number, sy: number, sw: number, sh: number): { data: Uint8ClampedArray }
 }
@@ -157,6 +158,7 @@ export async function preparePastedImage(
     const canvas = createCanvas(normalized.width, normalized.height)
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
     if (ctx === null) throw new ImageNormalizeError('Image processing is not supported in this browser.')
+    ctx.imageSmoothingQuality = 'high'
     ctx.drawImage(loaded.image, 0, 0, normalized.width, normalized.height)
 
     const hasAlpha = source.mediaType === 'image/jpeg'
@@ -174,6 +176,13 @@ export async function preparePastedImage(
       if (blob.type !== requestedType) break
     }
     if (smallest === undefined) throw new ImageNormalizeError('Image encoding failed.')
+    // A browser that fell back to PNG can still exceed the server's per-image
+    // cap; surfacing it at paste time beats a 413 on Send.
+    if (smallest.size > MAX_IMAGE_BYTES) {
+      throw new ImageNormalizeError(
+        `The normalized image is too large to send. Max ${MAX_IMAGE_BYTES} bytes.`,
+      )
+    }
 
     const outBytes = new Uint8Array(await smallest.arrayBuffer())
     const verified = inspectImageBytes(outBytes)

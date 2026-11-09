@@ -91,4 +91,14 @@ describe('ComposerImagePreviews', () => {
     const { container } = setup([pasted('p1', 'blob:mock-1')])
     expect(container.querySelector('.image-preview-compressed')).toBeNull()
   })
+
+  it('omits the badge when the normalized bytes grew despite a dimension change', () => {
+    const grew: PastedImage = {
+      ...pasted('p1', 'blob:mock-1'),
+      size: 10,
+      original: { mediaType: 'image/png', width: 4000, height: 3000, size: 5 },
+    }
+    const { container } = setup([grew])
+    expect(container.querySelector('.image-preview-compressed')).toBeNull()
+  })
 })

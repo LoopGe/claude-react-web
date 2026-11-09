@@ -485,7 +485,7 @@ export interface PastedImage {
   mediaType: SupportedImageMediaType
   width: number
   height: number
-  /** Normalized encoded byte length (what will be sent). */
+  /** Normalized encoded byte length, before base64 (the wire carries ~4/3). */
   size: number
   previewUrl: string
   /** Source facts, present when the image was normalized on intake. */

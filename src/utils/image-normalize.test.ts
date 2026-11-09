@@ -30,6 +30,25 @@ function sourceJpeg(width: number, height: number): ArrayBuffer {
   return buffer
 }
 
+function sourceGif(width: number, height: number): ArrayBuffer {
+  const header = Uint8Array.from([
+    ...new TextEncoder().encode('GIF89a'),
+    width & 0xff, (width >> 8) & 0xff,
+    height & 0xff, (height >> 8) & 0xff,
+    0, 0,
+  ])
+  const buffer = new ArrayBuffer(header.length)
+  new Uint8Array(buffer).set(header)
+  return buffer
+}
+
+function sourceWebp(width: number, height: number): ArrayBuffer {
+  const header = webpHeader(width, height)
+  const buffer = new ArrayBuffer(header.length)
+  new Uint8Array(buffer).set(header)
+  return buffer
+}
+
 function u32le(n: number): number[] {
   return [n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >>> 24) & 0xff]
 }
@@ -67,12 +86,19 @@ function fakeDeps(opts: {
   outputs: Array<{ type: string; size: number }>
   draw?: (image: unknown, dx: number, dy: number, dw: number, dh: number) => void
   outputBytes?: (type: string, width: number, height: number) => Blob
-}): { deps: ImageNormalizeDeps; qualities: Array<{ type: string; quality: number }>; close: ReturnType<typeof vi.fn> } {
+}): {
+  deps: ImageNormalizeDeps
+  qualities: Array<{ type: string; quality: number }>
+  contexts: Array<{ imageSmoothingQuality: 'low' | 'medium' | 'high' }>
+  close: ReturnType<typeof vi.fn>
+} {
   const qualities: Array<{ type: string; quality: number }> = []
+  const contexts: Array<{ imageSmoothingQuality: 'low' | 'medium' | 'high' }> = []
   let next = 0
   const close = vi.fn()
   return {
     qualities,
+    contexts,
     close,
     deps: {
       readFile: async () => opts.source,
@@ -85,10 +111,15 @@ function fakeDeps(opts: {
       createCanvas: (width: number, height: number) => ({
         width,
         height,
-        getContext: () => ({
-          drawImage: opts.draw ?? (() => {}),
-          getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, opts.alpha ?? 255]) }),
-        }),
+        getContext: () => {
+          const ctx = {
+            imageSmoothingQuality: 'low' as 'low' | 'medium' | 'high',
+            drawImage: opts.draw ?? (() => {}),
+            getImageData: () => ({ data: new Uint8ClampedArray([0, 0, 0, opts.alpha ?? 255]) }),
+          }
+          contexts.push(ctx)
+          return ctx
+        },
         toBlob: (cb: (blob: Blob | null) => void, type?: string, quality?: number) => {
           qualities.push({ type: type ?? '', quality: quality ?? 0 })
           const spec = opts.outputs[next++] ?? opts.outputs[opts.outputs.length - 1]
@@ -146,6 +177,62 @@ describe('preparePastedImage', () => {
     const out = await preparePastedImage(new Blob(['source']), { maxBytes: 10_000, deps })
     expect(out.mediaType).toBe('image/jpeg')
     expect(qualities[0]?.type).toBe('image/jpeg')
+  })
+
+  it.each([
+    ['GIF', sourceGif(10, 10)],
+    ['WebP', sourceWebp(10, 10)],
+  ])('routes a %s alpha source to WebP', async (_name, source) => {
+    const { deps, qualities } = fakeDeps({
+      source,
+      imageWidth: 10,
+      imageHeight: 10,
+      alpha: 0,
+      outputs: [{ type: 'image/webp', size: 100 }],
+    })
+    const out = await preparePastedImage(new Blob(['source']), { maxBytes: 10_000, deps })
+    expect(out.mediaType).toBe('image/webp')
+    expect(qualities[0]?.type).toBe('image/webp')
+  })
+
+  it('stops the ladder when the browser falls back to another codec', async () => {
+    const { deps, qualities } = fakeDeps({
+      source: sourcePng(10, 10),
+      imageWidth: 10,
+      imageHeight: 10,
+      alpha: 0,
+      outputs: [{ type: 'image/webp', size: 120 }],
+      outputBytes: () => outputBlob('image/png', 10, 10, 120),
+    })
+    const out = await preparePastedImage(new Blob(['source']), { maxBytes: 100, deps })
+    expect(out.mediaType).toBe('image/png')
+    expect(out.size).toBe(120)
+    expect(qualities).toHaveLength(1)
+  })
+
+  it('rejects a fallback output above the server per-image cap', async () => {
+    const { deps } = fakeDeps({
+      source: sourcePng(10, 10),
+      imageWidth: 10,
+      imageHeight: 10,
+      alpha: 0,
+      outputs: [{ type: 'image/webp', size: 10 * 1024 * 1024 + 1 }],
+      outputBytes: () => outputBlob('image/png', 10, 10, 10 * 1024 * 1024 + 1),
+    })
+    await expect(preparePastedImage(new Blob(['source']), { maxBytes: 100, deps }))
+      .rejects.toThrow(/too large/i)
+  })
+
+  it('uses high-quality image smoothing', async () => {
+    const { deps, contexts } = fakeDeps({
+      source: sourcePng(10, 10),
+      imageWidth: 10,
+      imageHeight: 10,
+      alpha: 255,
+      outputs: [{ type: 'image/jpeg', size: 100 }],
+    })
+    await preparePastedImage(new Blob(['source']), { maxBytes: 10_000, deps })
+    expect(contexts[0]?.imageSmoothingQuality).toBe('high')
   })
 
   it('routes alpha sources to WebP and opaque PNG sources to JPEG', async () => {

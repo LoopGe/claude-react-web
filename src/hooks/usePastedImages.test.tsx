@@ -215,6 +215,21 @@ describe('usePastedImages.addImages', () => {
     }
   })
 
+  it('does not surface a normalization error after the draft was cleared', async () => {
+    const { result } = renderHook(() => usePastedImages())
+    const pending = deferred<NormalizedImage>()
+    prepareMock.mockReturnValueOnce(pending.promise)
+    const file = new File(['a'], 'a.png', { type: 'image/png' })
+    await act(async () => {
+      const adding = result.current.addImages([file])
+      result.current.clear()
+      pending.reject(new ImageNormalizeError('bad image'))
+      await adding
+    })
+    expect(result.current.error).toBeNull()
+    expect(result.current.images).toEqual([])
+  })
+
   it('wraps a non-normalize error with a user-facing message', async () => {
     const { result } = renderHook(() => usePastedImages())
     prepareMock.mockRejectedValueOnce(new Error('boom'))

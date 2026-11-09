@@ -226,7 +226,10 @@ export function usePastedImages(): UsePastedImages {
         }))
         for (const entry of processed) {
           if ('error' in entry) {
-            refuse(entry.error)
+            // A failure that lands after the draft was cleared belongs to a
+            // paste the user already discarded; do not toast it on the empty
+            // composer.
+            if (clearGenerationRef.current === generation) refuse(entry.error)
             continue
           }
           if (clearGenerationRef.current !== generation) {

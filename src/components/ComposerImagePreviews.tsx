@@ -55,10 +55,7 @@ function ComposerImageThumb({
   group: readonly ViewerImage[]
 }) {
   const trigger = useImageViewerTrigger(group, index)
-  const original = img.original !== undefined
-    && (img.original.width !== img.width
-      || img.original.height !== img.height
-      || img.original.size > img.size)
+  const original = img.original !== undefined && img.original.size > img.size
     ? img.original
     : undefined
   return (
