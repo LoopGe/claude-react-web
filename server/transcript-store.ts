@@ -57,6 +57,8 @@ interface InternalEntry extends SeqMessage {
   evicted?: boolean
 }
 
+import { imagePayloadOfMessage } from '../shared/user-frames.js'
+
 export class TranscriptStore {
   readonly sessionId: string
   generation = 0
@@ -70,6 +72,19 @@ export class TranscriptStore {
 
   get headSeq(): number {
     return this.nextSeq
+  }
+
+  /** Count image blocks and base64 bytes retained by this store, including
+   *  tombstoned entries (their msg objects are still held). */
+  imagePayload(): { images: number; bytes: number } {
+    let images = 0
+    let bytes = 0
+    for (const entry of this.messages.values()) {
+      const payload = imagePayloadOfMessage(entry.msg)
+      images += payload.images
+      bytes += payload.bytes
+    }
+    return { images, bytes }
   }
 
   /** 非墓碑消息总数（getTranscriptWindow 的 totalCount 组装输入；墓碑占用的

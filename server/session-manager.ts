@@ -1021,7 +1021,7 @@ export class SessionManager {
       workingStuckMs: opts.workingStuckMs ?? defaultConfig.workingStuckMs,
       unload: (id, opts) => this.unload(id, opts),
       sweepOrphanWorktrees: () => this.sweepOrphansTick(),
-      onGcTick: () => this.recordRingImageMetrics(),
+      onGcTick: () => this.recordImageRetentionMetrics(),
     })
 
     // RecapManager — owns the lifecycle (pending — ready/error) for the
@@ -6998,12 +6998,23 @@ export class SessionManager {
     })
   }
 
-  /** Record retained image payload across both rings. The health monitor's
-   *  60s tick calls this, so the measurement adds no timer of its own. */
-  private recordRingImageMetrics(): void {
-    const { images, bytes } = ringImagePayload(this.sessions.values())
-    metrics.gauge('session_ring_images', images)
-    metrics.gauge('session_ring_image_base64_bytes', bytes)
+  /** Record retained image payload: the bounded ring and the unbounded seq
+   *  store, kept as separate gauges so neither double-counts the other. The
+   *  health monitor's 60s tick calls this, so the measurement adds no timer. */
+  private recordImageRetentionMetrics(): void {
+    const ring = ringImagePayload(this.sessions.values())
+    let transcriptImages = 0
+    let transcriptBytes = 0
+    for (const s of this.sessions.values()) {
+      const payload = this.transcriptStores.get(s.id)?.store.imagePayload()
+      if (payload === undefined) continue
+      transcriptImages += payload.images
+      transcriptBytes += payload.bytes
+    }
+    metrics.gauge('session_ring_images', ring.images)
+    metrics.gauge('session_ring_image_base64_bytes', ring.bytes)
+    metrics.gauge('session_transcript_images', transcriptImages)
+    metrics.gauge('session_transcript_image_base64_bytes', transcriptBytes)
   }
 
   // ---------------------------------------------------------------------------

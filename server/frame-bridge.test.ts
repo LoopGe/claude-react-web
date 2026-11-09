@@ -22,6 +22,7 @@ import type {
   UserDialogRequestUi,
 } from './session-types.js'
 import type { WsClientDebugRequest, WsClientFrame, WsMessageConsumed, WsMessageSteered, WsMessagesEvicted, WsMessagesWithdrawn, WsServerFrame, WsTurnChanges } from './ws-protocol.js'
+import { metrics } from './metrics.js'
 
 const tick = () => new Promise<void>((r) => setImmediate(r))
 
@@ -423,6 +424,30 @@ describe('SessionConnection (in-memory sink)', () => {
     if (live.kind !== 'message') throw new Error('narrowing')
     expect((live.message as { uuid?: string }).uuid).toBe('u2')
     expect(sink.rawCount).toBeGreaterThan(rawBefore)
+  })
+
+  it('counts image payloads once per unique live message frame', async () => {
+    const sm = new FakeBroadcaster()
+    const sess = sm.addSession('s1', { running: true })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await tick()
+    metrics.reset()
+    const image = {
+      type: 'assistant',
+      uuid: 'img1',
+      message: { role: 'assistant', content: [{ type: 'image', source: { type: 'base64', data: 'AAAA' } }] },
+    } as unknown as SDKMessage
+    // The same message object twice: the per-message serialization cache
+    // makes the second frame a hit, so the payload is counted once.
+    sess.messages.push(image)
+    sess.messages.push(image)
+    await waitForFrame(sink, (f) => f.kind === 'message' && f.sessionId === 's1')
+    await new Promise<void>((r) => setTimeout(r, 20))
+    const snap = metrics.snapshot()
+    expect(snap.counters['ws_message_images']).toBe(1)
+    expect(snap.counters['ws_message_image_base64_bytes']).toBe(4)
   })
 
   it('re-broadcasts pending requests with already-live on a duplicate subscribe', async () => {

@@ -27,6 +27,7 @@ import { TranscriptStore } from '../transcript-store.js'
 import { TranscriptSidecar, backfillFromEntries, type TranscriptHolder } from '../transcript-sidecar.js'
 import { historyEntriesFromJsonl, paginateJsonl } from '../history-reader.js'
 import { trimLargeToolResults } from '../history-utils.js'
+import { metrics } from '../metrics.js'
 
 const SID = 'history-shim-sid'
 
@@ -125,6 +126,22 @@ interface LegacyPage {
 }
 
 describe('GET /sessions/:id/history — legacy shim over the seq window (Task 10)', () => {
+  it('records the page image payload in metrics', async () => {
+    const store = makeStore()
+    store.record('img1', {
+      type: 'user',
+      uuid: 'img1',
+      message: { content: [{ type: 'image', source: { type: 'base64', data: 'AAAA' } }] },
+    })
+    const app = makeApp({ store })
+    metrics.reset()
+    const res = await app.request(`/sessions/${SID}/history`)
+    expect(res.status).toBe(200)
+    const snap = metrics.snapshot()
+    expect(snap.counters['history_page_images']).toBe(1)
+    expect(snap.counters['history_page_image_base64_bytes']).toBe(4)
+  })
+
   it('newest page: legacy shape with TOP-LEVEL flattened messages equal to the legacy disk reader output (+ seq)', async () => {
     const store = makeStore()
     const app = makeApp({ store })

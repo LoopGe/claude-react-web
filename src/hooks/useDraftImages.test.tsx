@@ -176,6 +176,27 @@ describe('useDraftImages persistence', () => {
     }
   })
 
+  it('does not log small draft image payloads', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    try {
+      const put = vi.fn()
+      const { rerender } = renderDraft(mutRef().ref, vi.fn(), {
+        get: async () => [],
+        put,
+        del: vi.fn(),
+        build: async () => [],
+        debounceMs: 5,
+      })
+      rerender({ images: [pimg('SMALL')] })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5)
+      })
+      expect(debug).not.toHaveBeenCalled()
+    } finally {
+      debug.mockRestore()
+    }
+  })
+
   it('deletes the record immediately when the images are cleared (send consumed the draft)', async () => {
     const put = vi.fn()
     const del = vi.fn()

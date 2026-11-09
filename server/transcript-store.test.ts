@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { TranscriptStore } from './transcript-store'
 
 describe('TranscriptStore', () => {
+  it('counts retained image payloads, including tombstoned entries', () => {
+    const s = new TranscriptStore('sid')
+    s.record('u1', { message: { content: [{ type: 'image', source: { type: 'base64', data: 'AAAA' } }] } })
+    s.record('u2', { message: { content: [{ type: 'text', text: 'x' }] } })
+    s.record('u3', { message: { content: [{ type: 'image', source: { type: 'base64', data: 'BBBBBB' } }] } })
+    s.evict(['u3'])
+    expect(s.imagePayload()).toEqual({ images: 2, bytes: 10 })
+  })
   it('assigns dense ascending seqs and dedups by uuid', () => {
     const s = new TranscriptStore('sid')
     expect(s.record('u1')).toBe(0)

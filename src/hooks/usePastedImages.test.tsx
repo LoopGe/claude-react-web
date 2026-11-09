@@ -220,12 +220,14 @@ describe('usePastedImages.addImages', () => {
     const pending = deferred<NormalizedImage>()
     prepareMock.mockReturnValueOnce(pending.promise)
     const file = new File(['a'], 'a.png', { type: 'image/png' })
+    let failure: string | null = null
     await act(async () => {
       const adding = result.current.addImages([file])
       result.current.clear()
       pending.reject(new ImageNormalizeError('bad image'))
-      await adding
+      failure = await adding
     })
+    expect(failure).toBeNull()
     expect(result.current.error).toBeNull()
     expect(result.current.images).toEqual([])
   })

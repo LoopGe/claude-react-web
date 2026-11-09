@@ -16,6 +16,7 @@ import {
 import { MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS } from '../../shared/upload-limits'
 import type { PastedImageOriginal } from '../types'
 import { fileToBase64 } from './file-to-base64'
+import { formatBytes } from './format'
 
 export class ImageNormalizeError extends Error {
   constructor(message: string) {
@@ -180,7 +181,7 @@ export async function preparePastedImage(
     // cap; surfacing it at paste time beats a 413 on Send.
     if (smallest.size > MAX_IMAGE_BYTES) {
       throw new ImageNormalizeError(
-        `The normalized image is too large to send. Max ${MAX_IMAGE_BYTES} bytes.`,
+        `The normalized image is too large to send. Max ${formatBytes(MAX_IMAGE_BYTES)}.`,
       )
     }
 

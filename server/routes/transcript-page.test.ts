@@ -5,6 +5,7 @@ import type { SessionManager } from '../session-manager.js'
 import { HttpError, createErrorHandler } from '../errors.js'
 import { TranscriptStore } from '../transcript-store.js'
 import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
+import { metrics } from '../metrics.js'
 
 const json = (res: Response) => res.json() as Promise<TranscriptPageResponse>
 
@@ -53,6 +54,21 @@ describe('GET /sessions/:id/messages', () => {
       messages: [],
       tombstones: [],
     })
+  })
+
+  it('records the page image payload in metrics', async () => {
+    const { app, store } = makeApp()
+    store.record('img1', {
+      type: 'user',
+      uuid: 'img1',
+      message: { content: [{ type: 'image', source: { type: 'base64', data: 'AAAA' } }] },
+    })
+    metrics.reset()
+    const res = await app.request('/sessions/s1/messages')
+    expect(res.status).toBe(200)
+    const snap = metrics.snapshot()
+    expect(snap.counters['history_page_images']).toBe(1)
+    expect(snap.counters['history_page_image_base64_bytes']).toBe(4)
   })
 
   it('evicted seqs inside the page span ride the response as tombstones', async () => {

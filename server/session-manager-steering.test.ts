@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SessionStore } from './persistence.js'
 import { SessionManager } from './session-manager.js'
+import { metrics } from './metrics.js'
 import { isSteerableUserText, userTextOf } from './session-manager.js'
 import type { SteeredEntry } from './steered-store.js'
 import { ProviderRegistry } from './providers/registry.js'
@@ -192,10 +193,13 @@ describe('steering routing (dispatchUserMessage)', () => {
     dirs.push(ctx.dir)
     const { sm, handle, info } = ctx
     sm.send(info.id, 'first') // 置 mid-turn
+    metrics.reset()
     const img = sm.sendContent(info.id, [
       { type: 'text', text: 'look at this' },
       { type: 'image', source: { type: 'base64', data: 'x', media_type: 'image/png' } },
     ])
+    expect(metrics.snapshot().counters['user_message_images']).toBe(1)
+    expect(metrics.snapshot().counters['user_message_image_base64_bytes']).toBe(1)
     expect(handle.enqueueSupplement).not.toHaveBeenCalled()
     expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(2)
     expect((img as { steeredAt?: number }).steeredAt).toBeUndefined()

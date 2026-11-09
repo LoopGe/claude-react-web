@@ -22,5 +22,7 @@ describe('SessionHealthMonitor', () => {
     } finally {
       monitor.stop()
     }
+    vi.advanceTimersByTime(60_000)
+    expect(onGcTick).toHaveBeenCalledTimes(1)
   })
 })

@@ -213,6 +213,8 @@ export function PerformancePanel() {
             <span>permissions_pending <b>{data.gauges['permissions_pending'] ?? 0}</b></span>
             <span>ring image bytes <b>{formatBytes(data.gauges['session_ring_image_base64_bytes'] ?? 0)}</b></span>
             <span>ring images <b>{data.gauges['session_ring_images'] ?? 0}</b></span>
+            <span>transcript image bytes <b>{formatBytes(data.gauges['session_transcript_image_base64_bytes'] ?? 0)}</b></span>
+            <span>transcript images <b>{data.gauges['session_transcript_images'] ?? 0}</b></span>
           </div>
         </section>
 
@@ -235,7 +237,7 @@ export function PerformancePanel() {
         <section className="settings-group">
           <div className="settings-group-head">
             <h4>Image payloads</h4>
-            <span className="settings-group-desc">Cumulative image counts and base64 payload bytes for composer sends, live message frames, and history pages since process start. The ring gauges above show what is retained now.</span>
+            <span className="settings-group-desc">Cumulative image counts and base64 payload bytes for composer sends, unique live message frames, and history pages since process start. The ring gauges show the bounded ring; the transcript gauges show the unbounded seq store, which retains image bytes after the ring evicts them.</span>
           </div>
           <HistTable entries={imagePayloads} history={history} />
         </section>
