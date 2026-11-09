@@ -39,6 +39,52 @@ export function apiError(status: number, body: string, retryAfterHeader?: string
 
 export type RetryCallback = (info: { attempt: number; maxRetries: number; delayMs: number }) => Promise<void>
 
+const EPHEMERAL = { type: 'ephemeral' } as const
+
+/** Build the Anthropic Messages request body, adding prompt-cache breakpoints
+ *  on the stable prefix: system prompt, the last tool, and the last content
+ *  block. Never mutates the caller's `tools` / `messages` — the agent loop
+ *  reuses its history across turns. */
+export function buildRequestBody(req: StreamRequest): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: req.model,
+    max_tokens: req.maxTokens,
+    stream: true,
+    system: req.system,
+    tools: req.tools,
+    messages: req.messages,
+  }
+
+  if (req.system !== '') {
+    body.system = [{ type: 'text', text: req.system, cache_control: EPHEMERAL }]
+  }
+
+  if (req.tools.length > 0) {
+    body.tools = req.tools.map((tool, i) =>
+      i === req.tools.length - 1
+        ? { ...(tool as Record<string, unknown>), cache_control: EPHEMERAL }
+        : { ...(tool as Record<string, unknown>) })
+  }
+
+  if (req.messages.length > 0) {
+    const last = req.messages[req.messages.length - 1] as Record<string, unknown>
+    const content = last.content
+    let cachedContent: unknown
+    if (typeof content === 'string') {
+      cachedContent = [{ type: 'text', text: content, cache_control: EPHEMERAL }]
+    } else if (Array.isArray(content) && content.length > 0) {
+      const blocks = content.slice()
+      blocks[blocks.length - 1] = { ...(blocks[blocks.length - 1] as Record<string, unknown>), cache_control: EPHEMERAL }
+      cachedContent = blocks
+    }
+    if (cachedContent !== undefined) {
+      body.messages = [...req.messages.slice(0, -1), { ...last, content: cachedContent }]
+    }
+  }
+
+  return body
+}
+
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
     const timer = setTimeout(resolve, ms)
@@ -101,14 +147,7 @@ export async function* streamAnthropicMessages(req: StreamRequest, onRetry: Retr
           'anthropic-version': '2023-06-01',
           Authorization: `Bearer ${req.authToken}`,
         },
-        body: JSON.stringify({
-          model: req.model,
-          max_tokens: req.maxTokens,
-          stream: true,
-          system: req.system,
-          tools: req.tools,
-          messages: req.messages,
-        }),
+        body: JSON.stringify(buildRequestBody(req)),
         signal: req.signal,
       })
     } catch (err) {

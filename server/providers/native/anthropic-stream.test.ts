@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiError, MAX_API_RETRIES, streamAnthropicMessages, type StreamRequest } from './anthropic-stream.js'
+import { apiError, buildRequestBody, MAX_API_RETRIES, streamAnthropicMessages, type StreamRequest } from './anthropic-stream.js'
 
 const baseReq: StreamRequest = {
   baseUrl: 'https://api.example.com',
@@ -65,6 +65,38 @@ describe('streamAnthropicMessages translation', () => {
       { kind: 'block_delta', index: 1, delta: { type: 'tool_input', json: '{"command":' }, raw: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"command":' } } },
       { kind: 'block_end', index: 1, raw: { type: 'content_block_stop', index: 1 } },
     ])
+  })
+})
+
+describe('buildRequestBody', () => {
+  it('adds cache_control breakpoints without mutating the caller objects', async () => {
+    const tools = [{ name: 'Read', description: 'r', input_schema: {} }, { name: 'Bash', description: 'b', input_schema: {} }]
+    const messages = [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+    ]
+    const req = { ...baseReq, system: 'SYS', tools, messages }
+    const body = buildRequestBody(req) as {
+      system: Array<{ type: string; text: string; cache_control?: unknown }>
+      tools: Array<{ name: string; cache_control?: unknown }>
+      messages: Array<{ content: Array<{ type: string; cache_control?: unknown }> }>
+    }
+    expect(body.system).toEqual([{ type: 'text', text: 'SYS', cache_control: { type: 'ephemeral' } }])
+    expect(body.tools[0].cache_control).toBeUndefined()
+    expect(body.tools[1].cache_control).toEqual({ type: 'ephemeral' })
+    expect(body.messages[1].content[0].cache_control).toEqual({ type: 'ephemeral' })
+    // The loop's objects are untouched.
+    expect(tools[1]).not.toHaveProperty('cache_control')
+    expect(messages[1].content[0]).not.toHaveProperty('cache_control')
+  })
+
+  it('converts a string-content last message into a cached text block', () => {
+    const body = buildRequestBody({ ...baseReq, system: '', messages: [{ role: 'user', content: 'hello' }] }) as {
+      system: unknown
+      messages: Array<{ content: Array<{ type: string; text: string; cache_control?: unknown }> }>
+    }
+    expect(body.system).toBe('')
+    expect(body.messages[0].content).toEqual([{ type: 'text', text: 'hello', cache_control: { type: 'ephemeral' } }])
   })
 })
 
