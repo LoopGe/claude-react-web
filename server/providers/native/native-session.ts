@@ -281,12 +281,22 @@ export class NativeSession implements ProviderSessionHandle {
  *  buckets the context bar needs; a usage-bearing `turn/end` (which only has
  *  input/output) is the fallback. The per-model totals sum every persisted
  *  assistant frame — one per API round — which is exactly what the live path
- *  accumulates in `persistFrame`. */
+ *  accumulates in `persistFrame`.
+ *
+ *  A `session/compact` event resets the LAST reading (the request after it
+ *  carries only the captured context + summary, so the context bar must show
+ *  0 like the live path does after `compactInPlace`). `usageByModel` keeps
+ *  scanning the whole log: billing is cumulative across the boundary. */
   private restoreUsage(events: readonly NativeLogEvent[]): void {
     let lastAssistant: Usage | null = null
     let lastEnd: Usage | null = null
     this.usageByModel.clear()
     for (const event of events) {
+      if (event.type === 'session/compact') {
+        lastAssistant = null
+        lastEnd = null
+        continue
+      }
       if (event.type === 'assistant') {
         const usage = usageOf(event.message.usage)
         if (usage) {
@@ -592,11 +602,21 @@ export class NativeSession implements ProviderSessionHandle {
    *  attempt. Emits NO frames: the manager owns the client-facing divider.
    *  `lastUsage` resets so the context bar starts from zero while
    *  `usageByModel` keeps the cumulative billing totals. A failed flush throws
-   *  before any in-memory state changes, leaving the session exactly as it was. */
+   *  before any in-memory state changes, leaving the session exactly as it was.
+   *
+   *  Sequencing contract: the compact boundary is appended before the flush
+   *  and the history is swapped only after it resolves, so no
+   *  `sendControlMessage` may run during that await — the manager owns it and
+   *  only compacts while the session is idle. A queued user turn cannot slip
+   *  in: the log's serialized flush chain makes the pump's own flush resolve
+   *  after the compact write, so the turn starts against the swapped history. */
   async compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void> {
     if (this._closed) throw new Error('session is closed')
     if (this.turnAbort !== null) throw new Error('a turn is in flight')
     if (this.input.length > 0) throw new Error('input is queued')
+    // An empty summary would persist a `session/compact` line the parser
+    // rejects as corrupt (it requires a non-empty `text`), bricking resume.
+    if (!summary.trim()) throw new Error('empty summary')
     const context = contextSnapshot(this.opts.cwd)
     this.log.append({
       type: 'session/compact',

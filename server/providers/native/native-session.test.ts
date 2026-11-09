@@ -830,6 +830,103 @@ describe('NativeSession', () => {
     await expect(compactable.compactInPlace('SUMMARY', opts)).rejects.toThrow()
   })
 
+  it('refuses to compact with an empty or whitespace summary', async () => {
+    const dir = await tempDir('native-inplace-empty-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'empty', cwd: dir })
+    const compactable = session as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+    }
+    const opts = { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' }
+    // An empty `text` would be persisted and then rejected by the parser on
+    // the next resume, so the refusal must happen BEFORE the append.
+    await expect(compactable.compactInPlace('', opts)).rejects.toThrow(/empty/i)
+    await expect(compactable.compactInPlace('  \n\t', opts)).rejects.toThrow(/empty/i)
+    expect(logOf(session).events.some((e) => e.type === 'session/compact')).toBe(false)
+    await session.destroy()
+  })
+
+  it('resume after a compact reports zero context usage but keeps cumulative billing', async () => {
+    const dir = await tempDir('native-inplace-resume-')
+    const provider = providerWithStreamer([textTurn('first')], dir)
+    const session = provider.createSession({ id: 'compact-resume', cwd: dir })
+    const compactable = session as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+    }
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('OLD-PROMPT') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'first')).toBe(true))
+    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    await session.destroy()
+
+    const resumed = provider.createSession({ id: 'compact-resume', cwd: dir, resume: 'compact-resume' })
+    // The compact floor drops the pre-compact prompt tokens from the LAST
+    // reading (the live path reset them in compactInPlace)...
+    const usage = (await resumed.getContextUsage?.()) as { totalTokens: number }
+    expect(usage.totalTokens).toBe(0)
+    // ...while the billing totals still sum the pre-compact assistant round.
+    expect(await resumed.getUsage?.()).toEqual({
+      session: {
+        model_usage: {
+          'claude-sonnet-4-5': { inputTokens: 10, outputTokens: 5 },
+        },
+      },
+      rate_limits_available: false,
+      cost_available: false,
+    })
+    const history = JSON.stringify((resumed as unknown as { history: unknown[] }).history)
+    expect(history).toContain('SUMMARY')
+    expect(history).not.toContain('OLD-PROMPT')
+    await resumed.destroy()
+  })
+
+  it('orders the compact boundary before a turn enqueued during its flush', async () => {
+    const dir = await tempDir('native-inplace-race-')
+    const provider = providerWithStreamer([textTurn('after')], dir)
+    const session = provider.createSession({ id: 'race', cwd: dir })
+    const internals = session as unknown as {
+      log: { flush: () => Promise<void>; events: LogEventLike[] }
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+    }
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    // Defer every flush until the release: the real log's serialized write
+    // chain then resolves the compact write BEFORE the pump's, so the spliced
+    // history is in place when the new turn runs.
+    const sessionLog = internals.log
+    const originalFlush = sessionLog.flush.bind(sessionLog)
+    let releaseFlush!: () => void
+    const gate = new Promise<void>((resolve) => { releaseFlush = resolve })
+    let flushCalls = 0
+    sessionLog.flush = () => {
+      flushCalls++
+      return gate.then(() => originalFlush())
+    }
+
+    const compacting = internals.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    // The guard already passed; the message lands while the compact write is
+    // still in flight.
+    session.enqueueUserMessage(userMsg('next') as never)
+    await vi.waitFor(() => expect(flushCalls).toBeGreaterThanOrEqual(2))
+    releaseFlush()
+    await compacting
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'after')).toBe(true))
+
+    const events = logOf(session).events
+    const compactIndex = events.findIndex((e) => e.type === 'session/compact')
+    const promptIndex = events.findIndex((e) => e.type === 'user' && JSON.stringify(e).includes('next'))
+    expect(compactIndex).toBeGreaterThanOrEqual(0)
+    expect(promptIndex).toBeGreaterThan(compactIndex)
+    const history = JSON.stringify((session as unknown as { history: unknown[] }).history)
+    expect(history).toContain('next')
+    expect(history).toContain('after')
+    expect(history.indexOf('SUMMARY')).toBeLessThan(history.indexOf('next'))
+    await session.destroy()
+  })
+
   it('refuses to resume a corrupt log', async () => {
     const dir = await tempDir('native-corrupt-')
     const provider = new NativeProvider({ stateDir: dir })
