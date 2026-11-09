@@ -106,10 +106,14 @@ async function sendTurn(sm: SessionManager, id: string, text = PROMPT): Promise<
 
 /** Wait until the assistant reply is readable from the native log on disk —
  *  the durable half of the turn, not just the live frame. */
-async function waitForPersistedTurn(provider: NativeProvider, id: string): Promise<void> {
+async function waitForPersistedTurn(
+  provider: NativeProvider,
+  id: string,
+  marker = REPLY,
+): Promise<void> {
   await vi.waitFor(async () => {
     const page = await provider.readHistoryPage(id, { limit: 20 })
-    expect(JSON.stringify(page.messages)).toContain(REPLY)
+    expect(JSON.stringify(page.messages)).toContain(marker)
   }, { timeout: 5000 })
 }
 
@@ -193,6 +197,10 @@ describe('native provider persistence through SessionManager', () => {
     // parent prefix rather than everything.
     armStream(provider, CHILD_REPLY)
     await sendTurn(sm, child.id, CHILD_PROMPT)
+    // sendTurn only waits for the `result` frame; the assistant frame is
+    // flushed fire-and-forget and the awaited turn/end flush lands after
+    // runTurn emits it. Gate on the durable child turn before reading.
+    await waitForPersistedTurn(provider, child.id, CHILD_REPLY)
 
     const page = await sm.getHistoryPage(child.id, { limit: 10 })
     expect(pageText(page)).toContain(CHILD_PROMPT)
