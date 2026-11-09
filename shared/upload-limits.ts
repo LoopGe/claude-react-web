@@ -15,6 +15,12 @@ export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
  *  turn cannot attach an unbounded number of tiny images. */
 export const MAX_IMAGES_PER_MESSAGE = 20
 
+/** Decoded-pixel cap for one image (width × height). */
+export const MAX_IMAGE_PIXELS = 64_000_000
+
+/** Per-side pixel cap for one image. */
+export const MAX_IMAGE_DIMENSION = 65_535
+
 /** Base64 characters accepted in one message's image blocks. */
 export const MAX_MESSAGE_BASE64 = 28_000_000
 

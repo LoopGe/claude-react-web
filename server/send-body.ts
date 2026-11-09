@@ -1,9 +1,12 @@
 import type { ScheduledSendBody, ScheduledSendContentBlock } from '../shared/scheduled-send.js'
 import { isSupportedImageMediaType } from '../shared/image-media.js'
+import { inspectImageBytes } from '../shared/image-inspect.js'
 import { isFileBlock } from '../shared/attachments.js'
 import {
   MAX_FILES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
+  MAX_IMAGE_DIMENSION,
+  MAX_IMAGE_PIXELS,
   MAX_IMAGES_PER_MESSAGE,
   MAX_MESSAGE_BASE64,
 } from '../shared/upload-limits.js'
@@ -57,6 +60,19 @@ export function validateSendBody(raw: { text?: unknown; content?: unknown }): Se
     for (const [index, image] of images.entries()) {
       if (Buffer.byteLength(image.data, 'base64') > MAX_IMAGE_BYTES) {
         return { ok: false, status: 413, error: `image #${index + 1} exceeds ${MAX_IMAGE_BYTES} bytes` }
+      }
+      const inspected = inspectImageBytes(Buffer.from(image.data, 'base64'))
+      if (!inspected.ok) {
+        return { ok: false, status: 400, error: `image #${index + 1} is not a valid PNG, JPEG, GIF, or WebP image` }
+      }
+      if (inspected.image.mediaType !== image.mediaType) {
+        return { ok: false, status: 400, error: `image #${index + 1} bytes do not match declared type ${image.mediaType}` }
+      }
+      if (inspected.image.width * inspected.image.height > MAX_IMAGE_PIXELS) {
+        return { ok: false, status: 400, error: `image #${index + 1} exceeds ${MAX_IMAGE_PIXELS} pixels` }
+      }
+      if (Math.max(inspected.image.width, inspected.image.height) > MAX_IMAGE_DIMENSION) {
+        return { ok: false, status: 400, error: `image #${index + 1} exceeds ${MAX_IMAGE_DIMENSION} pixels per side` }
       }
     }
     return { ok: true, body: { content: raw.content as ScheduledSendContentBlock[] } }
