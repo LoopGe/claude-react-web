@@ -2671,7 +2671,7 @@ export class SessionManager {
     //    subprocess exits, releasing the file handle) before we unlink —
     //    otherwise Windows EPERM/EBUSY on a still-locked jsonl.
     if (opts?.deleteOriginal) {
-      await this.unload(id, { terminated: true, reason: 'discarded', removeFromStore: true })
+      await this.unload(id, { terminated: true, reason: 'discarded', removeFromStore: true, awaitDestroy: true })
       const providerName = metaX?.provider ?? this.defaultProvider
       const deletesViaProvider = Boolean(this.providers.get(providerName).deleteTranscript)
       await this.deleteProviderTranscript(providerName, id, { single: true })
@@ -7399,18 +7399,21 @@ export class SessionManager {
       // Read the meta BEFORE store.remove drops the entry — the worktree
       // info must survive long enough to drive the cleanup below.
       const meta = this.store?.get(id)
-      // Resolve the provider BEFORE the strict probe: a provider that owns
-      // its transcript storage (native) deletes it below via its own method,
-      // so the claude-specific findTranscriptFile probe must not run for it.
-      const providerName = meta?.provider ?? this.defaultProvider
-      const provider = this.providers.get(providerName)
-      const deletesViaProvider = Boolean(provider.deleteTranscript)
-      if (opts?.deleteTranscript && !deletesViaProvider) {
-        try {
-          await findTranscriptFile(id, { strict: true })
-        } catch (err) {
-          this.failPermanentDelete(id, true)
-          throw err
+      if (opts?.deleteTranscript) {
+        // Resolve the provider only on the permanent-delete path: an ordinary
+        // delete must not touch the registry after beginPermanentDelete (a
+        // throw there would leave the id tombstoned).
+        const provider = this.providers.get(meta?.provider ?? this.defaultProvider)
+        // A provider that owns its transcript storage (native) deletes it via
+        // its own method below, so the claude-specific findTranscriptFile
+        // probe must not run for it.
+        if (!provider.deleteTranscript) {
+          try {
+            await findTranscriptFile(id, { strict: true })
+          } catch (err) {
+            this.failPermanentDelete(id, true)
+            throw err
+          }
         }
       }
       const transcriptSidecar = opts?.deleteTranscript ? this.transcriptStores.get(id)?.sidecar : undefined
@@ -7439,6 +7442,9 @@ export class SessionManager {
         throw err
       }
       if (opts?.deleteTranscript) {
+        const providerName = meta?.provider ?? this.defaultProvider
+        const provider = this.providers.get(providerName)
+        const deletesViaProvider = Boolean(provider.deleteTranscript)
         // Process-wait failures are NOT rolled back: a live/wedged CLI must
         // not become resumable while it can still write the transcript.
         const closingHandles = this.closingHandles.get(id)
