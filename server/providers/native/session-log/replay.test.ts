@@ -1,0 +1,80 @@
+import { describe, expect, it } from 'vitest'
+import { contextSnapshot, historyFromEvents, repairInterruptedTurn, repairRenderableLines } from './replay.js'
+import type { NativeLogEvent } from './format.js'
+import type { RawLine } from '../../../history-reader.js'
+
+const lost = { seq: 0, type: 'session/context', text: 'ctx' } as const
+const user = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `u${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
+const assistant = (seq: number, content: unknown[]): NativeLogEvent => ({ seq, type: 'assistant', uuid: `a${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content } })
+const result = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'user', uuid: `r${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'ok' }], is_error: false }] } })
+
+describe('replay', () => {
+  it('rebuilds history, strips thinking and merges consecutive tool results', () => {
+    const events = [
+      lost, user(1, 'hi'),
+      assistant(2, [{ type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'calling' }, { type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }]),
+      result(3, 't1'), result(4, 't2'),
+      assistant(5, [{ type: 'text', text: 'done' }]),
+      { seq: 6, type: 'turn/end', reason: 'completed' } as const,
+    ]
+    const messages = historyFromEvents(events) as Array<{ role: string; content: unknown[] }>
+    expect(messages).toHaveLength(5) // ctx, user, assistant, merged tool results, assistant
+    expect(messages[2].content.some((b) => (b as { type: string }).type === 'thinking')).toBe(false)
+    expect(messages[3].content).toHaveLength(2)
+  })
+  it('synthesizes a result for every unanswered tool_use', () => {
+    const events = [user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }])]
+    const { synthetic } = repairInterruptedTurn(events)
+    expect(synthetic.map((e) => (e as { message: { content: Array<{ tool_use_id: string }> } }).message.content[0].tool_use_id)).toEqual(['t1', 't2'])
+  })
+  it('returns no synthetic events for a complete turn', () => {
+    expect(repairInterruptedTurn([user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]), result(2, 't1')]).synthetic).toEqual([])
+  })
+})
+
+describe('repairRenderableLines', () => {
+  const line = (type: 'user' | 'assistant', content: unknown[]): RawLine => ({
+    type,
+    uuid: `${type}-line`,
+    session_id: 's',
+    message: { role: type, content },
+  })
+  const now = () => new Date('2026-11-09T00:00:00.000Z')
+
+  it('adds a synthetic tool_result line for an unanswered tool_use', () => {
+    const synthetic = repairRenderableLines([line('assistant', [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }])], { now })
+    expect(synthetic).toHaveLength(1)
+    expect(synthetic[0]).toMatchObject({
+      type: 'user',
+      session_id: 's',
+      parent_tool_use_id: null,
+      timestamp: '2026-11-09T00:00:00.000Z',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 't1',
+          is_error: true,
+          content: [{ type: 'text', text: 'tool result missing (session interrupted)' }],
+        }],
+      },
+    })
+    expect(synthetic[0].uuid).toBeTruthy()
+  })
+
+  it('returns no lines when every tool_use is answered', () => {
+    const lines = [
+      line('assistant', [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]),
+      line('user', [{ type: 'tool_result', tool_use_id: 't1', content: [], is_error: false }]),
+    ]
+    expect(repairRenderableLines(lines, { now })).toEqual([])
+  })
+})
+
+describe('contextSnapshot', () => {
+  it('renders the working directory as a system reminder', () => {
+    const snapshot = contextSnapshot('/repo')
+    expect(snapshot).toContain('<system-reminder>Working directory: /repo\nCurrent time: ')
+    expect(snapshot).toContain('</system-reminder>')
+  })
+})
