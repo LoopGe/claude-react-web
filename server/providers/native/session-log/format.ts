@@ -72,12 +72,27 @@ export interface NativeSeedEndEvent {
   type: 'session/end-seed'
 }
 
+/** Append-only compaction boundary: everything before it is superseded by
+ *  `text` (the summary the model continues from). `context` is the
+ *  system-reminder snapshot captured at compaction time, kept separate from
+ *  the summary so replay can seed the model history with the same opening
+ *  context a fresh session gets. */
+export interface NativeCompactEvent {
+  seq: number
+  type: 'session/compact'
+  text: string
+  context: string
+  uuid: string
+  timestamp: string
+}
+
 export type NativeLogEvent =
   | NativeUserEvent
   | NativeAssistantEvent
   | NativeContextEvent
   | NativeTurnEndEvent
   | NativeSeedEndEvent
+  | NativeCompactEvent
 
 export type NativeEventInput =
   | Omit<NativeUserEvent, 'seq'>
@@ -85,6 +100,7 @@ export type NativeEventInput =
   | Omit<NativeContextEvent, 'seq'>
   | Omit<NativeTurnEndEvent, 'seq'>
   | Omit<NativeSeedEndEvent, 'seq'>
+  | Omit<NativeCompactEvent, 'seq'>
 
 const TURN_END_REASONS: readonly NativeTurnEndReason[] = [
   'completed',
@@ -114,6 +130,15 @@ function requireMessage(raw: JsonObject, role: 'user' | 'assistant', sessionId: 
 function requireString(raw: JsonObject, field: string, sessionId: string, path: string): string {
   const value = raw[field]
   if (typeof value !== 'string') corrupt(sessionId, path, `${raw.type} event ${field} must be a string`)
+  return value
+}
+
+/** A compact boundary's fields are all load-bearing (replay seeds the model
+ *  with `context` + `text` and the reader keys the summary line on `uuid`),
+ *  so an empty string is corruption, not a value. */
+function requireNonEmptyString(raw: JsonObject, field: string, sessionId: string, path: string): string {
+  const value = requireString(raw, field, sessionId, path)
+  if (value.length === 0) corrupt(sessionId, path, `${raw.type} event ${field} must be a non-empty string`)
   return value
 }
 
@@ -226,6 +251,16 @@ export function parseEventLine(
 
     case 'session/end-seed':
       return { seq, type: 'session/end-seed' }
+
+    case 'session/compact':
+      return {
+        seq,
+        type: 'session/compact',
+        text: requireNonEmptyString(raw, 'text', sessionId, path),
+        context: requireNonEmptyString(raw, 'context', sessionId, path),
+        uuid: requireNonEmptyString(raw, 'uuid', sessionId, path),
+        timestamp: requireNonEmptyString(raw, 'timestamp', sessionId, path),
+      }
 
     default:
       return corrupt(sessionId, path, `unknown event type '${String(raw.type)}'`)

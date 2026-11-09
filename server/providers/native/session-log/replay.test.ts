@@ -22,6 +22,18 @@ describe('replay', () => {
     expect(messages[2].content.some((b) => (b as { type: string }).type === 'thinking')).toBe(false)
     expect(messages[3].content).toHaveLength(2)
   })
+  it('starts model history at the last compact event', () => {
+    const events = [
+      user(0, 'old'),
+      assistant(1, [{ type: 'text', text: 'old reply' }]),
+      { seq: 2, type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: 't' } as const,
+      user(3, 'new'),
+    ]
+    const messages = historyFromEvents(events) as Array<{ role: string; content: unknown[] }>
+    expect(messages).toHaveLength(3) // context, summary, new user
+    expect(JSON.stringify(messages)).not.toContain('old reply')
+    expect(JSON.stringify(messages)).toContain('SUMMARY')
+  })
   it('synthesizes a result for every unanswered tool_use', () => {
     const events = [user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }])]
     const { synthetic } = repairInterruptedTurn(events)

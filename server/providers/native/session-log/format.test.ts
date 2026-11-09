@@ -22,6 +22,7 @@ describe('session log format', () => {
       { seq: 2, type: 'session/context', text: 'ctx' },
       { seq: 3, type: 'turn/end', reason: 'completed' },
       { seq: 4, type: 'session/end-seed' },
+      { seq: 5, type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: 't' },
     ]
     for (const [i, e] of events.entries()) {
       expect(parseEventLine(e, i, 's1', 'p')).toEqual(e)

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { NativeSessionLog } from './log.js'
 import { nativeHistoryCache } from './cache.js'
 import { readNativeHistoryEntries, readNativeHistoryPage } from './reader.js'
+import type { HistoryPage } from '../../../history-reader.js'
 
 let dir: string
 afterEach(async () => { if (dir) { nativeHistoryCache.invalidate('s1'); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } })
@@ -18,6 +19,23 @@ async function seedLog() {
   push({ type: 'assistant', uuid: 'a1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'two' }] } } as never)
   push({ type: 'user', uuid: 'u2', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'user', content: [{ type: 'text', text: 'three' }] } } as never)
   await log.flush(); await log.close()
+}
+
+async function seedLogWithCompact() {
+  dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+  const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+  const push = (e: never) => log.append(e)
+  push({ type: 'session/context', text: 'CTX' } as never)
+  push({ type: 'user', uuid: 'p1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'pre-compact' }] } } as never)
+  push({ type: 'assistant', uuid: 'p2', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'pre-compact reply' }] } } as never)
+  push({ type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:02.000Z' } as never)
+  push({ type: 'user', uuid: 'u3', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:03.000Z', message: { role: 'user', content: [{ type: 'text', text: 'post-compact' }] } } as never)
+  push({ type: 'assistant', uuid: 'a3', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:04.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'post-compact reply' }] } } as never)
+  await log.flush(); await log.close()
+}
+
+function pageText(page: HistoryPage): string {
+  return JSON.stringify(page)
 }
 
 describe('native history reader', () => {
@@ -42,6 +60,15 @@ describe('native history reader', () => {
     const entries = await readNativeHistoryEntries(dir, 's1')
     expect(entries.map((e) => (e.message as { uuid: string }).uuid)).toEqual(['u1', 'a1', 'u2'])
     expect((entries[0].message as { receivedAt?: number }).receivedAt).toBe(Date.parse('2026-11-09T00:00:00.000Z'))
+  })
+  it('pages and searches only after the last compact', async () => {
+    await seedLogWithCompact()
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    expect(pageText(page)).not.toContain('pre-compact')
+    expect(pageText(page)).toContain('SUMMARY')
+    expect(pageText(page)).toContain('post-compact')
+    const entries = await readNativeHistoryEntries(dir, 's1')
+    expect(JSON.stringify(entries)).not.toContain('pre-compact')
   })
   it('returns an empty page for a missing log', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-reader-'))

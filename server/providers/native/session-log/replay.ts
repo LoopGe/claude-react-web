@@ -10,7 +10,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { RawLine } from '../../../history-reader.js'
-import type { NativeLogEvent, NativeUserEvent } from './format.js'
+import type { NativeCompactEvent, NativeLogEvent, NativeUserEvent } from './format.js'
 
 /** The error text a repaired tool_result carries — mirrors the live loop's
  *  synthetic abort result, worded for a crash rather than a user interrupt. */
@@ -22,6 +22,14 @@ export type SyntheticUserEvent = Omit<NativeUserEvent, 'seq'>
 
 export interface RepairResult {
   synthetic: SyntheticUserEvent[]
+}
+
+/** Index of the last compact boundary, or -1 when the log has none. */
+function lastCompactIndex(events: readonly NativeLogEvent[]): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === 'session/compact') return i
+  }
+  return -1
 }
 
 interface BlockLike {
@@ -62,6 +70,9 @@ export function contextSnapshot(cwd: string): string {
  *   user message — the API requires every tool_result for an assistant turn
  *   in a single user message.
  * - `turn/end` and `session/end-seed` are log bookkeeping, not model messages.
+ * - a `session/compact` event is a floor: everything before the LAST one is
+ *   superseded by the captured context snapshot and the summary, so replay
+ *   starts there instead of rebuilding the pre-compact conversation.
  */
 export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] {
   const messages: Array<{ role: 'user' | 'assistant'; content: unknown[] }> = []
@@ -69,7 +80,17 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
   // their blocks here instead of starting a new message.
   let openResults: { role: 'user'; content: unknown[] } | null = null
 
-  for (const event of events) {
+  const compactIndex = lastCompactIndex(events)
+  let start = 0
+  if (compactIndex !== -1) {
+    const compact = events[compactIndex] as NativeCompactEvent
+    messages.push({ role: 'user', content: [{ type: 'text', text: compact.context }] })
+    messages.push({ role: 'user', content: [{ type: 'text', text: compact.text }] })
+    start = compactIndex + 1
+  }
+
+  for (let i = start; i < events.length; i++) {
+    const event = events[i]
     switch (event.type) {
       case 'session/context':
         messages.push({ role: 'user', content: [{ type: 'text', text: event.text }] })
