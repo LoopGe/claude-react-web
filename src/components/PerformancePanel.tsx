@@ -215,6 +215,8 @@ export function PerformancePanel() {
             <span>ring images <b>{data.gauges['session_ring_images'] ?? 0}</b></span>
             <span>transcript image bytes <b>{formatBytes(data.gauges['session_transcript_image_base64_bytes'] ?? 0)}</b></span>
             <span>transcript images <b>{data.gauges['session_transcript_images'] ?? 0}</b></span>
+            <span>transcript jsonl <b>{formatBytes(data.gauges['session_jsonl_bytes'] ?? 0)}</b></span>
+            <span>transcript jsonl max <b>{formatBytes(data.gauges['session_jsonl_bytes_max'] ?? 0)}</b></span>
           </div>
         </section>
 

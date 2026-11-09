@@ -98,6 +98,8 @@ describe('PerformancePanel', () => {
         session_ring_images: 3,
         session_transcript_image_base64_bytes: 8 * 1024 * 1024,
         session_transcript_images: 12,
+        session_jsonl_bytes: 12 * 1024 * 1024,
+        session_jsonl_bytes_max: 5 * 1024 * 1024,
       },
       counters: { ...sample.counters, user_message_images: 4, user_message_image_base64_bytes: 5000 },
     }
@@ -106,6 +108,10 @@ describe('PerformancePanel', () => {
     expect(container.textContent).toContain('2.0 MB')
     expect(container.textContent).toContain('transcript image bytes')
     expect(container.textContent).toContain('8.0 MB')
+    expect(container.textContent).toContain('transcript jsonl')
+    expect(container.textContent).toContain('12.0 MB')
+    expect(container.textContent).toContain('transcript jsonl max')
+    expect(container.textContent).toContain('5.0 MB')
     expect(container.textContent).toContain('user_message_images')
     expect(container.textContent).toContain('user_message_image_base64_bytes')
   })

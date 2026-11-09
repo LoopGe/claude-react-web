@@ -59,6 +59,7 @@ import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, s
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { ringImagePayload } from './ring-metrics.js'
+import { jsonlSizeSummary } from './jsonl-metrics.js'
 import { execCommand, escapeXml } from './exec.js'
 import { invalidateClaudeHealth } from './routes/health-routes.js'
 import { config as defaultConfig, DEFAULT_PROFILE, type ProviderProfile } from './config.js'
@@ -1021,7 +1022,7 @@ export class SessionManager {
       workingStuckMs: opts.workingStuckMs ?? defaultConfig.workingStuckMs,
       unload: (id, opts) => this.unload(id, opts),
       sweepOrphanWorktrees: () => this.sweepOrphansTick(),
-      onGcTick: () => this.recordImageRetentionMetrics(),
+      onGcTick: () => { void this.recordRetentionMetrics() },
     })
 
     // RecapManager — owns the lifecycle (pending — ready/error) for the
@@ -3780,6 +3781,12 @@ export class SessionManager {
     const forSdk = files !== undefined && files.length > 0
       ? projectFileBlocksForSdk(userMsg, files)
       : { ...userMsg }
+    // Record the sent prompt BEFORE enqueue: a provider that consumes the
+    // message synchronously (the native direct hand-off) pairs the uuid inside
+    // enqueueUserMessage's consume callback, which runs before this method
+    // returns. Claude is unaffected — its pairing happens later in
+    // onPromptEcho when the SDK replays the prompt.
+    this.recordPromptUuid(s, userMsg)
     s.handle.enqueueUserMessage(forSdk)
     // Direct-hand-off case: the consume hook already ran, synchronously,
     // inside enqueueUserMessage. Carry its stamp onto the copy that enters
@@ -3787,7 +3794,6 @@ export class SessionManager {
     const consumedAt = (forSdk as { consumedAt?: number }).consumedAt
     if (typeof consumedAt === 'number') stampConsumedAt(userMsg, consumedAt)
     this.pushToSession(s, userMsg)
-    this.recordPromptUuid(s, userMsg)
   }
 
   /** Try to route a mid-turn plain-text message into steering (spec §6.1).
@@ -6880,6 +6886,20 @@ export class SessionManager {
     if (typeof uuid !== 'string') return
     const s = this.sessions.get(id)
     if (s) {
+      // Providers that never replay a top-level user prompt (the native
+      // provider) persist the app-minted uuid themselves, so consumption is
+      // the pairing point; without this every sent prompt stays unpaired and
+      // `promptUuids` grows without bound. Claude keeps the SDK-echo pairing
+      // in onPromptEcho. `turnActive` mirrors what the echo sets there — the
+      // provider has taken the turn.
+      if (s.handle.echoesUserPrompts === false) {
+        const list = s.promptUuids
+        if (list) {
+          const idx = list.findIndex((e) => e.v == null && e.u === uuid)
+          if (idx >= 0) list[idx] = { ...list[idx], v: uuid }
+        }
+        s.turnActive = true
+      }
       for (let i = s.history.length - 1; i >= 0; i--) {
         const entry = s.history[i] as { type?: string; uuid?: string } | undefined
         if (entry?.type === 'user' && entry.uuid === uuid) {
@@ -6998,23 +7018,45 @@ export class SessionManager {
     })
   }
 
-  /** Record retained image payload: the bounded ring and the unbounded seq
-   *  store, kept as separate gauges so neither double-counts the other. The
-   *  health monitor's 60s tick calls this, so the measurement adds no timer. */
-  private recordImageRetentionMetrics(): void {
-    const ring = ringImagePayload(this.sessions.values())
-    let transcriptImages = 0
-    let transcriptBytes = 0
-    for (const s of this.sessions.values()) {
-      const payload = this.transcriptStores.get(s.id)?.store.imagePayload()
-      if (payload === undefined) continue
-      transcriptImages += payload.images
-      transcriptBytes += payload.bytes
+  /** Record retained image payload: the bounded ring, the unbounded seq store,
+   *  and the SDK-owned transcript JSONL. The first two are separate gauges so
+   *  neither double-counts the other; the JSONL is measured separately because
+   *  attachment references cannot shrink the SDK's own copy. The health
+   *  monitor's 60s tick calls this, so the measurement adds no timer. */
+  private async recordRetentionMetrics(): Promise<void> {
+    try {
+      const sessions = [...this.sessions.values()]
+      const files = await Promise.all(
+        sessions.map((s) => (
+          // Only the claude provider owns a CLI JSONL; native/other providers
+          // would pay a projects-dir scan for a file that cannot exist.
+          s.provider === 'claude' ? findTranscriptFile(s.id).catch(() => null) : Promise.resolve(null)
+        )),
+      )
+      const ring = ringImagePayload(sessions)
+      let transcriptImages = 0
+      let transcriptBytes = 0
+      const jsonlSizes: number[] = []
+      for (let i = 0; i < sessions.length; i++) {
+        const session = sessions[i]!
+        const payload = this.transcriptStores.get(session.id)?.store.imagePayload()
+        if (payload !== undefined) {
+          transcriptImages += payload.images
+          transcriptBytes += payload.bytes
+        }
+        const file = files[i]
+        if (file !== null && file !== undefined) jsonlSizes.push(file.size)
+      }
+      metrics.gauge('session_ring_images', ring.images)
+      metrics.gauge('session_ring_image_base64_bytes', ring.bytes)
+      metrics.gauge('session_transcript_images', transcriptImages)
+      metrics.gauge('session_transcript_image_base64_bytes', transcriptBytes)
+      const jsonl = jsonlSizeSummary(jsonlSizes)
+      metrics.gauge('session_jsonl_bytes', jsonl.total)
+      metrics.gauge('session_jsonl_bytes_max', jsonl.max)
+    } catch (err) {
+      log.warn(`retention metrics failed: ${(err as Error).message ?? err}`)
     }
-    metrics.gauge('session_ring_images', ring.images)
-    metrics.gauge('session_ring_image_base64_bytes', ring.bytes)
-    metrics.gauge('session_transcript_images', transcriptImages)
-    metrics.gauge('session_transcript_image_base64_bytes', transcriptBytes)
   }
 
   // ---------------------------------------------------------------------------
