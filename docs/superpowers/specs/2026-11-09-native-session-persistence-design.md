@@ -310,4 +310,4 @@ P1.1 在持久化之上补两件事：跨 turn 复用稳定的 prompt 前缀（p
 ### Usage
 
 - `usageByModel` 跨压缩保持累计（计费不因压缩丢失）。
-- context-window 的 usage 从压缩后的对话重新开始（ContextBar 在压缩后回到低位）。
+- context-window 的 usage 从压缩后的对话重新开始：`compactInPlace` 清零 provider 的 `lastUsage`，manager 清空 `lastContextUsage`。已渲染的 ContextBar 在下一次 turn 产出新的 usage 前仍显示压缩前的百分比（不额外广播 reset）。
