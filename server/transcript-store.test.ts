@@ -63,6 +63,17 @@ describe('TranscriptStore', () => {
     expect(s.record('u2')).toBe(0)
     expect(s.seqOf('u1')).toBeUndefined()
   })
+  it('continueGeneration carries a store swap onto the next generation', () => {
+    // In-place compaction swaps the store: seqs restart at 0 but the
+    // generation must keep climbing, or the client's session-cleared floor
+    // (old + 1) can never be met.
+    const s = new TranscriptStore('sid')
+    s.continueGeneration(4)
+    expect(s.generation).toBe(5)
+    expect(s.headSeq).toBe(0)
+    s.record('u1')
+    expect(s.window(undefined, 10)).toMatchObject({ generation: 5, headSeq: 1 })
+  })
   it('hydrate restores indexes and tombstones', () => {
     const s = new TranscriptStore('sid')
     s.hydrate([

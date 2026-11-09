@@ -323,6 +323,10 @@ describe('native provider persistence through SessionManager', () => {
     }, { timeout: 5000 })
 
     expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1)
+    // Fresh seq space (boundary + summary) under the NEXT generation: the
+    // store was created at 0 and the reset must CONTINUE the counter (clients
+    // arm a `generation + 1` floor on `session-cleared`), not restart it.
+    expect(sm.transcriptHead(info.id)).toEqual({ generation: 1, headSeq: 2 })
     const s = liveSession(sm, info.id)
     expect(JSON.stringify(s.history)).toContain('MOCK SUMMARY')
     // The pre-compact turn is gone from the ring and from the disk page.

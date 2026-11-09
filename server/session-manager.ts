@@ -4732,9 +4732,11 @@ export class SessionManager {
    *  ring, prompt-uuid pairing, steering in-flight map, withdrawal window,
    *  deferred snapshot anchors and the cached context usage all describe the
    *  pre-compact conversation. The durable seq sidecar is deleted BEFORE the
-   *  new compact frames are recorded, so their seqs restart at 0. Background
-   *  task records and file snapshots survive (the provider's compaction does
-   *  not touch them). The client resets its transcript on the
+   *  new compact frames are recorded, so their seqs restart at 0 — and the
+   *  seq GENERATION is carried forward (`old + 1`) onto the fresh store, which
+   *  is the universe change the client's `session-cleared` floor expects.
+   *  Background task records and file snapshots survive (the provider's
+   *  compaction does not touch them). The client resets its transcript on the
    *  `session-cleared` signal, then paints the new divider + summary. */
   private async maybeAutoCompact(s: Session): Promise<void> {
     if (!defaultConfig.nativeAutoCompact) return
@@ -4757,8 +4759,14 @@ export class SessionManager {
       const preTokens = usage.totalTokens
       const uuid = randomUUID()
       const timestamp = new Date().toISOString()
+      // The seq generation must survive the store swap below: `session-cleared`
+      // makes every client arm a `generation + 1` floor, and the re-created
+      // store starts at 0. Carrying the bump is what lets the follow-up tail
+      // fetch and live frames re-anchor instead of retrying forever.
+      const prevGeneration = this.transcriptStores.get(s.id)?.store.generation ?? 0
       await compactInPlace.call(s.handle, summary, { uuid, timestamp })
       await this.removeTranscriptState(s.id)
+      this.getOrCreateTranscript(s.id).store.continueGeneration(prevGeneration)
       s.history = []
       s.subagentHistory = []
       s.promptUuids = []

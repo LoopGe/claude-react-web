@@ -193,6 +193,16 @@ export class TranscriptStore {
     return false
   }
 
+  /** 跨 store 实例续上世代（in-place compact）：同一个 session id 换了一个
+   *  全新的 store（seq 从 0 重新分配），但 generation 必须继续增长——客户端
+   *  把 generation 变化视为「旧宇宙已死」并重新锚定，而 `session-cleared`
+   *  处理器把 stale floor 置为 `oldGeneration + 1`；若新 store 从 0 开始，
+   *  `/messages` 与 live 帧永远低于这个 floor，所有已连接标签页都会卡在
+   *  transcript 加载失败。 */
+  continueGeneration(previous: number): void {
+    this.generation = previous + 1
+  }
+
   /** 世代切换（/clear）：generation+1，seq 归零，清空索引。
    *  注意（frame-bridge.ts messageFrameJson 的 frame-cache 不变量）：
    *  reset() 之后若该 session 仍在向已连接客户端广播，必须让
