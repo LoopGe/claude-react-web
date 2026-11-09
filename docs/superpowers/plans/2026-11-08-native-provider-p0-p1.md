@@ -2374,6 +2374,7 @@ git commit -m "test(native): end-to-end smoke through SessionManager"
 ## Out of scope (P2+ reminders, do NOT implement here)
 
 - Resume/fork of native sessions, persistence to disk (native sessions are memory-only in P1 — deleting the process loses them; document this in the session list UI in P2).
+- Persistence, resume, fork and side chat are implemented by `docs/superpowers/plans/2026-11-09-native-session-persistence.md`; this plan stays memory-only.
 - `stream_event` client polish (the frames are emitted; the client already renders them).
 - Streaming text ordering: the loop emits `stream_event` frames live but the `assistant` finalize frame lands only at `message_stop` — matches how the client already handles claude sessions.
 - Provider selection UI in the client, model catalogs, compaction, MCP, subagents, sandbox modes, multi-protocol adapters.
