@@ -53,7 +53,7 @@ describe('native provider through SessionManager', () => {
     dirs.push(dir)
     const store = new SessionStore({ stateDir: dir })
     await store.load()
-    const provider = new NativeProvider()
+    const provider = new NativeProvider({ stateDir: dir })
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of textTurn('hello native')) yield ev
     }
