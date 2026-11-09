@@ -24,7 +24,13 @@ import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.j
 import { runTurn, type LoopDeps } from './loop.js'
 import { streamAnthropicMessages } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
-import { apiRetryFrame, defaultFrameContext, resultFrame, type FrameContext, type Usage } from './frames.js'
+import { apiRetryFrame, defaultFrameContext, resultFrame, type Frame, type FrameContext, type Usage } from './frames.js'
+import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
+import { buildForkSeed } from './session-log/fork.js'
+import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
+import { NativeSessionStorageError } from './session-log/errors.js'
+import { nativeSessionLogPath } from './session-log/paths.js'
+import type { NativeLogEvent } from './session-log/format.js'
 import type { ToolDef } from './tools/types.js'
 
 const log = createLogger('native')
@@ -36,6 +42,14 @@ const CONTEXT_WINDOW = 200_000
 export interface NativeSessionOptions {
   id: string
   cwd: string
+  /** Resolved native state dir (`<stateDir>/native-sessions/<id>/session.v1.jsonl`). */
+  stateDir: string
+  /** Resume this session's own log (non-fork), or the source log id for a fork. */
+  resume?: string
+  /** Fork from `resume`'s log into `id` instead of resuming it. */
+  forkSession?: boolean
+  /** Fork cut point: the assistant message uuid to keep, inclusive. */
+  resumeSessionAt?: string
   model?: string
   permissionMode?: string
   /** Resolved lazily, on the first real network turn — a session must be
@@ -56,16 +70,18 @@ export interface NativeSessionOptions {
   streamSupplier?: () => LoopDeps['stream'] | undefined
 }
 
-function contextSnapshot(cwd: string): string {
-  return `<system-reminder>Working directory: ${cwd}\nCurrent time: ${new Date().toISOString()}</system-reminder>`
-}
-
 export class NativeSession implements ProviderSessionHandle {
   readonly provider = 'native'
 
   private readonly output: Pushable<AgentMessage>
   private readonly input: AgentUserMessage[] = []
   private readonly ctx: FrameContext
+  /** Append-only persistence for this session. Every constructor path opens it
+   *  (fresh create, resume, or fork-seeded) before `system/init` is pushed. */
+  private readonly log: NativeSessionLog
+  /** Arrival time per queued turn — written to the log when the pump consumes
+   *  the message, never at enqueue time (a drained turn must not persist). */
+  private readonly receivedAt = new WeakMap<AgentUserMessage, number>()
   /** Session-level abort (abort()/destroy()). Never aborted by a mere interrupt. */
   private readonly sessionAbort = new AbortController()
   /** Per-turn abort, replaced by pumpLoop for every turn. */
@@ -91,11 +107,17 @@ export class NativeSession implements ProviderSessionHandle {
     this.ctx = defaultFrameContext(opts.id)
     this.model = opts.model ?? DEFAULT_MODEL
     this.permissionMode = opts.permissionMode ?? 'default'
-    // History-only context snapshot (user-role, per the DSH design): NEVER
-    // emitted as a frame — user frames carry only tool_result content (the
-    // frame contract), and the manager's echo filter would drop or double-
-    // render a text user frame.
-    this.history.push({ role: 'user', content: [{ type: 'text', text: contextSnapshot(opts.cwd) }] })
+    // The mode switch owns the log, the model history, and the usage
+    // counters. It runs before `system/init` so a storage failure (fresh id
+    // that already has a log, corrupt resume) throws out of createSession
+    // instead of leaving a half-started session.
+    if (opts.forkSession && opts.resume) {
+      this.log = this.openForkLog(opts, opts.resume)
+    } else if (opts.resume) {
+      this.log = this.openResumeLog(opts)
+    } else {
+      this.log = this.openFreshLog(opts)
+    }
     // session-health's stuck-GC force-unloads sessions whose init never
     // lands — push it first, before any turn output.
     this.output.push({
@@ -105,6 +127,83 @@ export class NativeSession implements ProviderSessionHandle {
       uuid: this.ctx.uuid(),
       parent_tool_use_id: null,
     } as unknown as AgentMessage)
+  }
+
+  /** Fresh session: the log is created here, and its opening `session/context`
+   *  is the first model message (history-only, per the DSH design — never a
+   *  frame). An existing log for this id is left untouched: `open` throws
+   *  `kind: 'exists'`. */
+  private openFreshLog(opts: NativeSessionOptions): NativeSessionLog {
+    const log = NativeSessionLog.open({ stateDir: opts.stateDir, id: opts.id, cwd: opts.cwd, resume: false })
+    const context = log.append({ type: 'session/context', text: contextSnapshot(opts.cwd) })
+    this.history.push(...historyFromEvents([context]))
+    void log.flush()
+    return log
+  }
+
+  /** Resume: rebuild model history from the persisted events, repairing any
+   *  tool_use a crash left unanswered (the API rejects invalid tool history).
+   *  The synthetic results are appended so they survive the next restart too. */
+  private openResumeLog(opts: NativeSessionOptions): NativeSessionLog {
+    const log = NativeSessionLog.open({ stateDir: opts.stateDir, id: opts.id, cwd: opts.cwd, resume: true })
+    const events = log.events.slice()
+    const { synthetic } = repairInterruptedTurn(events)
+    for (const event of synthetic) log.append(event)
+    if (synthetic.length > 0) void log.flush()
+    // `append` mutated log.events, so this is the original prefix plus the
+    // synthetic results (now seq-numbered).
+    this.history.push(...historyFromEvents(log.events))
+    this.restoreUsage(events)
+    return log
+  }
+
+  /** Fork: copy the source log (up to `resumeSessionAt`) into a new seeded
+   *  log for `opts.id`, then start from the seed's model history. */
+  private openForkLog(opts: NativeSessionOptions, sourceId: string): NativeSessionLog {
+    const source = loadNativeSessionLogSync(opts.stateDir, sourceId)
+    if (!source) {
+      const path = nativeSessionLogPath(opts.stateDir, sourceId)
+      throw new NativeSessionStorageError(
+        'missing',
+        `no session log to fork from at ${path}`,
+        sourceId,
+        path,
+      )
+    }
+    const seed = buildForkSeed({
+      source,
+      sourceId,
+      newId: opts.id,
+      cwd: opts.cwd,
+      resumeSessionAt: opts.resumeSessionAt,
+    })
+    const log = NativeSessionLog.open({
+      stateDir: opts.stateDir,
+      id: opts.id,
+      cwd: opts.cwd,
+      resume: false,
+      seed,
+    })
+    this.history.push(...historyFromEvents(seed.events))
+    return log
+  }
+
+  /** Restore the usage counters from `turn/end` events. A seeded fork's
+   *  `turn/end { reason: 'forked' }` carries no usage and is skipped, so it
+   *  neither resets `lastUsage` nor contributes to `totalUsage`. */
+  private restoreUsage(events: readonly NativeLogEvent[]): void {
+    let last: Usage = { input_tokens: 0, output_tokens: 0 }
+    let total: Usage = { input_tokens: 0, output_tokens: 0 }
+    for (const event of events) {
+      if (event.type !== 'turn/end' || !event.usage) continue
+      last = { input_tokens: event.usage.input_tokens, output_tokens: event.usage.output_tokens }
+      total = {
+        input_tokens: total.input_tokens + event.usage.input_tokens,
+        output_tokens: total.output_tokens + event.usage.output_tokens,
+      }
+    }
+    this.lastUsage = last
+    this.totalUsage = total
   }
 
   readonly abortSignal = this.sessionAbort.signal
@@ -167,15 +266,57 @@ export class NativeSession implements ProviderSessionHandle {
     return testStream ? testStream(req) : this.defaultStream(req)
   }
 
+  /** Persist the durable half of the frame stream: model-visible assistant
+   *  messages and top-level tool_result user messages. Everything else
+   *  (stream_event, system/init, result, api_retry) is UI-only and never
+   *  enters the log. Fire-and-forget — the turn-end flush is the barrier. */
+  private persistFrame(frame: AgentMessage): void {
+    const f = frame as Frame
+    if (f.type === 'assistant') {
+      this.log.append({
+        type: 'assistant',
+        uuid: f.uuid!,
+        session_id: this.opts.id,
+        parent_tool_use_id: null,
+        timestamp: new Date().toISOString(),
+        message: f.message,
+      })
+      void this.log.flush()
+    } else if (f.type === 'user' && f.parent_tool_use_id === null) {
+      this.log.append({
+        type: 'user',
+        uuid: f.uuid!,
+        session_id: this.opts.id,
+        parent_tool_use_id: null,
+        timestamp: new Date().toISOString(),
+        message: f.message as unknown as { role: 'user'; content: unknown[] },
+      })
+      void this.log.flush()
+    }
+  }
+
   private async pumpLoop(): Promise<void> {
     while (!this._closed && this.input.length > 0) {
       const next = this.input.shift() as AgentUserMessage
       this.opts.onUserMessageConsumed?.(next)
-      // Fresh per-turn signal: interrupt() kills THIS turn only; the session
-      // survives for the next message (a one-shot controller would brick it).
+      // Fresh per-turn signal, armed BEFORE the persistence await: interrupt()
+      // kills THIS turn only, and must stay responsive while the consumed
+      // turn's write is in flight (the session survives for the next message).
       const turnAbort = new AbortController()
       this.turnAbort = turnAbort
       const turnSignal = AbortSignal.any([this.sessionAbort.signal, turnAbort.signal])
+      // The turn is consumed now, so it is now part of the conversation: write
+      // it (and wait for the write) before the model sees it. A queued turn
+      // that gets drained without ever reaching this point is never persisted.
+      this.log.append({
+        type: 'user',
+        uuid: next.uuid!,
+        session_id: this.opts.id,
+        parent_tool_use_id: null,
+        timestamp: new Date(this.receivedAt.get(next)!).toISOString(),
+        message: next.message as unknown as { role: 'user'; content: unknown[] },
+      })
+      await this.log.flush()
       try {
         const res = await runTurn(
           {
@@ -183,7 +324,10 @@ export class NativeSession implements ProviderSessionHandle {
             tools: this.opts.tools,
             cwd: this.opts.cwd,
             requestPermission: this.requestPermission,
-            emit: (frame) => this.output.push(frame),
+            emit: (frame) => {
+              this.persistFrame(frame)
+              this.output.push(frame)
+            },
             system: this.opts.system,
           },
           this.ctx,
@@ -199,6 +343,8 @@ export class NativeSession implements ProviderSessionHandle {
           input_tokens: this.totalUsage.input_tokens + res.usage.input_tokens,
           output_tokens: this.totalUsage.output_tokens + res.usage.output_tokens,
         }
+        this.log.append({ type: 'turn/end', reason: 'completed', usage: res.usage })
+        await this.log.flush()
       } catch (err) {
         // The other half of the single result-emission point: classify an
         // interrupt (this turn's abort, session still alive) vs a real error,
@@ -214,6 +360,12 @@ export class NativeSession implements ProviderSessionHandle {
           durationMs: 0,
           isError: true,
         }))
+        this.log.append({
+          type: 'turn/end',
+          reason: interrupted ? 'interrupted' : 'error',
+          usage: this.lastUsage,
+        })
+        await this.log.flush()
       } finally {
         this.turnAbort = null
       }
@@ -222,6 +374,10 @@ export class NativeSession implements ProviderSessionHandle {
 
   enqueueUserMessage(message: AgentUserMessage): void {
     if (this._closed) return
+    // Arrival time only — the message is not part of the conversation until
+    // the pump consumes it (see pumpLoop). The WeakMap keeps the provider's
+    // AgentUserMessage contract untouched.
+    this.receivedAt.set(message, Date.now())
     this.input.push(message)
     if (!this.pumping) {
       this.pumping = true
@@ -236,6 +392,18 @@ export class NativeSession implements ProviderSessionHandle {
    *  semantics). Append it to the history the next turn sends; no frame —
    *  the manager broadcasts the seed itself. */
   sendControlMessage(message: AgentUserMessage): void {
+    // The compact seed is a durable conversation message even though it never
+    // starts a turn: persist it, then make it visible to the next request.
+    this.log.append({
+      type: 'user',
+      uuid: message.uuid!,
+      session_id: this.opts.id,
+      parent_tool_use_id: null,
+      timestamp: new Date().toISOString(),
+      message: message.message as unknown as { role: 'user'; content: unknown[] },
+      isCompactSummary: true,
+    })
+    void this.log.flush()
     this.history.push({ role: 'user', content: message.message.content })
   }
 
@@ -291,5 +459,6 @@ export class NativeSession implements ProviderSessionHandle {
     this._closed = true
     this.sessionAbort.abort(new Error('destroyed'))
     this.output.end()
+    await this.log.close()
   }
 }

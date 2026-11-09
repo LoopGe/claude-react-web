@@ -9,6 +9,7 @@ import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, Provide
 import type { LoopDeps } from './loop.js'
 import { PromptSectionRegistry, IDENTITY_SECTION } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
+import { resolveNativeStateDir } from './session-log/paths.js'
 import { bashTool } from './tools/bash.js'
 import { readTool } from './tools/read.js'
 import { writeTool } from './tools/write.js'
@@ -20,6 +21,8 @@ const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool]
 
 export class NativeProvider implements AgentProvider {
   readonly name = 'native'
+  /** Native session logs live under `<stateDir>/native-sessions/`. */
+  readonly stateDir: string
   readonly capabilities: ProviderCapabilities = {
     supportsFineGrainedPermissions: true,
     supportsMcp: false,
@@ -49,6 +52,10 @@ export class NativeProvider implements AgentProvider {
    *  script between turns. Not part of the public contract. */
   _testStream?: LoopDeps['stream']
 
+  constructor(opts: { stateDir?: string } = {}) {
+    this.stateDir = resolveNativeStateDir(opts.stateDir)
+  }
+
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
     // One registry per session: sections are stable per conversation in P1.
     const registry = new PromptSectionRegistry()
@@ -59,6 +66,10 @@ export class NativeProvider implements AgentProvider {
     return new NativeSession({
       id: opts.id,
       cwd: opts.cwd ?? process.cwd(),
+      stateDir: this.stateDir,
+      resume: opts.resume,
+      forkSession: opts.forkSession,
+      resumeSessionAt: opts.resumeSessionAt,
       model: opts.model,
       permissionMode: opts.permissionMode,
       credentials: () => ({

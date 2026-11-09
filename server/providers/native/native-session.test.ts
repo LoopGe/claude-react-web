@@ -1,6 +1,13 @@
 // server/providers/native/native-session.test.ts
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { NativeProvider } from './native-provider.js'
+import { NativeSessionStorageError } from './session-log/errors.js'
+import { loadNativeSessionLogSync } from './session-log/log.js'
+import { nativeSessionLogPath } from './session-log/paths.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { Frame } from './frames.js'
 
@@ -14,10 +21,38 @@ function textTurn(text: string): CanonicalEvent[] {
   ]
 }
 
+/** A tool-calling response that leaves the tool unanswered when the caller
+ *  refuses/crashes before the result is produced. */
+function toolTurn(toolUseId: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'Read' } },
+    { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: '{"file_path":"package.json"}' } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
+}
+
+const tempDirs: string[] = []
+
+/** A fresh temp state dir per test — the provider's default state dir is the
+ *  real `~/.claude-react-web`, which a test must never touch. */
+async function tempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix))
+  tempDirs.push(dir)
+  return dir
+}
+
+afterEach(async () => {
+  for (const dir of tempDirs.splice(0)) {
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }
+})
+
 /** Inject a scripted streamer through the provider's test seam. The seam is
  *  evaluated PER TURN, so reassigning it between turns swaps the script. */
-function providerWithStreamer(scripts: CanonicalEvent[][]) {
-  const provider = new NativeProvider()
+function providerWithStreamer(scripts: CanonicalEvent[][], stateDir: string) {
+  const provider = new NativeProvider({ stateDir })
   ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
     for (const ev of scripts.shift() ?? []) yield ev
   }
@@ -34,9 +69,36 @@ function userMsg(text: string) {
   }
 }
 
+interface LogEventLike {
+  type: string
+  reason?: string
+  text?: string
+  isCompactSummary?: boolean
+  message?: { content?: Array<Record<string, unknown>> }
+}
+
+interface LogLike {
+  header: { id: string; isSeeded: boolean; inheritedEventCount: number }
+  events: LogEventLike[]
+}
+
+function logOf(session: unknown): LogLike {
+  return (session as { log: LogLike }).log
+}
+
+/** Text blocks carried by persisted user events, in order. */
+function userTexts(session: unknown): string[] {
+  return logOf(session).events
+    .filter((event) => event.type === 'user')
+    .flatMap((event) => event.message?.content ?? [])
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text as string)
+}
+
 describe('NativeSession', () => {
   it('emits init, then a full turn of frames for a text-only response', async () => {
-    const provider = providerWithStreamer([textTurn('hello native')])
+    const dir = await tempDir('native-session-')
+    const provider = providerWithStreamer([textTurn('hello native')], dir)
     const session = provider.createSession({ id: 's1', cwd: process.cwd() })
     const frames: Frame[] = []
     void (async () => {
@@ -60,7 +122,8 @@ describe('NativeSession', () => {
   })
 
   it('interrupt during a turn emits exactly one result frame and the session still works', async () => {
-    const provider = new NativeProvider()
+    const dir = await tempDir('native-session-')
+    const provider = new NativeProvider({ stateDir: dir })
     // Streamer that hangs until its signal aborts — the seam the real
     // defaultStream honors too (fetch rejects on abort).
     ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
@@ -101,7 +164,8 @@ describe('NativeSession', () => {
   })
 
   it('getContextUsage reflects the last turn usage', async () => {
-    const provider = providerWithStreamer([textTurn('x')])
+    const dir = await tempDir('native-session-')
+    const provider = providerWithStreamer([textTurn('x')], dir)
     const session = provider.createSession({ id: 's2', cwd: process.cwd() })
     const frames: Frame[] = []
     void (async () => {
@@ -121,7 +185,8 @@ describe('NativeSession', () => {
   })
 
   it('interrupt during tool processing does not park the turn: next tool skipped, exactly one interrupted result', async () => {
-    const provider = new NativeProvider()
+    const dir = await tempDir('native-session-')
+    const provider = new NativeProvider({ stateDir: dir })
     // One response carrying TWO tool_use blocks — the abort lands while the
     // first tool is being processed, so the second must never execute.
     const twoToolScript: CanonicalEvent[] = [
@@ -174,11 +239,166 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
-  it('capabilities declare interrupt and no MCP', () => {
-    const provider = new NativeProvider()
+  it('capabilities declare interrupt and no MCP', async () => {
+    const dir = await tempDir('native-session-')
+    const provider = new NativeProvider({ stateDir: dir })
     expect(provider.name).toBe('native')
     expect(provider.capabilities.supportsInterrupt).toBe(true)
     expect(provider.capabilities.supportsMcp).toBe(false)
     expect(provider.capabilities.supportsFineGrainedPermissions).toBe(true)
+  })
+
+  it('persists a turn and resumes it with model history', async () => {
+    const dir = await tempDir('native-persist-')
+    const provider = new NativeProvider({ stateDir: dir })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () { for (const ev of textTurn('hello')) yield ev }
+    const first = provider.createSession({ id: 's1', cwd: dir })
+    void (async () => { for await (const _ of first.messages) { /* drain */ } })()
+    first.enqueueUserMessage(userMsg('hi') as never)
+    await vi.waitFor(() => {
+      const log = logOf(first)
+      expect(log.events.some((e) => e.type === 'turn/end')).toBe(true)
+    })
+    await first.destroy()
+
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () { for (const ev of textTurn('again')) yield ev }
+    const resumed = provider.createSession({ id: 's1', cwd: dir, resume: 's1' })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of resumed.messages) frames.push(f as Frame) })()
+    await vi.waitFor(() => expect(frames[0]).toMatchObject({ type: 'system', subtype: 'init' }))
+    expect((resumed as unknown as { history: Array<{ role: string }> }).history[0].role).toBe('user')
+    resumed.enqueueUserMessage(userMsg('next') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'again')).toBe(true))
+    await resumed.destroy()
+  })
+
+  it('does not persist a queued turn that is never consumed', async () => {
+    const dir = await tempDir('native-queued-')
+    const provider = new NativeProvider({ stateDir: dir })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { signal: AbortSignal }) {
+      // Mirrors a real fetch: an already-aborted signal rejects immediately
+      // (the interrupt can land while the consumed turn's write is in flight).
+      if (req.signal.aborted) throw req.signal.reason ?? new Error('aborted')
+      await new Promise<never>((_, reject) => {
+        req.signal.addEventListener('abort', () => reject(req.signal.reason), { once: true })
+      })
+      yield // unreachable
+    }
+    const session = provider.createSession({ id: 'queued', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('first') as never)
+    session.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => expect(session.queueDepth).toBe(1))
+    // The pump persists the consumed turn (awaited flush) before it arms the
+    // per-turn abort controller; interrupt() is a no-op until then.
+    await vi.waitFor(() => {
+      expect((session as unknown as { turnAbort: unknown }).turnAbort).not.toBeNull()
+    })
+    await session.interrupt?.()
+    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    expect(userTexts(session)).toEqual(['first'])
+    expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    await session.destroy()
+  })
+
+  it('repairs an interrupted tool turn on resume', async () => {
+    const dir = await tempDir('native-repair-')
+    const provider = new NativeProvider({ stateDir: dir })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of toolTurn('t1')) yield ev
+    }
+    const session = provider.createSession({
+      id: 'repair',
+      cwd: dir,
+      canUseTool: async () => {
+        // A broker crash AFTER the assistant frame was persisted and BEFORE
+        // any tool_result — exactly the crash-shape repair exists for.
+        throw new Error('permission broker crashed')
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('use a tool') as never)
+    await vi.waitFor(() => {
+      expect(logOf(session).events.some((e) => e.type === 'turn/end' && e.reason === 'error')).toBe(true)
+    })
+    await session.destroy()
+
+    const resumed = provider.createSession({ id: 'repair', cwd: dir, resume: 'repair' })
+    const synthetic = logOf(resumed).events.find((e) => JSON.stringify(e).includes('tool result missing'))
+    expect(synthetic).toBeDefined()
+    expect(JSON.stringify(synthetic)).toContain('t1')
+    const history = (resumed as unknown as { history: unknown[] }).history
+    expect(JSON.stringify(history)).toContain('tool result missing')
+    await resumed.destroy()
+
+    const snapshot = loadNativeSessionLogSync(dir, 'repair')!
+    expect(snapshot.events.some((e) => JSON.stringify(e).includes('tool result missing'))).toBe(true)
+  })
+
+  it('forks from the source log and writes a seeded child log', async () => {
+    const dir = await tempDir('native-fork-')
+    const provider = new NativeProvider({ stateDir: dir })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of textTurn('source reply')) yield ev
+    }
+    const source = provider.createSession({ id: 'source', cwd: dir })
+    const sourceFrames: Frame[] = []
+    void (async () => { for await (const f of source.messages) sourceFrames.push(f as Frame) })()
+    source.enqueueUserMessage(userMsg('hi') as never)
+    await vi.waitFor(() => expect(sourceFrames.some((f) => f.type === 'result')).toBe(true))
+    await vi.waitFor(() => expect(logOf(source).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await source.destroy()
+    const sourceEvents = loadNativeSessionLogSync(dir, 'source')!.events
+
+    const forked = provider.createSession({ id: 'child', cwd: dir, resume: 'source', forkSession: true })
+    const log = logOf(forked)
+    expect(log.header.isSeeded).toBe(true)
+    expect(log.header.inheritedEventCount).toBe(sourceEvents.length)
+    expect(log.events.some((e) => e.type === 'session/end-seed')).toBe(true)
+    expect(log.events.some((e) => e.type === 'turn/end' && e.reason === 'forked')).toBe(true)
+    expect(log.events.some((e) => e.type === 'session/context' && (e.text ?? '').includes(dir))).toBe(true)
+    const history = (forked as unknown as { history: unknown[] }).history
+    expect(history[0]).toMatchObject({ role: 'user' })
+    expect(JSON.stringify(history)).toContain('source reply')
+    await forked.destroy()
+
+    const child = loadNativeSessionLogSync(dir, 'child')!
+    expect(child.header.id).toBe('child')
+    expect(child.header.isSeeded).toBe(true)
+  })
+
+  it('persists the compact control seed', async () => {
+    const dir = await tempDir('native-compact-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'compact', cwd: dir })
+    session.sendControlMessage(userMsg('compact summary') as never)
+    const compact = logOf(session).events.find((e) => JSON.stringify(e).includes('compact summary'))
+    expect(compact).toMatchObject({ type: 'user', isCompactSummary: true })
+    const history = (session as unknown as { history: unknown[] }).history
+    expect(JSON.stringify(history)).toContain('compact summary')
+    await session.destroy()
+
+    const snapshot = loadNativeSessionLogSync(dir, 'compact')!
+    const persisted = snapshot.events.find((e) => JSON.stringify(e).includes('compact summary'))
+    expect(persisted).toMatchObject({ type: 'user', isCompactSummary: true })
+  })
+
+  it('refuses to resume a corrupt log', async () => {
+    const dir = await tempDir('native-corrupt-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'corrupt', cwd: dir })
+    await session.destroy()
+    const path = nativeSessionLogPath(dir, 'corrupt')
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"v":1', '"v":2'))
+    let caught: unknown
+    try {
+      provider.createSession({ id: 'corrupt', cwd: dir, resume: 'corrupt' })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(NativeSessionStorageError)
+    expect((caught as NativeSessionStorageError).kind).toBe('unsupported-version')
   })
 })
