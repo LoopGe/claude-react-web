@@ -1,7 +1,18 @@
-import { describe, expect, it } from 'vitest'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  chmodSync,
+  constants,
+  existsSync,
+  mkdtempSync,
+  promises as fs,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { AttachmentObjectStore } from './attachment-object-store.js'
 
 async function* chunks(...values: string[]) { for (const v of values) yield new TextEncoder().encode(v) }
@@ -21,6 +32,42 @@ function cleanup(dir: string): void {
 function removeFile(path: string): void {
   chmodSync(path, 0o600)
   rmSync(path)
+}
+
+const originalPlatform = process.platform
+
+function forcePosixPlatform(): void {
+  Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+}
+
+afterEach(() => {
+  Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+})
+
+/** Run a publication with directory fsyncs recorded. The test forces the
+ *  POSIX branch and replaces directory handles with sync spies, so it proves
+ *  the call sequence on every host without depending on the OS fsync syscall. */
+async function withSyncedDirs(run: (synced: string[]) => Promise<void>): Promise<string[]> {
+  forcePosixPlatform()
+  const synced: string[] = []
+  const realOpen = fs.open.bind(fs)
+  const openSpy = vi.spyOn(fs, 'open').mockImplementation(((...args: Parameters<typeof fs.open>) => {
+    const [path, flags, mode] = args
+    if (flags === constants.O_RDONLY) {
+      synced.push(String(path))
+      return Promise.resolve({
+        sync: async () => {},
+        close: async () => {},
+      } as unknown as Awaited<ReturnType<typeof fs.open>>)
+    }
+    return realOpen(path, flags, mode)
+  }) as typeof fs.open)
+  try {
+    await run(synced)
+    return synced
+  } finally {
+    openSpy.mockRestore()
+  }
 }
 
 describe('AttachmentObjectStore', () => {
@@ -118,6 +165,31 @@ describe('AttachmentObjectStore', () => {
       await expect(store.removeObject('../../x')).rejects.toThrow(/digest/)
       await expect(store.removeObject('A'.repeat(64))).rejects.toThrow(/digest/)
       await expect(store.removeAlias(join(dir, 'outside.txt'))).rejects.toThrow(/store root/)
+    } finally { cleanup(dir) }
+  })
+
+  it('fsyncs the store root and its ancestors', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const synced = await withSyncedDirs(async () => {
+        await new AttachmentObjectStore(dir).publishStream({ chunks: chunks('hello'), name: 'a.txt', maxBytes: 100 })
+      })
+      expect(synced).toContain(join(dir, 'claude-web-attachments', 'v1'))
+      expect(synced).toContain(join(dir, 'claude-web-attachments'))
+      expect(synced).toContain(dir)
+    } finally { cleanup(dir) }
+  })
+
+  it('does not re-walk above the state dir for a second store', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'crw-store-'))
+    try {
+      const synced = await withSyncedDirs(async (recorded) => {
+        await new AttachmentObjectStore(dir).publishStream({ chunks: chunks('one'), name: 'a.txt', maxBytes: 100 })
+        recorded.length = 0
+        await new AttachmentObjectStore(dir).publishStream({ chunks: chunks('two'), name: 'b.txt', maxBytes: 100 })
+      })
+      expect(synced).toContain(join(dir, 'claude-web-attachments'))
+      expect(synced).not.toContain(dirname(dir))
     } finally { cleanup(dir) }
   })
 })

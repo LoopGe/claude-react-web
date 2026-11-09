@@ -10,7 +10,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, createReadStream, promises as fs } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, parse, resolve as resolvePath } from 'node:path'
 import {
   aliasPathOf,
   attachmentRoot,
@@ -24,6 +24,11 @@ export type AttachmentStoreErrorCode = 'too-large' | 'write-failed' | 'corrupt' 
 /** A digest is a bare lowercase sha256 — the object file name and the first
  *  path segment of every alias. Anything else could escape the store root. */
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/
+
+/** State dirs whose ancestor chain this process has already fsynced. The
+ *  proof is per process, so a directory another process created but has not
+ *  synced is never mistaken for a durable boundary. */
+const durableHomes = new Set<string>()
 
 export class AttachmentStoreError extends Error {
   constructor(
@@ -70,10 +75,12 @@ function errorMessage(err: unknown): string {
 }
 
 export class AttachmentObjectStore {
+  private readonly stateDir: string
   private readonly root: string
 
   constructor(stateDir: string) {
-    this.root = attachmentRoot(stateDir)
+    this.stateDir = resolvePath(stateDir)
+    this.root = attachmentRoot(this.stateDir)
   }
 
   /** Consume `chunks`, publish one object for the bytes, and link the
@@ -89,11 +96,12 @@ export class AttachmentObjectStore {
     let createdAlias = false
 
     try {
-      await this.ensureDirectory(join(this.root, 'tmp'))
+      const boundary = await this.ensureDurableHome()
+      await this.ensureDurableDirectory(join(this.root, 'tmp'), boundary)
       const { digest, size } = await this.writeTempFile(tmpPath, chunks, maxBytes, signal)
 
       objectPath = objectPathOf(this.root, digest)
-      await this.ensureDirectory(dirname(objectPath))
+      await this.ensureDurableDirectory(dirname(objectPath), boundary)
       try {
         await fs.link(tmpPath, objectPath)
         createdObject = true
@@ -111,7 +119,7 @@ export class AttachmentObjectStore {
       await fs.chmod(objectPath, 0o400)
 
       aliasPath = aliasPathOf(this.root, digest, name)
-      await this.ensureDirectory(dirname(aliasPath))
+      await this.ensureDurableDirectory(dirname(aliasPath), boundary)
       try {
         await fs.link(objectPath, aliasPath)
         createdAlias = true
@@ -217,6 +225,36 @@ export class AttachmentObjectStore {
     await fs.mkdir(dir, { recursive: true })
   }
 
+  /** Establish this process's proof that the state dir and every ancestor
+   *  below the filesystem root are durable. Mere existence is insufficient: a
+   *  concurrent process may have created the directory but not synced its
+   *  parent. */
+  private async ensureDurableHome(): Promise<string> {
+    if (!durableHomes.has(this.stateDir)) {
+      await this.ensureDurableDirectory(this.stateDir, parse(this.stateDir).root)
+      durableHomes.add(this.stateDir)
+    }
+    return this.stateDir
+  }
+
+  /** Create `path` and fsync every parent entry up to (excluding) `boundary`.
+   *  The walk ignores what mkdir reports as newly created: a concurrent first
+   *  save can create a level this process then merely observes, so "already
+   *  existed" is not "already durable". Re-syncing a durable entry is
+   *  harmless; skipping an unsynced one is not. */
+  private async ensureDurableDirectory(path: string, boundary: string): Promise<void> {
+    const target = resolvePath(path)
+    const stop = resolvePath(boundary)
+    await this.ensureDirectory(target)
+    let level = target
+    while (level !== stop) {
+      const parent = dirname(level)
+      await this.syncDirectory(parent)
+      if (parent === level) return
+      level = parent
+    }
+  }
+
   /** fsync every directory entry the publication added, from the object /
    *  alias parent up to (excluding) the store root. Windows cannot open a
    *  directory for fsync, so durability there is the filesystem's. */
@@ -236,6 +274,9 @@ export class AttachmentObjectStore {
   }
 
   private async syncDirectory(dir: string): Promise<void> {
+    // Windows opens a directory handle but refuses fsync on it (EPERM);
+    // NTFS metadata journaling owns entry durability there.
+    if (process.platform === 'win32') return
     const handle = await fs.open(dir, constants.O_RDONLY)
     try {
       await handle.sync()

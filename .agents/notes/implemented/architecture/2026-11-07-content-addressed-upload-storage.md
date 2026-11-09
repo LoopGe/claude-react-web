@@ -32,8 +32,12 @@ The reference stays a per-upload UUID; the bytes become content-addressed.
   (digest, name) at `files/<digest>/<name>`. The alias leaf `name` is sanitized
   and capped at 255 UTF-8 bytes, so a long non-ASCII upload name cannot fail
   publication on ext4 or APFS. Writes stage to a temp file, hash, fsync,
-  hard-link, and fsync the ancestor directories (skipped on Windows). Objects
-  and aliases are `0o400`; the model is given the alias path.
+  hard-link, then publish. Durability is proven, not assumed: the first
+  publication in a process fsyncs the state dir and every ancestor below the
+  filesystem root once, and every publication fsyncs the directory entries it
+  adds up to the state dir (skipped on Windows, where NTFS metadata journaling
+  owns entry durability). Objects and aliases are `0o400`; the model is given
+  the alias path.
 - `POST /uploads` streams the multipart part into `publishStream` (the `sink`
   mode of `server/stream-upload.ts`), so a large upload is never buffered. A
   batch that fails mid-stream rolls back the aliases/objects it published whose
@@ -107,3 +111,8 @@ a tampered small file a proper error status.
 - On Windows a hard link shares the read-only attribute, so publication unlinks
   the temp file before `chmod`, and tests must restore write permission before
   removing a published tree.
+- A filesystem that refuses directory fsync fails the upload with
+  `AttachmentStoreError('write-failed')` rather than returning a reference
+  whose directory entry is unproven. The ancestor proof is per process: a
+  directory another process created but has not synced is never treated as a
+  durable boundary.
