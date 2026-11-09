@@ -25,6 +25,8 @@ import type { CanonicalEvent } from './canonical.js'
 
 const PROMPT = 'persisted-prompt-marker'
 const REPLY = 'persisted-reply-marker'
+const CHILD_PROMPT = 'child-prompt-marker'
+const CHILD_REPLY = 'child-reply-marker'
 
 function textTurn(text: string): CanonicalEvent[] {
   return [
@@ -61,13 +63,17 @@ afterEach(async () => {
   dirs.length = 0
 })
 
+function armStream(provider: NativeProvider, text: string): void {
+  provider._testStream = async function* () {
+    for (const ev of textTurn(text)) yield ev
+  }
+}
+
 async function makeFixture(dir: string): Promise<Fixture> {
   const store = new SessionStore({ stateDir: dir })
   await store.load()
   const provider = new NativeProvider({ stateDir: dir })
-  provider._testStream = async function* () {
-    for (const ev of textTurn(REPLY)) yield ev
-  }
+  armStream(provider, REPLY)
   const registry = new ProviderRegistry()
   registry.register(provider)
   const sm = new SessionManager({ store, providers: registry })
@@ -82,14 +88,14 @@ async function createAndSend(sm: SessionManager, cwd: string): Promise<string> {
   return info.id
 }
 
-async function sendTurn(sm: SessionManager, id: string): Promise<void> {
+async function sendTurn(sm: SessionManager, id: string, text = PROMPT): Promise<void> {
   const sub = sm.subscribe(id)
   const frames: Frame[] = []
   void (async () => {
     for await (const f of sub.iterable) frames.push(f as Frame)
   })()
   try {
-    await sm.send(id, PROMPT)
+    await sm.send(id, text)
     await vi.waitFor(() => {
       expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
     }, { timeout: 5000 })
@@ -134,6 +140,17 @@ describe('native provider persistence through SessionManager', () => {
     const hits = await second.sm.searchMessages(REPLY, { sessionId: id })
     expect(hits.length).toBeGreaterThan(0)
     expect(hits.every((h) => h.sessionId === id)).toBe(true)
+
+    // The dormant readers above only prove the disk log parses. The resumed
+    // live handle's model history is what the next turn actually sends — it
+    // must have been rebuilt from the persisted events by `historyFromEvents`.
+    const live = (second.sm as unknown as {
+      sessions: Map<string, { handle: { history: unknown[] } }>
+    }).sessions.get(id)
+    expect(live).toBeDefined()
+    const modelHistory = JSON.stringify(live!.handle.history)
+    expect(modelHistory).toContain(PROMPT)
+    expect(modelHistory).toContain(REPLY)
   }, 20000)
 
   it('fork creates a child with its own seeded native log carrying the source turn', async () => {
@@ -170,7 +187,16 @@ describe('native provider persistence through SessionManager', () => {
     expect(await hasNativeSessionLog(dir, child.id)).toBe(true)
 
     // UI-facing page: the inherited prefix is reference-only model context.
+    // A page read before the child's first turn is empty, so the exclusion
+    // assertions below would be vacuous. Run one child turn first — then the
+    // page has positive content of its own to prove the boundary filters the
+    // parent prefix rather than everything.
+    armStream(provider, CHILD_REPLY)
+    await sendTurn(sm, child.id, CHILD_PROMPT)
+
     const page = await sm.getHistoryPage(child.id, { limit: 10 })
+    expect(pageText(page)).toContain(CHILD_PROMPT)
+    expect(pageText(page)).toContain(CHILD_REPLY)
     expect(pageText(page)).not.toContain(PROMPT)
     expect(pageText(page)).not.toContain(REPLY)
 
@@ -178,6 +204,7 @@ describe('native provider persistence through SessionManager', () => {
     const entries = await provider.readHistoryEntries(child.id, {})
     expect(JSON.stringify(entries)).toContain(PROMPT)
     expect(JSON.stringify(entries)).toContain(REPLY)
+    expect(JSON.stringify(entries)).toContain(CHILD_REPLY)
   }, 20000)
 
   it('delete with deleteTranscript removes the native log', async () => {
@@ -206,5 +233,17 @@ describe('native provider persistence through SessionManager', () => {
     expect(cleared.id).not.toBe(sourceId)
     expect(await hasNativeSessionLog(dir, cleared.id)).toBe(true)
     expect(await hasNativeSessionLog(dir, sourceId)).toBe(true)
+
+    // Fresh conversation, not a copy: the cleared session's page has none of
+    // the source's turn. clear() removes the SOURCE from the store
+    // (removeFromStore) while keeping its native log, so the source side is
+    // read through the provider's page reader directly.
+    const clearedPage = await sm.getHistoryPage(cleared.id, { limit: 10 })
+    expect(pageText(clearedPage)).not.toContain(PROMPT)
+    expect(pageText(clearedPage)).not.toContain(REPLY)
+
+    const sourcePage = await provider.readHistoryPage(sourceId, { limit: 10 })
+    expect(pageText(sourcePage)).toContain(PROMPT)
+    expect(pageText(sourcePage)).toContain(REPLY)
   }, 20000)
 })
