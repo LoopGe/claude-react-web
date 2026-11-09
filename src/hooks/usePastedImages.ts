@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
-import { fileToBase64 } from '../utils/file-to-base64'
 import { formatBytes } from '../utils/format'
+import { ImageNormalizeError, preparePastedImage, type NormalizedImage } from '../utils/image-normalize'
 import { isSupportedImageMediaType } from '../../shared/image-media'
 import { randomId } from '../utils/uuid'
 import { getMaxPastedImageBytes } from './config-store'
@@ -9,6 +9,10 @@ import type { PastedImage } from '../types'
 
 /** Concurrent decodes inside one intake batch. */
 const DECODE_CONCURRENCY = 2
+
+type ProcessedImage =
+  | { file: File; url: string; normalized: NormalizedImage }
+  | { file: File; error: string }
 
 export interface UsePastedImages {
   images: PastedImage[]
@@ -94,8 +98,8 @@ export function usePastedImages(): UsePastedImages {
   }, [])
   // Every blob URL we create is registered here the instant it's minted,
   // and removed only once it has been explicitly revoked. This closes the
-  // race where the component unmounts while an add is still awaiting
-  // fileToBase64/getImageDimensions: the previewUrl was created but never
+  // race where the component unmounts while an add is still normalizing: the
+  // previewUrl was created but never
   // yet pushed into `images` (so imagesRef doesn't know about it), and
   // the unmount cleanup below would otherwise miss it, pinning the blob's
   // bytes for the tab's lifetime. Tracking all URLs in one set guarantees
@@ -153,7 +157,7 @@ export function usePastedImages(): UsePastedImages {
     // `reservedBytesRef` extends the same accounting across overlapping
     // batches that have not committed yet.
     const accepted: File[] = []
-    let total = imagesRef.current.reduce((sum, img) => sum + img.size, 0) + reservedBytesRef.current
+    let total = imagesRef.current.reduce((sum, img) => sum + (img.original?.size ?? img.size), 0) + reservedBytesRef.current
     let totalCount = imagesRef.current.length + reservedCountRef.current
     const maxTotal = getMaxPastedImageBytes()
     let failure: string | null = null
@@ -190,34 +194,41 @@ export function usePastedImages(): UsePastedImages {
     reservedCountRef.current += accepted.length
     setPendingBatches((count) => count + 1)
     const generation = clearGenerationRef.current
-    // Decode at most two images at a time: one drop can carry many
-    // screenshots, and N concurrent FileReaders + Image decodes is a needless
-    // main-thread burst. Each chunk's images still land as soon as it
-    // finishes, so a send during a long batch sees what already made it.
-    // Their bytes move from the reservation to `pendingReleaseRef` at commit;
-    // the imagesRef sync effect drains them once the commit is visible.
+    // Normalize at most two images at a time: one drop can carry many
+    // screenshots, and N concurrent decodes/encodes is a needless main-thread
+    // burst. Each chunk's images still land as soon as it finishes, so a send
+    // during a long batch sees what already made it. Their source bytes move
+    // from the reservation to `pendingReleaseRef` at commit; the imagesRef
+    // sync effect drains them once the commit is visible.
     let committedBytes = 0
     let committedCount = 0
     try {
       for (let index = 0; index < accepted.length; index += DECODE_CONCURRENCY) {
         if (clearGenerationRef.current !== generation) break
         const chunk = accepted.slice(index, index + DECODE_CONCURRENCY)
-        const decoded = await Promise.all(chunk.map(async (file) => {
+        const processed = await Promise.all(chunk.map(async (file): Promise<ProcessedImage> => {
           let previewUrl: string | undefined
           try {
             const url = URL.createObjectURL(file)
             previewUrl = url
             allUrlsRef.current.add(url)
-            const data = await fileToBase64(file)
-            const dims = await getImageDimensions(url)
-            return { file, url, data, dims }
-          } catch {
+            const normalized = await preparePastedImage(file)
+            return { file, url, normalized }
+          } catch (err) {
             if (previewUrl !== undefined) revokeUrl(previewUrl)
-            return null
+            return {
+              file,
+              error: err instanceof ImageNormalizeError
+                ? err.message
+                : `Could not process image: ${err instanceof Error ? err.message : String(err)}`,
+            }
           }
         }))
-        for (const entry of decoded) {
-          if (entry === null) continue
+        for (const entry of processed) {
+          if ('error' in entry) {
+            refuse(entry.error)
+            continue
+          }
           if (clearGenerationRef.current !== generation) {
             revokeUrl(entry.url)
             continue
@@ -229,11 +240,12 @@ export function usePastedImages(): UsePastedImages {
           bumpMutations('add')
           setImages((prev) => [...prev, {
             id: randomId(),
-            data: entry.data,
-            mediaType: entry.file.type as PastedImage['mediaType'],
-            width: entry.dims.width,
-            height: entry.dims.height,
-            size: entry.file.size,
+            data: entry.normalized.data,
+            mediaType: entry.normalized.mediaType,
+            width: entry.normalized.width,
+            height: entry.normalized.height,
+            size: entry.normalized.size,
+            original: entry.normalized.original,
             previewUrl: entry.url,
           }])
         }
@@ -273,13 +285,4 @@ export function usePastedImages(): UsePastedImages {
     () => ({ images, error, pending, addImages, removeImage, clear, applyImages, mutationsRef }),
     [images, error, pending, addImages, removeImage, clear, applyImages, mutationsRef],
   )
-}
-
-function getImageDimensions(url: string): Promise<{ width: number; height: number }> {
-  return new Promise((resolve) => {
-    const img = new Image()
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
-    img.onerror = () => resolve({ width: 0, height: 0 })
-    img.src = url
-  })
 }
