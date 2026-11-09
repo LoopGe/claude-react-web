@@ -1,0 +1,51 @@
+// reader.test.ts
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { NativeSessionLog } from './log.js'
+import { nativeHistoryCache } from './cache.js'
+import { readNativeHistoryEntries, readNativeHistoryPage } from './reader.js'
+
+let dir: string
+afterEach(async () => { if (dir) { nativeHistoryCache.invalidate('s1'); await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } })
+async function seedLog() {
+  dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+  const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+  const push = (e: never) => log.append(e)
+  push({ type: 'session/context', text: 'ctx' } as never)
+  push({ type: 'user', uuid: 'u1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'one' }] } } as never)
+  push({ type: 'assistant', uuid: 'a1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'two' }] } } as never)
+  push({ type: 'user', uuid: 'u2', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'user', content: [{ type: 'text', text: 'three' }] } } as never)
+  await log.flush(); await log.close()
+}
+
+describe('native history reader', () => {
+  it('pages newest-first with the shared window semantics', async () => {
+    await seedLog()
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 2 })
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['a1', 'u2'])
+    expect(page.totalCount).toBe(3)
+    expect(page.startIndex).toBe(1)
+    expect(page.hasMore).toBe(true)
+    const older = await readNativeHistoryPage(dir, 's1', { before: page.startIndex, limit: 2 })
+    expect((older.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['u1'])
+  })
+  it('hides the inherited prefix after afterUuid', async () => {
+    await seedLog()
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10, afterUuid: 'a1' })
+    expect((page.messages as Array<{ uuid: string }>).map((m) => m.uuid)).toEqual(['u2'])
+    expect(page.totalCount).toBe(1)
+  })
+  it('returns entries with normalized timestamps and tool_result parents', async () => {
+    await seedLog()
+    const entries = await readNativeHistoryEntries(dir, 's1')
+    expect(entries.map((e) => (e.message as { uuid: string }).uuid)).toEqual(['u1', 'a1', 'u2'])
+    expect((entries[0].message as { receivedAt?: number }).receivedAt).toBe(Date.parse('2026-11-09T00:00:00.000Z'))
+  })
+  it('returns an empty page for a missing log', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    expect(await readNativeHistoryPage(dir, 'nope', { limit: 10 })).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })
+    expect(await readNativeHistoryEntries(dir, 'nope')).toEqual([])
+  })
+})
