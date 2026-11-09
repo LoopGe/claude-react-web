@@ -5,11 +5,16 @@
 // Registration lives in ../default-providers.ts alongside ClaudeProvider.
 
 import { config, requireAuthToken } from '../../config.js'
+import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
+import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle } from '../types.js'
 import type { LoopDeps } from './loop.js'
 import { PromptSectionRegistry, IDENTITY_SECTION } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
+import { nativeHistoryCache } from './session-log/cache.js'
+import { deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
+import { readNativeHistoryEntries, readNativeHistoryPage } from './session-log/reader.js'
 import { bashTool } from './tools/bash.js'
 import { readTool } from './tools/read.js'
 import { writeTool } from './tools/write.js'
@@ -28,8 +33,8 @@ export class NativeProvider implements AgentProvider {
     supportsMcp: false,
     supportsModelSwitch: true,
     supportsInterrupt: true,
-    supportsResume: false,
-    supportsFork: false,
+    supportsResume: true,
+    supportsFork: true,
     supportsPlugins: false,
     supportsFastMode: false,
     supportsEffortLevel: false,
@@ -63,6 +68,8 @@ export class NativeProvider implements AgentProvider {
     for (const tool of TOOLS) {
       registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
     }
+    const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
+    const system = systemPromptAppend ? `${registry.render()}\n\n${systemPromptAppend}` : registry.render()
     return new NativeSession({
       id: opts.id,
       cwd: opts.cwd ?? process.cwd(),
@@ -77,10 +84,30 @@ export class NativeProvider implements AgentProvider {
         authToken: opts.profile?.authToken ?? requireAuthToken(),
       }),
       tools: TOOLS,
-      system: registry.render(),
+      system,
       canUseTool: opts.canUseTool,
       onUserMessageConsumed: opts.onUserMessageConsumed,
       streamSupplier: () => this._testStream,
     })
+  }
+
+  readHistoryPage(
+    id: string,
+    opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string },
+  ): Promise<HistoryPage> {
+    return readNativeHistoryPage(this.stateDir, id, opts)
+  }
+
+  readHistoryEntries(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]> {
+    return readNativeHistoryEntries(this.stateDir, id, opts)
+  }
+
+  hasTranscript(meta: SessionMeta): Promise<boolean> {
+    return hasNativeSessionLog(this.stateDir, meta.id)
+  }
+
+  deleteTranscript(id: string): Promise<boolean> {
+    nativeHistoryCache.invalidate(id)
+    return deleteNativeSessionLog(this.stateDir, id)
   }
 }

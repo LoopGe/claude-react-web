@@ -1,12 +1,12 @@
 // server/providers/native/native-session.test.ts
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { NativeProvider } from './native-provider.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
-import { loadNativeSessionLogSync } from './session-log/log.js'
+import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { Frame } from './frames.js'
@@ -462,6 +462,42 @@ describe('NativeSession', () => {
     expect(persisted?.type === 'user' ? persisted.message.content : undefined).toEqual([
       { type: 'text', text: 'compact summary' },
     ])
+  })
+
+  it('exposes history, existence and deletion over the state dir', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-prov-'))
+    const provider = new NativeProvider({ stateDir: dir })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () { for (const ev of textTurn('hello')) yield ev }
+    const session = provider.createSession({ id: 'p1', cwd: dir })
+    ;(async () => { for await (const _ of session.messages) { /* drain */ } })()
+    session.enqueueUserMessage(userMsg('hi') as never)
+    await vi.waitFor(() => {
+      const log = (session as unknown as { log: { events: Array<{ type: string }> } }).log
+      expect(log.events.some((e) => e.type === 'turn/end')).toBe(true)
+    })
+    await session.destroy() // flush + close before reading the file
+    const meta = { id: 'p1', cwd: dir } as never
+    expect(await provider.hasTranscript(meta)).toBe(true)
+    const entries = await provider.readHistoryEntries!('p1', {})
+    expect(entries.length).toBeGreaterThan(0)
+    expect((await provider.readHistoryPage!('p1', { limit: 10 })).totalCount).toBe(entries.length)
+    expect(await provider.deleteTranscript!('p1')).toBe(true)
+    expect(await provider.hasTranscript(meta)).toBe(false)
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
+
+  it('reports a corrupt log as existing, then fails loudly on read', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-corrupt-'))
+    const provider = new NativeProvider({ stateDir: dir })
+    const log = NativeSessionLog.open({ stateDir: dir, id: 'p2', cwd: dir, resume: false })
+    log.append({ type: 'session/context', text: 'ctx' })
+    await log.flush(); await log.close()
+    const path = nativeSessionLogPath(dir, 'p2')
+    const raw = await readFile(path, 'utf8')
+    await writeFile(path, raw.replace('"v":1', '"v":2'))
+    expect(await provider.hasTranscript({ id: 'p2', cwd: dir } as never)).toBe(true)
+    await expect(provider.readHistoryEntries!('p2', {})).rejects.toThrow(/unsupported|version/i)
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   it('refuses to resume a corrupt log', async () => {
