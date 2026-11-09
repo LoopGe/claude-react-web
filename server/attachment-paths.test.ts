@@ -26,14 +26,19 @@ describe('attachment paths', () => {
     expect(sanitizeStoredName('../../x')).toBe('x')
     expect(sanitizeStoredName('')).toBe('upload')
   })
-  it('re-trims trailing dots and spaces exposed by the 200-char cut', () => {
-    // The dot/space is mid-name, so the pre-slice trim leaves it in place;
-    // it only becomes trailing after the 200-char cut.
-    expect(sanitizeStoredName(`${'a'.repeat(199)}.b`)).toBe('a'.repeat(199))
-    expect(sanitizeStoredName(`${'a'.repeat(199)} b`)).toBe('a'.repeat(199))
-    expect(sanitizeStoredName(`${'a'.repeat(200)}.b`)).toBe('a'.repeat(200))
+  it('caps stored names at 255 UTF-8 bytes', () => {
+    expect(sanitizeStoredName('中'.repeat(300))).toBe('中'.repeat(85))
+    expect(sanitizeStoredName('😀'.repeat(100))).toBe('😀'.repeat(63))
+    expect(sanitizeStoredName('a'.repeat(254) + '.b')).toBe('a'.repeat(254))
+    expect(sanitizeStoredName('a'.repeat(255) + '.b')).toBe('a'.repeat(255))
+    expect(Buffer.byteLength(sanitizeStoredName('中'.repeat(300)), 'utf8')).toBeLessThanOrEqual(255)
     // A name that is nothing but trimmed characters still falls back.
     expect(sanitizeStoredName('.'.repeat(220))).toBe('upload')
+  })
+
+  it('keeps the reserved-name prefix after byte truncation', () => {
+    expect(sanitizeStoredName('CON')).toBe('_CON')
+    expect(sanitizeStoredName('CON.' + 'a'.repeat(300))).toBe('_CON.' + 'a'.repeat(250))
   })
   it('prefixes Windows reserved device stems', () => {
     expect(sanitizeStoredName('CON')).toBe('_CON')

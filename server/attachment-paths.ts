@@ -36,12 +36,30 @@ export function aliasPathOf(root: string, digest: string, name: string): string 
  *  unreachable through ordinary path I/O. */
 const WINDOWS_RESERVED_STEM = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i
 
+/** Stored leaf names are capped by UTF-8 byte length: ext4 and APFS limit a
+ *  name to 255 bytes, while JavaScript string length counts UTF-16 units. */
+export const MAX_STORED_NAME_BYTES = 255
+
+/** Longest prefix of `value` whose UTF-8 encoding fits `maxBytes`, never
+ *  splitting a code point. */
+function truncateUtf8(value: string, maxBytes: number): string {
+  let bytes = 0
+  let out = ''
+  for (const ch of value) {
+    const n = Buffer.byteLength(ch, 'utf8')
+    if (bytes + n > maxBytes) break
+    out += ch
+    bytes += n
+  }
+  return out
+}
+
 /** Reduce an upload filename to a safe leaf name: drop any directory
  *  components (either separator), control characters, and the characters
  *  Windows reserves; trim trailing dots/spaces (Windows silently strips
- *  them, which would desync the link name); cap at 200 chars, re-trimming
- *  anything the cut exposed; prefix a Windows device stem so it is not
- *  interpreted as a device; fall back to `upload` when nothing usable is
+ *  them, which would desync the link name); prefix a Windows device stem so
+ *  it is not interpreted as a device; cap at 255 UTF-8 bytes, re-trimming
+ *  anything the cut exposed; fall back to `upload` when nothing usable is
  *  left. */
 export function sanitizeStoredName(name: string | undefined): string {
   const base = (name ?? '').split(/[\\/]/).pop() ?? ''
@@ -50,11 +68,11 @@ export function sanitizeStoredName(name: string | undefined): string {
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/[\\/<>:"|?*]/g, '_')
     .replace(/[. ]+$/, '')
-    .slice(0, 200)
-    .replace(/[. ]+$/, '')
   if (!cleaned) return 'upload'
   const stem = cleaned.split('.', 1)[0]
-  return WINDOWS_RESERVED_STEM.test(stem) ? `_${cleaned}` : cleaned
+  const prefixed = WINDOWS_RESERVED_STEM.test(stem) ? `_${cleaned}` : cleaned
+  const truncated = truncateUtf8(prefixed, MAX_STORED_NAME_BYTES).replace(/[. ]+$/, '')
+  return truncated || 'upload'
 }
 
 /** True when two stored paths name the same file. Windows and macOS resolve

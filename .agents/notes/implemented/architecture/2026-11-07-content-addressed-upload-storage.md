@@ -29,9 +29,11 @@ The reference stays a per-upload UUID; the bytes become content-addressed.
 - `AttachmentObjectStore` (`server/attachment-object-store.ts`) publishes each
   intake into `<stateDir>/claude-web-attachments/v1/`: one immutable object per
   sha256 at `objects/<digest[0..2]>/<digest>`, and one hard-link alias per
-  (digest, name) at `files/<digest>/<name>`. Writes stage to a temp file, hash,
-  fsync, hard-link, and fsync the ancestor directories (skipped on Windows).
-  Objects and aliases are `0o400`; the model is given the alias path.
+  (digest, name) at `files/<digest>/<name>`. The alias leaf `name` is sanitized
+  and capped at 255 UTF-8 bytes, so a long non-ASCII upload name cannot fail
+  publication on ext4 or APFS. Writes stage to a temp file, hash, fsync,
+  hard-link, and fsync the ancestor directories (skipped on Windows). Objects
+  and aliases are `0o400`; the model is given the alias path.
 - `POST /uploads` streams the multipart part into `publishStream` (the `sink`
   mode of `server/stream-upload.ts`), so a large upload is never buffered. A
   batch that fails mid-stream rolls back the aliases/objects it published whose
