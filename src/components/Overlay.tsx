@@ -52,6 +52,9 @@ const VARIANT_CLASSES = {
   git: { backdrop: 'git-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
   tasks: { backdrop: 'tasks-overlay', card: null, roleOn: 'backdrop', ariaModal: 'true' },
   palette: { backdrop: 'palette-backdrop', card: 'palette', roleOn: 'card', ariaModal: 'true' },
+  // Full-history session search: same fixed backdrop/palette surface, wider
+  // card with its own grouped-results internals.
+  search: { backdrop: 'palette-backdrop', card: 'session-search-dialog', roleOn: 'card', ariaModal: 'true' },
   marketplace: { backdrop: 'marketplace-overlay', card: 'marketplace-card', roleOn: 'card', ariaModal: 'true' },
   globalSettings: { backdrop: 'modal-backdrop', card: 'global-settings-modal', roleOn: 'card', ariaModal: 'true' },
   // Full-viewport image viewer (Lightbox). card: null like settings/git — the
@@ -80,6 +83,7 @@ const FIXED_BACKDROP_VARIANTS: readonly OverlayVariant[] = [
   'modal',
   'globalSettings',
   'palette',
+  'search',
   'marketplace',
   'lightbox',
 ]

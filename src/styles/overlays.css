@@ -1219,3 +1219,219 @@ mark.search-hl.search-hl-active {
   border-top: 1px solid var(--border);
   padding-top: var(--space-3);
 }
+
+/* ── Session search dialog ───────────────────────────────────────── */
+/* Full-history search (variant A). Same fixed palette backdrop; the card is
+   wider and owns its grouped result list. */
+
+.palette-backdrop > .session-search-dialog {
+  width: min(820px, calc(100vw - 40px));
+  max-height: min(74vh, calc(100dvh - 200px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--modal-shadow);
+}
+.palette-backdrop[data-state="open"] > .session-search-dialog {
+  animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+.palette-backdrop[data-state="closing"] > .session-search-dialog {
+  animation: overlay-panel-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+}
+
+.session-search-head {
+  padding: var(--space-3-5) var(--space-4) var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.session-search-row-top {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+}
+.session-search-icon {
+  display: inline-flex;
+  color: var(--fg-muted);
+}
+.session-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--fs-md);
+}
+.session-search-input::placeholder {
+  color: var(--fg-muted);
+}
+.session-search-scope {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-text);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.session-search-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.session-search-meta b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.session-search-meta-spacer {
+  margin-left: auto;
+}
+.session-search-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+.session-search-key {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  text-align: center;
+  font-size: var(--fs-xs);
+}
+.session-search-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.session-search-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: session-search-spin .7s linear infinite;
+}
+@keyframes session-search-spin {
+  to { transform: rotate(360deg); }
+}
+
+.session-search-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-1-5) var(--space-1-5) var(--space-3);
+}
+.session-search-group {
+  margin-bottom: var(--space-1);
+}
+.session-search-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3-5) var(--space-1);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+.session-search-turn-no {
+  color: var(--accent-text);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.session-search-turn-prompt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-search-hit {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: start;
+  width: 100%;
+  padding: var(--space-2) var(--space-3-5);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.session-search-hit.active,
+.session-search-hit:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+}
+.session-search-role {
+  margin-top: 1px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.session-search-role.user {
+  color: var(--fg);
+  background: var(--bg-elev-2);
+}
+.session-search-role.tool_result {
+  color: var(--warn-text);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+.session-search-snippet {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-size: var(--fs-base);
+}
+.session-search-time {
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.session-search-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+}
+.session-search-empty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: var(--fs-base);
+}
+.session-search-empty b {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--fg);
+}
+.session-search-retry {
+  display: block;
+  margin: var(--space-3) auto 0;
+  padding: var(--space-1-5) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  cursor: pointer;
+}
