@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { IconSearch, IconX } from './icons/ToolIcons'
 import { useListSelection } from '../hooks/useListSelection'
 import { useSessionSearch } from '../hooks/useSessionSearch'
+import { renderMatchMarks } from '../utils/highlight-matches'
 import type { SessionSearchHit, SessionSearchRole } from '../../shared/session-search'
 
 interface Props {
@@ -20,27 +21,6 @@ function formatTime(timestamp?: number): string {
   return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-/** Wrap every case-insensitive occurrence of `query` in a themed <mark>. */
-function highlight(text: string, query: string): ReactNode {
-  const q = query.trim()
-  if (!q) return text
-  const lower = text.toLowerCase()
-  const needle = q.toLowerCase()
-  const out: ReactNode[] = []
-  let i = 0
-  let key = 0
-  for (;;) {
-    const j = lower.indexOf(needle, i)
-    if (j < 0) {
-      out.push(text.slice(i))
-      break
-    }
-    out.push(text.slice(i, j))
-    out.push(<mark key={key++} className="search-hl">{text.slice(j, j + q.length)}</mark>)
-    i = j + q.length
-  }
-  return out
-}
 
 /**
  * Session-level full-history search panel. Rendered inside <Chat> through the
@@ -183,7 +163,7 @@ export function SessionSearchPanel({ sessionId, initialQuery, onClose, onSelect 
                   onClick={() => onSelect(hit)}
                 >
                   <span className={`search-panel-role ${hit.role}`}>{roleLabel(hit.role)}</span>
-                  <span className="search-panel-snippet">{highlight(hit.snippet, query)}</span>
+                  <span className="search-panel-snippet">{renderMatchMarks(hit.snippet, trimmed)}</span>
                   <span className="search-panel-time">{formatTime(hit.timestamp)}</span>
                 </button>
               ))}

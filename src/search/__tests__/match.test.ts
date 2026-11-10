@@ -36,6 +36,10 @@ describe('findRanges', () => {
     expect(findRanges('a*b', 'a*b')).toEqual([{ start: 0, end: 3 }])
     expect(findRanges('hello (world)', '(world)')).toEqual([{ start: 6, end: 13 }])
     expect(findRanges('back\\slash', '\\')).toEqual([{ start: 4, end: 5 }])
+    // `?` is a quantifier in regex; a literal query must not throw or match
+    // non-literally.
+    expect(findRanges('what? what', 'what?')).toEqual([{ start: 0, end: 5 }])
+    expect(findRanges('?', '?')).toEqual([{ start: 0, end: 1 }])
   })
 
   it('handles overlapping potential matches by stepping past each one', () => {

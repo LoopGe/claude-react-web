@@ -5,11 +5,11 @@
 
 import type { MatchOptions, Range } from './types.js'
 
-/** Escape regex metacharacters in a literal query.  Includes `\`
- *  inside the character class so a query containing a backslash is
- *  matched literally rather than as a regex escape. */
+/** Escape regex metacharacters in a literal query.  Includes `?` (the
+ *  quantifier) and `\` inside the character class so a query containing either
+ *  is matched literally rather than as regex syntax. */
 function escapeRegex(input: string): string {
-  return input.replace(/[.*+^${}()|[\]\\]/g, '\\$&')
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /** Find every non-overlapping match of `query` inside `text`.
