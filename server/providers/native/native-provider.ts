@@ -62,7 +62,7 @@ export class NativeProvider implements AgentProvider {
   /** OAuth provider resolver for a remote MCP server (see
    *  NativeMcpConnectionsOptions.authFor). Undefined when the host stores no
    *  MCP credentials. */
-  private readonly authFor?: (name: string) => OAuthClientProvider | undefined
+  readonly authFor?: (name: string) => OAuthClientProvider | undefined
 
   constructor(opts: { stateDir?: string; authFor?: (name: string) => OAuthClientProvider | undefined } = {}) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)

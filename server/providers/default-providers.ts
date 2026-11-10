@@ -1,6 +1,6 @@
 import type { MpStore } from '../mp-store.js'
 import type { AgentDefinitionStore } from '../agent-definition-store.js'
-import type { McpConfigStore } from '../mcp-config.js'
+import { createMcpOAuthProvider, type McpConfigStore } from '../mcp-config.js'
 import type { ProcessExitInfo } from '../process-monitor.js'
 import { ClaudeProvider } from './claude/claude-provider.js'
 import { NativeProvider } from './native/native-provider.js'
@@ -24,6 +24,18 @@ export interface DefaultProvidersOptions {
 export function createDefaultProviders(opts: DefaultProvidersOptions = {}): ProviderRegistry {
   const registry = new ProviderRegistry()
   registry.register(new ClaudeProvider(opts))
-  registry.register(new NativeProvider({ stateDir: opts.stateDir }))
+  // Remote MCP servers with stored OAuth state need a provider that reads and
+  // refreshes those tokens. The native path connects in-process, so it gets
+  // the same resolver the CLI path uses; a saved token flushes the store.
+  const mcpStore = opts.mcpStore
+  const authFor = mcpStore
+    ? (name: string) => {
+        const stored = mcpStore.get(name)
+        return stored
+          ? createMcpOAuthProvider(stored, () => void mcpStore.flush())
+          : undefined
+      }
+    : undefined
+  registry.register(new NativeProvider({ stateDir: opts.stateDir, authFor }))
   return registry
 }

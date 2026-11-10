@@ -48,6 +48,47 @@ describe('SessionMcpManager attach', () => {
   })
 })
 
+describe('SessionMcpManager setFirstPartyTool', () => {
+  it('re-runs setMcpServers on a live session and persists the override', async () => {
+    const session: Record<string, unknown> = {
+      id: 's1',
+      running: true,
+      cwd: '/tmp',
+      firstPartyTools: undefined,
+      dynamicMcpServers: { inline: { type: 'stdio', command: 'node' } },
+    }
+    const { deps, setMcpServers } = makeDeps(session)
+    const m = new SessionMcpManager(deps)
+
+    await m.setFirstPartyTool('s1', 'git-tools', false)
+
+    expect(setMcpServers).toHaveBeenCalledTimes(1)
+    // The session's own inline server survives the replace-semantics call.
+    expect(setMcpServers).toHaveBeenCalledWith(
+      expect.objectContaining({ inline: { type: 'stdio', command: 'node' } }),
+    )
+    expect(session.firstPartyTools).toEqual({ 'git-tools': false })
+  })
+
+  it('reverts the override when live re-injection fails', async () => {
+    const prior = { 'git-tools': true }
+    const session: Record<string, unknown> = {
+      id: 's1',
+      running: true,
+      cwd: '/tmp',
+      firstPartyTools: prior,
+      dynamicMcpServers: { inline: { type: 'stdio', command: 'node' } },
+    }
+    const { deps, setMcpServers } = makeDeps(session)
+    setMcpServers.mockRejectedValueOnce(new Error('boom'))
+    const m = new SessionMcpManager(deps)
+
+    await expect(m.setFirstPartyTool('s1', 'git-tools', false)).rejects.toThrow('boom')
+
+    expect(session.firstPartyTools).toEqual(prior)
+  })
+})
+
 describe('SessionMcpManager detach', () => {
   // Post-remove state: the global store no longer defines the target. It must
   // NOT be re-carried as an inline entry (that would re-add it).
