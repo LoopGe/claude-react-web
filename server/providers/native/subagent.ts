@@ -95,7 +95,12 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
       // Depth is capped at one by construction: the subagent never sees the
       // Agent tool, so it cannot fan out again.
       const nestedTools = deps.tools().filter((t) => t.name !== 'Agent')
-      const nestedModel = input.model ?? defModel ?? deps.model()
+      // The schema declares a string, but a model can still emit a number or
+      // blank string. Treat both as absent so the nested run inherits the
+      // definition/parent model instead of sending an invalid id to the API.
+      const requestedModel =
+        typeof input.model === 'string' && input.model.trim() ? input.model : undefined
+      const nestedModel = requestedModel ?? defModel ?? deps.model()
       const nestedCtx: FrameContext = { ...deps.frameCtx, parentToolUseId: ctx.toolUseId }
 
       if (ctx.signal.aborted) return { text: 'aborted', isError: true }

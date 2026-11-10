@@ -145,6 +145,20 @@ describe('createAgentTool', () => {
     expect(s.calls[0].model).toBe('override-model')
   })
 
+  it('treats a non-string or blank input.model as absent', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...textBlock(0, 'one'), deltaStop('end_turn')],
+      [startStop, ...textBlock(0, 'two'), deltaStop('end_turn')],
+    ])
+    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s) }))
+
+    await runAgent(agent, { description: 'd', prompt: 'p', model: 42 })
+    await runAgent(agent, { description: 'd', prompt: 'p', model: '   ' })
+
+    expect(s.calls[0].model).toBe('parent-model')
+    expect(s.calls[1].model).toBe('parent-model')
+  })
+
   it('reads the model getter at call time', async () => {
     const s = scriptedStreamer([
       [startStop, ...textBlock(0, 'one'), deltaStop('end_turn')],

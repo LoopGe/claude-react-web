@@ -13,7 +13,7 @@
 //   3. the parent's Agent tool_result carries the nested final report;
 //   4. a second manager resuming the same state dir:
 //      - seeds the main-thread prompt into the ring even though sidechain
-//        lines share the disk page (the seed read now spans
+//        lines share the disk page (for native the seed read spans
 //        historyCap + subagentHistoryCap — without it the 25 sidechain lines
 //        push the prompt out of the page tail),
 //      - keeps the sidechain frames in the disk page and the subagent ring,
@@ -30,6 +30,7 @@ import { NativeProvider } from './native-provider.js'
 import type { CanonicalEvent } from './canonical.js'
 
 const AGENT_ID = 'agent-1'
+const PENDING_TOOL_ID = 'read-after-agent'
 const NESTED_TOOL_PREFIX = 'nested-read-'
 const NESTED_REPORT = 'NESTED-REPORT-MARKER'
 const PARENT_DONE = 'PARENT-DONE-MARKER'
@@ -69,6 +70,43 @@ function toolUseTurn(id: string, name: string, inputJson = '{}'): CanonicalEvent
 /** One assistant round whose only call is the Agent tool. */
 function agentTurn(id: string, input: Record<string, unknown>): CanonicalEvent[] {
   return toolUseTurn(id, 'Agent', JSON.stringify(input))
+}
+
+/** One assistant round with TWO calls: the Agent plus a follow-up tool the
+ *  parent must abandon once the turn is interrupted mid-Agent. */
+function agentPlusPendingTurn(agentId: string, pendingId: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: agentId, name: 'Agent' } },
+    {
+      kind: 'block_delta',
+      index: 0,
+      delta: { type: 'tool_input', json: JSON.stringify({ description: 'd', prompt: 'p' }) },
+    },
+    { kind: 'block_end', index: 0 },
+    { kind: 'block_start', index: 1, block: { type: 'tool_use', id: pendingId, name: 'Read' } },
+    {
+      kind: 'block_delta',
+      index: 1,
+      delta: { type: 'tool_input', json: JSON.stringify({ file_path: 'package.json' }) },
+    },
+    { kind: 'block_end', index: 1 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
+}
+
+type StreamReq = {
+  model: string
+  system: string
+  tools: Array<{ name: string }>
+  messages: unknown[]
+  signal: AbortSignal
+}
+
+/** A nested (subagent) request never sees the Agent tool — depth is capped by
+ *  filtering it out of the tool list. */
+function isNestedRequest(req: StreamReq): boolean {
+  return !req.tools.some((t) => t.name === 'Agent')
 }
 
 type Frame = Record<string, any>
@@ -281,5 +319,120 @@ describe('native subagents end to end through SessionManager', () => {
     expect(resumedLive.subagentHistory).toHaveLength(SIDECHAIN_FRAMES)
     expect(resumedLive.subagentHistory.every((f) => f.parent_tool_use_id === AGENT_ID)).toBe(true)
     expect(JSON.stringify(resumedLive.subagentHistory)).toContain(NESTED_REPORT)
+  }, 30000)
+})
+
+describe('native subagent abort propagation', () => {
+  it('settles the hung nested loop when the parent turn is interrupted', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-subagent-abort-'))
+    dirs.push(dir)
+
+    // Round classification: the parent request keeps the Agent tool, the
+    // nested request has it filtered out. The nested round never yields; it
+    // only ends when the signal IT WAS HANDED aborts — a fresh controller
+    // (not the parent turn's) would never fire, leaving the interrupt stuck.
+    const requests: Array<{ nested: boolean; abortedAtEntry: boolean; signal: AbortSignal }> = []
+    let parentRounds = 0
+    const first = await makeFixture(dir)
+    ;(first.provider as unknown as { _testStream: unknown })._testStream = async function* (
+      req: StreamReq,
+    ) {
+      // Snapshot the entry state: every round shares the same AbortSignal
+      // instance, so `signal.aborted` must be read when the round starts.
+      requests.push({
+        nested: isNestedRequest(req),
+        abortedAtEntry: req.signal.aborted,
+        signal: req.signal,
+      })
+      if (isNestedRequest(req)) {
+        await new Promise<void>((resolve) => {
+          if (req.signal.aborted) {
+            resolve()
+            return
+          }
+          req.signal.addEventListener('abort', () => resolve(), { once: true })
+        })
+        throw new Error('nested stream aborted')
+      }
+      parentRounds++
+      if (parentRounds === 1) {
+        for (const ev of agentPlusPendingTurn(AGENT_ID, PENDING_TOOL_ID)) yield ev
+        return
+      }
+      // Reached only after the Agent call returns: the real stream would fail
+      // here on the already-aborted turn signal (or produce a next round the
+      // turn no longer wants). Throwing makes the turn settle through the
+      // session's interrupt-classification path.
+      throw new Error('parent stream aborted')
+    }
+
+    const info = await first.sm.create({
+      cwd: dir,
+      model: 'test-model',
+      provider: 'native',
+      title: 'subagent-abort',
+      canUseTool: allowingCanUseTool(),
+    })
+    sessionIds.push({ sm: first.sm, id: info.id })
+
+    const sub = first.sm.subscribe(info.id)
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of sub.iterable) frames.push(f as Frame)
+    })()
+
+    await first.sm.send(info.id, PROMPT)
+    // The Agent tool is running only once the nested request has been built.
+    await vi.waitFor(() => {
+      expect(requests.some((r) => r.nested)).toBe(true)
+    }, { timeout: 5000 })
+
+    const startedAt = Date.now()
+    await first.sm.interrupt(info.id)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    }, { timeout: 5000 })
+    const settleMs = Date.now() - startedAt
+    sub.unsubscribe()
+
+    // Exactly ONE terminal frame, classified as the interrupt — never a
+    // nested one, and never a success frame from an empty follow-up round.
+    const results = frames.filter((f) => f.type === 'result')
+    expect(results).toHaveLength(1)
+    expect(results[0].result).toBe('interrupted by user')
+    expect(results[0].is_error).toBe(true)
+
+    // The turn settled as soon as the interrupt aborted the shared signal:
+    // nothing had to wait for the hung nested stream's own timeout.
+    expect(settleMs).toBeLessThan(2000)
+
+    // The post-Agent parent round saw the SAME aborted signal the nested
+    // stream was handed — the proof that the nested loop shares the parent
+    // turn's signal rather than owning a fresh controller.
+    expect(parentRounds).toBe(2)
+    expect(requests).toHaveLength(3)
+    expect(requests.map((r) => r.nested)).toEqual([false, true, false])
+    expect(requests[0].abortedAtEntry).toBe(false)
+    expect(requests[2].abortedAtEntry).toBe(true)
+    expect(requests[2].signal).toBe(requests[1].signal)
+
+    // The Agent call resolves with the nested failure instead of hanging,
+    // and the parent's remaining call is closed with a synthetic aborted
+    // result (the API requires every tool_use to be answered).
+    const toolResult = (id: string) => frames.find(
+      (f) => f.type === 'user'
+        && Array.isArray(f.message?.content)
+        && f.message.content[0]?.tool_use_id === id,
+    )
+    const agentResult = toolResult(AGENT_ID)
+    expect(agentResult?.message.content[0]).toMatchObject({ type: 'tool_result', is_error: true })
+    expect(JSON.stringify(agentResult)).toContain('nested stream aborted')
+    const pendingResult = toolResult(PENDING_TOOL_ID)
+    expect(pendingResult?.message.content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: PENDING_TOOL_ID,
+      is_error: true,
+    })
+    expect(JSON.stringify(pendingResult)).toContain('aborted')
   }, 30000)
 })

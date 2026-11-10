@@ -1994,19 +1994,26 @@ export class SessionManager {
     let historySeed: SDKMessage[] | undefined
     try {
       // The seed page is later split by frame origin into the main and
-      // subagent rings, so the read must span BOTH budgets: a native log
+      // subagent rings, so a native read must span BOTH budgets: a native log
       // interleaves sidechain lines with main-thread ones, and a
       // subagent-heavy session would otherwise spend the whole historyCap on
       // sidechain lines and seed almost no main-thread messages (the
-      // original prompt included). Claude pages carry no sidechain lines, but
-      // their tool_result user lines have a content-derived parent and land in
-      // seedSub either way — the wider page changes neither that
-      // classification nor the per-ring bounds below
-      // (`slice(-historyCap)` / `slice(-subagentHistoryCap)`).
+      // original prompt included). Claude pages carry no sidechain lines, so
+      // they keep the plain historyCap page: widening it is not free — a
+      // CLI-created session with no `meta.model` resolves its resume model
+      // from the FIRST assistant frame (`firstAssistantModel`), and a page
+      // that reaches back before a mid-session model switch would resume on
+      // the older model. Their tool_result user lines have a content-derived
+      // parent and land in seedSub either way — that classification, and the
+      // per-ring bounds below (`slice(-historyCap)` /
+      // `slice(-subagentHistoryCap)`), do not depend on the page width.
       // NB: `sliceWindow` clamps `limit` to 1000, so the full-budget guarantee
       // degrades once historyCap + subagentHistoryCap exceeds 1000.
+      const pageLimit = provider === 'native'
+        ? this.historyCap + this.subagentHistoryCap
+        : this.historyCap
       const page = await this.readProviderHistoryPage(provider, id, {
-        limit: this.historyCap + this.subagentHistoryCap,
+        limit: pageLimit,
         // Side Chat: exclude the inherited parent prefix (fork boundary) so
         // re-seeding the ring on resume doesn't paint the parent's history.
         ...(meta.forkBoundaryUuid ? { afterUuid: meta.forkBoundaryUuid } : {}),
