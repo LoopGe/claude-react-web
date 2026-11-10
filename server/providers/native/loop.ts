@@ -25,7 +25,21 @@ export interface TurnResult {
   isError: boolean
 }
 
-type AggBlock = Extract<ContentBlock, { type: 'text' }> | Extract<ContentBlock, { type: 'thinking' }> | { type: 'tool_use'; id: string; name: string; json: string }
+type AggBlock =
+  | Extract<ContentBlock, { type: 'text' }>
+  | Extract<ContentBlock, { type: 'redacted_thinking' }>
+  | { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'tool_use'; id: string; name: string; json: string }
+
+/** Model history may carry a thinking block only when the API can verify it:
+ *  signed (`signature` non-empty) or redacted (`data`). The API rejects
+ *  unsigned thinking on a follow-up request, so those are stripped from
+ *  history — the UI-facing assistant frame keeps every block. */
+function isRetainedInHistory(block: ContentBlock): boolean {
+  if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature !== ''
+  if (block.type === 'redacted_thinking') return block.data !== ''
+  return true
+}
 
 /** One agent turn: stream → aggregate → execute tools → repeat until the
  *  model stops calling tools, then emit the result frame. History is mutated
@@ -67,19 +81,20 @@ export async function runTurn(
           blocks[ev.index] = ev.block.type === 'tool_use'
             ? { type: 'tool_use', id: ev.block.id, name: ev.block.name, json: '' }
             : ev.block.type === 'thinking'
-              ? { type: 'thinking', thinking: '' }
-              : { type: 'text', text: '' }
+              ? { type: 'thinking', thinking: '', signature: '' }
+              : ev.block.type === 'redacted_thinking'
+                ? { type: 'redacted_thinking', data: ev.block.data }
+                : { type: 'text', text: '' }
           break
         }
         case 'block_delta': {
           const block = blocks[ev.index]
           if (!block) break
-          // A delta must match its block kind — the adapter maps unknown
-          // delta types (e.g. thinking's signature_delta) to an empty
-          // tool_input delta, so a mismatched delta is a no-op, never a
-          // crash or cross-block contamination.
+          // A delta must match its block kind — a mismatched delta is a
+          // no-op, never a crash or cross-block contamination.
           if (ev.delta.type === 'text' && block.type === 'text') block.text += ev.delta.text
           else if (ev.delta.type === 'thinking' && block.type === 'thinking') block.thinking += ev.delta.thinking
+          else if (ev.delta.type === 'signature' && block.type === 'thinking') block.signature += ev.delta.signature
           else if (ev.delta.type === 'tool_input' && block.type === 'tool_use') block.json += ev.delta.json
           break
         }
@@ -98,18 +113,22 @@ export async function runTurn(
     }
     numTurns++
     usage = roundUsage
-    const content: ContentBlock[] = blocks.map((b) =>
-      b.type === 'tool_use'
-        ? { type: 'tool_use', id: b.id, name: b.name, input: parseJsonInput(b.json) }
-        : b,
-    )
+    const content: ContentBlock[] = blocks.map((b) => {
+      if (b.type === 'tool_use') return { type: 'tool_use', id: b.id, name: b.name, input: parseJsonInput(b.json) }
+      // Carry the signature in the UI frame: the session log persists these
+      // frames, and replay rebuilds model history from them.
+      if (b.type === 'thinking') {
+        return b.signature !== ''
+          ? { type: 'thinking', thinking: b.thinking, signature: b.signature }
+          : { type: 'thinking', thinking: b.thinking }
+      }
+      return b
+    })
     deps.emit(assistantFrame(ctx, { model, content, stopReason, usage: roundUsage }))
-    // Strip thinking blocks from what goes back to the API: P1 does not
-    // enable extended thinking and never aggregates signature_delta, so a
-    // re-sent thinking block would be unsigned and the API rejects unsigned
-    // thinking on follow-up requests. The UI-facing assistant frame above
-    // keeps the blocks; only the conversation history drops them.
-    history.push({ role: 'assistant', content: content.filter((b) => b.type !== 'thinking' && b.type !== 'redacted_thinking') })
+    // A re-sent thinking block must be verifiable, or the API rejects it: keep
+    // signed and redacted blocks, strip unsigned thinking from history. The
+    // UI-facing assistant frame above keeps every block.
+    history.push({ role: 'assistant', content: content.filter(isRetainedInHistory) })
     const toolUses = content.filter((b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use')
     if (toolUses.length === 0) {
       finalText = content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('')

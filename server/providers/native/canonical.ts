@@ -15,11 +15,13 @@ export type CanonicalUsagePartial = {
 export type CanonicalBlockStart =
   | { type: 'text' }
   | { type: 'thinking' }
+  | { type: 'redacted_thinking'; data: string }
   | { type: 'tool_use'; id: string; name: string }
 
 export type CanonicalDelta =
   | { type: 'text'; text: string }
   | { type: 'thinking'; thinking: string }
+  | { type: 'signature'; signature: string }
   | { type: 'tool_input'; json: string }
 
 export type CanonicalEvent = (

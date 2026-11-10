@@ -27,6 +27,23 @@ function textBlock(index: number, text: string): CanonicalEvent[] {
   ]
 }
 
+function thinkingBlock(index: number, thinking: string, signature?: string): CanonicalEvent[] {
+  const events: CanonicalEvent[] = [
+    { kind: 'block_start', index, block: { type: 'thinking' } },
+    { kind: 'block_delta', index, delta: { type: 'thinking', thinking } },
+  ]
+  if (signature !== undefined) events.push({ kind: 'block_delta', index, delta: { type: 'signature', signature } })
+  events.push({ kind: 'block_end', index })
+  return events
+}
+
+function redactedThinkingBlock(index: number, data: string): CanonicalEvent[] {
+  return [
+    { kind: 'block_start', index, block: { type: 'redacted_thinking', data } },
+    { kind: 'block_end', index },
+  ]
+}
+
 function toolUseBlock(index: number, id: string, name: string, inputJson: string): CanonicalEvent[] {
   return [
     { kind: 'block_start', index, block: { type: 'tool_use', id, name } },
@@ -220,5 +237,56 @@ describe('runTurn', () => {
     expect(second).toHaveLength(3)
     expect((second[1] as { role: string }).role).toBe('assistant')
     expect((second[2] as { role: string }).role).toBe('user')
+  })
+
+  it('keeps a signed thinking block in the next request and the UI frame', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...thinkingBlock(0, 'plan', 'sig-1'), ...toolUseBlock(1, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (f) => emitted.push(f as Frame) }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    const assistant = emitted.find((f) => f.type === 'assistant') as Frame
+    expect(assistant.message.content[0]).toEqual({ type: 'thinking', thinking: 'plan', signature: 'sig-1' })
+    const second = s.calls[1] as Array<{ role: string; content: unknown[] }>
+    expect(second[1].content[0]).toEqual({ type: 'thinking', thinking: 'plan', signature: 'sig-1' })
+  })
+
+  it('strips an unsigned thinking block from the next request but keeps it in the UI frame', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...thinkingBlock(0, 'plan'), ...toolUseBlock(1, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (f) => emitted.push(f as Frame) }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    const assistant = emitted.find((f) => f.type === 'assistant') as Frame
+    expect(assistant.message.content[0]).toEqual({ type: 'thinking', thinking: 'plan' })
+    const second = s.calls[1] as Array<{ role: string; content: Array<{ type: string }> }>
+    expect(second[1].content.map((b) => b.type)).toEqual(['tool_use'])
+  })
+
+  it('keeps a redacted_thinking block with data in the next request and the UI frame', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...redactedThinkingBlock(0, 'ENCRYPTED'), ...toolUseBlock(1, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (f) => emitted.push(f as Frame) }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    const assistant = emitted.find((f) => f.type === 'assistant') as Frame
+    expect(assistant.message.content[0]).toEqual({ type: 'redacted_thinking', data: 'ENCRYPTED' })
+    const second = s.calls[1] as Array<{ role: string; content: unknown[] }>
+    expect(second[1].content[0]).toEqual({ type: 'redacted_thinking', data: 'ENCRYPTED' })
   })
 })

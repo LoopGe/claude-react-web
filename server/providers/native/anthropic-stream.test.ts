@@ -50,6 +50,40 @@ describe('streamAnthropicMessages translation', () => {
     expect(vi.mocked(fetch).mock.calls[0][0]).toBe('https://api.example.com/v1/messages')
   })
 
+  it('translates thinking text and its signature_delta as separate canonical events', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      sseResponse([
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+      ]),
+    ))
+    const out = []
+    for await (const ev of streamAnthropicMessages(baseReq, async () => {})) out.push(ev)
+    expect(out).toEqual([
+      { kind: 'block_start', index: 0, block: { type: 'thinking' }, raw: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } } },
+      { kind: 'block_delta', index: 0, delta: { type: 'thinking', thinking: 'hmm' }, raw: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hmm' } } },
+      { kind: 'block_delta', index: 0, delta: { type: 'signature', signature: 'sig-1' }, raw: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-1' } } },
+      { kind: 'block_end', index: 0, raw: { type: 'content_block_stop', index: 0 } },
+    ])
+  })
+
+  it('carries redacted_thinking data at block start', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      sseResponse([
+        'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"ENCRYPTED"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+      ]),
+    ))
+    const out = []
+    for await (const ev of streamAnthropicMessages(baseReq, async () => {})) out.push(ev)
+    expect(out).toEqual([
+      { kind: 'block_start', index: 1, block: { type: 'redacted_thinking', data: 'ENCRYPTED' }, raw: { type: 'content_block_start', index: 1, content_block: { type: 'redacted_thinking', data: 'ENCRYPTED' } } },
+      { kind: 'block_end', index: 1, raw: { type: 'content_block_stop', index: 1 } },
+    ])
+  })
+
   it('translates tool_use blocks with input_json_delta', async () => {
     vi.stubGlobal('fetch', vi.fn(async () =>
       sseResponse([

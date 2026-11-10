@@ -13,7 +13,7 @@ const sideResult = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'u
 const sideUser = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `su${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
 
 describe('replay', () => {
-  it('rebuilds history, strips thinking and merges consecutive tool results', () => {
+  it('rebuilds history, strips unsigned thinking and merges consecutive tool results', () => {
     const events = [
       lost, user(1, 'hi'),
       assistant(2, [{ type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'calling' }, { type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }]),
@@ -25,6 +25,25 @@ describe('replay', () => {
     expect(messages).toHaveLength(5) // ctx, user, assistant, merged tool results, assistant
     expect(messages[2].content.some((b) => (b as { type: string }).type === 'thinking')).toBe(false)
     expect(messages[3].content).toHaveLength(2)
+  })
+  it('keeps a signed thinking block in the rebuilt history', () => {
+    const events = [
+      user(1, 'hi'),
+      assistant(2, [{ type: 'thinking', thinking: 'signed thought', signature: 'sig-1' }, { type: 'text', text: 'a' }]),
+      user(3, 'again'),
+      assistant(4, [{ type: 'thinking', thinking: 'unsigned thought' }, { type: 'text', text: 'b' }]),
+    ]
+    const messages = historyFromEvents(events) as Array<{ role: string; content: unknown[] }>
+    expect(messages[1].content[0]).toEqual({ type: 'thinking', thinking: 'signed thought', signature: 'sig-1' })
+    expect(messages[3].content).toEqual([{ type: 'text', text: 'b' }])
+  })
+  it('keeps a redacted_thinking block that carries data', () => {
+    const events = [
+      user(1, 'hi'),
+      assistant(2, [{ type: 'redacted_thinking', data: 'ENCRYPTED' }, { type: 'text', text: 'a' }]),
+    ]
+    const messages = historyFromEvents(events) as Array<{ role: string; content: unknown[] }>
+    expect(messages[1].content).toEqual([{ type: 'redacted_thinking', data: 'ENCRYPTED' }, { type: 'text', text: 'a' }])
   })
   it('starts model history at the last compact event', () => {
     const events = [

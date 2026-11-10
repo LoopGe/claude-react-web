@@ -37,6 +37,8 @@ interface BlockLike {
   type?: unknown
   id?: unknown
   tool_use_id?: unknown
+  signature?: unknown
+  data?: unknown
 }
 
 /** A user event is a tool-result event when its first content block is a
@@ -50,8 +52,13 @@ function isToolResultUser(content: unknown): boolean {
   return blocks.length > 0 && blocks[0].type === 'tool_result'
 }
 
-function isThinkingBlock(block: BlockLike): boolean {
-  return block.type === 'thinking' || block.type === 'redacted_thinking'
+/** Model history keeps a thinking block only when the API can verify it:
+ *  signed (non-empty `signature`) or redacted (non-empty `data`). The API
+ *  rejects unsigned thinking on a follow-up request, so it is stripped. */
+function isRetainedInHistory(block: BlockLike): boolean {
+  if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature !== ''
+  if (block.type === 'redacted_thinking') return typeof block.data === 'string' && block.data !== ''
+  return true
 }
 
 /** `<system-reminder>` context line shared by fresh, resumed and forked
@@ -64,9 +71,9 @@ export function contextSnapshot(cwd: string): string {
  * Rebuild the `messages` array sent to the API from a persisted event stream.
  *
  * - `session/context` becomes a user text message.
- * - assistant/user events keep their content; thinking blocks are stripped
- *   from assistant content (the API rejects unsigned thinking on replay, and
- *   the native provider never persists signatures).
+ * - assistant/user events keep their content; a thinking block survives only
+ *   when signed (non-empty `signature`) or redacted (non-empty `data`) — the
+ *   API rejects unsigned thinking on replay.
  * - a run of consecutive tool-result user events is concatenated into ONE
  *   user message — the API requires every tool_result for an assistant turn
  *   in a single user message.
@@ -103,7 +110,7 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
         if (isSidechainEvent(event)) break
         messages.push({
           role: 'assistant',
-          content: blocksOf(event.message.content).filter((block) => !isThinkingBlock(block)),
+          content: blocksOf(event.message.content).filter(isRetainedInHistory),
         })
         openResults = null
         break

@@ -101,19 +101,23 @@ function translate(ev: SseEvent): CanonicalEvent | null {
       return usage ? { kind: 'message_start', usage, raw: d } : { kind: 'message_start', raw: d }
     }
     case 'content_block_start': {
-      const cb = d.content_block as { type: string; id?: string; name?: string }
+      const cb = d.content_block as { type: string; id?: string; name?: string; data?: string }
       const block = cb.type === 'tool_use'
         ? { type: 'tool_use' as const, id: cb.id!, name: cb.name! }
-        : cb.type === 'thinking' ? { type: 'thinking' as const } : { type: 'text' as const }
+        : cb.type === 'thinking'
+          ? { type: 'thinking' as const }
+          : cb.type === 'redacted_thinking' ? { type: 'redacted_thinking' as const, data: cb.data ?? '' } : { type: 'text' as const }
       return { kind: 'block_start', index: d.index as number, block, raw: d }
     }
     case 'content_block_delta': {
-      const delta = d.delta as { type: string; text?: string; thinking?: string; partial_json?: string }
+      const delta = d.delta as { type: string; text?: string; thinking?: string; signature?: string; partial_json?: string }
       const cd = delta.type === 'text_delta'
         ? { type: 'text' as const, text: delta.text ?? '' }
         : delta.type === 'thinking_delta'
           ? { type: 'thinking' as const, thinking: delta.thinking ?? '' }
-          : { type: 'tool_input' as const, json: delta.partial_json ?? '' }
+          : delta.type === 'signature_delta'
+            ? { type: 'signature' as const, signature: delta.signature ?? '' }
+            : { type: 'tool_input' as const, json: delta.partial_json ?? '' }
       return { kind: 'block_delta', index: d.index as number, delta: cd, raw: d }
     }
     case 'content_block_stop':
