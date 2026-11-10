@@ -201,12 +201,16 @@ function logOf(session: unknown): LogLike {
 }
 
 /** Text blocks carried by persisted user events, in order. */
-function userTexts(session: unknown): string[] {
-  return logOf(session).events
+function userTextsOf(log: LogLike): string[] {
+  return log.events
     .filter((event) => event.type === 'user')
     .flatMap((event) => event.message?.content ?? [])
     .filter((block) => block.type === 'text' && typeof block.text === 'string')
     .map((block) => block.text as string)
+}
+
+function userTexts(session: unknown): string[] {
+  return userTextsOf(logOf(session))
 }
 
 /** Scripted streamer that snapshots every request. `req.messages` is the
@@ -788,9 +792,11 @@ describe('NativeSession', () => {
     const result = frames.find((f) => f.type === 'result') as Frame
     expect(result.is_error).toBe(true)
     expect(result.result).toContain('skill discovery exploded')
-    // The client already marked the turn "sent", so the ORIGINAL text is
-    // durable even though the turn never reached the model.
-    expect(userTexts(session)).toEqual(['/demo do this'])
+    // The client already marked the turn "sent", so the ORIGINAL text must be
+    // durable even though the turn never reached the model. Read the FILE, not
+    // the in-memory events: this proves the flush resolved before the throw.
+    const onDisk = loadNativeSessionLogSync(dir, 'skill-expand-fail') as unknown as LogLike
+    expect(userTextsOf(onDisk)).toEqual(['/demo do this'])
     expect(streamed).toEqual([])
     await session.destroy()
   })

@@ -689,10 +689,10 @@ export class NativeSession implements ProviderSessionHandle {
           session_id: this.opts.id,
           parent_tool_use_id: null,
           timestamp: new Date(this.receivedAt.get(next)!).toISOString(),
-          message: persistedUserMessage({ ...next.message, content: turnContent }),
+          message: persistedUserMessage({ content: turnContent }),
         })
         await this.log.flush()
-        if (skillError) throw skillError
+        if (skillError !== undefined) throw skillError
         // MCP discovery is awaited per turn, not at spawn: a slow server never
         // delays session creation, and a mid-turn replace/toggle only lands
         // on the next turn (the turn below runs on this snapshot).
