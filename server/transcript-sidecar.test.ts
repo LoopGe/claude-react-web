@@ -62,6 +62,33 @@ function assistantMsg(uuid: string): Record<string, unknown> {
   return { type: 'assistant', uuid, session_id: 'sid-1', message: { role: 'assistant', content: [] } }
 }
 
+const MULTI_BLOCK_MSG_ID = 'msg_d7f04e09-b02a-97de-a134-bf4a2267a72c'
+const DERIVED_UUID_PREFIX = '00bf9e30-3506-44fd-b02c-'
+/** The CLI splits an assistant message with more than one content block into
+ *  one streamed frame per block, each carrying this derived uuid:
+ *  `uuid.slice(0,24) + blockIndex.toString(16).padStart(12,'0')`. */
+const derivedUuid = (blockIndex: number) => `${DERIVED_UUID_PREFIX}${blockIndex.toString(16).padStart(12, '0')}`
+const ORIGINAL_UUID = `${DERIVED_UUID_PREFIX}638463dbf3fa`
+
+function assistantWithContent(
+  uuid: string,
+  messageId: string,
+  content: unknown[],
+  restoredFromDisk = false,
+): Record<string, unknown> {
+  return {
+    type: 'assistant',
+    uuid,
+    session_id: 'sid-1',
+    ...(restoredFromDisk ? { restoredFromDisk: true } : {}),
+    message: { id: messageId, role: 'assistant', content },
+  }
+}
+
+const thinkingBlock = (text: string) => ({ type: 'thinking', thinking: text, signature: '' })
+const toolUseBlock = (id: string, name: string) => ({ type: 'tool_use', id, name, input: { file_path: 'x' } })
+const multiBlockContent = [thinkingBlock('t'), toolUseBlock('tu-1', 'Edit'), toolUseBlock('tu-2', 'Write')]
+
 describe('TranscriptSidecar', () => {
   it('appends rows and loads them back in order', async () => {
     const dir = await tmpDir()
@@ -173,6 +200,67 @@ describe('foldSidecarRows', () => {
     expect(foldSidecarRows([{ seq: 'x' }, { seq: -1 }, { noSeq: true }, { seq: 1.5 }, { seq: 3, uuid: 'ok' }]))
       .toEqual([{ seq: 3, uuid: 'ok', msg: undefined, evicted: undefined }])
   })
+  it('evicts a disk-restored whole-message copy of blocks already recorded per frame', () => {
+    // Resume reconcile used to append the CLI JSONL's single multi-block
+    // assistant line (original uuid) even though the live stream had already
+    // recorded the same message as one frame per block (derived uuids), so the
+    // duplicate landed at the seq head and rendered as the transcript tail.
+    const folded = foldSidecarRows([
+      ...[0, 1, 2].map((i) => ({
+        seq: 2155 + i,
+        uuid: derivedUuid(i),
+        type: 'assistant',
+        msg: assistantWithContent(derivedUuid(i), MULTI_BLOCK_MSG_ID, [multiBlockContent[i]]),
+      })),
+      {
+        seq: 2786,
+        uuid: ORIGINAL_UUID,
+        type: 'assistant',
+        msg: assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true),
+      },
+    ])
+    expect(folded.map((r) => r.evicted)).toEqual([undefined, undefined, undefined, true])
+  })
+  it('keeps the disk copy when it carries blocks the live frames never delivered', () => {
+    // Crash mid-stream: live recorded two of the three blocks. Evicting the
+    // disk copy would drop the third, so the heal must stay hands-off.
+    const folded = foldSidecarRows([
+      { seq: 0, uuid: derivedUuid(0), type: 'assistant', msg: assistantWithContent(derivedUuid(0), MULTI_BLOCK_MSG_ID, [multiBlockContent[0]]) },
+      { seq: 1, uuid: derivedUuid(1), type: 'assistant', msg: assistantWithContent(derivedUuid(1), MULTI_BLOCK_MSG_ID, [multiBlockContent[1]]) },
+      { seq: 2, uuid: ORIGINAL_UUID, type: 'assistant', msg: assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true) },
+    ])
+    expect(folded.map((r) => r.evicted)).toEqual([undefined, undefined, undefined])
+  })
+  it('leaves per-frame rows alone when no whole-message copy exists', () => {
+    const folded = foldSidecarRows([0, 1, 2].map((i) => ({
+      seq: i,
+      uuid: derivedUuid(i),
+      type: 'assistant',
+      msg: assistantWithContent(derivedUuid(i), MULTI_BLOCK_MSG_ID, [multiBlockContent[i]]),
+    })))
+    expect(folded.map((r) => r.evicted)).toEqual([undefined, undefined, undefined])
+  })
+  it('removes a retracted message’s whole-message copy along with its tombstoned frames', () => {
+    // The retraction tombstoned the three derived-uuid frames; the old
+    // reconcile then appended the whole-message line. The copy must go too, or
+    // the retracted reply stays visible at the transcript tail.
+    const folded = foldSidecarRows([
+      ...[0, 1, 2].map((i) => ({
+        seq: i,
+        uuid: derivedUuid(i),
+        type: 'assistant',
+        msg: assistantWithContent(derivedUuid(i), MULTI_BLOCK_MSG_ID, [multiBlockContent[i]]),
+      })),
+      ...[0, 1, 2].map((seq) => ({ seq, evicted: true })),
+      {
+        seq: 6,
+        uuid: ORIGINAL_UUID,
+        type: 'assistant',
+        msg: assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true),
+      },
+    ])
+    expect(folded.map((r) => r.evicted)).toEqual([true, true, true, true])
+  })
 })
 
 describe('recordTranscriptMessage (seq assignment gate)', () => {
@@ -277,6 +365,94 @@ describe('backfillFromEntries (sidecar catch-up)', () => {
     // Settle the fire-and-forget sidecar writes before afterEach's rm (see the
     // drain note above).
     await drain(t.sidecar)
+  })
+  it('skips a disk row for a multi-block assistant message already recorded per frame', () => {
+    const t = stubHolder()
+    // Live stream: one frame per content block, each with a CLI-derived uuid.
+    for (let i = 0; i < multiBlockContent.length; i++) {
+      expect(recordTranscriptMessage(t, assistantWithContent(derivedUuid(i), MULTI_BLOCK_MSG_ID, [multiBlockContent[i]]))).toBe(i)
+    }
+    // Disk JSONL: the same message once, under its original uuid. Its uuid is
+    // unknown to the store, but its message id is not — appending it would put
+    // a whole duplicate of the message at the seq head.
+    const appended = backfillFromEntries(t, [
+      assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true),
+      // A genuinely new message id still appends.
+      assistantWithContent(`${DERIVED_UUID_PREFIX}0000000000ff`, 'msg_other', [thinkingBlock('x')], true),
+    ])
+    expect(appended).toBe(1)
+    expect(t.store.headSeq).toBe(4)
+  })
+  it('appends every per-block JSONL line of one assistant message', () => {
+    const t = stubHolder()
+    // The dominant JSONL shape (and the one a cold rebuild sees): one line per
+    // content block, each with its own uuid, all sharing one message id. The
+    // message-id identity must not collapse them into a single row.
+    const entries = multiBlockContent.map((block, i) =>
+      assistantWithContent(`uuid-block-${i}`, MULTI_BLOCK_MSG_ID, [block], true))
+    expect(backfillFromEntries(t, entries)).toBe(3)
+    expect(t.store.headSeq).toBe(3)
+  })
+  it('appends a whole-message line whose blocks the live frames did not all record', () => {
+    const t = stubHolder()
+    // Crash mid-stream: the store has two of the three blocks. Skipping the
+    // disk line would silently drop the third, so coverage — not mere
+    // identity — decides.
+    for (let i = 0; i < 2; i++) {
+      recordTranscriptMessage(t, assistantWithContent(derivedUuid(i), MULTI_BLOCK_MSG_ID, [multiBlockContent[i]]))
+    }
+    expect(backfillFromEntries(t, [
+      assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true),
+    ])).toBe(1)
+    expect(t.store.headSeq).toBe(3)
+  })
+  it('does not resurrect a retracted multi-block message from its disk copy', () => {
+    const t = stubHolder()
+    const uuids = [0, 1, 2].map(derivedUuid)
+    uuids.forEach((u, i) => recordTranscriptMessage(t, assistantWithContent(u, MULTI_BLOCK_MSG_ID, [multiBlockContent[i]])))
+    expect(t.store.evict(uuids)).toEqual([0, 1, 2])
+    // The retraction tombstones the live uuids, which the disk copy's original
+    // uuid never matches; the coverage projection includes tombstoned rows.
+    expect(backfillFromEntries(t, [assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true)])).toBe(0)
+    expect(t.store.visibleCount).toBe(0)
+  })
+  it('does not resurrect a retracted response even when its recorded blocks differ', () => {
+    const t = stubHolder()
+    // Only two of the three blocks were ever recorded, and they are retracted.
+    // Content no longer matches the disk line, but a fully tombstoned response
+    // must still be treated as covered.
+    const uuids = [0, 1].map(derivedUuid)
+    uuids.forEach((u, i) => recordTranscriptMessage(t, assistantWithContent(u, MULTI_BLOCK_MSG_ID, [multiBlockContent[i]])))
+    expect(t.store.evict(uuids)).toEqual([0, 1])
+    expect(backfillFromEntries(t, [assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true)])).toBe(0)
+    expect(t.store.visibleCount).toBe(0)
+  })
+  it('retracting a whole-message uuid evicts every block of the response', () => {
+    const t = stubHolder()
+    const uuids = [0, 1, 2].map(derivedUuid)
+    uuids.forEach((u, i) => recordTranscriptMessage(t, assistantWithContent(u, MULTI_BLOCK_MSG_ID, [multiBlockContent[i]])))
+    // Reconcile skipped the whole-message line and aliased its original uuid.
+    expect(backfillFromEntries(t, [assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true)])).toBe(0)
+    // The CLI retracts the uuid it persisted; every block must go, not just the
+    // first (aliased) one.
+    expect(t.store.evict([ORIGINAL_UUID])).toEqual([0, 1, 2])
+    expect(t.store.visibleCount).toBe(0)
+  })
+  it('stays idempotent when hydrate replays rows the live path already recorded', () => {
+    const t = stubHolder()
+    const msgs = [0, 1, 2].map((i) =>
+      assistantWithContent(derivedUuid(i), MULTI_BLOCK_MSG_ID, [multiBlockContent[i]]))
+    msgs.forEach((msg) => recordTranscriptMessage(t, msg))
+    // A live session does not reconcile at spawn: its first transcript read
+    // hydrates the sidecar rows over the live records. Replaying them must not
+    // double the coverage projection.
+    t.store.hydrate(foldSidecarRows(msgs.map((msg, i) => transcriptRow(i, derivedUuid(i), msg))))
+    expect(backfillFromEntries(t, [
+      assistantWithContent(ORIGINAL_UUID, MULTI_BLOCK_MSG_ID, multiBlockContent, true),
+    ])).toBe(0)
+    // The skipped line's original uuid still resolves for uuid-anchored reads
+    // (/messages?aroundUuid, /history?beforeUuid).
+    expect(t.store.seqOf(ORIGINAL_UUID)).toBe(0)
   })
 })
 

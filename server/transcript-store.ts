@@ -51,6 +51,12 @@ export interface HydrateRow {
   uuid: string | null
   evicted?: boolean
   msg?: unknown
+  /** When set, register this row's uuid against this OTHER seq instead of
+   *  its own. foldSidecarRows uses it for a healed whole-message duplicate:
+   *  the duplicate's seq is tombstoned, but its original uuid must still
+   *  resolve to the covering frame for uuid-anchored reads
+   *  (/messages?aroundUuid, /history?beforeUuid). */
+  aliasToSeq?: number
 }
 
 interface InternalEntry extends SeqMessage {
@@ -58,6 +64,7 @@ interface InternalEntry extends SeqMessage {
 }
 
 import { imagePayloadOfMessage } from '../shared/user-frames.js'
+import { assistantMessageShapeOf } from '../shared/assistant-message.js'
 
 export class TranscriptStore {
   readonly sessionId: string
@@ -65,6 +72,15 @@ export class TranscriptStore {
   private nextSeq = 0
   private messages = new Map<number, InternalEntry>()
   private uuidToSeq = new Map<string, number>()
+  /** response id → seqs of its rows, for the coverage projection
+   *  (assistantMessageBlocksOf). Kept separately from uuidToSeq because a
+   *  multi-content-block assistant message's frames share one response id
+   *  but carry distinct uuids (derived per block on the live stream,
+   *  original on disk). A response id that was ever recorded is "known",
+   *  which keeps a retracted message's disk copy from being re-appended (its
+   *  original uuid never matches the tombstoned derived uuids). Used by
+   *  reconcile's whole-message coverage check only. */
+  private assistantMessageSeqs = new Map<string, Set<number>>()
   /** Bumped whenever a message is newly tombstoned. Search caches use it to
    *  invalidate an index whose rows may still describe an evicted message. */
   private tombsEpoch = 0
@@ -115,6 +131,7 @@ export class TranscriptStore {
     }
     const seq = this.nextSeq++
     this.messages.set(seq, { seq, uuid, msg })
+    this.indexAssistantMessage(seq, msg)
     return seq
   }
 
@@ -130,12 +147,103 @@ export class TranscriptStore {
     return this.uuidToSeq.get(uuid)
   }
 
-  /** 驱逐 → 墓碑。返回被墓碑化的 seq 列表（未登记的 uuid 忽略）。幂等：重复 uuid 不重复返回。 */
+  /** Content blocks of every recorded row for one assistant response id,
+   *  concatenated in seq order; undefined when the id is unknown.
+   *
+   *  Coverage, not visibility: tombstoned rows count. A retracted message's
+   *  rows are tombstoned, and its disk copy must still be recognized as
+   *  covered so reconcile does not resurrect it. Derived from the rows
+   *  themselves rather than maintained incrementally: hydrate() can replay
+   *  rows the live path already recorded, and the projection must not double
+   *  them. */
+  assistantMessageBlocksOf(messageId: string): readonly unknown[] | undefined {
+    const seqs = this.assistantMessageSeqsOf(messageId)
+    if (seqs === undefined) return undefined
+    const blocks: unknown[] = []
+    for (const seq of seqs) {
+      const shape = assistantMessageShapeOf(this.messages.get(seq)?.msg)
+      if (shape?.blocks != null) blocks.push(...shape.blocks)
+    }
+    return blocks
+  }
+
+  /** Whether the response still has a visible (non-tombstoned) row. A fully
+   *  tombstoned response was retracted, so its disk copy must not come back
+   *  even when the recorded blocks no longer match it. */
+  assistantMessageHasVisibleRows(messageId: string): boolean {
+    const seqs = this.assistantMessageSeqsOf(messageId)
+    return seqs !== undefined && seqs.some((seq) => this.messages.get(seq)?.evicted !== true)
+  }
+
+  /** Response id → seq of its first VISIBLE row (falling back to its first
+   *  recorded row when all of them are tombstoned), or undefined when the id
+   *  is unknown. Used to alias a covered whole-message line's original uuid
+   *  onto the covering frames (backfillFromEntries) — pointing at a visible
+   *  frame keeps /messages?aroundUuid from resolving to a tombstone. */
+  assistantMessageSeqOf(messageId: string): number | undefined {
+    const seqs = this.assistantMessageSeqsOf(messageId)
+    if (seqs === undefined) return undefined
+    return seqs.find((seq) => this.messages.get(seq)?.evicted !== true) ?? seqs[0]
+  }
+
+  /** Map another uuid onto an already-recorded row, without allocating a seq.
+   *  A whole-message disk line skipped as covered still has to resolve for
+   *  uuid-anchored reads (/messages?aroundUuid, /history?beforeUuid); its
+   *  original uuid is registered against the covering frame's seq. An existing
+   *  mapping wins so a later live frame cannot re-target it. */
+  registerUuidAlias(uuid: string, seq: number): void {
+    if (!this.uuidToSeq.has(uuid)) this.uuidToSeq.set(uuid, seq)
+  }
+
+  private assistantMessageSeqsOf(messageId: string): readonly number[] | undefined {
+    const seqs = this.assistantMessageSeqs.get(messageId)
+    return seqs === undefined ? undefined : [...seqs].sort((a, b) => a - b)
+  }
+
+  private indexAssistantMessage(seq: number, msg: unknown): void {
+    const id = assistantMessageShapeOf(msg)?.id
+    if (id === undefined) return
+    // Set, not a list: hydrating rows the live path already recorded must not
+    // register the same seq twice.
+    const seqs = this.assistantMessageSeqs.get(id)
+    if (seqs) seqs.add(seq)
+    else this.assistantMessageSeqs.set(id, new Set([seq]))
+  }
+
+  /** 驱逐 → 墓碑。返回被墓碑化的 seq 列表（未登记的 uuid 忽略）。幂等：重复 uuid 不重复返回。
+   *
+   *  An assistant response is recorded as one row per content block, and the
+   *  CLI's retraction names whatever uuids it persisted — the original uuid of
+   *  a whole-message line, or the derived per-block uuids. Resolving only the
+   *  named row would leave the rest of a retracted response visible (and an
+   *  aliased whole-message uuid would retract just its first block), so a uuid
+   *  expands to every row of the response it belongs to. */
   evict(uuids: string[]): number[] {
-    const out: number[] = []
+    const seqsToEvict = new Set<number>()
+    // One expansion per response id: a retraction names every uuid of an
+    // N-block response, and re-deriving its seq set per uuid is O(N²).
+    const expandedById = new Map<string, readonly number[] | undefined>()
     for (const uuid of uuids) {
-      const seq = this.uuidToSeq.get(uuid)
+      const seq = this.seqOf(uuid)
       if (seq === undefined) continue
+      const id = assistantMessageShapeOf(this.messages.get(seq)?.msg)?.id
+      if (id === undefined) {
+        seqsToEvict.add(seq)
+        continue
+      }
+      let responseSeqs = expandedById.get(id)
+      if (responseSeqs === undefined) {
+        responseSeqs = this.assistantMessageSeqsOf(id)
+        expandedById.set(id, responseSeqs)
+      }
+      if (responseSeqs !== undefined) {
+        for (const s of responseSeqs) seqsToEvict.add(s)
+      } else {
+        seqsToEvict.add(seq)
+      }
+    }
+    const out: number[] = []
+    for (const seq of [...seqsToEvict].sort((a, b) => a - b)) {
       const entry = this.messages.get(seq)
       if (!entry || entry.evicted) continue
       entry.evicted = true
@@ -281,6 +389,7 @@ export class TranscriptStore {
     this.nextSeq = 0
     this.messages.clear()
     this.uuidToSeq.clear()
+    this.assistantMessageSeqs.clear()
   }
 
   /** 对账：从持久化行恢复内存索引（Task 3 负责加载行；本方法只做纯内存恢复）。 */
@@ -293,7 +402,8 @@ export class TranscriptStore {
         msg: row.msg,
         evicted: row.evicted === true ? true : undefined,
       })
-      if (row.uuid !== null) this.uuidToSeq.set(row.uuid, row.seq)
+      if (row.uuid !== null) this.uuidToSeq.set(row.uuid, row.aliasToSeq ?? row.seq)
+      this.indexAssistantMessage(row.seq, row.msg)
     }
   }
 }

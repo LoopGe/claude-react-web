@@ -7085,6 +7085,134 @@ describe('SessionManager', () => {
       expect(win.totalCount).toBe(0)
     })
 
+    it('does not surface the whole-message copy of a multi-block assistant reply on reload', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const base = '00bf9e30-3506-44fd-b02c-'
+      const derived = (i: number) => `${base}${i.toString(16).padStart(12, '0')}`
+      const blocks = [
+        { type: 'thinking', thinking: 't', signature: '' },
+        { type: 'tool_use', id: 'tu-1', name: 'Edit', input: { file_path: 'a.ts' } },
+        { type: 'tool_use', id: 'tu-2', name: 'Write', input: { file_path: 'b.md' } },
+      ]
+      // The CLI streams a multi-content-block assistant message one frame per
+      // block, each with a derived uuid.
+      for (let i = 0; i < blocks.length; i++) {
+        mockHandles[0].emit({
+          type: 'assistant',
+          uuid: derived(i),
+          parent_tool_use_id: null,
+          message: { id: 'msg_multi', role: 'assistant', content: [blocks[i]] },
+        })
+      }
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+
+      // Persist the duplicate exactly as the old uuid-only reconcile wrote it:
+      // the whole message under the original uuid, disk-restored, at the seq
+      // head. The client's newest page would otherwise render its thinking and
+      // tool cards as the transcript tail (their tool_results sit far outside
+      // the page, so the cards stay 'running').
+      const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
+      const originalUuid = `${base}638463dbf3fa`
+      const rowCount = async () =>
+        existsSync(sidecarFile)
+          ? (await nodeFs.readFile(sidecarFile, 'utf8')).split('\n').filter(Boolean).length
+          : 0
+      expect(await waitFor(async () => (await rowCount()) === 3)).toBe(true)
+      await nodeFs.appendFile(sidecarFile, JSON.stringify({
+        seq: 3,
+        uuid: originalUuid,
+        type: 'assistant',
+        msg: {
+          type: 'assistant',
+          uuid: originalUuid,
+          session_id: info.id,
+          parent_tool_use_id: null,
+          restoredFromDisk: true,
+          message: { id: 'msg_multi', role: 'assistant', content: blocks },
+        },
+      }) + '\n')
+
+      // A reload rehydrates through the fold, which tombstones the redundant
+      // whole-message row (content-equal to the per-block rows) while the seq
+      // space stays stable.
+      const store2 = new SessionStore({ stateDir: dir })
+      await store2.load()
+      const sm2 = new SessionManager({ store: store2 })
+      try {
+        const reloaded = await sm2.getTranscriptWindow(info.id)
+        expect(reloaded.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([derived(0), derived(1), derived(2)])
+        expect(reloaded.totalCount).toBe(3)
+        expect(reloaded.headSeq).toBe(4)
+        // The duplicate's original uuid resolves to the covering frame, not to
+        // the tombstoned seq, so search-jump previews keep working.
+        expect(await sm2.transcriptSeqOfUuid(info.id, originalUuid)).toBe(0)
+      } finally {
+        await sm2.shutdown()
+      }
+    })
+
+    it('reconciles against a real JSONL: the whole-message line is deduped, per-block lines are kept', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      const base = '00bf9e30-3506-44fd-b02c-'
+      const derived = (i: number) => `${base}${i.toString(16).padStart(12, '0')}`
+      const blocks = [
+        { type: 'thinking', thinking: 't', signature: '' },
+        { type: 'tool_use', id: 'tu-a1', name: 'Edit', input: { file_path: 'a.ts' } },
+        { type: 'tool_use', id: 'tu-a2', name: 'Write', input: { file_path: 'b.md' } },
+      ]
+      for (let i = 0; i < blocks.length; i++) {
+        mockHandles[0].emit({
+          type: 'assistant',
+          uuid: derived(i),
+          parent_tool_use_id: null,
+          message: { id: 'msg_whole', role: 'assistant', content: [blocks[i]] },
+        })
+      }
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+
+      // The live frames above were split out of ONE whole-message JSONL line
+      // (original uuid); the ordinary JSONL shape is one line per block, each
+      // with its own uuid. Reconcile must skip only the first and keep all of
+      // the second, or a cold rebuild drops every block after the first.
+      const jsonl = [
+        { type: 'assistant', uuid: `${base}638463dbf3fa`, message: { id: 'msg_whole', role: 'assistant', content: blocks } },
+        ...blocks.map((block, i) => ({
+          type: 'assistant',
+          uuid: `disk-block-${i}`,
+          message: { id: 'msg_per_block', role: 'assistant', content: [block] },
+        })),
+      ]
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(jsonlPath, jsonl.map((line) => JSON.stringify(line)).join('\n') + '\n')
+
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const reloaded = await sm2.getTranscriptWindow(info.id)
+          expect(reloaded.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual([
+            derived(0),
+            derived(1),
+            derived(2),
+            'disk-block-0',
+            'disk-block-1',
+            'disk-block-2',
+          ])
+          expect(reloaded.totalCount).toBe(6)
+          expect(reloaded.headSeq).toBe(6)
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+        else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+
     it('fork pre-seeds the seq space: a post-fork live message seq exceeds every pre-fork row (chronology holds)', async () => {
       // Give the SOURCE a completed turn so fork() allows the branch.
       const sourceCwd = '/tmp/fork-seq-src'

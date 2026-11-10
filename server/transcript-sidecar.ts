@@ -25,7 +25,9 @@
 import { mkdir, open, readFile, unlink } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname, basename, join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { createLogger } from './log.js'
+import { assistantMessageShapeOf } from '../shared/assistant-message.js'
 import type { HydrateRow, TranscriptStore } from './transcript-store.js'
 import { isRenderableSdkMessage } from './history-utils.js'
 
@@ -200,9 +202,14 @@ export function transcriptRow(seq: number, uuid: string | null, msg: unknown): S
  *  tombstone row marks the matching entry evicted (rows are applied in file
  *  order, so a tombstone that precedes its base row — only possible from a
  *  reconcile back-fill appending after an eviction — still sticks).
- *  Malformed rows (non-integer/negative seq) are skipped. */
+ *  Malformed rows (non-integer/negative seq) are skipped.
+ *
+ *  Also repairs a duplicate the old uuid-only back-fill could write: see
+ *  healDuplicateAssistantRows. The repair is deterministic from content, so
+ *  no tombstone row is persisted — every later load re-derives the same
+ *  projection. */
 export function foldSidecarRows(rows: readonly SidecarRow[]): HydrateRow[] {
-  const bySeq = new Map<number, HydrateRow & { evicted?: boolean }>()
+  const bySeq = new Map<number, HydrateRow>()
   for (const row of rows) {
     const seq = row.seq
     if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0) continue
@@ -220,7 +227,87 @@ export function foldSidecarRows(rows: readonly SidecarRow[]): HydrateRow[] {
       evicted: bySeq.get(seq)?.evicted,
     })
   }
-  return [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+  const folded = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+  healDuplicateAssistantRows(folded)
+  return folded
+}
+
+/** Tombstone the whole-message projection of a message that is already
+ *  recorded as one frame per content block.
+ *
+ *  A JSONL line carrying an entire multi-block assistant message under its
+ *  original uuid does not match the uuid of the live stream's per-block
+ *  frames (the CLI derives one uuid per block: `uuid.slice(0,24) + blockIndex
+ *  hex`). A reconcile whose dedupe only knew uuids therefore treated the disk
+ *  line as new and appended it at the seq head — a duplicate that renders as
+ *  the transcript tail. The fold removes it by shape and content alone: a row
+ *  carrying more than one block is redundant when its blocks are EXACTLY the
+ *  concatenation of the single-block rows for the same response id. A partial
+ *  live recording (crash mid-stream) keeps the disk copy, since dropping it
+ *  would lose the blocks it alone carries. Evicted frames still participate:
+ *  a retraction tombstoned the derived-uuid rows, and the duplicate appended
+ *  afterwards is exactly the row this removes. Only a visible multi-block row
+ *  is ever tombstoned; its uuid is re-pointed at the covering frame
+ *  (HydrateRow.aliasToSeq) so uuid-anchored reads do not resolve to the new
+ *  tombstone.
+ *
+ *  The whole-message shape is rare: the dominant JSONL shape is one line per
+ *  block, whose uuids match the live frames and therefore never reach this
+ *  repair. */
+function healDuplicateAssistantRows(rows: readonly HydrateRow[]): void {
+  // Only a response recorded in BOTH shapes (single-block frames and a
+  // whole-message row) can carry a duplicate. Collecting the ids first keeps a
+  // normal load — where every response has just one shape — allocation-free.
+  const multiBlockIds = new Set<string>()
+  const singleBlockIds = new Set<string>()
+  for (const row of rows) {
+    const shape = assistantMessageShapeOf(row.msg)
+    if (shape?.blocks == null) continue
+    if (shape.blocks.length > 1) multiBlockIds.add(shape.id)
+    else singleBlockIds.add(shape.id)
+  }
+  const candidateIds = new Set([...multiBlockIds].filter((id) => singleBlockIds.has(id)))
+  if (candidateIds.size === 0) return
+
+  const liveBlocksById = new Map<string, unknown[][]>()
+  const liveFirstSeqById = new Map<string, number>()
+  const liveFirstVisibleSeqById = new Map<string, number>()
+  const candidatesById = new Map<string, Array<{ row: HydrateRow; blocks: unknown[] }>>()
+  for (const row of rows) {
+    const shape = assistantMessageShapeOf(row.msg)
+    if (shape?.blocks == null || !candidateIds.has(shape.id)) continue
+    if (shape.blocks.length > 1) {
+      if (row.evicted !== true) {
+        const list = candidatesById.get(shape.id) ?? []
+        list.push({ row, blocks: shape.blocks })
+        candidatesById.set(shape.id, list)
+      }
+    } else {
+      // `rows` is seq-ordered, so the concatenation stays in message order.
+      const list = liveBlocksById.get(shape.id) ?? []
+      list.push(shape.blocks)
+      liveBlocksById.set(shape.id, list)
+      if (!liveFirstSeqById.has(shape.id)) liveFirstSeqById.set(shape.id, row.seq)
+      if (row.evicted !== true && !liveFirstVisibleSeqById.has(shape.id)) {
+        liveFirstVisibleSeqById.set(shape.id, row.seq)
+      }
+    }
+  }
+  for (const [id, candidates] of candidatesById) {
+    const live = liveBlocksById.get(id)
+    if (live === undefined || live.length === 0) continue
+    const merged = live.flat()
+    // Point the alias at a visible frame when one survives; otherwise at the
+    // response's original position (a better pagination anchor than the tail).
+    const aliasSeq = liveFirstVisibleSeqById.get(id) ?? liveFirstSeqById.get(id)
+    for (const candidate of candidates) {
+      if (!isDeepStrictEqual(candidate.blocks, merged)) continue
+      candidate.row.evicted = true
+      // The duplicate's seq is now a tombstone, so its original uuid must not
+      // keep resolving to it: point the uuid at the covering frame instead.
+      if (aliasSeq !== undefined) candidate.row.aliasToSeq = aliasSeq
+    }
+  }
 }
 
 /**
@@ -252,8 +339,19 @@ export function recordTranscriptMessage(t: TranscriptHolder, msg: unknown): numb
  * restart / cold session (spec §2: the sidecar may be missing or short).
  * Dedup is by uuid where one exists; uuid-less entries fall back to a
  * positional guard (only entries at or beyond the store's current head are
- * recorded, so an already-hydrated row is never double-allocated). Returns
- * the number of rows appended.
+ * recorded, so an already-hydrated row is never double-allocated).
+ *
+ * One extra identity check applies ONLY to a whole-message assistant line
+ * (more than one content block, original uuid): if the store already holds
+ * that message id AND the recorded blocks reproduce the line's blocks
+ * exactly, the live stream's derived-uuid frames cover it, so the line is
+ * skipped — its original uuid is aliased to the covering frame's seq so
+ * uuid-anchored reads still resolve. A partial live recording does not
+ * match, and the line is appended rather than dropping the blocks only it
+ * carries. Per-block JSONL lines (the dominant shape) share a message id but
+ * each carries its own block, so they must NOT be skipped — the store's
+ * first block would otherwise hide every sibling. Returns the number of rows
+ * appended.
  */
 export function backfillFromEntries(t: TranscriptHolder, entries: readonly unknown[]): number {
   let appended = 0
@@ -266,6 +364,23 @@ export function backfillFromEntries(t: TranscriptHolder, entries: readonly unkno
       if (t.store.seqOf(uuid) !== undefined) continue
     } else if (i < t.store.headSeq) {
       continue
+    }
+    const shape = assistantMessageShapeOf(msg)
+    if (shape !== null && shape.blocks !== null && shape.blocks.length > 1) {
+      const known = t.store.assistantMessageBlocksOf(shape.id)
+      if (known !== undefined) {
+        // Covered when the recorded blocks reproduce the line exactly. A fully
+        // tombstoned response is covered too: it was retracted, and its disk
+        // copy must not resurrect even if the recorded blocks differ.
+        const covered = !t.store.assistantMessageHasVisibleRows(shape.id) || isDeepStrictEqual(shape.blocks, known)
+        if (covered) {
+          if (uuid !== null) {
+            const firstSeq = t.store.assistantMessageSeqOf(shape.id)
+            if (firstSeq !== undefined) t.store.registerUuidAlias(uuid, firstSeq)
+          }
+          continue
+        }
+      }
     }
     const seq = t.store.record(uuid, msg)
     void t.sidecar.appendRow(transcriptRow(seq, uuid, msg))
