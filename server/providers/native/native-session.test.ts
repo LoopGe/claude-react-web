@@ -18,6 +18,7 @@ import { NativeSkillCatalog } from './skills.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
+import { buildRequestBody } from './anthropic-stream.js'
 import type { Frame } from './frames.js'
 import { config, __setConfigForTest } from '../../config.js'
 
@@ -1928,6 +1929,60 @@ describe('NativeSession', () => {
       await session.setMaxThinkingTokens?.(0)
       await nextRequest('fourth', 4)
       expect(requests[3].thinking).toEqual({ type: 'disabled' })
+    } finally {
+      await session.destroy()
+      streamAnthropicMessagesMock.mockReset()
+      streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+      __setConfigForTest(origConfig)
+    }
+  })
+
+  it('tracks the thinking display separately from the token config', async () => {
+    const dir = await tempDir('native-thinking-display-')
+    const origConfig = { ...config }
+    __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+    const requests: Array<Parameters<typeof buildRequestBody>[0]> = []
+    streamAnthropicMessagesMock.mockImplementation(async function* (req: Parameters<typeof buildRequestBody>[0]) {
+      requests.push(req)
+      for (const ev of textTurn('ok')) yield ev
+    })
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({
+      id: 'thinking-display',
+      cwd: dir,
+      thinking: { type: 'enabled', budgetTokens: 4096, display: 'summarized' },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    const nextRequest = async (text: string, count: number): Promise<void> => {
+      session.enqueueUserMessage(userMsg(text) as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(count))
+    }
+    const wireThinking = (i: number): unknown =>
+      (buildRequestBody(requests[i]) as { thinking?: unknown }).thinking
+    try {
+      await nextRequest('first', 1)
+      // The create-time display seeds the tracked field.
+      expect(wireThinking(0)).toEqual({ type: 'enabled', budget_tokens: 4096, display: 'summarized' })
+
+      // An ABSENT display keeps the session mode — it is not a reset.
+      await session.setMaxThinkingTokens?.(8192)
+      await nextRequest('second', 2)
+      expect(wireThinking(1)).toEqual({ type: 'enabled', budget_tokens: 8192, display: 'summarized' })
+
+      // null resets to the API default.
+      await session.setMaxThinkingTokens?.(4096, null)
+      await nextRequest('third', 3)
+      expect(wireThinking(2)).toEqual({ type: 'enabled', budget_tokens: 4096 })
+
+      await session.setMaxThinkingTokens?.(4096, 'omitted')
+      await nextRequest('fourth', 4)
+      expect(wireThinking(3)).toEqual({ type: 'enabled', budget_tokens: 4096, display: 'omitted' })
+
+      // 'highlights' is tracked but never reaches the wire.
+      await session.setMaxThinkingTokens?.(4096, 'highlights')
+      await nextRequest('fifth', 5)
+      expect(wireThinking(4)).toEqual({ type: 'enabled', budget_tokens: 4096 })
     } finally {
       await session.destroy()
       streamAnthropicMessagesMock.mockReset()

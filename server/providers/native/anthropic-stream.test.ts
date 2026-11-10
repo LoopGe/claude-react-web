@@ -135,8 +135,11 @@ describe('buildRequestBody', () => {
 })
 
 describe('buildRequestBody thinking', () => {
-  const bodyWithThinking = (thinking: RequestThinking, maxTokens = 16384): { thinking?: unknown } =>
-    buildRequestBody({ ...baseReq, maxTokens, thinking })
+  const bodyWithThinking = (
+    thinking: RequestThinking,
+    opts: { maxTokens?: number; display?: 'summarized' | 'omitted' | 'highlights' } = {},
+  ): { thinking?: unknown } =>
+    buildRequestBody({ ...baseReq, maxTokens: opts.maxTokens ?? 16384, thinking, thinkingDisplay: opts.display })
 
   it('emits the snake_case adaptive / enabled / disabled wire forms', () => {
     expect(bodyWithThinking({ type: 'adaptive' }).thinking).toEqual({ type: 'adaptive' })
@@ -167,17 +170,35 @@ describe('buildRequestBody thinking', () => {
     })
   })
 
-  it("forwards display only for 'summarized' | 'omitted', never 'highlights'", () => {
-    expect(bodyWithThinking({ type: 'adaptive', display: 'summarized' }).thinking).toEqual({
+  it('clamps against a non-default max_tokens', () => {
+    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 99_999 }, { maxTokens: 4096 }).thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 4095,
+    })
+  })
+
+  it('leaves the budget as-is when max_tokens <= 1024 (empty clamp range)', () => {
+    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 500 }, { maxTokens: 1024 }).thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 500,
+    })
+    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 5000 }, { maxTokens: 1024 }).thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 5000,
+    })
+  })
+
+  it("forwards the tracked display only for 'summarized' | 'omitted', never 'highlights'", () => {
+    expect(bodyWithThinking({ type: 'adaptive' }, { display: 'summarized' }).thinking).toEqual({
       type: 'adaptive',
       display: 'summarized',
     })
-    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 4096, display: 'omitted' }).thinking).toEqual({
+    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 4096 }, { display: 'omitted' }).thinking).toEqual({
       type: 'enabled',
       budget_tokens: 4096,
       display: 'omitted',
     })
-    expect(bodyWithThinking({ type: 'adaptive', display: 'highlights' }).thinking).toEqual({ type: 'adaptive' })
+    expect(bodyWithThinking({ type: 'adaptive' }, { display: 'highlights' }).thinking).toEqual({ type: 'adaptive' })
   })
 })
 

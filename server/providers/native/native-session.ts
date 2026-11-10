@@ -38,7 +38,7 @@ import { createAgentTool } from './subagent.js'
 import { NativeSkillCatalog } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
-import type { ThinkingSetting } from '../../../shared/session-info.js'
+import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 
 const log = createLogger('native')
 
@@ -252,6 +252,10 @@ export class NativeSession implements ProviderSessionHandle {
   /** Live extended-thinking config, read when the next request is built.
    *  `undefined` = no explicit choice (API/model default). */
   private thinking: ThinkingSetting | undefined
+  /** The session display mode, tracked apart from the token config (the
+   *  setMaxThinkingTokens contract: undefined keeps it, null resets it).
+   *  'highlights' may be held here but is never sent on the wire. */
+  private thinkingDisplay: ThinkingDisplay | undefined
   /** Synchronous pump guard: set before the async pumpLoop starts, so a
    *  second enqueueUserMessage while the first turn is still being scheduled
    *  cannot start a second concurrent pump. */
@@ -272,6 +276,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.model = opts.model ?? DEFAULT_MODEL
     this.permissionMode = opts.permissionMode ?? 'default'
     this.thinking = opts.thinking
+    this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
@@ -515,6 +520,7 @@ export class NativeSession implements ProviderSessionHandle {
         messages: req.messages,
         maxTokens: DEFAULT_MAX_TOKENS,
         thinking: this.thinking,
+        thinkingDisplay: this.thinkingDisplay,
         signal: req.signal,
       },
       async (info) => {
@@ -879,20 +885,21 @@ export class NativeSession implements ProviderSessionHandle {
   /** Runtime extended-thinking change (the SDK's setMaxThinkingTokens
    *  contract). The manager owns the ThinkingSetting → tokens mapping;
    *  null = adaptive, 0 = disabled, N = enabled with an N-token budget.
-   *  `display` replaces the session mode only for the API-supported
-   *  'summarized' | 'omitted'; null/undefined and 'highlights' leave it
-   *  unset (the API default), never persisted as a wire value. The next
-   *  request reads the live field. */
+   *  The display is tracked SEPARATELY from the token config: an ABSENT
+   *  display keeps the session-start mode, null resets it to the API
+   *  default, and a provided value replaces it. 'highlights' is stored but
+   *  never reaches the wire — the API only accepts 'summarized'|'omitted'.
+   *  The next request reads both live fields. */
   async setMaxThinkingTokens(
     tokens: number | null,
     display?: 'summarized' | 'omitted' | 'highlights' | null,
   ): Promise<void> {
-    const extra = display === 'summarized' || display === 'omitted' ? { display } : {}
+    if (display !== undefined) this.thinkingDisplay = display === null ? undefined : display
     this.thinking = tokens === null
-      ? { type: 'adaptive', ...extra }
+      ? { type: 'adaptive' }
       : tokens === 0
         ? { type: 'disabled' }
-        : { type: 'enabled', budgetTokens: tokens, ...extra }
+        : { type: 'enabled', budgetTokens: tokens }
   }
 
   /** Wire shape consumed by the host's reconcile probe

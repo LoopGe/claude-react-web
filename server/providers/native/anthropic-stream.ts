@@ -1,5 +1,5 @@
 import { createLogger } from '../../log.js'
-import type { ThinkingDisplay } from '../../../shared/session-info.js'
+import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import { parseSseStream, type SseEvent } from './sse.js'
 import type { CanonicalEvent } from './canonical.js'
 
@@ -9,13 +9,12 @@ export const MAX_API_RETRIES = 10
 const BACKOFF_BASE_MS = 1_000
 const BACKOFF_CAP_MS = 60_000
 
-/** Extended-thinking config for one request. The shape matches the SDK's
- *  `ThinkingConfig` (camelCase `budgetTokens`); `buildRequestBody` maps it to
- *  the wire's snake_case form. */
-export type RequestThinking =
-  | { type: 'adaptive'; display?: ThinkingDisplay }
-  | { type: 'disabled' }
-  | { type: 'enabled'; budgetTokens?: number; display?: ThinkingDisplay }
+/** Extended-thinking token config for one request. `RequestThinking` IS the
+ *  shared `ThinkingSetting` (the same type `SessionMeta.thinking` carries);
+ *  `buildRequestBody` maps it to the wire's snake_case form. The display mode
+ *  is NOT read from here — it travels as `StreamRequest.thinkingDisplay`, so
+ *  the live control can distinguish "keep" from "reset". */
+export type RequestThinking = ThinkingSetting
 
 export interface StreamRequest {
   baseUrl: string
@@ -26,6 +25,10 @@ export interface StreamRequest {
   messages: unknown[]
   maxTokens: number
   thinking?: RequestThinking
+  /** The session's display mode, tracked apart from the token config:
+   *  undefined = API default, 'highlights' is a CLI-only value the API does
+   *  not accept. Forwarded only when it is 'summarized' | 'omitted'. */
+  thinkingDisplay?: ThinkingDisplay
   signal: AbortSignal
 }
 
@@ -54,19 +57,26 @@ const EPHEMERAL = { type: 'ephemeral' } as const
 const THINKING_MIN_BUDGET = 1024
 
 /** The wire form of one thinking config. Bare `{type:'enabled'}` (no budget)
- *  has no valid wire form and maps to adaptive. `display` forwards only the
- *  API-supported 'summarized' | 'omitted' — 'highlights' is a CLI-only value.
- *  The enabled budget is clamped to `[1024, max_tokens - 1]`. */
-function thinkingBody(thinking: RequestThinking, maxTokens: number): Record<string, unknown> {
+ *  has no valid wire form and maps to adaptive. `display` comes from the
+ *  separately tracked session display and forwards only the API-supported
+ *  'summarized' | 'omitted' — 'highlights' is a CLI-only value.
+ *  The enabled budget is clamped to `[1024, max_tokens - 1]`; when
+ *  `max_tokens <= 1024` that range is empty, so the budget is left as-is
+ *  (1024 wins only when the upper bound is above it). */
+function thinkingBody(
+  thinking: RequestThinking,
+  maxTokens: number,
+  display?: ThinkingDisplay,
+): Record<string, unknown> {
   if (thinking.type === 'disabled') return { type: 'disabled' }
-  const display = thinking.display === 'summarized' || thinking.display === 'omitted'
-    ? { display: thinking.display }
-    : {}
+  const extra = display === 'summarized' || display === 'omitted' ? { display } : {}
   if (thinking.type === 'adaptive' || thinking.budgetTokens === undefined) {
-    return { type: 'adaptive', ...display }
+    return { type: 'adaptive', ...extra }
   }
-  const budget = Math.max(THINKING_MIN_BUDGET, Math.min(thinking.budgetTokens, maxTokens - 1))
-  return { type: 'enabled', budget_tokens: budget, ...display }
+  const budget = maxTokens > THINKING_MIN_BUDGET
+    ? Math.max(THINKING_MIN_BUDGET, Math.min(thinking.budgetTokens, maxTokens - 1))
+    : thinking.budgetTokens
+  return { type: 'enabled', budget_tokens: budget, ...extra }
 }
 
 /** Build the Anthropic Messages request body, adding prompt-cache breakpoints
@@ -84,7 +94,7 @@ export function buildRequestBody(req: StreamRequest): Record<string, unknown> {
   }
 
   if (req.thinking) {
-    body.thinking = thinkingBody(req.thinking, req.maxTokens)
+    body.thinking = thinkingBody(req.thinking, req.maxTokens, req.thinkingDisplay)
   }
 
   if (req.system !== '') {
