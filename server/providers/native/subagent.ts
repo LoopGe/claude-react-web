@@ -11,7 +11,9 @@ import type { ToolDef } from './tools/types.js'
  *  session's current values resolved by the caller's closure). */
 export interface AgentToolDeps {
   cwd: string
-  model: string
+  /** LIVE getter: a later `setModel` on the session must move the Agent's
+   *  fallback, not leave it at the spawn-time model. */
+  model: () => string
   system: string
   frameCtx: FrameContext
   /** LIVE getter: the session's builtins plus its current MCP/first-party
@@ -30,8 +32,8 @@ export interface AgentToolDeps {
 
 interface AgentToolInput {
   description?: string
-  prompt: string
-  subagent_type?: string
+  prompt: unknown
+  subagent_type?: unknown
   model?: string
 }
 
@@ -65,6 +67,13 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
     async run(raw, ctx) {
       const input = raw as unknown as AgentToolInput
       if (!ctx.toolUseId) throw new Error('Agent requires a tool_use id')
+      if (typeof input.prompt !== 'string' || !input.prompt.trim()) {
+        return { text: 'prompt is required', isError: true }
+      }
+      const prompt = input.prompt
+      if (input.subagent_type !== undefined && typeof input.subagent_type !== 'string') {
+        return { text: `unknown subagent_type: ${String(input.subagent_type)}`, isError: true }
+      }
 
       const requested = typeof input.subagent_type === 'string' ? input.subagent_type.trim() : ''
       let instruction = DEFAULT_AGENT_INSTRUCTION
@@ -82,7 +91,7 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
       // Depth is capped at one by construction: the subagent never sees the
       // Agent tool, so it cannot fan out again.
       const nestedTools = deps.tools().filter((t) => t.name !== 'Agent')
-      const nestedModel = input.model ?? defModel ?? deps.model
+      const nestedModel = input.model ?? defModel ?? deps.model()
       const nestedCtx: FrameContext = { ...deps.frameCtx, parentToolUseId: ctx.toolUseId }
 
       if (ctx.signal.aborted) return { text: 'aborted', isError: true }
@@ -100,15 +109,8 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
             emit: (frame) => {
               const f = frame as Frame
               if (f.type === 'assistant') {
-                const content = (f.message as { content?: unknown })?.content
-                if (Array.isArray(content)) {
-                  assistantTexts.push(
-                    content
-                      .filter((b) => b && typeof b === 'object' && (b as { type?: string }).type === 'text')
-                      .map((b) => (b as { text: string }).text)
-                      .join(''),
-                  )
-                }
+                const content = f.message.content as Array<{ type: string; text: string }>
+                assistantTexts.push(content.filter((b) => b.type === 'text').map((b) => b.text).join(''))
               }
               deps.emit(frame)
             },
@@ -117,7 +119,7 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
           },
           nestedCtx,
           [],
-          { role: 'user', content: [{ type: 'text', text: input.prompt }] },
+          { role: 'user', content: [{ type: 'text', text: prompt }] },
           nestedModel,
           ctx.signal,
         )
@@ -129,12 +131,10 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
       // checked again before the report is handed back as a tool_result.
       if (ctx.signal.aborted) return { text: 'aborted', isError: true }
 
-      let text = ''
       for (let i = assistantTexts.length - 1; i >= 0; i--) {
-        if (assistantTexts[i].trim()) { text = assistantTexts[i]; break }
+        if (assistantTexts[i].trim()) return { text: assistantTexts[i] }
       }
-      if (!text) text = assistantTexts.join('')
-      return { text: text.trim() ? text : '(no output)' }
+      return { text: '(no output)' }
     },
   }
 }

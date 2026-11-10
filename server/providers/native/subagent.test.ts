@@ -6,6 +6,7 @@ import type { CanonicalEvent } from './canonical.js'
 import type { AgentMessage } from '../../agent-message.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { ToolDef } from './tools/types.js'
+import { readTool } from './tools/read.js'
 
 type StreamReq = { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }
 
@@ -65,7 +66,7 @@ const extraTool: ToolDef = {
 function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
   return {
     cwd: process.cwd(),
-    model: 'parent-model',
+    model: () => 'parent-model',
     system: 'PARENT-SYS',
     frameCtx: defaultFrameContext('sess-1'),
     tools: () => [noopTool],
@@ -144,6 +145,45 @@ describe('createAgentTool', () => {
     expect(s.calls[0].model).toBe('override-model')
   })
 
+  it('reads the model getter at call time', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...textBlock(0, 'one'), deltaStop('end_turn')],
+      [startStop, ...textBlock(0, 'two'), deltaStop('end_turn')],
+    ])
+    let current = 'm1'
+    const agent = createAgentTool(baseDeps({ model: () => current, streamFor: s.streamFor.bind(s) }))
+
+    await runAgent(agent, { description: 'd', prompt: 'p' })
+    current = 'm2'
+    await runAgent(agent, { description: 'd', prompt: 'p' })
+
+    expect(s.calls[0].model).toBe('m1')
+    expect(s.calls[1].model).toBe('m2')
+  })
+
+  it('runs a nested tool call and stamps its tool_result with the parent id', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'inner-1', 'Read', '{"file_path":"does-not-exist.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    const permitted: string[] = []
+    const agent = createAgentTool(baseDeps({
+      tools: () => [readTool],
+      streamFor: s.streamFor.bind(s),
+      emit: (f) => emitted.push(f as Frame),
+      requestPermission: async (name, input) => { permitted.push(name); return { allowed: true, input } },
+    }))
+
+    const outcome = await runAgent(agent, { description: 'd', prompt: 'p' })
+
+    expect(permitted).toEqual(['Read'])
+    expect(outcome).toEqual({ text: 'done' })
+    const toolResult = emitted.find((f) => f.type === 'user') as Frame
+    expect(toolResult.parent_tool_use_id).toBe('tu-parent')
+    expect(toolResult.message.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'inner-1' })
+  })
+
   it('reads the tools getter at call time', async () => {
     const s = scriptedStreamer([
       [startStop, ...textBlock(0, 'one'), deltaStop('end_turn')],
@@ -203,6 +243,28 @@ describe('createAgentTool', () => {
       .toEqual({ text: 'unknown subagent_type: ghost', isError: true })
     expect(await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'off' }))
       .toEqual({ text: 'unknown subagent_type: off', isError: true })
+    expect(s.calls).toHaveLength(0)
+  })
+
+  it('requires a non-empty prompt', async () => {
+    const s = scriptedStreamer([])
+    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s) }))
+
+    expect(await runAgent(agent, { description: 'd' }))
+      .toEqual({ text: 'prompt is required', isError: true })
+    expect(await runAgent(agent, { description: 'd', prompt: '   ' }))
+      .toEqual({ text: 'prompt is required', isError: true })
+    expect(await runAgent(agent, { description: 'd', prompt: 42 }))
+      .toEqual({ text: 'prompt is required', isError: true })
+    expect(s.calls).toHaveLength(0)
+  })
+
+  it('rejects a non-string subagent_type', async () => {
+    const s = scriptedStreamer([])
+    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s) }))
+
+    expect(await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 7 }))
+      .toEqual({ text: 'unknown subagent_type: 7', isError: true })
     expect(s.calls).toHaveLength(0)
   })
 

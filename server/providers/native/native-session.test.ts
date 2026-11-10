@@ -13,6 +13,12 @@ import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { Frame } from './frames.js'
+import { config, __setConfigForTest } from '../../config.js'
+
+// The retry suppression test drives the real `defaultStream` against a mocked
+// wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
+const streamAnthropicMessagesMock = vi.hoisted(() => vi.fn())
+vi.mock('./anthropic-stream.js', () => ({ streamAnthropicMessages: streamAnthropicMessagesMock }))
 
 function textTurn(text: string): CanonicalEvent[] {
   return [
@@ -1112,6 +1118,44 @@ describe('NativeSession', () => {
     expect(history).toContain('after')
     expect(history.indexOf('SUMMARY')).toBeLessThan(history.indexOf('next'))
     await session.destroy()
+  })
+
+  it('defaultStream suppresses api_retry frames for nested streams', async () => {
+    const dir = await tempDir('native-retry-')
+    const origConfig = { ...config }
+    __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+    streamAnthropicMessagesMock.mockImplementation(async function* (
+      _req: unknown,
+      onRetry: (info: { attempt: number; maxRetries: number; delayMs: number }) => Promise<void>,
+    ) {
+      await onRetry({ attempt: 1, maxRetries: 10, delayMs: 250 })
+      yield { kind: 'message_start' } satisfies CanonicalEvent
+    })
+    try {
+      const provider = new NativeProvider({ stateDir: dir })
+      const session = provider.createSession({ id: 'retry', cwd: dir })
+      const internals = session as unknown as {
+        output: { drainQueue(): Frame[] }
+        defaultStream(
+          req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
+          opts?: { suppressRetryFrames?: boolean },
+        ): AsyncIterable<CanonicalEvent>
+      }
+      const req = { model: 'm', system: 's', tools: [], messages: [], signal: new AbortController().signal }
+
+      for await (const _event of internals.defaultStream(req, { suppressRetryFrames: true })) { /* drain */ }
+      expect(internals.output.drainQueue().filter((f) => f.subtype === 'api_retry')).toHaveLength(0)
+
+      for await (const _event of internals.defaultStream(req)) { /* drain */ }
+      const retries = internals.output.drainQueue().filter((f) => f.subtype === 'api_retry')
+      expect(retries).toHaveLength(1)
+      expect(retries[0]).toMatchObject({ type: 'system', subtype: 'api_retry', attempt: 1 })
+
+      await session.destroy()
+    } finally {
+      streamAnthropicMessagesMock.mockReset()
+      __setConfigForTest(origConfig)
+    }
   })
 
   it('refuses to resume a corrupt log', async () => {
