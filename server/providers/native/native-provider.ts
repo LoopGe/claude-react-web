@@ -14,6 +14,7 @@ import { NativeMcpConnections } from './mcp/connections.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
 import { AGENT_GUIDANCE } from './subagent.js'
+import { SKILL_GUIDANCE } from './tools/skill.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import { deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
@@ -32,6 +33,10 @@ const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool]
  *  (one exported constant), so the section and the schema cannot drift. */
 const AGENT_SECTION: PromptSection = { name: 'tool:Agent', order: 80, text: AGENT_GUIDANCE }
 
+/** The Skill tool's prompt section, same single-source rule. Registered in
+ *  BOTH prompts: the Skill tool is still in a subagent's tool list. */
+const SKILL_SECTION: PromptSection = { name: 'tool:Skill', order: 85, text: SKILL_GUIDANCE }
+
 /** Build this session's system prompt (plus any per-session append). The
  *  subagent variant omits the Agent section — see createSession. */
 function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }): string {
@@ -41,6 +46,7 @@ function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: st
     registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
   }
   if (opts.withAgentSection) registry.register(AGENT_SECTION)
+  registry.register(SKILL_SECTION)
   const rendered = registry.render()
   return opts.systemPromptAppend ? `${rendered}\n\n${opts.systemPromptAppend}` : rendered
 }
@@ -60,7 +66,7 @@ export class NativeProvider implements AgentProvider {
     supportsFastMode: false,
     supportsEffortLevel: false,
     supportsThinkingControl: false,
-    supportsCommands: false,
+    supportsCommands: true,
     supportsAgents: true,
     supportsContextUsage: true,
     supportsUsage: true,
@@ -109,6 +115,9 @@ export class NativeProvider implements AgentProvider {
     // awaited per turn, so spawn never blocks on a slow server.
     const mcp = new NativeMcpConnections({ authFor: this.authFor })
     mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
+    // Spawn skill policy rides the SDK-shaped create body the manager already
+    // forwards through providerExtras (`Options.skills`).
+    const sdkOptions = opts.providerExtras?.sdkOptions as { skills?: string[] | 'all' } | undefined
     // The constructor can throw on real paths (corrupt/unsupported log, missing
     // fork log). The queued connect has no owner then, so it must be torn down
     // here or it would run forever and leak its children.
@@ -129,6 +138,7 @@ export class NativeProvider implements AgentProvider {
         tools: TOOLS,
         mcp,
         agentStore: this.agentStore,
+        skills: sdkOptions?.skills,
         system,
         subagentSystem,
         canUseTool: opts.canUseTool,

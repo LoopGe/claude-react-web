@@ -35,6 +35,8 @@ import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
 import { createAgentTool } from './subagent.js'
+import { NativeSkillCatalog } from './skills.js'
+import { createSkillTool } from './tools/skill.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 
 const log = createLogger('native')
@@ -85,6 +87,12 @@ function usageOf(value: unknown): Usage | null {
   }
 }
 
+/** Append the `<available_skills>` block to a system prompt, or leave it
+ *  untouched when nothing is listable (no stray blank line). */
+function withSkillsSection(system: string, section: string): string {
+  return section ? `${system}\n\n${section}` : system
+}
+
 /** Field-wise sum of two usage readings (cache fields only appear when at
  *  least one side carries them). */
 function addUsage(a: Usage, b: Usage): Usage {
@@ -125,6 +133,9 @@ export interface NativeSessionOptions {
   /** Custom agent definitions the Agent tool resolves `subagent_type`
    *  against. Absent = only the built-in general-purpose agent. */
   agentStore?: AgentDefinitionStore
+  /** Spawn `Options.skills` policy: `undefined` = the CLI's name-only
+   *  default, `'all'` = list with descriptions, `string[]` = allowlist. */
+  skills?: string[] | 'all'
   system: string
   /** The prompt a nested (Agent) run gets: the parent system WITHOUT the
    *  `tool:Agent` section, since nested tools exclude Agent and a subagent
@@ -177,6 +188,14 @@ export class NativeSession implements ProviderSessionHandle {
    *  its live getters keep tracking `model` and the rebuilt `tools` list; it
    *  is appended in `rebuildTools` alongside the builtins. */
   private readonly agentTool: ToolDef
+  /** Local SKILL.md catalog. Discovery is kicked off at construction and
+   *  awaited per turn, the same shape as MCP's `whenReady`. */
+  private readonly skills: NativeSkillCatalog
+  /** The Skill tool this session hands the model. Built once; it rides every
+   *  tool list (nested ones too — a subagent may load a skill) and its
+   *  guidance is the provider's static prompt section. */
+  private readonly skillTool: ToolDef
+  private readonly skillsReady: Promise<void>
   /** Model-facing tool name → owning server, for the permission request's
    *  `mcpServer` field. Built from discovery metadata, never by parsing the
    *  FQN (it may be truncated and hashed). */
@@ -206,13 +225,26 @@ export class NativeSession implements ProviderSessionHandle {
     this.tools = [...opts.tools]
     this.model = opts.model ?? DEFAULT_MODEL
     this.permissionMode = opts.permissionMode ?? 'default'
+    // Skills are discovered before the first turn can ask for them. The
+    // policy is stored separately from discovery (the catalog resolves state
+    // lazily), so configure-before/after-reload makes no difference.
+    this.skills = new NativeSkillCatalog(opts.cwd)
+    this.skills.configure(opts.skills)
+    this.skillTool = createSkillTool(this.skills)
+    this.skillsReady = this.skills.reload()
+    // Discovery is awaited only by a turn. A session destroyed before its
+    // first turn would otherwise leave this promise unhandled at process
+    // level; the handler marks it observed while the turn path still awaits
+    // the ORIGINAL promise, so a real discovery failure stays a loud turn
+    // error rather than a silent empty catalog.
+    void this.skillsReady.catch((err) => log.warn(`[${opts.id}] skill discovery failed:`, err))
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
     // land in the transcript with their real parent. Built after `ctx` exists.
     this.agentTool = createAgentTool({
       cwd: opts.cwd,
       model: () => this.model,
-      system: opts.subagentSystem ?? opts.system,
+      system: () => this.subagentSystem(),
       frameCtx: this.ctx,
       tools: () => this.tools,
       streamFor: (req) => this.streamFor(req, { suppressRetryFrames: true }),
@@ -537,20 +569,28 @@ export class NativeSession implements ProviderSessionHandle {
     })
   }
 
+  /** The nested (Agent) prompt: the subagent system plus the CURRENT skills
+   *  section, read at call time so a reload/override reaches the next nested
+   *  run. The parent system is built per turn in `pumpLoop`. */
+  private subagentSystem(): string {
+    return withSkillsSection(this.opts.subagentSystem ?? this.opts.system, this.skills.section())
+  }
+
   /** Rebuild the tool list and the FQN → server map from the current
    *  connection state. Runs before every turn and after every live MCP
    *  mutation; `this.tools` is replaced (not mutated) so a running turn keeps
    *  the snapshot it was handed. */
   private rebuildTools(): void {
     this.mcpToolServers.clear()
-    // The Agent tool rides EVERY list, MCP-less sessions included — otherwise
-    // the model loses delegation exactly when it has no servers to call.
+    // The Agent and Skill tools ride EVERY list, MCP-less sessions included —
+    // otherwise the model loses delegation exactly when it has no servers to
+    // call, and a subagent could never load a skill.
     if (!this.mcp) {
-      this.tools = [...this.opts.tools, this.agentTool]
+      this.tools = [...this.opts.tools, this.agentTool, this.skillTool]
       return
     }
     const infos = this.mcp.tools()
-    this.tools = [...this.opts.tools, this.agentTool, ...mcpToolDefs(this.mcp)]
+    this.tools = [...this.opts.tools, this.agentTool, this.skillTool, ...mcpToolDefs(this.mcp)]
     const sdkServers = new Set(
       this.mcp.statuses().filter((status) => status.source === 'sdk').map((status) => status.name),
     )
@@ -596,6 +636,10 @@ export class NativeSession implements ProviderSessionHandle {
         // delays session creation, and a mid-turn replace/toggle only lands
         // on the next turn (the turn below runs on this snapshot).
         await this.mcp?.whenReady()
+        // Discovery is awaited per turn for the same reason as MCP: a slow
+        // disk never delays session creation. `skillsReady` resolves once, so
+        // this is a cheap re-await on every later turn.
+        await this.skillsReady
         this.rebuildTools()
         const res = await runTurn(
           {
@@ -607,7 +651,7 @@ export class NativeSession implements ProviderSessionHandle {
               this.persistFrame(frame)
               this.output.push(frame)
             },
-            system: this.opts.system,
+            system: withSkillsSection(this.opts.system, this.skills.section()),
           },
           this.ctx,
           this.history,
@@ -811,8 +855,34 @@ export class NativeSession implements ProviderSessionHandle {
     }
   }
 
+  /** The `/` command catalog: every user-invocable skill of the current
+   *  catalog, in the catalog's own selection state. Awaits the construction-
+   *  time discovery so an immediate `/commands` fetch after spawn cannot race
+   *  it into an empty answer. */
+  async supportedCommands(): Promise<unknown> {
+    await this.skillsReady
+    return this.skills.commands()
+  }
+
+  /** Re-read the skill roots and answer the fresh command catalog. */
   async reloadSkills(): Promise<unknown> {
-    return []
+    await this.skills.reload()
+    return { skills: this.skills.commands() }
+  }
+
+  /** The flag-settings layer, reduced to the ONE key this provider supports.
+   *  `skillOverrides` replaces the per-skill override map (`{}` restores the
+   *  spawn default). Plugin toggles must fail loudly: `supportsPlugins` is
+   *  false, so silently accepting them would report a change that never
+   *  happened. */
+  async applyFlagSettings(settings: Record<string, unknown>): Promise<void> {
+    const unknownKeys = Object.keys(settings).filter((key) => key !== 'skillOverrides')
+    if (unknownKeys.length > 0) {
+      throw new Error(`native provider does not support flag settings: ${unknownKeys.join(', ')}`)
+    }
+    const overrides = settings.skillOverrides
+    if (overrides === undefined) return
+    this.skills.applyOverrides(overrides as Record<string, 'on' | 'name-only' | 'user-invocable-only' | 'off'>)
   }
 
   /** Built-in agents only: the /agents route unions the enabled

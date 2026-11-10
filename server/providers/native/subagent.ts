@@ -7,14 +7,16 @@ import type { Frame, FrameContext } from './frames.js'
 import type { ToolDef } from './tools/types.js'
 
 /** Everything the Agent tool needs from the session that owns it. All fields
- *  are read at call time (except frameCtx/system, which are the session's
- *  current values resolved by the caller's closure). */
+ *  are read at call time (except frameCtx, which is the session's frame
+ *  context). */
 export interface AgentToolDeps {
   cwd: string
   /** LIVE getter: a later `setModel` on the session must move the Agent's
    *  fallback, not leave it at the spawn-time model. */
   model: () => string
-  system: string
+  /** LIVE getter: the subagent prompt plus the CURRENT skills section, so a
+   *  `reloadSkills`/`applyFlagSettings` change reaches the next nested run. */
+  system: () => string
   frameCtx: FrameContext
   /** LIVE getter: the session's builtins plus its current MCP/first-party
    *  defs. Read per call so a mid-session MCP change is honoured. */
@@ -91,7 +93,7 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
         defModel = def.model
       }
 
-      const nestedSystem = `${deps.system}\n\n${instruction}`
+      const nestedSystem = `${deps.system()}\n\n${instruction}`
       // Depth is capped at one by construction: the subagent never sees the
       // Agent tool, so it cannot fan out again.
       const nestedTools = deps.tools().filter((t) => t.name !== 'Agent')

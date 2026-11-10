@@ -67,7 +67,7 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
   return {
     cwd: process.cwd(),
     model: () => 'parent-model',
-    system: 'PARENT-SYS',
+    system: () => 'PARENT-SYS',
     frameCtx: defaultFrameContext('sess-1'),
     tools: () => [noopTool],
     streamFor: async function* () { /* replaced by tests */ },

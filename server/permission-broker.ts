@@ -77,6 +77,9 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Grep',
   'Glob',
   'NotebookRead',
+  // A skill load only reads the SKILL.md body into the conversation — no
+  // mutation, no network. Applies to the native provider's Skill tool too.
+  'Skill',
 ])
 
 /** Tools that are always safe in auto-mode — they either only read,

@@ -404,6 +404,14 @@ describe('PermissionBroker', () => {
       expect(session.pending.size).toBe(0)
     })
 
+    it('dontAsk auto-allows the Skill tool (a skill load is read-only)', async () => {
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('Skill', { skill: 'demo' }, ctx())
+      expect(result).toMatchObject({ behavior: 'allow' })
+      expect(session.pending.size).toBe(0)
+    })
+
     it('dontAsk auto-allows read-only Bash commands', async () => {
       const session = makeFakeSession({ permissionMode: 'dontAsk' })
       const canUseTool = broker.buildCanUseTool(session, vi.fn())

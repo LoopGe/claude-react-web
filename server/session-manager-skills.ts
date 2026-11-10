@@ -76,7 +76,13 @@ export class SessionSkillManager {
     const skills = (result && typeof result === 'object' && Array.isArray((result as { skills?: unknown }).skills))
       ? (result as { skills: unknown[] }).skills
       : []
-    if (skills.length > 0) this.deps.broadcastCommandsChanged(id, skills)
+    // Broadcast whenever the provider answered with a catalog — INCLUDING an
+    // empty one. A reload after every skill file was deleted must clear the
+    // client's picker; only a result carrying no `skills` array at all leaves
+    // the current list alone.
+    if (Array.isArray((result as { skills?: unknown } | null)?.skills)) {
+      this.deps.broadcastCommandsChanged(id, skills)
+    }
     return result
   }
 

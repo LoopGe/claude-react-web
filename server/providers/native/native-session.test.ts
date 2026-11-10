@@ -1,6 +1,6 @@
 // server/providers/native/native-session.test.ts
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -14,6 +14,7 @@ import { nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
 import type { NativeLogEvent } from './session-log/format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
+import { SKILL_GUIDANCE } from './tools/skill.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { Frame } from './frames.js'
@@ -58,6 +59,19 @@ function toolTurn(toolUseId: string): CanonicalEvent[] {
 
 const tempDirs: string[] = []
 
+/** Every native session discovers user-scope skills from the CLI config dir.
+ *  Redirect it at a temp empty dir so the developer's real `~/.claude/skills`
+ *  can never leak into a prompt assertion (and an unreadable one can never
+ *  fail a session's construction-time reload). */
+let skillsConfigDir: string
+let previousConfigDir: string | undefined
+
+beforeEach(async () => {
+  skillsConfigDir = await mkdtemp(join(tmpdir(), 'native-skills-config-'))
+  previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = skillsConfigDir
+})
+
 /** One assistant round whose only call is the Agent tool. */
 function agentTurn(toolUseId: string, input: Record<string, unknown>): CanonicalEvent[] {
   return [
@@ -69,6 +83,28 @@ function agentTurn(toolUseId: string, input: Record<string, unknown>): Canonical
   ]
 }
 
+/** Write a project-scope skill into a temp project's `.claude/skills`. */
+async function writeProjectSkill(
+  cwd: string,
+  name: string,
+  opts: { description?: string; body?: string; frontmatter?: Record<string, string> } = {},
+): Promise<void> {
+  const dir = join(cwd, '.claude', 'skills', name)
+  await mkdir(dir, { recursive: true })
+  const extra = Object.entries(opts.frontmatter ?? {}).map(([key, value]) => `${key}: ${value}`)
+  const content = [
+    '---',
+    `name: ${name}`,
+    `description: ${opts.description ?? `${name} description`}`,
+    ...extra,
+    '---',
+    '',
+    opts.body ?? `# ${name}`,
+    '',
+  ].join('\n')
+  await writeFile(join(dir, 'SKILL.md'), content, 'utf8')
+}
+
 /** A fresh temp state dir per test — the provider's default state dir is the
  *  real `~/.claude-react-web`, which a test must never touch. */
 async function tempDir(prefix: string): Promise<string> {
@@ -78,6 +114,9 @@ async function tempDir(prefix: string): Promise<string> {
 }
 
 afterEach(async () => {
+  if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+  await rm(skillsConfigDir, { recursive: true, force: true })
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }
@@ -375,7 +414,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent', 'Skill', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -470,14 +509,14 @@ describe('NativeSession', () => {
     })
 
     // The parent advertises Agent + the discovered MCP tool; every nested
-    // request drops Agent (depth cap 1) but keeps the MCP tool.
+    // request drops Agent (depth cap 1) but keeps the MCP and Skill tools.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent', 'Skill', 'mcp__a__echo',
     ])
     const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
     expect(nestedRequests).toHaveLength(2)
     for (const r of nestedRequests) {
-      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'mcp__a__echo'])
+      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Skill', 'mcp__a__echo'])
     }
 
     // Persistence: sidechain events carry the real parent on disk...
@@ -541,7 +580,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('review') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
 
-    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent'])
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent', 'Skill'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
     // The definition's prompt is the nested instruction suffix and its model the
     // default nested model...
@@ -603,10 +642,174 @@ describe('NativeSession', () => {
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
     expect((session as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
-      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent'])
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent', 'Skill'])
     expect(await session.supportedAgents?.()).toEqual([
       { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
     ])
+    await session.destroy()
+  })
+
+  it('exposes the skill catalog as commands and declares command support', async () => {
+    const dir = await tempDir('native-skill-commands-')
+    await writeProjectSkill(dir, 'demo', { frontmatter: { 'argument-hint': "'[topic]'" } })
+    const provider = new NativeProvider({ stateDir: dir })
+    expect(provider.capabilities.supportsCommands).toBe(true)
+    // Plugins stay unsupported — only the skill command catalog is exposed.
+    expect(provider.capabilities.supportsPlugins).toBe(false)
+    const session = provider.createSession({ id: 'skill-commands', cwd: dir })
+    expect(await session.supportedCommands?.()).toEqual([
+      { name: 'demo', description: 'demo description', argumentHint: '[topic]' },
+    ])
+    await session.destroy()
+  })
+
+  it('reloadSkills re-reads the skill roots and can empty the catalog', async () => {
+    const dir = await tempDir('native-skill-reload-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo v1' })
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'skill-reload', cwd: dir })
+    const catalog = session as unknown as { skills: { bodyOf(name: string): { text: string } } }
+    expect(await session.reloadSkills?.()).toEqual({
+      skills: [{ name: 'demo', description: 'demo description', argumentHint: '' }],
+    })
+
+    // A file edit is picked up only by a reload — the catalog caches bodies.
+    await writeProjectSkill(dir, 'demo', { body: '# demo v2' })
+    await session.reloadSkills?.()
+    expect(catalog.skills.bodyOf('demo').text).toContain('# demo v2')
+
+    // A fully deleted catalog answers an empty list (the manager relays that
+    // to the client so the picker clears).
+    await rm(join(dir, '.claude', 'skills', 'demo'), { recursive: true, force: true })
+    expect(await session.reloadSkills?.()).toEqual({ skills: [] })
+    expect(await session.supportedCommands?.()).toEqual([])
+    await session.destroy()
+  })
+
+  it('applyFlagSettings accepts only skillOverrides and drives the catalog state', async () => {
+    const dir = await tempDir('native-skill-overrides-')
+    await writeProjectSkill(dir, 'demo')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'skill-overrides', cwd: dir })
+    const catalog = session as unknown as {
+      skills: { section(): string; bodyOf(name: string): { text: string; isError?: boolean } }
+    }
+    // `supportedCommands` awaits the construction-time discovery, so the
+    // catalog is populated before the first synchronous read.
+    expect(await session.supportedCommands?.()).toEqual([
+      { name: 'demo', description: 'demo description', argumentHint: '' },
+    ])
+
+    await session.applyFlagSettings?.({ skillOverrides: { demo: 'off' } })
+    expect(catalog.skills.section()).toBe('')
+    expect(catalog.skills.bodyOf('demo')).toEqual({ text: 'unknown skill: demo', isError: true })
+
+    // An empty map restores the spawn default (undefined = name-only).
+    await session.applyFlagSettings?.({ skillOverrides: {} })
+    expect(catalog.skills.section()).toBe('<available_skills>\n- demo\n</available_skills>')
+    expect(catalog.skills.bodyOf('demo').text).toContain('# demo')
+
+    // Any other key throws, and applies nothing.
+    await expect(session.applyFlagSettings?.({ plugins: {} })).rejects.toThrow(/plugins/)
+    await expect(session.applyFlagSettings?.({ fastMode: true })).rejects.toThrow(/fastMode/)
+    expect(catalog.skills.section()).toBe('<available_skills>\n- demo\n</available_skills>')
+    await session.destroy()
+  })
+
+  it('rebuilds the per-turn skills section from the live overrides', async () => {
+    const dir = await tempDir('native-skill-section-')
+    await writeProjectSkill(dir, 'demo')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ system: string }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { system: string }) {
+      requests.push(structuredClone(req))
+      for (const ev of textTurn('ok')) yield ev
+    }
+    const session = provider.createSession({ id: 'skill-section', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    const runTurnOnce = async (n: number) => {
+      session.enqueueUserMessage(userMsg(`turn ${n}`) as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(n))
+    }
+
+    // Default (Options.skills undefined) = name-only: the name, no
+    // description, as its own `\n\n`-separated trailing block.
+    await runTurnOnce(1)
+    expect(requests[0].system).toContain('\n\n<available_skills>\n- demo\n</available_skills>')
+    expect(requests[0].system.endsWith('<available_skills>\n- demo\n</available_skills>')).toBe(true)
+    // The provider's static `tool:Skill` section travels with every prompt.
+    expect(requests[0].system).toContain(SKILL_GUIDANCE)
+
+    // 'on' brings the description back.
+    await session.applyFlagSettings?.({ skillOverrides: { demo: 'on' } })
+    await runTurnOnce(2)
+    expect(requests[1].system).toContain('- demo: demo description')
+
+    // 'user-invocable-only' leaves the model listing but keeps `/demo`.
+    await session.applyFlagSettings?.({ skillOverrides: { demo: 'user-invocable-only' } })
+    await runTurnOnce(3)
+    expect(requests[2].system).not.toContain('<available_skills>')
+    expect(await session.supportedCommands?.()).toEqual([
+      { name: 'demo', description: 'demo description', argumentHint: '' },
+    ])
+
+    // 'off' removes it everywhere. With nothing listable the system prompt is
+    // the static one — no empty section and no appended blank line (identical
+    // to the 'user-invocable-only' turn above, which is also unlistable).
+    await session.applyFlagSettings?.({ skillOverrides: { demo: 'off' } })
+    await runTurnOnce(4)
+    expect(requests[3].system).not.toContain('<available_skills>')
+    expect(requests[3].system).toBe(requests[2].system)
+    expect(await session.supportedCommands?.()).toEqual([])
+    await session.destroy()
+  })
+
+  it('the nested Agent system reads the current skills section through its live getter', async () => {
+    const dir = await tempDir('native-skill-nested-')
+    await writeProjectSkill(dir, 'demo')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ tools: Array<{ name: string }>; system: string }> = []
+    const scripts = [
+      agentTurn('agent-skill-1', { description: 'd', prompt: 'p' }),
+      textTurn('INNER-1'),
+      textTurn('OUTER-1'),
+      agentTurn('agent-skill-2', { description: 'd', prompt: 'p' }),
+      textTurn('INNER-2'),
+      textTurn('OUTER-2'),
+    ]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: {
+      tools: Array<{ name: string }>
+      system: string
+    }) {
+      requests.push(structuredClone(req))
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const session = provider.createSession({
+      id: 'skill-nested',
+      cwd: dir,
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('first') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'OUTER-1')).toBe(true))
+
+    const isParent = (r: { tools: Array<{ name: string }> }) => r.tools.some((t) => t.name === 'Agent')
+    // The first nested run sees the section (its prompt comes from the
+    // session-level subagent system, which has no per-turn string of its own).
+    expect(requests.filter(isParent)[0].system).toContain('<available_skills>\n- demo\n</available_skills>')
+    expect(requests.filter((r) => !isParent(r))[0].system).toContain('<available_skills>\n- demo\n</available_skills>')
+
+    // An override landed AFTER the Agent tool was built must reach the next
+    // nested run — a snapshot taken at construction would keep the section.
+    await session.applyFlagSettings?.({ skillOverrides: { demo: 'off' } })
+    session.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'OUTER-2')).toBe(true))
+    const nestedRuns = requests.filter((r) => !isParent(r))
+    expect(nestedRuns).toHaveLength(2)
+    expect(nestedRuns[0].system).toContain('<available_skills>')
+    expect(nestedRuns[1].system).not.toContain('<available_skills>')
     await session.destroy()
   })
 
