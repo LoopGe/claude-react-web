@@ -20,21 +20,25 @@
 //             system with subtype error|compact_boundary|api_retry
 //   - drop:   attachment / last-prompt / ai-title / queue-operation /
 //             isMeta / isSidechain (subagent inner stream) / everything else
-//   - parent_tool_use_id: disk lines DON'T carry this field, but the
-//             frontend's main-view filter (MessageList) hides any message
-//             whose parent_tool_use_id != null (tool_result content is
-//             surfaced via ToolCard, not as a raw bubble). So we replicate
-//             the live shape: a user line containing a tool_result block
-//             gets parent_tool_use_id = that tool_use_id; real prompts and
-//             assistant messages get null.
+//   - parent_tool_use_id: a PERSISTED value is authoritative. Native session
+//             log lines carry it on every user/assistant frame — a tool_use
+//             id on sidechain frames, an explicit null on the main thread —
+//             so those keep it verbatim. Claude CLI lines lack the field, so
+//             we fall back to the live shape: a user line containing a
+//             tool_result block gets parent_tool_use_id = that tool_use_id;
+//             real prompts and assistant messages get null. (The frontend's
+//             main-view filter hides any message whose parent_tool_use_id
+//             != null — tool_result content is surfaced via ToolCard, not as
+//             a raw bubble.)
 //   - receivedAt: carried from the SDK's on-disk `timestamp` (ISO) as epoch
 //             ms, so disk-restored history shows its original wall-clock time
 //             instead of a blank timestamp header. A top-level user prompt on
 //             disk was already consumed by the SDK (it's part of the persisted
 //             transcript), so we also stamp `consumedAt` — otherwise
 //             deriveDeliveryStatus would flag every historical prompt as
-//             'queued'. tool_result-bearing user frames are never queued
-//             (parent != null), so they only get receivedAt.
+//             'queued'. A tool_result-bearing user frame is excluded from
+//             queuing by the content check in countQueuedUserTurns, so the
+//             consumedAt a native main-thread one now also gets is harmless.
 
 import { open, readFile, readdir, stat, unlink, rm } from 'node:fs/promises'
 import path from 'node:path'

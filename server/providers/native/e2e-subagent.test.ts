@@ -126,13 +126,7 @@ async function makeFixture(stateDir: string, scripts?: CanonicalEvent[][]): Prom
   await store.load()
   const provider = new NativeProvider({ stateDir })
   if (scripts) {
-    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: {
-      tools: Array<{ name: string }>
-      messages: Array<{ role: string; content: unknown }>
-    }) {
-      // Snapshot the request: `req.messages` is the session's live history
-      // array, mutated by later rounds.
-      void req
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
       for (const ev of scripts.shift() ?? []) yield ev
     }
   }
@@ -242,7 +236,6 @@ describe('native subagents end to end through SessionManager', () => {
     const pageFrames = page.messages as Frame[]
     const pageSidechain = pageFrames.filter((m) => m.parent_tool_use_id === AGENT_ID)
     expect(pageSidechain).toHaveLength(SIDECHAIN_FRAMES)
-    expect(pageSidechain.every((m) => m.parent_tool_use_id === AGENT_ID)).toBe(true)
     expect(JSON.stringify(pageSidechain)).toContain(NESTED_REPORT)
     // The main-thread Agent tool_result keeps its null parent on disk.
     expect(pageFrames.some(
@@ -262,6 +255,15 @@ describe('native subagents end to end through SessionManager', () => {
     expect(modelHistory).toContain(PROMPT)
     expect(modelHistory).toContain(PARENT_DONE)
     expect(modelHistory).not.toContain(NESTED_TOOL_PREFIX)
+    // Structured twin of the string check: a leaked sidechain USER
+    // tool_result frame (not just an assistant tool_use) must fail here too.
+    const leakedNestedResults = (resumedLive.handle.history as Array<{
+      content?: Array<{ type?: string; tool_use_id?: string }>
+    }>).flatMap((m) => (Array.isArray(m.content) ? m.content : []))
+      .filter((b) => b.type === 'tool_result'
+        && typeof b.tool_use_id === 'string'
+        && b.tool_use_id.startsWith(NESTED_TOOL_PREFIX))
+    expect(leakedNestedResults).toEqual([])
 
     // 4c. The resume seed spans both budgets: the main-thread prompt is in
     //     the seeded ring even though the 25 sidechain lines alone exceed the

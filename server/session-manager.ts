@@ -1998,8 +1998,13 @@ export class SessionManager {
       // interleaves sidechain lines with main-thread ones, and a
       // subagent-heavy session would otherwise spend the whole historyCap on
       // sidechain lines and seed almost no main-thread messages (the
-      // original prompt included). Harmless for claude, whose disk reader
-      // never surfaces sidechain lines.
+      // original prompt included). Claude pages carry no sidechain lines, but
+      // their tool_result user lines have a content-derived parent and land in
+      // seedSub either way — the wider page changes neither that
+      // classification nor the per-ring bounds below
+      // (`slice(-historyCap)` / `slice(-subagentHistoryCap)`).
+      // NB: `sliceWindow` clamps `limit` to 1000, so the full-budget guarantee
+      // degrades once historyCap + subagentHistoryCap exceeds 1000.
       const page = await this.readProviderHistoryPage(provider, id, {
         limit: this.historyCap + this.subagentHistoryCap,
         // Side Chat: exclude the inherited parent prefix (fork boundary) so
