@@ -124,6 +124,18 @@ describe('NativeSkillCatalog — spawn policy', () => {
     expect(catalog.section()).toBe('<available_skills>\n- alpha: alpha description\n- beta: beta description\n</available_skills>')
   })
 
+  it('re-reads the policy lazily, so configure() after reload() still applies', async () => {
+    await writeSkill('alpha')
+    const catalog = new NativeSkillCatalog(project)
+    await catalog.reload()
+
+    expect(catalog.section()).toBe('<available_skills>\n- alpha\n</available_skills>')
+    catalog.configure('all')
+    expect(catalog.section()).toBe('<available_skills>\n- alpha: alpha description\n</available_skills>')
+    catalog.configure([])
+    expect(catalog.section()).toBe('')
+  })
+
   it('keeps only allowlisted skills and renders them with descriptions', async () => {
     await writeSkill('alpha')
     await writeSkill('beta')
@@ -161,6 +173,16 @@ describe('NativeSkillCatalog — overrides', () => {
     catalog.applyOverrides({})
     expect(catalog.section()).toContain('- alpha: alpha description')
     expect(catalog.commands().map((c) => c.name)).toEqual(['alpha', 'beta'])
+  })
+
+  it("restores the undefined-policy name-only default when the map is emptied", async () => {
+    await writeSkill('alpha')
+    const catalog = await load(undefined)
+
+    catalog.applyOverrides({ alpha: 'off' })
+    expect(catalog.section()).toBe('')
+    catalog.applyOverrides({})
+    expect(catalog.section()).toBe('<available_skills>\n- alpha\n</available_skills>')
   })
 
   it('cannot resurrect a skill excluded by the spawn allowlist', async () => {
@@ -202,13 +224,30 @@ describe('NativeSkillCatalog — overrides', () => {
 })
 
 describe('NativeSkillCatalog — frontmatter flags', () => {
-  it('disable-model-invocation blocks the Skill tool but not user expansion', async () => {
+  it('disable-model-invocation clamps the skill to user-invocable-only', async () => {
     await writeSkill('alpha', { frontmatter: { 'disable-model-invocation': 'true' } })
     const catalog = await load('all')
 
-    expect(catalog.section()).toContain('- alpha: alpha description')
+    // Clamped out of the model listing, but still a typeable `/alpha` command.
+    expect(catalog.section()).toBe('')
+    expect(catalog.commands().map((c) => c.name)).toEqual(['alpha'])
     expect(catalog.bodyOf('alpha')).toEqual({ text: 'unknown skill: alpha', isError: true })
     expect(catalog.expand('alpha')).toEqual({ body: expect.stringContaining('# alpha') })
+  })
+
+  it('no override can lift the disable-model-invocation clamp', async () => {
+    await writeSkill('alpha', { frontmatter: { 'disable-model-invocation': 'true' } })
+    const catalog = await load(undefined)
+
+    catalog.applyOverrides({ alpha: 'on' })
+    expect(catalog.section()).toBe('')
+    expect(catalog.bodyOf('alpha')).toEqual({ text: 'unknown skill: alpha', isError: true })
+    expect(catalog.expand('alpha')).toEqual({ body: expect.stringContaining('# alpha') })
+
+    // An explicit 'off' still hides it from the user surfaces.
+    catalog.applyOverrides({ alpha: 'off' })
+    expect(catalog.commands()).toEqual([])
+    expect(catalog.expand('alpha')).toBeNull()
   })
 
   it('user-invocable: false blocks expansion but not the Skill tool', async () => {

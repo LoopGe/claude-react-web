@@ -64,14 +64,18 @@ export class NativeSkillCatalog {
     const { skills } = await listSkills(this.cwd)
     // listSkills returns user scope first, project scope second; a project
     // skill with the same name wins — the project is the more specific owner.
+    // Invalid records are dropped BEFORE the dedupe, so a broken project skill
+    // leaves a valid user skill of the same name in place.
     const byName = new Map<string, SkillRecord>()
     for (const record of skills) {
       if (record.valid) byName.set(record.name, record)
     }
     const entries: CatalogEntry[] = []
     for (const record of byName.values()) {
+      // listSkills already rejects oversized files; a file that grew since
+      // then is skipped rather than failing the whole catalog.
       const stat = await fs.stat(record.path)
-      if (stat.size > MAX_SKILL_BYTES) throw new Error(`skill file is too large: ${record.path}`)
+      if (stat.size > MAX_SKILL_BYTES) continue
       entries.push({ record, body: await fs.readFile(record.path, 'utf8') })
     }
     entries.sort((a, b) => a.record.name.localeCompare(b.record.name))
@@ -106,14 +110,14 @@ export class NativeSkillCatalog {
     return out
   }
 
-  /** Body for the model-facing Skill tool. Refused when the skill is not
-   *  model-listable or opted out via `disable-model-invocation`. */
+  /** Body for the model-facing Skill tool. Refused unless the skill is
+   *  model-listable (`disable-model-invocation` is clamped out of that set by
+   *  {@link stateOf}). */
   bodyOf(name: string): { text: string; isError?: boolean } {
     const entry = this.byName.get(name)
     if (!entry) return unknownSkill(name)
     const state = this.stateOf(entry)
     if (state !== 'on' && state !== 'name-only') return unknownSkill(name)
-    if (entry.record.disableModelInvocation === true) return unknownSkill(name)
     return { text: entry.body }
   }
 
@@ -141,7 +145,13 @@ export class NativeSkillCatalog {
     } else {
       base = 'name-only'
     }
-    return this.overrides[name] ?? base
+    const effective = this.overrides[name] ?? base
+    // `disable-model-invocation: true` clamps the skill to
+    // 'user-invocable-only' in the CLI: it is never listed for the model and
+    // no 'on'/'name-only' override can lift that. An explicit 'off' still
+    // hides it from the user surfaces too.
+    if (entry.record.disableModelInvocation === true && effective !== 'off') return 'user-invocable-only'
+    return effective
   }
 }
 
