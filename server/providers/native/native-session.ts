@@ -1115,7 +1115,11 @@ export class NativeSession implements ProviderSessionHandle {
       }
     }
     if (settings.fastMode !== undefined) {
-      this.fastMode = settings.fastMode === true
+      const fastMode = settings.fastMode
+      if (fastMode !== null && typeof fastMode !== 'boolean') {
+        throw new Error(`native provider does not support fast mode: ${String(fastMode)}`)
+      }
+      this.fastMode = fastMode === true
     }
     const overrides = settings.skillOverrides
     if (overrides === undefined) return

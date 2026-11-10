@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import { runTurn, type LoopDeps } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
-import { defaultFrameContext, type Frame } from './frames.js'
+import { defaultFrameContext, isRetainedThinkingBlock, type Frame } from './frames.js'
 import { readTool } from './tools/read.js'
 import type { ToolContext, ToolDef } from './tools/types.js'
 
@@ -374,5 +374,27 @@ describe('runTurn', () => {
     expect(assistant.message.content[0]).toEqual({ type: 'thinking', thinking: 'plan', signature: 'sig-1sig-2' })
     const second = s.calls[1] as Array<{ role: string; content: unknown[] }>
     expect(second[1].content[0]).toEqual({ type: 'thinking', thinking: 'plan', signature: 'sig-1sig-2' })
+  })
+})
+
+describe('isRetainedThinkingBlock', () => {
+  it('keeps every non-thinking block type', () => {
+    expect(isRetainedThinkingBlock({ type: 'text' })).toBe(true)
+    expect(isRetainedThinkingBlock({ type: 'tool_use' })).toBe(true)
+    expect(isRetainedThinkingBlock({})).toBe(true)
+  })
+
+  it('keeps a thinking block only with a non-empty signature', () => {
+    expect(isRetainedThinkingBlock({ type: 'thinking', signature: 'sig-1' })).toBe(true)
+    expect(isRetainedThinkingBlock({ type: 'thinking', signature: '' })).toBe(false)
+    expect(isRetainedThinkingBlock({ type: 'thinking' })).toBe(false)
+    expect(isRetainedThinkingBlock({ type: 'thinking', signature: 1 })).toBe(false)
+  })
+
+  it('keeps a redacted_thinking block only with non-empty data', () => {
+    expect(isRetainedThinkingBlock({ type: 'redacted_thinking', data: 'ENCRYPTED' })).toBe(true)
+    expect(isRetainedThinkingBlock({ type: 'redacted_thinking', data: '' })).toBe(false)
+    expect(isRetainedThinkingBlock({ type: 'redacted_thinking' })).toBe(false)
+    expect(isRetainedThinkingBlock({ type: 'redacted_thinking', data: 1 })).toBe(false)
   })
 })

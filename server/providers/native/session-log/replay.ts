@@ -10,6 +10,7 @@
 
 import { randomUUID } from 'node:crypto'
 import type { RawLine } from '../../../history-reader.js'
+import { isRetainedThinkingBlock } from '../frames.js'
 import { isSidechainEvent } from './format.js'
 import type { NativeCompactEvent, NativeLogEvent, NativeUserEvent } from './format.js'
 
@@ -50,15 +51,6 @@ function blocksOf(content: unknown): BlockLike[] {
 function isToolResultUser(content: unknown): boolean {
   const blocks = blocksOf(content)
   return blocks.length > 0 && blocks[0].type === 'tool_result'
-}
-
-/** Model history keeps a thinking block only when the API can verify it:
- *  signed (non-empty `signature`) or redacted (non-empty `data`). The API
- *  rejects unsigned thinking on a follow-up request, so it is stripped. */
-function isRetainedInHistory(block: BlockLike): boolean {
-  if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature !== ''
-  if (block.type === 'redacted_thinking') return typeof block.data === 'string' && block.data !== ''
-  return true
 }
 
 /** `<system-reminder>` context line shared by fresh, resumed and forked
@@ -131,7 +123,7 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
         if (isSidechainEvent(event)) break
         messages.push({
           role: 'assistant',
-          content: blocksOf(event.message.content).filter(isRetainedInHistory),
+          content: blocksOf(event.message.content).filter(isRetainedThinkingBlock),
         })
         openResults = null
         break

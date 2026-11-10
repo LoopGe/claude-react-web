@@ -1,6 +1,6 @@
 // server/providers/native/loop.ts
 import type { AgentMessage } from '../../agent-message.js'
-import { assistantFrame, resultFrame, streamEventFrame, toolResultFrame, type ContentBlock, type FrameContext, type Usage } from './frames.js'
+import { assistantFrame, isRetainedThinkingBlock, resultFrame, streamEventFrame, toolResultFrame, type ContentBlock, type FrameContext, type Usage } from './frames.js'
 import type { CanonicalEvent, CanonicalUsagePartial } from './canonical.js'
 import type { ToolDef } from './tools/types.js'
 
@@ -41,16 +41,6 @@ type AggBlock =
   | Extract<ContentBlock, { type: 'redacted_thinking' }>
   | { type: 'thinking'; thinking: string; signature: string }
   | { type: 'tool_use'; id: string; name: string; json: string }
-
-/** Model history may carry a thinking block only when the API can verify it:
- *  signed (`signature` non-empty) or redacted (`data`). The API rejects
- *  unsigned thinking on a follow-up request, so those are stripped from
- *  history — the UI-facing assistant frame keeps every block. */
-function isRetainedInHistory(block: ContentBlock): boolean {
-  if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature !== ''
-  if (block.type === 'redacted_thinking') return block.data !== ''
-  return true
-}
 
 /** One agent turn: stream → aggregate → execute tools → repeat until the
  *  model stops calling tools, then emit the result frame. History is mutated
@@ -148,7 +138,7 @@ export async function runTurn(
     // A re-sent thinking block must be verifiable, or the API rejects it: keep
     // signed and redacted blocks, strip unsigned thinking from history. The
     // UI-facing assistant frame above keeps every block.
-    history.push({ role: 'assistant', content: content.filter(isRetainedInHistory) })
+    history.push({ role: 'assistant', content: content.filter(isRetainedThinkingBlock) })
     const toolUses = content.filter((b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use')
     if (toolUses.length === 0) {
       finalText = content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('')

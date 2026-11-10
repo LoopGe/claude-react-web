@@ -1,5 +1,5 @@
 import { createLogger } from '../../log.js'
-import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-capability.js'
+import { effortLevelsForModel, supportsFastModeForModel, supportsThinkingForModel } from '../../effort-capability.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import { parseSseStream, type SseEvent } from './sse.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -119,7 +119,11 @@ export function buildRequestBody(req: StreamRequest): Record<string, unknown> {
     messages: req.messages,
   }
 
-  if (req.thinking) {
+  // Thinking is gated on the model like effort and fast mode: a session
+  // switched to a non-thinking model must stop sending the config, not get a
+  // 400 from the API. Classification is the same model-id family rule the
+  // client uses for the chip (`supportsThinkingForModel`).
+  if (req.thinking && supportsThinkingForModel(req.model) === true) {
     body.thinking = thinkingBody(req.thinking, req.maxTokens, req.thinkingDisplay)
   }
 

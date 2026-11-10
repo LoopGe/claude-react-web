@@ -2260,6 +2260,15 @@ describe('NativeSession', () => {
       // Unsupported keys and invalid values still fail loudly.
       await expect(session.applyFlagSettings?.({ plugins: {} })).rejects.toThrow(/plugins/)
       await expect(session.applyFlagSettings?.({ effortLevel: 'ultra' })).rejects.toThrow(/effort level/)
+      // fastMode is boolean-or-null: a coercible non-boolean is a loud failure,
+      // not a silent `=== true` conversion.
+      await expect(session.applyFlagSettings?.({ fastMode: 'false' })).rejects.toThrow(/fast mode/)
+      await expect(session.applyFlagSettings?.({ fastMode: 1 })).rejects.toThrow(/fast mode/)
+
+      // null clears the intent like false does.
+      await session.applyFlagSettings?.({ fastMode: null })
+      await nextRequest('sixth', 6)
+      expect(wire(5)).not.toHaveProperty('speed')
     } finally {
       await session.destroy()
       streamAnthropicMessagesMock.mockReset()

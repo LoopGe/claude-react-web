@@ -155,6 +155,18 @@ describe('buildRequestBody thinking', () => {
     expect(body).not.toHaveProperty('thinking')
   })
 
+  it('emits thinking only for a model that supports it', () => {
+    const thinking = { type: 'enabled', budgetTokens: 4096 } as const
+    const withModel = (model: string) =>
+      buildRequestBody({ ...baseReq, model, maxTokens: 16384, thinking }) as { thinking?: unknown }
+    // A non-thinking model omits the config entirely — the API answers 400
+    // for it, and a session switched to haiku must keep working.
+    expect(withModel('claude-haiku-3-5')).not.toHaveProperty('thinking')
+    expect(withModel('claude-haiku-4-5')).not.toHaveProperty('thinking')
+    expect(withModel('claude-opus-4-8').thinking).toEqual({ type: 'enabled', budget_tokens: 4096 })
+    expect(withModel('claude-sonnet-4-5').thinking).toEqual({ type: 'enabled', budget_tokens: 4096 })
+  })
+
   it('maps bare enabled (no budget) to adaptive — there is no bare-enabled wire form', () => {
     expect(bodyWithThinking({ type: 'enabled' }).thinking).toEqual({ type: 'adaptive' })
   })

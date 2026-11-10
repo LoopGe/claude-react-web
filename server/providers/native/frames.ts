@@ -13,6 +13,17 @@ export type ContentBlock =
   | { type: 'redacted_thinking'; data: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
 
+/** Model history may carry a thinking block only when the API can verify it:
+ *  signed (`signature` non-empty) or redacted (`data` non-empty). The API
+ *  rejects unsigned thinking on a follow-up request, so those are stripped
+ *  from history — the UI-facing assistant frame keeps every block. Shared by
+ *  the live loop and the log replay so the two can never diverge. */
+export function isRetainedThinkingBlock(block: { type?: unknown; signature?: unknown; data?: unknown }): boolean {
+  if (block.type === 'thinking') return typeof block.signature === 'string' && block.signature !== ''
+  if (block.type === 'redacted_thinking') return typeof block.data === 'string' && block.data !== ''
+  return true
+}
+
 export interface Usage {
   input_tokens: number
   output_tokens: number
