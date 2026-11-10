@@ -17,6 +17,12 @@ const VALID_SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 interface ParsedSkillFrontmatter {
   name?: string
   description?: string
+  /** `disable-model-invocation: true` — the Skill tool must refuse it. */
+  disableModelInvocation?: boolean
+  /** `user-invocable: false` — hidden from the `/` command catalog. */
+  userInvocable?: boolean
+  /** `argument-hint: '[topic]'` — shown beside the command. */
+  argumentHint?: string
   errors: string[]
 }
 
@@ -108,6 +114,9 @@ export function parseSkillFrontmatter(content: string): ParsedSkillFrontmatter {
 
   let name: string | undefined
   let description: string | undefined
+  let disableModelInvocation: boolean | undefined
+  let userInvocable: boolean | undefined
+  let argumentHint: string | undefined
   for (const line of lines.slice(1, end)) {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith('#')) continue
@@ -117,10 +126,23 @@ export function parseSkillFrontmatter(content: string): ParsedSkillFrontmatter {
     const value = parseScalar(match[2])
     if (key === 'name') name = value
     if (key === 'description') description = value
+    // Only the non-default spelling is meaningful: `disable-model-invocation:
+    // true` and `user-invocable: false` turn behavior off, so their opposites
+    // stay undefined (the same as an omitted key for every consumer).
+    if (key === 'disable-model-invocation' && value === 'true') disableModelInvocation = true
+    if (key === 'user-invocable' && value === 'false') userInvocable = false
+    if (key === 'argument-hint' && value) argumentHint = value
   }
   if (!description) errors.push('frontmatter.description is required')
   if (name && !VALID_SKILL_NAME.test(name)) errors.push('frontmatter.name is not a valid skill name')
-  return { name, description, errors }
+  return {
+    name,
+    description,
+    ...(disableModelInvocation !== undefined ? { disableModelInvocation } : {}),
+    ...(userInvocable !== undefined ? { userInvocable } : {}),
+    ...(argumentHint !== undefined ? { argumentHint } : {}),
+    errors,
+  }
 }
 
 function defaultSkillContent(name: string, description?: string): string {
@@ -185,6 +207,9 @@ async function readSkill(scope: SkillScope, name: string, cwd?: string, includeC
     errors,
     updatedAt: stat.mtimeMs,
     size: stat.size,
+    ...(parsed.disableModelInvocation !== undefined ? { disableModelInvocation: parsed.disableModelInvocation } : {}),
+    ...(parsed.userInvocable !== undefined ? { userInvocable: parsed.userInvocable } : {}),
+    ...(parsed.argumentHint !== undefined ? { argumentHint: parsed.argumentHint } : {}),
     ...(includeContent ? { content } : {}),
     ...(source ? { source } : {}),
   }

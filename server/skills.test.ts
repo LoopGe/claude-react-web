@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { resolve } from 'node:path'
-import { getSkillRoots } from './skills.js'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { getSkillRoots, listSkills } from './skills.js'
 
 // The user-scope skills dir lives inside the CLI's config dir, so it has to
 // follow $CLAUDE_CONFIG_DIR rather than a hardcoded ~/.claude — otherwise a
@@ -31,5 +33,46 @@ describe('getSkillRoots — CLI config dir', () => {
       getSkillRoots('/some/project').find((r) => r.scope === 'project'),
     )
     expect(project?.path).toBe(resolve('/some/project', '.claude', 'skills'))
+  })
+})
+
+// The native provider's skill catalog reads invocation flags off the listed
+// records, so they have to survive the frontmatter parser and the record
+// mapper — not just exist in the file.
+describe('listSkills — invocation frontmatter', () => {
+  it('populates disableModelInvocation, userInvocable and argumentHint', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'crw-skills-'))
+    const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+    try {
+      const project = join(root, 'project')
+      await mkdir(join(root, 'config', 'skills'), { recursive: true })
+      const dir = join(project, '.claude', 'skills', 'topic')
+      await mkdir(dir, { recursive: true })
+      await writeFile(join(dir, 'SKILL.md'), [
+        '---',
+        'name: topic',
+        'description: A topic skill',
+        'disable-model-invocation: true',
+        'user-invocable: false',
+        "argument-hint: '[topic]'",
+        '---',
+        '',
+        'body',
+        '',
+      ].join('\n'), 'utf8')
+
+      const { skills } = await listSkills(project)
+      expect(skills.find((skill) => skill.name === 'topic')).toMatchObject({
+        valid: true,
+        disableModelInvocation: true,
+        userInvocable: false,
+        argumentHint: '[topic]',
+      })
+    } finally {
+      if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

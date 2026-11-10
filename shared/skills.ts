@@ -44,6 +44,13 @@ export interface SkillRecord {
   updatedAt?: number
   size?: number
   content?: string
+  /** `disable-model-invocation: true` in SKILL.md — the model may not load
+   *  this skill through the Skill tool (the user can still expand it). */
+  disableModelInvocation?: boolean
+  /** `user-invocable: false` in SKILL.md — hidden from the `/` command list. */
+  userInvocable?: boolean
+  /** `argument-hint` in SKILL.md (e.g. `[topic]`), shown beside the command. */
+  argumentHint?: string
   /** Present only for GitHub-installed skills (folder imports have none). */
   source?: SkillSourceInfo
 }
