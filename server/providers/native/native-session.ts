@@ -58,6 +58,42 @@ function persistedUserMessage(message: { content: unknown }): { role: 'user'; co
   }
 }
 
+/** `/name args` — the composer's slash-command shape for a user-invoked skill.
+ *  The name grammar mirrors the CLI's skill-name rule. */
+const SKILL_COMMAND_RE = /^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/
+
+/** Resolve one text block against the catalog: a `/name args` invocation of a
+ *  skill the user may invoke becomes that skill's body plus the arguments;
+ *  anything else (not a command, an unknown skill, an `off` skill) is returned
+ *  unchanged. */
+function expandSkillText(text: string, skills: NativeSkillCatalog): string {
+  const match = SKILL_COMMAND_RE.exec(text)
+  if (!match) return text
+  const skill = skills.expand(match[1])
+  if (!skill) return text
+  const args = match[2]
+  return args ? `${skill.body}\n\n${args}` : skill.body
+}
+
+/** The model-facing content of one user turn. For block content every non-text
+ *  block (image / file) is preserved untouched: only the FIRST text block is
+ *  considered, because that is where the slash command rides. */
+function expandSkillTurn(content: unknown, skills: NativeSkillCatalog): unknown {
+  if (typeof content === 'string') return expandSkillText(content, skills)
+  if (!Array.isArray(content)) return content
+  const index = content.findIndex(
+    (block) => typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text',
+  )
+  if (index === -1) return content
+  const block = content[index] as { type: 'text'; text?: unknown } & Record<string, unknown>
+  if (typeof block.text !== 'string') return content
+  const expandedText = expandSkillText(block.text, skills)
+  if (expandedText === block.text) return content
+  const expanded = content.slice()
+  expanded[index] = { ...block, text: expandedText }
+  return expanded
+}
+
 /** Fire-and-forget flush: a persistence failure must never become an
  *  unhandled rejection or a second terminal frame, but it must be visible. */
 function flushInBackground(sessionLog: NativeSessionLog, sessionId: string, what: string): void {
@@ -628,6 +664,13 @@ export class NativeSession implements ProviderSessionHandle {
       // `lastUsage` here would make `restoreUsage` sum it again after restart.
       let endUsage: Usage | undefined
       try {
+        // Skill discovery is awaited per turn, not at spawn: a slow disk never
+        // delays session creation, and `skillsReady` tracks the LATEST reload
+        // pass, so a manual reload supersedes the construction snapshot. It
+        // precedes the user write because a `/name args` turn is persisted —
+        // and sent — as the skill's expanded body.
+        await this.skillsReady
+        const turnContent = expandSkillTurn(next.message.content, this.skills)
         // The turn is consumed now, so it is part of the conversation: write it
         // (and wait for the write) before the model sees it. A queued turn that
         // gets drained without reaching this point is never persisted. Inside
@@ -639,17 +682,13 @@ export class NativeSession implements ProviderSessionHandle {
           session_id: this.opts.id,
           parent_tool_use_id: null,
           timestamp: new Date(this.receivedAt.get(next)!).toISOString(),
-          message: persistedUserMessage(next.message),
+          message: persistedUserMessage({ content: turnContent }),
         })
         await this.log.flush()
         // Discovery is awaited per turn, not at spawn: a slow server never
         // delays session creation, and a mid-turn replace/toggle only lands
         // on the next turn (the turn below runs on this snapshot).
         await this.mcp?.whenReady()
-        // Discovery is awaited per turn for the same reason as MCP: a slow
-        // disk never delays session creation. `skillsReady` tracks the LATEST
-        // reload pass, so a manual reload supersedes the construction snapshot.
-        await this.skillsReady
         this.rebuildTools()
         const res = await runTurn(
           {
@@ -665,7 +704,7 @@ export class NativeSession implements ProviderSessionHandle {
           },
           this.ctx,
           this.history,
-          { role: 'user', content: next.message.content } as { role: 'user'; content: unknown[] },
+          { role: 'user', content: turnContent } as { role: 'user'; content: unknown[] },
           this.model,
           turnSignal,
         )

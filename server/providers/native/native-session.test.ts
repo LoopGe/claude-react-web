@@ -209,6 +209,25 @@ function userTexts(session: unknown): string[] {
     .map((block) => block.text as string)
 }
 
+/** Scripted streamer that snapshots every request. `req.messages` is the
+ *  session's live history array, so a captured reference would show the FINAL
+ *  transcript instead of what this request actually sent. */
+function capturingStreamer(
+  scripts: CanonicalEvent[][],
+  requests: Array<{ messages: unknown[] } & Record<string, unknown>>,
+) {
+  return async function* (req: { messages: unknown[] } & Record<string, unknown>) {
+    requests.push(structuredClone(req))
+    for (const ev of scripts.shift() ?? []) yield ev
+  }
+}
+
+/** The prompt content a request sent: the last user-role message. */
+function sentUserContent(request: { messages: unknown[] }): unknown {
+  const messages = request.messages as Array<{ role: string; content: unknown }>
+  return [...messages].reverse().find((message) => message.role === 'user')!.content
+}
+
 describe('NativeSession', () => {
   it('emits init, then a full turn of frames for a text-only response', async () => {
     const dir = await tempDir('native-session-')
@@ -714,6 +733,180 @@ describe('NativeSession', () => {
     await expect(session.applyFlagSettings?.({ plugins: {} })).rejects.toThrow(/plugins/)
     await expect(session.applyFlagSettings?.({ fastMode: true })).rejects.toThrow(/fastMode/)
     expect(catalog.skills.section()).toBe('<available_skills>\n- demo\n</available_skills>')
+    await session.destroy()
+  })
+
+  it('expands a `/name args` turn into the skill body for the model and the log', async () => {
+    const dir = await tempDir('native-skill-expand-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    const body = await readFile(join(dir, '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'skill-expand', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    const queued = userMsg('/demo do this')
+    session.enqueueUserMessage(queued as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
+
+    const expected = `${body}\n\ndo this`
+    // The model saw the expanded body...
+    expect(sentUserContent(requests[0])).toEqual([{ type: 'text', text: expected }])
+    // ...and so does the durable log, so resumed history matches the live one.
+    expect(userTexts(session)).toEqual([expected])
+    // The live model history (what the next request sends) carries it too.
+    const history = (session as unknown as {
+      history: Array<{ role: string; content: unknown }>
+    }).history
+    expect(history.at(-2)).toEqual({ role: 'user', content: [{ type: 'text', text: expected }] })
+    // The queued message is never mutated: the manager's ring and broadcast
+    // keep the `/name args` text the user typed.
+    expect(queued.message.content).toEqual([{ type: 'text', text: '/demo do this' }])
+    await session.destroy()
+  })
+
+  it('passes `/unknown` and non-skill `/clear` turns through unchanged', async () => {
+    const dir = await tempDir('native-skill-passthrough-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('one'), textTurn('two')], requests)
+    const session = provider.createSession({ id: 'skill-passthrough', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    session.enqueueUserMessage(userMsg('/unknown') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'one')).toBe(true))
+    session.enqueueUserMessage(userMsg('/clear') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'two')).toBe(true))
+
+    expect(userTexts(session)).toEqual(['/unknown', '/clear'])
+    expect(sentUserContent(requests[0])).toEqual([{ type: 'text', text: '/unknown' }])
+    expect(sentUserContent(requests[1])).toEqual([{ type: 'text', text: '/clear' }])
+    await session.destroy()
+  })
+
+  it('expands name-only and user-invocable-only skills, but never an `off` one', async () => {
+    const dir = await tempDir('native-skill-states-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    await writeProjectSkill(dir, 'hidden', {
+      body: '# hidden body',
+      frontmatter: { 'disable-model-invocation': 'true' },
+    })
+    const demoBody = await readFile(join(dir, '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8')
+    const hiddenBody = await readFile(join(dir, '.claude', 'skills', 'hidden', 'SKILL.md'), 'utf8')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[]; system: string } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('one'), textTurn('two'), textTurn('three')], requests)
+    const session = provider.createSession({ id: 'skill-states', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    const runTurnOnce = async (n: number, text: string) => {
+      session.enqueueUserMessage(userMsg(text) as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(n))
+    }
+
+    // Default (name-only): listed by name and expanded.
+    await runTurnOnce(1, '/demo one')
+    expect(requests[0].system).toContain('<available_skills>\n- demo\n</available_skills>')
+    expect(sentUserContent(requests[0])).toEqual([{ type: 'text', text: `${demoBody}\n\none` }])
+
+    // `disable-model-invocation` clamps the skill to user-invocable-only: it is
+    // absent from the prompt section but `/hidden` still expands.
+    await runTurnOnce(2, '/hidden two')
+    expect(requests[1].system).toContain('<available_skills>\n- demo\n</available_skills>')
+    expect(requests[1].system).not.toContain('- hidden')
+    expect(sentUserContent(requests[1])).toEqual([{ type: 'text', text: `${hiddenBody}\n\ntwo` }])
+
+    // `off` hides it from the user surface too: the turn passes through.
+    await session.applyFlagSettings?.({ skillOverrides: { demo: 'off' } })
+    await runTurnOnce(3, '/demo three')
+    expect(sentUserContent(requests[2])).toEqual([{ type: 'text', text: '/demo three' }])
+    expect(userTexts(session)).toEqual([
+      `${demoBody}\n\none`,
+      `${hiddenBody}\n\ntwo`,
+      '/demo three',
+    ])
+    await session.destroy()
+  })
+
+  it('rewrites only the first text block of an image-bearing `/name` turn', async () => {
+    const dir = await tempDir('native-skill-image-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    const body = await readFile(join(dir, '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'skill-image', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } }
+    const queued = {
+      ...userMsg('/demo look'),
+      uuid: 'u-image',
+      message: { role: 'user' as const, content: [{ type: 'text', text: '/demo look' }, image] },
+    }
+    session.enqueueUserMessage(queued as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
+
+    const expected = [{ type: 'text', text: `${body}\n\nlook` }, image]
+    // The log and the request keep the image block untouched.
+    expect(logOf(session).events.find((e) => e.type === 'user')?.message?.content).toEqual(expected)
+    expect(sentUserContent(requests[0])).toEqual(expected)
+    // The queued message the manager broadcasts is unmodified.
+    expect(queued.message.content).toEqual([{ type: 'text', text: '/demo look' }, image])
+    await session.destroy()
+  })
+
+  it('preserves multiline `/name` arguments verbatim after the body', async () => {
+    const dir = await tempDir('native-skill-multiline-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    const body = await readFile(join(dir, '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'skill-multiline', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    session.enqueueUserMessage(userMsg('/demo line1\nline2') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
+
+    const expected = `${body}\n\nline1\nline2`
+    expect(userTexts(session)).toEqual([expected])
+    expect(sentUserContent(requests[0])).toEqual([{ type: 'text', text: expected }])
+    await session.destroy()
+  })
+
+  it('expands a string-content `/name` turn and normalizes the log to blocks', async () => {
+    const dir = await tempDir('native-skill-string-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    const body = await readFile(join(dir, '.claude', 'skills', 'demo', 'SKILL.md'), 'utf8')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'skill-string', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    session.enqueueUserMessage(stringUserMsg('/demo from string') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
+
+    const expected = `${body}\n\nfrom string`
+    // The in-memory history keeps the caller's string shape...
+    expect(sentUserContent(requests[0])).toBe(expected)
+    // ...while the log normalizes it to a block array (the parser rejects a
+    // bare string).
+    expect(logOf(session).events.find((e) => e.type === 'user')?.message?.content)
+      .toEqual([{ type: 'text', text: expected }])
     await session.destroy()
   })
 
