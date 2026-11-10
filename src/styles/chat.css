@@ -4664,11 +4664,9 @@ button.chat-empty-env-chip:hover {
   font-size: var(--fs-sm);
 }
 
-/* ── Search-jump reveal + anchored-history pill ──────────────────── */
-/* The row/tool-group flash is transient (MessageList drops the data attr
-   after ~1.8s); box-shadow keeps it out of layout so Virtuoso measurements
-   never change. */
-.virtuoso-item-wrapper[data-crw-reveal="true"],
+/* ── Search-hit reveal flash ─────────────────────────────────────── */
+/* The active search target's tool-group flash is transient; box-shadow keeps
+   it out of layout so Virtuoso measurements never change. */
 .tool-group-card[data-crw-reveal="true"] {
   animation: crw-reveal-flash 1.7s ease;
 }
@@ -4678,7 +4676,6 @@ button.chat-empty-env-chip:hover {
   100% { box-shadow: 0 0 0 1px transparent, 0 0 0 12px transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .virtuoso-item-wrapper[data-crw-reveal="true"],
   .tool-group-card[data-crw-reveal="true"] {
     animation: none;
     outline: 1px solid var(--accent);
@@ -4686,48 +4683,3 @@ button.chat-empty-env-chip:hover {
   }
 }
 
-.chat-newer-float {
-  position: absolute;
-  left: 50%;
-  bottom: 96px;
-  z-index: 6;
-  transform: translateX(-50%);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  padding: var(--space-1-5) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--bg-elev-2);
-  color: var(--fg);
-  font-size: var(--fs-sm);
-  box-shadow: var(--overlay-shadow);
-  cursor: pointer;
-}
-.chat-newer-float:hover {
-  border-color: var(--accent);
-  color: var(--accent-text);
-}
-
-/* Panel-header search button (Ctrl+F / session history). */
-.chat-panel-search-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-.chat-panel-search-btn:hover {
-  background: var(--btn-hover-bg);
-  color: var(--fg);
-}
-.chat-panel-search-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}

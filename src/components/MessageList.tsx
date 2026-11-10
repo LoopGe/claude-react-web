@@ -48,7 +48,6 @@ import {
   type TranscriptRow,
 } from './message-list/transcript-rows'
 import { useSubagentSyntheticRows } from './message-list/useSubagentSyntheticRows'
-import { resolveRevealItemIndex, type RevealTarget } from './message-list/reveal'
 import { TRANSCRIPT_REVEAL_ROW_CLASS, TRANSCRIPT_ROW_CLASS, useTranscriptAnimations } from './message-list/useTranscriptAnimations'
 import { useTranscriptScroll } from './message-list/useTranscriptScroll'
 import { scrollDebug as dbg } from './message-list/scroll-debug'
@@ -242,10 +241,7 @@ interface Props {
    *  means "no active match in this item" (or the active hit lives in
    *  a different item). */
   searchActiveMatchInItem?: number
-  /** Search-jump target: scroll to this message (or the tool_use owning a
-   *  tool_result hit) and flash its row. */
-  revealTarget?: RevealTarget | null
-  /** Filter mode for parent_tool_use_id:
+    /** Filter mode for parent_tool_use_id:
    *  - undefined / null: only show root messages (parent_tool_use_id == null).
    *    This is the default for the main transcript —subagent-internal
    *    messages are hidden and replaced by SubagentCards in their parent's
@@ -411,7 +407,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, streamingContent, streamingMode, static: isStatic = false, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, revealTarget, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, streamingContent, streamingMode, static: isStatic = false, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -810,13 +806,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   const searchRef = useRef({ searchQuery, searchActiveMsgIdx, searchActiveMatchInItem })
   searchRef.current = { searchQuery, searchActiveMsgIdx, searchActiveMatchInItem }
   /* eslint-enable react-hooks/refs */
-  const revealItemIndex = useMemo(
-    () => (revealTarget ? resolveRevealItemIndex(items, revealTarget) : -1),
-    [items, revealTarget],
-  )
-  const revealItemId = revealItemIndex >= 0 ? items[revealItemIndex]?.id ?? null : null
-  const revealNonce = revealTarget?.nonce ?? null
-  const searchLive = !!searchQuery?.trim() || (searchActiveMsgIdx != null && searchActiveMsgIdx >= 0) || revealItemIndex >= 0
+  const searchLive = !!searchQuery?.trim() || (searchActiveMsgIdx != null && searchActiveMsgIdx >= 0)
   const itemToVirtIdx = useMemo(() => {
     if (!searchLive) return EMPTY_VIRT_IDX
     const map = new Map<number, number>()
@@ -832,23 +822,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     }
     return map
   }, [renderableItems, searchLive])
-
-  // Search-jump reveal: a transient row flash, not a search mode. `revealRow`
-  // carries the item id + nonce so the matching Virtuoso row gets a clone with
-  // `revealTick` (new identity = re-render) while the flash is active. The
-  // timeout owns the lifetime; a new jump replaces it.
-  const [revealRow, setRevealRow] = useState<{ id: string; nonce: number } | null>(null)
-  const revealRef = useRef({ rowId: null as string | null, itemIndex: -1 })
-  // eslint-disable-next-line react-hooks/refs -- render-time ref write: itemContent must read the latest reveal state without being recreated
-  revealRef.current = { rowId: revealRow?.id ?? null, itemIndex: revealItemIndex }
-
-  useEffect(() => {
-    if (revealNonce == null || revealItemId == null) return
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- imperative reveal flash; the timeout owns its lifetime
-    setRevealRow({ id: revealItemId, nonce: revealNonce })
-    const timer = window.setTimeout(() => setRevealRow(null), 1800)
-    return () => window.clearTimeout(timer)
-  }, [revealNonce, revealItemId])
 
   // The scroll hook needs to report the visible-top row, and the thing that
   // consumes that report (`emitVisibleTop`, further down) needs `seekToIndex`
@@ -893,17 +866,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     showEpoch,
     followEnabled: !isStatic,
   })
-
-  // Search-jump seek. Runs after the scroll hook owns `seekToIndex`; the nonce
-  // guard makes a repeated render of the same target a no-op.
-  const revealSeekRef = useRef<number | null>(null)
-  useEffect(() => {
-    if (revealItemIndex < 0 || revealNonce == null) return
-    if (revealSeekRef.current === revealNonce) return
-    revealSeekRef.current = revealNonce
-    const virtIdx = itemToVirtIdx.get(revealItemIndex)
-    if (virtIdx != null) seekToIndex(virtIdx, 'center')
-  }, [revealItemIndex, revealNonce, itemToVirtIdx, seekToIndex])
 
   // App owns scroll-memory snapshots; this transcript owns every write. A
   // restore request becomes a distinct lifecycle owner and never changes the
@@ -1389,12 +1351,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // Search state read from a ref (not closure) so this callback stays
     // identity-stable across query changes — see searchRef above.
     const { searchQuery: sq, searchActiveMsgIdx: sami, searchActiveMatchInItem: samii } = searchRef.current
-    const revealTick = (item as { revealTick?: number }).revealTick
-    const revealState = revealRef.current
-    const revealMemberItemIndex =
-      revealState.rowId != null && item.toolGroup?.memberIds.includes(revealState.rowId)
-        ? revealState.itemIndex
-        : undefined
     // Only pipe `activeMatchInItem` into the message that actually
     // contains the active navigation target. Every other message gets
     // `undefined` so its <mark>s render at the default colour. This
@@ -1497,7 +1453,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             // same group), so its presence here means a boundary row landed.
             closed={nextItemTypeMap.has(item.id)}
             activeMemberItemIndex={activeGroupMemberIdx}
-            revealMemberItemIndex={revealMemberItemIndex ?? activeGroupMemberIdx}
             // Ungated here by design: ToolGroupCard gates per member
             // internally (only the member whose itemIndex matches
             // activeMemberItemIndex forwards it as activeMatchIdx).
@@ -1548,7 +1503,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         className={className}
         style={{ '--reveal-stagger': `${revealStagger}ms` } as CSSProperties}
         data-message-id={item.id}
-        data-crw-reveal={revealTick !== undefined ? 'true' : undefined}
         data-crw-optimistic-source={item.optimisticSourceId}
         data-enter-id={isEntering ? item.id : undefined}
         ref={isEntering ? enterNodeRef : undefined}
@@ -1659,23 +1613,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     return copied ? out : base
   }, [renderableItems, searchTick])
 
-  /** The searchTick overlay plus the reveal flash. Cloning only the matching
-   *  row (and the tool group that owns it) gives Virtuoso a new identity for
-   *  exactly the row that must re-render. */
-  const revealData: VirtuosoItem[] = useMemo(() => {
-    if (!revealRow) return virtuosoData
-    let copied = false
-    const out = virtuosoData.slice()
-    for (let i = 0; i < out.length; i++) {
-      const it = out[i]
-      if (it.id === revealRow.id || it.toolGroup?.memberIds.includes(revealRow.id)) {
-        out[i] = { ...it, revealTick: revealRow.nonce } as VirtuosoItem
-        copied = true
-      }
-    }
-    return copied ? out : virtuosoData
-  }, [virtuosoData, revealRow])
-
   // Virtuoso Footer is reserved for transcript metadata and invisible bottom
   // breathing room. The bottom overlay stack (live streaming bubble + task
   // cards) is an overlay, so the spacer lets settled messages scroll underneath
@@ -1772,7 +1709,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         <Virtuoso
           ref={virtuosoRef}
           scrollerRef={scrollerRefCb}
-          data={revealData}
+          data={virtuosoData}
           context={draftRowKeys}
           firstItemIndex={firstItemIndex}
           initialTopMostItemIndex={isStatic ? 0 : virtuosoData.length > 0 ? virtuosoData.length - 1 : 0}

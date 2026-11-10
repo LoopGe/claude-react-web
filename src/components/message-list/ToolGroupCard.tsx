@@ -70,9 +70,6 @@ interface ToolGroupCardProps {
   memberItemIndices: number[]
   activeMemberItemIndex?: number
   activeMatchInItem?: number
-  /** Search-jump target inside this group: force the group open and flash the
-   *  card while the jump is active. */
-  revealMemberItemIndex?: number
   searchQuery?: string
   /** Session turn-in-flight flag from MessageList. A group that was live
    *  stays expanded for the whole turn (tool gaps included); only after
@@ -234,7 +231,6 @@ function ToolGroupCardInner({
   memberItemIndices,
   activeMemberItemIndex,
   activeMatchInItem,
-  revealMemberItemIndex,
   searchQuery,
   working,
   subagentStatuses,
@@ -348,7 +344,7 @@ function ToolGroupCardInner({
   // would hide work the user can't see happening. Anything softer than that
   // yields to an explicit toggle, so clicking the header always does
   // something visible.
-  const revealMember = revealMemberItemIndex != null && memberItemIndices.includes(revealMemberItemIndex)
+  const revealMember = activeMemberItemIndex != null && memberItemIndices.includes(activeMemberItemIndex)
   const open = hasSearchHit || live || revealMember || (fold.userOpen ?? autoOpen)
 
   // Body-mount latch. The header is always rendered, but members (BlockView →
@@ -563,7 +559,6 @@ function propsEqual(a: ToolGroupCardProps, b: ToolGroupCardProps): boolean {
     a.searchQuery === b.searchQuery &&
     a.activeMemberItemIndex === b.activeMemberItemIndex &&
     a.activeMatchInItem === b.activeMatchInItem &&
-    a.revealMemberItemIndex === b.revealMemberItemIndex &&
     a.subagentStatuses === b.subagentStatuses &&
     a.workflowStatuses === b.workflowStatuses &&
     sameItems(a.members, b.members) &&

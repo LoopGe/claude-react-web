@@ -52,34 +52,6 @@ export const OlderHistoryFloat = memo(function OlderHistoryFloat({
   )
 })
 
-/* ── Newer-history pill ─────────────────────────────────────────────── */
-
-/** Bottom-center pill shown while the transcript is anchored in history and
- *  live messages are waiting. Clicking returns to the newest page. */
-export const NewerHistoryFloat = memo(function NewerHistoryFloat({
-  count,
-  hasNewer = false,
-  onReturn,
-}: {
-  count: number
-  /** The anchored page reported content above it even before a live frame. */
-  hasNewer?: boolean
-  onReturn: () => void
-}) {
-  if (count <= 0 && !hasNewer) return null
-  return (
-    <button
-      type="button"
-      className="chat-newer-float"
-      onClick={() => { void onReturn() }}
-    >
-      {count > 0
-        ? `${count} new message${count === 1 ? '' : 's'} · Back to latest`
-        : 'New messages · Back to latest'}
-    </button>
-  )
-})
-
 /* One fenced-code segment of the live turn, with primitive-only props so
  * memo actually bails out. Passing the <code> children JSX directly to the
  * memoized CodeBlock defeated its shallow compare (a fresh element per

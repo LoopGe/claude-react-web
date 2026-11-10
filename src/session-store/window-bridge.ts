@@ -46,14 +46,11 @@
 
 import type { SdkMessage } from '../types'
 import {
-  type ServerMirror,
   type SessionAction,
   type SessionState,
-  createInitialServerMirror,
   withMirror,
 } from './types'
 import {
-  emptyWindow,
   evictSeqs,
   liveAppend,
   pageLoaded,
@@ -100,33 +97,6 @@ export function windowLive(
     next = applyMessage(next, msg)
   }
   return next
-}
-
-/** ANCHOR_RESET: a search jump re-anchors the transcript at an older seq.
- *  Rebuild the transcript layer from a fresh mirror (items/messages, every
- *  toolUseId-keyed index, live-turn/draft state, pending consumed stamps) and
- *  start with an empty window at the page's generation/headSeq; the following
- *  WINDOW_PAGE at 'tail' adopts it. Non-transcript state (tasks, context
- *  usage, prompt suggestion, retry/thinking slots, CLI state, event counter)
- *  and the client-only `intent` layer survive unchanged. */
-export function anchorReset(
-  state: SessionState,
-  action: Extract<SessionAction, { type: 'ANCHOR_RESET' }>,
-): SessionState {
-  const mirror: ServerMirror = {
-    ...createInitialServerMirror(),
-    contextUsage: state.mirror.contextUsage,
-    promptSuggestion: state.mirror.promptSuggestion,
-    tasks: state.mirror.tasks,
-    apiRetry: state.mirror.apiRetry,
-    thinkingTokens: state.mirror.thinkingTokens,
-    sessionState: state.mirror.sessionState,
-    eventCount: state.mirror.eventCount,
-    window: emptyWindow(action.generation, action.headSeq),
-    anchored: action.anchored ?? true,
-    anchorSeq: action.anchored === false ? null : action.viewSeq,
-  }
-  return { sessionId: state.sessionId, mirror, intent: state.intent }
 }
 
 /** WINDOW_PAGE: a REST page from GET /sessions/:id/messages. Tail pages

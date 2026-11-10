@@ -116,11 +116,7 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 const noopPaging: TranscriptPaging = {
   loadingOlder: false,
   olderError: null,
-  anchored: false,
-  newerCount: 0, hasNewer: false,
   loadOlder: vi.fn(async () => 0),
-  anchorAt: vi.fn(async () => {}),
-  returnToHead: vi.fn(async () => {}),
 }
 
 const noopPermissions: UsePermissionChannel = {
@@ -297,7 +293,7 @@ describe('SideChatDrawer (session-synchronizer migration)', () => {
 
   it('shows the loading float when paging.loadingOlder is true', async () => {
     const props = makeProps({
-      paging: { loadingOlder: true, olderError: null, anchored: false, newerCount: 0, hasNewer: false, loadOlder: vi.fn(async () => 0), anchorAt: vi.fn(async () => {}), returnToHead: vi.fn(async () => {}) },
+      paging: { loadingOlder: true, olderError: null, loadOlder: vi.fn(async () => 0) },
     })
     const { container } = render(<SideChatDrawer {...props} />)
     await act(() => sleep(50))
@@ -310,7 +306,7 @@ describe('SideChatDrawer (session-synchronizer migration)', () => {
   it('shows the error float with a retry button when paging.olderError is set', async () => {
     const retry = vi.fn(async () => 0)
     const props = makeProps({
-      paging: { loadingOlder: false, olderError: 'Could not load', anchored: false, newerCount: 0, hasNewer: false, loadOlder: retry, anchorAt: vi.fn(async () => {}), returnToHead: vi.fn(async () => {}) },
+      paging: { loadingOlder: false, olderError: 'Could not load', loadOlder: retry },
     })
     const { container } = render(<SideChatDrawer {...props} />)
     await act(() => sleep(50))
