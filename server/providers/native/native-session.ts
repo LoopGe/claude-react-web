@@ -390,8 +390,14 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   /** The real network streamer: Task 2's caller with retry, whose onRetry
-   *  callback surfaces each backoff as an `api_retry` frame. */
-  private defaultStream(req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }): AsyncIterable<CanonicalEvent> {
+   *  callback surfaces each backoff as an `api_retry` frame. A nested
+   *  (subagent) stream sets `suppressRetryFrames`: retry behavior is
+   *  unchanged, but a subagent's backoff must not look like a main-thread
+   *  retry in the UI. */
+  private defaultStream(
+    req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
+    opts?: { suppressRetryFrames?: boolean },
+  ): AsyncIterable<CanonicalEvent> {
     return streamAnthropicMessages(
       {
         ...this.opts.credentials(),
@@ -402,13 +408,19 @@ export class NativeSession implements ProviderSessionHandle {
         maxTokens: DEFAULT_MAX_TOKENS,
         signal: req.signal,
       },
-      async (info) => this.output.push(apiRetryFrame(this.ctx, info)),
+      async (info) => {
+        if (!opts?.suppressRetryFrames) this.output.push(apiRetryFrame(this.ctx, info))
+      },
     )
   }
 
-  private streamFor(req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }): AsyncIterable<CanonicalEvent> {
+  private streamFor(
+    req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
+    opts?: { suppressRetryFrames?: boolean },
+  ): AsyncIterable<CanonicalEvent> {
+    // The test seam ignores opts: scripted streams have no retry path.
     const testStream = this.opts.streamSupplier?.()
-    return testStream ? testStream(req) : this.defaultStream(req)
+    return testStream ? testStream(req) : this.defaultStream(req, opts)
   }
 
   /** Persist the durable half of the frame stream: model-visible assistant
