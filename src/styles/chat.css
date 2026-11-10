@@ -4663,3 +4663,48 @@ button.chat-empty-env-chip:hover {
   color: var(--fg-muted);
   font-size: var(--fs-sm);
 }
+
+/* ── Search-jump reveal + anchored-history pill ──────────────────── */
+/* The row/tool-group flash is transient (MessageList drops the data attr
+   after ~1.8s); box-shadow keeps it out of layout so Virtuoso measurements
+   never change. */
+.virtuoso-item-wrapper[data-crw-reveal="true"],
+.tool-group-card[data-crw-reveal="true"] {
+  animation: crw-reveal-flash 1.7s ease;
+}
+@keyframes crw-reveal-flash {
+  0% { box-shadow: 0 0 0 1px var(--accent), 0 0 0 5px color-mix(in srgb, var(--accent) 22%, transparent); }
+  70% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 0 9px transparent; }
+  100% { box-shadow: 0 0 0 1px transparent, 0 0 0 12px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .virtuoso-item-wrapper[data-crw-reveal="true"],
+  .tool-group-card[data-crw-reveal="true"] {
+    animation: none;
+    outline: 1px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+.chat-newer-float {
+  position: absolute;
+  left: 50%;
+  bottom: 96px;
+  z-index: 6;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  padding: var(--space-1-5) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  box-shadow: var(--overlay-shadow);
+  cursor: pointer;
+}
+.chat-newer-float:hover {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}

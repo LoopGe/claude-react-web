@@ -50,6 +50,7 @@ function renderGroup({
   subagentStatuses,
   autoExpandRunningGroups,
   toolResults,
+  revealMemberItemIndex,
 }: {
   members: SdkMessage[]
   toolStatus: Map<string, ToolStatus>
@@ -61,6 +62,7 @@ function renderGroup({
   closed?: boolean
   subagentStatuses?: ReadonlyMap<string, ActiveSubagent>
   autoExpandRunningGroups?: boolean
+  revealMemberItemIndex?: number
 }) {
   return render(
     <ToolStatusProvider value={toolStatus}>
@@ -72,6 +74,7 @@ function renderGroup({
             searchQuery={searchQuery}
             activeMemberItemIndex={activeMemberItemIndex}
             activeMatchInItem={activeMatchInItem}
+            revealMemberItemIndex={revealMemberItemIndex}
             working={working}
             closed={closed}
             subagentStatuses={subagentStatuses}
@@ -98,6 +101,19 @@ describe('ToolGroupCard', () => {
     })
     expect(isOpen(container)).toBe(false)
     expect(container.textContent).toContain('Read')
+  })
+
+  it('force-opens and flashes for a revealed member', () => {
+    const { container } = renderGroup({
+      members: [toolMsg('t1'), toolMsg('t2')],
+      toolStatus: new Map<string, ToolStatus>([
+        ['t1-tu', 'success'],
+        ['t2-tu', 'success'],
+      ]),
+      revealMemberItemIndex: 1,
+    })
+    expect(isOpen(container)).toBe(true)
+    expect(container.querySelector('.tool-group-card')!.getAttribute('data-crw-reveal')).toBe('true')
   })
 
   it('defaults expanded while any tool is still running', () => {
