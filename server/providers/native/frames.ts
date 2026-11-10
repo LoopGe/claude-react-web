@@ -84,7 +84,17 @@ export function apiRetryFrame(
 
 export function resultFrame(
   ctx: FrameContext,
-  opts: { result: string; usage: Usage; numTurns: number; durationMs: number; isError: boolean },
+  opts: {
+    result: string
+    usage: Usage
+    numTurns: number
+    durationMs: number
+    isError: boolean
+    /** Intent-based fast-mode state (`on` when the session's fast intent is
+     *  on), stamped on every native result frame so the client's chip is
+     *  truthful for a provider with no CLI to report `cooldown`. */
+    fastModeState?: 'on' | 'off'
+  },
 ): Frame {
   return {
     ...base(ctx, 'result'),
@@ -95,6 +105,7 @@ export function resultFrame(
     num_turns: opts.numTurns,
     duration_ms: opts.durationMs,
     is_error: opts.isError,
+    ...(opts.fastModeState !== undefined ? { fast_mode_state: opts.fastModeState } : {}),
   } as unknown as AgentMessage
 }
 

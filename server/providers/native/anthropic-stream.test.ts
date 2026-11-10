@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiError, buildRequestBody, MAX_API_RETRIES, streamAnthropicMessages, type RequestThinking, type StreamRequest } from './anthropic-stream.js'
+import { apiError, buildRequestBody, FAST_MODE_BETA, MAX_API_RETRIES, streamAnthropicMessages, type RequestThinking, type StreamRequest } from './anthropic-stream.js'
 
 const baseReq: StreamRequest = {
   baseUrl: 'https://api.example.com',
@@ -199,6 +199,61 @@ describe('buildRequestBody thinking', () => {
       display: 'omitted',
     })
     expect(bodyWithThinking({ type: 'adaptive' }, { display: 'highlights' }).thinking).toEqual({ type: 'adaptive' })
+  })
+})
+
+describe('buildRequestBody effort and fast mode', () => {
+  const wire = (overrides: Partial<StreamRequest>) =>
+    buildRequestBody({ ...baseReq, model: 'claude-opus-4-8', ...overrides }) as {
+      output_config?: unknown
+      speed?: unknown
+    }
+
+  it('emits output_config.effort for a level the model supports', () => {
+    expect(wire({ effort: 'high' }).output_config).toEqual({ effort: 'high' })
+    // Sonnet 4.6 supports 'max' but not 'xhigh'.
+    expect(wire({ model: 'claude-sonnet-4-5', effort: 'max' }).output_config).toEqual({ effort: 'max' })
+  })
+
+  it('omits effort when the model does not support the level', () => {
+    expect(wire({ model: 'claude-sonnet-4-5', effort: 'xhigh' })).not.toHaveProperty('output_config')
+    expect(wire({ model: 'claude-haiku-3-5', effort: 'high' })).not.toHaveProperty('output_config')
+  })
+
+  it('omits both fields when no intent is configured', () => {
+    const body = wire({})
+    expect(body).not.toHaveProperty('output_config')
+    expect(body).not.toHaveProperty('speed')
+  })
+
+  it('emits speed: fast only for a fast-mode-capable model', () => {
+    expect(wire({ fastMode: true }).speed).toBe('fast')
+    expect(wire({ fastMode: false })).not.toHaveProperty('speed')
+    expect(wire({ model: 'claude-sonnet-4-5', fastMode: true })).not.toHaveProperty('speed')
+  })
+})
+
+describe('streamAnthropicMessages fast mode header', () => {
+  it('adds the fast-mode beta header only when the model can serve fast mode', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      sseResponse(['event: message_stop\ndata: {"type":"message_stop"}\n\n']),
+    ))
+    for await (const _ of streamAnthropicMessages(
+      { ...baseReq, model: 'claude-opus-4-8', fastMode: true },
+      async () => {},
+    )) { /* drain */ }
+    const fast = vi.mocked(fetch).mock.calls[0][1] as { headers: Record<string, string>; body: string }
+    expect(fast.headers['anthropic-beta']).toBe(FAST_MODE_BETA)
+    expect(JSON.parse(fast.body)).toMatchObject({ speed: 'fast' })
+
+    vi.mocked(fetch).mockClear()
+    for await (const _ of streamAnthropicMessages(
+      { ...baseReq, model: 'claude-sonnet-4-5', fastMode: true },
+      async () => {},
+    )) { /* drain */ }
+    const unsupported = vi.mocked(fetch).mock.calls[0][1] as { headers: Record<string, string>; body: string }
+    expect(unsupported.headers['anthropic-beta']).toBeUndefined()
+    expect(JSON.parse(unsupported.body)).not.toHaveProperty('speed')
   })
 })
 

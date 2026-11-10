@@ -1,4 +1,5 @@
 import { createLogger } from '../../log.js'
+import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-capability.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import { parseSseStream, type SseEvent } from './sse.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -16,6 +17,12 @@ const BACKOFF_CAP_MS = 60_000
  *  the live control can distinguish "keep" from "reset". */
 export type RequestThinking = ThinkingSetting
 
+/** The API's reasoning-effort ladder (same union as the SDK's EffortLevel). */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** The beta gate fast mode rides on. */
+export const FAST_MODE_BETA = 'fast-mode-2026-02-01'
+
 export interface StreamRequest {
   baseUrl: string
   authToken: string
@@ -29,7 +36,21 @@ export interface StreamRequest {
    *  undefined = API default, 'highlights' is a CLI-only value the API does
    *  not accept. Forwarded only when it is 'summarized' | 'omitted'. */
   thinkingDisplay?: ThinkingDisplay
+  /** Reasoning effort. Model-gated at build time: a level the model does not
+   *  support is OMITTED, never sent (the API answers 400 for it). */
+  effort?: EffortLevel
+  /** Fast-mode intent. Model-gated at build time, like `effort`: the
+   *  `speed` field AND the beta header are omitted together. */
+  fastMode?: boolean
   signal: AbortSignal
+}
+
+/** One decision point for fast mode: both the `speed: 'fast'` body field and
+ *  the `anthropic-beta` header follow this answer, so a model switch can never
+ *  leave half a fast-mode request behind. The family classification is the
+ *  same one the UI chip uses (`effort-capability.ts`). */
+function fastModeEnabled(req: StreamRequest): boolean {
+  return req.fastMode === true && supportsFastModeForModel(req.model) === true
 }
 
 export interface AnthropicApiError extends Error {
@@ -96,6 +117,16 @@ export function buildRequestBody(req: StreamRequest): Record<string, unknown> {
   if (req.thinking) {
     body.thinking = thinkingBody(req.thinking, req.maxTokens, req.thinkingDisplay)
   }
+
+  // Effort is a Claude-family feature, classified from the model id (the SDK's
+  // own report is untrustworthy behind gateways — see effort-capability.ts).
+  // An unsupported level is omitted rather than sent as a 400, so pinning
+  // 'xhigh' survives a switch to a model that only offers 'max'.
+  if (req.effort !== undefined && effortLevelsForModel(req.model)?.includes(req.effort)) {
+    body.output_config = { effort: req.effort }
+  }
+
+  if (fastModeEnabled(req)) body.speed = 'fast'
 
   if (req.system !== '') {
     body.system = [{ type: 'text', text: req.system, cache_control: EPHEMERAL }]
@@ -192,6 +223,7 @@ export async function* streamAnthropicMessages(req: StreamRequest, onRetry: Retr
           'Content-Type': 'application/json',
           'anthropic-version': '2023-06-01',
           Authorization: `Bearer ${req.authToken}`,
+          ...(fastModeEnabled(req) ? { 'anthropic-beta': FAST_MODE_BETA } : {}),
         },
         body: JSON.stringify(buildRequestBody(req)),
         signal: req.signal,

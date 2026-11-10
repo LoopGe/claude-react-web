@@ -711,7 +711,7 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
-  it('applyFlagSettings accepts only skillOverrides and drives the catalog state', async () => {
+  it('applyFlagSettings drives the skill catalog and rejects unknown keys', async () => {
     const dir = await tempDir('native-skill-overrides-')
     await writeProjectSkill(dir, 'demo')
     const provider = new NativeProvider({ stateDir: dir })
@@ -736,7 +736,7 @@ describe('NativeSession', () => {
 
     // Any other key throws, and applies nothing.
     await expect(session.applyFlagSettings?.({ plugins: {} })).rejects.toThrow(/plugins/)
-    await expect(session.applyFlagSettings?.({ fastMode: true })).rejects.toThrow(/fastMode/)
+    await expect(session.applyFlagSettings?.({ model: 'claude-opus-4-8' })).rejects.toThrow(/model/)
     expect(catalog.skills.section()).toBe('<available_skills>\n- demo\n</available_skills>')
     await session.destroy()
   })
@@ -1989,6 +1989,133 @@ describe('NativeSession', () => {
       streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
       __setConfigForTest(origConfig)
     }
+  })
+
+  it('sends effort and fast mode, and follows live applyFlagSettings', async () => {
+    const dir = await tempDir('native-effort-')
+    const origConfig = { ...config }
+    __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+    const requests: Array<Parameters<typeof buildRequestBody>[0]> = []
+    streamAnthropicMessagesMock.mockImplementation(async function* (req: Parameters<typeof buildRequestBody>[0]) {
+      requests.push(req)
+      for (const ev of textTurn('ok')) yield ev
+    })
+    const provider = new NativeProvider({ stateDir: dir })
+    expect(provider.capabilities.supportsEffortLevel).toBe(true)
+    expect(provider.capabilities.supportsFastMode).toBe(true)
+    const session = provider.createSession({
+      id: 'effort',
+      cwd: dir,
+      model: 'claude-opus-4-8',
+      effortLevel: 'high',
+      fastMode: true,
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    const nextRequest = async (text: string, count: number): Promise<void> => {
+      session.enqueueUserMessage(userMsg(text) as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(count))
+    }
+    const wire = (i: number): { output_config?: unknown; speed?: unknown } =>
+      buildRequestBody(requests[i]) as { output_config?: unknown; speed?: unknown }
+    try {
+      await nextRequest('first', 1)
+      expect(wire(0).output_config).toEqual({ effort: 'high' })
+      expect(wire(0).speed).toBe('fast')
+
+      // The live field, not the create-time opts value: the NEXT request reads it.
+      await session.applyFlagSettings?.({ effortLevel: 'max' })
+      await nextRequest('second', 2)
+      expect(wire(1).output_config).toEqual({ effort: 'max' })
+
+      // null clears back to the model default (the field is omitted).
+      await session.applyFlagSettings?.({ effortLevel: null })
+      await nextRequest('third', 3)
+      expect(wire(2)).not.toHaveProperty('output_config')
+
+      await session.applyFlagSettings?.({ fastMode: false })
+      await nextRequest('fourth', 4)
+      expect(wire(3)).not.toHaveProperty('speed')
+
+      await session.applyFlagSettings?.({ fastMode: true })
+      await nextRequest('fifth', 5)
+      expect(wire(4).speed).toBe('fast')
+
+      // Unsupported keys still fail loudly.
+      await expect(session.applyFlagSettings?.({ plugins: {} })).rejects.toThrow(/plugins/)
+    } finally {
+      await session.destroy()
+      streamAnthropicMessagesMock.mockReset()
+      streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+      __setConfigForTest(origConfig)
+    }
+  })
+
+  it('stamps fast_mode_state on the init frame and every result frame', async () => {
+    const dir = await tempDir('native-fast-state-')
+    const provider = providerWithStreamer([textTurn('a'), textTurn('b')], dir)
+    const session = provider.createSession({
+      id: 'fast-state',
+      cwd: dir,
+      model: 'claude-opus-4-8',
+      fastMode: true,
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('one') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+    // Intent-based, so the chip is correct BEFORE the first turn ends.
+    expect(frames[0]).toMatchObject({ type: 'system', subtype: 'init', fast_mode_state: 'on' })
+    expect(frames.filter((f) => f.type === 'result')[0].fast_mode_state).toBe('on')
+
+    await session.applyFlagSettings?.({ fastMode: false })
+    session.enqueueUserMessage(userMsg('two') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+    expect(frames.filter((f) => f.type === 'result')[1].fast_mode_state).toBe('off')
+    await session.destroy()
+  })
+
+  it('reports supported models in the SDK camelCase shape', async () => {
+    const dir = await tempDir('native-models-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({
+      id: 'models',
+      cwd: dir,
+      profile: {
+        id: 'p1',
+        name: 'Profile 1',
+        authToken: 'tok',
+        baseUrl: 'https://api.anthropic.com',
+        modelList: ['claude-opus-4-8', 'claude-sonnet-4-5', 'claude-haiku-3-5'],
+        modelGroups: [],
+        recapModel: '',
+        commitMessageModel: '',
+      },
+    })
+    expect(await session.supportedModels?.()).toEqual([
+      {
+        value: 'claude-opus-4-8',
+        displayName: 'claude-opus-4-8',
+        supportsFastMode: true,
+        supportsEffort: true,
+        supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      },
+      {
+        value: 'claude-sonnet-4-5',
+        displayName: 'claude-sonnet-4-5',
+        supportsFastMode: false,
+        supportsEffort: true,
+        supportedEffortLevels: ['low', 'medium', 'high', 'max'],
+      },
+      {
+        value: 'claude-haiku-3-5',
+        displayName: 'claude-haiku-3-5',
+        supportsFastMode: false,
+        supportsEffort: false,
+        supportedEffortLevels: [],
+      },
+    ])
+    await session.destroy()
   })
 
   it('refuses to resume a corrupt log', async () => {

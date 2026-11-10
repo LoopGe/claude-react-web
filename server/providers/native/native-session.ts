@@ -19,10 +19,12 @@
 
 import { createPushable, type Pushable } from '../../pushable.js'
 import { createLogger } from '../../log.js'
+import { config, type ProviderProfile } from '../../config.js'
+import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.js'
 import { runTurn, type LoopDeps } from './loop.js'
-import { streamAnthropicMessages } from './anthropic-stream.js'
+import { streamAnthropicMessages, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { apiRetryFrame, defaultFrameContext, resultFrame, type Frame, type FrameContext, type Usage } from './frames.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
@@ -160,6 +162,15 @@ export interface NativeSessionOptions {
   /** Extended-thinking config carried over from `SessionMeta.thinking`.
    *  Only the starting point: `setMaxThinkingTokens` keeps a live field. */
   thinking?: ThinkingSetting
+  /** Reasoning effort carried over from `SessionMeta.effortLevel`. Only the
+   *  starting point: `applyFlagSettings({effortLevel})` keeps a live field. */
+  effortLevel?: string
+  /** Fast-mode intent carried over from `SessionMeta.fastMode`. Only the
+   *  starting point: `applyFlagSettings({fastMode})` keeps a live field. */
+  fastMode?: boolean
+  /** The resolved provider profile, threaded from the manager. `supportedModels`
+   *  prefers its model list; absent (unit tests) = the global config's. */
+  profile?: ProviderProfile
   /** Resolved lazily, on the first real network turn — a session must be
    *  creatable on an unconfigured machine (the failure surfaces as a loud
    *  turn error, not a create-time throw). */
@@ -256,6 +267,11 @@ export class NativeSession implements ProviderSessionHandle {
    *  setMaxThinkingTokens contract: undefined keeps it, null resets it).
    *  'highlights' may be held here but is never sent on the wire. */
   private thinkingDisplay: ThinkingDisplay | undefined
+  /** Live reasoning effort, read when the next request is built.
+   *  `undefined` = no explicit choice (model default). */
+  private effortLevel: EffortLevel | undefined
+  /** Live fast-mode intent, read when the next request is built. */
+  private fastMode: boolean
   /** Synchronous pump guard: set before the async pumpLoop starts, so a
    *  second enqueueUserMessage while the first turn is still being scheduled
    *  cannot start a second concurrent pump. */
@@ -277,6 +293,8 @@ export class NativeSession implements ProviderSessionHandle {
     this.permissionMode = opts.permissionMode ?? 'default'
     this.thinking = opts.thinking
     this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
+    this.effortLevel = opts.effortLevel as EffortLevel | undefined
+    this.fastMode = opts.fastMode === true
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
@@ -313,13 +331,16 @@ export class NativeSession implements ProviderSessionHandle {
       this.log = this.openFreshLog(opts)
     }
     // session-health's stuck-GC force-unloads sessions whose init never
-    // lands — push it first, before any turn output.
+    // lands — push it first, before any turn output. `fast_mode_state` is
+    // intent-based, so the client's chip is correct before the first turn
+    // ends (the native provider has no CLI to report a runtime state).
     this.output.push({
       type: 'system',
       subtype: 'init',
       session_id: opts.id,
       uuid: this.ctx.uuid(),
       parent_tool_use_id: null,
+      fast_mode_state: this.fastMode ? 'on' : 'off',
     } as unknown as AgentMessage)
     // `tools` is now the effective list from birth, not builtins-only until
     // the first turn: the invariant tools = builtins + Agent + MCP defs must
@@ -521,6 +542,8 @@ export class NativeSession implements ProviderSessionHandle {
         maxTokens: DEFAULT_MAX_TOKENS,
         thinking: this.thinking,
         thinkingDisplay: this.thinkingDisplay,
+        effort: this.effortLevel,
+        fastMode: this.fastMode,
         signal: req.signal,
       },
       async (info) => {
@@ -724,6 +747,7 @@ export class NativeSession implements ProviderSessionHandle {
               this.output.push(frame)
             },
             system: withSkillsSection(this.opts.system, this.skills.section()),
+            fastModeState: () => (this.fastMode ? 'on' : 'off'),
           },
           this.ctx,
           this.history,
@@ -756,6 +780,7 @@ export class NativeSession implements ProviderSessionHandle {
           numTurns: 0,
           durationMs: 0,
           isError: true,
+          fastModeState: this.fastMode ? 'on' : 'off',
         }))
         endReason = interrupted ? 'interrupted' : 'error'
       } finally {
@@ -956,6 +981,25 @@ export class NativeSession implements ProviderSessionHandle {
     return this.skills.commands()
   }
 
+  /** The model report, in the SDK's camelCase shape (the manager translates
+   *  it to the wire's snake_case). The native provider has no CLI to ask, so
+   *  the list is the configured one (`opts.profile?.modelList ??
+   *  config.modelList`) and the capabilities come from the SAME model-id
+   *  classification the request builder gates effort/fast mode on — the
+   *  picker and the wire can therefore never disagree about a model. */
+  async supportedModels(): Promise<unknown> {
+    return (this.opts.profile?.modelList ?? config.modelList).map((value) => {
+      const levels = effortLevelsForModel(value) ?? []
+      return {
+        value,
+        displayName: value,
+        supportsFastMode: supportsFastModeForModel(value) === true,
+        supportsEffort: levels.length > 0,
+        supportedEffortLevels: levels,
+      }
+    })
+  }
+
   /** Re-read the skill roots and answer the fresh command catalog. The new
    *  discovery replaces `skillsReady`, so every per-turn await from here on
    *  tracks THIS pass — a manual reload both supersedes the construction
@@ -966,15 +1010,27 @@ export class NativeSession implements ProviderSessionHandle {
     return { skills: this.skills.commands() }
   }
 
-  /** The flag-settings layer, reduced to the ONE key this provider supports.
+  /** The flag-settings layer for the three keys this provider supports.
    *  `skillOverrides` replaces the per-skill override map (`{}` restores the
-   *  spawn default). Plugin toggles must fail loudly: `supportsPlugins` is
-   *  false, so silently accepting them would report a change that never
+   *  spawn default); `effortLevel` takes a level or null (clear back to the
+   *  model default); `fastMode` takes true to enable and false/null to clear.
+   *  Both new values are LIVE fields read when the next request is built, and
+   *  are omitted at build time when the current model cannot serve them.
+   *  Every other key must fail loudly: `supportsPlugins` is false, so
+   *  silently accepting a plugin toggle would report a change that never
    *  happened. */
   async applyFlagSettings(settings: Record<string, unknown>): Promise<void> {
-    const unknownKeys = Object.keys(settings).filter((key) => key !== 'skillOverrides')
+    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode'])
+    const unknownKeys = Object.keys(settings).filter((key) => !supported.has(key))
     if (unknownKeys.length > 0) {
       throw new Error(`native provider does not support flag settings: ${unknownKeys.join(', ')}`)
+    }
+    const level = settings.effortLevel
+    if (level !== undefined) {
+      this.effortLevel = level === null ? undefined : (level as EffortLevel)
+    }
+    if (settings.fastMode !== undefined) {
+      this.fastMode = settings.fastMode === true
     }
     const overrides = settings.skillOverrides
     if (overrides === undefined) return

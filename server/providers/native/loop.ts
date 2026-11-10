@@ -16,6 +16,10 @@ export interface LoopDeps {
    *  nested (sidechain) runner sets this to false: its frames belong to a
    *  parent tool, and the parent's own turn owns the single terminal result. */
   emitResult?: boolean
+  /** The session's LIVE fast-mode intent, read when the result frame is
+   *  emitted so the terminal frame reports the state the next turn would use.
+   *  Absent = the provider has no fast mode (the field is then omitted). */
+  fastModeState?: () => 'on' | 'off'
 }
 
 export interface TurnResult {
@@ -178,7 +182,14 @@ export async function runTurn(
     history.push({ role: 'user', content: results })
   }
   if (deps.emitResult !== false) {
-    deps.emit(resultFrame(ctx, { result: finalText, usage, numTurns, durationMs: 0, isError }))
+    deps.emit(resultFrame(ctx, {
+      result: finalText,
+      usage,
+      numTurns,
+      durationMs: 0,
+      isError,
+      fastModeState: deps.fastModeState?.(),
+    }))
   }
   return { usage, numTurns, finalText, isError }
 }
