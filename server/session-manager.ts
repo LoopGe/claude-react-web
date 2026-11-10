@@ -7394,6 +7394,7 @@ export class SessionManager {
       return await this.bridgeInheritedPromptUuids(forkId, sourceId, entries)
     } catch (err) {
       // Degraded but usable — same posture as ensureTranscriptReconciled.
+      t.degraded = true
       log.warn(`[session ${forkId}] transcript pre-seed failed: ${(err as Error).message ?? err}`)
       return []
     } finally {
@@ -7482,6 +7483,13 @@ export class SessionManager {
   async isTranscriptDegraded(id: string): Promise<boolean> {
     const t = await this.ensureTranscriptReconciled(id)
     return t.degraded
+  }
+
+  /** Monotonic counter bumped by transcript evictions; session search uses it
+   *  to invalidate a cached index that still contains an evicted row. */
+  async transcriptTombstoneEpoch(id: string): Promise<number> {
+    const t = await this.ensureTranscriptReconciled(id)
+    return t.store.tombstoneEpoch
   }
 
   /** Resolve one message uuid to its seq in the session's seq store — the

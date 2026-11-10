@@ -37,14 +37,18 @@
 ### 4.1 入口
 
 - `Ctrl+F`（macOS `Cmd+F`）打开当前聚焦面板的搜索弹窗；`Esc` 关闭。
-- 面板 header 增加一个搜索图标按钮（移动端/无键盘时使用）。
-- 右键菜单 “Search messages” 打开弹窗，并把单行选中文本作为初始 query。
-- 现有 `MessageSearch` 快速搜索条删除；弹窗是会话内唯一的搜索入口。
+- 不新增 header 按钮；另一个入口是消息右键菜单 “Search messages”，并把单行选中文本作为初始 query。
+- 现有 `MessageSearch` 快速搜索条删除；搜索面板是会话内唯一的搜索入口。
 
 ### 4.2 布局
 
-- 居中 modal（复用 `Overlay` 的 palette 风格或新增 `search` variant），宽度
-  `min(820px, calc(100vw - 40px))`，最大高度 `74vh`。
+- **session 级 in-panel overlay**，和 GitPanel / TasksPanel 同一套：
+  `Chat` 内 `<Overlay variant="search" renderCard={false}>` + `<aside className="search-panel">`；
+  body-only、按 `--chat-reading-inset` 对齐阅读列、header + close + 独立滚动区。
+  不覆盖面板 header，也不使用全屏居中 palette。
+- 打开状态由 App 的 panel-overlay 互斥组（`useAppOverlays`）持有，和 git/tasks/worktree
+  共用一份 `panelOverlay`；Chat 只消费 `searchOpen` / `onOpenSearch` / `onCloseSearch`。
+- 所有 UI 文案使用英文（仓库客户端文案约定），不使用中文。
 - 头部：搜索输入、scope chip「当前会话 · 完整历史」、结果数 / 搜索状态。
 - 主体：可滚动结果列表；按轮次分组：
   - 组头：`第 N 轮` + 该轮用户提示词（截断）+ 轮次时间。
@@ -242,7 +246,7 @@ interface SessionSearchResponse {
 
 ### 6.4 与现有入口的关系
 
-- `Ctrl+F` → 新弹窗；`MessageSearch` 快速条删除，弹窗是会话内唯一入口。
+- `Ctrl+F` → 新搜索面板（不再有快速条）。
 - CommandPalette 的 message hit 改走同一个 `revealTarget` 路径：它只有 `messageUuid`，
   没有 seq，因此锚定读取用 `aroundUuid`（服务端 `transcriptSeqOfUuid` 解析）。`pendingJump`
   的逐页循环删除。
@@ -299,7 +303,8 @@ interface SessionSearchResponse {
 - transcript 不可读返回 `indexStatus: 'degraded'`，不编造 503。
 - 结果按轮次正序；上限 100；`totalHits` 是命中消息数；单字可搜。
 - `turnSeq` 始终有值；steered 用户消息算新一轮；没有前置提示词时归入“会话开头”组。
-- `Ctrl+F` 主入口是弹窗；快速条删除，会话内只有这一个搜索入口。
+- `Ctrl+F` 主入口；搜索面板是 session 级 in-panel overlay（Git/Tasks 模式），不新增 header 按钮。
+- UI 文案全部英文。
 - 跳转用 seq 窗口锚定，而不是逐页 `loadOlder`。
 - CommandPalette 跳转统一到 `revealTarget`，用 `aroundUuid` 解析 seq。
 - 索引是进程内 LRU，不做持久化 FTS。

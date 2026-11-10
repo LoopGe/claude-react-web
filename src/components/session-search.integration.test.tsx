@@ -111,7 +111,7 @@ describe('session search jump integration', () => {
 
     render(<NewerHistoryFloat count={1} onReturn={() => { void sync.returnToHead() }} />)
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /1 条新消息/ }))
+      fireEvent.click(screen.getByRole('button', { name: /1 new message/ }))
       await new Promise((r) => setTimeout(r, 0))
     })
 

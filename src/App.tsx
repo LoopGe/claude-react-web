@@ -412,8 +412,11 @@ export function App() {
     handleCloseTasksPanel,
     handleOpenTasksPanel,
     worktreeOpenFor,
+    searchOpenFor,
     handleOpenWorktree,
     handleCloseWorktree,
+    handleOpenSearch,
+    handleCloseSearch,
     helpOpen,
     setHelpOpen,
     helpCommands,
@@ -5387,6 +5390,9 @@ export function App() {
                       worktreeOpen={worktreeOpenFor === s.id}
                       onOpenWorktree={handleOpenWorktree}
                       onCloseWorktree={handleCloseWorktree}
+                      searchOpen={searchOpenFor === s.id}
+                      onOpenSearch={handleOpenSearch}
+                      onCloseSearch={handleCloseSearch}
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}
                       onRegisterBackground={registerBackground}

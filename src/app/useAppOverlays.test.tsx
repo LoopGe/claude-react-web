@@ -17,7 +17,7 @@ import {
   type PanelOverlayKind,
 } from './useAppOverlays'
 
-const ALL_KINDS: PanelOverlayKind[] = ['settings', 'git', 'tasks', 'worktree']
+const ALL_KINDS: PanelOverlayKind[] = ['settings', 'git', 'tasks', 'worktree', 'search']
 
 type OverlayReturn = ReturnType<typeof useAppOverlays>
 type HookResult = { current: OverlayReturn }
@@ -30,6 +30,7 @@ function openFor(result: HookResult) {
     git: result.current.gitPanelOpenFor,
     tasks: result.current.tasksPanelOpenFor,
     worktree: result.current.worktreeOpenFor,
+    search: result.current.searchOpenFor,
   }
 }
 
@@ -42,6 +43,7 @@ describe('useAppOverlays — PanelOverlay union', () => {
     expect(result.current.gitPanelOpenFor).toBeNull()
     expect(result.current.tasksPanelOpenFor).toBeNull()
     expect(result.current.worktreeOpenFor).toBeNull()
+    expect(result.current.searchOpenFor).toBeNull()
   })
 
   it.each(ALL_KINDS)(

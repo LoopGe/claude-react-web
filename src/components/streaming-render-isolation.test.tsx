@@ -210,6 +210,8 @@ describe('live-turn streaming re-renders only the leaves', () => {
             onRequestResumeForPanel={noop}
             onOpenSettingsTab={noop}
             onShowHelp={noop}
+            onOpenSearch={noop}
+            onCloseSearch={noop}
             onClearSession={noop}
             onHandoffSession={noop}
             focused
@@ -399,6 +401,8 @@ describe('live-turn streaming re-renders only the leaves', () => {
           onRequestResumeForPanel={noop}
           onOpenSettingsTab={noop}
           onShowHelp={noop}
+          onOpenSearch={noop}
+          onCloseSearch={noop}
           onClearSession={noop}
           onHandoffSession={noop}
           focused
@@ -438,6 +442,8 @@ describe('live-turn streaming re-renders only the leaves', () => {
           onRequestResumeForPanel={noop}
           onOpenSettingsTab={noop}
           onShowHelp={noop}
+          onOpenSearch={noop}
+          onCloseSearch={noop}
           onClearSession={noop}
           onHandoffSession={noop}
           focused

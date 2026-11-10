@@ -152,6 +152,7 @@ const LOAD_ORDER = [
   'git-panel.css',
   'turn-changes.css',
   'tasks-panel.css',
+  'search-panel.css',
   'usage-panel.css',
   'uploads-manager.css',
   'update-dialog.css',

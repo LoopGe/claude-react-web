@@ -1,0 +1,44 @@
+/* Session search panel — body-only in-panel overlay, same chrome as
+   GitPanel/TasksPanel. The child <aside className="search-panel"> IS the card
+   (Overlay renderCard={false}); the shared reading-column padding lives in
+   overlays.css's grouped backdrop rule. */
+
+.search-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 65%, transparent);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  z-index: 5;
+}
+.search-overlay[data-state="open"] {
+  animation: fade-in var(--motion-duration-base) var(--motion-ease-standard) both;
+}
+.search-overlay[data-state="closing"] {
+  pointer-events: none;
+  animation: overlay-backdrop-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+}
+.search-overlay > .search-panel {
+  width: 100%;
+  max-width: var(--chat-reading-max-width);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--overlay-shadow);
+}
+.search-overlay[data-state="open"] > .search-panel {
+  animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
+}
+.search-overlay[data-state="closing"] > .search-panel {
+  animation: overlay-panel-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+}
+.search-overlay > .search-panel:focus {
+  outline: none;
+}

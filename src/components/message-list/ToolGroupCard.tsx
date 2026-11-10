@@ -563,6 +563,7 @@ function propsEqual(a: ToolGroupCardProps, b: ToolGroupCardProps): boolean {
     a.searchQuery === b.searchQuery &&
     a.activeMemberItemIndex === b.activeMemberItemIndex &&
     a.activeMatchInItem === b.activeMatchInItem &&
+    a.revealMemberItemIndex === b.revealMemberItemIndex &&
     a.subagentStatuses === b.subagentStatuses &&
     a.workflowStatuses === b.workflowStatuses &&
     sameItems(a.members, b.members) &&

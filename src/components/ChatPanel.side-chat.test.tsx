@@ -136,6 +136,8 @@ const basePanelProps = {
   onCloseGitPanel: noop,
   onOpenTasksPanel: noop,
   onCloseTasksPanel: noop,
+  onOpenSearch: noop,
+  onCloseSearch: noop,
   onOpenWorktree: noop,
   onCloseWorktree: noop,
   snippets: { snippets: [], add: noop, update: noop, remove: noop, reorder: noop } as never,

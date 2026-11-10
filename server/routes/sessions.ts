@@ -383,6 +383,7 @@ export function buildSessionRouter(
     getWindow: (id, before, limit) => sm.getTranscriptWindow(id, before, limit),
     getAfter: (id, afterSeq, limit) => sm.getTranscriptWindowAfter(id, afterSeq, limit),
     isDegraded: (id) => sm.isTranscriptDegraded(id),
+    getTombstoneEpoch: (id) => sm.transcriptTombstoneEpoch(id),
   })
 
   // List sessions (snapshot only — for push-based updates the frontend

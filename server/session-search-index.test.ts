@@ -66,7 +66,16 @@ function makeDeps(fixtures: Record<string, FixtureMessage[]>) {
     }
   })
   const isDegraded = vi.fn(async () => false)
-  return { getWindow, getAfter, isDegraded, setGeneration: (g: number) => { generation = g } }
+  let tombstoneEpoch = 0
+  const getTombstoneEpoch = vi.fn(async () => tombstoneEpoch)
+  return {
+    getWindow,
+    getAfter,
+    isDegraded,
+    getTombstoneEpoch,
+    setGeneration: (g: number) => { generation = g },
+    setTombstoneEpoch: (e: number) => { tombstoneEpoch = e },
+  }
 }
 
 function fixture(): Record<string, FixtureMessage[]> {
@@ -128,11 +137,11 @@ describe('createSessionSearchIndex', () => {
     expect(res.hits.find((h) => h.messageSeq === 8)?.turnNo).toBe(3)
   })
 
-  it('creates a 会话开头 group when the store has no preceding prompt', async () => {
+  it('creates a Session start group when the store has no preceding prompt', async () => {
     const deps = makeDeps(fixture())
     const index = createSessionSearchIndex(deps)
     const res = await index.search('s9', 'search', 100)
-    expect(res.hits[0]).toMatchObject({ turnNo: 1, turnPrompt: '（会话开头）' })
+    expect(res.hits[0]).toMatchObject({ turnNo: 1, turnPrompt: 'Session start' })
   })
 
   it('caps at limit and reports totalHits/truncated', async () => {
@@ -185,5 +194,34 @@ describe('createSessionSearchIndex', () => {
     expect(deps.getWindow).toHaveBeenCalled()
     expect(res.hits.map((h) => h.messageSeq)).toEqual([0])
     expect(res.hits[0].turnPrompt).toBe('fresh search')
+  })
+
+  it('rebuilds when an eviction bumps the tombstone epoch', async () => {
+    const fixtures = fixture()
+    const deps = makeDeps(fixtures)
+    const index = createSessionSearchIndex(deps)
+    await index.search('s1', 'search', 100)
+
+    fixtures.s1 = fixtures.s1.filter((m) => m.uuid !== 'a1')
+    deps.setTombstoneEpoch(1)
+    deps.getWindow.mockClear()
+    const res = await index.search('s1', 'search', 100)
+
+    expect(deps.getWindow).toHaveBeenCalled()
+    expect(res.hits.some((h) => h.messageUuid === 'a1')).toBe(false)
+  })
+
+  it('serializes concurrent searches without duplicating hits', async () => {
+    const deps = makeDeps(fixture())
+    const index = createSessionSearchIndex(deps)
+
+    const [a, b] = await Promise.all([
+      index.search('s1', 'search', 100),
+      index.search('s1', 'search', 100),
+    ])
+
+    expect(a.totalHits).toBe(3)
+    expect(b.totalHits).toBe(3)
+    expect(deps.getWindow).toHaveBeenCalledTimes(1)
   })
 })

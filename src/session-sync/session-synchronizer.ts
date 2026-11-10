@@ -43,6 +43,9 @@ export interface TranscriptPagingSnapshot {
   anchored: boolean
   /** Live message frames received while anchored, waiting behind the jump. */
   newerCount: number
+  /** The anchored page reported newer messages above it (the count is not
+   *  known until a live frame arrives, but the user still needs the way back). */
+  hasNewer: boolean
 }
 
 /** The handler callbacks the host (useSessionSynchronizer) supplies —
@@ -129,7 +132,7 @@ export class SessionSynchronizer {
   private storeUnsub: (() => void) | null = null
 
   // Paging snapshot (owned here, NOT in the store reducer).
-  private paging: TranscriptPagingSnapshot = { loadingOlder: false, olderError: null, anchored: false, newerCount: 0 }
+  private paging: TranscriptPagingSnapshot = { loadingOlder: false, olderError: null, anchored: false, newerCount: 0, hasNewer: false }
   private pagingListeners = new Set<() => void>()
 
   constructor(options: {
@@ -169,7 +172,7 @@ export class SessionSynchronizer {
     // Reset the paging snapshot for the new run. The setPaging call fires a
     // notification ONLY if a value actually changed (e.g. an olderError from
     // the previous run), so a clean start is silent.
-    this.setPaging({ loadingOlder: false, olderError: null, anchored: run.anchoredSeq != null, newerCount: 0 })
+    this.setPaging({ loadingOlder: false, olderError: null, anchored: run.anchoredSeq != null, newerCount: 0, hasNewer: false })
 
     const { hub } = this
 
@@ -334,7 +337,7 @@ export class SessionSynchronizer {
       tombstones: page.tombstones,
       hasMore: page.hasMore,
     })
-    this.setPaging({ ...this.paging, anchored, newerCount: 0 })
+    this.setPaging({ ...this.paging, anchored, newerCount: 0, hasNewer: anchored ? (page.hasNewer ?? false) : false })
   }
 
   // ── Frame handling ───────────────────────────────────────────────
@@ -556,7 +559,11 @@ export class SessionSynchronizer {
           // the REST page over that range is fetched here. While anchored,
           // the parked frame is exactly the "new messages" signal instead.
           if (run.anchoredSeq != null) {
-            run.newerCount += 1
+            // A result frame still has to settle the turn (clear liveTurn /
+            // activePhase / placeholders) even though its seq is parked. The
+            // ordered-log apply path is idempotent for the later head re-fetch.
+            if (message.type === 'result') store.dispatch({ type: 'MESSAGE', message })
+            else run.newerCount += 1
             this.setPaging({ ...this.paging, anchored: true, newerCount: run.newerCount })
           } else if (store.getSnapshot().hole) {
             void this.fillGap(run)
@@ -840,7 +847,8 @@ export class SessionSynchronizer {
       prev.loadingOlder === next.loadingOlder &&
       prev.olderError === next.olderError &&
       prev.anchored === next.anchored &&
-      prev.newerCount === next.newerCount
+      prev.newerCount === next.newerCount &&
+      prev.hasNewer === next.hasNewer
     ) {
       return
     }

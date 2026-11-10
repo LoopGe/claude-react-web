@@ -58,19 +58,24 @@ export const OlderHistoryFloat = memo(function OlderHistoryFloat({
  *  live messages are waiting. Clicking returns to the newest page. */
 export const NewerHistoryFloat = memo(function NewerHistoryFloat({
   count,
+  hasNewer = false,
   onReturn,
 }: {
   count: number
+  /** The anchored page reported content above it even before a live frame. */
+  hasNewer?: boolean
   onReturn: () => void
 }) {
-  if (count <= 0) return null
+  if (count <= 0 && !hasNewer) return null
   return (
     <button
       type="button"
       className="chat-newer-float"
       onClick={() => { void onReturn() }}
     >
-      {count} 条新消息 · 回到最新
+      {count > 0
+        ? `${count} new message${count === 1 ? '' : 's'} · Back to latest`
+        : 'New messages · Back to latest'}
     </button>
   )
 })

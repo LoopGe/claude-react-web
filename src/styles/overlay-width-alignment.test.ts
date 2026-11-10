@@ -22,11 +22,12 @@
 import { describe, expect, it } from 'vitest'
 import { parseBlocks, readCss, standaloneRuleBodies } from './contrast-test-utils'
 
-const BACKDROPS = ['.git-overlay', '.tasks-overlay'] as const
+const BACKDROPS = ['.git-overlay', '.tasks-overlay', '.search-overlay'] as const
 
 const CARDS = [
   { selector: '.git-overlay > .git-panel', file: 'git-panel.css' },
   { selector: '.tasks-overlay > .tasks-panel', file: 'tasks-panel.css' },
+  { selector: '.search-overlay > .search-panel', file: 'search-panel.css' },
   { selector: '.turn-review', file: 'turn-changes.css' },
 ] as const
 

@@ -150,7 +150,7 @@
    `.panel-overlay` is NOT part of this group: its consumers are palette-style
    pickers (InputHistoryPanel, ResumeSessionDialog), which keep the narrow
    560px CommandPalette width instead of a reading column. */
-.git-overlay, .tasks-overlay {
+.git-overlay, .tasks-overlay, .search-overlay {
   padding-block: var(--space-4);
   padding-inline: var(--chat-reading-inset);
 }
@@ -1160,42 +1160,65 @@ mark.search-hl.search-hl-active {
   padding-top: var(--space-3);
 }
 
-/* ── Session search dialog ───────────────────────────────────────── */
-/* Full-history search (variant A). Same fixed palette backdrop; the card is
-   wider and owns its grouped result list. */
 
-.palette-backdrop > .session-search-dialog {
-  width: min(820px, calc(100vw - 40px));
-  max-height: min(74vh, calc(100dvh - 200px));
+/* ── Session search panel ────────────────────────────────────────── */
+/* Body-only in-panel overlay, same chrome as GitPanel/TasksPanel. The child
+   <aside className="search-panel"> IS the card (renderCard={false}). */
+
+
+.search-panel-header {
   display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--modal-shadow);
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
-.palette-backdrop[data-state="open"] > .session-search-dialog {
-  animation: overlay-panel-in var(--motion-duration-base) var(--motion-ease-enter) both;
+.search-panel-title {
+  font-weight: 600;
 }
-.palette-backdrop[data-state="closing"] > .session-search-dialog {
-  animation: overlay-panel-out var(--motion-duration-fast) var(--motion-ease-exit) both;
+.search-panel-meta {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.search-panel-meta b {
+  color: var(--fg);
+  font-weight: 600;
+}
+.search-panel-spacer {
+  flex: 1;
+}
+.search-panel-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.search-panel-icon-btn:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
 }
 
-.session-search-head {
-  padding: var(--space-3-5) var(--space-4) var(--space-2);
-  border-bottom: 1px solid var(--border);
-}
-.session-search-row-top {
+.search-panel-input-row {
   display: flex;
   align-items: center;
   gap: var(--space-2-5);
+  padding: var(--space-2-5) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
-.session-search-icon {
+.search-panel-icon {
   display: inline-flex;
   color: var(--fg-muted);
 }
-.session-search-input {
+.search-panel-input {
   flex: 1;
   min-width: 0;
   border: 0;
@@ -1204,10 +1227,15 @@ mark.search-hl.search-hl-active {
   color: var(--fg);
   font-size: var(--fs-md);
 }
-.session-search-input::placeholder {
+.search-panel-input::placeholder {
   color: var(--fg-muted);
 }
-.session-search-scope {
+.search-panel-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+.search-panel-scope {
   flex-shrink: 0;
   padding: 3px 8px;
   border-radius: var(--radius-pill);
@@ -1217,45 +1245,12 @@ mark.search-hl.search-hl-active {
   font-size: var(--fs-xs);
   white-space: nowrap;
 }
-.session-search-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-}
-.session-search-meta b {
-  color: var(--fg);
-  font-weight: 600;
-}
-.session-search-meta-spacer {
-  margin-left: auto;
-}
-.session-search-keys {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  white-space: nowrap;
-}
-.session-search-key {
-  display: inline-block;
-  min-width: 16px;
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-bottom-width: 2px;
-  border-radius: var(--radius-xs);
-  background: var(--bg-elev-2);
-  color: var(--fg);
-  text-align: center;
-  font-size: var(--fs-xs);
-}
-.session-search-loading {
+.search-panel-loading {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
-.session-search-spinner {
+.search-panel-spinner {
   width: 11px;
   height: 11px;
   border-radius: var(--radius-circle);
@@ -1264,16 +1259,16 @@ mark.search-hl.search-hl-active {
   animation: spin .7s linear infinite;
 }
 
-.session-search-list {
+.search-panel-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-1-5) var(--space-1-5) var(--space-3);
 }
-.session-search-group {
+.search-panel-group {
   margin-bottom: var(--space-1);
 }
-.session-search-group-head {
+.search-panel-group-head {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
@@ -1281,17 +1276,17 @@ mark.search-hl.search-hl-active {
   color: var(--fg-muted);
   font-size: var(--fs-xs);
 }
-.session-search-turn-no {
+.search-panel-turn-no {
   color: var(--accent-text);
   font-weight: 650;
   white-space: nowrap;
 }
-.session-search-turn-prompt {
+.search-panel-turn-prompt {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.session-search-hit {
+.search-panel-hit {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: var(--space-2);
@@ -1305,12 +1300,12 @@ mark.search-hl.search-hl-active {
   text-align: left;
   cursor: pointer;
 }
-.session-search-hit.active,
-.session-search-hit:hover {
+.search-panel-hit.active,
+.search-panel-hit:hover {
   background: var(--bg-elev-2);
   border-color: var(--border);
 }
-.session-search-role {
+.search-panel-role {
   margin-top: 1px;
   padding: 1px 6px;
   border-radius: var(--radius-pill);
@@ -1320,15 +1315,15 @@ mark.search-hl.search-hl-active {
   color: var(--accent-text);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
-.session-search-role.user {
+.search-panel-role.user {
   color: var(--fg);
   background: var(--bg-elev-2);
 }
-.session-search-role.tool_result {
+.search-panel-role.tool_result {
   color: var(--warn-text);
   background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
-.session-search-snippet {
+.search-panel-snippet {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1336,33 +1331,46 @@ mark.search-hl.search-hl-active {
   color: var(--fg);
   font-size: var(--fs-base);
 }
-.session-search-time {
+.search-panel-time {
   color: var(--fg-muted);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.session-search-foot {
+.search-panel-footer {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-1-5);
   padding: var(--space-2) var(--space-4);
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
   font-size: var(--fs-xs);
+  flex-shrink: 0;
 }
-.session-search-empty {
+.search-panel-key {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-elev-2);
+  color: var(--fg);
+  text-align: center;
+  font-size: var(--fs-xs);
+}
+.search-panel-empty {
   padding: var(--space-6) var(--space-4);
   text-align: center;
   color: var(--fg-muted);
   font-size: var(--fs-base);
 }
-.session-search-empty b {
+.search-panel-empty b {
   display: block;
   margin-bottom: var(--space-1);
   color: var(--fg);
 }
-.session-search-retry {
+.search-panel-retry {
   display: block;
   margin: var(--space-3) auto 0;
   padding: var(--space-1-5) var(--space-3);
@@ -1371,10 +1379,4 @@ mark.search-hl.search-hl-active {
   background: var(--bg-elev-2);
   color: var(--fg);
   cursor: pointer;
-}
-
-.session-search-input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: var(--radius-xs);
 }

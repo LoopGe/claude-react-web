@@ -5,8 +5,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PluginContributionSlot } from '../app-plugins/PluginContributionSlot'
 import { Chat } from './Chat'
-import { SessionSearchDialog } from './SessionSearchDialog'
-import type { RevealTarget } from './message-list/reveal'
 import { SessionBody, errorCardState } from './SessionErrorCard'
 import { DirectoryPicker } from './DirectoryPicker'
 import { useRecentCwds } from '../hooks/useRecentItems'
@@ -40,7 +38,7 @@ import { ModelPicker } from './ModelPicker'
 import { EffortSlider } from './EffortSlider'
 import { basenameOf, initialOf } from '../utils/paths'
 import { ProjectPopover } from './ProjectPopover'
-import { IconCheck, IconSparkles, IconLoader, IconGauge, IconBrain, IconLayers, IconEyeOff, IconMask, IconSearch } from './icons/ToolIcons'
+import { IconCheck, IconSparkles, IconLoader, IconGauge, IconBrain, IconLayers, IconEyeOff, IconMask } from './icons/ToolIcons'
 import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { PermissionModeIcon, permissionModeLabel, permissionModeShortLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingDisplay, ThinkingSetting } from '../types'
@@ -237,6 +235,11 @@ export interface ChatPanelProps {
   tasksPanelOpen?: boolean
   onOpenTasksPanel: (sessionId: string) => void
   onCloseTasksPanel: () => void
+  /** When true, render the Search overlay on top of this panel. Mutually
+   *  exclusive with the other panel overlays (parent App enforces). */
+  searchOpen?: boolean
+  onOpenSearch: (sessionId: string) => void
+  onCloseSearch: () => void
   /** When true, render the Worktree-changes overlay on top of this panel.
    *  Mutually exclusive with `settingsOpen` / `gitPanelOpen` /
    *  `tasksPanelOpen` (parent App enforces via the same shared dispatch). */
@@ -329,6 +332,9 @@ export const ChatPanel = memo(function ChatPanel({
   tasksPanelOpen,
   onOpenTasksPanel,
   onCloseTasksPanel,
+  searchOpen,
+  onOpenSearch,
+  onCloseSearch,
   worktreeOpen,
   onOpenWorktree,
   onCloseWorktree,
@@ -349,30 +355,6 @@ export const ChatPanel = memo(function ChatPanel({
   // (the panel stays a drop target — harmless on touch).
   const isMobile = useIsMobile()
   const diagnostics = useDiagnostics(session.id, errorCardState(session) !== null)
-  // Session search dialog + jump target. The dialog lives at panel level so
-  // Ctrl+F and the header button share one instance; selecting a hit closes
-  // it and hands the target to <Chat>, which anchors + flashes.
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [revealTarget, setRevealTarget] = useState<RevealTarget | null>(null)
-  const revealNonceRef = useRef(0)
-  const openSearch = useCallback((query = '') => {
-    setSearchQuery(query.trim())
-    setSearchOpen(true)
-  }, [])
-  useEffect(() => {
-    if (!focused) return
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !e.shiftKey) {
-        const target = e.target as HTMLElement
-        if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return
-        e.preventDefault()
-        openSearch()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [focused, openSearch])
   // New-session project picker (the error card's relocation affordance):
   // recents are the same localStorage MRU the new-session dialog maintains,
   // threaded through the shared `useRecentCwds` adapter so every call site
@@ -1036,17 +1018,6 @@ export const ChatPanel = memo(function ChatPanel({
           <span className="chat-panel-title">{sessionTitleOrFallback(session)}</span>
         </HoverHint>
         <div className="chat-panel-meta">
-          <HoverHint label="Search session history (Ctrl+F)" side="bottom" align="end">
-            <button
-              type="button"
-              className="chat-panel-search-btn"
-              aria-label="搜索会话历史"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); openSearch() }}
-            >
-              <IconSearch size={13} aria-hidden />
-            </button>
-          </HoverHint>
           <HoverHint
             label={
               modelSwitchLabel !== null
@@ -1357,8 +1328,9 @@ export const ChatPanel = memo(function ChatPanel({
             onShowHelp={onShowHelp}
             settingsTabRequest={settingsTabRequest}
             messageJumpTarget={messageJumpTarget}
-            revealTarget={revealTarget}
-            onOpenSearch={openSearch}
+            searchOpen={searchOpen}
+            onOpenSearch={onOpenSearch}
+            onCloseSearch={onCloseSearch}
             settingsOpen={settingsOpen}
             onCloseSettings={onCloseSettings}
             gitPanelOpen={gitPanelOpen}
@@ -1430,22 +1402,6 @@ export const ChatPanel = memo(function ChatPanel({
           onCollapse={onToggleCollapseSideChat}
         />
       )}
-      <SessionSearchDialog
-        open={searchOpen}
-        sessionId={session.id}
-        initialQuery={searchQuery}
-        onClose={() => setSearchOpen(false)}
-        onSelect={(hit) => {
-          setSearchOpen(false)
-          revealNonceRef.current += 1
-          setRevealTarget({
-            nonce: revealNonceRef.current,
-            seq: hit.seq,
-            ...(hit.messageUuid ? { messageUuid: hit.messageUuid } : {}),
-            ...(hit.ownerToolUseId ? { ownerToolUseId: hit.ownerToolUseId } : {}),
-          })
-        }}
-      />
     </section>
   )
 })

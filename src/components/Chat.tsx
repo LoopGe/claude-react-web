@@ -85,6 +85,7 @@ import { useRecapSettle } from '../hooks/useRecapSettle'
 import { useScheduledSends } from '../hooks/useScheduledSends'
 import { useTaskList } from '../hooks/useTaskList'
 import { NewerHistoryFloat } from './message-list/transcript-chrome'
+import { SessionSearchPanel } from './SessionSearchPanel'
 import type { RevealTarget } from './message-list/reveal'
 import { useSessionTaskCounts, useSessionField, useSessionSelector, selectHasActivePhase, selectHasTranscriptBackground, selectHasLiveSyncSubagent } from '../session-store/selectors'
 import { computeWaiting, computeTurnActive, autoTitleDescription, isHumanUserMessage, countQueuedUserTurns } from '../session-store/normalize'
@@ -266,10 +267,11 @@ interface Props {
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
   messageJumpTarget?: MessageJumpTarget | null
-  /** Search-jump target from ChatPanel (dialog selection). */
-  revealTarget?: RevealTarget | null
-  /** Open the session search dialog with an optional seeded query. */
-  onOpenSearch?: (query: string) => void
+  /** Session-level search overlay state (owned by App, like the Git/Tasks
+   *  panel overlays). */
+  searchOpen?: boolean
+  onOpenSearch: (sessionId: string) => void
+  onCloseSearch: () => void
   /** When true, render the Settings overlay on top of this chat panel. */
   settingsOpen?: boolean
   onCloseSettings?: () => void
@@ -468,7 +470,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, handoffing, settingsTabRequest, messageJumpTarget, revealTarget, onOpenSearch, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, handoffing, settingsTabRequest, messageJumpTarget, searchOpen, onOpenSearch, onCloseSearch, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -1310,8 +1312,30 @@ export const Chat = memo(function Chat({
   // The dialog/palette only produce a target; the transcript owns the
   // anchor + flash. `paging.anchorAt` re-centers the seq window, then the
   // target is handed to MessageList, which seeks and flashes the row.
+  const [searchSeed, setSearchSeed] = useState('')
+  const openSearch = useCallback((query = '') => {
+    const seed = query.trim()
+    // A multi-line or oversized selection is not a useful query.
+    setSearchSeed(seed && !seed.includes('\n') && seed.length <= 200 ? seed : '')
+    onOpenSearch(session.id)
+  }, [onOpenSearch, session.id])
+  useEffect(() => {
+    if (!focused) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !e.shiftKey) {
+        const target = e.target as HTMLElement
+        if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return
+        e.preventDefault()
+        openSearch()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [focused, openSearch])
+
   const revealNonceRef = useRef(0)
   const [revealFlash, setRevealFlash] = useState<RevealTarget | null>(null)
+  const revealTimerRef = useRef<number | null>(null)
   const pagingAnchorAt = paging.anchorAt
   const revealMessage = useCallback(async (target: { seq?: number; messageUuid?: string; ownerToolUseId?: string }) => {
     const anchor = target.seq != null
@@ -1327,6 +1351,8 @@ export const Chat = memo(function Chat({
       ...(target.messageUuid != null ? { messageUuid: target.messageUuid } : {}),
       ...(target.ownerToolUseId != null ? { ownerToolUseId: target.ownerToolUseId } : {}),
     })
+    if (revealTimerRef.current != null) window.clearTimeout(revealTimerRef.current)
+    revealTimerRef.current = window.setTimeout(() => setRevealFlash(null), 2000)
   }, [pagingAnchorAt])
 
   const handledJumpNonceRef = useRef<number | null>(null)
@@ -1337,12 +1363,11 @@ export const Chat = memo(function Chat({
     void revealMessage({ messageUuid: messageJumpTarget.messageUuid })
   }, [messageJumpTarget, session.id, revealMessage])
 
-  // Dialog selection (ChatPanel → Chat) takes the same path. `revealTarget`
-  // carries a nonce, so re-rendering the same object does not re-anchor.
-  useEffect(() => {
-    if (!revealTarget) return
-    void revealMessage(revealTarget)
-  }, [revealTarget, revealMessage])
+  // Dialog selection (session-level: the dialog is rendered by this Chat)
+  // takes the same path as a palette hit.
+  useEffect(() => () => {
+    if (revealTimerRef.current != null) window.clearTimeout(revealTimerRef.current)
+  }, [])
 
   // Session recap ?phase-driven auto-generation. The hook reads
   // session.phase + session.lastTurnAt + session.recap (all kept current
@@ -1987,7 +2012,7 @@ export const Chat = memo(function Chat({
             {
               label: 'Search messages',
               icon: <IconSearch size={14} />,
-              onClick: () => onOpenSearch?.(exportMenuPos.selection),
+              onClick: () => openSearch(exportMenuPos.selection),
             },
             { label: '' },
             {
@@ -2652,6 +2677,30 @@ export const Chat = memo(function Chat({
         </Suspense>
       </Overlay>
 
+      <Overlay
+        variant="search"
+        ariaLabel="Search session history"
+        open={searchOpen}
+        onClose={() => onCloseSearch()}
+        renderCard={false}
+        trapRefTarget="backdrop"
+        focusEscapeSelector=".chat-panel"
+      >
+        <SessionSearchPanel
+          sessionId={session.id}
+          initialQuery={searchSeed}
+          onClose={() => onCloseSearch()}
+          onSelect={(hit) => {
+            onCloseSearch()
+            void revealMessage({
+              seq: hit.seq,
+              ...(hit.messageUuid ? { messageUuid: hit.messageUuid } : {}),
+              ...(hit.ownerToolUseId ? { ownerToolUseId: hit.ownerToolUseId } : {}),
+            })
+          }}
+        />
+      </Overlay>
+
       {/* In-panel resume picker (variant="panel"). Column-scoped overlay
           mirroring the Settings/Git overlays: only covers this chat panel,
           not the whole app. The chosen session replaces THIS panel's slot
@@ -2746,8 +2795,8 @@ export const Chat = memo(function Chat({
         />
       </div>
 
-      {paging.anchored && paging.newerCount > 0 && (
-        <NewerHistoryFloat count={paging.newerCount} onReturn={paging.returnToHead} />
+      {(paging.anchored && (paging.newerCount > 0 || paging.hasNewer)) && (
+        <NewerHistoryFloat count={paging.newerCount} hasNewer={paging.hasNewer} onReturn={paging.returnToHead} />
       )}
 
       {subagentStack.length > 0 && (

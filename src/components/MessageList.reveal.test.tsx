@@ -6,7 +6,7 @@ describe('NewerHistoryFloat', () => {
   it('shows the waiting count and returns to head on click', () => {
     const onReturn = vi.fn()
     render(<NewerHistoryFloat count={3} onReturn={onReturn} />)
-    fireEvent.click(screen.getByRole('button', { name: /3 条新消息/ }))
+    fireEvent.click(screen.getByRole('button', { name: /3 new messages/ }))
     expect(onReturn).toHaveBeenCalledTimes(1)
   })
 

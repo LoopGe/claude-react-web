@@ -65,6 +65,13 @@ export class TranscriptStore {
   private nextSeq = 0
   private messages = new Map<number, InternalEntry>()
   private uuidToSeq = new Map<string, number>()
+  /** Bumped whenever a message is newly tombstoned. Search caches use it to
+   *  invalidate an index whose rows may still describe an evicted message. */
+  private tombsEpoch = 0
+
+  get tombstoneEpoch(): number {
+    return this.tombsEpoch
+  }
 
   constructor(sessionId: string) {
     this.sessionId = sessionId
@@ -134,6 +141,7 @@ export class TranscriptStore {
       entry.evicted = true
       out.push(seq)
     }
+    if (out.length > 0) this.tombsEpoch++
     return out
   }
 

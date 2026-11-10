@@ -422,7 +422,7 @@ describe('SessionSynchronizer paging core', () => {
     // start() creates run B and resets paging to {false, null}.
     sync.start()
     await waitForTail(sid)
-    expect(sync.getPagingSnapshot()).toEqual({ loadingOlder: false, olderError: null, anchored: false, newerCount: 0 })
+    expect(sync.getPagingSnapshot()).toEqual({ loadingOlder: false, olderError: null, anchored: false, newerCount: 0, hasNewer: false })
 
     // Run B starts its own loadOlder — park it too. This sets
     // loadingOlder:true on run B.
@@ -498,7 +498,7 @@ describe('SessionSynchronizer paging core', () => {
     sync.start()
     await waitForTail(sid)
     expect(calls).toBe(1)
-    expect(sync.getPagingSnapshot()).toEqual({ loadingOlder: false, olderError: null, anchored: false, newerCount: 0 })
+    expect(sync.getPagingSnapshot()).toEqual({ loadingOlder: false, olderError: null, anchored: false, newerCount: 0, hasNewer: false })
 
     unsub()
   })

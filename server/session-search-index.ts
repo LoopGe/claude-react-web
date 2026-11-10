@@ -31,6 +31,8 @@ export interface SessionSearchDeps {
     limit: number,
   ): Promise<{ generation: number; headSeq: number; totalCount: number; messages: SeqMessage[] }>
   isDegraded(id: string): Promise<boolean>
+  /** Bumped by transcript evictions; a change invalidates the cached rows. */
+  getTombstoneEpoch(id: string): Promise<number>
 }
 
 export interface SessionSearchIndex {
@@ -63,6 +65,7 @@ interface IndexState {
   generation: number
   headSeq: number
   lastIndexedSeq: number
+  tombstoneEpoch: number
 }
 
 interface LooseMessage {
@@ -124,11 +127,12 @@ function isRealUserPrompt(msg: LooseMessage): boolean {
 function emptyState(): IndexState {
   return {
     rows: [],
-    turn: { turnNo: 0, turnSeq: 0, turnPrompt: '（会话开头）' },
+    turn: { turnNo: 0, turnSeq: 0, turnPrompt: 'Session start' },
     toolUseSeq: new Map(),
     generation: 0,
     headSeq: 0,
     lastIndexedSeq: -1,
+    tombstoneEpoch: 0,
   }
 }
 
@@ -156,11 +160,11 @@ function consume(state: IndexState, messages: readonly TranscriptPageMessage[]):
       state.turn.turnNo += 1
       state.turn.turnSeq = entry.seq
       const promptText = extractMessagePlainText(msg as Parameters<typeof extractMessagePlainText>[0]) ?? ''
-      state.turn.turnPrompt = turnPromptOf(promptText) || '（会话开头）'
+      state.turn.turnPrompt = turnPromptOf(promptText) || 'Session start'
     } else if (state.turn.turnNo === 0) {
       state.turn.turnNo = 1
       state.turn.turnSeq = 0
-      state.turn.turnPrompt = '（会话开头）'
+      state.turn.turnPrompt = 'Session start'
     }
 
     let ownerToolUseId: string | undefined
@@ -219,11 +223,14 @@ async function buildFull(id: string, deps: SessionSearchDeps): Promise<IndexStat
   await consumeChunked(state, pages.reverse().flatMap((p) => p.messages))
   // Cover an all-tombstone tail: the watermark is a seq, not a message.
   state.lastIndexedSeq = Math.max(state.lastIndexedSeq, state.headSeq - 1)
+  state.tombstoneEpoch = await deps.getTombstoneEpoch(id)
   return state
 }
 
 /** Returns false when the generation moved and the caller must rebuild. */
 async function append(id: string, deps: SessionSearchDeps, state: IndexState): Promise<boolean> {
+  const tombstoneEpoch = await deps.getTombstoneEpoch(id)
+  if (tombstoneEpoch !== state.tombstoneEpoch) return false
   let after = state.lastIndexedSeq
   for (;;) {
     const page = await deps.getAfter(id, after, PAGE_SIZE)
@@ -232,6 +239,7 @@ async function append(id: string, deps: SessionSearchDeps, state: IndexState): P
     state.headSeq = page.headSeq
     if (page.messages.length === 0 || page.messages.length < PAGE_SIZE) {
       state.lastIndexedSeq = Math.max(state.lastIndexedSeq, page.headSeq - 1)
+      state.tombstoneEpoch = tombstoneEpoch
       return true
     }
     after = page.messages[page.messages.length - 1].seq
@@ -240,6 +248,25 @@ async function append(id: string, deps: SessionSearchDeps, state: IndexState): P
 
 export function createSessionSearchIndex(deps: SessionSearchDeps): SessionSearchIndex {
   const cache = new Map<string, IndexState>()
+  // Serialize searches per session: concurrent queries share one mutable
+  // IndexState, so without this two requests can consume the same getAfter
+  // page into the rows twice (duplicated hits, inflated totalHits).
+  const locks = new Map<string, Promise<unknown>>()
+
+  const withLock = async <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+    const previous = locks.get(id) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const tail = previous.then(() => gate)
+    locks.set(id, tail)
+    await previous
+    try {
+      return await fn()
+    } finally {
+      release()
+      if (locks.get(id) === tail) locks.delete(id)
+    }
+  }
 
   const touch = (id: string, state: IndexState): void => {
     cache.delete(id)
@@ -251,8 +278,7 @@ export function createSessionSearchIndex(deps: SessionSearchDeps): SessionSearch
     }
   }
 
-  return {
-    async search(id, query, limit) {
+  const runSearch = async (id: string, query: string, limit: number): Promise<SessionSearchResponse> => {
       const q = query.trim()
       if (!q) {
         return { query: '', hits: [], totalHits: 0, truncated: false, indexStatus: 'ok' }
@@ -293,6 +319,9 @@ export function createSessionSearchIndex(deps: SessionSearchDeps): SessionSearch
         truncated: totalHits > hits.length,
         indexStatus: (await deps.isDegraded(id)) ? 'degraded' : 'ok',
       }
-    },
+    }
+
+  return {
+    search: (id, query, limit) => withLock(id, () => runSearch(id, query, limit)),
   }
 }

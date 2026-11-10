@@ -32,6 +32,7 @@ function makeApp(opts: { degraded?: boolean } = {}) {
       messages: store.after(afterSeq, limit),
     })),
     isTranscriptDegraded: vi.fn(async () => degraded),
+    transcriptTombstoneEpoch: vi.fn(async () => store.tombstoneEpoch),
     setDegraded: (value: boolean) => { degraded = value },
   }
 
@@ -90,5 +91,15 @@ describe('GET /sessions/:id/search', () => {
     const { app } = makeApp({ degraded: true })
     const body = await json(await app.request('/sessions/s1/search?q=search'))
     expect(body.indexStatus).toBe('degraded')
+  })
+
+  it('drops evicted hits on the next query', async () => {
+    const { app, store } = makeApp()
+    const first = await json(await app.request('/sessions/s1/search?q=search'))
+    expect(first.hits.some((h) => h.messageSeq === 1)).toBe(true)
+
+    store.evict(['a1'])
+    const second = await json(await app.request('/sessions/s1/search?q=search'))
+    expect(second.hits.some((h) => h.messageSeq === 1)).toBe(false)
   })
 })

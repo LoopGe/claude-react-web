@@ -5,7 +5,7 @@ import type { SlashCommand } from '../types'
 /** The four panel overlays that share one mutual-exclusion group: opening any
  *  one of them closes the rest. Modeled as a discriminated union so the type
  *  system makes the "two overlays open at once" state unrepresentable. */
-export type PanelOverlayKind = 'settings' | 'git' | 'tasks' | 'worktree'
+export type PanelOverlayKind = 'settings' | 'git' | 'tasks' | 'worktree' | 'search'
 
 /** The single source of truth for which panel overlay (if any) is open. `null`
  *  means no overlay is rendered. The `sessionId` identifies the chat panel the
@@ -62,6 +62,7 @@ export function useAppOverlays() {
   const tasksPanelOpenFor = panelOverlay?.kind === 'tasks' ? panelOverlay.sessionId : null
   const worktreeOpenFor =
     panelOverlay?.kind === 'worktree' ? panelOverlay.sessionId : null
+  const searchOpenFor = panelOverlay?.kind === 'search' ? panelOverlay.sessionId : null
 
   // ── Adapter handlers ───────────────────────────────────────────────
   // The existing open/close handler names App already destructures, kept as
@@ -91,6 +92,12 @@ export function useAppOverlays() {
     () => closePanelOverlay('worktree'),
     [closePanelOverlay],
   )
+  /** Session search joins the same mutual-exclusion group. */
+  const handleOpenSearch = useCallback(
+    (id: string) => openPanelOverlay('search', id),
+    [openPanelOverlay],
+  )
+  const handleCloseSearch = useCallback(() => closePanelOverlay('search'), [closePanelOverlay])
 
   const settingsTabNonceRef = useRef(0)
   /** Open the settings overlay AND emit a fresh `{sessionId, tab, nonce}`
@@ -128,8 +135,11 @@ export function useAppOverlays() {
     handleCloseTasksPanel,
     handleOpenTasksPanel,
     worktreeOpenFor,
+    searchOpenFor,
     handleOpenWorktree,
     handleCloseWorktree,
+    handleOpenSearch,
+    handleCloseSearch,
     helpOpen,
     setHelpOpen,
     helpCommands,
