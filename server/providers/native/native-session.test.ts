@@ -4,7 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync, writeFileSync } from 'node:fs'
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
+import type { NativeMcpConnections } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
@@ -57,6 +60,19 @@ function providerWithStreamer(scripts: CanonicalEvent[][], stateDir: string) {
     for (const ev of scripts.shift() ?? []) yield ev
   }
   return provider
+}
+
+/** A real in-process MCP server with one `echo` tool — the same fixture the
+ *  connection manager's own tests use, so the session test exercises the real
+ *  InMemoryTransport path rather than a mocked client. */
+function echoServer(name = 'echo-server'): McpServer {
+  const server = new McpServer({ name, version: '1.0.0' })
+  server.registerTool(
+    'echo',
+    { description: 'Echo the given text back.', inputSchema: { text: z.string() } },
+    async ({ text }) => ({ content: [{ type: 'text', text }] }),
+  )
+  return server
 }
 
 function userMsg(text: string) {
@@ -256,13 +272,110 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
-  it('capabilities declare interrupt and no MCP', async () => {
+  it('capabilities declare interrupt and MCP', async () => {
     const dir = await tempDir('native-session-')
     const provider = new NativeProvider({ stateDir: dir })
     expect(provider.name).toBe('native')
     expect(provider.capabilities.supportsInterrupt).toBe(true)
-    expect(provider.capabilities.supportsMcp).toBe(false)
+    expect(provider.capabilities.supportsMcp).toBe(true)
     expect(provider.capabilities.supportsFineGrainedPermissions).toBe(true)
+  })
+
+  it('offers discovered MCP tools to the model and routes their calls', async () => {
+    const dir = await tempDir('native-mcp-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ tools: Array<{ name: string }>; messages: unknown[] }> = []
+    const scripts: CanonicalEvent[][] = [
+      [
+        { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+        { kind: 'block_start', index: 0, block: { type: 'tool_use', id: 'm1', name: 'mcp__a__echo' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: '{"text":"hi from mcp"}' } },
+        { kind: 'block_end', index: 0 },
+        { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+      ],
+      textTurn('done'),
+    ]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: {
+      tools: Array<{ name: string }>
+      messages: unknown[]
+    }) {
+      // Snapshot the request: `req.messages` is the session's live history
+      // array, mutated by later rounds, so a captured reference would show the
+      // FINAL transcript instead of what this request actually sent.
+      requests.push({ tools: req.tools, messages: structuredClone(req.messages) })
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    let permissionCtx: { toolUseID?: string; mcpServer?: unknown } | undefined
+    const session = provider.createSession({
+      id: 'mcp',
+      cwd: dir,
+      mcpServers: { a: { type: 'sdk', instance: echoServer() } },
+      canUseTool: async (_toolName: unknown, input: unknown, ctx: unknown) => {
+        permissionCtx = ctx as { toolUseID?: string; mcpServer?: unknown }
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session.messages) frames.push(f as Frame)
+    })()
+
+    session.enqueueUserMessage(userMsg('use echo') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+
+    // The first API request advertises the builtins plus the discovered tool.
+    expect(requests[0].tools.map((t) => t.name)).toEqual([
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'mcp__a__echo',
+    ])
+    // The permission request carries the server OWNED BY the tool's FQN,
+    // resolved from discovery metadata (never parsed back out of the name).
+    expect(permissionCtx).toEqual({
+      signal: expect.anything(),
+      toolUseID: 'm1',
+      mcpServer: { name: 'a', source: 'sdk' },
+    })
+    // The second request carries the echo result as the tool_result.
+    const lastMessage = requests[1].messages.at(-1) as {
+      role: string
+      content: Array<{ type: string; tool_use_id: string; content: Array<{ text: string }>; is_error: boolean }>
+    }
+    expect(lastMessage.role).toBe('user')
+    expect(lastMessage.content).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'm1',
+        content: [{ type: 'text', text: 'hi from mcp' }],
+        is_error: false,
+      },
+    ])
+    // Status reads through to the connection manager (source = sdk entry).
+    const statuses = (await session.mcpServerStatus?.()) as Array<Record<string, unknown>>
+    expect(statuses).toHaveLength(1)
+    expect(statuses[0]).toMatchObject({ name: 'a', status: 'connected', source: 'sdk', scope: 'session' })
+    await session.destroy()
+  })
+
+  it('destroy closes every MCP connection exactly once', async () => {
+    const dir = await tempDir('native-mcp-close-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({
+      id: 'mcp-close',
+      cwd: dir,
+      mcpServers: { a: { type: 'sdk', instance: echoServer() } },
+    })
+    void (async () => {
+      for await (const _ of session.messages) { /* drain */ }
+    })()
+    const conns = (session as unknown as { mcp: NativeMcpConnections }).mcp
+    const closeAll = vi.spyOn(conns, 'closeAll')
+
+    await session.destroy()
+    // A second destroy is a no-op, so teardown never closes twice.
+    await session.destroy()
+
+    expect(closeAll).toHaveBeenCalledTimes(1)
   })
 
   it('persists a turn and resumes it with model history', async () => {

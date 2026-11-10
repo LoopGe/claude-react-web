@@ -31,6 +31,8 @@ import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './ses
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import type { NativeLogEvent, NativeTurnEndReason } from './session-log/format.js'
+import { mcpToolDefs } from './mcp/tools.js'
+import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
 
 const log = createLogger('native')
@@ -112,7 +114,12 @@ export interface NativeSessionOptions {
    *  creatable on an unconfigured machine (the failure surfaces as a loud
    *  turn error, not a create-time throw). */
   credentials: () => { baseUrl: string; authToken: string }
+  /** The builtin tools only. Discovered MCP tools are appended per turn by
+   *  `rebuildTools`. */
   tools: ToolDef[]
+  /** Per-session MCP connections (external servers + first-party in-process
+   *  ones). Absent in unit tests that drive the session without MCP. */
+  mcp?: NativeMcpConnections
   system: string
   /** Loose canUseTool from CreateSessionOptions — (toolName, input, {signal}) => PermissionResult. */
   canUseTool?: (...args: unknown[]) => Promise<unknown>
@@ -152,6 +159,15 @@ export class NativeSession implements ProviderSessionHandle {
   private turnAbort: AbortController | null = null
   /** Conversation state sent to the API on every turn (mutated in place by runTurn). */
   private readonly history: unknown[] = []
+  /** Builtins plus the MCP tools discovered as of the last rebuild. Replaced
+   *  (never mutated) so a mid-turn `setServers`/toggle only affects the NEXT
+   *  turn: the running turn holds the snapshot its `runTurn` started with. */
+  private tools: ToolDef[]
+  /** Model-facing tool name → owning server, for the permission request's
+   *  `mcpServer` field. Built from discovery metadata, never by parsing the
+   *  FQN (it may be truncated and hashed). */
+  private readonly mcpToolServers = new Map<string, { name: string; source: 'sdk' | 'dynamic' }>()
+  private readonly mcp: NativeMcpConnections | undefined
   private model: string
   /** Live permission mode: setPermissionMode keeps it current for the lifetime
    *  of the session — the spawn-time opts value is only the starting point, so
@@ -172,6 +188,8 @@ export class NativeSession implements ProviderSessionHandle {
     // opts must be bound before these: output's label and ctx carry the id.
     this.output = createPushable<AgentMessage>(`native-session[${opts.id}]`)
     this.ctx = defaultFrameContext(opts.id)
+    this.mcp = opts.mcp
+    this.tools = [...opts.tools]
     this.model = opts.model ?? DEFAULT_MODEL
     this.permissionMode = opts.permissionMode ?? 'default'
     // The mode switch owns the log, the model history, and the usage
@@ -356,9 +374,11 @@ export class NativeSession implements ProviderSessionHandle {
     if (!this.opts.canUseTool) {
       return { allowed: false, input, message: 'no permission handler registered for this session' }
     }
+    const mcpServer = this.mcpToolServers.get(toolName)
     const result = (await this.opts.canUseTool(toolName, input, {
       signal,
       toolUseID: toolUseId,
+      ...(mcpServer ? { mcpServer } : {}),
     })) as { behavior?: string; updatedInput?: Record<string, unknown>; message?: string }
     if (result?.behavior === 'allow') {
       return { allowed: true, input: result.updatedInput ?? input }
@@ -465,6 +485,29 @@ export class NativeSession implements ProviderSessionHandle {
     })
   }
 
+  /** Rebuild the tool list and the FQN → server map from the current
+   *  connection state. Runs before every turn and after every live MCP
+   *  mutation; `this.tools` is replaced (not mutated) so a running turn keeps
+   *  the snapshot it was handed. */
+  private rebuildTools(): void {
+    this.mcpToolServers.clear()
+    if (!this.mcp) {
+      this.tools = [...this.opts.tools]
+      return
+    }
+    const infos = this.mcp.tools()
+    this.tools = [...this.opts.tools, ...mcpToolDefs(this.mcp)]
+    const sdkServers = new Set(
+      this.mcp.statuses().filter((status) => status.source === 'sdk').map((status) => status.name),
+    )
+    for (const info of infos) {
+      this.mcpToolServers.set(info.fqn, {
+        name: info.server,
+        source: sdkServers.has(info.server) ? 'sdk' : 'dynamic',
+      })
+    }
+  }
+
   private async pumpLoop(): Promise<void> {
     while (!this._closed && this.input.length > 0) {
       const next = this.input.shift() as AgentUserMessage
@@ -495,10 +538,15 @@ export class NativeSession implements ProviderSessionHandle {
           message: persistedUserMessage(next.message),
         })
         await this.log.flush()
+        // Discovery is awaited per turn, not at spawn: a slow server never
+        // delays session creation, and a mid-turn replace/toggle only lands
+        // on the next turn (the turn below runs on this snapshot).
+        await this.mcp?.whenReady()
+        this.rebuildTools()
         const res = await runTurn(
           {
             stream: (req) => this.streamFor(req),
-            tools: this.opts.tools,
+            tools: [...this.tools],
             cwd: this.opts.cwd,
             requestPermission: this.requestPermission,
             emit: (frame) => {
@@ -713,6 +761,36 @@ export class NativeSession implements ProviderSessionHandle {
     return []
   }
 
+  // ── MCP control (optional ProviderSessionHandle members) ───────────────
+
+  async mcpServerStatus(): Promise<unknown> {
+    return this.mcp?.statuses() ?? []
+  }
+
+  /** Replace the dynamic MCP server set (Task 3 semantics: unchanged entries
+   *  are kept, changed/removed ones close, added ones connect). The next turn
+   *  sees the new tool list; a running turn keeps its snapshot. */
+  async setMcpServers(servers: Record<string, unknown>): Promise<unknown> {
+    if (!this.mcp) return { added: [], removed: [], errors: {} }
+    const result = await this.mcp.setServers(servers)
+    this.rebuildTools()
+    return result
+  }
+
+  async reconnectMcpServer(name: string): Promise<void> {
+    await this.mcp?.reconnect(name)
+    this.rebuildTools()
+  }
+
+  async toggleMcpServer(name: string, enabled: boolean): Promise<void> {
+    await this.mcp?.toggle(name, enabled)
+    this.rebuildTools()
+  }
+
+  async readMcpResource(serverName: string, uri: string): Promise<unknown> {
+    return this.mcp?.readResource(serverName, uri)
+  }
+
   abort(): void {
     this.sessionAbort.abort(new Error('aborted'))
   }
@@ -721,6 +799,9 @@ export class NativeSession implements ProviderSessionHandle {
     if (this._closed) return
     this._closed = true
     this.sessionAbort.abort(new Error('destroyed'))
+    // Abort first, then close: closeAll aborts every record synchronously, so
+    // a hung handshake / in-flight call cannot hold teardown open. Idempotent.
+    await this.mcp?.closeAll()
     this.output.end()
     await this.log.close()
   }

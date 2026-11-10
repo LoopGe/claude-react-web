@@ -4,11 +4,13 @@
 // and Anthropic streaming all run in this process (server/providers/native/*).
 // Registration lives in ../default-providers.ts alongside ClaudeProvider.
 
+import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { config, requireAuthToken } from '../../config.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle } from '../types.js'
 import type { LoopDeps } from './loop.js'
+import { NativeMcpConnections } from './mcp/connections.js'
 import { PromptSectionRegistry, IDENTITY_SECTION } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
 import { nativeHistoryCache } from './session-log/cache.js'
@@ -30,7 +32,7 @@ export class NativeProvider implements AgentProvider {
   readonly stateDir: string
   readonly capabilities: ProviderCapabilities = {
     supportsFineGrainedPermissions: true,
-    supportsMcp: false,
+    supportsMcp: true,
     supportsModelSwitch: true,
     supportsInterrupt: true,
     supportsResume: true,
@@ -57,8 +59,14 @@ export class NativeProvider implements AgentProvider {
    *  script between turns. Not part of the public contract. */
   _testStream?: LoopDeps['stream']
 
-  constructor(opts: { stateDir?: string } = {}) {
+  /** OAuth provider resolver for a remote MCP server (see
+   *  NativeMcpConnectionsOptions.authFor). Undefined when the host stores no
+   *  MCP credentials. */
+  private readonly authFor?: (name: string) => OAuthClientProvider | undefined
+
+  constructor(opts: { stateDir?: string; authFor?: (name: string) => OAuthClientProvider | undefined } = {}) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
+    this.authFor = opts.authFor
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
@@ -70,6 +78,11 @@ export class NativeProvider implements AgentProvider {
     }
     const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
     const system = systemPromptAppend ? `${registry.render()}\n\n${systemPromptAppend}` : registry.render()
+    // The manager has already resolved globals + inline configs + first-party
+    // `injectAll` results into `mcpServers`. Connections start here and are
+    // awaited per turn, so spawn never blocks on a slow server.
+    const mcp = new NativeMcpConnections({ authFor: this.authFor })
+    mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
     return new NativeSession({
       id: opts.id,
       cwd: opts.cwd ?? process.cwd(),
@@ -84,6 +97,7 @@ export class NativeProvider implements AgentProvider {
         authToken: opts.profile?.authToken ?? requireAuthToken(),
       }),
       tools: TOOLS,
+      mcp,
       system,
       canUseTool: opts.canUseTool,
       onUserMessageConsumed: opts.onUserMessageConsumed,
