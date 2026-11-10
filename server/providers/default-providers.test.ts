@@ -10,6 +10,23 @@ function nativeProvider(opts: Parameters<typeof createDefaultProviders>[0]): Nat
   return createDefaultProviders(opts).get('native') as NativeProvider
 }
 
+/** A real store on a temp dir with one OAuth-enabled remote server. */
+async function seededStore() {
+  const dir = await mkdtemp(join(tmpdir(), 'crw-default-providers-'))
+  const store = new McpConfigStore({ stateDir: dir })
+  await store.load()
+  store.upsert({
+    name: 'oauth-server',
+    type: 'http',
+    url: 'https://x',
+    oauth: { redirectUrl: 'http://127.0.0.1:9/cb' },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  })
+  await store.flush()
+  return { dir, store }
+}
+
 describe('createDefaultProviders native authFor wiring', () => {
   it('resolves an OAuth provider only for servers with stored oauth state', () => {
     const table: Record<string, unknown> = {
@@ -39,20 +56,8 @@ describe('createDefaultProviders native authFor wiring', () => {
 
 describe('createDefaultProviders native OAuth persistence', () => {
   it('persists tokens saved through the resolved provider', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'crw-default-providers-'))
+    const { dir, store } = await seededStore()
     try {
-      const store = new McpConfigStore({ stateDir: dir })
-      await store.load()
-      store.upsert({
-        name: 'oauth-server',
-        type: 'http',
-        url: 'https://x',
-        oauth: { redirectUrl: 'http://127.0.0.1:9/cb' },
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      })
-      await store.flush()
-
       const provider = nativeProvider({ mcpStore: store })
       provider.authFor?.('oauth-server')?.saveTokens({ access_token: 'tok', token_type: 'Bearer' })
 
@@ -63,10 +68,24 @@ describe('createDefaultProviders native OAuth persistence', () => {
         expect(raw['oauth-server'].oauth.tokens.access_token).toBe('tok')
         expect(raw['oauth-server'].oauth.lastAuthorizedAt).toBeTypeOf('number')
       })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not re-insert a server deleted after the provider was resolved', async () => {
+    const { dir, store } = await seededStore()
+    try {
+      const provider = nativeProvider({ mcpStore: store })
+      const auth = provider.authFor?.('oauth-server')
+      expect(auth).toBeDefined()
+
+      store.remove('oauth-server')
+      await store.flush()
+      auth?.saveTokens({ access_token: 'tok', token_type: 'Bearer' })
 
       const raw = JSON.parse(await readFile(join(dir, 'mcp-config.json'), 'utf8'))
-      expect(raw['oauth-server'].oauth.tokens.access_token).toBe('tok')
-      expect(raw['oauth-server'].oauth.lastAuthorizedAt).toBeTypeOf('number')
+      expect(raw['oauth-server']).toBeUndefined()
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

@@ -33,9 +33,12 @@ export function createDefaultProviders(opts: DefaultProvidersOptions = {}): Prov
         const stored = mcpStore.get(name)
         return stored
           ? createMcpOAuthProvider(stored, () => {
-              // The provider mutates the stored server's OAuth state in place;
-              // upsert re-marks the store dirty (flush is a no-op otherwise).
-              mcpStore.upsert(stored)
+              // The provider mutates the stored server's OAuth state in place.
+              // Patch only that field: a wholesale upsert of this stale
+              // connection-time snapshot would revert later edits (or
+              // resurrect a server deleted mid-session). patch marks the store
+              // dirty and inserts nothing when the entry is gone.
+              mcpStore.patch(stored.name, { oauth: stored.oauth })
               void mcpStore.flush()
             })
           : undefined
