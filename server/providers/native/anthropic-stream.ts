@@ -106,7 +106,7 @@ function translate(ev: SseEvent): CanonicalEvent | null {
         ? { type: 'tool_use' as const, id: cb.id!, name: cb.name! }
         : cb.type === 'thinking'
           ? { type: 'thinking' as const }
-          : cb.type === 'redacted_thinking' ? { type: 'redacted_thinking' as const, data: cb.data ?? '' } : { type: 'text' as const }
+          : cb.type === 'redacted_thinking' ? { type: 'redacted_thinking' as const, data: cb.data! } : { type: 'text' as const }
       return { kind: 'block_start', index: d.index as number, block, raw: d }
     }
     case 'content_block_delta': {

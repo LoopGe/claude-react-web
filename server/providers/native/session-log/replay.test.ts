@@ -45,6 +45,17 @@ describe('replay', () => {
     const messages = historyFromEvents(events) as Array<{ role: string; content: unknown[] }>
     expect(messages[1].content).toEqual([{ type: 'redacted_thinking', data: 'ENCRYPTED' }, { type: 'text', text: 'a' }])
   })
+  it('strips an empty signature and an empty redacted payload', () => {
+    const events = [
+      user(1, 'hi'),
+      assistant(2, [{ type: 'thinking', thinking: 'empty sig', signature: '' }, { type: 'text', text: 'a' }]),
+      user(3, 'again'),
+      assistant(4, [{ type: 'redacted_thinking', data: '' }, { type: 'text', text: 'b' }]),
+    ]
+    const messages = historyFromEvents(events) as Array<{ role: string; content: unknown[] }>
+    expect(messages[1].content).toEqual([{ type: 'text', text: 'a' }])
+    expect(messages[3].content).toEqual([{ type: 'text', text: 'b' }])
+  })
   it('starts model history at the last compact event', () => {
     const events = [
       user(0, 'old'),

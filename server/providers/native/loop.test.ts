@@ -289,4 +289,64 @@ describe('runTurn', () => {
     const second = s.calls[1] as Array<{ role: string; content: unknown[] }>
     expect(second[1].content[0]).toEqual({ type: 'redacted_thinking', data: 'ENCRYPTED' })
   })
+
+  it('strips a thinking block whose signature_delta is empty from API history', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...thinkingBlock(0, 'plan', ''), ...toolUseBlock(1, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (f) => emitted.push(f as Frame) }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    const assistant = emitted.find((f) => f.type === 'assistant') as Frame
+    expect(assistant.message.content[0]).toEqual({ type: 'thinking', thinking: 'plan' })
+    const second = s.calls[1] as Array<{ role: string; content: Array<{ type: string }> }>
+    expect(second[1].content.map((b) => b.type)).toEqual(['tool_use'])
+  })
+
+  it('strips a redacted_thinking block with empty data from API history but keeps the UI frame', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...redactedThinkingBlock(0, ''), ...toolUseBlock(1, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (f) => emitted.push(f as Frame) }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    const assistant = emitted.find((f) => f.type === 'assistant') as Frame
+    expect(assistant.message.content[0]).toEqual({ type: 'redacted_thinking', data: '' })
+    const second = s.calls[1] as Array<{ role: string; content: Array<{ type: string }> }>
+    expect(second[1].content.map((b) => b.type)).toEqual(['tool_use'])
+  })
+
+  it('accumulates multiple signature deltas onto one thinking block', async () => {
+    const s = scriptedStreamer([
+      [
+        startStop,
+        { kind: 'block_start', index: 0, block: { type: 'thinking' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'thinking', thinking: 'plan' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'signature', signature: 'sig-1' } },
+        { kind: 'block_delta', index: 0, delta: { type: 'signature', signature: 'sig-2' } },
+        { kind: 'block_end', index: 0 },
+        ...toolUseBlock(1, 't1', 'Read', '{"file_path":"a.txt"}'),
+        deltaStop('tool_use'),
+      ],
+      [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (f) => emitted.push(f as Frame) }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    const assistant = emitted.find((f) => f.type === 'assistant') as Frame
+    expect(assistant.message.content[0]).toEqual({ type: 'thinking', thinking: 'plan', signature: 'sig-1sig-2' })
+    const second = s.calls[1] as Array<{ role: string; content: unknown[] }>
+    expect(second[1].content[0]).toEqual({ type: 'thinking', thinking: 'plan', signature: 'sig-1sig-2' })
+  })
 })
