@@ -28,6 +28,7 @@ import {
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport, StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { InvalidClientError, InvalidGrantError, UnauthorizedClientError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import type {
   OAuthClientInformationMixed,
@@ -447,12 +448,12 @@ export async function testMcpConnection(
     { name: 'claude-react-web-test', version: '1.0.0' },
     { capabilities: {} },
   )
-  let transport: Awaited<ReturnType<typeof createTransport>> | null = null
+  let transport: Transport | null = null
   try {
     const authProvider = server.type !== 'stdio' && server.oauth?.tokens
       ? new StoredMcpOAuthProvider(server, server.oauth.redirectUrl ?? 'http://127.0.0.1/')
       : undefined
-    transport = await createTransport(server, authProvider)
+    transport = createMcpTransport(server, { authProvider })
     await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS)
     let tools: McpConnectionTool[] | undefined
     if (options.includeTools) {
@@ -501,7 +502,7 @@ export async function startMcpOAuth(server: StoredMcpServer, redirectUrl: string
   delete oauth.codeVerifier
   server.oauth = oauth
   const provider = new StoredMcpOAuthProvider(server, redirectUrl, (url) => { authorizationUrl = url.toString() })
-  const transport = createTransport(server, provider)
+  const transport = createMcpTransport(server, { authProvider: provider })
   const client = new Client({ name: 'claude-react-web-auth', version: '1.0.0' }, { capabilities: {} })
   try {
     await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS)
@@ -518,7 +519,7 @@ export async function startMcpOAuth(server: StoredMcpServer, redirectUrl: string
 export async function finishMcpOAuth(server: StoredMcpServer, code: string, redirectUrl: string): Promise<void> {
   if (server.type === 'stdio') throw new Error('OAuth auth is only available for remote MCP servers')
   const provider = new StoredMcpOAuthProvider(server, redirectUrl)
-  const transport = createTransport(server, provider)
+  const transport = createMcpTransport(server, { authProvider: provider })
   try {
     if ('finishAuth' in transport && typeof transport.finishAuth === 'function') {
       await withTimeout(transport.finishAuth(code), CONNECT_TIMEOUT_MS)
@@ -587,7 +588,9 @@ function normalizeToolAnnotations(annotations: unknown): McpConnectionTool['anno
   return normalized.readOnly || normalized.destructive || normalized.openWorld ? normalized : undefined
 }
 
-function isMcpAuthError(err: unknown): boolean {
+/** True when an MCP failure is an authentication/authorization failure, i.e.
+ *  the caller should start an OAuth flow rather than report a plain error. */
+export function isMcpAuthError(err: unknown): boolean {
   if (err instanceof UnauthorizedError) return true
   if (err instanceof StreamableHTTPError && err.code === 401) return true
   const maybe = err as { code?: unknown; message?: unknown }
@@ -608,38 +611,94 @@ function clearInvalidOAuthCredentials(server: StoredMcpServer, err: unknown): bo
   return true
 }
 
-function createTransport(server: StoredMcpServer, authProvider?: OAuthClientProvider) {
-  const type = server.type ?? 'stdio'
+/** Serializable subset of a stored server needed to build a client transport.
+ *  `StoredMcpServer` is structurally assignable to it. */
+export interface McpTransportTarget {
+  type: 'stdio' | 'sse' | 'http'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string>
+}
+
+/** Build the MCP client transport for a stdio / sse / http target.
+ *
+ *  Shared by the global-config test and OAuth paths and by providers that open
+ *  their own connections, so the stdio command allowlist lives in one place.
+ *
+ *  When `opts.authProvider` is given the remote transport authenticates through
+ *  it. With `opts.preferAuthProvider` also set, any `Authorization` header in
+ *  `target.headers` is dropped from the copy handed to the transport: the SDK
+ *  merges `requestInit` headers over the provider's own bearer token, so a
+ *  stale grafted header would shadow a refreshed one. Without the flag an
+ *  explicit header keeps winning, matching the SDK's own config path.
+ *  `target.headers` itself is never mutated. */
+export function createMcpTransport(
+  target: McpTransportTarget,
+  opts: { authProvider?: OAuthClientProvider; preferAuthProvider?: boolean } = {},
+): Transport {
+  const type = target.type ?? 'stdio'
   if (type === 'stdio') {
-    if (!server.command) throw new Error('command is required for stdio')
+    if (!target.command) throw new Error('command is required for stdio')
     // Defense-in-depth: validate against allowlist even for pre-existing configs.
-    const cmdErr = validateCommand(server.command)
+    const cmdErr = validateCommand(target.command)
     if (cmdErr) throw new Error(cmdErr)
     return new StdioClientTransport({
-      command: server.command,
-      args: server.args,
-      env: server.env
-        ? { ...process.env, ...Object.fromEntries(Object.entries(server.env).filter(([, v]) => v != null)) } as Record<string, string>
+      command: target.command,
+      args: target.args,
+      env: target.env
+        ? { ...process.env, ...Object.fromEntries(Object.entries(target.env).filter(([, v]) => v != null)) } as Record<string, string>
         : undefined,
     })
   }
   if (type === 'sse') {
-    if (!server.url) throw new Error('url is required for sse')
-    const url = new URL(server.url)
+    if (!target.url) throw new Error('url is required for sse')
+    const url = new URL(target.url)
     return new SSEClientTransport(url, {
-      authProvider,
-      requestInit: server.headers ? { headers: server.headers } : undefined,
+      authProvider: opts.authProvider,
+      requestInit: target.headers
+        ? { headers: transportHeaders(target.headers, opts) }
+        : undefined,
     })
   }
   if (type === 'http') {
-    if (!server.url) throw new Error('url is required for http')
-    const url = new URL(server.url)
+    if (!target.url) throw new Error('url is required for http')
+    const url = new URL(target.url)
     return new StreamableHTTPClientTransport(url, {
-      authProvider,
-      requestInit: server.headers ? { headers: server.headers } : undefined,
+      authProvider: opts.authProvider,
+      requestInit: target.headers
+        ? { headers: transportHeaders(target.headers, opts) }
+        : undefined,
     })
   }
   throw new Error(`unknown transport type: ${type}`)
+}
+
+/** Request headers for a remote transport. Returns the caller's record as-is
+ *  unless the auth provider is preferred, in which case a fresh copy without
+ *  any `Authorization` entry is returned. */
+function transportHeaders(
+  source: Record<string, string>,
+  opts: { authProvider?: OAuthClientProvider; preferAuthProvider?: boolean },
+): Record<string, string> {
+  if (!opts.preferAuthProvider || !opts.authProvider) return source
+  const headers = { ...source }
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === 'authorization') delete headers[key]
+  }
+  return headers
+}
+
+/** Build the OAuth client provider for a stored server. Returns undefined when
+ *  the server has no OAuth state. `onTokensSaved` fires after tokens land in
+ *  the stored state, so callers can persist the updated server. */
+export function createMcpOAuthProvider(
+  server: StoredMcpServer,
+  onTokensSaved?: () => void,
+): OAuthClientProvider | undefined {
+  if (!server.oauth) return undefined
+  return new StoredMcpOAuthProvider(server, server.oauth.redirectUrl ?? 'http://127.0.0.1/', undefined, onTokensSaved)
 }
 
 class StoredMcpOAuthProvider implements OAuthClientProvider {
@@ -647,6 +706,7 @@ class StoredMcpOAuthProvider implements OAuthClientProvider {
     private readonly server: StoredMcpServer,
     private readonly callbackUrl: string,
     private readonly onRedirect?: (url: URL) => void,
+    private readonly onTokensSaved?: () => void,
   ) {}
 
   get redirectUrl(): string {
@@ -679,6 +739,7 @@ class StoredMcpOAuthProvider implements OAuthClientProvider {
     const state = this.ensureState()
     state.tokens = tokens
     state.lastAuthorizedAt = Date.now()
+    this.onTokensSaved?.()
   }
 
   state(): string {
