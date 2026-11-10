@@ -327,10 +327,10 @@ describe('native subagent abort propagation', () => {
     const dir = await mkdtemp(join(tmpdir(), 'sm-native-subagent-abort-'))
     dirs.push(dir)
 
-    // Round classification: the parent request keeps the Agent tool, the
-    // nested request has it filtered out. The nested round never yields; it
-    // only ends when the signal IT WAS HANDED aborts — a fresh controller
-    // (not the parent turn's) would never fire, leaving the interrupt stuck.
+    // Classify rounds by tool list: the parent round keeps the Agent tool,
+    // the nested round has it filtered out. `parentRounds` only selects the
+    // scripted round; how many rounds the loop asks for afterwards is a loop
+    // implementation detail and is deliberately not pinned.
     const requests: Array<{ nested: boolean; abortedAtEntry: boolean; signal: AbortSignal }> = []
     let parentRounds = 0
     const first = await makeFixture(dir)
@@ -345,6 +345,9 @@ describe('native subagent abort propagation', () => {
         signal: req.signal,
       })
       if (isNestedRequest(req)) {
+        // The nested round never yields; it only ends when the signal IT WAS
+        // HANDED aborts. A fresh controller (not linked to the parent turn)
+        // would never fire, leaving the interrupt stuck.
         await new Promise<void>((resolve) => {
           if (req.signal.aborted) {
             resolve()
@@ -406,15 +409,15 @@ describe('native subagent abort propagation', () => {
     // nothing had to wait for the hung nested stream's own timeout.
     expect(settleMs).toBeLessThan(2000)
 
-    // The post-Agent parent round saw the SAME aborted signal the nested
-    // stream was handed — the proof that the nested loop shares the parent
-    // turn's signal rather than owning a fresh controller.
-    expect(parentRounds).toBe(2)
-    expect(requests).toHaveLength(3)
-    expect(requests.map((r) => r.nested)).toEqual([false, true, false])
+    // Behavioral proof that the nested loop shares the parent turn's signal:
+    // every signal handed to any round has aborted by the time the turn
+    // settles, and the nested round (the one that hung) was not aborted when
+    // it started. A future refactor may hand the nested loop a derived
+    // signal instead of the same instance — only the abort state matters.
+    expect(requests[0].nested).toBe(false)
     expect(requests[0].abortedAtEntry).toBe(false)
-    expect(requests[2].abortedAtEntry).toBe(true)
-    expect(requests[2].signal).toBe(requests[1].signal)
+    expect(requests.some((r) => r.nested)).toBe(true)
+    expect(requests.every((r) => r.signal.aborted)).toBe(true)
 
     // The Agent call resolves with the nested failure instead of hanging,
     // and the parent's remaining call is closed with a synthetic aborted

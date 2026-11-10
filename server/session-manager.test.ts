@@ -1851,6 +1851,46 @@ describe('SessionManager', () => {
     expect(store.get(info.id)?.model).toBe(FULL)
   })
 
+  it('resume() caps a claude seed page at historyCap — the subagent budget is native-only', async () => {
+    // The wider seed page exists to stop sidechain lines crowding main-thread
+    // messages out of a NATIVE log's page tail. A claude page has no
+    // sidechain lines, so widening it only changes where the page starts —
+    // and a CLI-adopted session with no persisted model resolves its resume
+    // model from the page's FIRST assistant frame, so a page that reaches
+    // back before a mid-session model switch resumes on the older model.
+    const capped = new SessionManager({ store, historyCap: 7, subagentHistoryCap: 3 })
+    try {
+      const info = await capped.create({ cwd: TEST_CWD })
+      capped.send(info.id, 'hi')
+      mockHandles[mockHandles.length - 1].emit({ type: 'result', session_id: info.id })
+      await tick()
+      await capped.unload(info.id)
+
+      const readPage = vi.spyOn(
+        capped as unknown as { readProviderHistoryPage: (provider: unknown, id: string, opts: { limit: number }) => Promise<unknown> },
+        'readProviderHistoryPage',
+      ).mockResolvedValue({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })
+
+      try {
+        await capped.resume(info.id)
+
+        // Assert while the spy is still installed: mockRestore() clears the
+        // recorded calls.
+        const limits = readPage.mock.calls
+          .filter(([, id]) => id === info.id)
+          .map(([, , opts]) => opts.limit)
+        expect(limits.length).toBeGreaterThan(0)
+        // 7, not 7 + 3: the native budget must not leak into the claude arm.
+        expect(limits.every((limit) => limit === 7)).toBe(true)
+        expect(readPage).toHaveBeenCalledWith('claude', info.id, { limit: 7 })
+      } finally {
+        readPage.mockRestore()
+      }
+    } finally {
+      await capped.shutdown()
+    }
+  })
+
   it('resume() heals a persisted SHORT model id back to the configured FULL id', async () => {
     // A session whose persisted meta already carries the SHORT id (e.g. the
     // corrupted 7142f1c8 entry) must be healed to the FULL id on resume — the
