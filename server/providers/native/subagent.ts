@@ -37,6 +37,11 @@ interface AgentToolInput {
   model?: string
 }
 
+/** The Agent tool's prompt-section guidance. Exported so the provider's static
+ *  `tool:Agent` prompt section and the tool definition cannot drift. */
+export const AGENT_GUIDANCE =
+  "Delegate self-contained subtasks to a subagent via Agent when it saves context; the result is the subagent's final report."
+
 /** The instruction used when no custom agent is named. */
 const DEFAULT_AGENT_INSTRUCTION =
   'You are a subagent working independently inside the session working directory. ' +
@@ -48,8 +53,7 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
     name: 'Agent',
     description:
       'Delegate a self-contained subtask to a subagent that works in its own context with the same tools and permissions, then returns a concise final report.',
-    guidance:
-      "Delegate self-contained subtasks to a subagent via Agent when it saves context; the result is the subagent's final report.",
+    guidance: AGENT_GUIDANCE,
     promptOrder: 80,
     schema: {
       type: 'object',

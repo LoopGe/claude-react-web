@@ -11,6 +11,10 @@ import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connec
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
+import { historyFromEvents } from './session-log/replay.js'
+import type { NativeLogEvent } from './session-log/format.js'
+import { AGENT_GUIDANCE } from './subagent.js'
+import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { Frame } from './frames.js'
 import { config, __setConfigForTest } from '../../config.js'
@@ -53,6 +57,17 @@ function toolTurn(toolUseId: string): CanonicalEvent[] {
 }
 
 const tempDirs: string[] = []
+
+/** One assistant round whose only call is the Agent tool. */
+function agentTurn(toolUseId: string, input: Record<string, unknown>): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'Agent' } },
+    { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify(input) } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
+}
 
 /** A fresh temp state dir per test — the provider's default state dir is the
  *  real `~/.claude-react-web`, which a test must never touch. */
@@ -132,6 +147,7 @@ interface LogEventLike {
   reason?: string
   text?: string
   isCompactSummary?: boolean
+  parent_tool_use_id?: string | null
   message?: { content?: Array<Record<string, unknown>> }
 }
 
@@ -359,7 +375,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -386,6 +402,166 @@ describe('NativeSession', () => {
     const statuses = (await session.mcpServerStatus?.()) as Array<Record<string, unknown>>
     expect(statuses).toHaveLength(1)
     expect(statuses[0]).toMatchObject({ name: 'a', status: 'connected', source: 'sdk', scope: 'session' })
+    await session.destroy()
+  })
+
+  it('runs the Agent tool as a sidechain: one top-level result, real parents, nested list minus Agent', async () => {
+    const dir = await tempDir('native-agent-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{
+      tools: Array<{ name: string }>
+      messages: unknown[]
+      system: string
+      model: string
+    }> = []
+    const scripts: CanonicalEvent[][] = [
+      agentTurn('agent-1', { description: 'd', prompt: 'do it' }),
+      toolTurn('nested-read'),
+      textTurn('NESTED-REPORT'),
+      textTurn('PARENT-DONE'),
+    ]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: {
+      tools: Array<{ name: string }>
+      messages: unknown[]
+      system: string
+      model: string
+    }) {
+      // Snapshot the request: `messages` is the live history array.
+      requests.push(structuredClone(req))
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const session = provider.createSession({
+      id: 'agent',
+      cwd: dir,
+      mcpServers: { a: { type: 'sdk', instance: delayedInstance(echoServer()) } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    session.enqueueUserMessage(userMsg('delegate') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+
+    // ONE terminal frame for the whole turn — the nested run emits its own
+    // result only if it were given emitResult, which the Agent tool never does.
+    const results = frames.filter((f) => f.type === 'result')
+    expect(results).toHaveLength(1)
+    expect(results[0].result).toBe('PARENT-DONE')
+
+    // The parent's Agent call got the nested final report back as its result.
+    const parentAgentResult = frames.find((f) => f.type === 'user'
+      && f.parent_tool_use_id == null
+      && (f.message.content[0] as { tool_use_id?: string }).tool_use_id === 'agent-1')
+    expect(parentAgentResult?.message.content[0]).toEqual({
+      type: 'tool_result',
+      tool_use_id: 'agent-1',
+      content: [{ type: 'text', text: 'NESTED-REPORT' }],
+      is_error: false,
+    })
+
+    // Sidechain frames carry the spawning tool_use id, assistant AND user.
+    const sidechain = frames.filter((f) => f.parent_tool_use_id === 'agent-1')
+    expect(sidechain.some((f) => f.type === 'assistant')).toBe(true)
+    const nestedToolResult = sidechain.find((f) => f.type === 'user')
+    expect(nestedToolResult?.message.content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'nested-read',
+    })
+
+    // The parent advertises Agent + the discovered MCP tool; every nested
+    // request drops Agent (depth cap 1) but keeps the MCP tool.
+    expect(requests[0].tools.map((t) => t.name)).toEqual([
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent', 'mcp__a__echo',
+    ])
+    const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
+    expect(nestedRequests).toHaveLength(2)
+    for (const r of nestedRequests) {
+      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'mcp__a__echo'])
+    }
+
+    // Persistence: sidechain events carry the real parent on disk...
+    const events = logOf(session).events
+    const sidechainAssistants = events.filter(
+      (e) => e.type === 'assistant' && e.parent_tool_use_id === 'agent-1',
+    )
+    expect(sidechainAssistants.length).toBeGreaterThan(0)
+    expect(JSON.stringify(sidechainAssistants)).toContain('NESTED-REPORT')
+    expect(events.some((e) => e.type === 'user' && e.parent_tool_use_id === 'agent-1')).toBe(true)
+
+    // ...while the model history excludes them (the report itself still reaches
+    // the parent as the Agent call's tool_result).
+    const mainHistory = historyFromEvents(events as unknown as NativeLogEvent[])
+    const mainAssistantBodies = JSON.stringify(
+      (mainHistory as Array<{ role: string; content: unknown[] }>).filter((m) => m.role === 'assistant'),
+    )
+    expect(mainAssistantBodies).not.toContain('NESTED-REPORT')
+    expect(mainAssistantBodies).toContain('PARENT-DONE')
+    expect(JSON.stringify(mainHistory)).toContain('NESTED-REPORT')
+
+    await session.destroy()
+  })
+
+  it('honors an enabled custom agent definition for the nested run', async () => {
+    const dir = await tempDir('native-agent-def-')
+    const defs: Record<string, Partial<StoredAgentDefinition>> = {
+      reviewer: { name: 'reviewer', description: 'Reviews code', prompt: 'REVIEW-PROMPT', model: 'reviewer-model', enabled: true },
+    }
+    const agentStore = {
+      get: (name: string) => defs[name] as StoredAgentDefinition | undefined,
+    } as unknown as AgentDefinitionStore
+    const provider = new NativeProvider({ stateDir: dir, agentStore })
+    const requests: Array<{
+      tools: Array<{ name: string }>
+      system: string
+      model: string
+    }> = []
+    const scripts: CanonicalEvent[][] = [
+      agentTurn('agent-2', { description: 'd', prompt: 'p', subagent_type: 'reviewer' }),
+      textTurn('REVIEWED'),
+      textTurn('DONE'),
+    ]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: {
+      tools: Array<{ name: string }>
+      system: string
+      model: string
+    }) {
+      requests.push(structuredClone(req))
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    // No MCP server: the `!this.mcp` branch of rebuildTools must still offer Agent.
+    const session = provider.createSession({
+      id: 'agent-def',
+      cwd: dir,
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    session.enqueueUserMessage(userMsg('review') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
+
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent'])
+    const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
+    // The definition's prompt is the nested instruction suffix, its model the
+    // default nested model, and the static Agent section is in the parent prompt.
+    expect(nested.system.endsWith('REVIEW-PROMPT')).toBe(true)
+    expect(nested.system).toContain(AGENT_GUIDANCE)
+    expect(nested.model).toBe('reviewer-model')
+    await session.destroy()
+  })
+
+  it('declares Agent support and lists the built-in general-purpose agent', async () => {
+    const dir = await tempDir('native-agents-cap-')
+    const provider = new NativeProvider({ stateDir: dir })
+    expect(provider.capabilities.supportsAgents).toBe(true)
+    // Task control and subagent transcripts are P1.3b — unchanged here.
+    expect(provider.capabilities.supportsTaskControl).toBe(false)
+    expect(provider.capabilities.supportsSubagentTranscripts).toBe(false)
+    const session = provider.createSession({ id: 'agents-cap', cwd: dir })
+    expect(await session.supportedAgents?.()).toEqual([
+      { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
+    ])
     await session.destroy()
   })
 

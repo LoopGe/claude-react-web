@@ -44,6 +44,6 @@ export function createDefaultProviders(opts: DefaultProvidersOptions = {}): Prov
           : undefined
       }
     : undefined
-  registry.register(new NativeProvider({ stateDir: opts.stateDir, authFor }))
+  registry.register(new NativeProvider({ stateDir: opts.stateDir, authFor, agentStore: opts.agentStore }))
   return registry
 }

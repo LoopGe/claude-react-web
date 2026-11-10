@@ -34,6 +34,8 @@ import type { NativeLogEvent, NativeTurnEndReason } from './session-log/format.j
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
+import { createAgentTool } from './subagent.js'
+import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 
 const log = createLogger('native')
 
@@ -120,6 +122,9 @@ export interface NativeSessionOptions {
   /** Per-session MCP connections (external servers + first-party in-process
    *  ones). Absent in unit tests that drive the session without MCP. */
   mcp?: NativeMcpConnections
+  /** Custom agent definitions the Agent tool resolves `subagent_type`
+   *  against. Absent = only the built-in general-purpose agent. */
+  agentStore?: AgentDefinitionStore
   system: string
   /** Loose canUseTool from CreateSessionOptions — (toolName, input, {signal}) => PermissionResult. */
   canUseTool?: (...args: unknown[]) => Promise<unknown>
@@ -163,6 +168,10 @@ export class NativeSession implements ProviderSessionHandle {
    *  (never mutated) so a mid-turn `setServers`/toggle only affects the NEXT
    *  turn: the running turn holds the snapshot its `runTurn` started with. */
   private tools: ToolDef[]
+  /** The Agent tool this session hands the model. Built once (not per turn) so
+   *  its live getters keep tracking `model` and the rebuilt `tools` list; it
+   *  is appended in `rebuildTools` alongside the builtins. */
+  private readonly agentTool: ToolDef
   /** Model-facing tool name → owning server, for the permission request's
    *  `mcpServer` field. Built from discovery metadata, never by parsing the
    *  FQN (it may be truncated and hashed). */
@@ -192,6 +201,23 @@ export class NativeSession implements ProviderSessionHandle {
     this.tools = [...opts.tools]
     this.model = opts.model ?? DEFAULT_MODEL
     this.permissionMode = opts.permissionMode ?? 'default'
+    // Every session can delegate, MCP or not: `tools` is a live getter and the
+    // `emit` path is the session's own persist+push, so a nested run's frames
+    // land in the transcript with their real parent. Built after `ctx` exists.
+    this.agentTool = createAgentTool({
+      cwd: opts.cwd,
+      model: () => this.model,
+      system: opts.system,
+      frameCtx: this.ctx,
+      tools: () => this.tools,
+      streamFor: (req) => this.streamFor(req, { suppressRetryFrames: true }),
+      requestPermission: this.requestPermission,
+      emit: (frame) => {
+        this.persistFrame(frame)
+        this.output.push(frame)
+      },
+      agentStore: opts.agentStore,
+    })
     // The mode switch owns the log, the model history, and the usage
     // counters. It runs before `system/init` so a storage failure (fresh id
     // that already has a log, corrupt resume) throws out of createSession
@@ -508,12 +534,14 @@ export class NativeSession implements ProviderSessionHandle {
    *  the snapshot it was handed. */
   private rebuildTools(): void {
     this.mcpToolServers.clear()
+    // The Agent tool rides EVERY list, MCP-less sessions included — otherwise
+    // the model loses delegation exactly when it has no servers to call.
     if (!this.mcp) {
-      this.tools = [...this.opts.tools]
+      this.tools = [...this.opts.tools, this.agentTool]
       return
     }
     const infos = this.mcp.tools()
-    this.tools = [...this.opts.tools, ...mcpToolDefs(this.mcp)]
+    this.tools = [...this.opts.tools, this.agentTool, ...mcpToolDefs(this.mcp)]
     const sdkServers = new Set(
       this.mcp.statuses().filter((status) => status.source === 'sdk').map((status) => status.name),
     )
@@ -776,6 +804,12 @@ export class NativeSession implements ProviderSessionHandle {
 
   async reloadSkills(): Promise<unknown> {
     return []
+  }
+
+  /** Built-in agents only: the /agents route unions the enabled
+   *  `AgentDefinitionStore` definitions on top (same split as claude). */
+  async supportedAgents(): Promise<unknown> {
+    return [{ name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' }]
   }
 
   // ── MCP control (optional ProviderSessionHandle members) ───────────────

@@ -11,8 +11,9 @@ import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle } from '../types.js'
 import type { LoopDeps } from './loop.js'
 import { NativeMcpConnections } from './mcp/connections.js'
-import { PromptSectionRegistry, IDENTITY_SECTION } from './prompt/sections.js'
+import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
+import { AGENT_GUIDANCE } from './subagent.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import { deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
@@ -23,8 +24,13 @@ import { writeTool } from './tools/write.js'
 import { editTool } from './tools/edit.js'
 import { grepTool } from './tools/grep.js'
 import type { ToolDef } from './tools/types.js'
+import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 
 const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool]
+
+/** The Agent tool's prompt section. The text is the tool def's own guidance
+ *  (one exported constant), so the section and the schema cannot drift. */
+const AGENT_SECTION: PromptSection = { name: 'tool:Agent', order: 80, text: AGENT_GUIDANCE }
 
 export class NativeProvider implements AgentProvider {
   readonly name = 'native'
@@ -42,7 +48,7 @@ export class NativeProvider implements AgentProvider {
     supportsEffortLevel: false,
     supportsThinkingControl: false,
     supportsCommands: false,
-    supportsAgents: false,
+    supportsAgents: true,
     supportsContextUsage: true,
     supportsUsage: true,
     supportsAccountInfo: false,
@@ -64,9 +70,18 @@ export class NativeProvider implements AgentProvider {
    *  MCP credentials. */
   readonly authFor?: (name: string) => OAuthClientProvider | undefined
 
-  constructor(opts: { stateDir?: string; authFor?: (name: string) => OAuthClientProvider | undefined } = {}) {
+  /** Custom agent definitions the Agent tool resolves `subagent_type`
+   *  against; forwarded to every session this provider creates. */
+  readonly agentStore?: AgentDefinitionStore
+
+  constructor(opts: {
+    stateDir?: string
+    authFor?: (name: string) => OAuthClientProvider | undefined
+    agentStore?: AgentDefinitionStore
+  } = {}) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
+    this.agentStore = opts.agentStore
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
@@ -76,6 +91,7 @@ export class NativeProvider implements AgentProvider {
     for (const tool of TOOLS) {
       registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
     }
+    registry.register(AGENT_SECTION)
     const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
     const system = systemPromptAppend ? `${registry.render()}\n\n${systemPromptAppend}` : registry.render()
     // The manager has already resolved globals + inline configs + first-party
@@ -102,6 +118,7 @@ export class NativeProvider implements AgentProvider {
         }),
         tools: TOOLS,
         mcp,
+        agentStore: this.agentStore,
         system,
         canUseTool: opts.canUseTool,
         onUserMessageConsumed: opts.onUserMessageConsumed,

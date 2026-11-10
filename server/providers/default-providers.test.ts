@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { McpConfigStore } from '../mcp-config.js'
+import type { AgentDefinitionStore } from '../agent-definition-store.js'
 import { createDefaultProviders } from './default-providers.js'
 import type { NativeProvider } from './native/native-provider.js'
 
@@ -51,6 +52,22 @@ describe('createDefaultProviders native authFor wiring', () => {
     const provider = nativeProvider({})
 
     expect(provider.authFor).toBeUndefined()
+  })
+})
+
+describe('createDefaultProviders native agent store', () => {
+  it('forwards the agent definition store into native sessions', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'crw-default-providers-'))
+    try {
+      const store = { get: vi.fn(), list: vi.fn(() => []) } as unknown as AgentDefinitionStore
+      const provider = createDefaultProviders({ agentStore: store, stateDir: dir }).get('native') as NativeProvider
+      expect(provider.agentStore).toBe(store)
+      const session = provider.createSession({ id: 'agent-store', cwd: dir })
+      expect((session as unknown as { opts: { agentStore?: AgentDefinitionStore } }).opts.agentStore).toBe(store)
+      await session.destroy()
+    } finally {
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
   })
 })
 
