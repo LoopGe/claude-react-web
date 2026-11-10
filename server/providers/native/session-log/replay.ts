@@ -85,6 +85,9 @@ export function contextSnapshot(cwd: string): string {
  *   WRAPPED guidance, inserted at its log position. It is a real user turn
  *   for the model, so it closes any open tool-result group — the results
  *   that follow belong to the next round, not the one before the supplement.
+ *   If the same uuid also appears as a main-thread user event (the requeue
+ *   after a failed delivery), the supplement is dropped: the plain prompt is
+ *   the message the model actually received.
  */
 export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] {
   const messages: Array<{ role: 'user' | 'assistant'; content: unknown[] }> = []
@@ -99,6 +102,20 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
     messages.push({ role: 'user', content: [{ type: 'text', text: compact.context }] })
     messages.push({ role: 'user', content: [{ type: 'text', text: compact.text }] })
     start = compactIndex + 1
+  }
+
+  // A supplement appended by a round whose flush then failed (or whose turn
+  // was interrupted mid-flush) is still persisted by the turn/end flush, even
+  // though the model never saw it. The manager requeues that message as an
+  // ordinary prompt, which persists a user event with the SAME uuid later.
+  // Replaying both would duplicate the guidance, so a supplement whose uuid
+  // also appears as a main-thread user event in this window is dropped and
+  // the plain prompt wins. A delivered supplement (no same-uuid user event)
+  // still replays as-is.
+  const userUuids = new Set<string>()
+  for (let i = start; i < events.length; i++) {
+    const event = events[i]
+    if (event.type === 'user' && !isSidechainEvent(event)) userUuids.add(event.uuid)
   }
 
   for (let i = start; i < events.length; i++) {
@@ -136,9 +153,11 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
         }
         break
       case 'session/supplement':
-        // Persisted as the WRAPPED guidance the model already saw — replay it
-        // verbatim; never re-wrap. Its presence ends any open tool-result
-        // group, exactly like a non-tool-result user turn.
+        // Delivered supplements replay verbatim (the wrapped guidance the model
+        // saw). One whose uuid also shows up as a user event is the
+        // appended-but-not-delivered copy: the requeued plain prompt is the
+        // message the model will actually get, so drop the duplicate.
+        if (userUuids.has(event.uuid)) break
         messages.push({ role: 'user', content: [{ type: 'text', text: event.text }] })
         openResults = null
         break

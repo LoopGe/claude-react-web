@@ -12,7 +12,11 @@ const sideAssistant = (seq: number, content: unknown[]): NativeLogEvent => ({ se
 const sideResult = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'user', uuid: `sr${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'inner ok' }], is_error: false }] } })
 const sideUser = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `su${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
 
-const supplement = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'session/supplement', uuid: `sp${seq}`, text, timestamp: 't' })
+const supplement = (seq: number, text: string, uuid = `sp${seq}`): NativeLogEvent => ({ seq, type: 'session/supplement', uuid, text, timestamp: 't' })
+const userWithUuid = (seq: number, text: string, uuid: string): NativeLogEvent => ({
+  seq, type: 'user', uuid, session_id: 's', parent_tool_use_id: null, timestamp: 't',
+  message: { role: 'user', content: [{ type: 'text', text }] },
+})
 
 describe('replay', () => {
   it('rebuilds history, strips unsigned thinking and merges consecutive tool results', () => {
@@ -121,6 +125,33 @@ describe('replay', () => {
     // Stored text is already the wrapped guidance — replayed exactly, no re-wrap.
     expect(messages[3]).toEqual({ role: 'user', content: [{ type: 'text', text: 'WRAPPED GUIDANCE' }] })
     expect(messages[4].content.map((b) => b.tool_use_id)).toEqual(['t2'])
+  })
+  it('drops a supplement whose uuid is requeued as an ordinary user prompt', () => {
+    // The appended-but-not-delivered shape: the supplement event is durable
+    // but the model never saw it, and the manager requeued the message as a
+    // plain prompt under the SAME uuid. Replaying both would duplicate the
+    // guidance — only the plain prompt survives.
+    const events = [
+      user(1, 'go'),
+      assistant(2, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]),
+      result(3, 't1'),
+      supplement(4, 'WRAPPED GUIDANCE', 'steer-1'),
+      userWithUuid(5, 'plain steer', 'steer-1'),
+      assistant(6, [{ type: 'text', text: 'done' }]),
+    ]
+    const messages = historyFromEvents(events) as Array<{ role: string; content: Array<{ text?: string }> }>
+    expect(messages).toHaveLength(5) // supplement skipped: tool_result group closed by the plain prompt
+    expect(JSON.stringify(messages)).not.toContain('WRAPPED GUIDANCE')
+    expect(JSON.stringify(messages)).toContain('plain steer')
+  })
+  it('keeps a delivered supplement when a following user event has a different uuid', () => {
+    const events = [
+      user(1, 'go'),
+      supplement(2, 'WRAPPED GUIDANCE', 'steer-1'),
+      userWithUuid(3, 'later prompt', 'u3'),
+    ]
+    const messages = historyFromEvents(events) as Array<{ role: string; content: Array<{ text?: string }> }>
+    expect(messages.map((m) => m.content[0]?.text)).toEqual(['go', 'WRAPPED GUIDANCE', 'later prompt'])
   })
   it('synthesizes a result for every unanswered tool_use', () => {
     const events = [user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }])]
