@@ -153,63 +153,72 @@ export function ChatEmptyStateEnv({ mcpServerNames, enabledPlugins, sessionId, r
     <div className="chat-empty-env">
       {showMcp && (
         <div className="chat-empty-env-row">
-          <span className="chat-empty-env-label">MCP</span>
-          <span className="chat-empty-env-chips">
-            {mcpServerNames!.map((name) => {
-              const status = actionable ? statuses[name] : undefined
-              const chip = (
-                <>
-                  {/* In-flight lookup → pulsing placeholder (data-status
-                      "loading", CSS drives the pulse); once it lands the real
-                      status color takes over. */}
-                  {(status || (actionable && loading)) && (
-                    <span
-                      className="chat-empty-env-dot"
-                      data-status={status ?? 'loading'}
-                      aria-hidden
-                    />
-                  )}
-                  <span className="chat-empty-env-chip-label">{name}</span>
-                </>
-              )
-              return actionable ? (
-                <button
-                  key={name}
-                  type="button"
-                  className="chat-empty-env-chip"
-                  title={`${name} — click for quick actions`}
-                  onClick={(e) => {
-                    // The one-shot status snapshot can be stale (the server
-                    // may have been toggled from the SettingsPanel while this
-                    // empty state sat mounted) — re-read on open so the menu
-                    // offers the action the CURRENT state calls for.
-                    refresh()
-                    setMenu({ x: e.clientX, y: e.clientY, name })
-                  }}
-                >
-                  {chip}
-                </button>
-              ) : (
-                <span key={name} className="chat-empty-env-chip">
-                  {chip}
-                </span>
-              )
-            })}
-          </span>
+          {/* Inner wrapper: the row itself is the 0fr→1fr grid shell that
+              grows the height in (env-row-grow), so the flex layout it
+              animates must live one level down — grid would stack the label
+              and the chips as separate tracks. See .chat-empty-env-row in
+              chat.css. */}
+          <div className="chat-empty-env-row-inner">
+            <span className="chat-empty-env-label">MCP</span>
+            <span className="chat-empty-env-chips">
+              {mcpServerNames!.map((name) => {
+                const status = actionable ? statuses[name] : undefined
+                const chip = (
+                  <>
+                    {/* In-flight lookup → pulsing placeholder (data-status
+                        "loading", CSS drives the pulse); once it lands the real
+                        status color takes over. */}
+                    {(status || (actionable && loading)) && (
+                      <span
+                        className="chat-empty-env-dot"
+                        data-status={status ?? 'loading'}
+                        aria-hidden
+                      />
+                    )}
+                    <span className="chat-empty-env-chip-label">{name}</span>
+                  </>
+                )
+                return actionable ? (
+                  <button
+                    key={name}
+                    type="button"
+                    className="chat-empty-env-chip"
+                    title={`${name} — click for quick actions`}
+                    onClick={(e) => {
+                      // The one-shot status snapshot can be stale (the server
+                      // may have been toggled from the SettingsPanel while this
+                      // empty state sat mounted) — re-read on open so the menu
+                      // offers the action the CURRENT state calls for.
+                      refresh()
+                      setMenu({ x: e.clientX, y: e.clientY, name })
+                    }}
+                  >
+                    {chip}
+                  </button>
+                ) : (
+                  <span key={name} className="chat-empty-env-chip">
+                    {chip}
+                  </span>
+                )
+              })}
+            </span>
+          </div>
         </div>
       )}
       {pluginChips && (
         <div className="chat-empty-env-row">
-          <span className="chat-empty-env-label">Plugins</span>
-          <span className="chat-empty-env-chips">
-            {pluginChips.map((c) => (
-              // title carries the compound key so ambiguous names stay
-              // disambiguatable on hover without spending layout space
-              <span key={c.key} className="chat-empty-env-chip" title={c.key}>
-                {c.label}
-              </span>
-            ))}
-          </span>
+          <div className="chat-empty-env-row-inner">
+            <span className="chat-empty-env-label">Plugins</span>
+            <span className="chat-empty-env-chips">
+              {pluginChips.map((c) => (
+                // title carries the compound key so ambiguous names stay
+                // disambiguatable on hover without spending layout space
+                <span key={c.key} className="chat-empty-env-chip" title={c.key}>
+                  {c.label}
+                </span>
+              ))}
+            </span>
+          </div>
         </div>
       )}
       {menu && (

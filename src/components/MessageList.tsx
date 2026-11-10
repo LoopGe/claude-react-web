@@ -1766,7 +1766,17 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         {renderableItems.length === 0 &&
           (!expectHistory || replayReady) &&
           (emptyStateContent != null || items.length === 0) && (
-          <div className="chat-messages-empty">
+          <div
+            className="chat-messages-empty"
+            /* Center over the area actually above the composer, not the full
+               panel body: `.chat-messages-empty` is `inset: 0` and
+               `.chat-bottom-stack` floats OVER the bottom band, so a plain
+               centering put the stack one composer-half too low — invisible
+               on the bare icon+title+subtitle stack, obvious once the
+               env rows (MCP servers / plugins) grow it. Same measured value
+               the transcript reserves via BottomOverlaySpacer. */
+            style={bottomStackHeight > 0 ? { bottom: bottomStackHeight } : undefined}
+          >
             {/* Like the lazy Settings / Git / Tasks panels, the lazy game is
                 paired with an ErrorBoundary: a rejected chunk degrades to "no
                 game" instead of reaching App's per-panel boundary. The

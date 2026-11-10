@@ -561,6 +561,9 @@
   .chat-empty-env {
     animation: none;
   }
+  .chat-empty-env-row {
+    animation: none;
+  }
 }
 .chat-empty-icon {
   width: 36px;
@@ -610,13 +613,42 @@
   gap: var(--space-1-5);
   max-width: 320px;
 }
+/* Each env row is a 0fr→1fr grid shell (same intrinsic-height technique as
+   .session-item-shell): the row grows its height in on mount instead of
+   popping to full size, so the flex-centered empty-state stack re-centers
+   CONTINUOUSLY while the row appears — both on first mount and when the
+   Plugins row lands late (enabledPlugins === undefined defers it to the
+   /mp/enabled-plugins round trip). Chosen over .chat-streaming-region's
+   max-height keyframes because fill-mode `both` would pin that cap on the
+   element forever, and wrapped chip rows have no predictable ceiling — 0fr→1fr
+   animates to the content's own height with nothing left behind. The flex
+   layout the shell animates lives on .chat-empty-env-row-inner (grid would
+   stack the label and chips as separate tracks). The delay mirrors the
+   section's content-enter stagger below, so the grow plays while the row is
+   fading in rather than before it. */
 .chat-empty-env-row {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: env-row-grow var(--motion-duration-base) var(--motion-ease-enter) both;
+  animation-delay: 280ms;
+}
+.chat-empty-env-row-inner {
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
   gap: var(--space-1-5);
   max-width: 100%;
+}
+@keyframes env-row-grow {
+  from {
+    grid-template-rows: 0fr;
+  }
+  to {
+    grid-template-rows: 1fr;
+  }
 }
 .chat-empty-env-label {
   font-size: var(--fs-xs);
