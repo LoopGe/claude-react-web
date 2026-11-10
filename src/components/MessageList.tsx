@@ -207,6 +207,12 @@ interface Props {
    *  third value (e.g. an 'off' mode) flows everywhere in one edit.
    *  See docs/superpowers/specs/2026-09-29-dual-mode-streaming-render-design.md. */
   streamingMode?: StreamingRenderMode
+  /** Static snapshot transcript (search preview, embedded read-only views).
+   * Disables ONLY the live layer: no draft rows, no overlay streaming bubble,
+   * and the initial view is top-aligned so a caller can seek to a target
+   * without a bottom-pin flash. Row model, tool groups, contexts, prefs,
+   * search marks and seek stay on the live path. */
+  static?: boolean
   /** Precomputed plan status keyed by toolUseId. */
   planStatus?: ReadonlyMap<string, PlanStatus>
   /** Plan body text extracted from ExitPlanMode tool_result outputs. */
@@ -405,7 +411,7 @@ function useStableSet(candidate: Set<string>): Set<string> {
   /* eslint-enable react-hooks/refs */
 }
 
-export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, streamingContent, streamingMode, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, revealTarget, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
+export const MessageList = memo(function MessageList({ items, working, toolGroupCards = true, autoExpandRunningGroups = true, showMessageHeaders = true, clearing, bottomOverlay, replayReady = true, transcriptSettling = false, transcriptRevealKey, panelVisible, showEpoch, sessionId, streamingContent, streamingMode, static: isStatic = false, planStatus = EMPTY_PLAN_STATUS, planContent = EMPTY_PLAN_CONTENT, questionAnswers = EMPTY_QUESTION_ANSWERS, toolStatus = EMPTY_TOOL_STATUS, toolResults = EMPTY_TOOL_RESULTS, searchQuery, searchActiveMsgIdx, searchActiveMatchInItem, revealTarget, parentToolUseIdFilter, subagent, loadOlder, hasOlder = false, oldestSeq, loadingOlder = false, onRegisterNavigate, onUserMessagesChange, emptyStateContent, emptyStateExtra, expectHistory, onSwitchModel, onAbortBash, onVisibleRangeChange, onPinnedUserMessageChange, cwd, onBackgroundTool, tasklist }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null)
 
   // Overlay scrollbar: hides the native bar and floats a thumb over
@@ -637,7 +643,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
   // Also gated on the ROOT transcript: the session's draft belongs to the
   // main thread, so appending it to a drill-in (parentToolUseIdFilter set)
   // would inject unrelated text into the subagent/workflow conversation.
-  const showsRootDrafts = resolvedMode === 'inline' && parentToolUseIdFilter == null
+  const showsRootDrafts = !isStatic && resolvedMode === 'inline' && parentToolUseIdFilter == null
   const draftSessionId = showsRootDrafts ? sessionId : undefined
   const draftKey = useOptionalSessionField(draftSessionId, 'draftKey')
   const frozenDrafts = useOptionalSessionField(draftSessionId, 'frozenDrafts')
@@ -885,6 +891,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     onUserScrollIntent: () => { navCursorRef.current = null },
     panelVisible,
     showEpoch,
+    followEnabled: !isStatic,
   })
 
   // Search-jump seek. Runs after the scroll hook owns `seekToIndex`; the nonce
@@ -1447,16 +1454,6 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       isHumanRow &&
       !!sq?.trim() &&
       countMatches(item.plainText, sq.trim()) > 0
-    // Only forward `searchQuery` to rows that actually carry a match (or
-    // whose plainText is unknown). When the query changes, non-matching rows
-    // keep `undefined` — their memo'd MessageView/ToolGroupCard see no prop
-    // change and skip the re-render.
-    const searchQueryForRow =
-      !sq?.trim()
-        ? undefined
-        : item.plainText == null || countMatches(item.plainText, sq.trim()) > 0
-          ? sq
-          : undefined
     // Which transcript item holds the active search match, when it landed
     // inside THIS row's tool group. The per-member gating (which member gets
     // activeMatchInItem) is owned inside ToolGroupCard.
@@ -1467,6 +1464,21 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       groupMemberIndices?.includes(searchActiveMsgIdx)
         ? searchActiveMsgIdx
         : undefined
+    const activeRowIdx =
+      searchActiveMsgIdx != null && searchActiveMsgIdx >= 0 && item.itemIndex === searchActiveMsgIdx
+        ? searchActiveMsgIdx
+        : undefined
+    // Only forward `searchQuery` to rows that actually carry a match (or
+    // whose plainText is unknown). When the query changes, non-matching rows
+    // keep `undefined` — their memo'd MessageView/ToolGroupCard see no prop
+    // change and skip the re-render. An active target always gets it: the
+    // match may live in a member's merged result, not the row's plainText.
+    const searchQueryForRow =
+      !sq?.trim()
+        ? undefined
+        : activeRowIdx != null || activeGroupMemberIdx != null || item.plainText == null || countMatches(item.plainText, sq.trim()) > 0
+          ? sq
+          : undefined
     const rowBody = item.toolGroup ? (
           <ToolGroupCard
             members={item.toolGroup.members}
@@ -1485,7 +1497,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
             // same group), so its presence here means a boundary row landed.
             closed={nextItemTypeMap.has(item.id)}
             activeMemberItemIndex={activeGroupMemberIdx}
-            revealMemberItemIndex={revealMemberItemIndex}
+            revealMemberItemIndex={revealMemberItemIndex ?? activeGroupMemberIdx}
             // Ungated here by design: ToolGroupCard gates per member
             // internally (only the member whose itemIndex matches
             // activeMemberItemIndex forwards it as activeMatchIdx).
@@ -1740,7 +1752,11 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         FOLLOWING/AWAY assertions (see useTranscriptScroll's setFollowing) —
         no runtime CSS or JS reads it; drop it with the tests if the
         assertion surface ever moves. */}
-    <div className="chat-messages-wrap" data-following={following ? 'true' : 'false'}>
+    <div
+      className="chat-messages-wrap"
+      data-following={following ? 'true' : 'false'}
+      data-static-transcript={isStatic ? 'true' : undefined}
+    >
       <div className="chat-messages-stage">
       <div ref={messagesElRef} key={transcriptRevealKey} className={messagesClassName}>
         {/* Virtuoso is ALWAYS mounted (even with zero items) so its scroller
@@ -1759,7 +1775,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           data={revealData}
           context={draftRowKeys}
           firstItemIndex={firstItemIndex}
-          initialTopMostItemIndex={virtuosoData.length > 0 ? virtuosoData.length - 1 : 0}
+          initialTopMostItemIndex={isStatic ? 0 : virtuosoData.length > 0 ? virtuosoData.length - 1 : 0}
           followOutput={followOutput}
           atBottomStateChange={atBottomStateChange}
           rangeChanged={handleRangeChanged}
@@ -1798,7 +1814,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
           // entirely tool cards. Rows are memoized, so the extra offscreen
           // DOM is cheap.
           increaseViewportBy={{ top: 600, bottom: 600 }}
-          alignToBottom
+          alignToBottom={!isStatic}
         />
         {/* The empty-state block, gated on "nothing rendered" AND — for the
             DEFAULT "Start a conversation" stack — "no transcript data".
@@ -1834,7 +1850,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         {/* Overlay-mode live bubble: a leaf that owns the streamingContent
             subscription + AnimatePresence exit (renders nothing until text
             arrives). */}
-        {resolvedMode === 'overlay' && (
+        {!isStatic && resolvedMode === 'overlay' && (
           <OverlayStreamingRegion sessionId={sessionId} streamingContent={streamingContent} />
         )}
         <div className="chat-bottom-overlay">

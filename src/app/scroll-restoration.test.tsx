@@ -34,7 +34,6 @@ function makeAppPanel() {
   panel.dataset.panelId = 's1'
   const scroller = document.createElement('div')
   scroller.className = 'chat-virtuoso-scroller'
-  scroller.dataset.following = 'false'
   Object.defineProperties(scroller, {
     clientHeight: { configurable: true, value: 200 },
     scrollHeight: { configurable: true, value: 1200 },
@@ -45,7 +44,11 @@ function makeAppPanel() {
       value: () => ({ top: 0, bottom: 200, left: 0, right: 800, width: 800, height: 200 }),
     },
   })
-  panel.append(scroller)
+  const wrap = document.createElement('div')
+  wrap.className = 'chat-messages-wrap'
+  wrap.dataset.following = 'false'
+  wrap.append(scroller)
+  panel.append(wrap)
   body.append(panel)
   document.body.append(body)
   return { body, scroller }
@@ -113,6 +116,33 @@ describe('App transcript scroll restoration', () => {
     expect(restore).toHaveBeenCalledTimes(1)
     expect((restore.mock.calls[0][0] as CustomEvent<{ target: number }>).detail).toEqual({ target: 317 })
     expect(scroller.scrollTop).toBe(0)
+  })
+
+  it('ignores a static transcript scroller inside the same panel', () => {
+    const { body, scroller } = makeAppPanel()
+    const panel = body.querySelector<HTMLElement>('[data-panel-id="s1"]')!
+    const staticWrap = document.createElement('div')
+    staticWrap.className = 'chat-messages-wrap'
+    staticWrap.dataset.staticTranscript = 'true'
+    const staticScroller = document.createElement('div')
+    staticScroller.className = 'chat-virtuoso-scroller'
+    Object.defineProperties(staticScroller, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 1200 },
+    })
+    staticWrap.append(staticScroller)
+    // Put the preview first in DOM order: the selector must still restore the
+    // live transcript, not the snapshot.
+    panel.prepend(staticWrap)
+    const restore = vi.fn()
+    const staticRestore = vi.fn()
+    scroller.addEventListener(TRANSCRIPT_RESTORE_EVENT, restore)
+    staticScroller.addEventListener(TRANSCRIPT_RESTORE_EVENT, staticRestore)
+
+    renderAppRestoration(body, { top: 317, anchorId: null, anchorOffset: 0 })
+
+    expect(restore).toHaveBeenCalledTimes(1)
+    expect(staticRestore).not.toHaveBeenCalled()
   })
 
   it('produces an initially measurable anchor reveal exactly once without an App scheduler', () => {

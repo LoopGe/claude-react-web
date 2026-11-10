@@ -1411,6 +1411,22 @@ describe('MessageList', () => {
     expect(container.querySelector('.chat-messages-stage')?.contains(streaming)).toBe(true)
   })
 
+  it('static suppresses the streaming bubble and marks the snapshot wrap', () => {
+    const msgs = [
+      makeMsg('assistant', {
+        message: { content: [{ type: 'text', text: 'Settled message' }] },
+      }),
+    ]
+
+    const { container } = render(
+      <MessageList static items={toItems(msgs as SdkMessage[])} streamingContent="Live tokens" streamingMode="overlay" />,
+    )
+
+    expect(container.querySelector('.streaming-footer-wrapper')).toBeNull()
+    expect(container.querySelector('.chat-messages-wrap')?.getAttribute('data-static-transcript')).toBe('true')
+    expect(container.querySelector('.chat-messages-wrap')?.getAttribute('data-following')).toBe('false')
+  })
+
   it('does not render the streaming footer before any text has flushed (empty string)', () => {
     // A live turn exists from its first stream event, but `flushedText`
     // starts as '' — the pre-text "thinking" phase (or a tool-use turn
@@ -6137,6 +6153,21 @@ describe('in-place draft rows (store-backed)', () => {
     // rows only — the bubble preview owns live text there.
     const overlay = renderList('overlay')
     expect(overlay.container.querySelector('[data-message-id^="draft:"]')).toBeNull()
+  })
+
+  it('static does not append root draft rows', () => {
+    streamDelta('preview only')
+    flush()
+    const { container } = render(
+      <MessageList
+        static
+        items={getSessionStore(SID).getSnapshot().items}
+        sessionId={SID}
+        streamingMode="inline"
+      />,
+    )
+
+    expect(container.querySelector('[data-message-id^="draft:"]')).toBeNull()
   })
 
   it('defaults to inline when no streamingMode is given (the shipped default)', () => {

@@ -31,7 +31,7 @@ export function useAppScrollRestoration({
     if (!mem || !bodyEl) return
     for (const [id, snapshot] of mem) {
       const panel = bodyEl.querySelector<HTMLElement>(`[data-panel-id="${id}"]`)
-      const scroller = panel?.querySelector<HTMLElement>('.chat-virtuoso-scroller')
+      const scroller = panel?.querySelector<HTMLElement>('.chat-messages-wrap:not([data-static-transcript]) .chat-virtuoso-scroller')
       // Collapsed scrollers clamp writes to zero. Following panels belong at
       // their new bottom, and active seeks own their target.
       const following = panel?.querySelector('[data-following]')?.getAttribute('data-following') === 'true'

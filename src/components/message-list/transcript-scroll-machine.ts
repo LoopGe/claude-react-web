@@ -90,10 +90,10 @@ export interface ScrollTransition {
   commands: ScrollCommand[]
 }
 
-export function createInitialScrollState(epoch = 0): ScrollState {
+export function createInitialScrollState(epoch = 0, intent: 'follow' | 'away' = 'follow'): ScrollState {
   return {
     attachment: { epoch, element: null, visibility: 'visible' },
-    intent: 'follow',
+    intent,
     owner: { kind: 'none' },
     seekState: 'idle',
     work: [],

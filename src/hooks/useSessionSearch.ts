@@ -4,6 +4,10 @@ import { useDebouncedValue } from './useDebouncedValue'
 import type { SessionSearchHit, SessionSearchResponse } from '../../shared/session-search'
 
 export interface SessionSearchState {
+  /** The debounced query that produced `hits`. Activation and highlighting use
+   *  this, not the still-being-typed input, so a fast Enter cannot pair stale
+   *  results with the next query. */
+  query: string
   hits: SessionSearchHit[]
   totalHits: number
   truncated: boolean
@@ -14,6 +18,7 @@ export interface SessionSearchState {
 }
 
 const IDLE = {
+  query: '',
   hits: [] as SessionSearchHit[],
   totalHits: 0,
   truncated: false,
@@ -45,7 +50,7 @@ export function useSessionSearch(
     let cancelled = false
     const controller = new AbortController()
     // eslint-disable-next-line react-hooks/set-state-in-effect -- a new query starts a request; clearing the stale hits and entering the loading state is the request lifecycle, not derivable state
-    setState({ ...IDLE, loading: true, retry })
+    setState({ ...IDLE, query: debounced, loading: true, retry })
 
     api
       .get<SessionSearchResponse>(
@@ -55,6 +60,7 @@ export function useSessionSearch(
       .then((res) => {
         if (cancelled || controller.signal.aborted) return
         setState({
+          query: debounced,
           hits: res.hits,
           totalHits: res.totalHits,
           truncated: res.truncated,
@@ -66,7 +72,7 @@ export function useSessionSearch(
       })
       .catch(() => {
         if (cancelled || controller.signal.aborted) return
-        setState({ ...IDLE, error: true, retry })
+        setState({ ...IDLE, query: debounced, error: true, retry })
       })
 
     return () => {

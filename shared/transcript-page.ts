@@ -42,4 +42,8 @@ export interface TranscriptPageResponse {
   /** True when non-tombstoned messages exist above this page's newest seq.
    *  Present only on `around` pages (a centered jump page). */
   hasNewer?: boolean
+  /** The seq an `around`/`aroundUuid` page was centered on. Lets callers
+   *  identify the target even when aroundUuid resolved an alias whose outer
+   *  message carries a different uuid. Present only on `around` pages. */
+  aroundSeq?: number
 }

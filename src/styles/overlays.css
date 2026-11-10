@@ -1358,6 +1358,84 @@ mark.search-hl.search-hl-active {
   margin-bottom: var(--space-1);
   color: var(--fg);
 }
+
+/* ── Search hit preview (drill-in inside the search panel) ───────── */
+.search-preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.search-preview-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.search-preview-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.search-preview-back:hover {
+  background: var(--btn-hover-bg);
+  color: var(--fg);
+}
+.search-preview-heading {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.search-preview-title {
+  font-weight: 600;
+}
+.search-preview-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.search-preview-meta {
+  color: var(--fg-muted);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+.search-preview-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* MessageList owns its Virtuoso scroller and overlay scrollbar. */
+  overflow: hidden;
+  padding-inline: var(--space-4);
+}
+.search-preview-state {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+  color: var(--fg-muted);
+}
+.search-preview-retry {
+  margin-left: var(--space-2);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .search-panel-retry {
   display: block;
   margin: var(--space-3) auto 0;

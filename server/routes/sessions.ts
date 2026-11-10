@@ -761,7 +761,7 @@ export function buildSessionRouter(
       const page = await sm.getTranscriptWindowAround(id, seq, beforeCount, afterCount)
       if (!page) throw new HttpError(404, `message at seq ${seq} not found`)
       recordHistoryPageImages(page.messages.map((m) => m.msg))
-      return c.json(page)
+      return c.json({ ...page, aroundSeq: seq })
     }
 
     const page: TranscriptPageResponse = await sm.getTranscriptWindow(id, before, limit)

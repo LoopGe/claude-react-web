@@ -23,9 +23,11 @@ interface Props {
   /** Fallback label — shown when the subagent hasn't been recorded in
    *  the index yet (stale state during a hard refresh, etc.). */
   fallbackLabel?: string
+  searchQuery?: string
+  activeMatchIdx?: number
 }
 
-export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabel }: Props) {
+export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabel, searchQuery, activeMatchIdx }: Props) {
   const ctx = useSubagentContext()
   // Session-level per-tool background action (same context the Bash card
   // reads). Only used for synchronous subagents — see the actions row below.
@@ -177,7 +179,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
           live={isRunning || status === 'pending'}
         />
       )}
-      {result && <ToolResultSection result={result} entering={resultEntering} />}
+      {result && <ToolResultSection result={result} entering={resultEntering} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}
     </div>
   )
 })

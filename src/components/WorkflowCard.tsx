@@ -31,9 +31,11 @@ interface Props {
   /** Fallback label — shown when the Workflow hasn't been recorded in the
    *  index yet (stale state during a hard refresh, etc.). */
   fallbackLabel?: string
+  searchQuery?: string
+  activeMatchIdx?: number
 }
 
-export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabel }: Props) {
+export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabel, searchQuery, activeMatchIdx }: Props) {
   const ctx = useWorkflowContext()
   // When rendered outside a WorkflowProvider (tests, exports), fall back to a
   // minimal inline display rather than crashing — same defensive pattern as
@@ -120,7 +122,7 @@ export const WorkflowCard = memo(function WorkflowCard({ toolUseId, fallbackLabe
           </a>
         </HoverHint>
       )}
-      {result && <ToolResultSection result={result} entering={resultEntering} />}
+      {result && <ToolResultSection result={result} entering={resultEntering} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}
     </div>
   )
 })

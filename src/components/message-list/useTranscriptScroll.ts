@@ -207,6 +207,9 @@ export interface UseTranscriptScrollOptions {
    * seek's own scroll events.
    */
   onUserScrollIntent?: () => void
+  /** Static snapshots do not follow the tail. When false, the controller starts
+   *  away and never re-arms follow; seeks and restores still work. */
+  followEnabled?: boolean
 }
 
 export interface TranscriptScrollApi {
@@ -255,6 +258,7 @@ export function useTranscriptScroll({
   onUserScrollIntent,
   panelVisible,
   showEpoch,
+  followEnabled = true,
 }: UseTranscriptScrollOptions): TranscriptScrollApi {
   // Boolean form of rowCount for effect deps: the scroll/gesture listeners
   // only need to (re-)attach when the scroller comes into existence, not on
@@ -322,8 +326,8 @@ export function useTranscriptScroll({
    * mutating the element obtained from `scrollerRef.current` inside hook
    * callbacks, and a declarative write needs no DOM access at all.)
    */
-  const [following, setFollowingState] = useState(true)
-  const scrollStateRef = useRef(createInitialScrollState())
+  const [following, setFollowingState] = useState(followEnabled)
+  const scrollStateRef = useRef(createInitialScrollState(0, followEnabled ? 'follow' : 'away'))
   const epochRef = useRef(0)
   const panelVisibleRef = useRef(panelVisible)
   const attachedRevealKeyRef = useRef(transcriptRevealKey)
@@ -340,6 +344,7 @@ export function useTranscriptScroll({
     onOwnerLanded: (token) => dispatchRef.current({ type: 'OWNER_LANDED', token }),
     onWorkConsumed: (id) => dispatchRef.current({ type: 'WORK_CONSUMED', id }),
     onFollowDebounce: () => {
+      if (!followEnabled) return
       const el = scrollerRef.current
       if (!el) {
         atBottomRef.current = false
@@ -362,13 +367,14 @@ export function useTranscriptScroll({
     onThumbClear: () => { thumbDraggingRef.current = false },
   }))
   const dispatch = useCallback((event: ScrollEvent) => {
+    if (!followEnabled && (event.type === 'FOLLOW_REQUESTED' || event.type === 'FOLLOW_ANIMATION_REQUESTED' || event.type === 'USER_RETURNED_TO_TRUE_BOTTOM')) return
     const previous = scrollStateRef.current
     const transition = reduceScroll(previous, event)
     scrollStateRef.current = transition.state
     const nextFollowing = transition.state.intent === 'follow'
     if ((previous.intent === 'follow') !== nextFollowing) setFollowingState(nextFollowing)
     writer.execute(transition.commands)
-  }, [writer])
+  }, [followEnabled, writer])
   useLayoutEffect(() => {
     dispatchRef.current = dispatch
   }, [dispatch])
@@ -1329,12 +1335,14 @@ export function useTranscriptScroll({
   // so this only affects settled-message appends — the standard chat-UI
   // snap-to-new-message.)
   const followOutput = useCallback((_atBottom: boolean) => {
+    if (!followEnabled) return false as const
     if (scrollStateRef.current.intent !== 'follow') return false as const
     animateScrollToBottom()
     return false as const
-  }, [animateScrollToBottom])
+  }, [animateScrollToBottom, followEnabled])
 
   const atBottomStateChange = useCallback((reportedAtBottom: boolean) => {
+    if (!followEnabled) return
     // Prefer direct DOM geometry so both measurements use the same bottom
     // definition. Before attachment, Virtuoso's report is the only sample.
     const el = scrollerRef.current
@@ -1349,9 +1357,10 @@ export function useTranscriptScroll({
     } else if (!writer.isScheduled('follow-debounce')) {
       dispatch({ type: 'FOLLOW_DEBOUNCE_REQUESTED', delayMs: FOLLOW_DEBOUNCE_MS })
     }
-  }, [FOLLOW_DEBOUNCE_MS, clearFollowTimer, confirmBottomGeometry, dispatch, setBottomState, setFollowing, writer])
+  }, [FOLLOW_DEBOUNCE_MS, clearFollowTimer, confirmBottomGeometry, dispatch, followEnabled, setBottomState, setFollowing, writer])
 
   const jumpToBottom = useCallback(() => {
+    if (!followEnabled) return
     focusNavigationRef.current = false
     dispatch({ type: 'FOCUS_RESET_CANCELLED' })
     thumbDraggingRef.current = false
@@ -1361,7 +1370,7 @@ export function useTranscriptScroll({
     onUserScrollIntentRef.current?.()
     scrollerRef.current?.dispatchEvent(new CustomEvent(TRANSCRIPT_SEEK_EVENT, { bubbles: true }))
     animateScrollToBottom()
-  }, [animateScrollToBottom, clearFollowTimer, dispatch, setBottomState, setFollowing])
+  }, [animateScrollToBottom, clearFollowTimer, dispatch, followEnabled, setBottomState, setFollowing])
 
   const seekToIndex = useCallback((index: number, align: 'start' | 'center') => {
     focusNavigationRef.current = false

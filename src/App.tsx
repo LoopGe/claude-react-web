@@ -2586,17 +2586,29 @@ export function App() {
   // eslint-disable-next-line react-hooks/refs -- intentional render-time ref sync, same rationale as the block above
   handleSelectRef.current = handleSelect
 
+  // Manual search opens clear any previous palette target; the palette sets a
+  // fresh target immediately after calling this.
+  const openSearchPanel = useCallback(
+    (id: string) => {
+      setMessageJumpTarget(null)
+      handleOpenSearch(id)
+    },
+    [handleOpenSearch],
+  )
+
   const handleSelectMessage = useCallback(
-    (hit: MessageSearchHit, _query: string) => {
+    (hit: MessageSearchHit, query: string) => {
+      openSearchPanel(hit.sessionId)
       const target: MessageJumpTarget = {
         nonce: ++jumpNonceRef.current,
         sessionId: hit.sessionId,
         messageUuid: hit.messageUuid,
+        query,
       }
       setMessageJumpTarget(target)
       void handleSelect(hit.sessionId)
     },
-    [handleSelect],
+    [handleSelect, openSearchPanel],
   )
   // Sidebar selection wrapper: on mobile, also close the drawer after picking
   // a session. Memoised so SessionList's `renderCard` useCallback (which lists
@@ -2856,7 +2868,7 @@ export function App() {
     for (const panel of bodyEl.querySelectorAll<HTMLElement>('[data-panel-id]')) {
       const id = panel.dataset.panelId
       if (!id) continue
-      const scroller = panel.querySelector<HTMLElement>('.chat-virtuoso-scroller')
+      const scroller = panel.querySelector<HTMLElement>('.chat-messages-wrap:not([data-static-transcript]) .chat-virtuoso-scroller')
       // Visible scrollers only: a cached (display:none) panel's scroller is
       // collapsed — scrollTop READS 0 there (snapshotting a hidden panel
       // would clobber its remembered value).
@@ -5391,7 +5403,7 @@ export function App() {
                       onOpenWorktree={handleOpenWorktree}
                       onCloseWorktree={handleCloseWorktree}
                       searchOpen={searchOpenFor === s.id}
-                      onOpenSearch={handleOpenSearch}
+                      onOpenSearch={openSearchPanel}
                       onCloseSearch={handleCloseSearch}
                       onRegisterInterrupt={registerInterrupt}
                       onRegisterRecap={registerRecap}

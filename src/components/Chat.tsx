@@ -84,9 +84,8 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { useRecapSettle } from '../hooks/useRecapSettle'
 import { useScheduledSends } from '../hooks/useScheduledSends'
 import { useTaskList } from '../hooks/useTaskList'
-import { NewerHistoryFloat } from './message-list/transcript-chrome'
 import { SessionSearchPanel } from './SessionSearchPanel'
-import type { RevealTarget } from './message-list/reveal'
+import type { MessagePreviewTarget } from '../hooks/useMessagePreview'
 import { useSessionTaskCounts, useSessionField, useSessionSelector, selectHasActivePhase, selectHasTranscriptBackground, selectHasLiveSyncSubagent } from '../session-store/selectors'
 import { computeWaiting, computeTurnActive, autoTitleDescription, isHumanUserMessage, countQueuedUserTurns } from '../session-store/normalize'
 import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction } from '../utils/task-actions'
@@ -1308,10 +1307,8 @@ export const Chat = memo(function Chat({
     const error = addFilesToDraft(files)
     if (error !== null) toast.info(error)
   }, [composerDisabled, addFilesToDraft, toast])
-  // ── Search-jump reveal ────────────────────────────────────────────
-  // The dialog/palette only produce a target; the transcript owns the
-  // anchor + flash. `paging.anchorAt` re-centers the seq window, then the
-  // target is handed to MessageList, which seeks and flashes the row.
+  // ── Search preview ────────────────────────────────────────────────
+  // The panel owns the hit preview; the transcript is never re-anchored.
   const [searchSeed, setSearchSeed] = useState('')
   const openSearch = useCallback((query = '') => {
     const seed = query.trim()
@@ -1333,41 +1330,13 @@ export const Chat = memo(function Chat({
     return () => window.removeEventListener('keydown', onKey)
   }, [focused, openSearch])
 
-  const revealNonceRef = useRef(0)
-  const [revealFlash, setRevealFlash] = useState<RevealTarget | null>(null)
-  const revealTimerRef = useRef<number | null>(null)
-  const pagingAnchorAt = paging.anchorAt
-  const revealMessage = useCallback(async (target: { seq?: number; messageUuid?: string; ownerToolUseId?: string }) => {
-    const anchor = target.seq != null
-      ? { seq: target.seq }
-      : target.messageUuid != null
-        ? { uuid: target.messageUuid }
-        : null
-    if (!anchor) return
-    await pagingAnchorAt(anchor)
-    revealNonceRef.current += 1
-    setRevealFlash({
-      nonce: revealNonceRef.current,
-      ...(target.messageUuid != null ? { messageUuid: target.messageUuid } : {}),
-      ...(target.ownerToolUseId != null ? { ownerToolUseId: target.ownerToolUseId } : {}),
-    })
-    if (revealTimerRef.current != null) window.clearTimeout(revealTimerRef.current)
-    revealTimerRef.current = window.setTimeout(() => setRevealFlash(null), 2000)
-  }, [pagingAnchorAt])
-
-  const handledJumpNonceRef = useRef<number | null>(null)
-  useEffect(() => {
-    if (!messageJumpTarget || messageJumpTarget.sessionId !== session.id) return
-    if (handledJumpNonceRef.current === messageJumpTarget.nonce) return
-    handledJumpNonceRef.current = messageJumpTarget.nonce
-    void revealMessage({ messageUuid: messageJumpTarget.messageUuid })
-  }, [messageJumpTarget, session.id, revealMessage])
-
-  // Dialog selection (session-level: the dialog is rendered by this Chat)
-  // takes the same path as a palette hit.
-  useEffect(() => () => {
-    if (revealTimerRef.current != null) window.clearTimeout(revealTimerRef.current)
-  }, [])
+  const initialSearchTarget = useMemo<MessagePreviewTarget | undefined>(
+    () =>
+      messageJumpTarget && messageJumpTarget.sessionId === session.id
+        ? { kind: 'uuid', uuid: messageJumpTarget.messageUuid, query: messageJumpTarget.query }
+        : undefined,
+    [messageJumpTarget, session.id],
+  )
 
   // Session recap ?phase-driven auto-generation. The hook reads
   // session.phase + session.lastTurnAt + session.recap (all kept current
@@ -2198,7 +2167,6 @@ export const Chat = memo(function Chat({
           transcriptRevealKey={session.id}
           panelVisible={panelVisible}
           showEpoch={showEpoch}
-          revealTarget={revealFlash}
           onRegisterNavigate={registerNavigate}
           onSwitchModel={handleSwitchModel}
           onAbortBash={abortBashCommand}
@@ -2687,17 +2655,15 @@ export const Chat = memo(function Chat({
         focusEscapeSelector=".chat-panel"
       >
         <SessionSearchPanel
+          key={messageJumpTarget?.nonce ?? 'search'}
           sessionId={session.id}
           initialQuery={searchSeed}
+          initialTarget={initialSearchTarget}
+          toolGroupCards={effectiveToolGroupCards}
+          showMessageHeaders={effectiveShowMessageHeaders}
+          autoExpandRunningGroups={effectiveAutoExpandRunningGroups}
+          cwd={session.cwd}
           onClose={() => onCloseSearch()}
-          onSelect={(hit) => {
-            onCloseSearch()
-            void revealMessage({
-              seq: hit.seq,
-              ...(hit.messageUuid ? { messageUuid: hit.messageUuid } : {}),
-              ...(hit.ownerToolUseId ? { ownerToolUseId: hit.ownerToolUseId } : {}),
-            })
-          }}
         />
       </Overlay>
 
@@ -2794,10 +2760,6 @@ export const Chat = memo(function Chat({
           onRetry={paging.loadOlder}
         />
       </div>
-
-      {(paging.anchored && (paging.newerCount > 0 || paging.hasNewer)) && (
-        <NewerHistoryFloat count={paging.newerCount} hasNewer={paging.hasNewer} onReturn={paging.returnToHead} />
-      )}
 
       {subagentStack.length > 0 && (
         <SubagentProvider value={subagentCtxValue}>
