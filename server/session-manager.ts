@@ -3243,8 +3243,9 @@ export class SessionManager {
       // live frames are indistinguishable downstream.
       // Seed split by frame origin: main-thread frames go to `history`,
       // subagent frames (parent_tool_use_id != null — only present in seeds
-      // built from a live session's merged view, e.g. discard(); the disk
-      // reader drops isSidechain lines) to `subagentHistory`. Each ring takes
+      // built from a live session's merged view, e.g. discard(); the
+      // claude/CLI disk reader drops isSidechain lines, while the native log
+      // keeps them) to `subagentHistory`. Each ring takes
       // its own tail, so neither budget can crowd the other at seed time.
       // stampReceivedAt fills in any frame that lacks a timestamp (a disk
       // line without one) so the mergedHistory sort stays a total order.

@@ -8,6 +8,9 @@ const user = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user'
 const assistant = (seq: number, content: unknown[]): NativeLogEvent => ({ seq, type: 'assistant', uuid: `a${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content } })
 const compact = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'session/compact', text, context: 'CTX', uuid: `c${seq}`, timestamp: 't' })
 const result = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'user', uuid: `r${seq}`, session_id: 's', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'ok' }], is_error: false }] } })
+const sideAssistant = (seq: number, content: unknown[]): NativeLogEvent => ({ seq, type: 'assistant', uuid: `sa${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'assistant', content } })
+const sideResult = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'user', uuid: `sr${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'inner ok' }], is_error: false }] } })
+const sideUser = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `su${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
 
 describe('replay', () => {
   it('rebuilds history, strips thinking and merges consecutive tool results', () => {
@@ -48,6 +51,22 @@ describe('replay', () => {
     expect(json).not.toContain('FIRST SUMMARY')
     expect(json).not.toContain('middle')
   })
+  it('excludes sidechain events from the main model history', () => {
+    const events = [
+      user(0, 'go'),
+      // The parent turn: the assistant calls a tool, then a nested runner's
+      // wraps run, and only the parent's result belongs to the main history.
+      assistant(1, [{ type: 'tool_use', id: 'agent1', name: 'Agent', input: {} }]),
+      sideUser(2, 'INNER PROMPT'),
+      sideAssistant(3, [{ type: 'text', text: 'INNER REPLY' }]),
+      sideResult(4, 'inner-tool'),
+      result(5, 'agent1'),
+    ]
+    const messages = historyFromEvents(events) as Array<{ role: string; content: unknown[] }>
+    expect(messages).toHaveLength(3) // user, assistant(tool_use), merged tool result
+    expect(JSON.stringify(messages)).not.toContain('INNER')
+    expect(messages[2].content).toHaveLength(1)
+  })
   it('synthesizes a result for every unanswered tool_use', () => {
     const events = [user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }])]
     const { synthetic } = repairInterruptedTurn(events)
@@ -55,6 +74,17 @@ describe('replay', () => {
   })
   it('returns no synthetic events for a complete turn', () => {
     expect(repairInterruptedTurn([user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }]), result(2, 't1')]).synthetic).toEqual([])
+  })
+  it('does not synthesize a result for an unanswered sidechain tool_use', () => {
+    const events = [
+      user(0, 'go'),
+      sideAssistant(1, [{ type: 'tool_use', id: 'inner', name: 'Read', input: {} }]),
+      assistant(2, [{ type: 'tool_use', id: 'outer', name: 'Read', input: {} }]),
+    ]
+    const { synthetic } = repairInterruptedTurn(events)
+    expect(
+      synthetic.map((e) => (e as { message: { content: Array<{ tool_use_id: string }> } }).message.content[0].tool_use_id),
+    ).toEqual(['outer'])
   })
   it('ignores an unanswered tool_use before the last compact', () => {
     // The replay floor supersedes the pre-compact conversation, so repairing
@@ -97,6 +127,29 @@ describe('repairRenderableLines', () => {
       },
     })
     expect(synthetic[0].uuid).toBeTruthy()
+  })
+
+  it('skips sidechain lines both when collecting and when answering', () => {
+    const synthetic = repairRenderableLines([
+      {
+        type: 'assistant', uuid: 'side', session_id: 's', parent_tool_use_id: 'agent1',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'inner', name: 'Read', input: {} }] },
+      },
+      {
+        // A sidechain result must not answer a main-thread tool_use.
+        type: 'user', uuid: 'side-answer', session_id: 's', parent_tool_use_id: 'agent1',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'outer', content: [], is_error: false }] },
+      },
+      {
+        type: 'assistant', uuid: 'top', session_id: 's', parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'outer', name: 'Read', input: {} }] },
+      },
+    ], { now })
+    expect(synthetic).toHaveLength(1)
+    expect(synthetic[0]).toMatchObject({
+      parent_tool_use_id: null,
+      message: { content: [{ tool_use_id: 'outer' }] },
+    })
   })
 
   it('returns no lines when every tool_use is answered', () => {

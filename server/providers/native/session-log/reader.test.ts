@@ -3,9 +3,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { NativeSessionLog } from './log.js'
+import { NativeSessionLog, loadNativeSessionLogSync } from './log.js'
 import { nativeHistoryCache } from './cache.js'
 import { readNativeHistoryEntries, readNativeHistoryPage } from './reader.js'
+import { historyFromEvents } from './replay.js'
 import type { HistoryPage } from '../../../history-reader.js'
 
 let dir: string
@@ -107,6 +108,36 @@ describe('native history reader', () => {
     expect(pageText(page)).toContain('SECOND SUMMARY')
     expect(pageText(page)).toContain('post-compact')
     expect(JSON.stringify(await readNativeHistoryEntries(dir, 's1'))).not.toContain('FIRST SUMMARY')
+  })
+  it('keeps sidechain lines in pages with their parent, but not in entries/search', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'session/context', text: 'ctx' } as never)
+    push({ type: 'user', uuid: 'u1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'top prompt' }] } } as never)
+    push({ type: 'assistant', uuid: 'side', session_id: 's1', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'inner reply' }] } } as never)
+    push({ type: 'user', uuid: 'side-result', session_id: 's1', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'inner-tool', content: [{ type: 'text', text: 'inner result' }], is_error: false }] } } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    const pageMessages = page.messages as Array<{ uuid: string; parent_tool_use_id: string | null }>
+    const side = pageMessages.find((m) => m.uuid === 'side')
+    expect(side?.parent_tool_use_id).toBe('agent1')
+    expect(pageMessages.find((m) => m.uuid === 'side-result')?.parent_tool_use_id).toBe('agent1')
+
+    // Search / the transcript seq backfill see top-level turns only.
+    const entries = await readNativeHistoryEntries(dir, 's1')
+    const entryUuids = entries.map((e) => (e.message as { uuid: string }).uuid)
+    expect(entryUuids).toContain('u1')
+    expect(entryUuids).not.toContain('side')
+    expect(entryUuids).not.toContain('side-result')
+
+    // The model history the session resumes from is top-level only too.
+    const events = loadNativeSessionLogSync(dir, 's1')!.events
+    const history = JSON.stringify(historyFromEvents(events))
+    expect(history).toContain('top prompt')
+    expect(history).not.toContain('inner reply')
+    expect(history).not.toContain('inner result')
   })
   it('returns an empty page for a missing log', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-reader-'))

@@ -431,8 +431,10 @@ export interface Session {
    *  main-thread frames from `history`. Every read surface (replay, getHistory,
    *  fork seeds, compact input) goes through SessionManager.mergedHistory(),
    *  which merges both rings in receivedAt order. Not persisted to disk —
-   *  history-reader drops isSidechain lines, so after a server restart the
-   *  subagent transcript is gone (same as before the split). */
+   *  the claude/CLI JSONL reader drops isSidechain lines, so after a server
+   *  restart a claude session's subagent transcript is gone (same as before
+   *  the split). The native provider's own session log keeps sidechain
+   *  frames (persisted with parent_tool_use_id). */
   subagentHistory: SDKMessage[]
   pumpTask: Promise<void>
   running: boolean

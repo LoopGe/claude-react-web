@@ -97,6 +97,9 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
         openResults = null
         break
       case 'assistant':
+        // Sidechain (nested-runner) frames belong to the transcript UI, not
+        // the MAIN conversation the model continues from.
+        if (event.parent_tool_use_id != null) break
         messages.push({
           role: 'assistant',
           content: blocksOf(event.message.content).filter((block) => !isThinkingBlock(block)),
@@ -104,6 +107,10 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
         openResults = null
         break
       case 'user':
+        // Skipping a sidechain frame must NOT close the open tool-result
+        // group: the sidechain interleaves with the parent's tool calls, and
+        // the parent's results still have to merge into one user message.
+        if (event.parent_tool_use_id != null) break
         if (isToolResultUser(event.message.content)) {
           if (openResults) {
             openResults.content.push(...blocksOf(event.message.content))
@@ -140,13 +147,18 @@ function collectOpenToolUses(
   // tool_use, which the API rejects.
   for (let i = lastCompactIndex(events) + 1; i < events.length; i++) {
     const event = events[i]
+    // Sidechain events are excluded from the main history, so their tool_use
+    // ids are not the main history's to repair (a synthetic result for one
+    // would be an orphan block in a conversation that never contained it).
     if (event.type === 'assistant') {
+      if (event.parent_tool_use_id != null) continue
       for (const block of blocksOf(event.message.content)) {
         if (block.type === 'tool_use' && typeof block.id === 'string') {
           open.push({ id: block.id, sessionId: event.session_id })
         }
       }
     } else if (event.type === 'user') {
+      if (event.parent_tool_use_id != null) continue
       answerToolUses(open, event.message.content)
     }
   }
@@ -213,6 +225,9 @@ export function repairRenderableLines(
   const timestamp = (opts?.now?.() ?? new Date()).toISOString()
   const open: OpenToolUse[] = []
   for (const line of lines) {
+    // Mirror the replay floor: sidechain lines are UI-only, so neither their
+    // tool_use ids nor their results participate in the main-turn repair.
+    if (line.parent_tool_use_id != null) continue
     if (line.type === 'assistant') {
       for (const block of blocksOf(line.message?.content)) {
         if (block.type === 'tool_use' && typeof block.id === 'string') {

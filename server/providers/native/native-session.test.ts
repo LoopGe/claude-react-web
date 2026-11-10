@@ -465,6 +465,37 @@ describe('NativeSession', () => {
     await resumed.destroy()
   })
 
+  it('reads context usage from the last TOP-LEVEL assistant while summing sidechain billing', async () => {
+    const dir = await tempDir('native-side-usage-')
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'side-usage', cwd: dir, resume: false })
+    seed.append({ type: 'session/context', text: 'ctx' })
+    seed.append({ type: 'user', uuid: 'u', session_id: 'side-usage', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } })
+    seed.append({ type: 'assistant', uuid: 'a-top', session_id: 'side-usage', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'top' }], usage: { input_tokens: 7, output_tokens: 3 } } })
+    // The LAST assistant frame is sidechain (a nested runner). It must not
+    // become the context bar's reading, but its tokens are still billed.
+    seed.append({ type: 'assistant', uuid: 'a-side', session_id: 'side-usage', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'inner' }], usage: { input_tokens: 40, output_tokens: 9 } } })
+    await seed.flush(); await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir })
+    const resumed = provider.createSession({ id: 'side-usage', cwd: dir, resume: 'side-usage' })
+    const contextUsage = (await resumed.getContextUsage?.()) as { totalTokens: number }
+    expect(contextUsage.totalTokens).toBe(7)
+    expect(await resumed.getUsage?.()).toEqual({
+      session: {
+        model_usage: {
+          'claude-sonnet-4-5': { inputTokens: 47, outputTokens: 12 },
+        },
+      },
+      rate_limits_available: false,
+      cost_available: false,
+    })
+    // Sidechain frames never reach the main model history.
+    const history = JSON.stringify((resumed as unknown as { history: unknown[] }).history)
+    expect(history).toContain('top')
+    expect(history).not.toContain('inner')
+    await resumed.destroy()
+  })
+
   it('writes the fresh session context synchronously at open', async () => {
     const dir = await tempDir('native-context-')
     const provider = new NativeProvider({ stateDir: dir })

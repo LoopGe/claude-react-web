@@ -4,6 +4,9 @@ export class ToolInputError extends Error {}
 export interface ToolContext {
   cwd: string
   signal: AbortSignal
+  /** The `tool_use` id of the call being executed. Lets a tool anchor nested
+   *  (sidechain) frames to itself. */
+  toolUseId?: string
 }
 
 export interface ToolOutcome {

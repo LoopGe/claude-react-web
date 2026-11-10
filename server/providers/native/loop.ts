@@ -12,6 +12,10 @@ export interface LoopDeps {
   requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string }>
   emit(frame: AgentMessage): void
   system: string
+  /** Emit the terminal result frame at the end of the turn (default true). A
+   *  nested (sidechain) runner sets this to false: its frames belong to a
+   *  parent tool, and the parent's own turn owns the single terminal result. */
+  emitResult?: boolean
 }
 
 export interface TurnResult {
@@ -131,7 +135,7 @@ export async function runTurn(
       let text: string
       let runFailed = false
       try {
-        const outcome = await tool.run(decision.input as never, { cwd: deps.cwd, signal })
+        const outcome = await tool.run(decision.input as never, { cwd: deps.cwd, signal, toolUseId: call.id })
         text = outcome.text
         runFailed = outcome.isError ?? false
       } catch (err) {
@@ -154,7 +158,9 @@ export async function runTurn(
     }
     history.push({ role: 'user', content: results })
   }
-  deps.emit(resultFrame(ctx, { result: finalText, usage, numTurns, durationMs: 0, isError }))
+  if (deps.emitResult !== false) {
+    deps.emit(resultFrame(ctx, { result: finalText, usage, numTurns, durationMs: 0, isError }))
+  }
   return { usage, numTurns, finalText, isError }
 }
 

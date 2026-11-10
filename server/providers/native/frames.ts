@@ -23,14 +23,17 @@ export interface Usage {
 export interface FrameContext {
   sessionId: string
   uuid(): string
+  /** Set by a nested (sidechain) runner: the id of the tool_use that spawned
+   *  it. Unset / null for the main thread. */
+  parentToolUseId?: string | null
 }
 
-export function defaultFrameContext(sessionId: string): FrameContext {
-  return { sessionId, uuid: () => crypto.randomUUID() }
+export function defaultFrameContext(sessionId: string, parentToolUseId?: string | null): FrameContext {
+  return { sessionId, uuid: () => crypto.randomUUID(), parentToolUseId: parentToolUseId ?? null }
 }
 
 function base(ctx: FrameContext, type: string): Record<string, unknown> {
-  return { type, session_id: ctx.sessionId, uuid: ctx.uuid(), parent_tool_use_id: null }
+  return { type, session_id: ctx.sessionId, uuid: ctx.uuid(), parent_tool_use_id: ctx.parentToolUseId ?? null }
 }
 
 export function assistantFrame(

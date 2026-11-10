@@ -4,6 +4,7 @@ import { runTurn, type LoopDeps } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, type Frame } from './frames.js'
 import { readTool } from './tools/read.js'
+import type { ToolContext, ToolDef } from './tools/types.js'
 
 /** Scripted fake streamer: one entry per API round-trip in the turn. Yields
  *  canonical events directly — the loop's actual contract. */
@@ -159,6 +160,49 @@ describe('runTurn', () => {
     // Both tool_uses are answered: t1 ran, t2 got the synthetic aborted result.
     expect(results.map((r) => r.tool_use_id)).toEqual(['t1', 't2'])
     expect(results[1].is_error).toBe(true)
+  })
+
+  it('emitResult: false suppresses the terminal result frame but returns TurnResult', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...textBlock(0, 'inner'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    const res = await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (f) => emitted.push(f as Frame), emitResult: false }),
+      defaultFrameContext('sess-1', 'tu1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    expect(emitted.some((f) => f.type === 'result')).toBe(false)
+    expect(res.finalText).toBe('inner')
+    expect(res.numTurns).toBe(1)
+    expect(res.isError).toBe(false)
+  })
+
+  it('passes the tool_use id to the tool context', async () => {
+    const seen: Array<ToolContext | undefined> = []
+    const captureTool: ToolDef = {
+      name: 'Capture',
+      description: 'd',
+      guidance: 'g',
+      promptOrder: 1,
+      schema: {},
+      async run(_input, ctx) {
+        seen.push(ctx)
+        return { text: 'ok' }
+      },
+    }
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'tu-9', 'Capture', '{}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), tools: [captureTool] }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.toolUseId).toBe('tu-9')
+    expect(seen[0]?.cwd).toBe(process.cwd())
   })
 
   it('second request history contains the assistant blocks and tool results, without thinking blocks', async () => {

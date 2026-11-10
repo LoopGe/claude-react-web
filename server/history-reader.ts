@@ -507,7 +507,14 @@ function pickCompactMetadata(meta: unknown): Record<string, unknown> {
  *  build small snippets — it never ships the full message over WS — so it
  *  passes `trim: false` to keep full recall on the on-disk text. */
 export function normalize(o: RawLine, sessionId: string, trim: boolean): unknown {
-  const parent = o.type === 'user' ? toolResultParentId(o.message?.content) : null
+  // Prefer a PERSISTED parent (native session log lines carry one on every
+  // user/assistant frame, sidechain or not). Claude CLI transcript lines have
+  // no top-level field, so they keep the content-derived behavior: a
+  // tool_result user line maps to its tool_use id, real prompts/assistants to
+  // null.
+  const parent = typeof o.parent_tool_use_id === 'string'
+    ? o.parent_tool_use_id
+    : (o.type === 'user' ? toolResultParentId(o.message?.content) : null)
   // The SDK writes an ISO `timestamp` on every persisted line. Carry it as
   // receivedAt (epoch ms) so disk-restored history (resume historySeed +
   // scroll-up loadOlder) shows its original wall-clock time. NaN for

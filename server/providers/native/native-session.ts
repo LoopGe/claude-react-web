@@ -318,7 +318,10 @@ export class NativeSession implements ProviderSessionHandle {
       if (event.type === 'assistant') {
         const usage = usageOf(event.message.usage)
         if (usage) {
-          lastAssistant = usage
+          // The context bar describes the MAIN conversation's last request, so
+          // only a top-level assistant frame updates it. Billing is cumulative
+          // across the whole session, sidechain rounds included.
+          if (event.parent_tool_use_id == null) lastAssistant = usage
           const model = typeof event.message.model === 'string' && event.message.model
             ? event.message.model
             : this.model
@@ -409,8 +412,10 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   /** Persist the durable half of the frame stream: model-visible assistant
-   *  messages and top-level tool_result user messages. Everything else
-   *  (stream_event, system/init, result, api_retry) is UI-only and never
+   *  messages and tool_result user messages (main thread AND sidechain — the
+   *  latter carry their spawning tool_use id, so replay can keep them out of
+   *  the main history while the transcript still renders them). Everything
+   *  else (stream_event, system/init, result, api_retry) is UI-only and never
    *  enters the log. Fire-and-forget — the turn-end flush is the barrier. */
   private persistFrame(frame: AgentMessage): void {
     const f = frame as Frame
@@ -419,7 +424,7 @@ export class NativeSession implements ProviderSessionHandle {
         type: 'assistant',
         uuid: f.uuid!,
         session_id: this.opts.id,
-        parent_tool_use_id: null,
+        parent_tool_use_id: f.parent_tool_use_id ?? null,
         timestamp: new Date().toISOString(),
         message: f.message,
       })
@@ -441,12 +446,12 @@ export class NativeSession implements ProviderSessionHandle {
           addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage),
         )
       }
-    } else if (f.type === 'user' && f.parent_tool_use_id === null) {
+    } else if (f.type === 'user') {
       this.log.append({
         type: 'user',
         uuid: f.uuid!,
         session_id: this.opts.id,
-        parent_tool_use_id: null,
+        parent_tool_use_id: f.parent_tool_use_id ?? null,
         timestamp: new Date().toISOString(),
         message: persistedUserMessage(f.message),
       })

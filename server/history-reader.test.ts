@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt, deleteTranscriptFiles } from './history-reader.js'
+import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt, deleteTranscriptFiles, normalize } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 
 // Creating a symlink needs no privileges on POSIX but does on Windows unless a
@@ -295,6 +295,38 @@ describe('paginateJsonl — normalization', () => {
     ])
     const page = paginateJsonl(raw, SID, { limit: 100 })
     expect(page.messages[0]).toMatchObject({ type: 'assistant', supersedes: ['x1', 'x2'] })
+  })
+})
+
+describe('normalize — persisted parent_tool_use_id', () => {
+  it('prefers the persisted parent over the content-derived tool_use id', () => {
+    const assistant = normalize({
+      type: 'assistant', uuid: 'a1', parent_tool_use_id: 'tu1',
+      message: { role: 'assistant', content: [] },
+    }, SID, false) as { parent_tool_use_id: string }
+    expect(assistant.parent_tool_use_id).toBe('tu1')
+    // The content says tool-42; the persisted field wins.
+    const toolResult = normalize({
+      type: 'user', uuid: 'u1', parent_tool_use_id: 'tu1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-42', content: 'ok' }] },
+    }, SID, false) as { parent_tool_use_id: string; consumedAt?: number }
+    expect(toolResult.parent_tool_use_id).toBe('tu1')
+    expect(toolResult.consumedAt).toBeUndefined()
+  })
+
+  it('behaves exactly as before when the field is absent (claude disk lines)', () => {
+    const assistant = normalize({
+      type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] },
+    }, SID, false) as { parent_tool_use_id: string | null }
+    expect(assistant.parent_tool_use_id).toBeNull()
+    const toolResult = normalize({
+      type: 'user', uuid: 'u1', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-42', content: 'ok' }] },
+    }, SID, false) as { parent_tool_use_id: string | null }
+    expect(toolResult.parent_tool_use_id).toBe('tool-42')
+    const prompt = normalize({
+      type: 'user', uuid: 'u2', message: { role: 'user', content: 'plain prompt' },
+    }, SID, false) as { parent_tool_use_id: string | null }
+    expect(prompt.parent_tool_use_id).toBeNull()
   })
 })
 

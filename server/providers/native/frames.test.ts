@@ -51,4 +51,24 @@ describe('frames', () => {
     expect(f.type).toBe('stream_event')
     expect(f.event.type).toBe('message_start')
   })
+
+  it('every factory carries the frame context parent (sidechain runner)', () => {
+    const side = defaultFrameContext('sess-1', 'tu1')
+    const frames = [
+      assistantFrame(side, { model: 'm', content: [], stopReason: null, usage }),
+      toolResultFrame(side, 't1', 'out', false),
+      apiRetryFrame(side, { attempt: 1, maxRetries: 2, delayMs: 1 }),
+      resultFrame(side, { result: '', usage, numTurns: 1, durationMs: 0, isError: false }),
+      streamEventFrame(side, { type: 'message_start' }),
+    ]
+    for (const f of frames) expect(f.parent_tool_use_id).toBe('tu1')
+  })
+
+  it('defaults the parent to null for a main-thread context', () => {
+    const f = assistantFrame(defaultFrameContext('sess-1'), {
+      model: 'm', content: [], stopReason: null, usage,
+    })
+    expect(f.parent_tool_use_id).toBeNull()
+    expect(defaultFrameContext('sess-1').parentToolUseId).toBeNull()
+  })
 })

@@ -39,6 +39,20 @@ describe('session log format', () => {
       expect(() => parseEventLine({ ...compact, [field]: '' }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
     }
   })
+  it('accepts a string parent_tool_use_id on user and assistant events', () => {
+    const user = { seq: 0, type: 'user', uuid: 'u', session_id: 's1', parent_tool_use_id: 'tu1', timestamp: 't', message: { role: 'user', content: [] } }
+    const assistant = { seq: 0, type: 'assistant', uuid: 'a', session_id: 's1', parent_tool_use_id: 'tu1', timestamp: 't', message: { role: 'assistant', content: [] } }
+    expect(parseEventLine(user, 0, 's1', 'p')).toMatchObject({ parent_tool_use_id: 'tu1' })
+    expect(parseEventLine(assistant, 0, 's1', 'p')).toMatchObject({ parent_tool_use_id: 'tu1' })
+  })
+  it('rejects a non-string, non-null parent_tool_use_id', () => {
+    for (const type of ['user', 'assistant'] as const) {
+      const base = { seq: 0, type, uuid: 'x', session_id: 's1', parent_tool_use_id: null, timestamp: 't', message: { role: type, content: [] } }
+      for (const bad of [3, {}, true, undefined] as unknown[]) {
+        expect(() => parseEventLine({ ...base, parent_tool_use_id: bad }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
+      }
+    }
+  })
   it('rejects an unknown event type', () => {
     expect(() => parseEventLine({ seq: 0, type: 'mystery' }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
   })

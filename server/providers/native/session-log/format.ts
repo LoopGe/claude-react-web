@@ -31,7 +31,10 @@ export interface NativeUserEvent {
   type: 'user'
   uuid: string
   session_id: string
-  parent_tool_use_id: null
+  /** Null for main-thread frames; the spawning `tool_use` id for a sidechain
+   *  (nested runner) frame. Sidechain frames are persisted and paged for the
+   *  transcript UI but never replayed into the MAIN model history. */
+  parent_tool_use_id: string | null
   timestamp: string
   message: { role: 'user'; content: unknown[] }
   isCompactSummary?: true
@@ -42,7 +45,8 @@ export interface NativeAssistantEvent {
   type: 'assistant'
   uuid: string
   session_id: string
-  parent_tool_use_id: null
+  /** See NativeUserEvent.parent_tool_use_id. */
+  parent_tool_use_id: string | null
   timestamp: string
   message: {
     role: 'assistant'
@@ -133,6 +137,17 @@ function requireString(raw: JsonObject, field: string, sessionId: string, path: 
   return value
 }
 
+/** `parent_tool_use_id` is required and is either null (main thread) or a
+ *  string (sidechain). A missing field is corruption, not "null". */
+function requireParentToolUseId(raw: JsonObject, sessionId: string, path: string): string | null {
+  const value = raw.parent_tool_use_id
+  if (value === null) return null
+  if (typeof value !== 'string') {
+    corrupt(sessionId, path, `${raw.type} event parent_tool_use_id must be a string or null`)
+  }
+  return value
+}
+
 /** A compact boundary's fields are all load-bearing (replay seeds the model
  *  with `context` + `text` and the reader keys the summary line on `uuid`),
  *  so an empty string is corruption, not a value. */
@@ -187,16 +202,14 @@ export function parseEventLine(
 
   switch (raw.type) {
     case 'user': {
-      if (raw.parent_tool_use_id !== null) {
-        corrupt(sessionId, path, 'user event parent_tool_use_id must be null')
-      }
+      const parentToolUseId = requireParentToolUseId(raw, sessionId, path)
       const message = requireMessage(raw, 'user', sessionId, path)
       const event: NativeUserEvent = {
         seq,
         type: 'user',
         uuid: requireString(raw, 'uuid', sessionId, path),
         session_id: requireString(raw, 'session_id', sessionId, path),
-        parent_tool_use_id: null,
+        parent_tool_use_id: parentToolUseId,
         timestamp: requireString(raw, 'timestamp', sessionId, path),
         message: message as unknown as NativeUserEvent['message'],
       }
@@ -208,16 +221,14 @@ export function parseEventLine(
     }
 
     case 'assistant': {
-      if (raw.parent_tool_use_id !== null) {
-        corrupt(sessionId, path, 'assistant event parent_tool_use_id must be null')
-      }
+      const parentToolUseId = requireParentToolUseId(raw, sessionId, path)
       const message = requireMessage(raw, 'assistant', sessionId, path)
       const event: NativeAssistantEvent = {
         seq,
         type: 'assistant',
         uuid: requireString(raw, 'uuid', sessionId, path),
         session_id: requireString(raw, 'session_id', sessionId, path),
-        parent_tool_use_id: null,
+        parent_tool_use_id: parentToolUseId,
         timestamp: requireString(raw, 'timestamp', sessionId, path),
         message: message as unknown as NativeAssistantEvent['message'],
       }

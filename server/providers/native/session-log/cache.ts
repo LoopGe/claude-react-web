@@ -89,10 +89,19 @@ function parseLine(line: string, id: string, path: string): unknown {
   }
 }
 
+/** A sidechain frame is excluded by `isRenderableSdkMessage` (the shared
+ *  top-level-transcript predicate, which must stay untouched), but the native
+ *  transcript needs it: a nested runner's frames render under the Agent card
+ *  and seed nothing into the main model history. */
+function isSidechainEvent(event: unknown): boolean {
+  const e = event as { type?: unknown; parent_tool_use_id?: unknown }
+  return (e.type === 'assistant' || e.type === 'user') && e.parent_tool_use_id != null
+}
+
 function collectRenderable(events: Iterable<unknown>): RawLine[] {
   const lines: RawLine[] = []
   for (const event of events) {
-    if (isRenderableSdkMessage(event as RawLine)) lines.push(event as RawLine)
+    if (isRenderableSdkMessage(event as RawLine) || isSidechainEvent(event)) lines.push(event as RawLine)
   }
   return lines
 }

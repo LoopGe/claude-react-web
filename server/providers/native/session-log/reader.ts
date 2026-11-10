@@ -174,12 +174,16 @@ export async function readNativeHistoryEntries(
 ): Promise<HistoryEntry[]> {
   const lines = await loadFlooredLines(stateDir, id)
   if (!lines) return []
-  return filterAfterUuid(withRepair(lines), opts.afterUuid).map((line, index) => ({
-    index,
-    // No trim: this path feeds search, which reads content to build snippets
-    // and never ships the full message over WS.
-    message: normalize(line, id, false),
-  }))
+  return filterAfterUuid(withRepair(lines), opts.afterUuid)
+    // This path feeds searchMessages and the transcript seq backfill, both of
+    // which must see only top-level turns. Pages keep sidechain lines.
+    .filter((line) => line.parent_tool_use_id == null)
+    .map((line, index) => ({
+      index,
+      // No trim: this path feeds search, which reads content to build snippets
+      // and never ships the full message over WS.
+      message: normalize(line, id, false),
+    }))
 }
 
 export async function readNativeHistoryPage(
