@@ -11,7 +11,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { IconCheck, IconChevronDown, IconChevronUp, IconFolder, IconSearch, IconX } from '../icons/ToolIcons'
+import { IconCheck, IconChevronDown, IconChevronUp, IconFolder, IconX } from '../icons/ToolIcons'
+import { SearchField } from '../SearchField'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useSearchablePicker } from '../../hooks/useSearchablePicker'
 import { useMergedRef } from '../../utils/mergedRef'
@@ -102,10 +103,10 @@ export function ProjectPicker({
     optionId,
     close,
     activate,
-    clearSearch,
+    searchRef,
+    setSearchValue,
     triggerProps,
     menuProps,
-    searchProps,
   } = useSearchablePicker<Row>({
     id: id ?? 'project-picker',
     rows: getRows,
@@ -225,20 +226,16 @@ export function ProjectPicker({
       {open &&
         createPortal(
           <div className="project-picker-menu" {...menuProps}>
-            <div className="project-picker-search">
-              <IconSearch size={13} aria-hidden />
-              <input placeholder="Search projects…" aria-label="Search projects" {...searchProps} />
-              {search && (
-                <button
-                  type="button"
-                  className="project-picker-clear"
-                  aria-label="Clear search"
-                  onClick={clearSearch}
-                >
-                  <IconX size={12} />
-                </button>
-              )}
-            </div>
+            <SearchField
+              value={search}
+              onChange={setSearchValue}
+              placeholder="Search projects…"
+              ariaLabel="Search projects"
+              wrapperClassName="project-picker-search"
+              inputRef={searchRef}
+              ariaControls={listId}
+              ariaActiveDescendant={active >= 0 ? optionId(active) : undefined}
+            />
 
             <div
               ref={listRefMerged}

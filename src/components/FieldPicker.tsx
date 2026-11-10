@@ -14,7 +14,8 @@
 import { useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
-import { IconCheck, IconChevronDown, IconChevronUp, IconSearch, IconX } from './icons/ToolIcons'
+import { IconCheck, IconChevronDown, IconChevronUp, IconX } from './icons/ToolIcons'
+import { SearchField } from './SearchField'
 import { useSearchablePicker } from '../hooks/useSearchablePicker'
 
 export interface FieldPickerOption {
@@ -110,10 +111,10 @@ export function FieldPicker({
     optionId,
     close,
     activate,
-    clearSearch,
+    searchRef,
+    setSearchValue,
     triggerProps,
     menuProps,
-    searchProps,
   } = useSearchablePicker<FieldPickerOption>({
     id: id ?? 'field-picker',
     rows: getRows,
@@ -158,20 +159,16 @@ export function FieldPicker({
         createPortal(
           <div className="field-picker-menu" {...menuProps}>
             {searchable && (
-              <div className="field-picker-search">
-                <IconSearch size={13} aria-hidden />
-                <input placeholder={searchPlaceholder} aria-label={searchLabel} {...searchProps} />
-                {search && (
-                  <button
-                    type="button"
-                    className="field-picker-clear"
-                    aria-label="Clear search"
-                    onClick={clearSearch}
-                  >
-                    <IconX size={12} />
-                  </button>
-                )}
-              </div>
+              <SearchField
+                value={search}
+                onChange={setSearchValue}
+                placeholder={searchPlaceholder}
+                ariaLabel={searchLabel}
+                wrapperClassName="field-picker-search"
+                inputRef={searchRef}
+                ariaControls={listId}
+                ariaActiveDescendant={active >= 0 ? optionId(active) : undefined}
+              />
             )}
 
             <div

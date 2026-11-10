@@ -1213,9 +1213,7 @@ mark.search-hl.search-hl-active {
   padding: var(--space-2-5) var(--space-4);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-}
-.search-panel-icon {
-  display: inline-flex;
+  /* Muted icon; the input below restores --fg for typed text. */
   color: var(--fg-muted);
 }
 .search-panel-input {

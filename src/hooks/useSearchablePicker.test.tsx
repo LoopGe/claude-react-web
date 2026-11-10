@@ -1,6 +1,7 @@
 import { createPortal } from 'react-dom'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import { SearchField } from '../components/SearchField'
 import { useSearchablePicker } from './useSearchablePicker'
 
 interface Row {
@@ -32,6 +33,10 @@ function Harness({
 }: HarnessProps) {
   const {
     open,
+    search,
+    setSearchValue,
+    searchRef,
+    active,
     rows: visibleRows,
     hover,
     listRef,
@@ -39,10 +44,8 @@ function Harness({
     optionId,
     close,
     activate,
-    clearSearch,
     triggerProps,
     menuProps,
-    searchProps,
   } = useSearchablePicker<Row>({
     id: 'test',
     rows: (query) => rows.filter((row) => row.label.toLowerCase().includes(query.toLowerCase())),
@@ -67,9 +70,20 @@ function Harness({
       {open &&
         createPortal(
           <div className="test-menu" {...menuProps}>
-            {searchable && <input aria-label="Search" {...searchProps} />}
-            <button type="button" onClick={clearSearch}>
-              Clear search
+            {searchable && (
+              <SearchField
+                value={search}
+                onChange={setSearchValue}
+                placeholder="Search"
+                ariaLabel="Search"
+                wrapperClassName="test-search"
+                inputRef={searchRef}
+                ariaControls={listId}
+                ariaActiveDescendant={active >= 0 ? optionId(active) : undefined}
+              />
+            )}
+            <button type="button" className="test-menu-button">
+              Menu button
             </button>
             <div
               ref={listRef}
@@ -148,12 +162,12 @@ describe('useSearchablePicker', () => {
     const onActivate = vi.fn()
     render(<Harness enterOnButtons="native" onActivate={onActivate} />)
     openPicker()
-    const clear = screen.getByRole('button', { name: 'Clear search' })
+    const menuButton = screen.getByRole('button', { name: 'Menu button' })
     act(() => {
-      clear.focus()
+      menuButton.focus()
     })
 
-    const notPrevented = fireEvent.keyDown(clear, { key: 'Enter' })
+    const notPrevented = fireEvent.keyDown(menuButton, { key: 'Enter' })
     expect(notPrevented).toBe(true)
     expect(onActivate).not.toHaveBeenCalled()
   })
@@ -162,12 +176,12 @@ describe('useSearchablePicker', () => {
     const onActivate = vi.fn()
     render(<Harness enterOnButtons="activate-row" onActivate={onActivate} />)
     openPicker()
-    const clear = screen.getByRole('button', { name: 'Clear search' })
+    const menuButton = screen.getByRole('button', { name: 'Menu button' })
     act(() => {
-      clear.focus()
+      menuButton.focus()
     })
 
-    fireEvent.keyDown(clear, { key: 'Enter' })
+    fireEvent.keyDown(menuButton, { key: 'Enter' })
     expect(onActivate).toHaveBeenCalledWith(DEFAULT_ROWS[0])
   })
 

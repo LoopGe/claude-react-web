@@ -182,11 +182,14 @@ export function useSearchablePicker<T>({
     }
   }
 
-  const clearSearch = useCallback(() => {
-    setSearch('')
-    reset()
-    searchRef.current?.focus()
-  }, [reset])
+  /** Setter for a caller-rendered SearchField; resets the cursor like typing. */
+  const setSearchValue = useCallback(
+    (value: string) => {
+      setSearch(value)
+      reset()
+    },
+    [reset],
+  )
 
   const menuId = `${id ?? 'searchable-picker'}-menu`
   const listId = `${menuId}-list`
@@ -206,7 +209,8 @@ export function useSearchablePicker<T>({
     close,
     toggle,
     activate,
-    clearSearch,
+    searchRef,
+    setSearchValue,
     triggerProps: {
       ref: triggerRef,
       'aria-haspopup': 'dialog' as const,
@@ -221,19 +225,6 @@ export function useSearchablePicker<T>({
       'aria-label': menuLabel,
       onKeyDown: handleMenuKeyDown,
       onBlur: handleMenuBlur,
-    },
-    searchProps: {
-      ref: searchRef,
-      type: 'text' as const,
-      value: search,
-      'aria-controls': listId,
-      'aria-activedescendant': active >= 0 ? optionId(active) : undefined,
-      spellCheck: false,
-      autoComplete: 'off',
-      onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
-        setSearch(event.target.value)
-        reset()
-      },
     },
   }
 }

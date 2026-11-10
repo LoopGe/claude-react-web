@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { IconSearch, IconX } from './icons/ToolIcons'
+import { IconX } from './icons/ToolIcons'
+import { SearchField } from './SearchField'
 import { useListSelection } from '../hooks/useListSelection'
 import { useSessionSearch } from '../hooks/useSessionSearch'
 import { renderMatchMarks } from '../utils/highlight-matches'
@@ -91,25 +92,22 @@ export function SessionSearchPanel({ sessionId, initialQuery, onClose, onSelect 
         </button>
       </header>
 
-      <div className="search-panel-input-row">
-        <span className="search-panel-icon" aria-hidden="true">
-          <IconSearch size={15} />
-        </span>
-        <input
-          ref={inputRef}
-          className="search-panel-input"
-          type="text"
-          value={query}
-          onChange={(e) => {
-            setQuery(e.target.value)
-            reset()
-          }}
-          placeholder="Search this session's history…"
-          aria-label="Search session history"
-          aria-controls="session-search-list"
-          aria-activedescendant={search.hits.length > 0 ? `session-search-hit-${activeIndex}` : undefined}
-        />
-      </div>
+      <SearchField
+        value={query}
+        onChange={(value) => {
+          setQuery(value)
+          reset()
+        }}
+        placeholder="Search this session's history…"
+        ariaLabel="Search session history"
+        wrapperClassName="search-panel-input-row"
+        inputClassName="search-panel-input"
+        inputRef={inputRef}
+        iconSize={15}
+        showClear={false}
+        ariaControls="session-search-list"
+        ariaActiveDescendant={search.hits.length > 0 ? `session-search-hit-${activeIndex}` : undefined}
+      />
 
       <div className="search-panel-list" ref={listRef} id="session-search-list" role="listbox" aria-label="Search results">
         {!trimmed ? (

@@ -1386,8 +1386,7 @@
 .project-picker-search input::placeholder,
 .field-picker-search input::placeholder,
 .settings-skill-picker-search input::placeholder { color: var(--fg-muted); }
-.project-picker-clear,
-.field-picker-clear {
+.search-field-clear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1400,8 +1399,7 @@
   color: var(--fg-muted);
   cursor: pointer;
 }
-.project-picker-clear:hover,
-.field-picker-clear:hover { color: var(--fg); background: var(--btn-hover-bg); }
+.search-field-clear:hover { color: var(--fg); background: var(--btn-hover-bg); }
 
 .project-picker-list,
 .field-picker-list {

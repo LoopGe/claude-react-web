@@ -23,7 +23,8 @@ import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 import { useMergedRef } from '../utils/mergedRef'
 import { usePopoverMotion } from '../utils/transitions'
-import { IconCheck, IconSearch } from './icons/ToolIcons'
+import { IconCheck } from './icons/ToolIcons'
+import { SearchField } from './SearchField'
 
 interface Props {
   /** Client-coordinate anchor (typically the chip's bottom-left). `source` is
@@ -234,23 +235,22 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
       onMouseDown={(e) => e.stopPropagation()}
       onKeyDown={handleKeyDown}
     >
-      <div className="model-picker-search">
-        <IconSearch size={14} aria-hidden />
-        <input
-          ref={inputRef}
-          className="model-picker-input"
-          type="text"
-          placeholder="Search or type a model id…"
-          value={query}
-          disabled={disabled}
-          onChange={(e) => {
-            setQuery(e.target.value)
-            reset()
-          }}
-          aria-label="Search models"
-          aria-autocomplete="list"
-        />
-      </div>
+      <SearchField
+        value={query}
+        onChange={(value) => {
+          setQuery(value)
+          reset()
+        }}
+        placeholder="Search or type a model id…"
+        ariaLabel="Search models"
+        wrapperClassName="model-picker-search"
+        inputClassName="model-picker-input"
+        inputRef={inputRef}
+        iconSize={14}
+        showClear={false}
+        disabled={disabled}
+        ariaAutocomplete="list"
+      />
       <div className="model-picker-list" ref={listRefMerged} role="listbox">
         {rows.length === 0 && <div className="model-picker-empty">No matches</div>}
         {rows.map((row, i) => (
