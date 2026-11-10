@@ -13,9 +13,20 @@
 //     its identity is the instance itself. An external entry's identity is the
 //     serializable fields only (headers but not env — changing an env value
 //     does not reconnect, matching the replace diff's documented behavior).
+//   - Every `setServers` closes and reconnects all `type:'sdk'` servers: the
+//     manager's `injectAll` builds fresh server instances per call, so their
+//     identities differ by construction. That is correct and cheap (in-process).
+//   - An unchanged server is KEPT AS IS by `setServers`, including one that is
+//     already `failed` — a replace is not a retry. Use `reconnect(name)` to
+//     retry a server; otherwise a permanently broken server would be
+//     re-attempted on every replace.
 //   - Every mutation (load / setServers / reconnect / toggle / closeAll) runs
 //     serialized on one queue; `whenReady()` is that queue, so callers that
 //     need discovered tools just await it.
+//   - Each record owns an `AbortController` that bounds its whole connect task
+//     (handshake AND every `listTools` page) and its in-flight tool calls.
+//     `closeServer` / `closeAll` abort it synchronously BEFORE awaiting, so
+//     teardown never waits out a hung server.
 //   - A failing or timing-out server never rejects a mutation and never leaks
 //     a child process: the client is closed (which kills a stdio child), the
 //     in-process instance is closed, and the record turns `failed` /
@@ -106,8 +117,9 @@ interface ServerRecord {
   identity: unknown
   client?: Client
   connectTimer?: ReturnType<typeof setTimeout>
-  /** Rejects an in-flight connect race early (closeAll). */
-  cancelConnect?: () => void
+  /** Bounds this record's connect task (handshake + tool discovery) and its
+   *  in-flight tool calls. Replaced on every connect attempt. */
+  abort: AbortController
   status: NativeMcpStatus['status']
   serverInfo?: { name: string; version: string }
   error?: string
@@ -163,11 +175,13 @@ export class NativeMcpConnections {
       })
   }
 
-  /** Discovered tools of every connected server, in status (name) order. */
+  /** Discovered tools of every connected server, in status (name) order. Each
+   *  entry is copied so a consumer cannot mutate the stored tool list the next
+   *  `call` resolves against. */
   tools(): NativeMcpToolInfo[] {
     const out: NativeMcpToolInfo[] = []
     for (const rec of [...this.records.values()].sort((a, b) => a.name.localeCompare(b.name))) {
-      if (rec.status === 'connected') out.push(...rec.tools)
+      if (rec.status === 'connected') for (const tool of rec.tools) out.push({ ...tool })
     }
     return out
   }
@@ -188,7 +202,9 @@ export class NativeMcpConnections {
     const result = (await found.rec.client!.callTool(
       { name: found.tool.rawName, arguments: args },
       CallToolResultSchema,
-      { timeout: this.toolTimeoutMs, signal },
+      // The record's signal tears down an in-flight call when the server is
+      // closed under it (replace / toggle / closeAll).
+      { timeout: this.toolTimeoutMs, signal: AbortSignal.any([signal, found.rec.abort.signal]) },
     )) as CallToolResult
     const parts: string[] = []
     for (const block of result.content) {
@@ -229,6 +245,7 @@ export class NativeMcpConnections {
       await this.closeServer(rec)
       rec.status = 'disabled'
       rec.error = undefined
+      rec.serverInfo = undefined
       rec.tools = []
     })
   }
@@ -247,9 +264,10 @@ export class NativeMcpConnections {
    *  never throws. */
   async closeAll(): Promise<void> {
     this.closing = true
-    // Cancel in-flight connects synchronously so this does not wait out a
-    // hanging handshake; the queue then drains with those attempts settled.
-    for (const rec of this.records.values()) rec.cancelConnect?.()
+    // Abort in-flight connects synchronously so this does not wait out a
+    // hanging handshake or tool listing; the queue then drains with those
+    // attempts settled.
+    for (const rec of this.records.values()) rec.abort.abort()
     await this.enqueue(async () => {
       const records = [...this.records.values()]
       this.records.clear()
@@ -294,6 +312,7 @@ export class NativeMcpConnections {
         name,
         config: entry.config,
         identity: entry.identity,
+        abort: new AbortController(),
         status: 'pending',
         tools: [],
       }
@@ -314,6 +333,7 @@ export class NativeMcpConnections {
   /** Connect + discover tools for one record. Never rejects: every failure is
    *  recorded on the record and its resources are closed. */
   private async connectRecord(rec: ServerRecord): Promise<void> {
+    rec.abort = new AbortController()
     rec.status = 'pending'
     rec.error = undefined
     rec.serverInfo = undefined
@@ -354,40 +374,48 @@ export class NativeMcpConnections {
     await client.connect(transport)
   }
 
-  /** Race the handshake against `connectTimeoutMs`. `cancelConnect` lets
-   *  closeAll reject it immediately; the losing promise's handlers stay
+  /** Race the handshake against `connectTimeoutMs` and the record's abort
+   *  signal. `closeAll` / `closeServer` abort that signal synchronously, so a
+   *  hung handshake is rejected immediately; the losing promise's handlers stay
    *  attached, so a late settlement is never an unhandled rejection. */
   private raceConnect(rec: ServerRecord, work: Promise<void>): Promise<void> {
+    const signal = rec.abort.signal
     return new Promise<void>((resolve, reject) => {
-      const settle = () => {
+      let settled = false
+      const finish = (err: Error | null) => {
+        if (settled) return
+        settled = true
         if (rec.connectTimer) clearTimeout(rec.connectTimer)
         rec.connectTimer = undefined
-        rec.cancelConnect = undefined
+        signal.removeEventListener('abort', onAbort)
+        if (err) reject(err)
+        else resolve()
       }
-      rec.connectTimer = setTimeout(() => {
-        settle()
-        reject(new Error(`connection timed out after ${this.connectTimeoutMs}ms`))
-      }, this.connectTimeoutMs)
-      rec.cancelConnect = () => {
-        settle()
-        reject(new Error('connection cancelled'))
-      }
+      const onAbort = () => finish(new Error('connection closed'))
+      rec.connectTimer = setTimeout(
+        () => finish(new Error(`connection timed out after ${this.connectTimeoutMs}ms`)),
+        this.connectTimeoutMs,
+      )
+      signal.addEventListener('abort', onAbort, { once: true })
       work.then(
-        () => { settle(); resolve() },
-        (err) => { settle(); reject(err) },
+        () => finish(null),
+        // Reject with the original instance: `isMcpAuthError` narrows on the
+        // SDK's error classes.
+        (err) => finish(err instanceof Error ? err : new Error(String(err))),
       )
     })
   }
 
-  /** `listTools` following `nextCursor` until exhausted. The request timeout
-   *  is the connect timeout so a server that handshakes but never lists tools
-   *  cannot hold `whenReady()` open. */
+  /** `listTools` following `nextCursor` until exhausted. Every page is bounded
+   *  by the record's signal plus the connect timeout, so a server that
+   *  handshakes but never lists tools cannot hold `whenReady()` open. */
   private async discoverTools(rec: ServerRecord, client: Client): Promise<NativeMcpToolInfo[]> {
     const out: NativeMcpToolInfo[] = []
     let cursor: string | undefined
     do {
       const page = await client.listTools(cursor === undefined ? undefined : { cursor }, {
         timeout: this.connectTimeoutMs,
+        signal: rec.abort.signal,
       })
       for (const tool of page.tools) out.push(toolInfo(rec.name, tool))
       cursor = page.nextCursor
@@ -396,9 +424,10 @@ export class NativeMcpConnections {
   }
 
   /** Close a record's connection and drop its state; keeps the record itself
-   *  (status is set by the caller). */
+   *  (status is set by the caller). Aborting BEFORE awaiting is what keeps
+   *  teardown from waiting out an in-flight handshake or `listTools` page. */
   private async closeServer(rec: ServerRecord): Promise<void> {
-    rec.cancelConnect?.()
+    rec.abort.abort()
     await this.closeResources(rec)
     rec.tools = []
   }
@@ -521,11 +550,13 @@ function toolInfo(
   return info
 }
 
-/** The API-facing status of one server's config: never env/headers. */
+/** The API-facing status of one server's config: never env/headers. Returns a
+ *  fresh object with a copied `args`, so a caller editing the status cannot
+ *  change the stored config the next reconnect uses. */
 function configOf(config: NativeMcpServerConfig): NonNullable<NativeMcpStatus['config']> {
   const out: NonNullable<NativeMcpStatus['config']> = { type: config.type }
   if (config.command !== undefined) out.command = config.command
-  if (config.args !== undefined) out.args = config.args
+  if (config.args !== undefined) out.args = [...config.args]
   if (config.url !== undefined) out.url = config.url
   return out
 }

@@ -124,6 +124,47 @@ describe('NativeMcpConnections', () => {
     await conns.closeAll()
   }, 15_000)
 
+  it('closeAll aborts an in-flight connect instead of waiting out the timeout', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    // Default 10 s connect timeout: teardown must not wait for it.
+    const conns = new NativeMcpConnections()
+    conns.load({ hung: { type: 'stdio', command: 'node', args: [fixturePath, byePath, '--hang'] } })
+    // Let the child spawn and the handshake get in flight.
+    await new Promise((resolve) => setTimeout(resolve, 300))
+
+    const started = Date.now()
+    await conns.closeAll()
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(conns.statuses()).toEqual([])
+    await waitFor(() => existsSync(byePath), 5000, 'the aborted child to be terminated')
+  }, 15_000)
+
+  it('closeAll aborts a stalled tool listing, not just a stalled handshake', async () => {
+    // The handshake test above exercises the connect race; this one covers the
+    // window AFTER `initialize` settles, where only the request's own signal
+    // can end `listTools`. Regression guard for deleting the signal from
+    // `discoverTools`: without it closeAll waits out the 10 s request timeout.
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const toolsRequested = `${byePath}.tools-requested`
+    const conns = new NativeMcpConnections()
+    conns.load({ stalled: { type: 'stdio', command: 'node', args: [fixturePath, byePath, '--hang-tools'] } })
+
+    // The marker is written by the server's `tools/list` handler, so it proves
+    // the handshake completed and discovery is the step in flight.
+    await waitFor(() => existsSync(toolsRequested), 5000, 'the tools/list request to reach the server')
+    const [pending] = conns.statuses()
+    expect(pending.status).toBe('pending')
+    expect(pending.tools).toEqual([])
+
+    const started = Date.now()
+    await conns.closeAll()
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(conns.statuses()).toEqual([])
+    await waitFor(() => existsSync(byePath), 5000, 'the stalled child to be terminated')
+  }, 15_000)
+
   it('replace closes removed servers, keeps unchanged ones and reports bad configs', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')
@@ -207,6 +248,57 @@ describe('NativeMcpConnections', () => {
     expect(conns.statuses()[0].status).toBe('connected')
     expect(conns.tools().map((t) => t.fqn)).toEqual(['mcp__a__echo'])
     expect((await conns.call('mcp__a__echo', { text: 'again' }, abortSignal())).text).toContain('again')
+
+    await conns.closeAll()
+  }, 15_000)
+
+  it('replaces a changed in-process entry (same name, new instance)', async () => {
+    const conns = new NativeMcpConnections()
+    const first = echoServer('first-server')
+    const second = echoServer('second-server')
+    const closeSpy = vi.spyOn(first, 'close')
+    conns.load({ a: { type: 'sdk', instance: first } })
+    await conns.whenReady()
+    expect(conns.statuses()[0].serverInfo).toEqual({ name: 'first-server', version: '1.0.0' })
+
+    const result = await conns.setServers({ a: { type: 'sdk', instance: second } })
+    expect(result.added).toEqual(['a'])
+    expect(result.removed).toEqual(['a'])
+    expect(result.errors).toEqual({})
+    expect(closeSpy).toHaveBeenCalledTimes(1)
+
+    const [status] = conns.statuses()
+    expect(status).toMatchObject({ name: 'a', status: 'connected', source: 'sdk' })
+    expect(status.serverInfo).toEqual({ name: 'second-server', version: '1.0.0' })
+    expect((await conns.call('mcp__a__echo', { text: 'new one' }, abortSignal())).text).toContain('new one')
+
+    await conns.closeAll()
+  }, 15_000)
+
+  it('gives look-alike server names distinct FQNs while status keeps bare names', async () => {
+    const conns = new NativeMcpConnections()
+    conns.load({
+      'a b': { type: 'sdk', instance: echoServer('space-server') },
+      'a.b': { type: 'sdk', instance: echoServer('dot-server') },
+    })
+    await conns.whenReady()
+
+    const tools = conns.tools()
+    expect(tools).toHaveLength(2)
+    const fqns = tools.map((t) => t.fqn)
+    expect(new Set(fqns).size).toBe(2)
+    for (const fqn of fqns) expect(fqn).toMatch(/^[A-Za-z0-9_-]{1,64}$/)
+
+    // Both FQNs resolve to a live server: each name sanitizes to the same
+    // prefix, so only the hash separates them.
+    for (const fqn of fqns) {
+      const echoed = await conns.call(fqn, { text: `via ${fqn}` }, abortSignal())
+      expect(echoed.text).toContain(`via ${fqn}`)
+    }
+
+    // The status keeps the bare server-side tool name, not the FQN.
+    expect(conns.statuses().map((s) => s.name).sort()).toEqual(['a b', 'a.b'])
+    for (const status of conns.statuses()) expect(status.tools?.map((t) => t.name)).toEqual(['echo'])
 
     await conns.closeAll()
   }, 15_000)
