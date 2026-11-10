@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from './useApi'
 import type { McpServerStatus } from '../types'
+import { mcpToolFqn } from '../../shared/mcp-fqn.js'
 
 /**
  * MCP Apps (SEP-1865) client plumbing — the READ-ONLY half.
@@ -51,7 +52,7 @@ function buildAppUriMap(statuses: McpServerStatus[] | undefined): Map<string, Mc
   for (const s of statuses ?? []) {
     for (const t of s.tools ?? []) {
       const uri = extractMcpAppResourceUri(t._meta)
-      if (uri) map.set(`mcp__${s.name}__${t.name}`, { server: s.name, uri })
+      if (uri) map.set(mcpToolFqn(s.name, t.name), { server: s.name, uri })
     }
   }
   return map

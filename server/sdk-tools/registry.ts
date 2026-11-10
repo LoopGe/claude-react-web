@@ -9,6 +9,7 @@ import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import { gitAppTools } from './app-tools.js'
 import type { FirstPartyToolBuildContext, FirstPartyToolServer } from './types.js'
 import type { FirstPartyToolDef, FirstPartyToolServerInfo } from '../../shared/first-party.js'
+import { mcpToolFqn } from '../../shared/mcp-fqn.js'
 
 export class FirstPartyToolRegistry {
   private readonly servers = new Map<string, FirstPartyToolServer>()
@@ -82,7 +83,7 @@ export class FirstPartyToolRegistry {
   }
 
   private fqn(server: string, tool: string): string {
-    return `mcp__${server}__${tool}`
+    return mcpToolFqn(server, tool)
   }
 
   /** Static tool metadata for every registered server — the first-party
