@@ -1993,8 +1993,15 @@ export class SessionManager {
     // resolveConfiguredModel below maps it back to the configured full id.
     let historySeed: SDKMessage[] | undefined
     try {
+      // The seed page is later split by frame origin into the main and
+      // subagent rings, so the read must span BOTH budgets: a native log
+      // interleaves sidechain lines with main-thread ones, and a
+      // subagent-heavy session would otherwise spend the whole historyCap on
+      // sidechain lines and seed almost no main-thread messages (the
+      // original prompt included). Harmless for claude, whose disk reader
+      // never surfaces sidechain lines.
       const page = await this.readProviderHistoryPage(provider, id, {
-        limit: this.historyCap,
+        limit: this.historyCap + this.subagentHistoryCap,
         // Side Chat: exclude the inherited parent prefix (fork boundary) so
         // re-seeding the ring on resume doesn't paint the parent's history.
         ...(meta.forkBoundaryUuid ? { afterUuid: meta.forkBoundaryUuid } : {}),
