@@ -647,8 +647,8 @@ export class NativeSession implements ProviderSessionHandle {
         // on the next turn (the turn below runs on this snapshot).
         await this.mcp?.whenReady()
         // Discovery is awaited per turn for the same reason as MCP: a slow
-        // disk never delays session creation. `skillsReady` resolves once, so
-        // this is a cheap re-await on every later turn.
+        // disk never delays session creation. `skillsReady` tracks the LATEST
+        // reload pass, so a manual reload supersedes the construction snapshot.
         await this.skillsReady
         this.rebuildTools()
         const res = await runTurn(
@@ -866,8 +866,8 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   /** The `/` command catalog: every user-invocable skill of the current
-   *  catalog, in the catalog's own selection state. Awaits the construction-
-   *  time discovery so an immediate `/commands` fetch after spawn cannot race
+   *  catalog, in the catalog's own selection state. Awaits the CURRENT
+   *  discovery pass so an immediate `/commands` fetch after spawn cannot race
    *  it into an empty answer. */
   async supportedCommands(): Promise<unknown> {
     await this.skillsReady
