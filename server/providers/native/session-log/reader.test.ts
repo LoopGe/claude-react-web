@@ -139,6 +139,29 @@ describe('native history reader', () => {
     expect(history).not.toContain('inner reply')
     expect(history).not.toContain('inner result')
   })
+  it('keeps page-stream indices in entries so a search hit addresses the right page row', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'session/context', text: 'ctx' } as never)
+    push({ type: 'user', uuid: 'u1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'before' }] } } as never)
+    push({ type: 'assistant', uuid: 'side', session_id: 's1', parent_tool_use_id: 'agent1', timestamp: '2026-11-09T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'inner' }] } } as never)
+    push({ type: 'user', uuid: 'u2', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'user', content: [{ type: 'text', text: 'after' }] } } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    const pageUuids = (page.messages as Array<{ uuid: string }>).map((m) => m.uuid)
+    // The page's messageIndex space includes the sidechain row.
+    expect(pageUuids).toEqual(['u1', 'side', 'u2'])
+    const pageIndexAfter = page.startIndex + pageUuids.indexOf('u2')
+
+    // Entries drop the sidechain row but keep the remaining indices in the
+    // SAME space, so history_read_context's messageIndex still lands on u2.
+    const entries = await readNativeHistoryEntries(dir, 's1')
+    expect(entries.map((e) => (e.message as { uuid: string }).uuid)).toEqual(['u1', 'u2'])
+    expect(entries.map((e) => e.index)).toEqual([0, 2])
+    expect(entries[1].index).toBe(pageIndexAfter)
+  })
   it('returns an empty page for a missing log', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
     expect(await readNativeHistoryPage(dir, 'nope', { limit: 10 })).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })

@@ -106,6 +106,15 @@ export type NativeEventInput =
   | Omit<NativeSeedEndEvent, 'seq'>
   | Omit<NativeCompactEvent, 'seq'>
 
+/** True for a sidechain (nested-runner) user/assistant frame — one carrying a
+ *  non-null `parent_tool_use_id`. Works for both persisted log events and raw
+ *  transcript lines. Sidechain frames are persisted and paged for the
+ *  transcript UI but excluded from the main model history, the transcript seq
+ *  backfill and search. */
+export function isSidechainEvent(event: { type?: unknown; parent_tool_use_id?: unknown }): boolean {
+  return (event.type === 'assistant' || event.type === 'user') && event.parent_tool_use_id != null
+}
+
 const TURN_END_REASONS: readonly NativeTurnEndReason[] = [
   'completed',
   'interrupted',

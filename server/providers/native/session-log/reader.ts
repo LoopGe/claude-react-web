@@ -27,7 +27,7 @@ import { resolve } from 'node:path'
 import { normalize, paginateRenderable } from '../../../history-reader.js'
 import type { HistoryEntry, HistoryPage, RawLine } from '../../../history-reader.js'
 import { nativeHistoryCache } from './cache.js'
-import { parseEventLine } from './format.js'
+import { isSidechainEvent, parseEventLine } from './format.js'
 import type { NativeCompactEvent } from './format.js'
 import { nativeSessionLogPath } from './paths.js'
 import { repairRenderableLines } from './replay.js'
@@ -174,16 +174,23 @@ export async function readNativeHistoryEntries(
 ): Promise<HistoryEntry[]> {
   const lines = await loadFlooredLines(stateDir, id)
   if (!lines) return []
-  return filterAfterUuid(withRepair(lines), opts.afterUuid)
-    // This path feeds searchMessages and the transcript seq backfill, both of
-    // which must see only top-level turns. Pages keep sidechain lines.
-    .filter((line) => line.parent_tool_use_id == null)
-    .map((line, index) => ({
+  const stream = filterAfterUuid(withRepair(lines), opts.afterUuid)
+  // This path feeds searchMessages and the transcript seq backfill, both of
+  // which must see only top-level turns. Entries keep their FULL-STREAM index
+  // — the same index `readNativeHistoryPage` assigns — so a hit's
+  // `messageIndex` still addresses the right page row. Sidechain entries are
+  // dropped AFTER indexing, leaving a sparse (but aligned) index space.
+  const entries: HistoryEntry[] = []
+  for (const [index, line] of stream.entries()) {
+    if (isSidechainEvent(line)) continue
+    entries.push({
       index,
       // No trim: this path feeds search, which reads content to build snippets
       // and never ships the full message over WS.
       message: normalize(line, id, false),
-    }))
+    })
+  }
+  return entries
 }
 
 export async function readNativeHistoryPage(

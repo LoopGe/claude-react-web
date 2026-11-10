@@ -9,9 +9,12 @@
 //                          lines (the log is append-only).
 //     size shrank / same size with a new mtime → full re-parse (a rewritten
 //     log).
-//   - Entries store RENDERABLE raw lines only (isRenderableSdkMessage), which
-//     is the exact input `normalize` / `paginateRenderable` expect. The
-//     `session/header` line is validated but not stored.
+//   - Entries store RENDERABLE raw lines — the shared isRenderableSdkMessage
+//     set PLUS sidechain user/assistant frames (parent_tool_use_id != null),
+//     which the transcript UI renders under their Agent card but the main
+//     history/search exclude. That is the exact input `normalize` /
+//     `paginateRenderable` expect. The `session/header` line is validated but
+//     not stored.
 //   - Only COMPLETE lines (up to the last '\n') are parsed. A torn final line
 //     (the writer is mid-append) stays unparsed until the file grows past it.
 //   - Every parsed line is validated with the same header/event validators the
@@ -28,7 +31,7 @@ import { readFile, stat } from 'node:fs/promises'
 import type { RawLine } from '../../../history-reader.js'
 import { isRenderableSdkMessage } from '../../../history-utils.js'
 import { NativeSessionStorageError } from './errors.js'
-import { parseEventLine } from './format.js'
+import { isSidechainEvent, parseEventLine } from './format.js'
 import type { NativeLogEvent } from './format.js'
 import { loadNativeSessionLog } from './log.js'
 import { nativeSessionLogPath } from './paths.js'
@@ -89,19 +92,11 @@ function parseLine(line: string, id: string, path: string): unknown {
   }
 }
 
-/** A sidechain frame is excluded by `isRenderableSdkMessage` (the shared
- *  top-level-transcript predicate, which must stay untouched), but the native
- *  transcript needs it: a nested runner's frames render under the Agent card
- *  and seed nothing into the main model history. */
-function isSidechainEvent(event: unknown): boolean {
-  const e = event as { type?: unknown; parent_tool_use_id?: unknown }
-  return (e.type === 'assistant' || e.type === 'user') && e.parent_tool_use_id != null
-}
-
 function collectRenderable(events: Iterable<unknown>): RawLine[] {
   const lines: RawLine[] = []
   for (const event of events) {
-    if (isRenderableSdkMessage(event as RawLine) || isSidechainEvent(event)) lines.push(event as RawLine)
+    const line = event as RawLine
+    if (isRenderableSdkMessage(line) || isSidechainEvent(line)) lines.push(line)
   }
   return lines
 }

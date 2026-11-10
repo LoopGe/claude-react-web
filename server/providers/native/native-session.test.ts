@@ -496,6 +496,33 @@ describe('NativeSession', () => {
     await resumed.destroy()
   })
 
+  it('persists a live sidechain user frame with its real parent', async () => {
+    const dir = await tempDir('native-side-persist-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'side-persist', cwd: dir })
+    const internals = session as unknown as {
+      persistFrame(frame: unknown): void
+      log: { flush: () => Promise<void> }
+    }
+    internals.persistFrame({
+      type: 'user',
+      uuid: 'side-result',
+      session_id: 'side-persist',
+      parent_tool_use_id: 'tu-agent',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'inner-tool', content: [{ type: 'text', text: 'ok' }], is_error: false }],
+      },
+    })
+    await internals.log.flush()
+    const eventOf = (events: Array<{ type: string }>) =>
+      events.find((e) => (e as { uuid?: string }).uuid === 'side-result') as { parent_tool_use_id?: string } | undefined
+    expect(eventOf(logOf(session).events)).toMatchObject({ type: 'user', parent_tool_use_id: 'tu-agent' })
+    await session.destroy()
+    // Durable too, not just in memory.
+    expect(eventOf(loadNativeSessionLogSync(dir, 'side-persist')!.events)?.parent_tool_use_id).toBe('tu-agent')
+  })
+
   it('writes the fresh session context synchronously at open', async () => {
     const dir = await tempDir('native-context-')
     const provider = new NativeProvider({ stateDir: dir })
