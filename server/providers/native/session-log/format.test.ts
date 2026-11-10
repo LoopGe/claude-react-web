@@ -23,6 +23,7 @@ describe('session log format', () => {
       { seq: 3, type: 'turn/end', reason: 'completed' },
       { seq: 4, type: 'session/end-seed' },
       { seq: 5, type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: 't' },
+      { seq: 6, type: 'session/supplement', uuid: 'sp1', text: 'WRAPPED', timestamp: 't' },
     ]
     for (const [i, e] of events.entries()) {
       expect(parseEventLine(e, i, 's1', 'p')).toEqual(e)
@@ -38,6 +39,19 @@ describe('session log format', () => {
     for (const field of ['text', 'context', 'uuid', 'timestamp'] as const) {
       expect(() => parseEventLine({ ...compact, [field]: '' }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
     }
+  })
+  it('rejects a missing or empty session/supplement field', () => {
+    const supplement = { seq: 0, type: 'session/supplement', uuid: 'sp1', text: 'WRAPPED', timestamp: 't' }
+    for (const field of ['uuid', 'text'] as const) {
+      expect(() => parseEventLine({ ...supplement, [field]: '' }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
+      expect(() => parseEventLine({ ...supplement, [field]: undefined }, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
+    }
+    const noUuid = { ...supplement } as Record<string, unknown>
+    delete noUuid.uuid
+    expect(() => parseEventLine(noUuid, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
+    const noText = { ...supplement } as Record<string, unknown>
+    delete noText.text
+    expect(() => parseEventLine(noText, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
   })
   it('accepts a string parent_tool_use_id on user and assistant events', () => {
     const user = { seq: 0, type: 'user', uuid: 'u', session_id: 's1', parent_tool_use_id: 'tu1', timestamp: 't', message: { role: 'user', content: [] } }

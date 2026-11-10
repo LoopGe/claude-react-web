@@ -932,12 +932,18 @@ export class NativeSession implements ProviderSessionHandle {
   /** The loop's per-round drain: persist one `session/supplement` event per
    *  pending entry (the WRAPPED guidance, so replay rebuilds the exact model
    *  history), await the flush barrier, then report delivery. The loop appends
-   *  the returned text to history before building the next request. */
+   *  the returned text to history before building the next request.
+   *
+   *  The queue is cleared only AFTER the flush succeeds: a rejected flush
+   *  leaves the batch pending, so the manager's turn-end `drainSupplements`
+   *  requeue (or the next round's drain) still owns it — clearing first would
+   *  silently drop the message after the client already rendered its bubble. */
   private async injectSupplements(): Promise<Array<{ uuid: string; text: string }>> {
-    const pending = this.supplementQueue.splice(0)
-    if (pending.length === 0) return pending
+    // A COPY: entries stay queued until the batch is durable.
+    const batch = this.supplementQueue.slice()
+    if (batch.length === 0) return []
     const timestamp = new Date().toISOString()
-    const wrapped = pending.map((entry) => ({
+    const wrapped = batch.map((entry) => ({
       uuid: entry.uuid,
       text: formatSupplementInstruction(entry.text),
     }))
@@ -950,10 +956,14 @@ export class NativeSession implements ProviderSessionHandle {
       })
     }
     await this.log.flush()
-    for (const entry of wrapped) {
+    // An entry a concurrent drain removed meanwhile (interrupt) is the
+    // manager's to requeue — do not inject or report it again.
+    const retained = wrapped.filter((_entry, index) => this.supplementQueue.includes(batch[index]))
+    this.supplementQueue = this.supplementQueue.filter((entry) => !batch.includes(entry))
+    for (const entry of retained) {
       this.opts.onSupplementDelivered?.(entry.uuid, { ok: true, boundary: 'PreToolUse' })
     }
-    return wrapped
+    return retained
   }
 
   async interrupt(opts?: { cancelQueued?: boolean }): Promise<ProviderInterruptReceipt | void> {

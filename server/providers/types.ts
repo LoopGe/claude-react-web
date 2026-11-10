@@ -7,9 +7,9 @@ import type { ProviderProfile } from '../config.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured.js'
 import type { SandboxSetting } from '../../shared/sandbox.js'
 import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './claude/inprocess-hooks.js'
-import type { SupplementOutcome } from './claude/steering.js'
+import type { SupplementOutcome } from './steering-format.js'
 
-export type { SupplementOutcome } from './claude/steering.js'
+export type { SupplementOutcome } from './steering-format.js'
 
 export interface CreateSessionOptions {
   id: string

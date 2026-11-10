@@ -484,6 +484,92 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('drains multiple supplements as separate user messages and separate log events', async () => {
+    const dir = await tempDir('native-steer-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [toolTurn('t1'), textTurn('done')],
+      requests,
+    )
+    const delivered: string[] = []
+    let session: ReturnType<NativeProvider['createSession']> | null = null
+    session = provider.createSession({
+      id: 'steer-multi',
+      cwd: process.cwd(),
+      onSupplementDelivered: (uuid) => delivered.push(uuid),
+      canUseTool: async (_toolName: unknown, input: unknown) => {
+        session!.enqueueSupplement!({ uuid: 'sup-a', text: 'first steer' })
+        session!.enqueueSupplement!({ uuid: 'sup-b', text: 'second steer' })
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session!.messages) frames.push(f as Frame)
+    })()
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    const wrappedA = formatSupplementInstruction('first steer')
+    const wrappedB = formatSupplementInstruction('second steer')
+    // One user message per supplement, in queue order, before the next request.
+    const second = requests[1].messages as Array<{ role: string; content: unknown }>
+    expect(second.slice(-2)).toEqual([
+      { role: 'user', content: [{ type: 'text', text: wrappedA }] },
+      { role: 'user', content: [{ type: 'text', text: wrappedB }] },
+    ])
+    // One durable event per supplement, each carrying its own wrapped text.
+    const events = logOf(session).events.filter((e) => e.type === 'session/supplement')
+    expect(events.map((e) => e.text)).toEqual([wrappedA, wrappedB])
+    expect(delivered).toEqual(['sup-a', 'sup-b'])
+    await session.destroy()
+  })
+
+  it('keeps the batch queued when the supplement flush fails (no delivery, still drainable)', async () => {
+    const dir = await tempDir('native-steer-')
+    const provider = providerWithStreamer([toolTurn('t1'), textTurn('done')], dir)
+    const delivered: string[] = []
+    let session: ReturnType<NativeProvider['createSession']> | null = null
+    session = provider.createSession({
+      id: 'steer-flush',
+      cwd: process.cwd(),
+      onSupplementDelivered: (uuid) => delivered.push(uuid),
+      canUseTool: async (_toolName: unknown, input: unknown) => {
+        session!.enqueueSupplement!({ uuid: 'sup-flush', text: 'keep me' })
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session!.messages) frames.push(f as Frame)
+    })()
+    // Fail exactly the flush that follows the supplement append; the earlier
+    // frame flushes must succeed or the turn never reaches injection.
+    const log = (session as unknown as { log: NativeSessionLog }).log
+    const originalFlush = log.flush.bind(log)
+    let failed = false
+    vi.spyOn(log, 'flush').mockImplementation(async () => {
+      if (!failed && log.events.some((e) => e.type === 'session/supplement')) {
+        failed = true
+        throw new Error('flush failed')
+      }
+      return originalFlush()
+    })
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    expect(failed).toBe(true)
+    // The turn failed loudly, but the message is NOT lost: no delivery fired
+    // and the manager can still requeue it from the pending queue.
+    expect((frames.at(-1) as Frame).is_error).toBe(true)
+    expect(delivered).toEqual([])
+    expect(session.drainSupplements!()).toEqual([{ uuid: 'sup-flush', text: 'keep me' }])
+    await session.destroy()
+  })
+
   it('drainSupplements returns leftovers and clears the queue (nothing injected, no delivery)', async () => {
     const dir = await tempDir('native-steer-')
     const provider = new NativeProvider({ stateDir: dir })
