@@ -10,7 +10,8 @@ const HEAD_CHARS = 25_000
 const TAIL_CHARS = 5_000
 // Byte caps for the bounded accumulator. HEAD_BYTES decodes to at least
 // HEAD_CHARS characters (UTF-8 encodes a character in at most 4 bytes), so
-// cap() below still sees a full head window; the same holds for the tail.
+// capToolText() below still sees a full head window; the same holds for the
+// tail.
 const HEAD_BYTES = HEAD_CHARS * 4
 const TAIL_BYTES = TAIL_CHARS * 4
 
@@ -70,7 +71,10 @@ class CappedOutput {
   }
 }
 
-function cap(text: string): string {
+/** Head+tail truncation for command / tool output: keeps the first
+ *  `HEAD_CHARS` and the last `TAIL_CHARS` characters. Shared with the MCP
+ *  connection manager so an MCP tool result is bounded the same way. */
+export function capToolText(text: string): string {
   if (text.length <= HEAD_CHARS + TAIL_CHARS) return text
   return text.slice(0, HEAD_CHARS) + '\n...[truncated]...\n' + text.slice(-TAIL_CHARS)
 }
@@ -130,7 +134,7 @@ export const bashTool: ToolDef<{ command: string; timeout_ms?: number }> = {
       const timer = setTimeout(() => {
         timedOut = true
         kill()
-        settle({ text: `command timed out after ${timeoutMs}ms\n${cap(stdout.text() + stderr.text())}`, isError: true })
+        settle({ text: `command timed out after ${timeoutMs}ms\n${capToolText(stdout.text() + stderr.text())}`, isError: true })
       }, timeoutMs)
       ctx.signal.addEventListener('abort', onAbort, { once: true })
       child.on('error', (err) => {
@@ -138,7 +142,7 @@ export const bashTool: ToolDef<{ command: string; timeout_ms?: number }> = {
       })
       child.on('close', (code) => {
         if (timedOut) return
-        const combined = cap((stdout.text() + (stderr.text() ? '\n' + stderr.text() : '')).trimEnd())
+        const combined = capToolText((stdout.text() + (stderr.text() ? '\n' + stderr.text() : '')).trimEnd())
         settle({ text: `${combined}\n[exit code: ${code ?? -1}]` })
       })
     })
