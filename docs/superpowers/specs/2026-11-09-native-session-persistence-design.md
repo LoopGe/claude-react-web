@@ -351,3 +351,45 @@ P1.2 让 native 会话的工具面与 claude 会话对齐：用户配置的 MCP 
 - MCP elicitation：server 收到 method-not-found（native 暂不支持 OAuth 表单交互）。
 - `setMcpPermissionModeOverride`：返回 501（claude/SDK 专有的 per-process 覆盖）。
 - `listTools` 的游标分页已实现，但 in-memory 与测试 fixture 都不产生分页，暂无集成测试覆盖。
+
+## P1.3 — Subagents
+
+P1.3 让 native 会话拥有 `Agent` 工具：子代理在同一条 turn 循环里跑自己的历史，帧带上真实的父 `tool_use` id，复用现有的 SubagentCard / SubagentOverlay / SubagentSwarm 渲染。只支持同步调用。
+
+### Agent 工具
+
+- `Agent` 是**每个会话**构造的 `ToolDef`（不是全局静态），闭包捕获会话的 `streamFor`、模型、cwd、permission handler 与 emit 路径。schema 为 `{ description, prompt, subagent_type?, model? }`，`required: ['description', 'prompt']`；`run_in_background` 不在 schema 里。
+- `run` 用**空历史**重新进入 `runTurn`（`[]` + 一条 user 消息），`emitResult: false` 因此不再产出第二个顶层 `result` 帧；`signal` 与父 turn 相同，中断父 turn 同时中断嵌套循环。
+- 每个嵌套帧经 `FrameContext.parentToolUseId = <Agent 的 tool_use id>` 打上 `parent_tool_use_id`，父帧保持 `null`。父级归属**只**来自这个 ctx，没有第二层 stamping wrapper。
+- 结果是嵌套循环里**最后一条非空 assistant 文本**；全都为空时退回 `'(no output)'`。工具异常转成 `{ text, isError: true }`；`ctx.signal.aborted` 在进入前和返回后各查一次（脚本化或不响应 signal 的流不会挂住）。
+
+### 嵌套 turn 的形状
+
+- **system**：父会话渲染出的 subagent 版本 prompt —— 与父 prompt 同一个 registry，但**不含** `tool:Agent` 段（子代理不会被告知可以再分派），再拼上 agent 指令。
+- **tools**：调用时读取父工具列表并过滤掉 `Agent`（深度上限 1 由构造保证，不靠运行时计数）。因为调用时读取，中途变化的 MCP / first-party 工具对子代理立即生效。
+- **model**：`input.model ?? def.model ?? 父会话当前模型`。父模型是**实时 getter**，中途 `setModel` 不会让子代理落回 spawn 时的旧模型。
+- **权限**：沿用父会话的 `requestPermission` 与 permission mode —— 子代理永不扩大授权范围。
+- 嵌套 `api_retry` 不产出帧（`streamFor(req, { suppressRetryFrames: true })`）；重试行为本身不变，只有顶层会话发重试帧。
+
+### 自定义 agent
+
+- agent 定义来自 `AgentDefinitionStore`：启用条目的 `prompt` 作为嵌套 system 后缀，`model` 作为默认模型。未知或未启用的 `subagent_type` 返回错误 outcome。
+- `supportedAgents()` 只返回内建的 `general-purpose`；路由负责把 store 里的定义并上去（与 claude 路径一致）。
+
+### 持久化：一条日志，两个视图
+
+- sidechain 的 user/assistant 事件**写进同一条 append-only 会话日志**，带真实的 `parent_tool_use_id`。日志格式仍是 v1，只把该字段从字面量 `null` 放宽为 `string | null`：旧日志照常解析，但含 sidechain 的新日志会被旧服务端判为 `corrupt`（**downgrade-unsafe**，已知并接受）。
+- `readNativeHistoryPage`（resume seed + 历史 UI）**保留** sidechain 行，因此子代理的对话在恢复后仍然可见。
+- `readNativeHistoryEntries`（搜索 + transcript seq 回填）**过滤掉** sidechain，但保留每一行的完整流索引 —— 命中项的 `messageIndex` 仍指向正确页行，索引空间只是变稀疏。seq store 与搜索因此保持纯顶层，不需要改 `composeTranscriptEntries`。
+- `historyFromEvents`（模型历史）跳过 `parent_tool_use_id != null` 的事件；两条修复路径（`collectOpenToolUses` / `repairRenderableLines`）同样跳过 sidechain —— 崩溃修复不会为 sidechain 的 `tool_use` 伪造顶层 `tool_result`。
+- 日志缓存（`session-log/cache.ts`）的纳入条件放宽为 `isRenderableSdkMessage(event) || isSidechainEvent(event)`；共享谓词本身不动，所以 seq store 仍然排除 sidechain。
+- `history-reader` 的 `normalize` 优先采用**持久化**的 `parent_tool_use_id`（`string` 或显式 `null` 都算数）；只有字段缺失（claude CLI 的盘上行）才回落到从 tool_result 内容推导的父 id。
+- resume seed 的页大小是 `historyCap + subagentHistoryCap`（先读、再按 sidechain 拆分）；否则子代理密集的会话会把几乎整个 `historyCap` 花在 sidechain 上，顶层历史被挤掉。
+
+### 延迟项
+
+- 后台子代理与 `run_in_background`；task 帧（`task_started` / `task_notification` / `task_progress`）与 task 控制（`backgroundTasks` / `stopTask`）。
+- `Task` / `Explore` 别名、progress summary、`listSubagents`。
+- 自定义 agent 定义中 `prompt` / `model` 以外的字段（`tools`、`disallowedTools`、`maxTurns`、`background` 等）。
+- model 别名解析：`input.model` 原样透传，短别名可能被 API 拒绝。
+- 在 sidechain 内部 fork：会留下未回答的 sidechain `tool_use`，渲染成一张卡住的子代理卡（接受）。
