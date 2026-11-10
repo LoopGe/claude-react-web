@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiError, buildRequestBody, MAX_API_RETRIES, streamAnthropicMessages, type StreamRequest } from './anthropic-stream.js'
+import { apiError, buildRequestBody, MAX_API_RETRIES, streamAnthropicMessages, type RequestThinking, type StreamRequest } from './anthropic-stream.js'
 
 const baseReq: StreamRequest = {
   baseUrl: 'https://api.example.com',
@@ -131,6 +131,53 @@ describe('buildRequestBody', () => {
     }
     expect(body.system).toBe('')
     expect(body.messages[0].content).toEqual([{ type: 'text', text: 'hello', cache_control: { type: 'ephemeral' } }])
+  })
+})
+
+describe('buildRequestBody thinking', () => {
+  const bodyWithThinking = (thinking: RequestThinking, maxTokens = 16384): { thinking?: unknown } =>
+    buildRequestBody({ ...baseReq, maxTokens, thinking })
+
+  it('emits the snake_case adaptive / enabled / disabled wire forms', () => {
+    expect(bodyWithThinking({ type: 'adaptive' }).thinking).toEqual({ type: 'adaptive' })
+    expect(bodyWithThinking({ type: 'disabled' }).thinking).toEqual({ type: 'disabled' })
+    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 4096 }).thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 4096,
+    })
+  })
+
+  it('omits the field when no thinking config is present', () => {
+    const body = buildRequestBody({ ...baseReq, maxTokens: 16384 })
+    expect(body).not.toHaveProperty('thinking')
+  })
+
+  it('maps bare enabled (no budget) to adaptive — there is no bare-enabled wire form', () => {
+    expect(bodyWithThinking({ type: 'enabled' }).thinking).toEqual({ type: 'adaptive' })
+  })
+
+  it('clamps budget_tokens to [1024, max_tokens - 1]', () => {
+    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 100 }).thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 1024,
+    })
+    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 99_999 }).thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 16_383,
+    })
+  })
+
+  it("forwards display only for 'summarized' | 'omitted', never 'highlights'", () => {
+    expect(bodyWithThinking({ type: 'adaptive', display: 'summarized' }).thinking).toEqual({
+      type: 'adaptive',
+      display: 'summarized',
+    })
+    expect(bodyWithThinking({ type: 'enabled', budgetTokens: 4096, display: 'omitted' }).thinking).toEqual({
+      type: 'enabled',
+      budget_tokens: 4096,
+      display: 'omitted',
+    })
+    expect(bodyWithThinking({ type: 'adaptive', display: 'highlights' }).thinking).toEqual({ type: 'adaptive' })
   })
 })
 

@@ -1,4 +1,5 @@
 import { createLogger } from '../../log.js'
+import type { ThinkingDisplay } from '../../../shared/session-info.js'
 import { parseSseStream, type SseEvent } from './sse.js'
 import type { CanonicalEvent } from './canonical.js'
 
@@ -8,6 +9,14 @@ export const MAX_API_RETRIES = 10
 const BACKOFF_BASE_MS = 1_000
 const BACKOFF_CAP_MS = 60_000
 
+/** Extended-thinking config for one request. The shape matches the SDK's
+ *  `ThinkingConfig` (camelCase `budgetTokens`); `buildRequestBody` maps it to
+ *  the wire's snake_case form. */
+export type RequestThinking =
+  | { type: 'adaptive'; display?: ThinkingDisplay }
+  | { type: 'disabled' }
+  | { type: 'enabled'; budgetTokens?: number; display?: ThinkingDisplay }
+
 export interface StreamRequest {
   baseUrl: string
   authToken: string
@@ -16,6 +25,7 @@ export interface StreamRequest {
   tools: unknown[]
   messages: unknown[]
   maxTokens: number
+  thinking?: RequestThinking
   signal: AbortSignal
 }
 
@@ -41,6 +51,24 @@ export type RetryCallback = (info: { attempt: number; maxRetries: number; delayM
 
 const EPHEMERAL = { type: 'ephemeral' } as const
 
+const THINKING_MIN_BUDGET = 1024
+
+/** The wire form of one thinking config. Bare `{type:'enabled'}` (no budget)
+ *  has no valid wire form and maps to adaptive. `display` forwards only the
+ *  API-supported 'summarized' | 'omitted' — 'highlights' is a CLI-only value.
+ *  The enabled budget is clamped to `[1024, max_tokens - 1]`. */
+function thinkingBody(thinking: RequestThinking, maxTokens: number): Record<string, unknown> {
+  if (thinking.type === 'disabled') return { type: 'disabled' }
+  const display = thinking.display === 'summarized' || thinking.display === 'omitted'
+    ? { display: thinking.display }
+    : {}
+  if (thinking.type === 'adaptive' || thinking.budgetTokens === undefined) {
+    return { type: 'adaptive', ...display }
+  }
+  const budget = Math.max(THINKING_MIN_BUDGET, Math.min(thinking.budgetTokens, maxTokens - 1))
+  return { type: 'enabled', budget_tokens: budget, ...display }
+}
+
 /** Build the Anthropic Messages request body, adding prompt-cache breakpoints
  *  on the stable prefix: system prompt, the last tool, and the last content
  *  block. Never mutates the caller's `tools` / `messages` — the agent loop
@@ -53,6 +81,10 @@ export function buildRequestBody(req: StreamRequest): Record<string, unknown> {
     system: req.system,
     tools: req.tools,
     messages: req.messages,
+  }
+
+  if (req.thinking) {
+    body.thinking = thinkingBody(req.thinking, req.maxTokens)
   }
 
   if (req.system !== '') {

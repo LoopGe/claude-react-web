@@ -65,7 +65,7 @@ export class NativeProvider implements AgentProvider {
     supportsPlugins: false,
     supportsFastMode: false,
     supportsEffortLevel: false,
-    supportsThinkingControl: false,
+    supportsThinkingControl: true,
     supportsCommands: true,
     supportsAgents: true,
     supportsContextUsage: true,
@@ -131,6 +131,7 @@ export class NativeProvider implements AgentProvider {
         resumeSessionAt: opts.resumeSessionAt,
         model: opts.model,
         permissionMode: opts.permissionMode,
+        thinking: opts.thinking,
         credentials: () => ({
           baseUrl: opts.profile?.baseUrl ?? config.baseUrl,
           authToken: opts.profile?.authToken ?? requireAuthToken(),

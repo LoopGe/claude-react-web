@@ -1890,6 +1890,52 @@ describe('NativeSession', () => {
     }
   })
 
+  it('sends the persisted thinking config and follows live setMaxThinkingTokens', async () => {
+    const dir = await tempDir('native-thinking-')
+    const origConfig = { ...config }
+    __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+    const requests: Array<{ thinking?: unknown }> = []
+    streamAnthropicMessagesMock.mockImplementation(async function* (req: { thinking?: unknown }) {
+      requests.push(req)
+      for (const ev of textTurn('ok')) yield ev
+    })
+    const provider = new NativeProvider({ stateDir: dir })
+    expect(provider.capabilities.supportsThinkingControl).toBe(true)
+    const session = provider.createSession({
+      id: 'thinking',
+      cwd: dir,
+      thinking: { type: 'enabled', budgetTokens: 4096 },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    const nextRequest = async (text: string, count: number): Promise<void> => {
+      session.enqueueUserMessage(userMsg(text) as never)
+      await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(count))
+    }
+    try {
+      await nextRequest('first', 1)
+      expect(requests[0].thinking).toEqual({ type: 'enabled', budgetTokens: 4096 })
+
+      // The live field, not the create-time opts value: the NEXT request reads it.
+      await session.setMaxThinkingTokens?.(8192)
+      await nextRequest('second', 2)
+      expect(requests[1].thinking).toEqual({ type: 'enabled', budgetTokens: 8192 })
+
+      await session.setMaxThinkingTokens?.(null)
+      await nextRequest('third', 3)
+      expect(requests[2].thinking).toEqual({ type: 'adaptive' })
+
+      await session.setMaxThinkingTokens?.(0)
+      await nextRequest('fourth', 4)
+      expect(requests[3].thinking).toEqual({ type: 'disabled' })
+    } finally {
+      await session.destroy()
+      streamAnthropicMessagesMock.mockReset()
+      streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+      __setConfigForTest(origConfig)
+    }
+  })
+
   it('refuses to resume a corrupt log', async () => {
     const dir = await tempDir('native-corrupt-')
     const provider = new NativeProvider({ stateDir: dir })
