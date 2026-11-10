@@ -166,6 +166,8 @@ export class SessionStore {
       generation: win.generation,
       headSeq: win.headSeq,
       hole: win.hole,
+      anchored: mirror.anchored,
+      anchorSeq: mirror.anchorSeq,
     }
   }
 

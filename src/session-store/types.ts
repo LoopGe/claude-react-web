@@ -759,7 +759,7 @@ export type SessionAction =
    *  transcript layer (items/messages/indexes/live-turn state) while
    *  preserving intent and non-transcript mirror fields; the following
    *  WINDOW_PAGE at 'tail' adopts the emptied window. */
-  | { type: 'ANCHOR_RESET'; generation: number; headSeq: number; viewSeq: number }
+  | { type: 'ANCHOR_RESET'; generation: number; headSeq: number; viewSeq: number; anchored?: boolean }
   /** Server tombstones (`messages-evicted` WS frame): remove the named
    *  seqs from the window AND the ordered render log (by uuid mapping),
    *  pruning the toolUseId-keyed lifecycle maps like EVICT_MESSAGES. */
@@ -854,6 +854,10 @@ export interface SessionSnapshot {
    *  out-of-order live frames sit in the pending buffer; null otherwise.
    *  Task 8's hook fetches the REST page over this range to fill it. */
   hole: [number, number] | null
+  /** True while the transcript is anchored at an older seq (search jump). */
+  anchored: boolean
+  /** The anchor's seq; null when not anchored. */
+  anchorSeq: number | null
 }
 
 /** Build a fresh ServerMirror. Used by createInitialSessionState and by any

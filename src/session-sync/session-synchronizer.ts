@@ -39,6 +39,10 @@ export type SessionSyncGet = <T>(path: string) => Promise<T>
 export interface TranscriptPagingSnapshot {
   loadingOlder: boolean
   olderError: string | null
+  /** True while the transcript is anchored at an older seq (search jump). */
+  anchored: boolean
+  /** Live message frames received while anchored, waiting behind the jump. */
+  newerCount: number
 }
 
 /** The handler callbacks the host (useSessionSynchronizer) supplies —
@@ -80,6 +84,13 @@ interface SyncRunState {
   fillGapRerun: boolean
   /** Older-history in-flight guard (at most one loadOlder per run). */
   olderInFlight: boolean
+  /** Bumped by every anchor/returnToHead. A page requested under an older
+   *  epoch is discarded rather than inserted into the re-anchored window. */
+  anchorEpoch: number
+  /** The seq this run is anchored at; null = following the live tail. */
+  anchoredSeq: number | null
+  /** Live message frames received while anchored (drives the newer pill). */
+  newerCount: number
 }
 
 function createRun(): SyncRunState {
@@ -91,6 +102,9 @@ function createRun(): SyncRunState {
     fillGapRunning: false,
     fillGapRerun: false,
     olderInFlight: false,
+    anchorEpoch: 0,
+    anchoredSeq: null,
+    newerCount: 0,
   }
 }
 
@@ -115,7 +129,7 @@ export class SessionSynchronizer {
   private storeUnsub: (() => void) | null = null
 
   // Paging snapshot (owned here, NOT in the store reducer).
-  private paging: TranscriptPagingSnapshot = { loadingOlder: false, olderError: null }
+  private paging: TranscriptPagingSnapshot = { loadingOlder: false, olderError: null, anchored: false, newerCount: 0 }
   private pagingListeners = new Set<() => void>()
 
   constructor(options: {
@@ -146,10 +160,16 @@ export class SessionSynchronizer {
     const run = createRun()
     this.run = run
 
+    // Resume an anchored view across a reconnect: the store remembers the
+    // cursor, so the first page fetch must re-read that position instead of
+    // snapping the user back to the live tail.
+    const startSnap = this.store.getSnapshot()
+    run.anchoredSeq = startSnap.anchored ? startSnap.anchorSeq : null
+
     // Reset the paging snapshot for the new run. The setPaging call fires a
     // notification ONLY if a value actually changed (e.g. an olderError from
     // the previous run), so a clean start is silent.
-    this.setPaging({ loadingOlder: false, olderError: null })
+    this.setPaging({ loadingOlder: false, olderError: null, anchored: run.anchoredSeq != null, newerCount: 0 })
 
     const { hub } = this
 
@@ -241,6 +261,82 @@ export class SessionSynchronizer {
     })
   }
 
+  // ── Anchored history (search jumps) ────────────────────────────
+
+  /** Re-anchor the transcript at an older message. `seq` is preferred; the
+   *  uuid form is used by CommandPalette hits (the server resolves it). */
+  async anchorAt(target: { seq: number } | { uuid: string }): Promise<void> {
+    const run = this.run
+    if (!run) return
+    await this.fetchAnchor(run, target)
+  }
+
+  /** Leave the anchored view and re-read the newest page. */
+  async returnToHead(): Promise<void> {
+    const run = this.run
+    if (!run) return
+    run.anchorEpoch += 1
+    const page = await this.fetchValidatedPage(
+      run,
+      `/sessions/${this.sessionId}/messages?limit=200`,
+    )
+    if (page == null) return
+    run.anchoredSeq = null
+    run.newerCount = 0
+    this.applyAnchorPage(page, null)
+  }
+
+  private async fetchAnchor(
+    run: SyncRunState,
+    target: { seq: number } | { uuid: string },
+  ): Promise<void> {
+    run.anchorEpoch += 1
+    const url = 'seq' in target
+      ? `/sessions/${this.sessionId}/messages?around=${target.seq}&limit=200`
+      : `/sessions/${this.sessionId}/messages?aroundUuid=${encodeURIComponent(target.uuid)}&limit=200`
+    let page: TranscriptPageResponse | null
+    try {
+      page = await this.fetchValidatedPage(run, url)
+    } catch {
+      if (!run.cancelled && this.run === run) {
+        this.store.dispatch({ type: 'ERROR', message: 'Failed to load transcript history' })
+      }
+      return
+    }
+    if (page == null) return
+    const targetSeq = 'seq' in target
+      ? target.seq
+      : (page.messages.find((m) => (m.msg as { uuid?: string }).uuid === target.uuid)?.seq
+        ?? page.messages[Math.floor(page.messages.length / 2)]?.seq
+        ?? page.startIndex)
+    run.anchoredSeq = targetSeq
+    run.newerCount = 0
+    this.applyAnchorPage(page, targetSeq)
+  }
+
+  /** Reset the transcript to an anchor page and seed the seq window from it.
+   *  `viewSeq = null` means "back to the live tail" (not anchored). */
+  private applyAnchorPage(page: TranscriptPageResponse, viewSeq: number | null): void {
+    const anchored = viewSeq != null
+    this.store.dispatch({
+      type: 'ANCHOR_RESET',
+      generation: page.generation,
+      headSeq: page.headSeq,
+      viewSeq: viewSeq ?? page.startIndex,
+      anchored,
+    })
+    this.store.dispatch({
+      type: 'WINDOW_PAGE',
+      at: 'tail',
+      generation: page.generation,
+      headSeq: page.headSeq,
+      messages: page.messages,
+      tombstones: page.tombstones,
+      hasMore: page.hasMore,
+    })
+    this.setPaging({ ...this.paging, anchored, newerCount: 0 })
+  }
+
   // ── Frame handling ───────────────────────────────────────────────
 
   /** Re-fetch the tail page and dispatch it. Run-scoped: bails (returns)
@@ -249,6 +345,10 @@ export class SessionSynchronizer {
    *  attached-generation-bump re-fetch all go through here. */
   private async refetchTail(run: SyncRunState): Promise<void> {
     try {
+      if (run.anchoredSeq != null) {
+        await this.fetchAnchor(run, { seq: run.anchoredSeq })
+        return
+      }
       const page = await this.fetchValidatedPage(
         run,
         `/sessions/${this.sessionId}/messages?limit=200`,
@@ -289,6 +389,11 @@ export class SessionSynchronizer {
    *  stopped run never dispatches. The worker latch and rerun flag live on
    *  `run`, not on the instance — a new start() gets a fresh latch. */
   private async fillGap(run: SyncRunState): Promise<void> {
+    // Anchored history must not be pulled back to the head by gap-fill: the
+    // missing range is the whole distance between the anchor and the live
+    // tail, not a transient hole. Live frames park and the newer pill offers
+    // an explicit return.
+    if (run.anchoredSeq != null) return
     if (run.fillGapRunning) {
       run.fillGapRerun = true
       return
@@ -394,13 +499,18 @@ export class SessionSynchronizer {
         // session's replayReady-gated turn-end sweep.
         if (!snap.replayReady) break
         if (frame.generation !== snap.generation) {
-          // Dead universe (/clear or a server-side reset): whole-window
-          // invalidation, then re-fetch the tail under the new generation.
-          // WINDOW_BUMP (not an empty page) is what discards the old seq
-          // space's tombstones/pending.
+          // Dead universe (/clear or a server-side reset): the anchor's seq
+          // space is gone, so drop the cursor and re-fetch the new tail.
+          run.anchoredSeq = null
+          run.newerCount = 0
+          this.setPaging({ ...this.paging, anchored: false, newerCount: 0 })
           store.dispatch({ type: 'WINDOW_BUMP', generation: frame.generation, headSeq: frame.headSeq })
           run.minGeneration = frame.generation
           void this.refetchTail(run)
+        } else if (snap.anchored || run.anchoredSeq != null) {
+          // Anchored history: live gaps are expected (the anchor is behind
+          // the head) and are surfaced by the newer pill, not gap-filled.
+          break
         } else if (snap.newestSeq == null) {
           // Post-open recovery with an empty window. A front hole (parked
           // live frames awaiting their prefix) is owned by fillGap — the
@@ -443,8 +553,14 @@ export class SessionSynchronizer {
           // read from the snapshot after the dispatch. liveAppend parks
           // any seq beyond newestSeq + 1 AND the first live frame of an
           // empty window above seq 0 (a front hole for the missed prefix);
-          // the REST page over that range is fetched here.
-          if (store.getSnapshot().hole) void this.fillGap(run)
+          // the REST page over that range is fetched here. While anchored,
+          // the parked frame is exactly the "new messages" signal instead.
+          if (run.anchoredSeq != null) {
+            run.newerCount += 1
+            this.setPaging({ ...this.paging, anchored: true, newerCount: run.newerCount })
+          } else if (store.getSnapshot().hole) {
+            void this.fillGap(run)
+          }
         } else {
           // No seq on the frame (synthetic / ephemeral frame: stream
           // events, pump errors) — legacy ordered-log append, no window
@@ -655,7 +771,7 @@ export class SessionSynchronizer {
 
     // A new attempt supersedes the previous failure — the float flips from
     // the error pill to the loading pill while the retry runs.
-    this.setPaging({ loadingOlder: true, olderError: null })
+    this.setPaging({ ...this.paging, loadingOlder: true, olderError: null })
 
     try {
       // Through the validated fetch like every other page read: a head page
@@ -720,7 +836,12 @@ export class SessionSynchronizer {
    *  already {false, null} is a silent no-op. */
   private setPaging(next: TranscriptPagingSnapshot): void {
     const prev = this.paging
-    if (prev.loadingOlder === next.loadingOlder && prev.olderError === next.olderError) {
+    if (
+      prev.loadingOlder === next.loadingOlder &&
+      prev.olderError === next.olderError &&
+      prev.anchored === next.anchored &&
+      prev.newerCount === next.newerCount
+    ) {
       return
     }
     this.paging = next
@@ -750,12 +871,18 @@ export class SessionSynchronizer {
     const { get } = this
     for (let retries = 0; ; retries++) {
       const epochAtRequest = run.clearEpoch
+      const anchorEpochAtRequest = run.anchorEpoch
       const page = await get<TranscriptPageResponse>(url)
       // Run invalidated while we were waiting (stop/start) — bail without
       // dispatching. This is what makes the restart-during-deferred-loadOlder
       // race safe: the old run's late page never reaches the store or the
       // new run's paging snapshot.
       if (run.cancelled || this.run !== run) return null
+      // A page requested before ANCHOR_RESET belongs to the previous view.
+      // Unlike a generation move (retry under the new generation), it must be
+      // discarded: inserting a tail/older page into the anchored window would
+      // splice two disjoint ranges.
+      if (run.anchorEpoch !== anchorEpochAtRequest) return null
       const stale =
         run.clearEpoch !== epochAtRequest ||
         (run.minGeneration != null && page.generation < run.minGeneration)

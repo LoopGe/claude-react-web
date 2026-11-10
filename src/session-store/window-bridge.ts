@@ -123,8 +123,8 @@ export function anchorReset(
     sessionState: state.mirror.sessionState,
     eventCount: state.mirror.eventCount,
     window: emptyWindow(action.generation, action.headSeq),
-    anchored: true,
-    anchorSeq: action.viewSeq,
+    anchored: action.anchored ?? true,
+    anchorSeq: action.anchored === false ? null : action.viewSeq,
   }
   return { sessionId: state.sessionId, mirror, intent: state.intent }
 }

@@ -145,6 +145,16 @@ export function useSessionSynchronizer(
     [sync],
   )
 
+  /** Search-jump anchoring. Stable per synchronizer like loadOlder. */
+  const anchorAt = useCallback(
+    (target: { seq: number } | { uuid: string }) => sync.anchorAt(target),
+    [sync],
+  )
+  const returnToHead = useCallback(
+    () => sync.returnToHead(),
+    [sync],
+  )
+
   // Memoized TranscriptPaging. The paging snapshot fields are spread in so
   // consumers read loadingOlder/olderError directly off the return value;
   // when the snapshot reference changes (a field flipped), the memo rebuilds
@@ -153,7 +163,7 @@ export function useSessionSynchronizer(
   // flips, so consumers that put loadOlder in a dep array are unaffected by
   // loadingOlder/olderError transitions.
   return useMemo(
-    () => ({ ...paging, loadOlder }),
-    [paging, loadOlder],
+    () => ({ ...paging, loadOlder, anchorAt, returnToHead }),
+    [paging, loadOlder, anchorAt, returnToHead],
   )
 }
