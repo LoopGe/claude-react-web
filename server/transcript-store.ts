@@ -193,6 +193,65 @@ export class TranscriptStore {
     return false
   }
 
+  /** 是否仍存在比 seq 更大的非墓碑消息（决定 around 页的 hasNewer）。 */
+  hasVisibleAfter(seq: number): boolean {
+    for (let s = seq + 1; s < this.nextSeq; s++) {
+      const entry = this.messages.get(s)
+      if (entry && !entry.evicted) return true
+    }
+    return false
+  }
+
+  /** seq 正序返回水位以上的非墓碑消息（增量索引使用）。 */
+  after(afterSeq: number, limit: number): SeqMessage[] {
+    const out: SeqMessage[] = []
+    for (let seq = afterSeq + 1; seq < this.nextSeq && out.length < limit; seq++) {
+      const entry = this.messages.get(seq)
+      if (!entry || entry.evicted) continue
+      out.push({ seq: entry.seq, uuid: entry.uuid, msg: entry.msg })
+    }
+    return out
+  }
+
+  /** 以 seq 为中心的一页。目标不存在或已墓碑时返回 null。 */
+  around(seq: number, beforeCount: number, afterCount: number): (TranscriptWindow & { hasNewer: boolean }) | null {
+    const target = this.messages.get(seq)
+    if (!target || target.evicted) return null
+
+    const before: InternalEntry[] = []
+    for (let s = seq - 1; s >= 0 && before.length < beforeCount; s--) {
+      const entry = this.messages.get(s)
+      if (!entry || entry.evicted) continue
+      before.push(entry)
+    }
+    before.reverse()
+
+    const after: InternalEntry[] = []
+    for (let s = seq + 1; s < this.nextSeq && after.length < afterCount; s++) {
+      const entry = this.messages.get(s)
+      if (!entry || entry.evicted) continue
+      after.push(entry)
+    }
+
+    const picked = [...before, target, ...after]
+    const startIndex = picked[0].seq
+    const endSeq = picked[picked.length - 1].seq
+    const tombstones: number[] = []
+    for (let s = startIndex; s <= endSeq; s++) {
+      const entry = this.messages.get(s)
+      if (!entry || entry.evicted) tombstones.push(s)
+    }
+    return {
+      generation: this.generation,
+      headSeq: this.nextSeq,
+      startIndex,
+      hasMore: this.hasVisibleBelow(startIndex),
+      hasNewer: this.hasVisibleAfter(endSeq),
+      messages: picked.map(({ seq: s, uuid, msg }) => ({ seq: s, uuid, msg })),
+      tombstones,
+    }
+  }
+
   /** 跨 store 实例续上世代（in-place compact）：同一个 session id 换了一个
    *  全新的 store（seq 从 0 重新分配），但 generation 必须继续增长——客户端
    *  把 generation 变化视为「旧宇宙已死」并重新锚定，而 `session-cleared`

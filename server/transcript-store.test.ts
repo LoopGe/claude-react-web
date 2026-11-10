@@ -140,4 +140,28 @@ describe('TranscriptStore', () => {
       expect(s.window(undefined, 10).tombstones).toEqual([1])
     })
   })
+
+  it('around returns before/after context and whether newer rows exist', () => {
+    const s = new TranscriptStore('s')
+    for (let i = 0; i < 10; i++) s.record(`u${i}`, { type: 'assistant', uuid: `u${i}` })
+    const page = s.around(5, 2, 2)!
+    expect(page.messages.map((m) => m.seq)).toEqual([3, 4, 5, 6, 7])
+    expect(page.hasNewer).toBe(true)
+    expect(page.hasMore).toBe(true)
+  })
+
+  it('around returns null for an unknown or tombstoned seq', () => {
+    const s = new TranscriptStore('s')
+    s.record('u0', { type: 'assistant', uuid: 'u0' })
+    s.evict(['u0'])
+    expect(s.around(0, 1, 1)).toBeNull()
+    expect(s.around(99, 1, 1)).toBeNull()
+  })
+
+  it('after returns only visible messages above the watermark, ascending', () => {
+    const s = new TranscriptStore('s')
+    for (let i = 0; i < 5; i++) s.record(`u${i}`, { type: 'assistant', uuid: `u${i}` })
+    s.evict(['u3'])
+    expect(s.after(1, 10).map((m) => m.seq)).toEqual([2, 4])
+  })
 })
