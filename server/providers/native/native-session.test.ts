@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { NativeProvider } from './native-provider.js'
-import type { NativeMcpConnections } from './mcp/connections.js'
+import type { NativeMcpConnections, NativeMcpServerInstance } from './mcp/connections.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
@@ -73,6 +73,20 @@ function echoServer(name = 'echo-server'): McpServer {
     async ({ text }) => ({ content: [{ type: 'text', text }] }),
   )
   return server
+}
+
+/** Wrap an in-process server so its connect settles asynchronously, like a
+ *  real handshake. Without the delay the connect can finish during the turn's
+ *  preceding log flush, which would let a missing per-turn `whenReady()` await
+ *  slip through: the first request would still advertise the tool. */
+function delayedInstance(instance: McpServer, ms = 100): NativeMcpServerInstance {
+  return {
+    connect: async (transport) => {
+      await new Promise((resolve) => setTimeout(resolve, ms))
+      return instance.connect(transport)
+    },
+    close: () => instance.close(),
+  }
 }
 
 function userMsg(text: string) {
@@ -309,7 +323,9 @@ describe('NativeSession', () => {
     const session = provider.createSession({
       id: 'mcp',
       cwd: dir,
-      mcpServers: { a: { type: 'sdk', instance: echoServer() } },
+      // Connect stays pending across the turn's log flush, so this test only
+      // passes if the pump actually awaits `whenReady()` before the request.
+      mcpServers: { a: { type: 'sdk', instance: delayedInstance(echoServer()) } },
       canUseTool: async (_toolName: unknown, input: unknown, ctx: unknown) => {
         permissionCtx = ctx as { toolUseID?: string; mcpServer?: unknown }
         return { behavior: 'allow', updatedInput: input }
