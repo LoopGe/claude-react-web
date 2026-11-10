@@ -339,9 +339,9 @@ describe('native skills end to end through SessionManager', () => {
     await writeExtraSkill(project, 'other', 'Other skill')
     const fx = await makeFixture(stateDir)
 
-    // Allowlist ⇒ Options.skills = ['demo'] (the projection of
-    // `{ kind: 'mode', mode: 'allowlist', allowlist: ['demo'] }`): only demo
-    // is listable, as 'on' (name + description).
+    // Allowlist ⇒ Options.skills = ['demo'] (passed directly; the policy-object
+    // projection `applySkillPolicyToOptions` is unit-covered elsewhere): only
+    // demo is listable, as 'on' (name + description).
     const allowId = await createSession(fx, project, { skills: ['demo'] })
     const allow = collectFrames(fx.sm, allowId)
     fx.scripts.push(textTurn('allowlisted'))

@@ -69,8 +69,9 @@ describe('SessionSkillManager.setSkillOverride', () => {
     const manager = new SessionSkillManager(deps)
 
     await manager.setSkillOverride('s1', { kind: 'disabled' })
-    // Disabling every skill must clear an open picker, so the empty list is
-    // pushed rather than suppressed.
+    // The applied override map is projected from `listSkills` (empty in this
+    // fixture), and the EMPTY command list is broadcast, not suppressed, so
+    // an open picker is cleared after a reload that yields no skills.
     expect(applyFlagSettings).toHaveBeenCalledWith({ skillOverrides: {} })
     expect(broadcastCommandsChanged).toHaveBeenCalledWith('s1', [])
 
