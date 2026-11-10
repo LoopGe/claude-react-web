@@ -314,6 +314,25 @@ describe('normalize — persisted parent_tool_use_id', () => {
     expect(toolResult.consumedAt).toBeUndefined()
   })
 
+  it('keeps a persisted null parent on a main-thread tool_result line', () => {
+    // Native log lines write an explicit null on every main-thread frame.
+    // Falling through to the content-derived id here would label the parent's
+    // own tool_result as a sidechain frame and file it under the Agent card.
+    const toolResult = normalize({
+      type: 'user', uuid: 'u1', parent_tool_use_id: null,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-42', content: 'ok' }] },
+    }, SID, false) as { parent_tool_use_id: string | null }
+    expect(toolResult.parent_tool_use_id).toBeNull()
+  })
+
+  it('keeps a persisted Agent parent on a sidechain tool_result line', () => {
+    const toolResult = normalize({
+      type: 'user', uuid: 'u1', parent_tool_use_id: 'agent-1',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'nested-read-0', content: 'ok' }] },
+    }, SID, false) as { parent_tool_use_id: string }
+    expect(toolResult.parent_tool_use_id).toBe('agent-1')
+  })
+
   it('behaves exactly as before when the field is absent (claude disk lines)', () => {
     const assistant = normalize({
       type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] },

@@ -238,17 +238,17 @@ describe('native subagents end to end through SessionManager', () => {
 
     // 4a. The disk page still carries the sidechain frames under their
     //     parent; it is the UI read surface, not the model's history.
-    //     (A top-level tool_result line also normalizes to its tool_use id
-    //     through the content-derived fallback, so the filter below selects
-    //     the nested run's own frames by their content.)
     const page = await second.sm.getHistoryPage(info.id, { limit: 50 })
     const pageFrames = page.messages as Frame[]
-    const pageSidechain = pageFrames.filter((m) => m.parent_tool_use_id === AGENT_ID
-      && (JSON.stringify(m).includes(NESTED_TOOL_PREFIX)
-        || (m.type === 'assistant' && JSON.stringify(m).includes(NESTED_REPORT))))
+    const pageSidechain = pageFrames.filter((m) => m.parent_tool_use_id === AGENT_ID)
     expect(pageSidechain).toHaveLength(SIDECHAIN_FRAMES)
     expect(pageSidechain.every((m) => m.parent_tool_use_id === AGENT_ID)).toBe(true)
     expect(JSON.stringify(pageSidechain)).toContain(NESTED_REPORT)
+    // The main-thread Agent tool_result keeps its null parent on disk.
+    expect(pageFrames.some(
+      (m) => m.type === 'user' && m.parent_tool_use_id == null
+        && m.message?.content?.[0]?.tool_use_id === AGENT_ID,
+    )).toBe(true)
     expect(pageFrames.some(
       (m) => m.type === 'user' && JSON.stringify(m).includes(PROMPT),
     )).toBe(true)
@@ -266,14 +266,18 @@ describe('native subagents end to end through SessionManager', () => {
     // 4c. The resume seed spans both budgets: the main-thread prompt is in
     //     the seeded ring even though the 25 sidechain lines alone exceed the
     //     old `limit: historyCap` page read. Sidechain frames land in the
-    //     separate subagent ring.
+    //     separate subagent ring; the main-thread Agent tool_result stays in
+    //     the main ring under its null parent.
     expect(JSON.stringify(resumedLive.history)).toContain(PROMPT)
     expect(JSON.stringify(resumedLive.history)).not.toContain(NESTED_TOOL_PREFIX)
-    const seededSidechain = resumedLive.subagentHistory.filter(
-      (f) => JSON.stringify(f).includes(NESTED_TOOL_PREFIX),
+    const resumedAgentResult = resumedLive.history.find(
+      (f) => f.type === 'user' && f.parent_tool_use_id == null
+        && f.message?.content?.[0]?.tool_use_id === AGENT_ID,
     )
-    expect(seededSidechain).toHaveLength(NESTED_ROUNDS * 2)
-    expect(seededSidechain.every((f) => f.parent_tool_use_id === AGENT_ID)).toBe(true)
+    expect(resumedAgentResult).toBeDefined()
+    expect(JSON.stringify(resumedAgentResult)).toContain(NESTED_REPORT)
+    expect(resumedLive.subagentHistory).toHaveLength(SIDECHAIN_FRAMES)
+    expect(resumedLive.subagentHistory.every((f) => f.parent_tool_use_id === AGENT_ID)).toBe(true)
     expect(JSON.stringify(resumedLive.subagentHistory)).toContain(NESTED_REPORT)
   }, 30000)
 })

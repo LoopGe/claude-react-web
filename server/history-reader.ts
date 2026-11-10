@@ -507,13 +507,16 @@ function pickCompactMetadata(meta: unknown): Record<string, unknown> {
  *  build small snippets — it never ships the full message over WS — so it
  *  passes `trim: false` to keep full recall on the on-disk text. */
 export function normalize(o: RawLine, sessionId: string, trim: boolean): unknown {
-  // Prefer a PERSISTED parent (native session log lines carry one on every
-  // user/assistant frame, sidechain or not). Claude CLI transcript lines have
-  // no top-level field, so they keep the content-derived behavior: a
+  // A PERSISTED parent (`string` OR explicit `null`) wins verbatim: native
+  // session log lines write it on every user/assistant frame, so a
+  // main-thread tool_result keeps its null parent and a sidechain frame keeps
+  // its Agent id. Only an ABSENT field (claude CLI transcript lines, which
+  // have no top-level parent) keeps the content-derived behavior: a
   // tool_result user line maps to its tool_use id, real prompts/assistants to
   // null.
-  const parent = typeof o.parent_tool_use_id === 'string'
-    ? o.parent_tool_use_id
+  const persistedParent = o.parent_tool_use_id
+  const parent = persistedParent === null || typeof persistedParent === 'string'
+    ? persistedParent
     : (o.type === 'user' ? toolResultParentId(o.message?.content) : null)
   // The SDK writes an ISO `timestamp` on every persisted line. Carry it as
   // receivedAt (epoch ms) so disk-restored history (resume historySeed +
