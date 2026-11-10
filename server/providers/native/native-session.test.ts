@@ -2041,8 +2041,9 @@ describe('NativeSession', () => {
       await nextRequest('fifth', 5)
       expect(wire(4).speed).toBe('fast')
 
-      // Unsupported keys still fail loudly.
+      // Unsupported keys and invalid values still fail loudly.
       await expect(session.applyFlagSettings?.({ plugins: {} })).rejects.toThrow(/plugins/)
+      await expect(session.applyFlagSettings?.({ effortLevel: 'ultra' })).rejects.toThrow(/effort level/)
     } finally {
       await session.destroy()
       streamAnthropicMessagesMock.mockReset()

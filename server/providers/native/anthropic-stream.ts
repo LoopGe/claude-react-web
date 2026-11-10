@@ -20,6 +20,11 @@ export type RequestThinking = ThinkingSetting
 /** The API's reasoning-effort ladder (same union as the SDK's EffortLevel). */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/** Runtime membership list for the union above — the live-control path
+ *  validates against it so an invalid level fails loudly instead of being
+ *  silently omitted from the request. */
+export const EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
 /** The beta gate fast mode rides on. */
 export const FAST_MODE_BETA = 'fast-mode-2026-02-01'
 

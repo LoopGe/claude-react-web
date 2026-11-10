@@ -211,7 +211,8 @@ describe('buildRequestBody effort and fast mode', () => {
 
   it('emits output_config.effort for a level the model supports', () => {
     expect(wire({ effort: 'high' }).output_config).toEqual({ effort: 'high' })
-    // Sonnet 4.6 supports 'max' but not 'xhigh'.
+    // The classifier's sonnet rule grants every sonnet id [low, medium, high,
+    // max] (only 'xhigh' is opus-only), so 'max' is emitted for any sonnet id.
     expect(wire({ model: 'claude-sonnet-4-5', effort: 'max' }).output_config).toEqual({ effort: 'max' })
   })
 
@@ -238,20 +239,28 @@ describe('streamAnthropicMessages fast mode header', () => {
     vi.stubGlobal('fetch', vi.fn(async () =>
       sseResponse(['event: message_stop\ndata: {"type":"message_stop"}\n\n']),
     ))
-    for await (const _ of streamAnthropicMessages(
-      { ...baseReq, model: 'claude-opus-4-8', fastMode: true },
-      async () => {},
-    )) { /* drain */ }
-    const fast = vi.mocked(fetch).mock.calls[0][1] as { headers: Record<string, string>; body: string }
+    const sent = async (overrides: Partial<StreamRequest>): Promise<{ headers: Record<string, string>; body: string }> => {
+      vi.mocked(fetch).mockClear()
+      for await (const _ of streamAnthropicMessages({ ...baseReq, model: 'claude-opus-4-8', ...overrides }, async () => {})) {
+        /* drain */
+      }
+      return vi.mocked(fetch).mock.calls[0][1] as { headers: Record<string, string>; body: string }
+    }
+
+    // Enabled on a capable model: header + speed.
+    const fast = await sent({ fastMode: true })
     expect(fast.headers['anthropic-beta']).toBe(FAST_MODE_BETA)
     expect(JSON.parse(fast.body)).toMatchObject({ speed: 'fast' })
 
-    vi.mocked(fetch).mockClear()
-    for await (const _ of streamAnthropicMessages(
-      { ...baseReq, model: 'claude-sonnet-4-5', fastMode: true },
-      async () => {},
-    )) { /* drain */ }
-    const unsupported = vi.mocked(fetch).mock.calls[0][1] as { headers: Record<string, string>; body: string }
+    // Explicitly disabled and absent intent: neither the header nor speed.
+    for (const fastMode of [false, undefined]) {
+      const off = await sent({ fastMode })
+      expect(off.headers['anthropic-beta']).toBeUndefined()
+      expect(JSON.parse(off.body)).not.toHaveProperty('speed')
+    }
+
+    // Intent on, incapable model: both are omitted together.
+    const unsupported = await sent({ model: 'claude-sonnet-4-5', fastMode: true })
     expect(unsupported.headers['anthropic-beta']).toBeUndefined()
     expect(JSON.parse(unsupported.body)).not.toHaveProperty('speed')
   })

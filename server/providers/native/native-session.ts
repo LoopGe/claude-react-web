@@ -24,7 +24,7 @@ import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-cap
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.js'
 import { runTurn, type LoopDeps } from './loop.js'
-import { streamAnthropicMessages, type EffortLevel } from './anthropic-stream.js'
+import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { apiRetryFrame, defaultFrameContext, resultFrame, type Frame, type FrameContext, type Usage } from './frames.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
@@ -1012,8 +1012,9 @@ export class NativeSession implements ProviderSessionHandle {
 
   /** The flag-settings layer for the three keys this provider supports.
    *  `skillOverrides` replaces the per-skill override map (`{}` restores the
-   *  spawn default); `effortLevel` takes a level or null (clear back to the
-   *  model default); `fastMode` takes true to enable and false/null to clear.
+   *  spawn default); `effortLevel` takes a level from the API's ladder or null
+   *  (clear back to the model default — anything else throws); `fastMode`
+   *  takes true to enable and false/null to clear.
    *  Both new values are LIVE fields read when the next request is built, and
    *  are omitted at build time when the current model cannot serve them.
    *  Every other key must fail loudly: `supportsPlugins` is false, so
@@ -1027,7 +1028,13 @@ export class NativeSession implements ProviderSessionHandle {
     }
     const level = settings.effortLevel
     if (level !== undefined) {
-      this.effortLevel = level === null ? undefined : (level as EffortLevel)
+      if (level === null) {
+        this.effortLevel = undefined
+      } else if (typeof level === 'string' && (EFFORT_LEVELS as readonly string[]).includes(level)) {
+        this.effortLevel = level as EffortLevel
+      } else {
+        throw new Error(`native provider does not support effort level: ${String(level)}`)
+      }
     }
     if (settings.fastMode !== undefined) {
       this.fastMode = settings.fastMode === true
