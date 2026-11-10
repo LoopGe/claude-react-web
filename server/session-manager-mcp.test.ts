@@ -77,6 +77,7 @@ describe('SessionMcpManager setFirstPartyTool', () => {
       running: true,
       cwd: '/tmp',
       firstPartyTools: prior,
+      appToolsGit: true,
       dynamicMcpServers: { inline: { type: 'stdio', command: 'node' } },
     }
     const { deps, setMcpServers } = makeDeps(session)
@@ -86,6 +87,8 @@ describe('SessionMcpManager setFirstPartyTool', () => {
     await expect(m.setFirstPartyTool('s1', 'git-tools', false)).rejects.toThrow('boom')
 
     expect(session.firstPartyTools).toEqual(prior)
+    // The legacy appToolsGit surface is reverted alongside the canonical map.
+    expect(session.appToolsGit).toBe(true)
   })
 })
 

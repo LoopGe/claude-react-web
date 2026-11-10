@@ -1,23 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import type { McpConfigStore } from '../mcp-config.js'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { McpConfigStore } from '../mcp-config.js'
 import { createDefaultProviders } from './default-providers.js'
 import type { NativeProvider } from './native/native-provider.js'
-
-function makeStore() {
-  const table: Record<string, unknown> = {
-    'oauth-server': {
-      name: 'oauth-server',
-      type: 'http',
-      url: 'https://x',
-      oauth: { redirectUrl: 'http://127.0.0.1:9/cb' },
-    },
-    plain: { name: 'plain', type: 'stdio', command: 'node' },
-  }
-  const get = vi.fn((n: string) => table[n])
-  const flush = vi.fn(async () => {})
-  const store = { get, flush } as unknown as McpConfigStore
-  return { store, get, flush }
-}
 
 function nativeProvider(opts: Parameters<typeof createDefaultProviders>[0]): NativeProvider {
   return createDefaultProviders(opts).get('native') as NativeProvider
@@ -25,7 +12,16 @@ function nativeProvider(opts: Parameters<typeof createDefaultProviders>[0]): Nat
 
 describe('createDefaultProviders native authFor wiring', () => {
   it('resolves an OAuth provider only for servers with stored oauth state', () => {
-    const { store } = makeStore()
+    const table: Record<string, unknown> = {
+      'oauth-server': {
+        name: 'oauth-server',
+        type: 'http',
+        url: 'https://x',
+        oauth: { redirectUrl: 'http://127.0.0.1:9/cb' },
+      },
+      plain: { name: 'plain', type: 'stdio', command: 'node' },
+    }
+    const store = { get: vi.fn((n: string) => table[n]) } as unknown as McpConfigStore
     const provider = nativeProvider({ mcpStore: store })
 
     expect(provider.authFor).toBeTypeOf('function')
@@ -34,18 +30,45 @@ describe('createDefaultProviders native authFor wiring', () => {
     expect(provider.authFor?.('missing')).toBeUndefined()
   })
 
-  it('flushes the MCP store when the provider saves tokens', () => {
-    const { store, flush } = makeStore()
-    const provider = nativeProvider({ mcpStore: store })
-
-    provider.authFor?.('oauth-server')?.saveTokens({ access_token: 't', token_type: 'Bearer' })
-
-    expect(flush).toHaveBeenCalled()
-  })
-
   it('leaves authFor undefined when no MCP store is configured', () => {
     const provider = nativeProvider({})
 
     expect(provider.authFor).toBeUndefined()
+  })
+})
+
+describe('createDefaultProviders native OAuth persistence', () => {
+  it('persists tokens saved through the resolved provider', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'crw-default-providers-'))
+    try {
+      const store = new McpConfigStore({ stateDir: dir })
+      await store.load()
+      store.upsert({
+        name: 'oauth-server',
+        type: 'http',
+        url: 'https://x',
+        oauth: { redirectUrl: 'http://127.0.0.1:9/cb' },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+      await store.flush()
+
+      const provider = nativeProvider({ mcpStore: store })
+      provider.authFor?.('oauth-server')?.saveTokens({ access_token: 'tok', token_type: 'Bearer' })
+
+      // onTokensSaved queues the write; flush() is a no-op once the store is
+      // no longer dirty, so poll until the queued atomic write lands.
+      await vi.waitFor(async () => {
+        const raw = JSON.parse(await readFile(join(dir, 'mcp-config.json'), 'utf8'))
+        expect(raw['oauth-server'].oauth.tokens.access_token).toBe('tok')
+        expect(raw['oauth-server'].oauth.lastAuthorizedAt).toBeTypeOf('number')
+      })
+
+      const raw = JSON.parse(await readFile(join(dir, 'mcp-config.json'), 'utf8'))
+      expect(raw['oauth-server'].oauth.tokens.access_token).toBe('tok')
+      expect(raw['oauth-server'].oauth.lastAuthorizedAt).toBeTypeOf('number')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

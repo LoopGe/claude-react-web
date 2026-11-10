@@ -32,7 +32,12 @@ export function createDefaultProviders(opts: DefaultProvidersOptions = {}): Prov
     ? (name: string) => {
         const stored = mcpStore.get(name)
         return stored
-          ? createMcpOAuthProvider(stored, () => void mcpStore.flush())
+          ? createMcpOAuthProvider(stored, () => {
+              // The provider mutates the stored server's OAuth state in place;
+              // upsert re-marks the store dirty (flush is a no-op otherwise).
+              mcpStore.upsert(stored)
+              void mcpStore.flush()
+            })
           : undefined
       }
     : undefined
