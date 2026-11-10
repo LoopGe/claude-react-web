@@ -42,3 +42,12 @@
 .search-overlay > .search-panel:focus {
   outline: none;
 }
+/* While a hit preview is open the panel must carry a definite height: the
+   preview embeds the real MessageList, whose Virtuoso scroller is
+   height:100% with no intrinsic height — measured against a content-sized
+   panel the whole wrap/stage/messages chain resolves to 0 and the previewed
+   messages render at zero visible height. The results view stays
+   content-sized (short hit lists must not become a full-height card). */
+.search-overlay > .search-panel.has-preview {
+  height: 100%;
+}

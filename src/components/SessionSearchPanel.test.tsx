@@ -102,13 +102,21 @@ describe('SessionSearchPanel', () => {
 
   it('opens the preview on click and returns to the results', () => {
     renderPanel()
+    // The results view stays content-sized; only the preview carries the
+    // definite-height class the embedded MessageList needs (see
+    // search-panel.css .search-panel.has-preview).
+    const panel = document.querySelector('.search-panel') as HTMLElement
+    expect(panel.classList.contains('has-preview')).toBe(false)
+
     fireEvent.click(screen.getAllByRole('option')[1])
 
+    expect(panel.classList.contains('has-preview')).toBe(true)
     expect(screen.getByRole('region', { name: 'Search result preview' })).toBeTruthy()
     expect(screen.getByText('Turn 5')).toBeTruthy()
     expect(screen.queryByRole('listbox')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to results' }))
+    expect(panel.classList.contains('has-preview')).toBe(false)
     expect(screen.getByRole('listbox')).toBeTruthy()
   })
 

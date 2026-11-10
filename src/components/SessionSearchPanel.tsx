@@ -113,7 +113,7 @@ export function SessionSearchPanel({
 
   return (
     <aside
-      className="search-panel"
+      className={`search-panel${preview ? ' has-preview' : ''}`}
       role="region"
       aria-label="Search session history"
       onKeyDown={preview ? undefined : handleKeyDown}
