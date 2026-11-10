@@ -393,3 +393,51 @@ P1.3 让 native 会话拥有 `Agent` 工具：子代理在同一条 turn 循环�
 - 自定义 agent 定义中 `prompt` / `model` 以外的字段（`tools`、`disallowedTools`、`maxTurns`、`background` 等）。
 - model 别名解析：`input.model` 原样透传，短别名可能被 API 拒绝。
 - 在 sidechain 内部 fork：会留下未回答的 sidechain `tool_use`，渲染成一张卡住的子代理卡（接受）。
+
+## P1.4 — Skills / commands / presets
+
+P1.4 让 native 会话拥有与 claude 会话同等的本地技能能力：发现项目的 `.claude/skills` 与用户级 `skills/` 下的 `SKILL.md`，把可选技能写进每轮 system prompt 与 `/` 命令目录，让模型通过 `Skill` 工具加载正文，并把用户的 `/name args` turn 展开成技能正文。解析仍走现有的 `server/skills.ts` / `shared/skills.ts`，没有新增解析器与依赖。
+
+### NativeSkillCatalog 与选择策略
+
+- 每个 native 会话一个 `NativeSkillCatalog`。spawn 策略（`configure`）与 override 层（`applyOverrides`，整表替换）分开存放，与发现解耦，因此调用顺序不影响结果。
+- `reload()` 是**异步**的：重新跑 `listSkills(cwd)`，为每个有效技能缓存整份 SKILL.md（含 frontmatter，单文件 ≤1 MiB；发现之后变大的文件被跳过，不让整轮发现失败）。此后 `section()` / `commands()` / `bodyOf()` / `expand()` 全是同步读取缓存。
+- 同名去重：项目级覆盖用户级；无效记录在去重**之前**丢弃，因此坏掉的项目技能会回落到同名的有效用户技能。
+- 基础状态（spawn `Options.skills`）：
+  - `undefined`（默认）→ 每个技能 `name-only`：只列名字、不列描述，模型仍可调用。这是 CLI/app 的实际默认，不是 "all with descriptions"。
+  - `'all'` → `on`：名字 + 描述。
+  - `string[]` → 列表内 `on`、列表外 `off`。allowlist 是硬上下文过滤，override `'on'` **不能**复活被排除的技能。
+  - `[]` → 全部 `off`。
+- override（`Settings.skillOverrides`）叠在基础状态之上：`on` / `name-only` / `user-invocable-only` / `off`。`name-only` 只改变 `section()` 的展示（仍可被模型调用），`user-invocable-only` 从 `section()` 消失但 `/name` 仍可展开，`off` 在 section / commands / bodyOf / expand 四处全部隐藏。
+- `disable-model-invocation: true` 把有效状态钳制为 `user-invocable-only`（显式 `off` 仍是 `off`）：该技能永不进入 `section()`，且任何 override 都无法把它抬回 `on` / `name-only`。
+- `commands()` 过滤 `off` 与 `user-invocable: false`；`bodyOf()` 只在 `on` / `name-only` 下返回正文，其余返回 `unknown skill: <name>` 错误；`expand()` 在 `state !== 'off'` 且 `userInvocable !== false` 时返回正文。
+
+### Prompt section 与 Skill 工具
+
+- 每轮 turn 把 `<available_skills>` 段拼到 system 字符串之后（空段不留多余空行）。turn 拿到的是本轮开始时的快照，运行中的 turn 不受后到的 reload / override 影响。
+- 子代理 prompt 的 skills 段是**实时 getter**，嵌套 Agent 调用读到的总是当前目录状态。
+- `Skill` 是每个会话构造的 `ToolDef`（不是全局静态），随所有工具列表下发——子代理也有，因为子代理也可能需要加载技能。`run` 返回缓存正文；带 `args` 时追加 `\n\nArguments: <args>`。不支持 forked 执行。
+- 未知名字、`off` 技能与 `disable-model-invocation` 技能都返回错误正文，且不发起任何流调用。
+
+### 用户 `/skill` 展开
+
+- `pumpLoop` 在每轮开头 `await skillsReady` 再展开内容：字符串 content 整体匹配 `/^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/`；数组 content 只重写**第一个** text block，image / file 等其它 block 原样保留。未命中（非命令、未知技能、`off`）原样透传。
+- 命中时模型侧内容 = `正文 + (args ? '\n\n' + args : '')`。
+- **日志持久化展开后的内容，manager 的 ring 保留用户输入的 `/name args`。** 日志是模型历史，必须与模型实际看到的一致，否则 live 与 resume 的历史会分叉；ring 只服务 UI 的即时气泡。
+- 接受的外观差异：**resume 后**客户端从日志重放，transcript 会渲染展开后的 SKILL.md（含 frontmatter）而不是用户敲的 `/demo args`。live 期间 UI 仍显示用户输入；这个差异只存在于 resume/fork 的历史重放。
+
+### 控制面
+
+- `supportedCommands()` 返回 `commands()`，并 await 当前发现，避免 spawn 后立即拉取时拿到空表；`capabilities.supportsCommands = true`。
+- `reloadSkills()` 重新发现并返回 `{ skills }`。新的发现**替换** `skillsReady`，所以手动 reload 既覆盖构造时的快照，也能从一次失败的发现中恢复（后续每轮 turn 的 await 都跟踪这一遍）。
+- `applyFlagSettings` 只接受 `skillOverrides`：它**替换**整张 override 表，`{}` 回到 spawn 默认；任何其它 key 直接抛错。`supportsPlugins` 保持 false——插件开关必须响亮失败，而不是报告一个没有发生的变更。
+- 发现失败不阻塞建会话：失败的 promise 被观察（日志 warn），turn 侧仍 await 原始 promise。**被消费的 user turn 在发现失败时先以原始文本落盘，再让 turn 响亮失败**——客户端已把该 turn 标成 "sent"，日志不能让它蒸发。代价是日志记录了一个 live 模型没看到的 turn；resume 后模型可以回答它，这是为持久性有意接受的取舍。
+
+### 共享改动
+
+- `Skill` 同时加入 `server/permission-broker.ts` 的 `READONLY_TOOL_NAMES` 与 `SAFE_AUTO_TOOLS`：加载技能只读、无网络，claude 与 native 两个 provider 都适用。
+- `SessionSkillManager.reloadSkills` 在 provider 返回 `skills` 数组时**也广播空表**（`commands-changed`）；只有结果完全不带 `skills` 数组时才保留现有列表。因此删光所有技能会清空客户端的选择器。
+
+### 延迟项
+
+- 插件来源的技能（`Options.plugins`）；forked 技能执行（`Skill "<x>" completed (forked execution)` 的整段对话）；`getContextUsage` 的 `includedSkills` / `skillFrontmatter` 明细；`opts.agent` 主会话 preset（native 目前忽略 `opts.agent`，它也不属于子代理 store）。
