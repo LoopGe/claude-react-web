@@ -1235,16 +1235,6 @@ mark.search-hl.search-hl-active {
   outline-offset: 2px;
   border-radius: var(--radius-xs);
 }
-.search-panel-scope {
-  flex-shrink: 0;
-  padding: 3px 8px;
-  border-radius: var(--radius-pill);
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent-text);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
 .search-panel-loading {
   display: inline-flex;
   align-items: center;

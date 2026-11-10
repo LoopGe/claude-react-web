@@ -139,7 +139,6 @@ export function SessionSearchPanel({ sessionId, initialQuery, onClose, onSelect 
           aria-controls="session-search-list"
           aria-activedescendant={search.hits.length > 0 ? `session-search-hit-${activeIndex}` : undefined}
         />
-        <span className="search-panel-scope">This session · Full history</span>
       </div>
 
       <div className="search-panel-list" ref={listRef} id="session-search-list" role="listbox" aria-label="Search results">
