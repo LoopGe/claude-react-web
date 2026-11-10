@@ -39,13 +39,14 @@ function toolResultMessage(seq: number, uuid: string, toolUseId: string, text: s
 }
 
 function makeDeps(fixtures: Record<string, FixtureMessage[]>) {
+  let generation = 0
   const pageOf = (all: FixtureMessage[], before: number | undefined, limit: number): TranscriptPageResponse => {
     const headSeq = (all.at(-1)?.seq ?? -1) + 1
     const bound = before ?? headSeq
     const below = all.filter((m) => m.seq < bound)
     const picked = below.slice(-limit)
     return {
-      generation: 0,
+      generation,
       headSeq,
       totalCount: all.length,
       startIndex: picked[0]?.seq ?? bound,
@@ -58,14 +59,14 @@ function makeDeps(fixtures: Record<string, FixtureMessage[]>) {
   const getAfter = vi.fn(async (id: string, afterSeq: number, limit = 1000) => {
     const all = fixtures[id] ?? []
     return {
-      generation: 0,
+      generation,
       headSeq: (all.at(-1)?.seq ?? -1) + 1,
       totalCount: all.length,
       messages: all.filter((m) => m.seq > afterSeq).slice(0, limit).map(({ seq, uuid, msg }) => ({ seq, uuid, msg })),
     }
   })
   const isDegraded = vi.fn(async () => false)
-  return { getWindow, getAfter, isDegraded }
+  return { getWindow, getAfter, isDegraded, setGeneration: (g: number) => { generation = g } }
 }
 
 function fixture(): Record<string, FixtureMessage[]> {
@@ -152,5 +153,37 @@ describe('createSessionSearchIndex', () => {
     const res = await index.search('s1', '   ', 100)
     expect(res.hits).toEqual([])
     expect(deps.getWindow).not.toHaveBeenCalled()
+  })
+
+  it('appends only rows above lastIndexedSeq', async () => {
+    const fixtures = fixture()
+    const deps = makeDeps(fixtures)
+    const index = createSessionSearchIndex(deps)
+    await index.search('s1', 'search', 100)
+    deps.getWindow.mockClear()
+    deps.getAfter.mockClear()
+
+    fixtures.s1.push(textMessage(9, 'a9', 'assistant', 'search appended'))
+    const res = await index.search('s1', 'search', 100)
+
+    expect(deps.getWindow).not.toHaveBeenCalled()
+    expect(deps.getAfter).toHaveBeenCalledWith('s1', 8, 1000)
+    expect(res.hits.some((h) => h.messageSeq === 9)).toBe(true)
+  })
+
+  it('rebuilds when generation changes', async () => {
+    const fixtures = fixture()
+    const deps = makeDeps(fixtures)
+    const index = createSessionSearchIndex(deps)
+    await index.search('s1', 'search', 100)
+
+    deps.setGeneration(1)
+    fixtures.s1 = [textMessage(0, 'n0', 'user', 'fresh search')]
+    deps.getWindow.mockClear()
+    const res = await index.search('s1', 'search', 100)
+
+    expect(deps.getWindow).toHaveBeenCalled()
+    expect(res.hits.map((h) => h.messageSeq)).toEqual([0])
+    expect(res.hits[0].turnPrompt).toBe('fresh search')
   })
 })

@@ -26,6 +26,7 @@ import { createLogger } from '../log.js'
 import { validateSendBody } from '../send-body.js'
 import { HttpError } from '../errors.js'
 import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
+import { createSessionSearchIndex } from '../session-search-index.js'
 import { worktreeIsDirty } from '../git.js'
 import { worktreePathOf } from '../session-worktree.js'
 import { readSubagentTranscript } from '../subagent-transcripts.js'
@@ -378,6 +379,11 @@ export function buildSessionRouter(
   uploadStore?: UploadStore,
 ): Hono {
   const app = new Hono()
+  const sessionSearch = createSessionSearchIndex({
+    getWindow: (id, before, limit) => sm.getTranscriptWindow(id, before, limit),
+    getAfter: (id, afterSeq, limit) => sm.getTranscriptWindowAfter(id, afterSeq, limit),
+    isDegraded: (id) => sm.isTranscriptDegraded(id),
+  })
 
   // List sessions (snapshot only — for push-based updates the frontend
   // subscribes to the WebSocket channel in ws.ts).
@@ -763,6 +769,18 @@ export function buildSessionRouter(
     }
     recordHistoryPageImages(page.messages.map((m) => m.msg))
     return c.json(page)
+  })
+
+  // Session-scoped full-history search (the search dialog). Hits are grouped
+  // by turn and carry seq jump targets; the index is incremental per session.
+  app.get('/sessions/:id/search', async (c) => {
+    const id = c.req.param('id')
+    sm.get(id) // live-or-persisted existence check; unknown → HttpError 404
+    const q = c.req.query('q') ?? ''
+    const limitRaw = c.req.query('limit')
+    const limitNum = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : undefined
+    const limit = Math.min(100, Math.max(1, limitNum ?? 100))
+    return c.json(await sessionSearch.search(id, q, limit))
   })
 
   // Interrupt. Optional body { cancelQueued: true } — "stop means stop

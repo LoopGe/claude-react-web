@@ -6,6 +6,10 @@
  * jumped to without another uuid→index lookup. Rows are the messages the main
  * transcript can render: sidechain frames are excluded, hidden frames are
  * excluded, and a tool_result stays attached to its owning tool_use's seq.
+ *
+ * The index is incremental: each session keeps a `lastIndexedSeq` watermark
+ * and only reads messages above it on subsequent queries. A generation change
+ * (`/clear`) invalidates the cache and triggers a full rebuild.
  */
 import { countMatches } from '../shared/search/match.js'
 import { extractMessagePlainText } from '../shared/search/extract.js'
@@ -42,9 +46,23 @@ interface Row {
   turnSeq: number
   turnNo: number
   turnPrompt: string
-  ownerSeq?: number
   ownerToolUseId?: string
   timestamp?: number
+}
+
+interface TurnState {
+  turnNo: number
+  turnSeq: number
+  turnPrompt: string
+}
+
+interface IndexState {
+  rows: Row[]
+  turn: TurnState
+  toolUseSeq: Map<string, number>
+  generation: number
+  headSeq: number
+  lastIndexedSeq: number
 }
 
 interface LooseMessage {
@@ -59,6 +77,8 @@ interface LooseMessage {
 
 const TURN_PROMPT_MAX = 80
 const SNIPPET_MAX = 180
+const PAGE_SIZE = 1000
+const MAX_SESSIONS = 4
 
 function buildSnippet(text: string, query: string): string {
   const idx = text.toLowerCase().indexOf(query.toLowerCase())
@@ -101,32 +121,21 @@ function isRealUserPrompt(msg: LooseMessage): boolean {
   return true
 }
 
-async function buildRows(id: string, deps: SessionSearchDeps): Promise<Row[]> {
-  // Page backward to the beginning, then reverse into chronological order.
-  const pages: TranscriptPageResponse[] = []
-  let before: number | undefined
-  for (;;) {
-    const page = await deps.getWindow(id, before, 1000)
-    pages.push(page)
-    if (!page.hasMore || page.messages.length === 0) break
-    if (before !== undefined && page.startIndex >= before) break
-    before = page.startIndex
+function emptyState(): IndexState {
+  return {
+    rows: [],
+    turn: { turnNo: 0, turnSeq: 0, turnPrompt: '（会话开头）' },
+    toolUseSeq: new Map(),
+    generation: 0,
+    headSeq: 0,
+    lastIndexedSeq: -1,
   }
-  const messages: TranscriptPageMessage[] = pages.reverse().flatMap((p) => p.messages)
+}
 
-  const rows: Row[] = []
-  const toolUseSeq = new Map<string, number>()
-  let turnNo = 0
-  let turnSeq = 0
-  let turnPrompt = '（会话开头）'
-
-  let processed = 0
+/** Consume a chronological slice into the index state. Mutates state. */
+function consume(state: IndexState, messages: readonly TranscriptPageMessage[]): void {
   for (const entry of messages) {
-    processed++
-    if (processed % 200 === 0) {
-      await new Promise<void>((resolve) => setImmediate(resolve))
-    }
-
+    state.lastIndexedSeq = entry.seq
     const msg = entry.msg as LooseMessage
     const isToolResult = msg.type === 'user' && userMessageHasToolResult(msg)
     if (msg.type !== 'user' && msg.type !== 'assistant') continue
@@ -138,20 +147,20 @@ async function buildRows(id: string, deps: SessionSearchDeps): Promise<Row[]> {
     if (msg.type === 'assistant') {
       for (const block of blocksOf(msg)) {
         if (block.type === 'tool_use' && typeof block.id === 'string') {
-          toolUseSeq.set(block.id, entry.seq)
+          state.toolUseSeq.set(block.id, entry.seq)
         }
       }
     }
 
     if (isRealUserPrompt(msg)) {
-      turnNo += 1
-      turnSeq = entry.seq
+      state.turn.turnNo += 1
+      state.turn.turnSeq = entry.seq
       const promptText = extractMessagePlainText(msg as Parameters<typeof extractMessagePlainText>[0]) ?? ''
-      turnPrompt = turnPromptOf(promptText) || '（会话开头）'
-    } else if (turnNo === 0) {
-      turnNo = 1
-      turnSeq = 0
-      turnPrompt = '（会话开头）'
+      state.turn.turnPrompt = turnPromptOf(promptText) || '（会话开头）'
+    } else if (state.turn.turnNo === 0) {
+      state.turn.turnNo = 1
+      state.turn.turnSeq = 0
+      state.turn.turnPrompt = '（会话开头）'
     }
 
     let ownerToolUseId: string | undefined
@@ -161,7 +170,7 @@ async function buildRows(id: string, deps: SessionSearchDeps): Promise<Row[]> {
       const id = typeof block?.tool_use_id === 'string' ? block.tool_use_id : undefined
       if (!id) continue
       ownerToolUseId = id
-      ownerSeq = toolUseSeq.get(id)
+      ownerSeq = state.toolUseSeq.get(id)
       if (ownerSeq === undefined) continue
     }
 
@@ -169,34 +178,97 @@ async function buildRows(id: string, deps: SessionSearchDeps): Promise<Row[]> {
     if (!text) continue
     const timestamp = timestampOf(msg)
 
-    rows.push({
+    state.rows.push({
       seq: ownerSeq ?? entry.seq,
       messageSeq: entry.seq,
       uuid: typeof msg.uuid === 'string' ? msg.uuid : null,
       role: isToolResult ? 'tool_result' : msg.type === 'user' ? 'user' : 'assistant',
       text,
-      turnSeq,
-      turnNo,
-      turnPrompt,
-      ...(ownerSeq !== undefined ? { ownerSeq } : {}),
+      turnSeq: state.turn.turnSeq,
+      turnNo: state.turn.turnNo,
+      turnPrompt: state.turn.turnPrompt,
       ...(ownerToolUseId !== undefined ? { ownerToolUseId } : {}),
       ...(timestamp !== undefined ? { timestamp } : {}),
     })
   }
+}
 
-  return rows
+async function consumeChunked(state: IndexState, messages: readonly TranscriptPageMessage[]): Promise<void> {
+  for (let i = 0; i < messages.length; i += 200) {
+    consume(state, messages.slice(i, i + 200))
+    if (i + 200 < messages.length) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+  }
+}
+
+async function buildFull(id: string, deps: SessionSearchDeps): Promise<IndexState> {
+  const pages: TranscriptPageResponse[] = []
+  let before: number | undefined
+  for (;;) {
+    const page = await deps.getWindow(id, before, PAGE_SIZE)
+    pages.push(page)
+    if (!page.hasMore || page.messages.length === 0) break
+    if (before !== undefined && page.startIndex >= before) break
+    before = page.startIndex
+  }
+  const newest = pages[0]
+  const state = emptyState()
+  state.generation = newest?.generation ?? 0
+  state.headSeq = newest?.headSeq ?? 0
+  await consumeChunked(state, pages.reverse().flatMap((p) => p.messages))
+  // Cover an all-tombstone tail: the watermark is a seq, not a message.
+  state.lastIndexedSeq = Math.max(state.lastIndexedSeq, state.headSeq - 1)
+  return state
+}
+
+/** Returns false when the generation moved and the caller must rebuild. */
+async function append(id: string, deps: SessionSearchDeps, state: IndexState): Promise<boolean> {
+  let after = state.lastIndexedSeq
+  for (;;) {
+    const page = await deps.getAfter(id, after, PAGE_SIZE)
+    if (page.generation !== state.generation) return false
+    await consumeChunked(state, page.messages)
+    state.headSeq = page.headSeq
+    if (page.messages.length === 0 || page.messages.length < PAGE_SIZE) {
+      state.lastIndexedSeq = Math.max(state.lastIndexedSeq, page.headSeq - 1)
+      return true
+    }
+    after = page.messages[page.messages.length - 1].seq
+  }
 }
 
 export function createSessionSearchIndex(deps: SessionSearchDeps): SessionSearchIndex {
+  const cache = new Map<string, IndexState>()
+
+  const touch = (id: string, state: IndexState): void => {
+    cache.delete(id)
+    cache.set(id, state)
+    while (cache.size > MAX_SESSIONS) {
+      const oldest = cache.keys().next().value
+      if (oldest === undefined) break
+      cache.delete(oldest)
+    }
+  }
+
   return {
     async search(id, query, limit) {
       const q = query.trim()
       if (!q) {
         return { query: '', hits: [], totalHits: 0, truncated: false, indexStatus: 'ok' }
       }
-      const rows = await buildRows(id, deps)
+
+      let state = cache.get(id)
+      if (state) {
+        const appended = await append(id, deps, state)
+        if (!appended) state = await buildFull(id, deps)
+      } else {
+        state = await buildFull(id, deps)
+      }
+      touch(id, state)
+
       const all: SessionSearchHit[] = []
-      for (const row of rows) {
+      for (const row of state.rows) {
         if (!row.text.toLowerCase().includes(q.toLowerCase())) continue
         all.push({
           seq: row.seq,
