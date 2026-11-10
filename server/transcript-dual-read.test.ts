@@ -69,6 +69,7 @@ function seqWindowMessages(raw: string): { messages: unknown[]; store: Transcrip
     // so the pipeline is exercised without touching the filesystem.
     sidecar: new TranscriptSidecar(undefined, SID),
     reconciled: true,
+    degraded: false,
   }
   // readHistoryEntries normalizes untrimmed (search recall); the reconcile
   // then applies the live-path cap. Same two steps here.
@@ -253,6 +254,7 @@ describe('transcript dual-read parity (Task 6 migration guard)', () => {
         store,
         sidecar: new TranscriptSidecar(undefined, SID),
         reconciled: true,
+        degraded: false,
       }
       const u = 'server-minted-u1'
       // Live ingest path: send() mints u, the pump drops the echo, and

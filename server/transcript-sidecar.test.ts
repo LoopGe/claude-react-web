@@ -28,7 +28,7 @@ async function tmpDir(): Promise<string> {
 }
 
 function holder(dir: string, sessionId = 'sid-1'): TranscriptHolder {
-  return { store: new TranscriptStore(sessionId), sidecar: new TranscriptSidecar(dir, sessionId), reconciled: false }
+  return { store: new TranscriptStore(sessionId), sidecar: new TranscriptSidecar(dir, sessionId), reconciled: false, degraded: false }
 }
 
 /** Holder with a no-op sidecar (pure store assertions — no fs). */
@@ -37,6 +37,7 @@ function stubHolder(): TranscriptHolder {
     store: new TranscriptStore('sid'),
     sidecar: { appendRow: async () => {}, load: async () => [], remove: async () => {} } as unknown as TranscriptSidecar,
     reconciled: true,
+    degraded: false,
   }
 }
 

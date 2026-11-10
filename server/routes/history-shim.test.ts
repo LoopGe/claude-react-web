@@ -78,6 +78,7 @@ function makeStore(): TranscriptStore {
     store,
     sidecar: new TranscriptSidecar(undefined, SID), // dir=undefined → no-op appends
     reconciled: true,
+    degraded: false,
   }
   const entries = historyEntriesFromJsonl(RAW, SID).map((e) => e.message)
   for (const m of entries) trimLargeToolResults(m as Parameters<typeof trimLargeToolResults>[0])

@@ -39,4 +39,7 @@ export interface TranscriptPageResponse {
    *  above the tombstone); the client's contiguity check must skip them
    *  instead of parking behind an unfillable hole. */
   tombstones: number[]
+  /** True when non-tombstoned messages exist above this page's newest seq.
+   *  Present only on `around` pages (a centered jump page). */
+  hasNewer?: boolean
 }

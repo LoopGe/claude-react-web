@@ -719,13 +719,44 @@ export function buildSessionRouter(
     const id = c.req.param('id')
     sm.get(id) // live-or-persisted existence check; unknown → HttpError 404
     const beforeRaw = c.req.query('before')
+    const aroundRaw = c.req.query('around')
+    const aroundUuid = c.req.query('aroundUuid')
     const limitRaw = c.req.query('limit')
+    if (aroundRaw != null && aroundUuid != null) {
+      throw new HttpError(400, 'around and aroundUuid are mutually exclusive')
+    }
+    if (beforeRaw != null && (aroundRaw != null || aroundUuid != null)) {
+      throw new HttpError(400, 'before cannot be combined with around/aroundUuid')
+    }
     const before = beforeRaw != null && /^\d+$/.test(beforeRaw) ? Number(beforeRaw) : undefined
     if (beforeRaw != null && before === undefined) {
       throw new HttpError(400, 'before must be a non-negative integer')
     }
+    const around = aroundRaw != null && /^\d+$/.test(aroundRaw) ? Number(aroundRaw) : undefined
+    if (aroundRaw != null && around === undefined) {
+      throw new HttpError(400, 'around must be a non-negative integer')
+    }
     const limitNum = limitRaw != null && /^\d+$/.test(limitRaw) ? Number(limitRaw) : undefined
     const limit = Math.min(1000, Math.max(1, limitNum ?? 200))
+
+    if (aroundRaw != null || aroundUuid != null) {
+      let seq: number
+      if (aroundUuid != null) {
+        const resolved = await sm.transcriptSeqOfUuid(id, aroundUuid)
+        if (resolved === undefined) throw new HttpError(404, `unknown message uuid: ${aroundUuid}`)
+        seq = resolved
+      } else {
+        if (around === undefined) throw new HttpError(400, 'around must be a non-negative integer')
+        seq = around
+      }
+      const beforeCount = Math.floor((limit - 1) / 2)
+      const afterCount = limit - 1 - beforeCount
+      const page = await sm.getTranscriptWindowAround(id, seq, beforeCount, afterCount)
+      if (!page) throw new HttpError(404, `message at seq ${seq} not found`)
+      recordHistoryPageImages(page.messages.map((m) => m.msg))
+      return c.json(page)
+    }
+
     const page: TranscriptPageResponse = await sm.getTranscriptWindow(id, before, limit)
     if (before !== undefined && before > page.headSeq) {
       throw new HttpError(400, `before (${before}) is beyond headSeq (${page.headSeq})`)

@@ -47,6 +47,11 @@ export interface TranscriptHolder {
   store: TranscriptStore
   sidecar: TranscriptSidecar
   reconciled: boolean
+  /** True when reconcile swallowed a read failure: the store keeps whatever
+   *  hydrated/appended before the failure and is still usable, but may be
+   *  missing pre-restart history. Session search reports this as
+   *  `indexStatus: 'degraded'`. */
+  degraded: boolean
 }
 
 export class TranscriptSidecar {

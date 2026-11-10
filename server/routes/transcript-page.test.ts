@@ -25,6 +25,11 @@ function makeApp() {
       const win = store.window(before, limit)
       return { ...win, totalCount: store.visibleCount }
     }),
+    getTranscriptWindowAround: vi.fn(async (_id: string, seq: number, beforeCount: number, afterCount: number) => {
+      const win = store.around(seq, beforeCount, afterCount)
+      return win ? { ...win, totalCount: store.visibleCount } : null
+    }),
+    transcriptSeqOfUuid: vi.fn(async (_id: string, uuid: string) => store.seqOf(uuid)),
   }
   // buildApiRouter's onError translates HttpError → JSON; mirror it here so
   // the 404/400 assertions test the real wire contract.
@@ -169,5 +174,30 @@ describe('GET /sessions/:id/messages', () => {
     expect(body.generation).toBe(1)
     expect(body.headSeq).toBe(0)
     expect(body.messages).toEqual([])
+  })
+
+  it('serves a page centered on around and reports hasNewer', async () => {
+    const { app, store } = makeApp()
+    for (let i = 0; i < 5; i++) recordTurn(store, i) // seqs 0..9
+    const res = await app.request('/sessions/s1/messages?around=5&limit=4')
+    expect(res.status).toBe(200)
+    const body = await json(res)
+    expect(body.messages.map((m: { seq: number }) => m.seq)).toEqual([4, 5, 6, 7])
+    expect(body.hasNewer).toBe(true)
+  })
+
+  it('resolves aroundUuid before serving the page', async () => {
+    const { app, store } = makeApp()
+    for (let i = 0; i < 6; i++) recordTurn(store, i) // u5 is seq 10
+    const res = await app.request('/sessions/s1/messages?aroundUuid=u5&limit=4')
+    expect(res.status).toBe(200)
+    const body = await json(res)
+    expect(body.messages.some((m) => (m as { uuid?: string }).uuid === 'u5')).toBe(true)
+  })
+
+  it('rejects around + before and unknown uuids', async () => {
+    const { app } = makeApp()
+    expect((await app.request('/sessions/s1/messages?around=5&before=9')).status).toBe(400)
+    expect((await app.request('/sessions/s1/messages?aroundUuid=nope')).status).toBe(404)
   })
 })

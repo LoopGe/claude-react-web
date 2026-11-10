@@ -138,7 +138,7 @@ import {
 } from './subagent-watcher.js'
 import { SessionSkillManager } from './session-manager-skills.js'
 import { pushBounded, stampReceivedAt, stampConsumedAt, stampSteeredAt, stampInjectedAt, stampRequeuedAt, removeFromHistory, countQueuedUserTurns, getParentToolUseId, trimLargeToolResults } from './history-utils.js'
-import { TranscriptStore, type TranscriptWindow } from './transcript-store.js'
+import { TranscriptStore, type SeqMessage, type TranscriptWindow } from './transcript-store.js'
 import {
   TranscriptSidecar,
   backfillFromEntries,
@@ -7238,7 +7238,7 @@ export class SessionManager {
       // deletion. Return a tombstoned writer instead of a fresh appendable one.
       const sidecar = new TranscriptSidecar(this.store?.getDir(), id)
       sidecar.tombstone()
-      return { store: new TranscriptStore(id), sidecar, reconciled: true }
+      return { store: new TranscriptStore(id), sidecar, reconciled: true, degraded: false }
     }
     let t = this.transcriptStores.get(id)
     if (!t) {
@@ -7246,6 +7246,7 @@ export class SessionManager {
         store: new TranscriptStore(id),
         sidecar: new TranscriptSidecar(this.store?.getDir(), id),
         reconciled: false,
+        degraded: false,
       }
       this.transcriptStores.set(id, t)
     }
@@ -7323,6 +7324,7 @@ export class SessionManager {
       } catch (err) {
         // Degraded but usable: the store keeps whatever hydrated/appended
         // before the failure; the sidecar's append queue is unbroken.
+        t.degraded = true
         log.warn(`[session ${id}] transcript reconcile failed: ${(err as Error).message ?? err}`)
       } finally {
         t.reconciled = true
@@ -7445,6 +7447,41 @@ export class SessionManager {
     const t = await this.ensureTranscriptReconciled(id)
     const win = t.store.window(before, limit)
     return { ...win, totalCount: t.store.visibleCount }
+  }
+
+  /** A seq-centered page for search jumps. Null when the target seq is
+   *  unknown or tombstoned. */
+  async getTranscriptWindowAround(
+    id: string,
+    seq: number,
+    beforeCount: number,
+    afterCount: number,
+  ): Promise<(TranscriptWindow & { totalCount: number; hasNewer: boolean }) | null> {
+    const t = await this.ensureTranscriptReconciled(id)
+    const win = t.store.around(seq, beforeCount, afterCount)
+    return win ? { ...win, totalCount: t.store.visibleCount } : null
+  }
+
+  /** Visible messages strictly above `afterSeq`, ascending — the incremental
+   *  session-search index watermark read. */
+  async getTranscriptWindowAfter(
+    id: string,
+    afterSeq: number,
+    limit: number,
+  ): Promise<{ generation: number; headSeq: number; totalCount: number; messages: SeqMessage[] }> {
+    const t = await this.ensureTranscriptReconciled(id)
+    return {
+      generation: t.store.generation,
+      headSeq: t.store.headSeq,
+      totalCount: t.store.visibleCount,
+      messages: t.store.after(afterSeq, limit),
+    }
+  }
+
+  /** True when the session's transcript reconcile swallowed a failure. */
+  async isTranscriptDegraded(id: string): Promise<boolean> {
+    const t = await this.ensureTranscriptReconciled(id)
+    return t.degraded
   }
 
   /** Resolve one message uuid to its seq in the session's seq store — the
