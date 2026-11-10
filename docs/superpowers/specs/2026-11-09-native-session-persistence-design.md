@@ -25,7 +25,7 @@ native provider 目前在 `NativeSession.history` 里保存对话，进程退出
 - 构建上下文压缩/摘要功能本身（但 `/compact` 已经产生的 seed 必须持久化，否则恢复后会话内容全丢）。
 - SQLite FTS 搜索、zstd 压缩、跨进程写锁。
 - 会话格式的完整迁移链：v1 只做版本拒绝，不实现 v2 迁移。
-- 子代理、MCP、multi-protocol adapter、provider 选择 UI。
+- 子代理、multi-protocol adapter、provider 选择 UI；MCP 与 first-party 工具已由 P1.2 交付（见 `## P1.2 — MCP 与 first-party 工具`）。
 - `request/header` 级别的请求信封快照（未来做模型路由/缓存复用时再加）。
 - 未消费输入队列的持久化：queued-but-not-consumed 的 turn 不写盘，崩溃后丢失，与 claude 当前行为一致。
 
@@ -311,3 +311,43 @@ P1.1 在持久化之上补两件事：跨 turn 复用稳定的 prompt 前缀（p
 
 - `usageByModel` 跨压缩保持累计（计费不因压缩丢失）。
 - context-window 的 usage 从压缩后的对话重新开始：`compactInPlace` 清零 provider 的 `lastUsage`，manager 清空 `lastContextUsage`。已渲染的 ContextBar 在下一次 turn 产出新的 usage 前仍显示压缩前的百分比（不额外广播 reset）。
+
+## P1.2 — MCP 与 first-party 工具
+
+P1.2 让 native 会话的工具面与 claude 会话对齐：用户配置的 MCP server 与进程内 first-party server 都能被模型发现、调用、授权、动态增删，并出现在设置面板的状态视图里。
+
+### 一个会话一个 MCP 客户端层
+
+- 每个 native 会话持有自己的 `NativeMcpConnections`。manager 解析出的 `mcpServers`（全局 + inline + first-party `injectAll` 结果）在 `createSession` 时一次性交给它；native provider 不再重新合并全局配置，也不维护 `mcpServerNames`。
+- 每个 entry 一个 `@modelcontextprotocol/sdk` `Client`。外部 server 复用 `createMcpTransport`（stdio / SSE / StreamableHTTP，含 allowlist 与 OAuth）；`type:'sdk'` 的 first-party entry 通过 `InMemoryTransport.createLinkedPair()` 连接，进程内外共用一条发现 / 调用 / 状态路径。工具调用仍然穿过 SDK 的 `McpServer`，因此 `inputSchema` 的 Zod 校验与 `CallToolResult` 归一化保持原样。
+- 连接是**异步**的：`load()` 立即返回，所有变更（load / replace / reconnect / toggle / closeAll）串行跑在一条队列上，`whenReady()` 就是该队列。turn 在发请求前 await 它，所以慢 server 或坏 server 永远不会阻塞 `createSession`，也不会让 turn 无限等待。
+- 每个 server 记录持有自己的 `AbortController`，覆盖握手、每一页 `listTools` 与在途工具调用；连接超时（10 s）或移除会**先** abort、再关闭 client（stdio 子进程随之被杀），状态记为 `failed`，从不向调用方抛错。
+- 状态机：`pending → connected | failed | needs-auth`，`disabled` 由 toggle 产生。失败的 server 只是不贡献工具，不影响其它 server 或会话本身。
+- `closeAll()` 幂等：同步 abort 所有在途连接，再关闭已建立的 client；`destroy` 走这条路径。
+
+### 工具名与授权
+
+- 模型看到的工具名一律来自 `mcpToolFqn(server, tool)`：`mcp__{server}__{tool}` 把每个 `[^A-Za-z0-9_-]` 换成 `_`，超过 64 字符时截断并追加 FNV-1a 8 位哈希后缀，因此结果始终满足 Anthropic API 的 `^[A-Za-z0-9_-]{1,64}$`。合法输入原样返回（`mcp__git-tools__git_status`）。同一个函数被 model tool list、first-party registry、permission broker 与客户端 MCP-Apps 映射共用。
+- 权限请求通过发现元数据把 FQN 映射回 `{ name, source: 'sdk' | 'dynamic' }`，**不解析工具名**（名字可能被截断或哈希）。`canUseTool` 只在 MCP 工具上收到 `mcpServer`，内置工具省略该字段。
+- MCP 工具不注册 prompt section：native 的 system prompt 在 create 时冻结，工具描述本身承载模型需要的信息。first-party server 的只读 / 写入注解继续驱动 broker 的只读豁免与 git 快照广播。
+
+### 状态形状
+
+`mcpServerStatus()` 原样返回 `NativeMcpStatus[]`，服务端不做变换：
+
+- `name` / `status` / `serverInfo?` / `error?` / `scope: 'session'`；
+- 进程内 server 带 `source: 'sdk'`，外部 server 省略该字段；
+- `tools` 是**裸工具名**数组（附 description / annotations / `_meta`），供 SettingsPanel 与 `useMcpApps` 使用；
+- `config` 只含 `{ type, command?, args?, url? }`，**永不**包含 `env` 或 `headers` 的值（`args` 按 CLI 自身状态的做法保留）。
+
+### 动态替换
+
+- `setMcpServers` 是**替换**语义。entry 以指纹比较：外部 entry 取可序列化字段的 JSON，`type:'sdk'` entry 取 instance 本身；永远不对 entry 做 `JSON.stringify`（live instance 会因循环引用抛错）。未变 = 保留，移除 = 关闭，新增/变化 = 关闭后重连；返回 `{ added, removed, errors }`。
+- manager 的 `injectAll` 每次都会构造新的 first-party instance，因此每次 `setMcpServers` 都会重连 first-party server——进程内、代价可接受，是刻意的取舍。
+- 变更只在下一次 turn 生效：turn 开始时 await `whenReady()` 再重建工具数组；运行中的 turn 继续使用它拿到的快照。
+
+### 延迟项
+
+- MCP elicitation：server 收到 method-not-found（native 暂不支持 OAuth 表单交互）。
+- `setMcpPermissionModeOverride`：返回 501（claude/SDK 专有的 per-process 覆盖）。
+- `listTools` 的游标分页已实现，但 in-memory 与测试 fixture 都不产生分页，暂无集成测试覆盖。
