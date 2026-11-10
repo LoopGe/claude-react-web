@@ -5,6 +5,8 @@ import type { TranscriptItem } from '../../session-store/types'
  *  own message has no main-view row; the jump lands on the owning tool card. */
 export interface RevealTarget {
   nonce: number
+  /** Anchor seq (preferred by Chat's anchor request; unused by MessageList). */
+  seq?: number
   messageUuid?: string
   ownerToolUseId?: string
 }

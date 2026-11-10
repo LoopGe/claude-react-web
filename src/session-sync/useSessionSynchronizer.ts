@@ -39,6 +39,8 @@ import {
  *  instance (re-binding only when the session changes). */
 export interface TranscriptPaging extends TranscriptPagingSnapshot {
   loadOlder: () => Promise<number>
+  anchorAt: (target: { seq: number } | { uuid: string }) => Promise<void>
+  returnToHead: () => Promise<void>
 }
 
 export function useSessionSynchronizer(

@@ -8,9 +8,8 @@
 // new rules flag as a cascading-render hazard. Re-mount is cheap because
 // the sessions themselves are long-lived on the server.
 
-import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import { useDebouncedValue } from '../hooks/useDebouncedValue'
 import { sessionTitleOrFallback } from '../utils/session-title'
 import { shouldMountRecapWindow } from '../utils/recap-visibility'
 // SettingsPanel and GitPanel are split into their own chunks: both are
@@ -85,8 +84,8 @@ import { useSessionRecap } from '../hooks/useSessionRecap'
 import { useRecapSettle } from '../hooks/useRecapSettle'
 import { useScheduledSends } from '../hooks/useScheduledSends'
 import { useTaskList } from '../hooks/useTaskList'
-import { MessageSearch } from './MessageSearch'
-import { countMatches } from '../search'
+import { NewerHistoryFloat } from './message-list/transcript-chrome'
+import type { RevealTarget } from './message-list/reveal'
 import { useSessionTaskCounts, useSessionField, useSessionSelector, selectHasActivePhase, selectHasTranscriptBackground, selectHasLiveSyncSubagent } from '../session-store/selectors'
 import { computeWaiting, computeTurnActive, autoTitleDescription, isHumanUserMessage, countQueuedUserTurns } from '../session-store/normalize'
 import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction } from '../utils/task-actions'
@@ -120,7 +119,6 @@ import { intakeComposerFiles } from '../utils/image-intake'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
 import type { SettingsTabName } from '../local-commands'
-import { clamp } from '../utils/clamp'
 import { DRAFT_KEY_PREFIX, DRAFT_BODIES_KEY_PREFIX, DRAFT_WRITE_DEBOUNCE_MS } from '../constants/storageKeys'
 
 // Module-level predicates for the three minimize/reopen sets (questions,
@@ -268,6 +266,10 @@ interface Props {
    *  SettingsPanel, which applies it when the nonce changes. */
   settingsTabRequest?: { tab: SettingsTabName; nonce: number } | null
   messageJumpTarget?: MessageJumpTarget | null
+  /** Search-jump target from ChatPanel (dialog selection). */
+  revealTarget?: RevealTarget | null
+  /** Open the session search dialog with an optional seeded query. */
+  onOpenSearch?: (query: string) => void
   /** When true, render the Settings overlay on top of this chat panel. */
   settingsOpen?: boolean
   onCloseSettings?: () => void
@@ -466,7 +468,7 @@ export const Chat = memo(function Chat({
   worktreeOpen, onCloseWorktree, worktreeView,
   tasksPanelOpen, onCloseTasksPanel, onOpenTasksPanel,
   recapOpen, onCloseRecap,
-  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, handoffing, settingsTabRequest, messageJumpTarget, focused, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
+  onSessionUpdate, onRequestResumeForPanel, resumeOpen, onResumeIntoPanel, onCloseResume, onOpenSettingsTab, onShowHelp, onClearSession, onHandoffSession, handoffing, settingsTabRequest, messageJumpTarget, revealTarget, onOpenSearch, panelVisible, showEpoch, composerFocusSignal: externalComposerFocusSignal, composerControls, globalPrefs, onRegisterInterrupt, onRegisterRecap, onRegisterBackground, onRegisterTurnActive, onRegisterScrollNav, onInterruptFired, historyOpen, onCloseHistory,
   onResume, onForkFromLastCompleted,
   snippets, onOpenSnippetsManager, onSaveCurrentAsSnippet, onClosePanel, onDelete, onAskConfirm, onDiscard, groupLabel, onCloseGroupPanels, onOpenSettingsPanel, onSideChat,
   sideChatCollapsed, sideChatWorking, onToggleCollapseSideChat, skin,
@@ -489,10 +491,8 @@ export const Chat = memo(function Chat({
   const openResource = useOptionalOpenResource()
   const [settingsEverOpened, setSettingsEverOpened] = useState(false)
   if (settingsOpen && !settingsEverOpened) setSettingsEverOpened(true)
-  // In-chat search open state. Declared here (rather than in the search
-  // section below) because it gates the recap/pinned presence hooks, which
-  // hide those overlays while search is open so the search bar isn't covered.
-  const [searchOpen, setSearchOpen] = useState(false)
+  // In-chat quick search was replaced by the full-history search dialog in
+  // ChatPanel; the transcript no longer owns a search bar.
   // Effective UI prefs: a per-session override (session.<field>) wins,
   // otherwise the global default (globalPrefs.<field>, server-backed) applies.
   // Computed via the shared resolver so a SettingsPanel override or a
@@ -1130,20 +1130,6 @@ export const Chat = memo(function Chat({
     }
   }, [permissions.pending, questionDrafts])
 
-  // ── In-chat search ──────────────────────────────────────────────────
-  // (searchOpen is declared above with the panel-open states so the
-  // recap/pinned presence hooks can gate on it.)
-  // Seed for the search input, captured from the current selection at open time.
-  const [searchSeed, setSearchSeed] = useState('')
-  // Open search, pre-filling the input with the user's current selection
-  // (single-line, trimmed) so they can search the highlighted text directly.
-  const openSearch = useCallback(() => {
-    const sel = window.getSelection()?.toString() ?? ''
-    // Ignore multi-line / oversized selections ?those aren't useful as a query.
-    const seed = sel.trim()
-    setSearchSeed(seed && !seed.includes('\n') && seed.length <= 200 ? seed : '')
-    setSearchOpen(true)
-  }, [])
   // Message-area right-click menu. `selection` is captured at open time —
   // clicking a menu item can collapse the live selection, so we snapshot it.
   // `targetId` is the uuid of the message row the user right-clicked (via
@@ -1320,175 +1306,43 @@ export const Chat = memo(function Chat({
     const error = addFilesToDraft(files)
     if (error !== null) toast.info(error)
   }, [composerDisabled, addFilesToDraft, toast])
-  const [searchQuery, setSearchQuery] = useState('')
-  const debouncedQuery = useDebouncedValue(searchQuery, 200)
-  // Raw state; the value consumers see (`searchActiveIdx`, below) is
-  // clamped on read against the current match count. That way we don't
-  // need an effect to reset the index when a query change shrinks or
-  // clears the match set — an out-of-range raw value simply reads as 0
-  // (empty) or `len - 1` (over) without a cascading render.
-  //
-  // Held via useReducer (not useState) so the pendingJump effect below
-  // can dispatch the resolved-jump index without tripping
-  // `react-hooks/set-state-in-effect`. The rule targets the
-  // "derive-state-via-effect" antipattern where an effect calls setState
-  // on a value it doesn't read; useReducer's dispatch is out of scope
-  // because reducers are the sanctioned way to coordinate multi-source
-  // updates. Behaviour is identical: `setSearchActiveIdx(n)` is a
-  // one-arg replace.
-  const [searchActiveIdxRaw, setSearchActiveIdx] = useReducer(
-    (_prev: number, next: number) => next,
-    0,
-  )
-  // Top-most visible item index, reported by MessageList on scroll.
-  // Used to find the nearest search match to the viewport. Kept as a
-  // ref (not state) to avoid re-renders on every scroll tick.
-  const topVisibleIdxRef = useRef(0)
-  const handleVisibleRangeChange = useCallback((idx: number) => { topVisibleIdxRef.current = idx }, [])
-  /** Flat list of text-level matches across the transcript. Each entry
-   *  records the transcript item it lives in plus its local index
-   *  within that item (0-based, so the third "foo" inside item #5 is
-   *  `{ itemIdx: 5, matchInItem: 2 }`). The array length is the total
-   *  hit count shown in the search bar.
-   *
-   *  We carry the per-item index alongside the global one so the
-   *  active-mark highlighter can colour the precise `<mark>` the user
-   *  is currently on ?without it, "next match" jumps inside the same
-   *  message would be invisible (same outline, no scroll change).
-   *
-   *  Matching uses the canonical `plainText` field — same view the
-   *  rehype highlighter reconstructs at render time, so the counter
-   *  and the visible <mark>s describe the same text. */
-  const searchMatches = useMemo(() => {
-    if (!debouncedQuery) return [] as Array<{ itemIdx: number; matchInItem: number }>
-    const out: Array<{ itemIdx: number; matchInItem: number }> = []
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i]
-      // Hidden frames (system init/status, /model command logs, …) carry
-      // non-null plainText but aren't in renderableItems, so counting them
-      // would inflate the match counter and strand next/prev on matches that
-      // have no virtual index to scroll to. Skip them.
-      if (!item || item.hiddenByDefault) continue
-      const text = item.plainText
-      if (!text) continue
-      const n = countMatches(text, debouncedQuery)
-      for (let k = 0; k < n; k++) out.push({ itemIdx: i, matchInItem: k })
-    }
-    return out
-  }, [items, debouncedQuery])
-  // Clamped view of the raw active-idx state — see the useState comment
-  // above. Consumers that render the "N/total" chip or index into
-  // `searchMatches` should use this, not the raw value.
-  const searchActiveIdx = useMemo(() => {
-    if (searchMatches.length === 0) return 0
-    return clamp(searchActiveIdxRaw, 0, searchMatches.length - 1)
-  }, [searchActiveIdxRaw, searchMatches.length])
-  // When the match set changes (new query or new messages), find the
-  // nearest match to the current viewport rather than always starting
-  // from the first one.
-  useEffect(() => {
-    if (searchMatches.length === 0) return
-    const top = topVisibleIdxRef.current
-    // Binary search for the first match whose itemIdx >= top.
-    let lo = 0
-    let hi = searchMatches.length
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1
-      if (searchMatches[mid].itemIdx < top) lo = mid + 1
-      else hi = mid
-    }
-    // lo is the first match at or after the viewport. The match
-    // immediately before it (lo-1) might be closer, so compare.
-    const after = lo < searchMatches.length ? searchMatches[lo].itemIdx : Infinity
-    const before = lo > 0 ? searchMatches[lo - 1].itemIdx : -Infinity
-    const nearest = (top - before) <= (after - top) ? lo - 1 : lo
-    setSearchActiveIdx(clamp(nearest, 0, searchMatches.length - 1))
-  }, [searchMatches])
+  // ── Search-jump reveal ────────────────────────────────────────────
+  // The dialog/palette only produce a target; the transcript owns the
+  // anchor + flash. `paging.anchorAt` re-centers the seq window, then the
+  // target is handed to MessageList, which seeks and flashes the row.
+  const revealNonceRef = useRef(0)
+  const [revealFlash, setRevealFlash] = useState<RevealTarget | null>(null)
+  const pagingAnchorAt = paging.anchorAt
+  const revealMessage = useCallback(async (target: { seq?: number; messageUuid?: string; ownerToolUseId?: string }) => {
+    const anchor = target.seq != null
+      ? { seq: target.seq }
+      : target.messageUuid != null
+        ? { uuid: target.messageUuid }
+        : null
+    if (!anchor) return
+    await pagingAnchorAt(anchor)
+    revealNonceRef.current += 1
+    setRevealFlash({
+      nonce: revealNonceRef.current,
+      ...(target.messageUuid != null ? { messageUuid: target.messageUuid } : {}),
+      ...(target.ownerToolUseId != null ? { ownerToolUseId: target.ownerToolUseId } : {}),
+    })
+  }, [pagingAnchorAt])
 
   const handledJumpNonceRef = useRef<number | null>(null)
-  const [pendingJump, setPendingJump] = useReducer(
-    (_prev: MessageJumpTarget | null, next: MessageJumpTarget | null) => next,
-    null,
-  )
   useEffect(() => {
     if (!messageJumpTarget || messageJumpTarget.sessionId !== session.id) return
     if (handledJumpNonceRef.current === messageJumpTarget.nonce) return
     handledJumpNonceRef.current = messageJumpTarget.nonce
+    void revealMessage({ messageUuid: messageJumpTarget.messageUuid })
+  }, [messageJumpTarget, session.id, revealMessage])
 
-    setSearchSeed(messageJumpTarget.query)
-    setSearchQuery(messageJumpTarget.query)
-    setSearchActiveIdx(0)
-    setSearchOpen(true)
-    setPendingJump(messageJumpTarget)
-  }, [messageJumpTarget, session.id])
-
-  // Destructure the paging fields the pending-jump effect touches. Naming
-  // them directly in the dep array (instead of bare `paging`) keeps the
-  // effect from re-running every time the paging snapshot identity churns,
-  // and satisfies react-hooks/exhaustive-deps.
-  const pagingLoadOlder = paging.loadOlder
-  const pagingLoadingOlder = paging.loadingOlder
+  // Dialog selection (ChatPanel → Chat) takes the same path. `revealTarget`
+  // carries a nonce, so re-rendering the same object does not re-anchor.
   useEffect(() => {
-    if (!pendingJump) return
-    if (debouncedQuery !== pendingJump.query) return
-
-    const itemIdx = pendingJump.messageUuid
-      ? items.findIndex((item) => item.msg.uuid === pendingJump.messageUuid)
-      : -1
-    if (itemIdx >= 0) {
-      const beforeTarget = items.slice(0, itemIdx)
-      let globalIdx = 0
-      for (const item of beforeTarget) if (!item.hiddenByDefault) globalIdx += countMatches(item.plainText, pendingJump.query)
-      setSearchActiveIdx(globalIdx)
-      setPendingJump(null)
-      return
-    }
-
-    if (!hasOlder) {
-      const visibleMatches = items.reduce(
-        (total, item) => total + (item.hiddenByDefault ? 0 : countMatches(item.plainText, pendingJump.query)),
-        0,
-      )
-      if (pendingJump.matchOrdinal != null && visibleMatches > pendingJump.matchOrdinal) {
-        setSearchActiveIdx(pendingJump.matchOrdinal)
-      }
-      setPendingJump(null)
-      return
-    }
-    if (pagingLoadingOlder) return
-
-    let cancelled = false
-    void pagingLoadOlder().then((loaded) => {
-      if (!cancelled && loaded === 0) setPendingJump(null)
-    })
-    return () => { cancelled = true }
-  }, [debouncedQuery, pendingJump, hasOlder, items, pagingLoadOlder, pagingLoadingOlder])
-
-  // Ctrl+F opens search on the *focused* panel only. Without the
-  // `focused` guard, every mounted Chat would intercept the same
-  // keydown event and all search bars would open simultaneously.
-  useEffect(() => {
-    if (!focused) return
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f' && !e.shiftKey) {
-        // Only intercept when the chat panel is focused (not when the
-        // browser's own find bar is more appropriate).
-        const target = e.target as HTMLElement
-        if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') return
-        e.preventDefault()
-        openSearch()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [focused, openSearch])
-
-  const handleSearchNavigate = useCallback(
-    (index: number) => {
-      setSearchActiveIdx(index)
-    },
-    [],
-  )
+    if (!revealTarget) return
+    void revealMessage(revealTarget)
+  }, [revealTarget, revealMessage])
 
   // Session recap ?phase-driven auto-generation. The hook reads
   // session.phase + session.lastTurnAt + session.recap (all kept current
@@ -2133,7 +1987,7 @@ export const Chat = memo(function Chat({
             {
               label: 'Search messages',
               icon: <IconSearch size={14} />,
-              onClick: () => openSearch(),
+              onClick: () => onOpenSearch?.(exportMenuPos.selection),
             },
             { label: '' },
             {
@@ -2290,19 +2144,6 @@ export const Chat = memo(function Chat({
         />
       )}
 
-      <MessageSearch
-        open={searchOpen}
-        onClose={() => {
-          setSearchOpen(false)
-          setSearchQuery('')
-        }}
-        onNavigate={handleSearchNavigate}
-        totalResults={searchMatches.length}
-        onQueryChange={setSearchQuery}
-        activeIndex={searchActiveIdx}
-        initialQuery={searchSeed}
-      />
-
       <SubagentProvider value={subagentCtxValue}>
         <WorkflowProvider value={workflowCtxValue}>
         <SkillProvider value={skillCtxValue}>
@@ -2332,13 +2173,10 @@ export const Chat = memo(function Chat({
           transcriptRevealKey={session.id}
           panelVisible={panelVisible}
           showEpoch={showEpoch}
-          searchQuery={searchOpen ? debouncedQuery : ''}
-          searchActiveMsgIdx={searchMatches[searchActiveIdx]?.itemIdx ?? -1}
-          searchActiveMatchInItem={searchMatches[searchActiveIdx]?.matchInItem ?? -1}
+          revealTarget={revealFlash}
           onRegisterNavigate={registerNavigate}
           onSwitchModel={handleSwitchModel}
           onAbortBash={abortBashCommand}
-          onVisibleRangeChange={handleVisibleRangeChange}
           onPinnedUserMessageChange={handlePinnedUserMessageChange}
           onUserMessagesChange={handleUserMessagesChange}
           cwd={session.cwd}
@@ -2869,7 +2707,7 @@ export const Chat = memo(function Chat({
               prop type for RecapWindow (the predicate takes a boolean). */}
           {shouldMountRecapWindow({
             recapOpen: !!recapOpen,
-            searchOpen,
+            searchOpen: false,
             hasRecap: session.recap != null,
             hasOlder: hasOlder,
             hasPinnedUserMessage,
@@ -2882,7 +2720,7 @@ export const Chat = memo(function Chat({
               onRetry={recap.refresh}
             />
           )}
-          {effectiveShowPinned && hasPinnedUserMessage && !searchOpen && (
+          {effectiveShowPinned && hasPinnedUserMessage && (
             <PinnedUserMessageHeader
               key="pinned"
               store={pinnedStore}
@@ -2907,6 +2745,10 @@ export const Chat = memo(function Chat({
           onRetry={paging.loadOlder}
         />
       </div>
+
+      {paging.anchored && paging.newerCount > 0 && (
+        <NewerHistoryFloat count={paging.newerCount} onReturn={paging.returnToHead} />
+      )}
 
       {subagentStack.length > 0 && (
         <SubagentProvider value={subagentCtxValue}>

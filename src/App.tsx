@@ -2584,14 +2584,11 @@ export function App() {
   handleSelectRef.current = handleSelect
 
   const handleSelectMessage = useCallback(
-    (hit: MessageSearchHit, query: string) => {
+    (hit: MessageSearchHit, _query: string) => {
       const target: MessageJumpTarget = {
         nonce: ++jumpNonceRef.current,
         sessionId: hit.sessionId,
-        query,
         messageUuid: hit.messageUuid,
-        messageIndex: hit.messageIndex,
-        matchOrdinal: hit.matchOrdinal,
       }
       setMessageJumpTarget(target)
       void handleSelect(hit.sessionId)

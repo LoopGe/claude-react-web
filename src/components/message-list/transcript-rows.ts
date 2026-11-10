@@ -337,6 +337,16 @@ export function foldToolGroupRows(rows: readonly TranscriptRow[]): TranscriptRow
   return out
 }
 
+/** True when the item belongs to the main-thread transcript. The main view
+ *  renders only these rows (`parentToolUseIdFilter == null` branch above);
+ *  subagent inner-stream frames and disk-normalized tool_result frames carry
+ *  a non-null `parent_tool_use_id` and are rendered inside their owning card
+ *  or overlay instead. In-chat search shares this predicate so it skips the
+ *  frames that have no main-view row. */
+export function isRootTranscriptItem(item: TranscriptItem): boolean {
+  return item.msg.parent_tool_use_id == null
+}
+
 export function buildTranscriptRows({
   items,
   parentToolUseIdFilter,
@@ -359,11 +369,10 @@ export function buildTranscriptRows({
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i]
-    const parent = item.msg.parent_tool_use_id
     if (parentToolUseIdFilter == null) {
-      if (parent != null) continue
+      if (!isRootTranscriptItem(item)) continue
     } else {
-      if (parent !== parentToolUseIdFilter) continue
+      if (item.msg.parent_tool_use_id !== parentToolUseIdFilter) continue
     }
     pushRow(out, item, i, isResultConsumed)
   }

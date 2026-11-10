@@ -19,7 +19,7 @@ const GROUPS = [
   {
     canonical: 'spin',
     retired: ['handoff-spin'],
-    references: { 'chat.css': 2, 'utilities.css': 1 },
+    references: { 'chat.css': 2, 'utilities.css': 1, 'overlays.css': 1 },
   },
   {
     canonical: 'content-enter',
@@ -78,12 +78,12 @@ const GROUPS = [
   {
     canonical: 'slide-down-enter',
     retired: ['session-nav-strip-in', 'message-search-in', 'tasks-row-in'],
-    references: { 'layout.css': 1, 'overlays.css': 1, 'tasks-panel.css': 1 },
+    references: { 'layout.css': 1, 'tasks-panel.css': 1 },
   },
   {
     canonical: 'slide-up-exit',
     retired: ['session-nav-strip-out', 'message-search-out'],
-    references: { 'layout.css': 1, 'overlays.css': 1 },
+    references: { 'layout.css': 1 },
   },
 ] as const
 
@@ -149,15 +149,9 @@ describe('global keyframe uniqueness', () => {
 })
 
 describe('keyframe/class prefix isolation', () => {
-  it('keeps message-search-input selectors intact', () => {
+  it('does not reintroduce retired search-bar keyframes', () => {
     const css = cssByFile.get('overlays.css')!
-    expect(css).toMatch(/\.message-search-input\s*\{/)
-    expect(css).toMatch(/\.message-search-input:focus\s*\{/)
     expect(css).not.toContain('.slide-down-enterput')
-
-    const component = readFileSync(join(process.cwd(), 'src/components/MessageSearch.tsx'), 'utf8')
-    expect(component).toContain('className="message-search-input"')
-    expect(component).not.toContain('slide-down-enterput')
   })
 })
 

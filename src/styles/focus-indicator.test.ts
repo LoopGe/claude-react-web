@@ -197,7 +197,6 @@ describe('focus indicator contract for text-entry controls', () => {
     { cls: 'model-picker-input' },
     { cls: 'git-panel-filter-input' },
     { cls: 'palette-input' },
-    { cls: 'message-search-input', allowNonOutlineCompanion: true },
     { cls: 'git-commit-textarea', allowNonOutlineCompanion: true, note: 'border+shadow glow' },
     { cls: 'git-new-branch-input', allowNonOutlineCompanion: true, note: 'border-color' },
     { cls: 'perm-feedback-input', allowNonOutlineCompanion: true, note: 'border-color' },
