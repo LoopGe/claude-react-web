@@ -89,6 +89,8 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 const SAFE_AUTO_TOOLS: ReadonlySet<string> = new Set([
   // Read-only
   'Read', 'Grep', 'Glob', 'NotebookRead',
+  // A skill load only reads SKILL.md into the conversation (both providers).
+  'Skill',
   // Code intelligence (read-only)
   'LSP', 'ToolSearch', 'ListMcpResources', 'ReadMcpResource',
   // Task management

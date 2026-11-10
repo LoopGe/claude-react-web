@@ -14,6 +14,7 @@ import { nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
 import type { NativeLogEvent } from './session-log/format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
+import { NativeSkillCatalog } from './skills.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -810,6 +811,77 @@ describe('NativeSession', () => {
     expect(nestedRuns).toHaveLength(2)
     expect(nestedRuns[0].system).toContain('<available_skills>')
     expect(nestedRuns[1].system).not.toContain('<available_skills>')
+    await session.destroy()
+  })
+
+  it('a failed construction-time skill discovery fails the turn loudly', async () => {
+    const dir = await tempDir('native-skill-discovery-fail-')
+    // Fail the constructor's `reload()` (the first call on the prototype),
+    // then restore so later explicit reloads behave normally.
+    const reload = vi.spyOn(NativeSkillCatalog.prototype, 'reload')
+    reload.mockRejectedValueOnce(new Error('skill discovery exploded'))
+    const provider = new NativeProvider({ stateDir: dir })
+    const streamed: string[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      streamed.push('called')
+      for (const ev of textTurn('unreachable')) yield ev
+    }
+    let session: ReturnType<NativeProvider['createSession']>
+    try {
+      session = provider.createSession({ id: 'skill-fail', cwd: dir })
+    } finally {
+      reload.mockRestore()
+    }
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+
+    const result = frames.find((f) => f.type === 'result') as Frame
+    expect(result.is_error).toBe(true)
+    expect(result.result).toContain('skill discovery exploded')
+    // The turn died BEFORE the model was called — the failure is not masked
+    // as an empty catalog.
+    expect(streamed).toEqual([])
+    await session.destroy()
+  })
+
+  it('reloadSkills recovers a session whose construction discovery failed', async () => {
+    const dir = await tempDir('native-skill-recover-')
+    await writeProjectSkill(dir, 'demo')
+    const reload = vi.spyOn(NativeSkillCatalog.prototype, 'reload')
+    reload.mockRejectedValueOnce(new Error('skill discovery exploded'))
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ system: string }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { system: string }) {
+      requests.push(structuredClone(req))
+      for (const ev of textTurn('ok')) yield ev
+    }
+    let session: ReturnType<NativeProvider['createSession']>
+    try {
+      session = provider.createSession({ id: 'skill-recover', cwd: dir })
+    } finally {
+      reload.mockRestore()
+    }
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('first') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+    expect((frames.find((f) => f.type === 'result') as Frame).is_error).toBe(true)
+
+    // The manual reload supersedes the failed construction pass, so the NEXT
+    // turn awaits the fresh one and sees the discovered skill.
+    expect(await session.reloadSkills?.()).toEqual({
+      skills: [{ name: 'demo', description: 'demo description', argumentHint: '' }],
+    })
+    session.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => {
+      const results = frames.filter((f) => f.type === 'result')
+      expect(results).toHaveLength(2)
+      expect(results[1].subtype).toBe('success')
+    })
+    expect((frames.filter((f) => f.type === 'result')[1] as Frame).result).toBe('ok')
+    expect(requests[0].system).toContain('<available_skills>\n- demo\n</available_skills>')
     await session.destroy()
   })
 

@@ -195,7 +195,10 @@ export class NativeSession implements ProviderSessionHandle {
    *  tool list (nested ones too — a subagent may load a skill) and its
    *  guidance is the provider's static prompt section. */
   private readonly skillTool: ToolDef
-  private readonly skillsReady: Promise<void>
+  /** The CURRENT discovery/reload in flight. Re-assigned by `reloadSkills`, so
+   *  a manual reload supersedes the construction one (and can recover from a
+   *  transient construction failure) for every per-turn await. */
+  private skillsReady: Promise<void>
   /** Model-facing tool name → owning server, for the permission request's
    *  `mcpServer` field. Built from discovery metadata, never by parsing the
    *  FQN (it may be truncated and hashed). */
@@ -231,13 +234,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.skills = new NativeSkillCatalog(opts.cwd)
     this.skills.configure(opts.skills)
     this.skillTool = createSkillTool(this.skills)
-    this.skillsReady = this.skills.reload()
-    // Discovery is awaited only by a turn. A session destroyed before its
-    // first turn would otherwise leave this promise unhandled at process
-    // level; the handler marks it observed while the turn path still awaits
-    // the ORIGINAL promise, so a real discovery failure stays a loud turn
-    // error rather than a silent empty catalog.
-    void this.skillsReady.catch((err) => log.warn(`[${opts.id}] skill discovery failed:`, err))
+    this.skillsReady = this.startSkillReload()
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
     // land in the transcript with their real parent. Built after `ctx` exists.
@@ -569,6 +566,19 @@ export class NativeSession implements ProviderSessionHandle {
     })
   }
 
+  /** Start a discovery pass and return it as the current `skillsReady`.
+   *
+   *  Discovery is awaited only by a turn, so a session destroyed before its
+   *  first turn would leave the promise unhandled at process level. The
+   *  handler marks it observed while the turn path still awaits the ORIGINAL
+   *  promise — a real discovery failure stays a loud turn error, never a
+   *  silent empty catalog. */
+  private startSkillReload(): Promise<void> {
+    const reload = this.skills.reload()
+    void reload.catch((err) => log.warn(`[${this.opts.id}] skill discovery failed:`, err))
+    return reload
+  }
+
   /** The nested (Agent) prompt: the subagent system plus the CURRENT skills
    *  section, read at call time so a reload/override reaches the next nested
    *  run. The parent system is built per turn in `pumpLoop`. */
@@ -864,9 +874,13 @@ export class NativeSession implements ProviderSessionHandle {
     return this.skills.commands()
   }
 
-  /** Re-read the skill roots and answer the fresh command catalog. */
+  /** Re-read the skill roots and answer the fresh command catalog. The new
+   *  discovery replaces `skillsReady`, so every per-turn await from here on
+   *  tracks THIS pass — a manual reload both supersedes the construction
+   *  snapshot and recovers the session from a failed one. */
   async reloadSkills(): Promise<unknown> {
-    await this.skills.reload()
+    this.skillsReady = this.startSkillReload()
+    await this.skillsReady
     return { skills: this.skills.commands() }
   }
 
