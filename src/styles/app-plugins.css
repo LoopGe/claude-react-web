@@ -45,11 +45,15 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 .app-plugins-row-toggle {
   display: flex;
+  flex: 1 1 320px;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: var(--space-2);
   background: none;
   border: none;
@@ -60,10 +64,15 @@
   text-align: left;
 }
 .app-plugins-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-weight: 600;
 }
 .app-plugins-row-actions {
   display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--space-1-5);
 }
 .app-plugins-meta {
@@ -74,8 +83,29 @@
   color: var(--fg-muted);
   font-size: var(--fs-xs);
 }
+.app-plugins-meta > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .app-plugins-err {
   color: var(--danger-text);
+}
+.app-plugins-reason {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  margin-top: var(--space-1-5);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.app-plugins-reason-warn {
+  color: var(--warn-text);
+}
+.app-plugins-reason-danger {
+  color: var(--danger-text);
+}
+.app-plugins-reason-detail {
+  overflow-wrap: anywhere;
 }
 .app-plugins-details {
   margin-top: var(--space-2-5);

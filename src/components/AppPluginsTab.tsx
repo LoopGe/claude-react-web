@@ -13,7 +13,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Mutable
 import { createPortal } from 'react-dom'
 import { api, apiRequest } from '../hooks/useApi'
 import { usePluginRegistry } from '../app-plugins/usePluginRegistry'
-import { StatusBadge, type StatusTone } from './StatusBadge'
+import { StatusBadge } from './StatusBadge'
+import { getAppPluginRowStatus } from '../utils/app-plugin-status'
 import { AppPluginMarketplaceSection } from './AppPluginMarketplaceSection'
 import { DirectoryPicker } from './DirectoryPicker'
 import { IconFolder } from './icons/ToolIcons'
@@ -109,7 +110,7 @@ export function AppPluginsTab({ saveAllRef }: { saveAllRef?: MutableRefObject<((
       <section className="settings-group">
         <div className="settings-group-head">
           <h4>Installed</h4>
-          <span className="settings-group-desc">Local plugin directories installed on this server.</span>
+          <span className="settings-group-desc">File status reflects the last validation. Running means activation was confirmed by the host, not a live process heartbeat.</span>
         </div>
         <div className="settings-group-body">
           <div className="app-plugins-install">
@@ -183,22 +184,20 @@ function PluginRow(props: {
   onRegisterDirtySave: (key: string, save: (() => Promise<void>) | null) => void
 }) {
   const { plugin: p, expanded } = props
-  // Map the plugin runtime state onto the shared status tones so the App
-  // Plugin state chip uses the same visual set as the profile "Active" badge.
-  const stateTone: StatusTone = p.runtimeState === 'active'
-    ? 'accent' // match the Setting-Profiles "Active" badge colour
-    : p.runtimeState === 'quarantined' || p.runtimeState === 'crashed'
-      ? 'danger'
-      : p.runtimeState === 'permission-required' || p.runtimeState === 'incompatible' || p.runtimeState === 'corrupted'
-        ? 'warn'
-        : 'muted'
+  const status = getAppPluginRowStatus(p)
+  const toggle = (
+    <button className="app-plugins-row-toggle" onClick={props.onToggleExpand} aria-expanded={expanded}>
+      <span className="app-plugins-name">{p.name}</span>
+      <StatusBadge tone={status.intent.tone}>{status.intent.label}</StatusBadge>
+      <span role="status" aria-live="polite">
+        <StatusBadge tone={status.runtime.tone}>{status.runtime.label}</StatusBadge>
+      </span>
+    </button>
+  )
   return (
     <li className="app-plugins-row">
       <div className="app-plugins-row-head">
-        <button className="app-plugins-row-toggle" onClick={props.onToggleExpand} aria-expanded={expanded}>
-          <span className="app-plugins-name">{p.name}</span>
-          <StatusBadge tone={stateTone}>{p.runtimeState}</StatusBadge>
-        </button>
+        {status.runtime.hint ? <HoverHint label={status.runtime.hint}>{toggle}</HoverHint> : toggle}
         <div className="app-plugins-row-actions">
           {p.enabled ? (
             <button className="btn" disabled={props.busy} onClick={props.onDisable}>Disable</button>
@@ -211,8 +210,18 @@ function PluginRow(props: {
       <div className="app-plugins-meta">
         <span>{p.id}</span>
         <span>v{p.version}</span>
-        {p.lastError && <span className="app-plugins-err">{p.lastError}</span>}
+        <HoverHint label={status.files.hint}>
+          <span tabIndex={0} className={status.files.tone === 'danger' ? 'app-plugins-err' : undefined}>
+            {status.files.label}
+          </span>
+        </HoverHint>
       </div>
+      {status.reason && (
+        <div role="status" aria-live="polite" className={`app-plugins-reason app-plugins-reason-${status.reason.tone}`}>
+          <span>{status.reason.text}</span>
+          {status.reason.detail && <span className="app-plugins-reason-detail">{status.reason.detail}</span>}
+        </div>
+      )}
       {expanded && <PluginDetails plugin={p} modelList={props.modelList} onRegisterDirtySave={props.onRegisterDirtySave} />}
     </li>
   )
