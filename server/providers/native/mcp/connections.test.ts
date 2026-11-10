@@ -82,6 +82,43 @@ describe('NativeMcpConnections', () => {
     await conns.closeAll()
   }, 15_000)
 
+  it('falls back to structured content when a tool returns no content blocks', async () => {
+    const conns = new NativeMcpConnections()
+    const structured = new McpServer({ name: 'structured-server', version: '1.0.0' })
+    structured.registerTool(
+      'structured',
+      { description: 'Returns only structured content.' },
+      async () => ({ content: [], structuredContent: { ok: 1 } }),
+    )
+    conns.load({ s: { type: 'sdk', instance: structured } })
+    await conns.whenReady()
+
+    const result = await conns.call('mcp__s__structured', {}, abortSignal())
+    // An empty text block is rejected by the Messages API on the next round,
+    // so the structured payload stands in for the missing text.
+    expect(result.text).toContain('"ok":1')
+    expect(result.text.length).toBeGreaterThan(0)
+
+    await conns.closeAll()
+  }, 15_000)
+
+  it('never returns empty text for a tool with no output at all', async () => {
+    const conns = new NativeMcpConnections()
+    const silent = new McpServer({ name: 'silent-server', version: '1.0.0' })
+    silent.registerTool(
+      'silent',
+      { description: 'Returns nothing.' },
+      async () => ({ content: [] }),
+    )
+    conns.load({ s: { type: 'sdk', instance: silent } })
+    await conns.whenReady()
+
+    const result = await conns.call('mcp__s__silent', {}, abortSignal())
+    expect(result.text).toBe('(no output)')
+
+    await conns.closeAll()
+  }, 15_000)
+
   it('connects a real stdio server, calls a tool and kills the child on closeAll', async () => {
     const dir = await tempDir()
     const byePath = join(dir, 'bye.txt')

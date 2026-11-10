@@ -83,26 +83,34 @@ export class NativeProvider implements AgentProvider {
     // awaited per turn, so spawn never blocks on a slow server.
     const mcp = new NativeMcpConnections({ authFor: this.authFor })
     mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
-    return new NativeSession({
-      id: opts.id,
-      cwd: opts.cwd ?? process.cwd(),
-      stateDir: this.stateDir,
-      resume: opts.resume,
-      forkSession: opts.forkSession,
-      resumeSessionAt: opts.resumeSessionAt,
-      model: opts.model,
-      permissionMode: opts.permissionMode,
-      credentials: () => ({
-        baseUrl: opts.profile?.baseUrl ?? config.baseUrl,
-        authToken: opts.profile?.authToken ?? requireAuthToken(),
-      }),
-      tools: TOOLS,
-      mcp,
-      system,
-      canUseTool: opts.canUseTool,
-      onUserMessageConsumed: opts.onUserMessageConsumed,
-      streamSupplier: () => this._testStream,
-    })
+    // The constructor can throw on real paths (corrupt/unsupported log, missing
+    // fork log). The queued connect has no owner then, so it must be torn down
+    // here or it would run forever and leak its children.
+    try {
+      return new NativeSession({
+        id: opts.id,
+        cwd: opts.cwd ?? process.cwd(),
+        stateDir: this.stateDir,
+        resume: opts.resume,
+        forkSession: opts.forkSession,
+        resumeSessionAt: opts.resumeSessionAt,
+        model: opts.model,
+        permissionMode: opts.permissionMode,
+        credentials: () => ({
+          baseUrl: opts.profile?.baseUrl ?? config.baseUrl,
+          authToken: opts.profile?.authToken ?? requireAuthToken(),
+        }),
+        tools: TOOLS,
+        mcp,
+        system,
+        canUseTool: opts.canUseTool,
+        onUserMessageConsumed: opts.onUserMessageConsumed,
+        streamSupplier: () => this._testStream,
+      })
+    } catch (err) {
+      void mcp.closeAll()
+      throw err
+    }
   }
 
   readHistoryPage(

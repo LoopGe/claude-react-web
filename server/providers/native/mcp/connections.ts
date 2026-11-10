@@ -213,7 +213,7 @@ export class NativeMcpConnections {
       if (block.type === 'text') parts.push(block.text)
       else parts.push(JSON.stringify(block))
     }
-    const out: { text: string; isError?: boolean } = { text: capToolText(parts.join('\n')) }
+    const out: { text: string; isError?: boolean } = { text: capToolText(textOf(result, parts)) }
     if (result.isError === true) out.isError = true
     return out
   }
@@ -254,8 +254,9 @@ export class NativeMcpConnections {
   async readResource(name: string, uri: string): Promise<unknown> {
     await this.queue
     const rec = this.records.get(name)
-    if (!rec || rec.status !== 'connected' || !rec.client) {
-      throw new Error(`unknown MCP server: ${name}`)
+    if (!rec) throw new Error(`unknown MCP server: ${name}`)
+    if (rec.status !== 'connected' || !rec.client) {
+      throw new Error(`MCP server "${name}" is not connected`)
     }
     return rec.client.readResource({ uri })
   }
@@ -475,6 +476,19 @@ function noop(): void {}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/** The text a tool result contributes to the conversation. A legal empty
+ *  `content: []` (or a structured-content-only result) would otherwise produce
+ *  an empty text block, which the Messages API rejects on the NEXT round. */
+function textOf(result: CallToolResult, parts: string[]): string {
+  const joined = parts.join('\n')
+  if (joined !== '') return joined
+  if (result.structuredContent !== undefined) {
+    const json = JSON.stringify(result.structuredContent)
+    if (json !== '') return json
+  }
+  return '(no output)'
 }
 
 function isStringRecord(v: unknown): v is Record<string, string> {

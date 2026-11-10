@@ -1072,4 +1072,31 @@ describe('NativeSession', () => {
     expect(caught).toBeInstanceOf(NativeSessionStorageError)
     expect((caught as NativeSessionStorageError).kind).toBe('unsupported-version')
   })
+
+  it('closes queued MCP connections when the session constructor throws', async () => {
+    const dir = await tempDir('native-create-fail-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const seed = provider.createSession({ id: 'leak', cwd: dir })
+    await seed.destroy()
+    const path = nativeSessionLogPath(dir, 'leak')
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"v":1', '"v":2'))
+
+    // The connect is queued by `load` before the resume throw; without the
+    // provider's teardown it would run forever with no owner.
+    const instance = echoServer()
+    const closeSpy = vi.spyOn(instance, 'close')
+    let caught: unknown
+    try {
+      provider.createSession({
+        id: 'leak',
+        cwd: dir,
+        resume: 'leak',
+        mcpServers: { a: { type: 'sdk', instance } },
+      })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(NativeSessionStorageError)
+    await vi.waitFor(() => expect(closeSpy).toHaveBeenCalled())
+  })
 })
