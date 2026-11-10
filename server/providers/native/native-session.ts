@@ -664,16 +664,23 @@ export class NativeSession implements ProviderSessionHandle {
       // `lastUsage` here would make `restoreUsage` sum it again after restart.
       let endUsage: Usage | undefined
       try {
-        // Skill discovery is awaited per turn, not at spawn: a slow disk never
-        // delays session creation, and `skillsReady` tracks the LATEST reload
-        // pass, so a manual reload supersedes the construction snapshot. It
-        // precedes the user write because a `/name args` turn is persisted —
-        // and sent — as the skill's expanded body.
-        await this.skillsReady
-        const turnContent = expandSkillTurn(next.message.content, this.skills)
-        // The turn is consumed now, so it is part of the conversation: write it
-        // (and wait for the write) before the model sees it. A queued turn that
-        // gets drained without reaching this point is never persisted. Inside
+        // The turn is consumed now, so it must be persisted on EVERY path —
+        // the client has already marked it "sent". A `/name args` turn is
+        // persisted and sent as the skill's expanded body, so discovery has to
+        // land first; a failed pass still writes the ORIGINAL text (below) and
+        // then fails the turn loudly.
+        let turnContent: unknown = next.message.content
+        let skillError: unknown
+        try {
+          // Skill discovery is awaited per turn, not at spawn: a slow disk
+          // never delays session creation, and `skillsReady` tracks the LATEST
+          // reload pass, so a manual reload supersedes the construction snapshot.
+          await this.skillsReady
+          turnContent = expandSkillTurn(next.message.content, this.skills)
+        } catch (err) {
+          skillError = err
+        }
+        // Write it (and wait for the write) before the model sees it. Inside
         // the try so a rejected write is classified as this turn's failure
         // instead of rejecting the pump.
         this.log.append({
@@ -682,10 +689,11 @@ export class NativeSession implements ProviderSessionHandle {
           session_id: this.opts.id,
           parent_tool_use_id: null,
           timestamp: new Date(this.receivedAt.get(next)!).toISOString(),
-          message: persistedUserMessage({ content: turnContent }),
+          message: persistedUserMessage({ ...next.message, content: turnContent }),
         })
         await this.log.flush()
-        // Discovery is awaited per turn, not at spawn: a slow server never
+        if (skillError) throw skillError
+        // MCP discovery is awaited per turn, not at spawn: a slow server never
         // delays session creation, and a mid-turn replace/toggle only lands
         // on the next turn (the turn below runs on this snapshot).
         await this.mcp?.whenReady()

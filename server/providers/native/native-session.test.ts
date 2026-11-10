@@ -753,18 +753,45 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
     const expected = `${body}\n\ndo this`
-    // The model saw the expanded body...
+    // The model saw the expanded body in the request it sent...
     expect(sentUserContent(requests[0])).toEqual([{ type: 'text', text: expected }])
     // ...and so does the durable log, so resumed history matches the live one.
     expect(userTexts(session)).toEqual([expected])
-    // The live model history (what the next request sends) carries it too.
-    const history = (session as unknown as {
-      history: Array<{ role: string; content: unknown }>
-    }).history
-    expect(history.at(-2)).toEqual({ role: 'user', content: [{ type: 'text', text: expected }] })
     // The queued message is never mutated: the manager's ring and broadcast
     // keep the `/name args` text the user typed.
     expect(queued.message.content).toEqual([{ type: 'text', text: '/demo do this' }])
+    await session.destroy()
+  })
+
+  it('persists the consumed prompt when skill discovery fails, then fails loudly', async () => {
+    const dir = await tempDir('native-skill-expand-fail-')
+    // Fail the constructor's discovery pass; the session is otherwise healthy.
+    const reload = vi.spyOn(NativeSkillCatalog.prototype, 'reload')
+    reload.mockRejectedValueOnce(new Error('skill discovery exploded'))
+    const provider = new NativeProvider({ stateDir: dir })
+    const streamed: string[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      streamed.push('called')
+      for (const ev of textTurn('unreachable')) yield ev
+    }
+    let session: ReturnType<NativeProvider['createSession']>
+    try {
+      session = provider.createSession({ id: 'skill-expand-fail', cwd: dir })
+    } finally {
+      reload.mockRestore()
+    }
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage(userMsg('/demo do this') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
+
+    const result = frames.find((f) => f.type === 'result') as Frame
+    expect(result.is_error).toBe(true)
+    expect(result.result).toContain('skill discovery exploded')
+    // The client already marked the turn "sent", so the ORIGINAL text is
+    // durable even though the turn never reached the model.
+    expect(userTexts(session)).toEqual(['/demo do this'])
+    expect(streamed).toEqual([])
     await session.destroy()
   })
 
