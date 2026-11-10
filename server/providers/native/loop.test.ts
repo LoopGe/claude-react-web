@@ -222,6 +222,32 @@ describe('runTurn', () => {
     expect(seen[0]?.cwd).toBe(process.cwd())
   })
 
+  it('injects drained supplements into history before the NEXT request, verbatim', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    // Already-wrapped guidance (the session wraps it; the loop must not).
+    const wrapped = '[ADDITIONAL GUIDANCE] wrapped pivot'
+    let drainCalls = 0
+    const drainSupplement = async () => {
+      drainCalls++
+      return drainCalls === 1 ? [] : [{ uuid: 'sup-1', text: wrapped }]
+    }
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), drainSupplement }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    // Drained before every round (including the first, which had nothing).
+    expect(drainCalls).toBe(2)
+    expect(JSON.stringify(s.calls[0])).not.toContain('[ADDITIONAL GUIDANCE]')
+    const second = s.calls[1] as Array<{ role: string; content: Array<{ type: string; text?: string }> }>
+    expect(second.at(-1)).toEqual({ role: 'user', content: [{ type: 'text', text: wrapped }] })
+    // Exactly one injection.
+    expect(JSON.stringify(second).split('[ADDITIONAL GUIDANCE]')).toHaveLength(2)
+  })
+
   it('second request history contains the assistant blocks and tool results, without thinking blocks', async () => {
     const s = scriptedStreamer([
       [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],

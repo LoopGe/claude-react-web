@@ -12,6 +12,8 @@ const sideAssistant = (seq: number, content: unknown[]): NativeLogEvent => ({ se
 const sideResult = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'user', uuid: `sr${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'inner ok' }], is_error: false }] } })
 const sideUser = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `su${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
 
+const supplement = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'session/supplement', uuid: `sp${seq}`, text, timestamp: 't' })
+
 describe('replay', () => {
   it('rebuilds history, strips unsigned thinking and merges consecutive tool results', () => {
     const events = [
@@ -96,6 +98,29 @@ describe('replay', () => {
     expect(messages).toHaveLength(3) // user, assistant(tool_use), merged tool result
     expect(JSON.stringify(messages)).not.toContain('INNER')
     expect(messages[2].content).toHaveLength(1)
+  })
+  it('replays a supplement verbatim at its position and closes the tool-result group', () => {
+    // result(5) follows the supplement: without closing the group it would
+    // merge into result(3)'s message, placing it BEFORE the supplement.
+    const events = [
+      user(1, 'go'),
+      assistant(2, [
+        { type: 'tool_use', id: 't1', name: 'Read', input: {} },
+        { type: 'tool_use', id: 't2', name: 'Read', input: {} },
+      ]),
+      result(3, 't1'),
+      supplement(4, 'WRAPPED GUIDANCE'),
+      result(5, 't2'),
+    ]
+    const messages = historyFromEvents(events) as Array<{
+      role: string
+      content: Array<{ type?: string; text?: string; tool_use_id?: string }>
+    }>
+    expect(messages).toHaveLength(5)
+    expect(messages[2].content.map((b) => b.tool_use_id)).toEqual(['t1'])
+    // Stored text is already the wrapped guidance — replayed exactly, no re-wrap.
+    expect(messages[3]).toEqual({ role: 'user', content: [{ type: 'text', text: 'WRAPPED GUIDANCE' }] })
+    expect(messages[4].content.map((b) => b.tool_use_id)).toEqual(['t2'])
   })
   it('synthesizes a result for every unanswered tool_use', () => {
     const events = [user(0, 'go'), assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }])]

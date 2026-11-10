@@ -4,26 +4,17 @@
 // 归属（B' 切分）：本文件是 provider 机制——CLI 特有细节（agent_id 过滤、
 // stop_hook_active、hook 输出形状）全部封在这里；manager 只认识
 // enqueue/drain/delivered 三个动词（spec §4 接口契约）。
-export type SteerBoundary = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'Stop'
-export type SupplementOutcome = { ok: true; boundary: SteerBoundary } | { ok: false; reason: 'aborted' }
+import { formatSupplementInstruction, type SteerBoundary, type SupplementOutcome } from '../steering-format.js'
+
+// The wrapper and the outcome vocabulary live in the provider-neutral
+// `../steering-format.ts` (the native provider shares them); re-exported here
+// so every existing claude import path stays valid.
+export { formatSupplementInstruction } from '../steering-format.js'
+export type { SteerBoundary, SupplementOutcome } from '../steering-format.js'
+
 export interface SteerEntryInput {
   uuid: string
   text: string
-}
-
-/** 注入指令包装（spec §5.4，multica 提示词工程移植）。四条规则防住三个模型
- *  行为陷阱：把补充当新任务、中断工作先回一句「收到」、擅自放弃原目标。 */
-export function formatSupplementInstruction(text: string): string {
-  return `[ADDITIONAL GUIDANCE] The user sent a message while you were working.
-
-Treat this as additional guidance for the same active task, not as a replacement:
-- Preserve and complete the original objective.
-- Incorporate this guidance into the work and the turn's single final response.
-- Do not send a separate acknowledgement.
-- Replace or cancel the original objective only if the user explicitly asks.
-
-User message:
-${text}`
 }
 
 type PendingEntry = SteerEntryInput

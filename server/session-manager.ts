@@ -7042,10 +7042,13 @@ export class SessionManager {
       s.steeredInFlight.delete(uuid)
       if (!userMsg) continue
       const at = stampRequeuedAt(userMsg)
-      s.handle.enqueueUserMessage({ ...userMsg })
       // 【补录】requeue 后它就是一条会 echo 的普通 prompt——此刻才进
       // FIFO 配对（spec §6.3；漏掉会让 onPromptEcho 永久错配）。
+      // Record BEFORE enqueue: a provider that consumes synchronously (the
+      // native direct hand-off pairs inside enqueueUserMessage) would else
+      // consume an entry that does not exist yet and leave it unpaired.
       this.recordPromptUuid(s, userMsg)
+      s.handle.enqueueUserMessage({ ...userMsg })
       void this.steeredStore.markRequeued(s.id, uuid, at)
       this.pushMessageStatus(s.id, { kind: 'message-steered', sessionId: s.id, uuid, state: 'requeued' })
       log.info(`[session ${s.id}] steered ${uuid.slice(0, 8)} requeued as next-turn prompt`)

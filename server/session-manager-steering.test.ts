@@ -99,6 +99,28 @@ class FakeProvider implements AgentProvider {
   }
 }
 
+/** Native-flavored fake: the queue is consumed SYNCHRONOUSLY inside
+ *  `enqueueUserMessage` (the native pump shifts it on the same call), so the
+ *  manager's consumption callback runs before the call returns. */
+class SynchronousConsumeHandle extends FakeHandle {
+  readonly echoesUserPrompts = false
+  constructor(consume: (message: AgentUserMessage) => void) {
+    super()
+    this.enqueueUserMessage = vi.fn((m: AgentUserMessage) => {
+      consume(m)
+      this.input.push(m)
+    })
+  }
+}
+
+class SynchronousConsumeProvider implements AgentProvider {
+  readonly name = 'fake-sync'
+  readonly capabilities = FAKE_CAPS
+  createSession(opts: CreateSessionOptions): ProviderSessionHandle {
+    return new SynchronousConsumeHandle((m) => opts.onUserMessageConsumed?.(m))
+  }
+}
+
 async function makeSteeringSession() {
   const dir = await mkdtemp(join(tmpdir(), 'sm-steer-'))
   const store = new SessionStore({ stateDir: dir })
@@ -110,6 +132,18 @@ async function makeSteeringSession() {
   const info = await sm.create({ cwd: undefined, model: 'test-model', provider: 'fake' })
   const s = (sm as unknown as { sessions: Map<string, { pendingTurns: number; turnActive?: boolean; steeredInFlight: Map<string, AgentUserMessage>; promptUuids?: Array<{ u: string; v?: string }>; history: AgentUserMessage[]; id: string; handle: FakeHandle }> }).sessions.get(info.id)!
   return { sm, s, handle: s.handle, info, dir, provider }
+}
+
+async function makeSyncConsumeSession() {
+  const dir = await mkdtemp(join(tmpdir(), 'sm-steer-sync-'))
+  const store = new SessionStore({ stateDir: dir })
+  await store.load()
+  const registry = new ProviderRegistry()
+  registry.register(new SynchronousConsumeProvider())
+  const sm = new SessionManager({ store, providers: registry })
+  const info = await sm.create({ cwd: undefined, model: 'test-model', provider: 'fake-sync' })
+  const s = (sm as unknown as { sessions: Map<string, { pendingTurns: number; turnActive?: boolean; steeredInFlight: Map<string, AgentUserMessage>; promptUuids?: Array<{ u: string; v?: string }>; history: AgentUserMessage[]; id: string; handle: SynchronousConsumeHandle }> }).sessions.get(info.id)!
+  return { sm, s, handle: s.handle, info, dir }
 }
 
 let dirs: string[] = []
@@ -332,6 +366,25 @@ describe('turn-end steer fallback', () => {
     const sidecar = await (sm as unknown as { steeredStore: { load(id: string): Promise<Array<{ u: string; requeuedAt?: number }>> } }).steeredStore.load(info.id)
     expect(sidecar?.[0]).toMatchObject({ u: second.uuid, requeuedAt: expect.any(Number) })
     expect(s.steeredInFlight.size).toBe(0)
+    await sm.shutdown()
+  })
+  it('requeues with the prompt uuid recorded BEFORE enqueue (synchronous consume pairs it)', async () => {
+    // Native-flavored handle: the consume callback runs inside
+    // enqueueUserMessage. Recording the prompt uuid after the enqueue would
+    // leave the entry absent during the pairing scan — permanently unpaired.
+    const ctx = await makeSyncConsumeSession()
+    dirs.push(ctx.dir)
+    const { sm, s, handle, info } = ctx
+    const first = sm.send(info.id, 'first message')
+    // The ordinary dispatch path already records before enqueue.
+    expect(s.promptUuids?.find((e) => e.u === first.uuid)?.v).toBe(first.uuid)
+    // Mid-turn steer: not enqueued, so no promptUuids entry yet.
+    const second = sm.send(info.id, 'pivot now')
+    expect(s.promptUuids?.map((e) => e.u)).toEqual([first.uuid])
+    handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
+    ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(s, false)
+    // Requeued: recorded before the synchronous consume, which paired it.
+    expect(s.promptUuids?.find((e) => e.u === second.uuid)?.v).toBe(second.uuid)
     await sm.shutdown()
   })
   it('empty bookend (emptyResult=true) is a turn-end no-op — no close, no requeue', async () => {

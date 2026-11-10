@@ -76,7 +76,7 @@ export class NativeProvider implements AgentProvider {
     supportsStructuredOutput: false,
     supportsReadFile: false,
     supportsSubagentTranscripts: false,
-    supportsSteering: false,
+    supportsSteering: true,
   }
 
   /** Test seam: when set, replaces the real network streamer for every turn.
@@ -147,6 +147,7 @@ export class NativeProvider implements AgentProvider {
         subagentSystem,
         canUseTool: opts.canUseTool,
         onUserMessageConsumed: opts.onUserMessageConsumed,
+        onSupplementDelivered: opts.onSupplementDelivered,
         streamSupplier: () => this._testStream,
       })
     } catch (err) {

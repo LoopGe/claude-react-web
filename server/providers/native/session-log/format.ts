@@ -90,6 +90,18 @@ export interface NativeCompactEvent {
   timestamp: string
 }
 
+/** A mid-run steering supplement, persisted at the moment it is delivered to
+ *  the model. `text` is the WRAPPED guidance (what the model saw), so replay
+ *  can reconstruct the same history without re-wrapping. The event is not a
+ *  renderable transcript line: the steered bubble lives in the sidecar. */
+export interface NativeSupplementEvent {
+  seq: number
+  type: 'session/supplement'
+  uuid: string
+  text: string
+  timestamp: string
+}
+
 export type NativeLogEvent =
   | NativeUserEvent
   | NativeAssistantEvent
@@ -97,6 +109,7 @@ export type NativeLogEvent =
   | NativeTurnEndEvent
   | NativeSeedEndEvent
   | NativeCompactEvent
+  | NativeSupplementEvent
 
 export type NativeEventInput =
   | Omit<NativeUserEvent, 'seq'>
@@ -105,6 +118,7 @@ export type NativeEventInput =
   | Omit<NativeTurnEndEvent, 'seq'>
   | Omit<NativeSeedEndEvent, 'seq'>
   | Omit<NativeCompactEvent, 'seq'>
+  | Omit<NativeSupplementEvent, 'seq'>
 
 /** True for a sidechain (nested-runner) user/assistant frame — one carrying a
  *  non-null `parent_tool_use_id`. Works for both persisted log events and raw
@@ -279,6 +293,15 @@ export function parseEventLine(
         text: requireNonEmptyString(raw, 'text', sessionId, path),
         context: requireNonEmptyString(raw, 'context', sessionId, path),
         uuid: requireNonEmptyString(raw, 'uuid', sessionId, path),
+        timestamp: requireNonEmptyString(raw, 'timestamp', sessionId, path),
+      }
+
+    case 'session/supplement':
+      return {
+        seq,
+        type: 'session/supplement',
+        uuid: requireNonEmptyString(raw, 'uuid', sessionId, path),
+        text: requireNonEmptyString(raw, 'text', sessionId, path),
         timestamp: requireNonEmptyString(raw, 'timestamp', sessionId, path),
       }
 

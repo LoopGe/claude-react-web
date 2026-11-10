@@ -12,7 +12,9 @@ import { NativeSessionStorageError } from './session-log/errors.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
+import { readNativeHistoryEntries } from './session-log/reader.js'
 import type { NativeLogEvent } from './session-log/format.js'
+import { formatSupplementInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { NativeSkillCatalog } from './skills.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
@@ -389,6 +391,134 @@ describe('NativeSession', () => {
     expect(provider.capabilities.supportsInterrupt).toBe(true)
     expect(provider.capabilities.supportsMcp).toBe(true)
     expect(provider.capabilities.supportsFineGrainedPermissions).toBe(true)
+    expect(provider.capabilities.supportsSteering).toBe(true)
+  })
+
+  it('admits a mid-turn supplement, injects the wrapped guidance before the next request and reports delivery', async () => {
+    const dir = await tempDir('native-steer-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] }> = []
+    const scripts: CanonicalEvent[][] = [toolTurn('t1'), textTurn('done')]
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(scripts, requests)
+    const delivered: Array<{ uuid: string; outcome: unknown }> = []
+    let admitted: boolean | undefined
+    let session: ReturnType<NativeProvider['createSession']> | null = null
+    session = provider.createSession({
+      id: 'steer',
+      cwd: process.cwd(),
+      onSupplementDelivered: (uuid, outcome) => delivered.push({ uuid, outcome }),
+      // The permission round-trip is mid-turn: the pump has already consumed
+      // the prompt, so steering admission is open here.
+      canUseTool: async (_toolName: unknown, input: unknown) => {
+        admitted = session!.enqueueSupplement!({ uuid: 'sup-1', text: 'pivot to python' })
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session!.messages) frames.push(f as Frame)
+    })()
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    expect(admitted).toBe(true)
+    const wrapped = formatSupplementInstruction('pivot to python')
+    // Round 1 saw only the prompt; round 2 carries the wrapped guidance last.
+    expect(JSON.stringify(requests[0].messages)).not.toContain('[ADDITIONAL GUIDANCE]')
+    const second = requests[1].messages as Array<{ role: string; content: unknown }>
+    expect(second.at(-1)).toEqual({ role: 'user', content: [{ type: 'text', text: wrapped }] })
+    // Injected exactly once (already wrapped — never re-wrapped).
+    expect(JSON.stringify(second).split('[ADDITIONAL GUIDANCE]')).toHaveLength(2)
+    // Delivery fires once, at the pre-request boundary.
+    expect(delivered).toEqual([{ uuid: 'sup-1', outcome: { ok: true, boundary: 'PreToolUse' } }])
+    // Durable half: the log stores the WRAPPED text, and replay rebuilds it
+    // at its position (after the tool_result, before the final assistant turn).
+    const supplementEvents = logOf(session).events.filter((e) => e.type === 'session/supplement')
+    expect(supplementEvents).toEqual([
+      expect.objectContaining({ type: 'session/supplement', uuid: 'sup-1', text: wrapped }),
+    ])
+    const rebuilt = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[]) as Array<{
+      role: string
+      content: Array<{ text?: string }>
+    }>
+    expect(rebuilt.at(-2)).toEqual({ role: 'user', content: [{ type: 'text', text: wrapped }] })
+    expect(rebuilt.at(-1)?.role).toBe('assistant')
+    // Not a renderable line: the transcript reader excludes it.
+    await (session as unknown as { log: { flush: () => Promise<void> } }).log.flush()
+    const entries = await readNativeHistoryEntries(dir, 'steer')
+    expect(entries.length).toBeGreaterThan(0)
+    expect(entries.some((entry) => JSON.stringify(entry.message).includes('[ADDITIONAL GUIDANCE]'))).toBe(false)
+    await session.destroy()
+  })
+
+  it('rejects supplements while idle and after the turn settles (nothing stranded)', async () => {
+    const dir = await tempDir('native-steer-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [textTurn('one'), textTurn('two')],
+      requests,
+    )
+    const session = provider.createSession({ id: 'steer-idle', cwd: process.cwd() })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session.messages) frames.push(f as Frame)
+    })()
+    // Idle: no turn has started, so admission is closed.
+    expect(session.enqueueSupplement!({ uuid: 'sup-idle', text: 'too early' })).toBe(false)
+    session.enqueueUserMessage(userMsg('one') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    // The manager closes admission on every terminal frame; a steer landing
+    // now must be rejected, not queued with no round left to inject into.
+    session.noteTurnSettled!()
+    expect(session.enqueueSupplement!({ uuid: 'sup-late', text: 'too late' })).toBe(false)
+    expect(session.drainSupplements!()).toEqual([])
+    session.enqueueUserMessage(userMsg('two') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(2)
+    })
+    expect(JSON.stringify(requests[1].messages)).not.toContain('[ADDITIONAL GUIDANCE]')
+    await session.destroy()
+  })
+
+  it('drainSupplements returns leftovers and clears the queue (nothing injected, no delivery)', async () => {
+    const dir = await tempDir('native-steer-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [toolTurn('t1'), textTurn('done')],
+      requests,
+    )
+    const delivered: string[] = []
+    let leftovers: Array<{ uuid: string; text?: string }> = []
+    let session: ReturnType<NativeProvider['createSession']> | null = null
+    session = provider.createSession({
+      id: 'steer-drain',
+      cwd: process.cwd(),
+      onSupplementDelivered: (uuid) => delivered.push(uuid),
+      canUseTool: async (_toolName: unknown, input: unknown) => {
+        session!.enqueueSupplement!({ uuid: 'sup-left', text: 'leftover' })
+        leftovers = session!.drainSupplements!()
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of session!.messages) frames.push(f as Frame)
+    })()
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    })
+    expect(leftovers).toEqual([{ uuid: 'sup-left', text: 'leftover' }])
+    expect(session.drainSupplements!()).toEqual([]) // cleared by the drain
+    expect(delivered).toEqual([])
+    // The next round saw no injection — the leftover left the session queue.
+    expect(JSON.stringify(requests[1].messages)).not.toContain('[ADDITIONAL GUIDANCE]')
+    await session.destroy()
   })
 
   it('offers discovered MCP tools to the model and routes their calls', async () => {

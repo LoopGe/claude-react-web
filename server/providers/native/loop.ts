@@ -20,6 +20,13 @@ export interface LoopDeps {
    *  emitted so the terminal frame reports the state the next turn would use.
    *  Absent = the provider has no fast mode (the field is then omitted). */
   fastModeState?: () => 'on' | 'off'
+  /** Mid-run steering: drain supplements queued since the previous round.
+   *  Called at the TOP of every iteration (before the API request); each
+   *  entry's `text` is ALREADY the wrapped guidance, appended to history
+   *  verbatim. The session's drain owns persistence and the delivery callback
+   *  — the loop neither wraps nor reports. Absent for the nested Agent runner
+   *  (a subagent never consumes main-thread steering). */
+  drainSupplement?: () => Promise<Array<{ uuid: string; text: string }>>
 }
 
 export interface TurnResult {
@@ -66,6 +73,15 @@ export async function runTurn(
   const isError = false
   history.push(turnInput)
   for (;;) {
+    // Mid-run steering: anything queued since the previous round joins the
+    // conversation as a user message BEFORE this round's request is built.
+    // `entry.text` is already the wrapped guidance — never re-wrap it.
+    if (deps.drainSupplement) {
+      const entries = await deps.drainSupplement()
+      for (const entry of entries) {
+        history.push({ role: 'user', content: [{ type: 'text', text: entry.text }] })
+      }
+    }
     const blocks: AggBlock[] = []
     let stopReason: string | null = null
     // Per-API-round usage: each assistant frame reports only the usage of the

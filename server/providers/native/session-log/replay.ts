@@ -81,6 +81,10 @@ export function contextSnapshot(cwd: string): string {
  * - a `session/compact` event is a floor: everything before the LAST one is
  *   superseded by the captured context snapshot and the summary, so replay
  *   starts there instead of rebuilding the pre-compact conversation.
+ * - a `session/supplement` event is a user message carrying the ALREADY
+ *   WRAPPED guidance, inserted at its log position. It is a real user turn
+ *   for the model, so it closes any open tool-result group — the results
+ *   that follow belong to the next round, not the one before the supplement.
  */
 export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] {
   const messages: Array<{ role: 'user' | 'assistant'; content: unknown[] }> = []
@@ -130,6 +134,13 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
           messages.push({ role: 'user', content: [...blocksOf(event.message.content)] })
           openResults = null
         }
+        break
+      case 'session/supplement':
+        // Persisted as the WRAPPED guidance the model already saw — replay it
+        // verbatim; never re-wrap. Its presence ends any open tool-result
+        // group, exactly like a non-tool-result user turn.
+        messages.push({ role: 'user', content: [{ type: 'text', text: event.text }] })
+        openResults = null
         break
       default:
         break

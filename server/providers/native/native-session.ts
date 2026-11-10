@@ -40,6 +40,7 @@ import { createAgentTool } from './subagent.js'
 import { NativeSkillCatalog } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
+import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 
 const log = createLogger('native')
@@ -199,6 +200,10 @@ export interface NativeSessionOptions {
    *  called when a queued message is dequeued for a turn — without it the
    *  client's send bubble stays 'queued' forever. */
   onUserMessageConsumed?: (message: AgentUserMessage) => void
+  /** Mid-run steering delivery: fired per supplement once its
+   *  `session/supplement` event is durable, right before the next request
+   *  carries it. The manager stamps the bubble and the sidecar from it. */
+  onSupplementDelivered?: (uuid: string, outcome: SupplementOutcome) => void
   /** Test seam: evaluated PER TURN; a non-undefined return replaces the real
    *  network streamer for that turn. Per-turn evaluation lets tests swap the
    *  script between turns. */
@@ -276,6 +281,14 @@ export class NativeSession implements ProviderSessionHandle {
    *  second enqueueUserMessage while the first turn is still being scheduled
    *  cannot start a second concurrent pump. */
   private pumping = false
+  /** Steering admission: opened when the pump consumes a prompt (a turn is
+   *  starting) and closed by `noteTurnSettled` (the manager's turn-end
+   *  fallback). Deliberately NOT keyed on `turnAbort !== null`: a supplement
+   *  landing between the manager's turn-end drain and the pump's `finally`
+   *  would then be admitted with no round left to inject it into (stranded). */
+  private steeringOpen = false
+  /** Supplements admitted during the current turn, not yet injected. */
+  private supplementQueue: Array<{ uuid: string; text: string }> = []
   private lastUsage: Usage = { input_tokens: 0, output_tokens: 0 }
   /** Per-model totals for the /usage panel. Accumulated from every persisted
    *  assistant frame (one per API round), which keeps the live value identical
@@ -690,6 +703,9 @@ export class NativeSession implements ProviderSessionHandle {
     while (!this._closed && this.input.length > 0) {
       const next = this.input.shift() as AgentUserMessage
       this.opts.onUserMessageConsumed?.(next)
+      // The turn has started, so mid-run steering admission opens. It stays
+      // open until the manager settles the turn (noteTurnSettled).
+      this.steeringOpen = true
       // Fresh per-turn signal, armed BEFORE the persistence await: interrupt()
       // kills THIS turn only, and must stay responsive while the consumed
       // turn's write is in flight (the session survives for the next message).
@@ -748,6 +764,7 @@ export class NativeSession implements ProviderSessionHandle {
             },
             system: withSkillsSection(this.opts.system, this.skills.section()),
             fastModeState: () => (this.fastMode ? 'on' : 'off'),
+            drainSupplement: () => this.injectSupplements(),
           },
           this.ctx,
           this.history,
@@ -886,6 +903,57 @@ export class NativeSession implements ProviderSessionHandle {
 
   drainQueuedInput(): AgentUserMessage[] {
     return this.input.splice(0)
+  }
+
+  /** Mid-run steering intake: admitted ONLY while a turn is live — i.e. since
+   *  the pump consumed its prompt and before the manager settles the turn.
+   *  False means "not now", and the manager transparently falls back to its
+   *  normal next-turn queue. */
+  enqueueSupplement(entry: { uuid: string; text: string }): boolean {
+    if (!this.steeringOpen) return false
+    this.supplementQueue.push(entry)
+    return true
+  }
+
+  /** Close steering admission at the turn's end. The manager calls this on
+   *  every terminal frame shape (result / interrupt / API error), so a steer
+   *  arriving after the turn can never be admitted with no round to inject
+   *  into. */
+  noteTurnSettled(): void {
+    this.steeringOpen = false
+  }
+
+  /** Remove and return undelivered supplements — the manager's turn-end and
+   *  interrupt requeue path (zero-loss fallback into the next-turn queue). */
+  drainSupplements(): Array<{ uuid: string; text: string }> {
+    return this.supplementQueue.splice(0)
+  }
+
+  /** The loop's per-round drain: persist one `session/supplement` event per
+   *  pending entry (the WRAPPED guidance, so replay rebuilds the exact model
+   *  history), await the flush barrier, then report delivery. The loop appends
+   *  the returned text to history before building the next request. */
+  private async injectSupplements(): Promise<Array<{ uuid: string; text: string }>> {
+    const pending = this.supplementQueue.splice(0)
+    if (pending.length === 0) return pending
+    const timestamp = new Date().toISOString()
+    const wrapped = pending.map((entry) => ({
+      uuid: entry.uuid,
+      text: formatSupplementInstruction(entry.text),
+    }))
+    for (const entry of wrapped) {
+      this.log.append({
+        type: 'session/supplement',
+        uuid: entry.uuid,
+        text: entry.text,
+        timestamp,
+      })
+    }
+    await this.log.flush()
+    for (const entry of wrapped) {
+      this.opts.onSupplementDelivered?.(entry.uuid, { ok: true, boundary: 'PreToolUse' })
+    }
+    return wrapped
   }
 
   async interrupt(opts?: { cancelQueued?: boolean }): Promise<ProviderInterruptReceipt | void> {
