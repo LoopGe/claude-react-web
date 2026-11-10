@@ -40,13 +40,11 @@ export function useSessionSearch(
   const retry = useCallback(() => setRetryNonce((n) => n + 1), [])
 
   useEffect(() => {
-    if (!enabled || !debounced) {
-      setState({ ...IDLE, retry })
-      return
-    }
+    if (!enabled || !debounced) return
 
     let cancelled = false
     const controller = new AbortController()
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- a new query starts a request; clearing the stale hits and entering the loading state is the request lifecycle, not derivable state
     setState({ ...IDLE, loading: true, retry })
 
     api
@@ -77,5 +75,5 @@ export function useSessionSearch(
     }
   }, [sessionId, debounced, enabled, retryNonce, retry])
 
-  return state
+  return !enabled || !debounced ? { ...IDLE, retry } : state
 }
