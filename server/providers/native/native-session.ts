@@ -126,6 +126,11 @@ export interface NativeSessionOptions {
    *  against. Absent = only the built-in general-purpose agent. */
   agentStore?: AgentDefinitionStore
   system: string
+  /** The prompt a nested (Agent) run gets: the parent system WITHOUT the
+   *  `tool:Agent` section, since nested tools exclude Agent and a subagent
+   *  told to delegate would look for a tool it cannot see. Defaults to
+   *  `system`. */
+  subagentSystem?: string
   /** Loose canUseTool from CreateSessionOptions — (toolName, input, {signal}) => PermissionResult. */
   canUseTool?: (...args: unknown[]) => Promise<unknown>
   /** Manager-injected consumed stamp (CreateSessionOptions.onUserMessageConsumed):
@@ -207,7 +212,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.agentTool = createAgentTool({
       cwd: opts.cwd,
       model: () => this.model,
-      system: opts.system,
+      system: opts.subagentSystem ?? opts.system,
       frameCtx: this.ctx,
       tools: () => this.tools,
       streamFor: (req) => this.streamFor(req, { suppressRetryFrames: true }),
@@ -238,6 +243,10 @@ export class NativeSession implements ProviderSessionHandle {
       uuid: this.ctx.uuid(),
       parent_tool_use_id: null,
     } as unknown as AgentMessage)
+    // `tools` is now the effective list from birth, not builtins-only until
+    // the first turn: the invariant tools = builtins + Agent + MCP defs must
+    // hold for every reader, not just the pump after discovery.
+    this.rebuildTools()
   }
 
   /** Fresh session: the log is created here, with its opening `session/context`

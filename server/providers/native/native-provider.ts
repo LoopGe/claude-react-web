@@ -32,6 +32,19 @@ const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool]
  *  (one exported constant), so the section and the schema cannot drift. */
 const AGENT_SECTION: PromptSection = { name: 'tool:Agent', order: 80, text: AGENT_GUIDANCE }
 
+/** Build this session's system prompt (plus any per-session append). The
+ *  subagent variant omits the Agent section — see createSession. */
+function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }): string {
+  const registry = new PromptSectionRegistry()
+  registry.register(IDENTITY_SECTION)
+  for (const tool of TOOLS) {
+    registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
+  }
+  if (opts.withAgentSection) registry.register(AGENT_SECTION)
+  const rendered = registry.render()
+  return opts.systemPromptAppend ? `${rendered}\n\n${opts.systemPromptAppend}` : rendered
+}
+
 export class NativeProvider implements AgentProvider {
   readonly name = 'native'
   /** Native session logs live under `<stateDir>/native-sessions/`. */
@@ -85,15 +98,12 @@ export class NativeProvider implements AgentProvider {
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
-    // One registry per session: sections are stable per conversation in P1.
-    const registry = new PromptSectionRegistry()
-    registry.register(IDENTITY_SECTION)
-    for (const tool of TOOLS) {
-      registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
-    }
-    registry.register(AGENT_SECTION)
+    // Prompt sections are stable per conversation in P1 (no hot-plug). The parent
+    // prompt advertises Agent; the subagent prompt does not — nested tools drop
+    // Agent, and guidance for a tool the model cannot call is misleading.
     const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
-    const system = systemPromptAppend ? `${registry.render()}\n\n${systemPromptAppend}` : registry.render()
+    const system = renderSystem({ withAgentSection: true, systemPromptAppend })
+    const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend })
     // The manager has already resolved globals + inline configs + first-party
     // `injectAll` results into `mcpServers`. Connections start here and are
     // awaited per turn, so spawn never blocks on a slow server.
@@ -120,6 +130,7 @@ export class NativeProvider implements AgentProvider {
         mcp,
         agentStore: this.agentStore,
         system,
+        subagentSystem,
         canUseTool: opts.canUseTool,
         onUserMessageConsumed: opts.onUserMessageConsumed,
         streamSupplier: () => this._testStream,

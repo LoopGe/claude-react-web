@@ -543,11 +543,52 @@ describe('NativeSession', () => {
 
     expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
-    // The definition's prompt is the nested instruction suffix, its model the
-    // default nested model, and the static Agent section is in the parent prompt.
+    // The definition's prompt is the nested instruction suffix and its model the
+    // default nested model...
     expect(nested.system.endsWith('REVIEW-PROMPT')).toBe(true)
-    expect(nested.system).toContain(AGENT_GUIDANCE)
     expect(nested.model).toBe('reviewer-model')
+    // ...while the Agent guidance is in the PARENT prompt only: the subagent
+    // cannot call Agent, so advertising it would be misleading.
+    expect(requests[0].system).toContain(AGENT_GUIDANCE)
+    expect(nested.system).not.toContain(AGENT_GUIDANCE)
+    await session.destroy()
+  })
+
+  it('reads the session model at Agent call time, not at construction', async () => {
+    const dir = await tempDir('native-agent-model-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ tools: Array<{ name: string }>; model: string }> = []
+    const scripts: CanonicalEvent[][] = [
+      agentTurn('agent-3', { description: 'd', prompt: 'p' }),
+      textTurn('INNER'),
+      textTurn('OUTER'),
+    ]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: {
+      tools: Array<{ name: string }>
+      model: string
+    }) {
+      requests.push(structuredClone(req))
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const session = provider.createSession({
+      id: 'agent-model',
+      cwd: dir,
+      model: 'm1',
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    // The switch happens AFTER the Agent tool was constructed: a snapshotted
+    // `model: this.model` would leave the nested run on m1.
+    await session.setModel?.('m2')
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'OUTER')).toBe(true))
+
+    expect(requests[0].model).toBe('m2')
+    const nested = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
+    expect(nested).toHaveLength(1)
+    expect(nested[0].model).toBe('m2')
     await session.destroy()
   })
 
@@ -559,6 +600,10 @@ describe('NativeSession', () => {
     expect(provider.capabilities.supportsTaskControl).toBe(false)
     expect(provider.capabilities.supportsSubagentTranscripts).toBe(false)
     const session = provider.createSession({ id: 'agents-cap', cwd: dir })
+    // The effective tool list holds from construction (rebuildTools runs in the
+    // constructor), not builtins-only until the first turn.
+    expect((session as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Agent'])
     expect(await session.supportedAgents?.()).toEqual([
       { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
     ])
