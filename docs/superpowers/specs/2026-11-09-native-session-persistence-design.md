@@ -442,3 +442,42 @@ P1.4 让 native 会话拥有与 claude 会话同等的本地技能能力：发�
 ### 延迟项
 
 - 插件来源的技能（`Options.plugins`）；forked 技能执行（`Skill "<x>" completed (forked execution)` 的整段对话）；`getContextUsage` 的 `includedSkills` / `skillFrontmatter` 明细；`opts.agent` 主会话 preset（native 目前忽略 `opts.agent`，它也不属于子代理 store）。
+
+## P1.5 — Thinking / effort / steering
+
+P1.5 让 native 会话拥有与 claude 会话同等的三项能力：扩展思考（只保留可验证的块 + 运行时切换）、reasoning effort / fast mode，以及运行中 steering（`session/supplement` 持久化）。三项都只改 native provider 的请求构造与 turn loop，没有新增依赖，也不改 claude 路径。
+
+### Thinking：只保留可验证的块
+
+- **signed-only 保留**：模型历史只保留**带签名**的 `thinking` 块与 `redacted_thinking` 块（`isRetainedInHistory`）。无签名的 thinking 块从 API 历史中剥离——API 会拒绝 follow-up 请求里的 unsigned thinking；UI 帧（assistant `content`）仍保留全部块，客户端照常渲染。
+- `signature_delta` 与 `thinking_delta` 在 loop 内按 delta 累积到同一个 `{type:'thinking', thinking, signature}` 块；`redacted_thinking` 在 `content_block_start` 就带 `data`。
+- 块类型与 delta 类型不匹配时是 no-op，不会跨块污染；`signature` 只在 thinking 块上累积。
+
+### `thinking` 线上形状与运行时切换
+
+- 线上用 snake_case：`{type:'enabled', budget_tokens:N}`、`{type:'adaptive'}`、`{type:'disabled'}`。裸 `{type:'enabled'}`（无 budget）没有合法线上形状，按 adaptive 发送。
+- `budget_tokens` 钳在 `[1024, max_tokens - 1]`（`max_tokens <= 1024` 时区间为空，budget 原样保留）。native 的 `max_tokens` 固定 16384，因此客户端 16k / 32k 的预算会钳到 16383；claude 路径把预算原样交给 CLI，这是两条 provider 的已知差异。
+- `display` 只转发 API 接受的 `'summarized'` / `'omitted'`；`'highlights'` 是 CLI-only 值，只保留在会话状态里，永不上线。
+- display 与 token 配置**分开跟踪**（`thinkingDisplay`）：ABSENT 表示保持会话启动时的模式，`null` 表示重置为 API 默认，显式值表示替换。`POST /sessions/:id/thinking` 的 `clearDisplay: true` 是唯一的显式重置入口，所以 type / budget 变化不会顺带清掉 display。
+- 运行时切换沿用 SDK `setMaxThinkingTokens` 的语义：adaptive → `null`，disabled → `0`，enabled N → `N`。live 切换拒绝没有正 budget 的 enabled（400）。`SessionMeta.thinking` 持久化，resume / fork / clear / respawn 在 spawn 时重新应用；create 时的 `Options.thinking.display` 只作为 `thinkingDisplay` 的初值。
+
+### Effort 与 fast mode
+
+- effort 走 `output_config.effort`，fast mode 走 `speed: 'fast'` + 请求头 `anthropic-beta: fast-mode-2026-02-01`。两者是**一个判定点**（`fastModeEnabled`）：模型不支持时 `speed` 与 beta header 一起省略，绝不会只发一半。
+- 模型能力按 model id 关键词分类（`effortLevelsForModel` / `supportsFastModeForModel`），与 UI chip 用的是同一份判定；模型不支持该 level 时**省略**而不是发送后等 400，所以切模型不会把钉住的 level 变成错误。`EFFORT_LEVELS` 在 `applyFlagSettings` 中校验，非法 level 响亮抛错。
+- `applyFlagSettings` 只接受三个 key：`skillOverrides`、`effortLevel`（level 或 `null` 清回模型默认）、`fastMode`（true 开，false / null 清）。其它 key 抛错（`supportsPlugins` 保持 false）。
+- `fast_mode_state` 是**意图导向**的：native 没有 CLI 可以报告运行时状态，所以 init 帧与 result 帧都按当前意图打 `on` / `off`，chip 在第一轮结束前就是正确的。resume 时按持久化的 `SessionMeta.fastMode` 重新打。
+
+### Steering（`session/supplement`）
+
+- **admission 是 `steeringOpen`**：pump 消费一条 prompt 时打开，manager 的 `noteTurnSettled` 关闭。刻意不看 `turnAbort !== null`——否则在 manager turn-end drain 与 pump `finally` 之间到达的 supplement 会被接纳却没有下一轮可注入（stranded）。关闭后到达的消息走普通下一轮队列。
+- **round-top 注入**：loop 每轮在构造请求前调用 `drainSupplement`，把已到达的 supplement 追加为 user 消息后再发请求。被注入的是 **WRAP 后的文本**（`formatSupplementInstruction`），并作为 `session/supplement` 事件持久化；replay 原样插回日志位置、重置开放的 tool-result 组，因此重启后的模型历史与 live 注入完全一致。它不进入 history reader / 搜索（重启后按内容搜索不到），UI 气泡由 steered sidecar 拥有。
+- **flush-before-delivery**：`session/supplement` 先 append 并 `await flush()`，成功之后才清队列并触发 `onSupplementDelivered`；失败时条目留在队列里，由 turn-end 的 drain 或下一轮继续负责——客户端已经画出气泡，绝不能静默丢失。
+- **zero-loss 回退**：turn 结束时（manager 的 `drainAndRequeueSteered`）与 plain interrupt 时，未投递的 supplement 由 `drainSupplements` 取出，按原文重新入队为下一轮 prompt（打 `requeuedAt`，广播 `message-steered {state:'requeued'}`）。empty bookend（后台任务完成、`num_turns 0`）不是 turn 结束，既不关闸也不 requeue。
+- **requeue-order 修复**：requeue 前先把 prompt uuid 记进 `promptUuids` 再 `enqueueUserMessage`。native 的 handle 在 `enqueueUserMessage` 内同步消费并配对 uuid，先入队会让配对扫描找不到条目，留下永久 unpaired 项。
+- 投递成功广播 `message-steered {state:'injected'}` 并给 ring 条目打 `injectedAt`；sidecar 同步记录，重连标签页靠它恢复。
+
+### 能力位与延迟项
+
+- native 的 `capabilities` 打开 `supportsThinkingControl` / `supportsEffortLevel` / `supportsFastMode` / `supportsSteering`，manager 对应的控制方法因此不再被 capability gate 拒绝。上述全部路径由 `server/providers/native/e2e-thinking-effort.test.ts` 经 `SessionManager` 端到端覆盖。
+- **延迟**：per-model effort 降级（不支持就省略，不降到最近的可用级别）；`'summarized'` / `'omitted'` 之外的 display 值；`supportedModels` 里 SDK 上报的其余字段；fast-mode 的资格规则（`model_not_allowed` 等 org 能力）；generic `/settings` 的其余 key（autoCompactEnabled / agent / hooks / sandbox / memory 继续响亮拒绝）。
