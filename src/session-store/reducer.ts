@@ -22,7 +22,7 @@ import { evictMessages } from './transcript-log'
 // imports applyMessage from message-pipeline and prependMessages/evictMessages
 // from transcript-log, so neither message-pipeline nor transcript-log needs to
 // import the other for the WINDOW path.
-import { windowEvict, windowLive, windowPage } from './window-bridge'
+import { anchorReset, windowEvict, windowLive, windowPage } from './window-bridge'
 // applyMessage moved to message-pipeline.ts (Task 7). The reducer's MESSAGE
 // action delegates here. The WINDOW_* handlers in window-bridge.ts import this
 // same binding — window-bridge is the seam that breaks the would-be
@@ -184,6 +184,8 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
     }
     case 'EVICT_MESSAGES':
       return evictMessages(state, action.uuids)
+    case 'ANCHOR_RESET':
+      return anchorReset(state, action)
     case 'WINDOW_PAGE':
       return windowPage(state, action)
     case 'WINDOW_LIVE':

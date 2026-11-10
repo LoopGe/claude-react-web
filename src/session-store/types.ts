@@ -463,6 +463,12 @@ export interface ServerMirror {
    *  every store emit, including every stream_event delta. */
   activeWorktree: ActiveWorktree | null
   eventCount: number
+  /** True while the transcript is anchored at an older seq (a search jump)
+   *  instead of the live tail. Cleared by a `returnToHead` anchor reset. */
+  anchored: boolean
+  /** The seq this anchored view centers on; null when not anchored. Used by
+   *  the synchronizer to re-fetch the same cursor after a reconnect. */
+  anchorSeq: number | null
   liveTurn: LiveTurnState | null
   contextUsage: ContextUsage | null
   /** Predicted next-user-prompt from the SDK. Ephemeral — cleared when the
@@ -749,6 +755,11 @@ export type SessionAction =
    *  window's pending buffer (hole exposed via the snapshot) and are
    *  applied when the hole fills; old/duplicate seqs are dropped. */
   | { type: 'WINDOW_LIVE'; seq: number; generation: number; message: SdkMessage }
+  /** Re-anchor the transcript at an older seq (a search jump). Clears the
+   *  transcript layer (items/messages/indexes/live-turn state) while
+   *  preserving intent and non-transcript mirror fields; the following
+   *  WINDOW_PAGE at 'tail' adopts the emptied window. */
+  | { type: 'ANCHOR_RESET'; generation: number; headSeq: number; viewSeq: number }
   /** Server tombstones (`messages-evicted` WS frame): remove the named
    *  seqs from the window AND the ordered render log (by uuid mapping),
    *  pruning the toolUseId-keyed lifecycle maps like EVICT_MESSAGES. */
@@ -855,6 +866,8 @@ export function createInitialServerMirror(): ServerMirror {
     messages: [],
     activeWorktree: null,
     eventCount: 0,
+    anchored: false,
+    anchorSeq: null,
     liveTurn: null,
     contextUsage: null,
     promptSuggestion: null,
