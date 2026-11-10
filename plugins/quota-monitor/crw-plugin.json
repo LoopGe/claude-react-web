@@ -5,7 +5,7 @@
   "description": "Queries API subscription quota / balance for Volcengine Ark, Zhipu, Kimi, MiniMax, ZenMux, OpenCode Go and generic relays, shown in the bottom-left widget.",
   "version": "0.1.0",
   "publisher": "claude-react-web",
-  "engines": { "claudeReactWeb": "^0.7.0", "pluginApi": "^1.0.0", "node": ">=20" },
+  "engines": { "claudeReactWeb": "^0.8.0", "pluginApi": "^1.0.0", "node": ">=20" },
   "runtime": { "service": "dist/service.mjs" },
   "activationEvents": ["onStartup"],
   "permissions": [

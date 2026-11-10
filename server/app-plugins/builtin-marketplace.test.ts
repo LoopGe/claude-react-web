@@ -1,7 +1,8 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { validateManifest } from '../../shared/app-plugins/manifest-validator.js'
 import { AppPluginMarketplaceStore } from './marketplace-store.js'
 import {
   BUILTIN_MARKETPLACE_ID,
@@ -10,6 +11,12 @@ import {
   buildBuiltinRecord,
   seedBuiltinMarketplace,
 } from './builtin-marketplace.js'
+
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')) as {
+  version: string
+  engines: { node: string }
+}
+const minimumNodeMajor = Number(/^>=\s*(\d+)/.exec(pkg.engines.node)?.[1])
 
 /** Write a minimal-but-valid marketplace fixture at `dir`. */
 function writeMarketplaceFixture(dir: string) {
@@ -122,5 +129,23 @@ describe('built-in app plugin marketplace', () => {
     const store = new AppPluginMarketplaceStore({ stateDir })
     await seedBuiltinMarketplace(store, join(stateDir, 'does-not-exist'))
     expect(store.list()).toHaveLength(0)
+  })
+
+  it('ships official plugins compatible with the current host at the Node floor and runtime', async () => {
+    const dir = resolveBundledPluginsDir()!
+    const record = await buildBuiltinRecord(dir)
+    const nodeMajors = new Set([minimumNodeMajor, Number(process.versions.node.split('.')[0])])
+
+    for (const entry of record.manifest.plugins) {
+      const manifest = JSON.parse(readFileSync(join(dir, entry.dir, 'crw-plugin.json'), 'utf8'))
+      for (const hostNodeMajor of nodeMajors) {
+        const result = validateManifest(manifest, {
+          hostVersion: pkg.version,
+          hostNodeMajor,
+          isWindows: process.platform === 'win32',
+        })
+        expect(result.errors, `${entry.dir} on Node ${hostNodeMajor}: ${result.errors.join('; ')}`).toEqual([])
+      }
+    }
   })
 })
