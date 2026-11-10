@@ -84,6 +84,10 @@ describe('createDefaultProviders native OAuth persistence', () => {
       await store.flush()
       auth?.saveTokens({ access_token: 'tok', token_type: 'Bearer' })
 
+      // Synchronous discriminator: the callback must not insert an entry.
+      // `upsert` would re-add it here; `patch` inserts nothing.
+      expect(store.has('oauth-server')).toBe(false)
+
       const raw = JSON.parse(await readFile(join(dir, 'mcp-config.json'), 'utf8'))
       expect(raw['oauth-server']).toBeUndefined()
     } finally {
