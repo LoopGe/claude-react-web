@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { IconSearch, IconX } from './icons/ToolIcons'
 import { useListSelection } from '../hooks/useListSelection'
 import { useSessionSearch } from '../hooks/useSessionSearch'
@@ -42,10 +42,14 @@ export function SessionSearchPanel({ sessionId, initialQuery, onClose, onSelect 
     return () => cancelAnimationFrame(frame)
   }, [])
 
-  const { activeIndex, hover, move, reset } = useListSelection({
+  const { activeIndex, hover, reset, handleKeyDown } = useListSelection({
     count: search.hits.length,
     getRow: (i) => listRef.current?.querySelectorAll<HTMLElement>('[data-search-hit]')[i],
     wrap: true,
+    onActivate: (i) => {
+      const hit = search.hits[i]
+      if (hit) onSelect(hit)
+    },
   })
 
   const groups = useMemo(() => {
@@ -66,20 +70,6 @@ export function SessionSearchPanel({ sessionId, initialQuery, onClose, onSelect 
   const showError = !!trimmed && !search.loading && search.error
   const showDegraded = !!trimmed && !search.loading && !search.error && search.indexStatus === 'degraded'
   const showEmpty = !!trimmed && !search.loading && !search.error && !showDegraded && search.hits.length === 0
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLElement>) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      move(1)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      move(-1)
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      const hit = search.hits[activeIndex]
-      if (hit) onSelect(hit)
-    }
-  }
 
   return (
     <aside className="search-panel" role="region" aria-label="Search session history" onKeyDown={handleKeyDown}>

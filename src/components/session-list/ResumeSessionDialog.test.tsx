@@ -113,4 +113,17 @@ describe('ResumeSessionDialog', () => {
     expect(scrollIntoView).toHaveBeenCalledTimes(1)
     expect(scrollIntoView.mock.instances[0]).toBe(rows()[0])
   })
+
+  it('resumes the highlighted session on Enter', async () => {
+    spyOnScrollIntoView()
+    const onResume = vi.fn()
+    render(<ResumeSessionDialog onResume={onResume} onCancel={vi.fn()} />)
+    await waitFor(() => expect(rows()).toHaveLength(SESSIONS.length))
+    const input = screen.getByLabelText('Search resumable sessions')
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onResume).toHaveBeenCalledWith('session-1')
+  })
 })

@@ -145,9 +145,14 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
 
   // Hover only moves the highlight; arrow keys and the open/query resets also
   // scroll the selected row into view (see useListSelection).
-  const { activeIndex, hover, move, reset } = useListSelection({
+  const { activeIndex, hover, reset, handleKeyDown } = useListSelection({
     count: filtered.length,
     getRow: (i) => listRef.current?.querySelectorAll<HTMLElement>('[data-palette-option]')[i],
+    onActivate: (i) => {
+      filtered[i]?.action()
+      onClose()
+    },
+    tabFocusRef: inputRef,
   })
 
   /* eslint-disable react-hooks/set-state-in-effect -- intentional UI reset on open */
@@ -167,27 +172,6 @@ export function CommandPalette({ open, onClose, shortcuts, sessions, onSelectSes
   }, [presence.shouldRender])
 
   if (!presence.shouldRender) return null
-
-  const runSelected = () => {
-    filtered[activeIndex]?.action()
-    onClose()
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      move(1)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      move(-1)
-    } else if (e.key === 'Enter' && filtered.length > 0) {
-      e.preventDefault()
-      runSelected()
-    } else if (e.key === 'Tab') {
-      e.preventDefault()
-      inputRef.current?.focus()
-    }
-  }
 
   let lastSection: PaletteSection | null = null
   const showSearching = trimmedQuery.length >= 2 && messageSearchLoading && messageHits.length === 0

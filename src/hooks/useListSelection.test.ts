@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react'
 import { useListSelection } from './useListSelection'
 
 /** Fake scrollable rows: one element per row with a spied scrollIntoView. */
@@ -11,7 +12,35 @@ function makeRows(count: number) {
   })
 }
 
-function setup(count = 5, opts: { emptyIndex?: number; wrap?: boolean } = {}) {
+interface KeyEventOptions {
+  isComposing?: boolean
+  keyCode?: number
+  target?: Element
+}
+
+function keyEvent(key: string, opts: KeyEventOptions = {}) {
+  const preventDefault = vi.fn()
+  const event = {
+    key,
+    preventDefault,
+    target: opts.target ?? document.createElement('div'),
+    nativeEvent: {
+      isComposing: opts.isComposing ?? false,
+      keyCode: opts.keyCode ?? 0,
+    },
+  } as unknown as ReactKeyboardEvent<Element>
+  return { event, preventDefault }
+}
+
+function setup(
+  count = 5,
+  opts: {
+    emptyIndex?: number
+    wrap?: boolean
+    onActivate?: (index: number) => void
+    tabFocusRef?: RefObject<HTMLElement | null>
+  } = {},
+) {
   // A fixed 10-element pool lets tests grow/shrink `count` without re-creating
   // the element spies.
   const rows = makeRows(10)
@@ -107,5 +136,138 @@ describe('useListSelection', () => {
 
     expect(result.current.activeIndex).toBe(0)
     expect(scrolled()).toEqual([0])
+  })
+
+  describe('handleKeyDown', () => {
+    it('moves on ArrowDown/ArrowUp and prevents the browser default', () => {
+      const { result } = setup()
+      const down = keyEvent('ArrowDown')
+      act(() => result.current.handleKeyDown(down.event))
+      expect(result.current.activeIndex).toBe(1)
+      expect(down.preventDefault).toHaveBeenCalled()
+
+      const up = keyEvent('ArrowUp')
+      act(() => result.current.handleKeyDown(up.event))
+      expect(result.current.activeIndex).toBe(0)
+      expect(up.preventDefault).toHaveBeenCalled()
+    })
+
+    it('activates the clamped index on Enter', () => {
+      const onActivate = vi.fn()
+      const { result } = setup(5, { onActivate })
+
+      act(() => result.current.hover(3))
+      const enter = keyEvent('Enter')
+      act(() => result.current.handleKeyDown(enter.event))
+
+      expect(onActivate).toHaveBeenCalledWith(3)
+      expect(enter.preventDefault).toHaveBeenCalled()
+    })
+
+    it('activates the clamped index when the row set shrinks', () => {
+      const onActivate = vi.fn()
+      const { result, rerender } = setup(5, { onActivate })
+
+      act(() => result.current.hover(4))
+      rerender({ count: 2 })
+      const enter = keyEvent('Enter')
+      act(() => result.current.handleKeyDown(enter.event))
+
+      expect(onActivate).toHaveBeenCalledWith(1)
+    })
+
+    it('leaves Enter to a focused button', () => {
+      const onActivate = vi.fn()
+      const { result } = setup(5, { onActivate })
+      const enter = keyEvent('Enter', { target: document.createElement('button') })
+
+      act(() => result.current.handleKeyDown(enter.event))
+
+      expect(onActivate).not.toHaveBeenCalled()
+      expect(enter.preventDefault).not.toHaveBeenCalled()
+    })
+
+    it('ignores Enter when no activation handler is configured', () => {
+      const { result } = setup(5)
+      const enter = keyEvent('Enter')
+
+      act(() => result.current.handleKeyDown(enter.event))
+
+      expect(enter.preventDefault).not.toHaveBeenCalled()
+    })
+
+    it('ignores Enter on an empty list', () => {
+      const onActivate = vi.fn()
+      const { result } = setup(0, { onActivate })
+      const enter = keyEvent('Enter')
+
+      act(() => result.current.handleKeyDown(enter.event))
+
+      expect(onActivate).not.toHaveBeenCalled()
+      expect(enter.preventDefault).not.toHaveBeenCalled()
+    })
+
+    it('ignores keys while an IME composition is active', () => {
+      const onActivate = vi.fn()
+      const { result } = setup(5, { onActivate })
+      const enter = keyEvent('Enter', { isComposing: true })
+      const down = keyEvent('ArrowDown', { isComposing: true })
+
+      act(() => result.current.handleKeyDown(enter.event))
+      act(() => result.current.handleKeyDown(down.event))
+
+      expect(onActivate).not.toHaveBeenCalled()
+      expect(result.current.activeIndex).toBe(0)
+      expect(enter.preventDefault).not.toHaveBeenCalled()
+      expect(down.preventDefault).not.toHaveBeenCalled()
+    })
+
+    it('treats keyCode 229 as an IME commit even without isComposing', () => {
+      const onActivate = vi.fn()
+      const { result } = setup(5, { onActivate })
+      const enter = keyEvent('Enter', { keyCode: 229 })
+
+      act(() => result.current.handleKeyDown(enter.event))
+
+      expect(onActivate).not.toHaveBeenCalled()
+      expect(enter.preventDefault).not.toHaveBeenCalled()
+    })
+
+    it('contains Tab on the search input when a focus ref is supplied', () => {
+      const input = document.createElement('input')
+      document.body.appendChild(input)
+      const tabFocusRef: RefObject<HTMLElement | null> = { current: input }
+      const { result } = setup(5, { tabFocusRef })
+      const tab = keyEvent('Tab')
+
+      act(() => result.current.handleKeyDown(tab.event))
+
+      expect(tab.preventDefault).toHaveBeenCalled()
+      expect(document.activeElement).toBe(input)
+      input.remove()
+    })
+
+    it('contains Tab even while an IME composition is active', () => {
+      const input = document.createElement('input')
+      document.body.appendChild(input)
+      const tabFocusRef: RefObject<HTMLElement | null> = { current: input }
+      const { result } = setup(5, { tabFocusRef })
+      const tab = keyEvent('Tab', { isComposing: true })
+
+      act(() => result.current.handleKeyDown(tab.event))
+
+      expect(tab.preventDefault).toHaveBeenCalled()
+      expect(document.activeElement).toBe(input)
+      input.remove()
+    })
+
+    it('leaves Tab alone when containment is not requested', () => {
+      const { result } = setup()
+      const tab = keyEvent('Tab')
+
+      act(() => result.current.handleKeyDown(tab.event))
+
+      expect(tab.preventDefault).not.toHaveBeenCalled()
+    })
   })
 })

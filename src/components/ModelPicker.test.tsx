@@ -124,4 +124,13 @@ describe('ModelPicker', () => {
     expect(scrollIntoView).toHaveBeenCalledTimes(1)
     expect(scrollIntoView.mock.instances[0]).toBe(rows()[3])
   })
+
+  it('activates the highlighted row on Enter', () => {
+    const props = makeProps()
+    render(<ModelPicker {...props} />)
+
+    fireEvent.keyDown(document.querySelector('.model-picker')!, { key: 'Enter' })
+
+    expect(props.onSelectGroup).toHaveBeenCalledWith('g1')
+  })
 })

@@ -75,13 +75,21 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
     )
   }, [sessions, query])
 
+  const choose = (s: ResumableSession | undefined) => {
+    // Hard-terminal sessions can't be resumed; transiently-terminated ones
+    // (canRetryResume) can — let them through so the user can retry.
+    if (!open || !s || (s.terminated && !s.canRetryResume)) return
+    onResume(s.sessionId)
+  }
+
   // Hover only moves the highlight; arrow keys and the row-0 resets also
   // scroll the selected row into view (see useListSelection).
-  const { activeIndex, hover, move, reset } = useListSelection({
+  const { activeIndex, hover, reset, handleKeyDown } = useListSelection({
     count: filtered.length,
     // Address rows by attribute, not child index: the list also renders
     // loading/empty placeholders, so `children[i]` is not the i-th row.
     getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-session-index="${i}"]`),
+    onActivate: (i) => choose(filtered[i]),
   })
 
   // Fetch the resumable list whenever the scope toggles. Aborts in-flight
@@ -123,26 +131,6 @@ export function ResumeSessionDialog({ open = true, defaultCwd, onResume, onCance
   useEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
-
-  const choose = (s: ResumableSession | undefined) => {
-    // Hard-terminal sessions can't be resumed; transiently-terminated ones
-    // (canRetryResume) can — let them through so the user can retry.
-    if (!open || !s || (s.terminated && !s.canRetryResume)) return
-    onResume(s.sessionId)
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      move(1)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      move(-1)
-    } else if (e.key === 'Enter' && filtered.length > 0) {
-      e.preventDefault()
-      choose(filtered[activeIndex])
-    }
-  }
 
   // The inner content is identical across variants; only the wrapper chrome
   // differs. The 'panel' variant delegates backdrop/Esc/focus-trap/exit

@@ -49,9 +49,17 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   // scroll the selected entry into view (see useListSelection). The displayed
   // index is clamped inside the hook, so a cross-tab store update that shrinks
   // `flat` below the cursor can never render "nothing selected".
-  const { activeIndex, hover, move, reset } = useListSelection({
+  const { activeIndex, hover, reset, handleKeyDown } = useListSelection({
     count: flat.length,
     getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-entry-index="${i}"]`),
+    onActivate: (i) => {
+      const entry = flat[i]
+      if (entry != null) {
+        onSelect(entry)
+        onClose()
+      }
+    },
+    tabFocusRef: inputRef,
   })
 
   // Reset state when opening, synchronously before first paint so the user
@@ -71,29 +79,6 @@ export function InputHistoryPanel({ open, onClose, onSelect, currentSessionId }:
   useLayoutEffect(() => {
     if (open) inputRef.current?.focus()
   }, [open])
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      move(1)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      move(-1)
-    } else if (e.key === 'Enter' && flat.length > 0) {
-      e.preventDefault()
-      const entry = flat[activeIndex]
-      if (entry != null) {
-        onSelect(entry)
-        onClose()
-      }
-    } else if (e.key === 'Tab') {
-      // Contain Tab inside the panel by keeping the search input focused —
-      // palettes don't wrap onto result buttons (you type to filter, arrow to
-      // select, Enter to confirm).
-      e.preventDefault()
-      inputRef.current?.focus()
-    }
-  }
 
   // Render one selectable entry button. `flatIndex` is its position in `flat`.
   const renderItem = (entry: HistoryPanelEntry, flatIndex: number) => (

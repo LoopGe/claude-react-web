@@ -20,22 +20,24 @@ const shortcut = (description: string, combo: string): Shortcut => ({
 function setup() {
   const scrollIntoView = vi.fn()
   ;(Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollIntoView
+  const shortcuts = [
+    shortcut('one', 'mod+1'),
+    shortcut('two', 'mod+2'),
+    shortcut('three', 'mod+3'),
+  ]
+  const onClose = vi.fn()
   render(
     <CommandPalette
       open
-      onClose={vi.fn()}
-      shortcuts={[
-        shortcut('one', 'mod+1'),
-        shortcut('two', 'mod+2'),
-        shortcut('three', 'mod+3'),
-      ]}
+      onClose={onClose}
+      shortcuts={shortcuts}
       sessions={[]}
       onSelectSession={vi.fn()}
       onSelectMessage={vi.fn()}
     />,
   )
   const rows = () => Array.from(document.querySelectorAll<HTMLElement>('[data-palette-option]'))
-  return { scrollIntoView, rows }
+  return { scrollIntoView, rows, shortcuts, onClose }
 }
 
 describe('CommandPalette', () => {
@@ -55,5 +57,17 @@ describe('CommandPalette', () => {
     expect(rows()[1].className).toContain('selected')
     expect(scrollIntoView).toHaveBeenCalledTimes(1)
     expect(scrollIntoView.mock.instances[0]).toBe(rows()[1])
+  })
+
+  it('runs the highlighted command on Enter', async () => {
+    const { rows, shortcuts, onClose } = setup()
+    await waitFor(() => expect(rows()).toHaveLength(3))
+    const input = document.querySelector('.palette-input')!
+
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(shortcuts[1].handler).toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalled()
   })
 })

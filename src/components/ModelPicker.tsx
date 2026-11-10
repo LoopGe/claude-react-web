@@ -171,9 +171,12 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   // clamped inside the hook: when the row set shrinks (a search narrows the
   // list) the stored index may exceed the new length, so the active index is
   // always derived, never stored stale.
-  const { activeIndex, hover, move, reset } = useListSelection({
+  const { activeIndex, hover, reset, handleKeyDown } = useListSelection({
     count: rows.length,
     getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-row="${i}"]`),
+    onActivate: (i) => {
+      rows[i]?.select()
+    },
   })
 
   // Measure after layout and nudge inward to stay in the viewport.
@@ -214,19 +217,6 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   // No trigger: this picker's chip only opens it (see ChatPanel), so a press
   // on the chip is an ordinary outside press.
   useOutsideMouseDown({ ref, onClose })
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      move(1)
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      move(-1)
-    } else if (e.key === 'Enter') {
-      e.preventDefault()
-      rows[activeIndex]?.select()
-    }
-  }
 
   return createPortal(
     <motion.div

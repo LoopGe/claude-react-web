@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react'
 import { clamp } from '../utils/clamp'
 
 /**
@@ -40,6 +41,17 @@ export interface UseListSelectionOptions {
   emptyIndex?: number
   /** Arrow movement wraps past the ends (listbox menus) instead of clamping. */
   wrap?: boolean
+  /**
+   * Enter activates the highlighted row. Omit for lists that only navigate
+   * (the swarm popover passes it only when a drill-in handler exists).
+   */
+  onActivate?: (index: number) => void
+  /**
+   * Keep Tab on this element instead of moving focus out of the list. Passing
+   * the input ref *is* the containment request — there is no separate flag to
+   * leave half-configured.
+   */
+  tabFocusRef?: RefObject<HTMLElement | null>
 }
 
 export interface ListSelection {
@@ -51,6 +63,12 @@ export interface ListSelection {
   move: (delta: number) => void
   /** Programmatic reset to row 0 (open / query change / close): scrolls. */
   reset: () => void
+  /**
+   * Arrow / Enter / Tab handler shared by every list's search input. Skips
+   * every key while an IME composition is active so a candidate-confirm Enter
+   * cannot activate a row.
+   */
+  handleKeyDown: (event: ReactKeyboardEvent<Element>) => void
 }
 
 export function useListSelection({
@@ -58,6 +76,8 @@ export function useListSelection({
   getRow,
   emptyIndex = 0,
   wrap = false,
+  onActivate,
+  tabFocusRef,
 }: UseListSelectionOptions): ListSelection {
   const [rawIndex, setRawIndex] = useState(0)
   // Declared by every selection update right before setState and read by the
@@ -106,10 +126,46 @@ export function useListSelection({
 
   const activeIndex = count === 0 ? emptyIndex : clamp(rawIndex, 0, count - 1)
 
+  const handleKeyDown = useCallback(
+    (event: ReactKeyboardEvent<Element>) => {
+      // Tab containment runs before the IME guard: an active composition must
+      // not let Tab walk focus out of the search input.
+      if (event.key === 'Tab' && tabFocusRef) {
+        event.preventDefault()
+        tabFocusRef.current?.focus()
+        return
+      }
+      // Safari fires compositionend before the keydown that confirms a
+      // candidate, so `isComposing` alone misses it; 229 is the legacy marker.
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        move(1)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        move(-1)
+        return
+      }
+      if (event.key === 'Enter') {
+        // An empty list has nothing to activate, and swallowing Enter there
+        // would break a surrounding form's submit.
+        if (!onActivate || count === 0) return
+        // A focused button/link keeps its own Enter action: the list's row
+        // buttons and an overlay's close button must not be hijacked.
+        if ((event.target as Element).closest('button, a')) return
+        event.preventDefault()
+        onActivate(activeIndex)
+      }
+    },
+    [activeIndex, count, move, onActivate, tabFocusRef],
+  )
+
   useEffect(() => {
     if (!scrollOnSelectRef.current) return
     getRowRef.current(activeIndex)?.scrollIntoView({ block: 'nearest' })
   }, [activeIndex, scrollTick])
 
-  return { activeIndex, hover, move, reset }
+  return { activeIndex, hover, move, reset, handleKeyDown }
 }

@@ -224,9 +224,17 @@ function SubagentSwarmPopover({
   // into view (see useListSelection). Derive rather than store: the fan-out
   // shrinks as agents settle, so a stored index can outrun the list between
   // renders — the hook clamps it.
-  const { activeIndex, hover, move } = useListSelection({
+  const { activeIndex, hover, handleKeyDown } = useListSelection({
     count: subagents.length,
     getRow: (i) => listRef.current?.querySelector<HTMLElement>(`[data-row="${i}"]`),
+    // The popover only navigates when a drill-in target exists; without it
+    // Enter must stay inert.
+    onActivate: clickable
+      ? (i) => {
+          const target = subagents[i]
+          if (target) open(target.toolUseId)
+        }
+      : undefined,
   })
 
   // Singular-aware for the same reason the pill's label is (see above): the
@@ -294,19 +302,7 @@ function SubagentSwarmPopover({
       // The window mousedown listener above would otherwise treat a click
       // inside the popover as an outside click.
       onMouseDown={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault()
-          move(1)
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault()
-          move(-1)
-        } else if (e.key === 'Enter' && clickable) {
-          e.preventDefault()
-          const target = subagents[activeIndex]
-          if (target) open(target.toolUseId)
-        }
-      }}
+      onKeyDown={handleKeyDown}
     >
       <div className="subagent-swarm-pop-head">
         <span className="subagent-swarm-pop-title">{popoverLabel}</span>
