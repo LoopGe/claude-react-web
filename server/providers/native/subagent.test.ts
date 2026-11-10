@@ -167,17 +167,20 @@ describe('createAgentTool', () => {
       [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
     ])
     const emitted: Frame[] = []
-    const permitted: string[] = []
+    const permitted: Array<{ name: string; toolUseId: string }> = []
     const agent = createAgentTool(baseDeps({
       tools: () => [readTool],
       streamFor: s.streamFor.bind(s),
       emit: (f) => emitted.push(f as Frame),
-      requestPermission: async (name, input) => { permitted.push(name); return { allowed: true, input } },
+      requestPermission: async (name, input, toolUseId) => {
+        permitted.push({ name, toolUseId })
+        return { allowed: true, input }
+      },
     }))
 
     const outcome = await runAgent(agent, { description: 'd', prompt: 'p' })
 
-    expect(permitted).toEqual(['Read'])
+    expect(permitted).toEqual([{ name: 'Read', toolUseId: 'inner-1' }])
     expect(outcome).toEqual({ text: 'done' })
     const toolResult = emitted.find((f) => f.type === 'user') as Frame
     expect(toolResult.parent_tool_use_id).toBe('tu-parent')

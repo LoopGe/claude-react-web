@@ -17,8 +17,18 @@ import { config, __setConfigForTest } from '../../config.js'
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
+// The original function is captured so it can be restored after the test —
+// the module mock would otherwise stay implementation-less for the rest of
+// this file.
+const originalStreamAnthropicMessages = vi.hoisted(() => ({
+  fn: undefined as unknown as typeof import('./anthropic-stream.js').streamAnthropicMessages,
+}))
 const streamAnthropicMessagesMock = vi.hoisted(() => vi.fn())
-vi.mock('./anthropic-stream.js', () => ({ streamAnthropicMessages: streamAnthropicMessagesMock }))
+vi.mock('./anthropic-stream.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./anthropic-stream.js')>()
+  originalStreamAnthropicMessages.fn = original.streamAnthropicMessages
+  return { ...original, streamAnthropicMessages: streamAnthropicMessagesMock }
+})
 
 function textTurn(text: string): CanonicalEvent[] {
   return [
@@ -1131,9 +1141,9 @@ describe('NativeSession', () => {
       await onRetry({ attempt: 1, maxRetries: 10, delayMs: 250 })
       yield { kind: 'message_start' } satisfies CanonicalEvent
     })
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'retry', cwd: dir })
     try {
-      const provider = new NativeProvider({ stateDir: dir })
-      const session = provider.createSession({ id: 'retry', cwd: dir })
       const internals = session as unknown as {
         output: { drainQueue(): Frame[] }
         defaultStream(
@@ -1150,10 +1160,10 @@ describe('NativeSession', () => {
       const retries = internals.output.drainQueue().filter((f) => f.subtype === 'api_retry')
       expect(retries).toHaveLength(1)
       expect(retries[0]).toMatchObject({ type: 'system', subtype: 'api_retry', attempt: 1 })
-
-      await session.destroy()
     } finally {
+      await session.destroy()
       streamAnthropicMessagesMock.mockReset()
+      streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
       __setConfigForTest(origConfig)
     }
   })

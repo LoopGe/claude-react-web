@@ -7,8 +7,8 @@ import type { Frame, FrameContext } from './frames.js'
 import type { ToolDef } from './tools/types.js'
 
 /** Everything the Agent tool needs from the session that owns it. All fields
- *  are read at call time (except frameCtx/model/system, which are the
- *  session's current values resolved by the caller's closure). */
+ *  are read at call time (except frameCtx/system, which are the session's
+ *  current values resolved by the caller's closure). */
 export interface AgentToolDeps {
   cwd: string
   /** LIVE getter: a later `setModel` on the session must move the Agent's
