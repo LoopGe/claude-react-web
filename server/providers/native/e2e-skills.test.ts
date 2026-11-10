@@ -161,6 +161,21 @@ async function makeEnv(): Promise<{ project: string; stateDir: string }> {
   return { project, stateDir }
 }
 
+/** Write an additional project-scope SKILL.md (proves allowlist filtering). */
+async function writeExtraSkill(project: string, name: string, description: string): Promise<void> {
+  const dir = join(project, '.claude', 'skills', name)
+  await mkdir(dir, { recursive: true })
+  await writeFile(join(dir, 'SKILL.md'), [
+    '---',
+    `name: ${name}`,
+    `description: ${description}`,
+    '---',
+    '',
+    `# ${name}`,
+    '',
+  ].join('\n'), 'utf8')
+}
+
 async function makeFixture(stateDir: string): Promise<Fixture> {
   const store = new SessionStore({ stateDir })
   await store.load()
@@ -181,13 +196,18 @@ async function makeFixture(stateDir: string): Promise<Fixture> {
   return { sm, requests, scripts }
 }
 
-async function createSession(fx: Fixture, cwd: string): Promise<string> {
+async function createSession(
+  fx: Fixture,
+  cwd: string,
+  extra: Partial<CreateOptions> = {},
+): Promise<string> {
   const info = await fx.sm.create({
     cwd,
     model: 'test-model',
     provider: 'native',
     title: 'skills-e2e',
     canUseTool: allowingCanUseTool(),
+    ...extra,
   })
   sessionIds.push({ sm: fx.sm, id: info.id })
   return info.id
@@ -312,4 +332,71 @@ describe('native skills end to end through SessionManager', () => {
     }, { timeout: 5000 })
     sub.unsubscribe()
   })
+
+  it('projects a create-time skill policy onto the prompt section', async () => {
+    const { project, stateDir } = await makeEnv()
+    // A second skill makes an allowlist distinguishable from "every skill".
+    await writeExtraSkill(project, 'other', 'Other skill')
+    const fx = await makeFixture(stateDir)
+
+    // Allowlist ⇒ Options.skills = ['demo'] (the projection of
+    // `{ kind: 'mode', mode: 'allowlist', allowlist: ['demo'] }`): only demo
+    // is listable, as 'on' (name + description).
+    const allowId = await createSession(fx, project, { skills: ['demo'] })
+    const allow = collectFrames(fx.sm, allowId)
+    fx.scripts.push(textTurn('allowlisted'))
+    await sendAndWait(fx, allowId, allow.frames, 'hello', 1)
+    expect(fx.requests[0].system).toContain(
+      `<available_skills>\n- demo: ${SKILL_DESCRIPTION}\n</available_skills>`,
+    )
+    expect(fx.requests[0].system).not.toContain('Other skill')
+    allow.unsubscribe()
+
+    // Disabled ⇒ Options.skills = [] (the projection of
+    // `{ kind: 'disabled' }`): nothing is listed at all.
+    const disabledId = await createSession(fx, project, { skills: [] })
+    const disabled = collectFrames(fx.sm, disabledId)
+    fx.scripts.push(textTurn('disabled'))
+    await sendAndWait(fx, disabledId, disabled.frames, 'hello', 1)
+    expect(fx.requests[1].system).not.toContain('<available_skills>')
+    disabled.unsubscribe()
+  })
+
+  it('persists the expanded /demo body so a resumed session rebuilds it in model history', async () => {
+    const { project, stateDir } = await makeEnv()
+    const first = await makeFixture(stateDir)
+    const id = await createSession(first, project)
+    const { frames, unsubscribe } = collectFrames(first.sm, id)
+
+    first.scripts.push(textTurn('expanded'))
+    await sendAndWait(first, id, frames, '/demo do X', 1)
+    unsubscribe()
+
+    // Gate on the durable half: the log must carry the expanded body before
+    // the restart below reads it.
+    await vi.waitFor(async () => {
+      const page = await first.sm.getHistoryPage(id, { limit: 50 })
+      expect(JSON.stringify(page.messages)).toContain('Follow the demo instructions.')
+    }, { timeout: 5000 })
+
+    // --- restart + resume over the same state dir -------------------------
+    await first.sm.shutdown()
+    const second = await makeFixture(stateDir)
+    const resumed = await second.sm.resume(id)
+    expect(resumed.id).toBe(id)
+    sessionIds.push({ sm: second.sm, id })
+
+    // The resumed live handle's model history is rebuilt from the log and is
+    // what the next turn sends: it must carry the EXPANDED body, not the
+    // typed `/demo do X`.
+    const live = (second.sm as unknown as {
+      sessions: Map<string, { handle: { history: unknown[] } }>
+    }).sessions.get(id)
+    expect(live).toBeDefined()
+    const modelHistory = JSON.stringify(live!.handle.history)
+    expect(modelHistory).toContain('# Demo skill')
+    expect(modelHistory).toContain('Follow the demo instructions.')
+    expect(modelHistory).toContain('do X')
+    expect(modelHistory).not.toContain('/demo do X')
+  }, 20000)
 })

@@ -49,8 +49,8 @@ export interface SkillManagerDeps {
   ): T
   /** Time an SDK control round-trip (slow-call logging + 502 wrapping). */
   timeSdkControl<T>(id: string, label: string, fn: () => Promise<T>): Promise<T>
-  /** Broadcast a slash-command-list change (reloadSkills may add/remove
-   *  skill-backed commands). */
+  /** Broadcast a slash-command-list change (a reload or an override change
+   *  may add/remove/hide skill-backed commands). */
   broadcastCommandsChanged(id: string, commands: unknown[]): void
   /** Persist + broadcast a session update. */
   persist(s: Session): void
@@ -174,6 +174,18 @@ export class SessionSkillManager {
       'applyFlagSettings',
       'skill overrides',
     )({ skillOverrides })
+    // The override layer feeds more than the prompt: an open `/` picker reads
+    // `commands-changed`. Re-read the provider's catalog (which reflects the
+    // new overrides) and push it — INCLUDING an empty list, since disabling
+    // every skill must clear the picker.
+    const supportedCommands = this.deps.requireHandleMethod<() => Promise<unknown>>(
+      s,
+      'supportedCommands',
+      'supported commands',
+      'supportsCommands',
+    )
+    const commands = await this.deps.timeSdkControl(s.id, 'supportedCommands', supportedCommands)
+    this.deps.broadcastCommandsChanged(s.id, commands as unknown[])
   }
 
   /** Re-broadcast the global skill policy to every live session that's

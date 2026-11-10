@@ -14,6 +14,9 @@
 import { promises as fs } from 'node:fs'
 import { MAX_SKILL_BYTES, listSkills } from '../../skills.js'
 import type { SkillRecord } from '../../../shared/skills.js'
+import { createLogger } from '../../log.js'
+
+const log = createLogger('native-skills')
 
 /** The CLI's per-skill listing states (`Settings.skillOverrides` values). */
 export type NativeSkillState = 'on' | 'name-only' | 'user-invocable-only' | 'off'
@@ -72,11 +75,21 @@ export class NativeSkillCatalog {
     }
     const entries: CatalogEntry[] = []
     for (const record of byName.values()) {
-      // listSkills already rejects oversized files; a file that grew since
-      // then is skipped rather than failing the whole catalog.
-      const stat = await fs.stat(record.path)
-      if (stat.size > MAX_SKILL_BYTES) continue
-      entries.push({ record, body: await fs.readFile(record.path, 'utf8') })
+      let body: string
+      try {
+        // listSkills already rejects oversized files; a file that grew since
+        // then is skipped rather than failing the whole catalog.
+        const stat = await fs.stat(record.path)
+        if (stat.size > MAX_SKILL_BYTES) continue
+        body = await fs.readFile(record.path, 'utf8')
+      } catch (err) {
+        // Deleted or made unreadable between the listing and this read. Skip
+        // just this record like the oversized case: rejecting the pass would
+        // leave `skillsReady` rejected for every later turn.
+        log.warn(`reload: skipping unreadable skill ${record.name} (${record.path}):`, err)
+        continue
+      }
+      entries.push({ record, body })
     }
     entries.sort((a, b) => a.record.name.localeCompare(b.record.name))
     this.entries = entries

@@ -79,6 +79,8 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'NotebookRead',
   // A skill load only reads the SKILL.md body into the conversation — no
   // mutation, no network. Applies to the native provider's Skill tool too.
+  // Assumes the CLI's own skill load has no side effect; a forked skill's
+  // inner tool calls are still classified individually.
   'Skill',
 ])
 

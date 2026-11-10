@@ -425,6 +425,7 @@ P1.4 让 native 会话拥有与 claude 会话同等的本地技能能力：发�
 - 命中时模型侧内容 = `正文 + (args ? '\n\n' + args : '')`。
 - **日志持久化展开后的内容，manager 的 ring 保留用户输入的 `/name args`。** 日志是模型历史，必须与模型实际看到的一致，否则 live 与 resume 的历史会分叉；ring 只服务 UI 的即时气泡。
 - 接受的外观差异：**resume 后**客户端从日志重放，transcript 会渲染展开后的 SKILL.md（含 frontmatter）而不是用户敲的 `/demo args`。live 期间 UI 仍显示用户输入；这个差异只存在于 resume/fork 的历史重放。
+- 同一原因下，消息搜索（`searchMessages`）读的也是日志，所以 native 会话里搜索用户敲的 `/demo args` 不再命中（命中的是展开后的正文，且含 frontmatter）；与上面的 resume/fork 渲染差异同属一类。
 
 ### 控制面
 

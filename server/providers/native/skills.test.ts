@@ -1,7 +1,8 @@
+import { promises as fsp } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseSkillFrontmatter } from '../../skills.js'
 import { NativeSkillCatalog } from './skills.js'
 
@@ -295,6 +296,39 @@ describe('NativeSkillCatalog — discovery', () => {
     expect(catalog.section()).toBe('<available_skills>\n- alpha: alpha description\n</available_skills>')
     expect(catalog.commands().map((c) => c.name)).toEqual(['alpha'])
     expect(catalog.bodyOf('broken')).toEqual({ text: 'unknown skill: broken', isError: true })
+  })
+
+  it('skips a skill whose file vanishes between the listing and the read', async () => {
+    await writeSkill('alpha', { body: 'Alpha instructions.' })
+    await writeSkill('beta', { body: 'Beta instructions.' })
+    // `listSkills` reads each SKILL.md once; `reload` reads it again. Fail only
+    // the SECOND read of beta so the record is listed and then vanishes
+    // mid-pass — the exact deleted-between-listing-and-read window.
+    const realReadFile = fsp.readFile.bind(fsp) as (...args: unknown[]) => Promise<unknown>
+    let betaReads = 0
+    const spy = vi.spyOn(fsp, 'readFile').mockImplementation((async (file: unknown, ...rest: unknown[]) => {
+      if (String(file).endsWith(join('beta', 'SKILL.md'))) {
+        betaReads += 1
+        if (betaReads > 1) throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' })
+      }
+      return realReadFile(file, ...rest)
+    }) as unknown as typeof fsp.readFile)
+    try {
+      const catalog = new NativeSkillCatalog(project)
+      catalog.configure('all')
+
+      // The unreadable record is skipped, not fatal: the pass still resolves
+      // with the other skill so `skillsReady` is never left rejected.
+      await expect(catalog.reload()).resolves.toBeUndefined()
+      expect(catalog.section()).toBe('<available_skills>\n- alpha: alpha description\n</available_skills>')
+      expect(catalog.bodyOf('beta')).toEqual({ text: 'unknown skill: beta', isError: true })
+
+      // The next turn's `await skillsReady` lands: a following pass succeeds.
+      await expect(catalog.reload()).resolves.toBeUndefined()
+      expect(catalog.section()).toContain('- alpha: alpha description')
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('prefers the project-scope skill when both scopes define the same name', async () => {
