@@ -1,10 +1,10 @@
-// Left sidebar: "+ New session" button on top, full-height session list below.
-// The new-session form lives inside a modal (<NewSessionDialog />) so the
-// sidebar can dedicate its vertical space to listing sessions.
+// Left sidebar: "+ New" create-menu button on top, full-height session list
+// below. The new-session form lives inside a modal (<NewSessionDialog />) so
+// the sidebar can dedicate its vertical space to listing sessions.
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useDndContext, useDroppable } from '@dnd-kit/core'
-import { SortableContext, horizontalListSortingStrategy, verticalListSortingStrategy } from '@dnd-kit/sortable'
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { dndData, dndPayloadOf } from '../dnd/payload'
 import { SortableNode } from '../dnd/SortableNode'
 import { prepareSessionMoveFlip } from '../utils/flip'
@@ -17,10 +17,10 @@ import { NewSessionDialog } from './session-list/NewSessionDialog'
 import { SessionContextMenu } from './session-list/SessionContextMenu'
 import { buildGroupContextMenuItems } from './session-list/groupMenuItems'
 import { SessionCard } from './session-list/SessionCard'
-import { DialogHosts } from './DialogHosts'
+import { CreateMenuButton } from './CreateMenuButton'
 import { HoverHint } from './HoverHint'
 import { HoverValue } from './HoverPopover'
-import { useDialogHosts } from '../hooks/useDialogHosts'
+import type { ConfirmRequest, PromptRequest } from '../hooks/useDialogHosts'
 import { ContextMenu } from './ContextMenu'
 import type { SessionDeleteHandler } from './session-delete-menu'
 import { IconX, IconChevronRight, IconChevronDown, IconSquare, IconSearch } from './icons/ToolIcons'
@@ -148,12 +148,18 @@ interface Props {
     position: 'before' | 'after',
     groupId: string,
   ) => void
-  /** Drag-and-drop reorder of the `groups` array. Drag surface = section
-   *  headers (vertical) + top pills (horizontal). Position is relative to
-   *  the target group. */
+  /** Drag-and-drop reorder of the `groups` array. Drag surface = the group
+   *  section headers (vertical). Position is relative to the target group. */
   onReorderGroups?: (draggedId: string, targetId: string, position: 'before' | 'after') => void
   /** Keyboard / context-menu fallback — swap a group with its neighbour. */
   onMoveGroup?: (groupId: string, direction: 'up' | 'down') => void
+  /** App-level dialog hosts (App's stripDialogs). Deliberately lifted, not
+   *  local useDialogHosts state: the perm-variant Overlay these dialogs use
+   *  is panel-scoped BY DESIGN (see Overlay's FIXED_BACKDROP_VARIANTS), so a
+   *  locally-rendered host would confine every prompt/confirm to the sidebar
+   *  box. Rendering App-level makes them full-viewport like the header's. */
+  askConfirm: (config: ConfirmRequest) => void
+  askPrompt: (config: PromptRequest) => void
   /** New-session dialog open state is lifted so App-level shortcuts
    *  (Alt+N) can open it. Uncontrolled mode falls back to internal state. */
   newSessionDialogOpen?: boolean
@@ -187,11 +193,8 @@ interface Props {
   maxGroupSize: number
   /** On mobile only one panel shows at a time, so "activating" a group (a
    *  panel-swap affordance) is meaningless. When true, group headers toggle
-   *  collapse instead, and the group-pills quick-switch row is hidden. */
+   *  collapse instead. */
   isMobile?: boolean
-  /** True while Alt is held — renders a number badge on each group pill
-   *  (first 9 groups) so the alt+<n> shortcut mapping is discoverable. */
-  showGroupHints?: boolean
 }
 
 export const SessionList = memo(function SessionList({
@@ -233,7 +236,8 @@ export const SessionList = memo(function SessionList({
   activeGroupId,
   maxGroupSize,
   isMobile,
-  showGroupHints,
+  askConfirm,
+  askPrompt,
 }: Props) {
   const [uncontrolledShow, setUncontrolledShow] = useState(false)
   const showDialog = newSessionDialogOpen ?? uncontrolledShow
@@ -260,8 +264,8 @@ export const SessionList = memo(function SessionList({
    *  cwd, and the first 8 chars of the id. Not persisted — a stale filter
    *  after a reload causes more confusion than it saves typing. */
   const [filter, setFilter] = useState('')
-  /** When the user drags a folder onto the "New session" button we
-   *  pre-fill its cwd here and open the dialog. `undefined` means
+  /** When the user drags a folder onto the "+ New" button we
+   *  pre-fill the dialog's cwd here and open it. `undefined` means
    *  "use defaults" (the dialog behaves as before). */
   const [prefilledCwd, setPrefilledCwd] = useState<string | undefined>(undefined)
   /** Visual highlight while a file is being dragged over the button. */
@@ -269,17 +273,13 @@ export const SessionList = memo(function SessionList({
   /** Global toast hub. `showFolderDropError` becomes `toast.error(...)`
    *  and the previous inline `successMsg` banner becomes `toast.success(...)`. */
   const toast = useToast()
-  // --- Confirm / Prompt dialog state (replaces window.confirm / window.prompt).
-  // Shared busy-wrapping host — see useDialogHosts; rendered by <DialogHosts>. ---
-  const dialogs = useDialogHosts()
-  /** Pending group pill context menu target — the group id whose
-   *  right-click context menu should open. Null when menu is closed. */
+  // --- Confirm / Prompt dialogs come from App (see the askConfirm/askPrompt
+  // props) — the app-level hosts render full-viewport; a local host would be
+  // panel-scoped. ---
+  /** Pending group context menu target — the group id whose right-click
+   *  context menu (on the section header) should open. Null when closed. */
   const [groupMenuTarget, setGroupMenuTarget] = useState<string | null>(null)
   const [groupMenuPos, setGroupMenuPos] = useState<{ x: number; y: number } | null>(null)
-  // --- Group UI state ---
-  const [showNewGroupInput, setShowNewGroupInput] = useState(false)
-  const [newGroupName, setNewGroupName] = useState('')
-  const newGroupInputRef = useRef<HTMLInputElement>(null)
   // One-shot entrance stagger: the sidebar's session cards fade+rise in a
   // cascade for the short window after the list actually populates, then the
   // session-entering class drops so Virtuoso's scroll re-mounts (and any
@@ -306,9 +306,6 @@ export const SessionList = memo(function SessionList({
   const virtuosoScrollerRef = useCallback((ref: Window | HTMLElement | null) => {
     setVirtuosoScroller(ref instanceof HTMLElement ? ref : null)
   }, [setVirtuosoScroller])
-  // Guard against double-creation when Enter triggers both the keyDown
-  // handler and the subsequent blur (from DOM removal).
-  const groupCreatedViaEnterRef = useRef(false)
   const visibleSessions = useMemo<SessionInfo[]>(() => {
     const q = filter.trim().toLowerCase()
     if (!q) return sessions
@@ -353,13 +350,6 @@ export const SessionList = memo(function SessionList({
    *  Both surfaces animate because both show the same list at once (see
    *  utils/nav-strip-mount). */
   const prepareMoveAnimation = useCallback(() => prepareSessionMoveFlip(), [])
-
-  // Auto-focus the new-group name input when it appears.
-  useEffect(() => {
-    if (showNewGroupInput && newGroupInputRef.current) {
-      newGroupInputRef.current.focus()
-    }
-  }, [showNewGroupInput])
 
   // ── Stable callbacks for SessionCard ─────────────────────────
   const handleCardContextMenu = useCallback((e: React.MouseEvent, id: string) => {
@@ -607,14 +597,20 @@ export const SessionList = memo(function SessionList({
     <>
       <div className="session-list-top">
         <HoverHint
-          label="New session (Alt+N) · drop a folder here to prefill cwd"
+          label="New session or group · drop a folder here to prefill cwd · Alt+N opens New session"
           side="bottom"
           align="start"
         >
-          <button
+          {/* Same create menu as the header "+" (CreateMenuButton): New
+              session… opens the dialog, New group… opens the name prompt.
+              The folder-drop handlers bypass the menu — a drop always opens
+              the dialog pre-filled directly. */}
+          <CreateMenuButton
             className={`btn btn-primary new-session-btn ${dropZoneActive ? 'drop-target' : ''}`}
             style={{ width: '100%' }}
-            onClick={() => setShowDialog(true)}
+            onNewSession={() => setShowDialog(true)}
+            onCreateGroup={onCreateGroup}
+            askPrompt={askPrompt}
             onDragOver={(e) => {
               // Accept anything that carries a file-uri — that covers folder
               // drops from native file managers (Nautilus, Finder, Windows
@@ -628,8 +624,8 @@ export const SessionList = memo(function SessionList({
             onDragLeave={() => setDropZoneActive(false)}
             onDrop={(e) => void handleFolderDrop(e)}
           >
-            + New session
-          </button>
+            + New
+          </CreateMenuButton>
         </HoverHint>
         {/* Filter input: visible only when there are at least a handful
             of sessions. Keep it mounted so threshold changes animate instead
@@ -656,111 +652,6 @@ export const SessionList = memo(function SessionList({
                 aria-label="Clear filter"
               >
                 <IconX size={12} />
-              </button>
-            </HoverHint>
-          )}
-        </div>
-        {/* Group pills — horizontal row of clickable group chips. These are a
-            quick "swap the whole panel set to this group" affordance, which is
-            meaningless on mobile (single panel), so the chips are hidden there.
-            The "+ Group" create control stays available on all viewports; the
-            groups themselves remain visible as collapsible sections below. */}
-        <div className="group-pills">
-          {!isMobile && (
-            <SortableContext items={groups.map((g) => `pill-${g.id}`)} strategy={horizontalListSortingStrategy}>
-            {groups.map((g, i) => (
-              <SortableNode
-                key={g.id}
-                // Distinct node id from the group section (same App-level
-                // DndContext registers both; the registry is keyed by id).
-                // The payload id stays `g.id` — that's what the reorder
-                // handlers act on.
-                id={`pill-${g.id}`}
-                data={dndData({ kind: 'group-card', id: g.id }, { axis: 'x' })}
-                disabled={isMobile || !onReorderGroups || groups.length <= 1}
-              >
-                {({ isDragging, setActivatorNodeRef, listeners }) => (
-                  <HoverHint
-                    label={`Activate "${g.name}" (${g.sessionIds.length} sessions)${i < 9 ? ` · Alt+${i + 1}` : ''} · right-click for options · drag to reorder`}
-                    side="bottom"
-                    align="start"
-                  >
-                    <button
-                      ref={setActivatorNodeRef}
-                      type="button"
-                      data-group-pill-id={g.id}
-                      className={`group-pill ${g.id === activeGroupId ? 'active' : ''} ${
-                        isDragging ? 'dragging' : ''
-                      }`}
-                      aria-pressed={g.id === activeGroupId}
-                      {...listeners}
-                      onClick={() => onActivateGroup(g.id)}
-                      onContextMenu={(e) => {
-                        e.preventDefault()
-                        setGroupMenuTarget(g.id)
-                        setGroupMenuPos({ x: e.clientX, y: e.clientY })
-                      }}
-                    >
-                      {showGroupHints && i < 9 && (
-                        <span className="group-pill-hint" aria-hidden="true">{i + 1}</span>
-                      )}
-                      {g.name}
-                      <span className="group-pill-count">{g.sessionIds.length}</span>
-                    </button>
-                  </HoverHint>
-                )}
-              </SortableNode>
-            ))}
-            </SortableContext>
-          )}
-          {showNewGroupInput ? (
-            <input
-              ref={newGroupInputRef}
-              className="group-pill-input"
-              aria-label="New group name"
-              placeholder="Group name…"
-              value={newGroupName}
-              onChange={(e) => setNewGroupName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  const name = newGroupName.trim()
-                  if (name) {
-                    groupCreatedViaEnterRef.current = true
-                    onCreateGroup(name)
-                  }
-                  setNewGroupName('')
-                  setShowNewGroupInput(false)
-                } else if (e.key === 'Escape') {
-                  // stopPropagation: this press cancels the new-group input,
-                  // it must not keep bubbling to App's escape chain —
-                  // idle-Esc now opens the resume picker (escapeAction).
-                  e.stopPropagation()
-                  setNewGroupName('')
-                  setShowNewGroupInput(false)
-                }
-              }}
-              onBlur={() => {
-                // If Enter already created the group, skip the blur path
-                // to avoid a duplicate creation (Enter unmounts the input,
-                // which fires blur synchronously before React re-renders).
-                if (groupCreatedViaEnterRef.current) {
-                  groupCreatedViaEnterRef.current = false
-                  return
-                }
-                const name = newGroupName.trim()
-                if (name) onCreateGroup(name)
-                setNewGroupName('')
-                setShowNewGroupInput(false)
-              }}
-            />
-          ) : (
-            <HoverHint label="Create a new session group" side="bottom" align="start">
-              <button
-                type="button"
-                className="group-pill group-pill-new"
-                onClick={() => setShowNewGroupInput(true)}
-              >
-                + Group
               </button>
             </HoverHint>
           )}
@@ -818,6 +709,9 @@ export const SessionList = memo(function SessionList({
                   <div>
                     <HoverValue>{sec.sessions.length}</HoverValue> session{sec.sessions.length === 1 ? '' : 's'}
                   </div>
+                  {!isMobile && (
+                    <div>Right-click for rename / delete / reorder</div>
+                  )}
                   {groupPending > 0 && (
                     <div>
                       <HoverValue>{groupPending}</HoverValue> pending permission{groupPending === 1 ? '' : 's'}
@@ -848,7 +742,7 @@ export const SessionList = memo(function SessionList({
                   data={dndData(
                     { kind: 'group-card', id: sec.group.id },
                     // origin drives App's renderDndGhost: a section drag lifts
-                    // a real header+cards preview, a pill drag keeps the pill.
+                    // a real header+cards preview.
                     { axis: 'y', origin: 'sidebar-section' },
                   )}
                   disabled={!onReorderGroups || isMobile || groups.length <= 1}
@@ -907,6 +801,15 @@ export const SessionList = memo(function SessionList({
                         if (isMobile) onToggleGroupCollapse(sec.group.id)
                         else onActivateGroup(sec.group.id)
                       }
+                    }}
+                    // Group management (rename / delete / reorder) lives in
+                    // this right-click menu — it used to be reachable from the
+                    // group pills too, but the pills are gone (creating a group
+                    // is the "+ New" menu; activating is this header).
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setGroupMenuTarget(sec.group.id)
+                      setGroupMenuPos({ x: e.clientX, y: e.clientY })
                     }}
                   >
                     <button
@@ -1035,7 +938,7 @@ export const SessionList = memo(function SessionList({
         onAddToGroup={animatedAddToGroup}
         maxGroupSize={maxGroupSize}
         onShowSuccess={toast.success}
-        onAskConfirm={dialogs.askConfirm}
+        onAskConfirm={askConfirm}
       />
       })()}
 
@@ -1062,7 +965,7 @@ export const SessionList = memo(function SessionList({
         />
       )}
 
-      {/* Group pill context menu (replaces window.prompt) */}
+      {/* Group context menu (replaces window.prompt) */}
       {groupMenuTarget && groupMenuPos && (() => {
         const g = groups.find((grp) => grp.id === groupMenuTarget)
         if (!g) return null
@@ -1081,14 +984,11 @@ export const SessionList = memo(function SessionList({
               onMove: (id, dir) => onMoveGroup?.(id, dir),
               onRename: onRenameGroup,
               onDelete: onDeleteGroup,
-              dialogs: { askConfirm: dialogs.askConfirm, askPrompt: dialogs.askPrompt },
+              dialogs: { askConfirm, askPrompt },
             })}
           />
         )
       })()}
-
-      {/* Confirm + prompt dialog hosts (replaces window.confirm / window.prompt) */}
-      <DialogHosts hosts={dialogs} />
     </>
   )
 })

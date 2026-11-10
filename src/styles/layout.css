@@ -336,7 +336,7 @@ body.resizing-col .app {
 .session-nav-tab.active {
   /* Variant B (user-picked from the visual companion): accent wash + accent
      ink, no border — a "dye" language against the chip's "outline" language.
-     Wash ratio (14%) matches the sidebar's .group-pill.active so accent
+     Wash ratio (14%) matches the sidebar's group-active wash so accent
      intensity stays consistent app-wide. Ink is the accent *text* token
      (AA-fitted per skin/theme) and the wash mixes against the opaque header
      surface, so status-ink-contrast.test.ts sees and verifies this plate. */

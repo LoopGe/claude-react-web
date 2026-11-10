@@ -105,13 +105,6 @@ body.has-bg .chat-panel.chat-panel-ghost {
   animation: none !important;
 }
 
-/* Group pill ghost: the cloned element keeps its real classes; this only
-   adds the grabbing cursor. (The panel ghost keeps the real header classes
-   too — see the .dnd-ghost-panel block above.) */
-.group-pill-ghost {
-  cursor: grabbing;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .dnd-ghost {
     scale: 1;

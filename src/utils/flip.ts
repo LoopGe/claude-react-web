@@ -94,11 +94,9 @@ export function prepareSessionMoveFlip(): () => void {
  *  strip row) in one pass. Same contract as `prepareFlip`: call
  *  before mutating `groups`, run the returned function right after. */
 export function prepareGroupFlip(): () => void {
-  const animatePills = prepareFlip('[data-group-pill-id]', 'data-group-pill-id')
   const animateSections = prepareFlip('[data-group-section-id]', 'data-group-section-id')
   const animateStrip = prepareStripFlip()
   return () => {
-    animatePills()
     animateSections()
     animateStrip()
   }

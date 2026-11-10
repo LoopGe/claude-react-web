@@ -1428,7 +1428,6 @@ button.tool-group-failed-jump:focus-visible {
 [data-motion="off"] .subagent-child-dot-pulse,
 [data-motion="off"] .chat-panel-slot.key-hint,
 [data-motion="off"] .chat-panel-git-badge,
-[data-motion="off"] .group-pill-hint,
 [data-motion="off"] .session-item-slot.pending,
 [data-motion="off"] .session-item-perm-badge,
 [data-motion="off"] .session-status-dot.status-working,

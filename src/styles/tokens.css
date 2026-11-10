@@ -1212,10 +1212,6 @@
   border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
 }
 
-[data-skin="glow"] .group-pill:hover {
-  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
 /* ── glow · medium-impact surfaces ───────────────────────────────────── */
 
 /* Danger button hover intensifies its halo (the default .btn-danger glow

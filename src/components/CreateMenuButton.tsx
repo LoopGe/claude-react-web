@@ -10,9 +10,10 @@
 // the click that follows flips the open state closed.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react'
 import { ContextMenu } from './ContextMenu'
 import { buildCreateMenuItems } from './createMenuItems'
+import { useMergedRef } from '../utils/mergedRef'
 import type { PromptRequest } from '../hooks/useDialogHosts'
 
 interface Props extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'children'> {
@@ -26,6 +27,13 @@ interface Props extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' 
   newSessionDisabled?: boolean
   /** The + glyph (or any button content). */
   children?: ReactNode
+  /** React 19 ref-as-prop, forwarded to the trigger button. Callers that
+   *  wrap the button in HoverHint (which clones a ref onto its child) need
+   *  this for popover anchoring; the header surfaces don't. Must be a
+   *  stable ref (useRef object or stable callback) — it flows through
+   *  useMergedRef's first-render closure, so a re-created inline callback
+   *  ref would silently stop being invoked after the first render. */
+  ref?: Ref<HTMLButtonElement>
 }
 
 export function CreateMenuButton({
@@ -34,10 +42,14 @@ export function CreateMenuButton({
   askPrompt,
   newSessionDisabled,
   children,
+  ref: externalRef,
   ...buttonProps
 }: Props) {
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  // Both refs are stable across renders (useRef objects), so useMergedRef's
+  // first-render closure is safe — see its jsdoc.
+  const mergedTriggerRef = useMergedRef(triggerRef, externalRef)
 
   const items = useMemo(
     () => buildCreateMenuItems({ onNewSession, onCreateGroup, askPrompt, newSessionDisabled }),
@@ -60,7 +72,7 @@ export function CreateMenuButton({
   return (
     <>
       <button
-        ref={triggerRef}
+        ref={mergedTriggerRef}
         type="button"
         aria-haspopup="menu"
         aria-expanded={anchor != null}

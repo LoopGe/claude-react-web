@@ -324,9 +324,8 @@ export function App() {
    *  `focusSignal` prop changes). Monotonic counters — only the value
    *  *changing* matters, never the value itself. */
   const [panelFocusSignals, setPanelFocusSignals] = useState<[number, number, number]>([0, 0, 0])
-  /** Held key-hint modifiers. Ctrl/Cmd lights up the slot pills (mod+1/2/3),
-   *  Alt reveals the group-pill number badges (alt+1..9). Re-renders only on
-   *  actual modifier press/release. */
+  /** Held key-hint modifiers. Ctrl/Cmd lights up the slot pills (mod+1/2/3).
+   *  Re-renders only on actual modifier press/release. */
   const heldModifiers = useHeldModifiers()
   /** Mobile drawer (sidebar) open state. Desktop ignores this — the sidebar
    *  is always a static grid column there. */
@@ -3008,9 +3007,10 @@ export function App() {
   // the compiler rejects for sync setState).
   const [stripMenu, setStripMenu] = useState<{ x: number; y: number; id: string } | null>(null)
   const [stripGroupMenu, setStripGroupMenu] = useState<{ x: number; y: number; id: string } | null>(null)
-  /** Shared busy-wrapping confirm/prompt hosts (same implementation the
-   *  sidebar's SessionList uses) — rendered by <DialogHosts> near the other
-   *  app-level dialogs. */
+  /** Shared busy-wrapping confirm/prompt hosts — rendered by <DialogHosts>
+   *  near the other app-level dialogs, and passed DOWN to SessionList so the
+   *  sidebar's prompts/confirms (New group, group rename/delete, session
+   *  context menu) render full-viewport instead of panel-scoped. */
   const stripDialogs = useDialogHosts()
 
   const handleStripSessionContextMenu = useCallback((e: React.MouseEvent, id: string) => {
@@ -3057,9 +3057,10 @@ export function App() {
 
   const shortcuts = useMemo(
     () => [
-      // Alt+1..Alt+9 activate the Nth group — keyboard equivalent of
-      // clicking a sidebar group pill. Generated dynamically so the
-      // ShortcutHelp panel only lists real groups (0 groups → none).
+      // Alt+1..Alt+9 activate the Nth group. Generated dynamically so the
+      // ShortcutHelp panel only lists real groups (0 groups → none). The
+      // old sidebar pill badges that made these discoverable in place are
+      // gone — this panel is the only mapping surface now.
       ...Array.from({ length: Math.min(groups.length, 9) }, (_, i): Shortcut => ({
         combo: `alt+${i + 1}`,
         allowInInput: true,
@@ -4073,15 +4074,15 @@ export function App() {
   // travel from either surface to the other. Kinds in play here:
   //   sidebar-card  — live-reorders within its container on drag-over;
   //                   cross-container / group-target drops resolve on end
-  //   group-card    — live-reorders pills (x axis) and section headers (y)
+  //   group-card    — live-reorders section headers (y axis)
   //   main-panel    — swap on drop (resolved by the panel droppable ids)
   //   main-grid     — drop a sidebar card on the empty grid to open it
   const dndSensors = useAppDndSensors()
   const [dndActive, setDndActive] = useState<DragPayload | null>(null)
   /** Which surface the active drag started on (payload `origin` extra). The
    *  strip lifts compact tab/chip ghosts, a sidebar SECTION drag lifts a real
-   *  header+cards preview, and the sidebar's cards/pills keep their card/pill
-   *  ghosts. State, not a ref — renderDndGhost reads it during render. */
+   *  header+cards preview, and the sidebar's cards keep their card ghosts.
+   *  State, not a ref — renderDndGhost reads it during render. */
   const [dndOrigin, setDndOrigin] = useState<'strip' | 'sidebar-section' | undefined>(undefined)
   /** Frozen whole-panel clone for the panel-drag ghost, captured at drag
    *  activation (see handleDndStart) so the lifted ghost IS the session —
@@ -4144,7 +4145,7 @@ export function App() {
     const kindOf = (c: Collision) => collisionPayloadOf(c)?.kind
     const axisOf = (c: Collision) => dndExtraOf<'x' | 'y'>(collisionDataOf(c) ?? undefined, 'axis')
     /** Group-card drags only collide with axis-bearing group droppables
-     *  (pills / section nodes) — the group-body droppables share the kind
+     *  (section nodes) — the group-body droppables share the kind
      *  and would otherwise shadow the section with a rect that has no
      *  before/after meaning. */
     const eligible = (c: Collision) => {
@@ -4379,8 +4380,8 @@ export function App() {
   }, [setSidebarOrder, setGroups, setOpenIds, setDndOrigin])
 
   /** Floating ghost for the active drag, rendered inside the portaled
-   *  DragOverlay. The sidebar-card / group-pill branches re-render the REAL
-   *  widget (SessionCard, the group pill) so the ghost is pixel-identical to
+   *  DragOverlay. The sidebar-card branch re-renders the REAL widget
+   *  (SessionCard) so the ghost is pixel-identical to
    *  the source at rest — a hand-rolled approximation drifts out of sync
    *  with the real markup and reads as a different element mid-drag. The
    *  main-panel branch is the deliberate exception: it renders a frozen DOM
@@ -4502,18 +4503,6 @@ export function App() {
           </DragGhost>
         )
       }
-      const pillIdx = groups.indexOf(g)
-      return (
-        <DragGhost>
-          <span className={`group-pill group-pill-ghost${g.id === activeGroupId ? ' active' : ''}`}>
-            {heldModifiers.alt && pillIdx < 9 && (
-              <span className="group-pill-hint" aria-hidden="true">{pillIdx + 1}</span>
-            )}
-            {g.name}
-            <span className="group-pill-count">{g.sessionIds.length}</span>
-          </span>
-        </DragGhost>
-      )
     }
     if (dndActive.kind === 'main-panel') {
       if (!panelGhost) return null
@@ -5060,7 +5049,8 @@ export function App() {
           activeGroupId={activeGroupId}
           maxGroupSize={maxGroupSize}
           isMobile={isMobile}
-          showGroupHints={heldModifiers.alt}
+          askConfirm={stripDialogs.askConfirm}
+          askPrompt={stripDialogs.askPrompt}
         />
         <PluginWidgetSlot location="global.bottomLeft" />
         <div

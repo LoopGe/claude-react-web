@@ -73,100 +73,6 @@
 }
 .session-filter-clear:hover { background: var(--bg-elev-2); color: var(--fg); }
 
-/* ── Group pills (horizontal row in sidebar top area) ── */
-.group-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  align-items: center;
-}
-.group-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-0-5) var(--space-2);
-  border-radius: var(--radius-lg);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  background: var(--bg-elev-2);
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    background var(--motion-duration-fast) var(--motion-ease-standard),
-    color var(--motion-duration-fast) var(--motion-ease-standard),
-    border-color var(--motion-duration-fast) var(--motion-ease-standard);
-  user-select: none;
-}
-.group-pill:hover {
-  background: var(--bg-elev-3);
-  color: var(--fg);
-  border-color: var(--accent);
-}
-/* Active group — its sessions currently occupy the main panels. Accent
-   border + faint accent wash + brightened text gives the row a clear
-   "you are here" anchor (Navigation: Active State). */
-.group-pill.active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  border-color: var(--accent);
-  color: var(--fg);
-}
-.group-pill.active .group-pill-count {
-  opacity: 0.9;
-}
-.group-pill-count {
-  font-size: var(--fs-2xs);
-  opacity: 0.7;
-  margin-left: 1px;
-}
-/* Key-hint badge (Alt held): a solid accent keycap carrying the group's
-   alt+<n> number, so the shortcut mapping is discoverable. The halo pulse
-   mirrors the perm-badge's breathing glow; frozen under reduced-motion. */
-.group-pill-hint {
-  font-family: var(--mono);
-  font-size: var(--fs-2xs);
-  font-weight: 700;
-  line-height: 1;
-  color: var(--on-accent);
-  background: var(--accent);
-  border-radius: var(--radius-xs);
-  padding: 2px 3px;
-  min-width: 13px;
-  text-align: center;
-  animation: group-pill-hint-pulse 1.2s ease-in-out infinite;
-}
-@keyframes group-pill-hint-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
-  50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 0%, transparent); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .group-pill-hint { animation: none; }
-}
-.group-pill-new {
-  border-style: dashed;
-  opacity: 0.8;
-}
-.group-pill-new:hover { opacity: 1; }
-.group-pill-input {
-  font-size: var(--fs-xs);
-  padding: var(--space-0-5) var(--space-1-5);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--accent);
-  background: var(--bg-elev-1);
-  color: var(--fg);
-  outline: none;
-  width: 80px;
-}
-
-/* Group pill drag — the source dims; displacement of the live-reordered
-   siblings is the drop signal (dnd-kit). */
-.group-pill.dragging {
-  opacity: 0.3;
-  cursor: grabbing;
-}
-.group-pill.dragging:hover { background: var(--bg-elev-2); }
-
 /* ── Session section (grouped sidebar view) ── */
 .session-section {
   display: flex;
@@ -480,8 +386,7 @@
   .session-item.dragging,
   .session-item-shell { transition: none; }
   .session-item-shell.deleting { transform: none; }
-  .session-group-header.dragging,
-  .group-pill.dragging { transition: none; }
+  .session-group-header.dragging { transition: none; }
 }
 
 .session-item.terminated { opacity: 0.6; }

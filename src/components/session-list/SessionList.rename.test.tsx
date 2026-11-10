@@ -4,6 +4,7 @@ import { SessionList } from '../SessionList'
 import { ToastProvider } from '../ToastProvider'
 import { ToastHost } from '../ToastHost'
 import type { SessionInfo } from '../../types'
+import type { ConfirmRequest } from '../../hooks/useDialogHosts'
 
 // Renaming a session is reachable from two places and both must behave the
 // same: the SettingsPanel title field already toasts on failure, while the
@@ -71,7 +72,14 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   } as SessionInfo
 }
 
-function renderList(session: SessionInfo, onDelete: (id: string, opts?: { deleteTranscript?: boolean }) => void = () => {}) {
+function renderList(
+  session: SessionInfo,
+  onDelete: (id: string, opts?: { deleteTranscript?: boolean }) => void = () => {},
+  /** Defaults to auto-confirm. Tests that inspect the confirm request pass
+   *  a capturing stub (the dialog itself renders App-level, outside this
+   *  component test's tree). */
+  onAskConfirm: (c: ConfirmRequest) => void = (c) => void c.onConfirm(),
+) {
   return render(
     <ToastProvider>
       <SessionList
@@ -97,6 +105,8 @@ function renderList(session: SessionInfo, onDelete: (id: string, opts?: { delete
         onRenameGroup={() => {}}
         onAddToGroup={() => {}}
         onToggleGroupCollapse={() => {}}
+        askConfirm={onAskConfirm}
+        askPrompt={() => {}}
       />
       <ToastHost />
     </ToastProvider>,
@@ -247,6 +257,8 @@ describe('SessionList inline rename', () => {
           onRenameGroup={() => {}}
           onAddToGroup={() => {}}
           onToggleGroupCollapse={() => {}}
+          askConfirm={(c) => void c.onConfirm()}
+          askPrompt={() => {}}
         />
         <ToastHost />
       </ToastProvider>,
@@ -325,19 +337,24 @@ describe('SessionList inline rename', () => {
 
   it('forwards permanent-delete options through the sidebar wrapper', async () => {
     const onDelete = vi.fn()
-    const { container } = renderList(makeSession(), onDelete)
+    const asks: ConfirmRequest[] = []
+    const { container } = renderList(makeSession(), onDelete, (c) => {
+      asks.push(c)
+      void c.onConfirm()
+    })
     fireEvent.contextMenu(container.querySelector('.session-item')!)
     const item = [...document.body.querySelectorAll('[role="menuitem"]')]
       .find((el) => el.textContent === 'Delete permanently')
     expect(item).toBeTruthy()
+    // The confirm dialog itself is rendered by App's app-level DialogHosts,
+    // outside this component test's tree — what THIS test owns is that the
+    // destructive confirm request is well-formed and its onConfirm forwards
+    // the delete options.
     fireEvent.click(item!)
 
-    await waitFor(() => expect(document.querySelector('[role="dialog"]')).not.toBeNull())
-    const confirm = [...document.body.querySelectorAll('button')]
-      .find((el) => el.textContent === 'Delete permanently')
-    expect(confirm).toBeTruthy()
-    fireEvent.click(confirm!)
-
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith('sess-1', { deleteTranscript: true }))
+    expect(asks).toHaveLength(1)
+    expect(asks[0]!.confirmLabel).toBe('Delete permanently')
+    expect(asks[0]!.destructive).toBe(true)
   })
 })

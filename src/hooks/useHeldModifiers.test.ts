@@ -23,14 +23,6 @@ describe('useHeldModifiers', () => {
     expect(result.current.ctrlOrMeta).toBe(false)
   })
 
-  it('tracks Alt while held and clears on release', () => {
-    const { result } = renderHook(() => useHeldModifiers())
-    act(() => fire('Alt', { altKey: true }))
-    expect(result.current.alt).toBe(true)
-    act(() => fire('Alt', { altKey: false }, 'keyup'))
-    expect(result.current.alt).toBe(false)
-  })
-
   it('keeps the hint while a second key is pressed inside the modifier', () => {
     const { result } = renderHook(() => useHeldModifiers())
     act(() => fire('Control', { ctrlKey: true }))
@@ -44,17 +36,17 @@ describe('useHeldModifiers', () => {
     const { result } = renderHook(() => useHeldModifiers())
     act(() => fire('a'))
     act(() => fire('b'))
-    expect(result.current).toEqual({ ctrlOrMeta: false, alt: false })
+    expect(result.current).toEqual({ ctrlOrMeta: false })
   })
 
-  it('resets both flags on window blur', () => {
+  it('resets the flag on window blur', () => {
     const { result } = renderHook(() => useHeldModifiers())
-    act(() => fire('Alt', { altKey: true }))
-    expect(result.current.alt).toBe(true)
+    act(() => fire('Control', { ctrlKey: true }))
+    expect(result.current.ctrlOrMeta).toBe(true)
     act(() => {
       window.dispatchEvent(new Event('blur'))
     })
-    expect(result.current).toEqual({ ctrlOrMeta: false, alt: false })
+    expect(result.current).toEqual({ ctrlOrMeta: false })
   })
 
   it('removes listeners on unmount', () => {
