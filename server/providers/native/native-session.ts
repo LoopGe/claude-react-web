@@ -314,6 +314,9 @@ export class NativeSession implements ProviderSessionHandle {
   private baseSkillPolicy: readonly string[] | 'all' | undefined
   private baseToolProfile: SessionToolProfile | undefined
   private currentProfile: NativeAgentProfile | null = null
+  /** Distinguishes an explicit logged clear from a pre-selection legacy log.
+   *  Only the former may erase the legacy metadata name at manager sync. */
+  private hasAgentSelectionEvent = false
   private model: string
   /** Live permission mode: setPermissionMode keeps it current for the lifetime
    *  of the session — the spawn-time opts value is only the starting point, so
@@ -449,6 +452,7 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   private applyAgentSelection(selection: NativeAgentSelectionEvent): void {
+    this.hasAgentSelectionEvent = true
     this.baseModel = selection.base.model
     this.basePermissionMode = selection.base.permissionMode
     this.baseEffortLevel = selection.base.effortLevel as EffortLevel | undefined
@@ -497,7 +501,7 @@ export class NativeSession implements ProviderSessionHandle {
       // invented 'default' that would override the caller's next resume mode.
       ...(permissionMode !== undefined ? { permissionMode } : {}),
       ...(this.effortLevel !== undefined ? { effortLevel: this.effortLevel } : {}),
-      agent: this.currentProfile?.name ?? null,
+      agent: this.hasAgentSelectionEvent ? (this.currentProfile?.name ?? null) : (this.opts.agent ?? null),
     }
   }
 

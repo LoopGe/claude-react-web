@@ -374,6 +374,9 @@ import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { TranscriptSidecar } from './transcript-sidecar.js'
 import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
+import { NativeProvider } from './providers/native/native-provider.js'
+import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
+import type { CanonicalEvent } from './providers/native/canonical.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -427,6 +430,70 @@ function writeTranscriptArtifacts(configDir: string, sessionId: string): { mainP
   writeFileSync(mainPath, '{}\n')
   writeFileSync(join(sessionDir, 'subagents', 'agent-one.jsonl'), '{}\n')
   return { mainPath, sessionDir }
+}
+
+function nativeTextTurn(text: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 1, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'text' } },
+    { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 1 } },
+  ]
+}
+
+async function seedPreSelectionNativeLog(
+  stateDir: string,
+  id: string,
+  cwd: string,
+  opts: { explicitClear?: boolean } = {},
+): Promise<void> {
+  const log = NativeSessionLog.open({ stateDir, id, cwd, resume: false })
+  log.append({ type: 'session/context', text: 'legacy context' })
+  if (opts.explicitClear) {
+    log.append({
+      type: 'session/agent',
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })
+  }
+  log.append({
+    type: 'assistant',
+    uuid: 'legacy-assistant',
+    session_id: id,
+    parent_tool_use_id: null,
+    timestamp: '2026-11-11T00:00:01.000Z',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'legacy reply' }] },
+  })
+  log.append({ type: 'turn/end', reason: 'completed' })
+  await log.flush()
+  await log.close()
+}
+
+function legacyAgentStore(): AgentDefinitionStore {
+  const definition = {
+    name: 'reviewer',
+    description: 'Legacy reviewer',
+    prompt: 'LEGACY-PERSONA-MUST-NOT-APPLY',
+    model: 'legacy-persona-model',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+  }
+  return {
+    get: (name: string) => name === 'reviewer' ? definition : undefined,
+  } as unknown as AgentDefinitionStore
+}
+
+function captureNativeRequests(sm: SessionManager): Array<{ model: string; system: string }> {
+  const requests: Array<{ model: string; system: string }> = []
+  const provider = (sm as unknown as { providers: { get(name: string): NativeProvider } }).providers.get('native')
+  provider._testStream = async function* (req: { model: string; system: string }) {
+    requests.push({ model: req.model, system: req.system })
+    for (const event of nativeTextTurn('done')) yield event
+  }
+  return requests
 }
 
 describe('SessionManager', () => {
@@ -6282,6 +6349,90 @@ describe('SessionManager', () => {
       expect(store.get(side.id)?.forkBoundaryUuid).toBe('a-parent')
       readPage.mockRestore()
     })
+  })
+
+  it('preserves legacy SessionMeta.agent on resume without applying or migrating the persona', async () => {
+    const id = 'legacy-agent-resume'
+    await seedPreSelectionNativeLog(dir, id, TEST_CWD)
+    store.upsert({
+      id,
+      provider: 'native',
+      createdAt: 1,
+      lastActivityAt: 1,
+      cwd: TEST_CWD,
+      model: 'base-model',
+      agent: 'reviewer',
+      messageCount: 1,
+      terminated: false,
+      lastTurnAt: 1,
+    })
+    sm = new SessionManager({ store, agentStore: legacyAgentStore() })
+    const requests = captureNativeRequests(sm)
+
+    const info = await sm.resume(id)
+    sm.send(id, 'next')
+    await waitFor(() => requests.length === 1)
+
+    expect(requests[0].model).toBe('base-model')
+    expect(requests[0].system).not.toContain('LEGACY-PERSONA-MUST-NOT-APPLY')
+    expect(loadNativeSessionLogSync(dir, id)!.events.some((event) => event.type === 'session/agent')).toBe(false)
+    expect(info.agent).toBe('reviewer')
+    expect(sm.get(id).agent).toBe('reviewer')
+    expect(store.get(id)?.agent).toBe('reviewer')
+  })
+
+  it('preserves legacy SessionMeta.agent on fork without applying or migrating the persona', async () => {
+    const id = 'legacy-agent-fork'
+    await seedPreSelectionNativeLog(dir, id, TEST_CWD)
+    store.upsert({
+      id,
+      provider: 'native',
+      createdAt: 1,
+      lastActivityAt: 1,
+      cwd: TEST_CWD,
+      model: 'base-model',
+      agent: 'reviewer',
+      messageCount: 1,
+      terminated: false,
+      lastTurnAt: 1,
+    })
+    sm = new SessionManager({ store, agentStore: legacyAgentStore() })
+    const requests = captureNativeRequests(sm)
+
+    const info = await sm.fork(id)
+    sm.send(info.id, 'next')
+    await waitFor(() => requests.length === 1)
+
+    expect(requests[0].model).toBe('base-model')
+    expect(requests[0].system).not.toContain('LEGACY-PERSONA-MUST-NOT-APPLY')
+    expect(loadNativeSessionLogSync(dir, info.id)!.events.some((event) => event.type === 'session/agent')).toBe(false)
+    expect(info.agent).toBe('reviewer')
+    expect(sm.get(info.id).agent).toBe('reviewer')
+    expect(store.get(info.id)?.agent).toBe('reviewer')
+  })
+
+  it('honors an explicit selection-event clear instead of falling back to legacy SessionMeta.agent', async () => {
+    const id = 'legacy-agent-explicit-clear'
+    await seedPreSelectionNativeLog(dir, id, TEST_CWD, { explicitClear: true })
+    store.upsert({
+      id,
+      provider: 'native',
+      createdAt: 1,
+      lastActivityAt: 1,
+      cwd: TEST_CWD,
+      model: 'base-model',
+      agent: 'reviewer',
+      messageCount: 1,
+      terminated: false,
+      lastTurnAt: 1,
+    })
+    sm = new SessionManager({ store, agentStore: legacyAgentStore() })
+
+    const info = await sm.resume(id)
+
+    expect(info.agent).toBeUndefined()
+    expect(sm.get(id).agent).toBeUndefined()
+    expect(store.get(id)?.agent).toBeUndefined()
   })
 
   it('keeps an unspecified native permission intent unset at spawn', async () => {
