@@ -30,6 +30,7 @@ import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
 import type { Frame } from './frames.js'
 import { config, __setConfigForTest } from '../../config.js'
+import { HttpError } from '../../errors.js'
 import { QUESTION_RESULT } from '../../permission-broker.js'
 
 // The retry suppression test drives the real `defaultStream` against a mocked
@@ -2594,5 +2595,118 @@ describe('NativeSession', () => {
     }
     expect(caught).toBeInstanceOf(NativeSessionStorageError)
     await vi.waitFor(() => expect(closeSpy).toHaveBeenCalled())
+  })
+
+  describe('title generation and account info', () => {
+    const profile = (recapModel: string) => ({
+      id: 'p1',
+      name: 'Profile 1',
+      authToken: 'tok',
+      baseUrl: 'https://api.example.test',
+      modelList: [],
+      modelGroups: [],
+      recapModel,
+      commitMessageModel: '',
+    })
+
+    const stubAuxFetch = (requests: Array<Record<string, unknown>>, text = 'First title') =>
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+          requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+          return new Response(JSON.stringify({ content: [{ type: 'text', text }] }), {
+            headers: { 'content-type': 'application/json' },
+          })
+        }),
+      )
+
+    it('generateTitle asks the aux caller with profile.recapModel', async () => {
+      const dir = await tempDir('native-title-')
+      const provider = new NativeProvider({ stateDir: dir })
+      const session = provider.createSession({
+        id: 'title-1',
+        cwd: dir,
+        model: 'session-model',
+        profile: profile('recap-model'),
+      })
+      const requests: Array<Record<string, unknown>> = []
+      stubAuxFetch(requests)
+      try {
+        await expect(session.generateTitle?.('describe the session')).resolves.toBe('First title')
+        expect(requests).toHaveLength(1)
+        expect(requests[0]).toMatchObject({
+          model: 'recap-model',
+          max_tokens: 64,
+          temperature: 0.3,
+          system:
+            'Generate a concise session title in the same language as the request. Return only the title, without quotes, a prefix, or trailing punctuation.',
+          messages: [{ role: 'user', content: 'describe the session' }],
+        })
+      } finally {
+        await session.destroy()
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('generateTitle falls back to the CURRENT session model when recapModel is empty', async () => {
+      const dir = await tempDir('native-title-model-')
+      const provider = new NativeProvider({ stateDir: dir })
+      const session = provider.createSession({
+        id: 'title-2',
+        cwd: dir,
+        model: 'm1',
+        profile: profile(''),
+      })
+      const requests: Array<Record<string, unknown>> = []
+      stubAuxFetch(requests)
+      try {
+        // A live switch after construction must reach the title call.
+        await session.setModel?.('m2')
+        await expect(session.generateTitle?.('describe')).resolves.toBe('First title')
+        expect(requests[0].model).toBe('m2')
+      } finally {
+        await session.destroy()
+        vi.unstubAllGlobals()
+      }
+    })
+
+    it('accountInfo resolves undefined', async () => {
+      const dir = await tempDir('native-account-')
+      const provider = new NativeProvider({ stateDir: dir })
+      const session = provider.createSession({ id: 'account-1', cwd: dir })
+      try {
+        await expect(session.accountInfo?.()).resolves.toBeUndefined()
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('applyFlagSettings rejects the sandbox flag', async () => {
+      const dir = await tempDir('native-sandbox-flag-')
+      const provider = new NativeProvider({ stateDir: dir })
+      const session = provider.createSession({ id: 'sandbox-flag', cwd: dir })
+      try {
+        await expect(session.applyFlagSettings?.({ sandbox: { enabled: true } }))
+          .rejects.toThrow('native provider does not support flag settings: sandbox')
+      } finally {
+        await session.destroy()
+      }
+    })
+
+    it('createSession rejects a sandbox intent with a 501 before opening a log', async () => {
+      const dir = await tempDir('native-sandbox-create-')
+      const provider = new NativeProvider({ stateDir: dir })
+      let caught: unknown
+      try {
+        provider.createSession({ id: 'sandboxed', cwd: dir, sandbox: { enabled: true } })
+      } catch (err) {
+        caught = err
+      }
+      expect(caught).toBeInstanceOf(HttpError)
+      expect((caught as HttpError).status).toBe(501)
+      expect((caught as Error).message).toBe('provider native does not support sandbox')
+      // Rejected before the session log was opened.
+      expect(loadNativeSessionLogSync(dir, 'sandboxed')).toBeNull()
+    })
   })
 })

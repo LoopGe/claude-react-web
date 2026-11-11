@@ -1709,6 +1709,18 @@ export class SessionManager {
       provider: opts.provider ?? this.defaultProvider,
       model: opts.model ?? profileDefaultModel(profile),
     }
+    // The sandbox is applied post-spawn through the flag-settings layer, which
+    // only the claude provider implements. Reject the intent for native BEFORE
+    // worktree provisioning: a rejected create must not leave an orphan
+    // worktree + branch behind. (The native provider has the same guard for
+    // direct createSession callers; this one runs earlier so no side effects
+    // happen at all.)
+    if (
+      withDefault.provider === 'native'
+      && (opts as { sandbox?: SandboxSetting }).sandbox?.enabled === true
+    ) {
+      throw new HttpError(501, 'provider native does not support sandbox')
+    }
     // Create-time per-first-party-server override (app-level `firstPartyTools`
     // body field — NOT an SDK Options key; the provider whitelists what
     // reaches the subprocess). Rides into spawn() as prefs so the FIRST

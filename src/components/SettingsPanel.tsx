@@ -1389,6 +1389,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         </SettingsRow>
       </section>
 
+      {/* The native provider has no sandbox implementation (its create
+          rejects the intent with a 501), so offering the control would only
+          produce an error. Everything else on this tab stays shared. */}
+      {session.provider !== 'native' && (
       <section className="settings-group">
         <div className="settings-group-head">
           <h4>Sandbox</h4>
@@ -1486,6 +1490,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
           </>
         )}
       </section>
+      )}
       </div>
       )}
 

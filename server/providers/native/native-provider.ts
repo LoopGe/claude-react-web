@@ -6,6 +6,7 @@
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import { config, requireAuthToken } from '../../config.js'
+import { HttpError } from '../../errors.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle } from '../types.js'
@@ -92,8 +93,8 @@ export class NativeProvider implements AgentProvider {
     supportsAgents: true,
     supportsContextUsage: true,
     supportsUsage: true,
-    supportsAccountInfo: false,
-    supportsSessionTitle: false,
+    supportsAccountInfo: true,
+    supportsSessionTitle: true,
     supportsTaskControl: false,
     supportsStructuredOutput: false,
     supportsReadFile: false,
@@ -126,6 +127,13 @@ export class NativeProvider implements AgentProvider {
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
+    // The native path has no sandbox implementation (no OS-level isolation
+    // layer), so accepting the intent would silently drop it. The manager
+    // rejects this before worktree provisioning for its own create path;
+    // this guard covers direct provider callers (fork / respawn / tests).
+    if (opts.sandbox?.enabled === true) {
+      throw new HttpError(501, 'provider native does not support sandbox')
+    }
     // Prompt sections are stable per conversation in P1 (no hot-plug). The parent
     // prompt advertises Agent; the subagent prompt does not — nested tools drop
     // Agent, and guidance for a tool the model cannot call is misleading.

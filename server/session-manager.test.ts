@@ -11003,6 +11003,21 @@ describe('create() worktree isolation', () => {
       .rejects.toMatchObject({ status: 400 })
     rmRf(plain)
   })
+
+  it('rejects native sandbox BEFORE provisioning a worktree', async () => {
+    await expect(sm.create({
+      provider: 'native',
+      cwd: repo,
+      model: 'test-model',
+      isolateWorktree: true,
+      sandbox: { enabled: true },
+    } as unknown as Parameters<SessionManager['create']>[0]))
+      .rejects.toMatchObject({ status: 501, message: 'provider native does not support sandbox' })
+    // No side effects: the guard runs before provisionWorktree, so neither a
+    // worktree dir nor a spawned session exists.
+    expect(existsSync(join(dir, 'worktrees'))).toBe(false)
+    expect(mockHandles).toHaveLength(0)
+  })
 })
 
 describe('clear() worktree inheritance (legacy path-less meta)', () => {

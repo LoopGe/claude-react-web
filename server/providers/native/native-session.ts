@@ -19,6 +19,7 @@
 
 import { createPushable, type Pushable } from '../../pushable.js'
 import { createLogger } from '../../log.js'
+import { callAnthropicMessages } from '../../anthropic-api.js'
 import { config, type ProviderProfile } from '../../config.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
@@ -52,6 +53,11 @@ const log = createLogger('native')
 const DEFAULT_MODEL = 'claude-sonnet-4-5'
 const DEFAULT_MAX_TOKENS = 16384
 const CONTEXT_WINDOW = 200_000
+
+/** The aux prompt for `generateTitle`. The manager trims and persists the
+ *  caller's first text block, so the model must answer with the title alone. */
+const TITLE_PROMPT =
+  'Generate a concise session title in the same language as the request. Return only the title, without quotes, a prefix, or trailing punctuation.'
 
 /** The log format requires a persisted user event's content to be a block
  *  array (the parser rejects a bare string as corrupt). The manager's primary
@@ -1104,6 +1110,31 @@ export class NativeSession implements ProviderSessionHandle {
   async supportedCommands(): Promise<unknown> {
     await this.skillsReady
     return this.skills.commands()
+  }
+
+  /** Auto-title through the shared auxiliary caller — the same wire contract
+   *  recap / commit-message use. The model is resolved at CALL time: the
+   *  profile's recapModel when set, else the session's CURRENT model (a live
+   *  switch must reach this call). The manager trims and persists the
+   *  returned first text block. */
+  async generateTitle(description: string): Promise<unknown> {
+    return callAnthropicMessages({
+      model: this.opts.profile?.recapModel || this.model,
+      system: TITLE_PROMPT,
+      userContent: description,
+      maxTokens: 64,
+      temperature: 0.3,
+      caller: 'session-title',
+      target: this.opts.credentials(),
+    })
+  }
+
+  /** The native provider talks to an Anthropic-compatible endpoint with the
+   *  profile's token; there is no CLI account state to report. Answering
+   *  undefined keeps the route's `{ account: null }` honest instead of
+   *  fabricating account fields. */
+  async accountInfo(): Promise<unknown> {
+    return undefined
   }
 
   /** The model report, in the SDK's camelCase shape (the manager translates

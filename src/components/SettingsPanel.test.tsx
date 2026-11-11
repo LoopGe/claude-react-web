@@ -1476,3 +1476,31 @@ describe('SettingsPanel Loaded skills preview', () => {
     expect(container.textContent).toContain('list down')
   })
 })
+
+describe('SettingsPanel sandbox section by provider', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+  })
+
+  it('renders the sandbox section for the claude provider', async () => {
+    const { container } = renderPanel({ tab: 'general', session: mkSession() })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    expect(screen.queryByRole('heading', { name: 'Sandbox' })).not.toBeNull()
+  })
+
+  it('hides the sandbox section for the native provider', async () => {
+    const session = { ...mkSession(), provider: 'native' } as SessionInfo
+    const { container } = renderPanel({ tab: 'general', session })
+    await waitFor(() => expect(container.textContent).toContain('Live controls'))
+    expect(screen.queryByRole('heading', { name: 'Sandbox' })).toBeNull()
+    // Only the sandbox section is dropped — the rest of the general tab stays.
+    expect(screen.queryByRole('heading', { name: 'Session' })).not.toBeNull()
+  })
+})
