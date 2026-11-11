@@ -12,11 +12,16 @@ import { nativeSessionLogPath } from './paths.js'
 // writer commits a complete line after the new writer's read but before it
 // decides whether to truncate a torn tail.
 const fsRead = vi.hoisted(() => ({ stale: null as Buffer | null }))
+const fsTruncate = vi.hoisted(() => ({ calls: [] as Array<{ path: string; length: number }> }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import('node:fs')
   return {
     ...actual,
     readFileSync: ((path: string) => fsRead.stale ?? actual.readFileSync(path)) as typeof actual.readFileSync,
+    truncateSync: ((path: string, length: number) => {
+      fsTruncate.calls.push({ path, length })
+      actual.truncateSync(path, length)
+    }) as typeof actual.truncateSync,
   }
 })
 
@@ -256,6 +261,52 @@ describe('NativeSessionLog', () => {
       await original.close()
       if (replacement) await replacement.close()
     }
+  })
+
+  it('appendDurable does not roll back a successful reservation when close races its flush', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('committed'))
+    await log.flush()
+    const path = nativeSessionLogPath(stateDir, 's1')
+    let closePromise: Promise<void> | undefined
+    let bytesAfterSelection: Buffer | undefined
+    const handle = {
+      write: async (chunk: Buffer, offset: number, length: number) => {
+        await writeFile(path, chunk.subarray(offset, offset + length), { flag: 'a' })
+        if (chunk.toString('utf8').includes('"type":"session/agent"')) {
+          bytesAfterSelection = await readFile(path)
+          log.append(userEvent('ordinary-during-close'))
+          closePromise = log.close()
+        }
+        return { bytesWritten: length, buffer: chunk }
+      },
+      sync: async () => undefined,
+    }
+    ;(log as unknown as { ensureHandle: () => Promise<unknown> }).ensureHandle = async () => handle
+    fsTruncate.calls.length = 0
+
+    await expect(log.appendDurable({
+      type: 'session/agent',
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })).rejects.toThrow(/closed/)
+    expect(closePromise).toBeDefined()
+    await closePromise
+
+    expect(fsTruncate.calls).toEqual([])
+    expect(bytesAfterSelection).toBeDefined()
+    const ordinary = userEvent('ordinary-during-close')
+    const expectedBytes = Buffer.concat([
+      bytesAfterSelection!,
+      Buffer.from(JSON.stringify({ ...ordinary, seq: 2 }) + '\n', 'utf8'),
+    ])
+    expect((await readFile(path)).equals(expectedBytes)).toBe(true)
+    const persisted = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(persisted.events.map((event) => event.type)).toEqual(['user', 'session/agent', 'user'])
+    expect(persisted.events.map((event) => event.seq)).toEqual([0, 1, 2])
+    expect(persisted.events[2]).toMatchObject({ type: 'user', uuid: 'ordinary-during-close' })
   })
 
   it('appendDurable refuses closed and superseded writers without reserving an event', async () => {

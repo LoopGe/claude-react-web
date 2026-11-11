@@ -252,8 +252,8 @@ export class NativeSessionLog {
   /** Append one control event as an atomic durable reservation. Ordinary
    *  append/flush keeps its crash-recovery semantics; this stricter path is for
    *  selections that must not become visible in memory OR replay after a
-   *  rejected write. Every non-rejected event appended after the prior flush is
-   *  preserved with a fresh contiguous seq on rollback. */
+   *  genuine write failure. Every non-rejected event appended after the prior
+   *  flush is preserved with a fresh contiguous seq on rollback. */
   async appendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
     await this.flush()
     this.assertDurableWriterActive()
@@ -261,14 +261,19 @@ export class NativeSessionLog {
     const preSize = (await stat(this.path)).size
     this.assertDurableWriterActive()
     let reservation: NativeLogEvent | undefined
+    let flushSucceeded = false
     try {
       reservation = this.append(input)
       await this.flush()
+      flushSucceeded = true
       // writePending deliberately no-ops after takeover/close. A resolved flush
       // is durable only while this writer still owns the path.
       this.assertDurableWriterActive()
       return reservation
     } catch (err) {
+      // A close observed after a successful flush is not a write failure. Its
+      // allowClosed flush still owns the ordinary pending bytes.
+      if (flushSucceeded && this.closed && !this.superseded) throw err
       const appended = this.events.splice(preEventCount)
       this.pending = []
       // A replacement writer may already have committed newer events. Never
