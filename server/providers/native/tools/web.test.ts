@@ -417,15 +417,17 @@ describe('createWebFetchTool', () => {
     ).rejects.toThrow(/exceeds .* bytes/)
   })
 
-  it('rejects an unsupported content-encoding instead of decoding mojibake', async () => {
-    stubPage(() =>
-      new Response('not zstd', {
-        headers: { 'content-type': 'text/plain', 'content-encoding': 'zstd' },
-      }),
-    )
-    await expect(
-      webFetch().run({ url: 'https://docs.example.test/zstd', prompt: 'q' }, ctx()),
-    ).rejects.toThrow(/unsupported content-encoding: zstd/)
+  it('rejects unsupported and prototype-key content-encodings instead of decoding mojibake', async () => {
+    for (const encoding of ['zstd', 'constructor', '__proto__']) {
+      stubPage(() =>
+        new Response('not a supported encoding', {
+          headers: { 'content-type': 'text/plain', 'content-encoding': encoding },
+        }),
+      )
+      await expect(
+        webFetch().run({ url: 'https://docs.example.test/unsupported', prompt: 'q' }, ctx()),
+      ).rejects.toThrow(`unsupported content-encoding: ${encoding}`)
+    }
   })
 
   it('stops after five redirects', async () => {

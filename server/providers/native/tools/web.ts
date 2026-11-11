@@ -339,11 +339,11 @@ function requestWeb(
   })
 }
 
-const DECODERS: Record<string, () => Transform> = {
-  gzip: createGunzip,
-  deflate: createInflate,
-  br: createBrotliDecompress,
-}
+const DECODERS = new Map<string, () => Transform>([
+  ['gzip', createGunzip],
+  ['deflate', createInflate],
+  ['br', createBrotliDecompress],
+])
 
 interface DecodedBody {
   body: AsyncIterable<Uint8Array>
@@ -361,7 +361,7 @@ function decodeResponseBody(res: RawResponse): DecodedBody {
   if (encoding === '' || encoding === 'identity') {
     return { body: res.body, compressed: false, destroy: () => res.destroy() }
   }
-  const makeDecoder = DECODERS[encoding]
+  const makeDecoder = DECODERS.get(encoding)
   if (!makeDecoder) {
     res.destroy()
     throw new ToolInputError(`unsupported content-encoding: ${encoding}`)
