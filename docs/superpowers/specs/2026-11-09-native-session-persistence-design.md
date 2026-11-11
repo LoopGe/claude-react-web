@@ -526,7 +526,7 @@ P1.6 让 native 会话补齐日常工具（Glob、LS、WebFetch、WebSearch、To
 - `SessionManager.create` 在 **worktree provisioning 之前**拒绝 native + `sandbox.enabled === true`（`501 provider native does not support sandbox`），因此不会留下孤儿的 worktree / 分支；native provider 的 `createSession` 对直接调用者做同样的守卫。
 - `SettingsPanel` 对 native 会话隐藏 sandbox 区块（不再提供一个必然失败的控件）；`applyFlagSettings({sandbox})` 继续抛错。
 - DSH 级隔离（Linux bubblewrap/Landlock、macOS Seatbelt、Windows restricted-token ACL runner 且只能部分强制）超出 P1.6 范围。未来项目应先确定单一平台/后端与显式 fail-closed 语义，再把该设置暴露给 native 会话。
-- 上述全部路径由 `server/providers/native/e2e-tools.test.ts` 经 `SessionManager` 端到端覆盖（真实 PermissionBroker 的问答路径、stubbed `fetch` / DNS，无真实网络）。
+- 各条 sandbox 路径的覆盖分工：manager create 的 501（发生在 worktree provisioning 之前、不留下孤儿目录）由 `server/providers/native/e2e-tools.test.ts` 经 `SessionManager` 覆盖；provider 的直接守卫（直接调用 `createSession`）与 `applyFlagSettings({sandbox})` 的拒绝在 `server/providers/native/native-session.test.ts`；`SettingsPanel` 对 native 隐藏 sandbox 区块在 `src/components/SettingsPanel.test.tsx`；manager 层的「拒绝先于 provisioning、不产生 worktree」断言另有 `server/session-manager.test.ts` 的专测。P1.6 的其余端到端路径（真实 PermissionBroker 问答、stubbed `fetch` / DNS、无真实网络）同样由 `e2e-tools.test.ts` 覆盖。
 
 ### 延迟项
 

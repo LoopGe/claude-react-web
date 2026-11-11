@@ -32,18 +32,25 @@ vi.mock('node:dns/promises', () => ({ lookup: lookupMock }))
 const PUBLIC_ADDRESS = [{ address: '93.184.216.34', family: 4 }]
 
 /** The profile the sessions run on. A real authToken + baseUrl is what the
- *  WebFetch aux call and generateTitle read through `opts.credentials()`; the
- *  URL is never dialed because fetch is stubbed. */
+ *  WebFetch aux call and generateTitle read through `opts.credentials()`. The
+ *  profile values are DELIBERATELY distinct from the global config (set below
+ *  in beforeEach) so a credential bug cannot pass by coincidence: the aux calls
+ *  must carry the session profile's token, not the global one. The URL is never
+ *  dialed because fetch is stubbed. */
 const TEST_PROFILE = {
   id: 'e2e',
   name: 'E2E',
-  authToken: 'test-token',
+  authToken: 'profile-token',
   baseUrl: 'https://api.example.test',
   modelList: ['test-model'],
   modelGroups: [],
   recapModel: '',
   commitMessageModel: '',
 }
+
+/** Global fallback an aux call would pick up if it read the wrong source. */
+const GLOBAL_AUTH_TOKEN = 'global-token'
+const GLOBAL_BASE_URL = 'https://global.example.test'
 
 /** The aux title prompt (asserted verbatim: the manager trims the answer, so
  *  the model must be told to return the title alone). */
@@ -151,6 +158,18 @@ function toolResultOf(request: StreamRequest, id: string): CapturedToolResult {
   return result
 }
 
+/** The emitted `user` frame carrying one tool_result block — what the client
+ *  and the session log see — or undefined while it has not arrived. */
+function toolResultBlockOf(frames: Frame[], toolUseId: string): Record<string, any> | undefined {
+  for (const frame of frames) {
+    if (frame.type !== 'user' || !Array.isArray(frame.message?.content)) continue
+    for (const block of frame.message.content as Array<Record<string, any>>) {
+      if (block.type === 'tool_result' && block.tool_use_id === toolUseId) return block
+    }
+  }
+  return undefined
+}
+
 function parseToolResult<T>(request: StreamRequest, id: string): T {
   return JSON.parse(toolResultOf(request, id).text) as T
 }
@@ -218,8 +237,8 @@ beforeEach(async () => {
   __setConfigForTest({
     profiles: [TEST_PROFILE],
     activeProfileId: TEST_PROFILE.id,
-    authToken: TEST_PROFILE.authToken,
-    baseUrl: TEST_PROFILE.baseUrl,
+    authToken: GLOBAL_AUTH_TOKEN,
+    baseUrl: GLOBAL_BASE_URL,
   })
 })
 
@@ -426,6 +445,8 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     // profile credentials and the tool's pinned sampling parameters.
     const auxCall = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/v1/messages'))
     expect(auxCall).toBeDefined()
+    // The session PROFILE's endpoint and token, not the global fallbacks.
+    expect(String(auxCall![0])).toBe('https://api.example.test/v1/messages')
     const auxInit = auxCall![1] as RequestInit
     const auxBody = JSON.parse(String(auxInit.body)) as Record<string, unknown>
     expect(auxBody).toMatchObject({ model: 'test-model', max_tokens: 1024, temperature: 0.2 })
@@ -433,7 +454,7 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     expect(auxBody.system).toContain('World')
     expect(auxBody.system).not.toContain('evil()')
     expect(auxBody.messages).toEqual([{ role: 'user', content: 'Summarize' }])
-    expect((auxInit.headers as Record<string, string>).Authorization).toBe('Bearer test-token')
+    expect((auxInit.headers as Record<string, string>).Authorization).toBe('Bearer profile-token')
 
     fx.scripts.push(
       toolUseTurn('s1', 'WebSearch', JSON.stringify({ query: 'native tools', blocked_domains: ['blocked.test'] })),
@@ -584,6 +605,7 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     const { project, stateDir } = await makeEnv()
     const fx = await makeFixture(stateDir)
     const id = await createRawSession(fx, project)
+    const { frames, unsubscribe } = collectFrames(fx.sm, id)
 
     fx.scripts.push(
       toolUseTurn('q2', 'AskUserQuestion', JSON.stringify(QUESTION_INPUT)),
@@ -596,14 +618,19 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     }, { timeout: 5000 })
     await fx.sm.interrupt(id)
 
-    // The turn loop still records the denied call (the abort resolves the
-    // broker promise without the answer marker), so the model sees an ERROR.
+    // The abort resolves the broker promise WITHOUT the answer marker, so the
+    // loop emits (and persists) the model-facing tool_result as an ERROR
+    // before it continues. Assert that emitted frame directly: classification
+    // must not hinge on a later round's request surviving the abort.
     await vi.waitFor(() => {
-      expect(fx.requests).toHaveLength(2)
+      expect(toolResultBlockOf(frames, 'q2')).toMatchObject({
+        type: 'tool_result',
+        tool_use_id: 'q2',
+        is_error: true,
+        content: [{ type: 'text', text: 'aborted' }],
+      })
     }, { timeout: 5000 })
-    const result = toolResultOf(fx.requests[1], 'q2')
-    expect(result.is_error).toBe(true)
-    expect(result.text).toBe('aborted')
+    unsubscribe()
   })
 
   it('persists an auto-generated title, reports no account info, and rejects sandbox creates', async () => {
@@ -621,12 +648,16 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     expect(fx.sm.list().find((s) => s.id === id)?.title).toBe('Native tools e2e')
     expect(fx.store.get(id)?.title).toBe('Native tools e2e')
 
-    const auxInit = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/v1/messages'))![1] as RequestInit
+    const auxCall = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/v1/messages'))
+    expect(auxCall).toBeDefined()
+    // Session-profile endpoint + token, not the global fallbacks.
+    expect(String(auxCall![0])).toBe('https://api.example.test/v1/messages')
+    const auxInit = auxCall![1] as RequestInit
     const auxBody = JSON.parse(String(auxInit.body)) as Record<string, unknown>
     expect(auxBody).toMatchObject({ model: 'test-model', max_tokens: 64, temperature: 0.3 })
     expect(auxBody.system).toBe(TITLE_PROMPT)
     expect(auxBody.messages).toEqual([{ role: 'user', content: 'covering the new native tools' }])
-    expect((auxInit.headers as Record<string, string>).Authorization).toBe('Bearer test-token')
+    expect((auxInit.headers as Record<string, string>).Authorization).toBe('Bearer profile-token')
 
     // A named session is never re-titled (and no second LLM call is made).
     const again = await fx.sm.autoGenerateTitle(id, 'a different description')
