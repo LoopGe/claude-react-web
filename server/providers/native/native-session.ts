@@ -41,6 +41,7 @@ import { NativeSkillCatalog } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
+import { createTodoWriteTool } from './tools/todo-write.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
@@ -261,6 +262,9 @@ export class NativeSession implements ProviderSessionHandle {
   /** WebSearch is per-session so its `searchCount` counter is scoped to one
    *  conversation instead of being shared process-wide. */
   private readonly webSearchTool: ToolDef
+  /** TodoWrite is per-session because the tool instance owns the live todo
+   *  list; two sessions must never share tasks. */
+  private readonly todoWriteTool: ToolDef
   /** The CURRENT discovery/reload in flight. Re-assigned by `reloadSkills`, so
    *  a manual reload supersedes the construction one (and can recover from a
    *  transient construction failure) for every per-turn await. */
@@ -326,6 +330,7 @@ export class NativeSession implements ProviderSessionHandle {
       credentials: opts.credentials,
     })
     this.webSearchTool = createWebSearchTool()
+    this.todoWriteTool = createTodoWriteTool({ todos: [] })
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
@@ -701,7 +706,14 @@ export class NativeSession implements ProviderSessionHandle {
     // otherwise the model loses delegation exactly when it has no servers to
     // call, and a subagent could never load a skill.
     if (!this.mcp) {
-      this.tools = [...this.opts.tools, this.webFetchTool, this.webSearchTool, this.agentTool, this.skillTool]
+      this.tools = [
+        ...this.opts.tools,
+        this.webFetchTool,
+        this.webSearchTool,
+        this.todoWriteTool,
+        this.agentTool,
+        this.skillTool,
+      ]
       return
     }
     const infos = this.mcp.tools()
@@ -709,6 +721,7 @@ export class NativeSession implements ProviderSessionHandle {
       ...this.opts.tools,
       this.webFetchTool,
       this.webSearchTool,
+      this.todoWriteTool,
       this.agentTool,
       this.skillTool,
       ...mcpToolDefs(this.mcp),

@@ -26,12 +26,14 @@ import { editTool } from './tools/edit.js'
 import { grepTool } from './tools/grep.js'
 import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
+import { notebookEditTool } from './tools/notebook-edit.js'
+import { TODO_WRITE_GUIDANCE } from './tools/todo-write.js'
 import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import type { ToolDef } from './tools/types.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 
-const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool]
+const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool, notebookEditTool]
 
 /** The Agent tool's prompt section. The text is the tool def's own guidance
  *  (one exported constant), so the section and the schema cannot drift. */
@@ -49,6 +51,10 @@ const SKILL_SECTION: PromptSection = { name: 'tool:Skill', order: 85, text: SKIL
 const WEB_FETCH_SECTION: PromptSection = { name: 'tool:WebFetch', order: 160, text: WEB_FETCH_GUIDANCE }
 const WEB_SEARCH_SECTION: PromptSection = { name: 'tool:WebSearch', order: 170, text: WEB_SEARCH_GUIDANCE }
 
+/** TodoWrite is a per-session factory too (the list lives in the session's
+ *  tool instance), so its section rides the same explicit registration. */
+const TODO_WRITE_SECTION: PromptSection = { name: 'tool:TodoWrite', order: 180, text: TODO_WRITE_GUIDANCE }
+
 /** Build this session's system prompt (plus any per-session append). The
  *  subagent variant omits the Agent section — see createSession. */
 function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }): string {
@@ -59,6 +65,7 @@ function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: st
   }
   registry.register(WEB_FETCH_SECTION)
   registry.register(WEB_SEARCH_SECTION)
+  registry.register(TODO_WRITE_SECTION)
   if (opts.withAgentSection) registry.register(AGENT_SECTION)
   registry.register(SKILL_SECTION)
   const rendered = registry.render()
