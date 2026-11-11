@@ -263,6 +263,102 @@ describe('NativeSessionLog', () => {
     }
   })
 
+  it('appendDurable close flush restores ordinary events after a partial selection write', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('committed'))
+    await log.flush()
+    const path = nativeSessionLogPath(stateDir, 's1')
+    const bytesBeforeSelection = await readFile(path)
+    let closePromise: Promise<void> | undefined
+    let selectionWrites = 0
+    const handle = {
+      write: async (chunk: Buffer, offset: number, length: number) => {
+        if (chunk.toString('utf8').includes('"type":"session/agent"')) {
+          selectionWrites++
+          if (selectionWrites === 1) {
+            const bytes = chunk.subarray(offset, offset + Math.min(5, length))
+            await writeFile(path, bytes, { flag: 'a' })
+            return { bytesWritten: bytes.length, buffer: chunk }
+          }
+          log.append(userEvent('ordinary-during-close'))
+          closePromise = log.close()
+          throw new Error('partial selection write during close')
+        }
+        await writeFile(path, chunk.subarray(offset, offset + length), { flag: 'a' })
+        return { bytesWritten: length, buffer: chunk }
+      },
+      sync: async () => undefined,
+    }
+    ;(log as unknown as { ensureHandle: () => Promise<unknown> }).ensureHandle = async () => handle
+
+    await expect(log.appendDurable({
+      type: 'session/agent',
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })).rejects.toThrow('partial selection write during close')
+    expect(closePromise).toBeDefined()
+    await closePromise
+
+    const ordinary = userEvent('ordinary-during-close')
+    const expectedBytes = Buffer.concat([
+      bytesBeforeSelection,
+      Buffer.from(JSON.stringify({ ...ordinary, seq: 1 }) + '\n', 'utf8'),
+    ])
+    expect((await readFile(path)).equals(expectedBytes)).toBe(true)
+    const persisted = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(persisted.events.map((event) => event.type)).toEqual(['user', 'user'])
+    expect(persisted.events.map((event) => event.seq)).toEqual([0, 1])
+    expect(persisted.events[1]).toMatchObject({ type: 'user', uuid: 'ordinary-during-close' })
+  })
+
+  it('appendDurable close flush restores ordinary events after selection sync failure', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('committed'))
+    await log.flush()
+    const path = nativeSessionLogPath(stateDir, 's1')
+    const bytesBeforeSelection = await readFile(path)
+    let closePromise: Promise<void> | undefined
+    let syncCalls = 0
+    const handle = {
+      write: async (chunk: Buffer, offset: number, length: number) => {
+        await writeFile(path, chunk.subarray(offset, offset + length), { flag: 'a' })
+        if (chunk.toString('utf8').includes('"type":"session/agent"')) {
+          log.append(userEvent('ordinary-during-close'))
+          closePromise = log.close()
+        }
+        return { bytesWritten: length, buffer: chunk }
+      },
+      sync: async () => {
+        syncCalls++
+        if (syncCalls === 1) throw new Error('selection sync failure during close')
+      },
+    }
+    ;(log as unknown as { ensureHandle: () => Promise<unknown> }).ensureHandle = async () => handle
+
+    await expect(log.appendDurable({
+      type: 'session/agent',
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })).rejects.toThrow('selection sync failure during close')
+    expect(closePromise).toBeDefined()
+    await closePromise
+
+    const ordinary = userEvent('ordinary-during-close')
+    const expectedBytes = Buffer.concat([
+      bytesBeforeSelection,
+      Buffer.from(JSON.stringify({ ...ordinary, seq: 1 }) + '\n', 'utf8'),
+    ])
+    expect((await readFile(path)).equals(expectedBytes)).toBe(true)
+    const persisted = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(persisted.events.map((event) => event.type)).toEqual(['user', 'user'])
+    expect(persisted.events.map((event) => event.seq)).toEqual([0, 1])
+    expect(persisted.events[1]).toMatchObject({ type: 'user', uuid: 'ordinary-during-close' })
+  })
+
   it('appendDurable does not roll back a successful reservation when close races its flush', async () => {
     const stateDir = await fresh()
     const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })

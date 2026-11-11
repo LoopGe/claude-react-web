@@ -283,14 +283,23 @@ export class NativeSessionLog {
         truncateSync(this.path, preSize)
         for (const event of appended) {
           if (event === reservation) continue
-          const { seq: _seq, ...rest } = event
-          this.append(rest as NativeEventInput)
+          this.restoreAfterDurableRollback(event)
         }
       } catch (rollbackErr) {
         throw new AggregateError([err, rollbackErr], `failed to roll back durable append: ${this.path}`)
       }
       throw err
     }
+  }
+
+  private restoreAfterDurableRollback(event: NativeLogEvent): void {
+    const { seq: _seq, ...rest } = event
+    const restored = { ...rest, seq: this.events.length } as NativeLogEvent
+    this.events.push(restored)
+    // Restoration belongs to the durable operation, not the public append
+    // contract. A racing close disables new public buffering, but its queued
+    // allowClosed flush still owns these restored bytes.
+    this.pending.push(Buffer.from(serializeEvent(restored) + '\n', 'utf8'))
   }
 
   private assertDurableWriterActive(): void {
