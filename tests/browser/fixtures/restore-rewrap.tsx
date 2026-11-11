@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 /// <reference types="vite/client" />
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { MessageList } from '../../../src/components/MessageList'
 import { DevTraceButton } from '../../../src/components/DevTraceButton'

@@ -438,6 +438,8 @@ export const ToolCard = memo(function ToolCard({
   // Resolved lifecycle status for the background-button gate — the same
   // resolver the badge below uses, so the two can never disagree.
   const resolvedStatus = useResolvedToolStatus(toolUseId, status)
+  const showBackground = onBackground != null && resolvedStatus === 'running'
+  const hasActions = showBackground || !hideStatus || copyValue != null
   // When this tool's pending permission dialog has been minimized, surface a
   // "Review permission" chip so the user can re-open it. Mirrors the inline
   // reopen button PlanCard/QuestionCard render when minimized.
@@ -460,16 +462,19 @@ export const ToolCard = memo(function ToolCard({
             Review permission
           </button>
         )}
-        <span className="tool-card-spacer" />
-        {onBackground && resolvedStatus === 'running' && (
-          <BackgroundToolButton
-            onClick={onBackground}
-            title="Background this task — the turn continues while it detaches to the background task list (Alt+B backgrounds every running task)"
-            ariaLabel="Background this task"
-          />
+        {hasActions && (
+          <span className="tool-card-actions">
+            {showBackground && (
+              <BackgroundToolButton
+                onClick={onBackground}
+                title="Background this task — the turn continues while it detaches to the background task list (Alt+B backgrounds every running task)"
+                ariaLabel="Background this task"
+              />
+            )}
+            {!hideStatus && <ToolStatusBadgeResolved status={resolvedStatus} />}
+            {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
+          </span>
         )}
-        {!hideStatus && <ToolStatusBadgeResolved status={resolvedStatus} />}
-        {copyValue && <CopyButton getValue={copyValue} label={copyLabel} />}
       </div>
       {children != null && <div className="tool-card-body">{children}</div>}
       {result && <ToolResultSection result={result} entering={resultEntering} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />}

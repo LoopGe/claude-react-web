@@ -1,7 +1,6 @@
 /// <reference lib="dom" />
 /// <reference types="vite/client" />
 
-import React from 'react'
 import { createRoot } from 'react-dom/client'
 import type { TurnDiffViewMode } from '../../../shared/turn-changes.js'
 import { TurnDiffView } from '../../../src/components/TurnDiffView'

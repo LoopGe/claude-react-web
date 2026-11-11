@@ -100,6 +100,7 @@
   border-radius: var(--radius-sm);
   background: var(--bg-elev);
   overflow: hidden; /* clip children to the rounded corners */
+  container-type: inline-size;
   font-size: var(--fs-base);
 }
 .tool-card-header {
@@ -128,6 +129,7 @@
   color: var(--fg-muted);
 }
 .tool-card-title {
+  flex: 1 1 0;
   font-weight: 500;
   color: var(--fg);
   font-size: var(--fs-base);
@@ -147,9 +149,19 @@
   padding: 1px 6px;
   border-radius: var(--radius-xs);
 }
-.tool-card-spacer {
-  flex: 1;
-  min-width: var(--size-4px);
+.tool-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  margin-left: auto;
+}
+@container (max-width: 239px) {
+  .tool-card-actions .tool-card-bg-btn > span,
+  .tool-card-actions .tool-status-label {
+    display: none;
+  }
 }
 .tool-card-body {
   background: var(--bg);
@@ -274,7 +286,7 @@
   align-items: baseline;
   gap: var(--space-2);
   min-width: 0;
-  flex: 1;
+  flex: 0 1 auto;
   /* Now a <button> (click-to-copy the absolute path) — reset to look like
      the plain inline-flex title it replaced, with a subtle hover wash to
      signal clickability. Negative margin + matching padding keeps the wash
