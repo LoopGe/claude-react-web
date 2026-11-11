@@ -6365,7 +6365,7 @@ describe('SessionManager', () => {
     })
   })
 
-  it('preserves legacy SessionMeta.agent on resume without applying or migrating the persona', async () => {
+  it('migrates legacy SessionMeta.agent on resume and applies the supported persona', async () => {
     const id = 'legacy-agent-resume'
     await seedPreSelectionNativeLog(dir, id, TEST_CWD)
     store.upsert({
@@ -6387,15 +6387,22 @@ describe('SessionManager', () => {
     sm.send(id, 'next')
     await waitFor(() => requests.length === 1)
 
-    expect(requests[0].model).toBe('base-model')
-    expect(requests[0].system).not.toContain('LEGACY-PERSONA-MUST-NOT-APPLY')
-    expect(loadNativeSessionLogSync(dir, id)!.events.some((event) => event.type === 'session/agent')).toBe(false)
+    expect(requests[0].model).toBe('legacy-persona-model')
+    expect(requests[0].system).toContain('LEGACY-PERSONA-MUST-NOT-APPLY')
+    const selections = loadNativeSessionLogSync(dir, id)!.events
+      .filter((event) => event.type === 'session/agent')
+    expect(selections).toHaveLength(1)
+    expect(selections[0]).toMatchObject({
+      name: 'reviewer',
+      definition: { prompt: 'LEGACY-PERSONA-MUST-NOT-APPLY', model: 'legacy-persona-model' },
+      base: { model: 'base-model' },
+    })
     expect(info.agent).toBe('reviewer')
     expect(sm.get(id).agent).toBe('reviewer')
     expect(store.get(id)?.agent).toBe('reviewer')
   })
 
-  it('preserves legacy SessionMeta.agent on fork without applying or migrating the persona', async () => {
+  it('migrates legacy SessionMeta.agent on fork and applies the supported persona', async () => {
     const id = 'legacy-agent-fork'
     await seedPreSelectionNativeLog(dir, id, TEST_CWD)
     store.upsert({
@@ -6417,9 +6424,16 @@ describe('SessionManager', () => {
     sm.send(info.id, 'next')
     await waitFor(() => requests.length === 1)
 
-    expect(requests[0].model).toBe('base-model')
-    expect(requests[0].system).not.toContain('LEGACY-PERSONA-MUST-NOT-APPLY')
-    expect(loadNativeSessionLogSync(dir, info.id)!.events.some((event) => event.type === 'session/agent')).toBe(false)
+    expect(requests[0].model).toBe('legacy-persona-model')
+    expect(requests[0].system).toContain('LEGACY-PERSONA-MUST-NOT-APPLY')
+    const selections = loadNativeSessionLogSync(dir, info.id)!.events
+      .filter((event) => event.type === 'session/agent')
+    expect(selections).toHaveLength(1)
+    expect(selections[0]).toMatchObject({
+      name: 'reviewer',
+      definition: { prompt: 'LEGACY-PERSONA-MUST-NOT-APPLY', model: 'legacy-persona-model' },
+      base: { model: 'base-model' },
+    })
     expect(info.agent).toBe('reviewer')
     expect(sm.get(info.id).agent).toBe('reviewer')
     expect(store.get(info.id)?.agent).toBe('reviewer')
