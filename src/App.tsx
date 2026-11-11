@@ -63,7 +63,6 @@ import type { PaletteItem } from './components/CommandPalette'
 import type { WsServerFrame } from './ws-types'
 import type { MessageSearchHit } from '../shared/search-results'
 import type { MessageJumpTarget } from '../shared/message-jump'
-import { firstPartyOverridesForCreate } from '../shared/session-info'
 import type { NewSessionForm, PermissionMode, SessionInfo, SessionGroup, SidebarSection } from './types'
 import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
@@ -142,7 +141,7 @@ import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { evictFromGroups, inheritGroupId, inheritSidebarOrderId, joinGroupOfSource, placeInGroupId } from './utils/session-slot'
 import { resetCompletion } from './utils/reset-completion'
-import { buildNewLikeThisForm } from './utils/new-like-this'
+import { buildNewLikeThisForm, buildRestartSessionBody } from './utils/new-like-this'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
 import { randomId } from './utils/uuid'
@@ -2253,47 +2252,10 @@ export function App() {
         // broadcast carry `joinGroupOf: X`, so every tab appends Y to X's
         // group the instant Y appears — no "Ungrouped" flash before this POST
         // resolves and swapSession runs (swapSession then evicts X).
-        const res = await api.post<{ session: SessionInfo }>('/sessions', {
-          // An isolated source runs inside its worktree; restart Y must land in
-          // the main repo (X's delete removes the worktree dir Y would otherwise
-          // be spawned into). Mirrors the server fork rule.
-          cwd: source.worktree?.mainRepoPath ?? source.cwd,
-          model: source.model,
-          permissionMode: source.permissionMode,
-          // Preserve beta flags (notably `context-1m-...`) so restart
-          // doesn't silently drop the window from 1M back to 200k.
-          betas: source.betas,
-          // Preserve per-first-party-server overrides so a restarted session
-          // keeps its tool set (create-time prefs honor them on FIRST spawn).
-          firstPartyTools: firstPartyOverridesForCreate(source),
-          // Preserve the plugin subset (undefined = all enabled, `[]` = none).
-          // Same fresh-id reason as the UI prefs below: no persisted meta
-          // exists for Y, so without this the restart silently widens the
-          // session to every globally-enabled plugin.
-          enabledPlugins: source.enabledPlugins,
-          // Preserve the MCP selection — without this the restarted session
-          // silently loses every MCP server (the create route treats an
-          // absent field as no selection; undefined for a legacy session
-          // keeps that same historical behavior via JSON.stringify drop).
-          enabledMcpServers: source.mcpServerNames,
-          // Preserve the panel's per-session UI overrides. Y is a fresh id
-          // with no persisted meta, so without these the replacement would
-          // silently revert to the global defaults (and writeStore would then
-          // clobber the on-disk values). `undefined` (inherit) is omitted by
-          // JSON.stringify — the create route treats absent as inherit.
-          showPinnedUserMessage: source.showPinnedUserMessage,
-          autoRecap: source.autoRecap,
-          toolGroupCards: source.toolGroupCards,
-          autoExpandRunningGroups: source.autoExpandRunningGroups,
-          showMessageHeaders: source.showMessageHeaders,
-          title: source.title,
-          joinGroupOf: id,
-          // X is being evicted by this restart (swapSession replaces X→Y), so
-          // the server tags the created(Y) broadcast with evictingSource. The
-          // client uses that flag to keep Y pending (NOT appended) until
-          // swapSession places it in X's exact slot — no group-tail flash.
-          evictingSource: true,
-        })
+        const res = await api.post<{ session: SessionInfo }>(
+          '/sessions',
+          buildRestartSessionBody(source),
+        )
         // Atomic X→Y swap (sessions/openIds/focusedId/groups/sidebarOrder/
         // lastSeenTurn). Y mounts fresh and plays .entering. swapSession also
         // inserts Y into `sessions`, so openSessions resolves it with no gap.

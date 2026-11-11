@@ -75,6 +75,9 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
   const [cwd, setCwd] = useState<string>(initialCwd ?? recentCwds[0] ?? defaults.cwd ?? '')
   // Opt-in worktree isolation — off by default; only sent when checked.
   const [isolate, setIsolate] = useState(false)
+  // Which agent runtime backs the session. `claude` (the CLI subprocess) is
+  // the historical default; `native` runs in-process and ignores plugins.
+  const [provider, setProvider] = useState('claude')
   const [model, setModel] = useState<string>(defaults.model ?? '')
   /** Model Group pin. Mutually exclusive with a concrete `model` — selecting
    *  one clears the other (ChatPanel's ModelPicker has the same contract). */
@@ -429,6 +432,21 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     })),
   ]
 
+  const providerOptions: FieldPickerOption[] = [
+    {
+      key: 'claude',
+      label: 'Claude CLI',
+      selected: provider === 'claude',
+      onSelect: () => setProvider('claude'),
+    },
+    {
+      key: 'native',
+      label: 'Native in-process',
+      selected: provider === 'native',
+      onSelect: () => setProvider('native'),
+    },
+  ]
+
   const submit = () => {
     if (submitting) return
     setSubmitting(true)
@@ -492,6 +510,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
     const env = envEntries.length > 0 ? Object.fromEntries(envEntries) : undefined
 
     onSubmit({
+      provider,
       cwd: cwd.trim() || undefined,
       isolateWorktree: isolate || undefined,
       model: activeModelGroup ? undefined : model.trim() || undefined,
@@ -672,6 +691,17 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                   </span>
                 </span>
               </label>
+            </div>
+
+            <div className="settings-field">
+              <label htmlFor={uid + '-provider'}>Provider</label>
+              <FieldPicker
+                id={uid + '-provider'}
+                label={provider === 'native' ? 'Native in-process' : 'Claude CLI'}
+                menuLabel="Providers"
+                searchable={false}
+                options={providerOptions}
+              />
             </div>
 
             <div className="settings-field">
@@ -1003,7 +1033,7 @@ export function NewSessionDialog({ open = true, defaults, initialCwd, onSubmit, 
                     })}
                   </div>
                 )}
-                {allPluginKeys.length > 0 && (
+                {provider !== 'native' && allPluginKeys.length > 0 && (
                   <div className="settings-field" style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}>
                     <label style={{ margin: 0 }}>Plugins</label>
                     <span className="hint" style={{ marginTop: 4, display: 'block' }}>

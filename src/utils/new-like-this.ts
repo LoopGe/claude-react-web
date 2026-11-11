@@ -18,6 +18,9 @@ export function buildNewLikeThisForm(
   maxGroupSize: number,
 ): NewSessionForm {
   const form: NewSessionForm = {
+    // The copy runs on the same provider — native sessions must not silently
+    // revert to the claude subprocess.
+    provider: source.provider,
     // An isolated source runs inside its worktree; the copy must land in the
     // main repo (the source's worktree belongs to the source session and is
     // removed with it). Mirrors the server fork rule.
@@ -48,4 +51,73 @@ export function buildNewLikeThisForm(
     form.groupId = undefined
   }
   return form
+}
+
+/** The `POST /sessions` body for the "Restart" action: create the replacement
+ *  Y, then delete the source X. Y gets a fresh id with no persisted meta, so
+ *  every per-session choice must be carried explicitly here — an omitted field
+ *  silently reverts to the global default. `joinGroupOf` / `evictingSource`
+ *  make the server tag the `session-created(Y)` broadcast so every connected
+ *  tab slots Y where X was instead of appending it beside the doomed source. */
+export type RestartSessionBody = Pick<
+  NewSessionForm,
+  | 'provider'
+  | 'cwd'
+  | 'model'
+  | 'permissionMode'
+  | 'betas'
+  | 'firstPartyTools'
+  | 'enabledPlugins'
+  | 'enabledMcpServers'
+  | 'title'
+> & {
+  showPinnedUserMessage?: boolean
+  autoRecap?: boolean
+  toolGroupCards?: boolean
+  autoExpandRunningGroups?: boolean
+  showMessageHeaders?: boolean
+  joinGroupOf: string
+  evictingSource: true
+}
+
+export function buildRestartSessionBody(source: SessionInfo): RestartSessionBody {
+  return {
+    // Same provider as the source — a native session restarted as claude (or
+    // the reverse) would change the whole execution model behind the user.
+    provider: source.provider,
+    // An isolated source runs inside its worktree; restart Y must land in the
+    // main repo (X's delete removes the worktree dir Y would otherwise be
+    // spawned into). Mirrors the server fork rule.
+    cwd: source.worktree?.mainRepoPath ?? source.cwd,
+    model: source.model,
+    permissionMode: source.permissionMode,
+    // Preserve beta flags (notably `context-1m-...`) so restart doesn't
+    // silently drop the window from 1M back to 200k.
+    betas: source.betas,
+    // Preserve per-first-party-server overrides so a restarted session keeps
+    // its tool set (create-time prefs honor them on FIRST spawn).
+    firstPartyTools: firstPartyOverridesForCreate(source),
+    // Preserve the plugin subset (undefined = all enabled, `[]` = none) — with
+    // a fresh id and no persisted meta, omitting it would silently widen the
+    // session to every globally-enabled plugin.
+    enabledPlugins: source.enabledPlugins,
+    // Preserve the MCP selection — the create route treats an absent field as
+    // no selection, so a legacy `undefined` keeps the historical behavior via
+    // JSON.stringify's key drop.
+    enabledMcpServers: source.mcpServerNames,
+    // Preserve the panel's per-session UI overrides; `undefined` (inherit) is
+    // dropped by JSON.stringify, which the create route treats as inherit.
+    showPinnedUserMessage: source.showPinnedUserMessage,
+    autoRecap: source.autoRecap,
+    toolGroupCards: source.toolGroupCards,
+    autoExpandRunningGroups: source.autoExpandRunningGroups,
+    showMessageHeaders: source.showMessageHeaders,
+    title: source.title,
+    joinGroupOf: source.id,
+    // X is being evicted by this restart (swapSession replaces X→Y), so the
+    // server tags the created(Y) broadcast with evictingSource. The client
+    // uses that flag to keep Y pending (NOT appended) until swapSession places
+    // it in X's exact slot — no group-tail flash.
+    evictingSource: true,
+  }
 }

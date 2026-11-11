@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildNewLikeThisForm } from './new-like-this'
+import { buildNewLikeThisForm, buildRestartSessionBody } from './new-like-this'
 import type { SessionInfo, SessionGroup } from '../types'
 
 const mkSource = (fields: Partial<SessionInfo>) => fields as unknown as SessionInfo
@@ -122,5 +122,68 @@ describe('buildNewLikeThisForm', () => {
   it('keeps the plain cwd when the source is not isolated', () => {
     const form = buildNewLikeThisForm(mkSource({ id: 's1', cwd: '/repo' }), undefined, 10)
     expect(form.cwd).toBe('/repo')
+  })
+
+  it('carries the source provider so a native copy stays native', () => {
+    const form = buildNewLikeThisForm(mkSource({ id: 's1', provider: 'native' }), undefined, 10)
+    expect(form.provider).toBe('native')
+  })
+})
+
+describe('buildRestartSessionBody', () => {
+  it('carries the source provider (a restart must not revert native → claude)', () => {
+    const body = buildRestartSessionBody(mkSource({ id: 's1', provider: 'native' }))
+    expect(body.provider).toBe('native')
+  })
+
+  it('preserves every restart field and the swap bookkeeping', () => {
+    const body = buildRestartSessionBody(
+      mkSource({
+        id: 's1',
+        provider: 'native',
+        cwd: '/repo',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'acceptEdits',
+        title: 'Fix bug',
+        betas: ['context-1m-2025-08-07'],
+        mcpServerNames: ['srvA'],
+        enabledPlugins: ['plugA@mp1'],
+        firstPartyTools: { 'git-tools': false },
+        showPinnedUserMessage: false,
+        autoRecap: true,
+        toolGroupCards: false,
+        autoExpandRunningGroups: true,
+        showMessageHeaders: false,
+      }),
+    )
+    expect(body).toEqual({
+      provider: 'native',
+      cwd: '/repo',
+      model: 'claude-sonnet-4-6',
+      permissionMode: 'acceptEdits',
+      title: 'Fix bug',
+      betas: ['context-1m-2025-08-07'],
+      enabledMcpServers: ['srvA'],
+      enabledPlugins: ['plugA@mp1'],
+      firstPartyTools: { 'git-tools': false },
+      showPinnedUserMessage: false,
+      autoRecap: true,
+      toolGroupCards: false,
+      autoExpandRunningGroups: true,
+      showMessageHeaders: false,
+      joinGroupOf: 's1',
+      evictingSource: true,
+    })
+  })
+
+  it('maps an isolated source cwd to the main repo (never the live worktree)', () => {
+    const body = buildRestartSessionBody(
+      mkSource({
+        id: 's1',
+        cwd: '/state/worktrees/ws-x',
+        worktree: { mainRepoPath: '/repo', branch: 'crw-ws-x', baseSha: 'abc123' },
+      }),
+    )
+    expect(body.cwd).toBe('/repo')
   })
 })

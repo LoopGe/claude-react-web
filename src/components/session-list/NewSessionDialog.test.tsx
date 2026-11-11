@@ -207,6 +207,73 @@ describe('NewSessionDialog first-party tools picker', () => {
   })
 })
 
+describe('NewSessionDialog provider picker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    window.localStorage.clear()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') {
+        return Promise.resolve({
+          plugins: [{ key: 'plugA@mp1', name: 'plugA', marketplace: 'mp1' }],
+        })
+      }
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      return Promise.resolve({})
+    })
+  })
+  afterEach(() => window.localStorage.clear())
+
+  const providerTrigger = () => screen.getByLabelText('Provider') as HTMLButtonElement
+  const fieldItems = () => Array.from(document.querySelectorAll('.field-picker-item')) as HTMLButtonElement[]
+
+  const clickCreate = async (onSubmit: ReturnType<typeof vi.fn>) => {
+    const createBtn = Array.from(document.body.querySelectorAll('button')).find(
+      (b) => b.textContent?.trim() === 'Create',
+    )!
+    fireEvent.click(createBtn)
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    return onSubmit.mock.calls[0][0] as NewSessionForm
+  }
+
+  it('defaults to Claude CLI and keeps the plugin cluster visible', async () => {
+    const { baseElement } = render(<NewSessionDialog {...baseProps} />)
+    expect(providerTrigger().textContent).toContain('Claude CLI')
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
+    expect(baseElement.textContent).toContain('Plugins')
+  })
+
+  it('submits provider: claude by default', async () => {
+    const onSubmit = vi.fn()
+    render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    const form = await clickCreate(onSubmit)
+    expect(form.provider).toBe('claude')
+  })
+
+  it('submits provider: native and hides the plugin cluster', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
+
+    fireEvent.click(providerTrigger())
+    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Native in-process'))!)
+    expect(providerTrigger().textContent).toContain('Native in-process')
+
+    // Native ignores plugins — the cluster (and its rows) must be hidden.
+    await waitFor(() => expect(baseElement.textContent).not.toContain('Plugins'))
+    expect(baseElement.textContent).not.toContain('plugA')
+
+    const form = await clickCreate(onSubmit)
+    expect(form.provider).toBe('native')
+  })
+
+  it('offers exactly the two provider labels', () => {
+    render(<NewSessionDialog {...baseProps} />)
+    fireEvent.click(providerTrigger())
+    const labels = fieldItems().map((el) => el.querySelector('.field-picker-item-name')?.textContent)
+    expect(labels).toEqual(['Claude CLI', 'Native in-process'])
+  })
+})
+
 describe('NewSessionDialog field pickers (model / permission mode / group)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
