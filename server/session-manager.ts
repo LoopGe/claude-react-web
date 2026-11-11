@@ -1443,7 +1443,9 @@ export class SessionManager {
   /** Fill `session.tasks` from the durable sidecar after spawn. Fire-and-
    *  forget: a failed load leaves old tasks invisible (the pre-feature
    *  behaviour) but never blocks spawn. Only fills MISSING keys so a live
-   *  task frame that already landed wins (spec review focus #3). */
+   *  task frame that already landed wins (spec review focus #3). Native
+   *  execution cannot survive its host process, so hydrated active records
+   *  are settled before the snapshot is persisted and broadcast. */
   private hydrateTasks(id: string, session: Session): void {
     void (async () => {
       let records: TaskRecordUi[] | null = null
@@ -1454,9 +1456,19 @@ export class SessionManager {
         return
       }
       if (!records || records.length === 0) return
+      let reconciled = false
+      if (session.provider === 'native') {
+        const endedAt = Date.now()
+        records = records.map((rec) => {
+          if (isTerminalTaskStatus(rec.status)) return rec
+          reconciled = true
+          return { ...rec, status: 'stopped' as const, reason: 'worker_restart' as const, endedAt }
+        })
+      }
       for (const rec of records) {
         if (!session.tasks.has(rec.taskId)) session.tasks.set(rec.taskId, rec)
       }
+      if (reconciled) this.persistTasks(session)
       pruneAndBroadcastTasks(session)
     })()
   }

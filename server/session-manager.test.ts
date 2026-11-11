@@ -373,6 +373,7 @@ import { cleanupGitFixtures, makeRepo } from './test-git-fixtures.js'
 import { branchExists } from './git.js'
 import { SnapshotStore } from './snapshot/snapshot-store.js'
 import { TranscriptSidecar } from './transcript-sidecar.js'
+import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
 
 function makeTmpDir(): string {
   return mkdtempSync(join(tmpdir(), 'claude-rw-sm-'))
@@ -7885,6 +7886,115 @@ describe('SessionManager', () => {
       await new Promise((r) => setTimeout(r, 20))
       expect(s1.tasks.get('t2')?.result).toBe('LIVE-ONE') // unchanged — hydrate only fills holes
       expect(s1.tasks.get('t2')?.description).not.toBe('STALE')
+    })
+
+    const respawnWithTasks = async (provider: 'native' | 'claude', records: TaskRecordUi[]) => {
+      const info = await sm.create({ provider, cwd: TEST_CWD, model: 'test-model' })
+      // Simulate records left by a previous process: spawn cleanly first, then
+      // seed the sidecar before a fresh manager resumes from the same state dir.
+      await sm.shutdown()
+      const { TaskResultStore } = await import('./task-result-store.js')
+      await new TaskResultStore(dir).save(info.id, records)
+      const restartedStore = new SessionStore({ stateDir: dir })
+      await restartedStore.load()
+      const restarted = new SessionManager({ store: restartedStore, modelSwitchRetryDelayMs: 5 })
+      try {
+        await restarted.resume(info.id)
+      } catch (err) {
+        await restarted.shutdown()
+        throw err
+      }
+      return { id: info.id, restarted }
+    }
+
+    it('settles stale active native tasks on respawn without changing terminal records', async () => {
+      const running: TaskRecordUi = {
+        taskId: 'native-running', toolUseId: 'native-tool', description: 'stale agent',
+        taskType: 'subagent', subagentType: 'Explore', status: 'running', isBackgrounded: true,
+        result: 'partial output', progressSummary: 'still working', runId: 'old-run',
+        startedAt: 100, updatedAt: 200,
+      }
+      const terminal: TaskRecordUi = {
+        taskId: 'native-terminal', toolUseId: 'native-done', description: 'finished agent',
+        taskType: 'subagent', status: 'completed', result: 'final output',
+        startedAt: 10, endedAt: 20, updatedAt: 20,
+      }
+      const beforeRestart = Date.now()
+      const { id, restarted } = await respawnWithTasks('native', [running, terminal])
+      try {
+        const subscription = restarted.subscribeTasks(id)!
+        const nextBroadcast = subscription.iterable[Symbol.asyncIterator]().next()
+        const currentTasks = () => {
+          const current = restarted.subscribeTasks(id)!
+          current.unsubscribe()
+          return current.snapshot
+        }
+        let snapshot: TaskRecordUi[] = []
+        await vi.waitFor(() => {
+          snapshot = currentTasks()
+          expect(snapshot.find((task) => task.taskId === running.taskId)?.status).toBe('stopped')
+        }, { timeout: 15_000 })
+
+        const reconciled = snapshot.find((task) => task.taskId === running.taskId)!
+        expect(reconciled).toEqual({
+          ...running,
+          status: 'stopped',
+          reason: 'worker_restart',
+          endedAt: expect.any(Number),
+        })
+        expect(reconciled.endedAt!).toBeGreaterThanOrEqual(beforeRestart)
+        expect(snapshot.find((task) => task.taskId === terminal.taskId)).toEqual(terminal)
+
+        // Waiting counts and TasksPanel Stop both derive from non-terminal records.
+        expect(restarted.get(id).backgroundSubagentCount).toBe(0)
+        expect(restarted.get(id).phase).toBe('idle')
+        expect(snapshot.filter((task) => !isTerminalTaskStatus(task.status))).toEqual([])
+
+        const { TaskResultStore } = await import('./task-result-store.js')
+        await vi.waitFor(async () => {
+          expect(await new TaskResultStore(dir).load(id)).toEqual(snapshot)
+        }, { timeout: 15_000 })
+        const broadcast = await Promise.race([
+          nextBroadcast,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('task snapshot was not broadcast')), 1000)),
+        ])
+        expect(broadcast.done).toBe(false)
+        expect(broadcast.value).toEqual(snapshot)
+        subscription.unsubscribe()
+      } finally {
+        await restarted.shutdown()
+      }
+    })
+
+    it('leaves hydrated Claude task records untouched on respawn', async () => {
+      const running: TaskRecordUi = {
+        taskId: 'claude-running', toolUseId: 'claude-tool', description: 'live agent',
+        taskType: 'subagent', status: 'running', isBackgrounded: true,
+        result: 'partial output', startedAt: 100, updatedAt: 200,
+      }
+      const terminal: TaskRecordUi = {
+        taskId: 'claude-terminal', toolUseId: 'claude-done', description: 'finished agent',
+        taskType: 'subagent', status: 'failed', result: 'failure output',
+        startedAt: 10, endedAt: 20, updatedAt: 20,
+      }
+      const { id, restarted } = await respawnWithTasks('claude', [running, terminal])
+      try {
+        const currentTasks = () => {
+          const current = restarted.subscribeTasks(id)!
+          current.unsubscribe()
+          return current.snapshot
+        }
+        let snapshot: TaskRecordUi[] = []
+        await vi.waitFor(() => {
+          snapshot = currentTasks()
+          expect(snapshot).toHaveLength(2)
+        }, { timeout: 15_000 })
+        expect(snapshot).toEqual([running, terminal])
+        const { TaskResultStore } = await import('./task-result-store.js')
+        expect(await new TaskResultStore(dir).load(id)).toEqual([running, terminal])
+      } finally {
+        await restarted.shutdown()
+      }
     })
 
     it('persists after settleTasksOnProcessExit flips a live record terminal (Review Focus #7)', async () => {
