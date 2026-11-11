@@ -197,11 +197,10 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
     const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
     for (const { toolUseId, content, isError } of subagentResultEntries) {
       const existing = activeSubagents.get(toolUseId)
-      // D2-B launch-ack guard (pure regex, no seed immunity): an ack
-      // tool_result is NOT real output — skip it entirely so the record
-      // stays 'running'. TASKS_SNAPSHOT (isBackgrounded) is the sole
-      // authority for flipping running→background; task_notification is
-      // the sole authority for completion.
+      // Async launch/detach metadata guard: an ack tool_result is NOT real
+      // output. Once TASKS_SNAPSHOT marks the record background/async, its
+      // originating tool_result is detach metadata regardless of its text;
+      // task_notification remains the sole authority for completion.
       const ackText = typeof content === 'string' ? content : resultContentToText(content)
       const isAck = !isError && typeof ackText === 'string' &&
         /^async agent launched successfully/i.test(ackText)
@@ -221,7 +220,8 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
           (existing.resultOrigin == null || existing.resultOrigin === 'notification' || existing.resultOrigin === 'summary' || existing.resultOrigin === 'async_metadata' || existing.resultOrigin === 'streamed')))
       if (!canMergeResult) continue
       if ((existing.status === 'done' || existing.status === 'interrupted') && !existing.endedAtEstimated && existing.endedAt != null && typeof message.receivedAt === 'number' && message.receivedAt < existing.endedAt) continue
-      if (isAck || (isDetachAck && (existing.result || existing.status === 'background' || existing.status === 'pending'))) {
+      if (isAck || (existing.status === 'background' && existing.isAsync === true) ||
+        (isDetachAck && (existing.result || existing.status === 'pending'))) {
         if (!existing.result && existing.resultOrigin == null) {
           if (!touched) {
             if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)

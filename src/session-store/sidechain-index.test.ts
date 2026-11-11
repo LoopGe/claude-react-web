@@ -1407,6 +1407,38 @@ describe('applyTasksSnapshot: isAsync authority', () => {
     expect(m.activeSubagents.get('tu_a')?.isAsync).toBe(true)
   })
 
+  it('keeps a background agent live when the detach ack follows its snapshot', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'running', isBackgrounded: true },
+    ]))
+    expect(m.activeSubagents.get('tu_a')?.status).toBe('background')
+
+    m = updateSidechainIndexMirror(m, user([toolResult('tu_a', {
+      content: 'Task tu_a is running in the background. Use TaskOutput to retrieve its final output.',
+    })], 'u-det'))
+
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'background',
+      isAsync: true,
+      resultOrigin: 'async_metadata',
+    })
+    expect(m.activeSubagents.get('tu_a')?.result).toBeUndefined()
+
+    m = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-final', task_id: 'tu_a', tool_use_id: 'tu_a',
+      status: 'completed', summary: 'Agent finished', result: 'real final report', receivedAt: 9_000,
+    } as unknown as SdkMessage)
+
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      isAsync: true,
+      result: { content: 'real final report', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
   it('rescues a detach ack to background, then replaces it with the system result without changing isAsync', () => {
     // Ctrl+B detach ack: the ack tool_result doesn't match the launch-ack
     // signature, so the record was mis-settled to 'done' with a fake result.
