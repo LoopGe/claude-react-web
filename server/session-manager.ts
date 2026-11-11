@@ -533,12 +533,15 @@ function effectiveSkillPolicyFor(
  *  precedence. Otherwise we project the resolved policy onto Options.skills.
  *
  *  Important: this is the SPAWN-time projection only. Mid-session changes go
- *  through applyDynamicSkillOverrides() which uses applyFlagSettings(). */
+ *  through applyDynamicSkillOverrides() which uses applyFlagSettings(). A
+ *  provider reset with an explicit base policy skips this projection even when
+ *  that policy is undefined; its RAM override is re-applied after spawn. */
 function applySkillPolicyToOptions<T extends Options>(
   opts: T,
   override: SessionSkillOverride | undefined,
+  preserveBasePolicy = false,
 ): T {
-  if (opts.skills !== undefined) return opts
+  if (preserveBasePolicy || opts.skills !== undefined) return opts
   const projected = policyToInitialSkillsOption(effectiveSkillPolicyFor(override))
   if (projected !== undefined) opts.skills = projected
   return opts
@@ -3161,6 +3164,10 @@ export class SessionManager {
      *  passthrough is captured instead (see extractToolProfile). Undefined =
      *  no default tool surface beyond whatever the create body set. */
     toolProfile?: SessionToolProfile,
+    /** A provider reset owns the base skill policy even when it is explicitly
+     *  undefined. Skip only the spawn-time override projection; clear re-applies
+     *  the RAM override afterward without persisting it as the new base. */
+    preserveBaseSkillPolicy = false,
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -3463,7 +3470,7 @@ export class SessionManager {
     }
 
     const sdkOptions = {
-      ...applyToolProfile(applySkillPolicyToOptions(fullOpts, skillOverride), session.toolProfile),
+      ...applyToolProfile(applySkillPolicyToOptions(fullOpts, skillOverride, preserveBaseSkillPolicy), session.toolProfile),
     } as Options & { provider?: string }
     delete sdkOptions.provider
     // Strip the app-level plugin selection so it doesn't reach the SDK:
@@ -4542,8 +4549,8 @@ export class SessionManager {
         worktree: settings.worktree,
       }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; parentId?: string }
       // Carry the base spawn-time skill policy separately from skillOverride.
-      // Only a provider that exposes reset-base state owns this field; an
-      // explicit undefined still takes the ordinary override/default path.
+      // preserveBaseSkillPolicy below makes even an explicit undefined base win
+      // over the spawn projection; the RAM override is re-applied afterward.
       if (resetBase) freshOpts.skills = settings.skills
       // Carry the auto-memory intent onto the fresh session (new id —
       // snapshotMeta captures it from here, same as fork).
@@ -4591,6 +4598,7 @@ export class SessionManager {
         undefined, // promptUuids
         undefined, // replacesSource
         settings.toolProfile,
+        resetBase !== undefined,
       )
       const newYId = newY.id
 

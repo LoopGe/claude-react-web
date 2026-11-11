@@ -439,6 +439,32 @@ describe('native agent profiles end to end through SessionManager', () => {
     expect([...toolNames(fx.requests[0])].sort()).toEqual(['Read', 'Skill'])
   }, 30_000)
 
+  it('preserves an undefined base skill policy through manager clear and later override removal', async () => {
+    const { cwd, stateDir } = await makeEnv('sm-native-agent-manager-clear-default-skills-')
+    await writeProjectSkill(cwd, 'demo')
+    await writeProjectSkill(cwd, 'other')
+    const fx = await makeFixture(stateDir)
+    fx.agentStore.upsert(definition('reviewer', { prompt: 'CLEAR-DEFAULT-SKILLS' }))
+    const id = await createSession(fx, cwd, { agent: 'reviewer' })
+    const commandNames = async (sessionId: string) =>
+      ((await fx.sm.supportedCommands(sessionId)) as Array<{ name: string }>).map((command) => command.name)
+    expect(await commandNames(id)).toEqual(['demo', 'other'])
+    await fx.sm.setSkillOverride(id, { kind: 'disabled' })
+    expect(await fx.sm.supportedCommands(id)).toEqual([])
+
+    const next = await fx.sm.clear(id)
+    remember(fx.sm, next.id)
+    expect(await fx.sm.supportedCommands(next.id)).toEqual([])
+    const selection = loadNativeSessionLogSync(stateDir, next.id)!.events
+      .find((event) => event.type === 'session/agent')
+    expect(selection?.base).not.toHaveProperty('skillPolicy')
+
+    await fx.sm.setSkillOverride(next.id, undefined)
+    expect(await commandNames(next.id)).toEqual(['demo', 'other'])
+    await fx.sm.setAgent(next.id, null)
+    expect(await commandNames(next.id)).toEqual(['demo', 'other'])
+  }, 30_000)
+
   it('keeps a nested read-only profile read-only and asks under nested default despite parent bypass', async () => {
     const { cwd, stateDir } = await makeEnv('sm-native-agent-nested-')
     const fx = await makeFixture(stateDir)

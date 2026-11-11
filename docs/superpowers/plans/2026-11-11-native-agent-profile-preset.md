@@ -302,13 +302,16 @@ Run: `npx vitest run server/providers/native/e2e-agent-profile.test.ts server/pr
 - Task 5 的 nested 完整工具快照不受 parent persona 过滤影响，但保留 `baseToolProfile` 上限；nested permission 通过 broker context 覆盖，不写父会话。
 - Task 6 除原列文件外还修改 `server/session-manager.test.ts`，把两个旧的“不迁移”resume/fork 断言改为真实 manager 下的支持字段迁移断言。这是 test-only amendment，无 manager production change。
 - Task 7 新增 `.agents/notes/implemented/architecture/2026-11-11-native-agent-profile-presets.md`，并把 `npm run verify:agent-notes` 与 `git diff --check` 纳入门禁。
+- 最终 whole-workstream review 补足了 durable 初始 flush 的静止基线，以及真实 `/clear` 的 reset-base 读取；显式未定义的 base skill policy 通过独立 reset 标记保留，RAM skillOverride 只在 spawn 后重应用，不写入新 base。
 
 - [x] **Step 4: 全量门禁**
 
 Run: `npm run typecheck && npx vitest run && npm run lint`。任何失败先归因；并行工作流的未提交 RED 不得计入本计划，但必须给隔离证据。
 
-结果：focused 42 files / 1131 tests 全绿；full 711 files / 9970 passed / 8 skipped；四个 typecheck project 与 eslint 通过（eslint 仅 26 个既有 warning）；Agent Note 校验 17 notes OK，`git diff --check` 通过。
+结果：focused 42 files / 1131 tests 全绿；最终 full 711 files / 9973 passed / 8 skipped；四个 typecheck project 与 eslint 通过（eslint 仅 26 个既有 warning）；Agent Note 校验 17 notes OK，`git diff --check` 通过。
 
-- [ ] **Step 5: 自审、提交与 controller 最终 review**
+- [x] **Step 5: 自审、提交与 controller 最终 review**
 
 本任务对最终 diff 做 self-review，提交 `test(native): cover agent profiles end to end`，只包含 E2E、两份文档和新增 Agent Note。controller 随后运行独立的 final whole-workstream review，并在批准后 push；本任务不派遣 reviewer、不 push，也不提前勾选最终 review。
+
+最终结果：whole-workstream review 的两项 finding 与定向复审的一项 residual 均已修复并复审 Approved；最终门禁全绿后由 controller 提交修复并执行用户授权的 push。
