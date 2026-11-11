@@ -137,7 +137,7 @@ export const ToolUseBlock = memo(function ToolUseBlock({ block, searchQuery, act
         (typeof input?.description === 'string' && input.description) ||
         (typeof input?.prompt === 'string' && truncate(input.prompt as string, 80)) ||
         undefined
-      return <SubagentCard toolUseId={id} fallbackLabel={fallback} searchQuery={searchQuery} activeMatchIdx={activeMatchIdx} />
+      return <SubagentCard toolUseId={id} fallbackLabel={fallback} />
     }
   }
 

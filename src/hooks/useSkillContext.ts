@@ -52,8 +52,8 @@ export function useSkillContext(): SkillContextValue | null {
  *  no input prompt, so no synthetic question row is injected) and `result` (the
  *  fork's final report, rendered as the closing row of the inner conversation).
  *
- *  `isAsync: false` is deliberate, not filler: `subagentResultText` returns
- *  undefined for an async record, which would drop that closing row. A forked
+ *  `isAsync: false` is deliberate, not filler: `subagentResultContent` returns
+ *  undefined for an async record without result provenance, which would drop that closing row. A forked
  *  skill is synchronous from the caller's point of view — the calling thread
  *  blocks on its tool_result — so false is also the honest value.
  *

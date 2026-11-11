@@ -1,5 +1,6 @@
 import { createInitialSessionState, type ServerMirror, type SessionAction, type SessionSnapshot, type SessionState, type LiveTurnSegment } from './types'
 import { reduceSessionState } from './reducer'
+import { consumesSubagentRootResult } from './sidechain-index'
 import type { SdkMessage } from '../types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, ENTER_PLAN_MODE_TOOL_NAME } from '../constants/toolNames'
 
@@ -406,15 +407,13 @@ function dumpToolStatus(): ToolStatusDump[] {
       // (O(messages × ids)); on a 500-entry ring with many tools the dump
       // itself stalled. One pass up front makes every lookup O(1).
       const index = buildToolIndex(messages)
-      // Subagent result ids: an Agent/Task/Explore whose own tool_result
-      // merged into its card (record.result set). MessageList folds these
-      // into makeResultConsumed to suppress the orphan bubble — the dump
-      // MUST mirror that, or it misclassifies a healthy merged subagent as
-      // an orphan (and, worse, tags it EXPECTED so the real turn-end-wipe
-      // bug reads as "working as designed").
+      // Match MessageList: captured results, async metadata, and live async
+      // acknowledgements are consumed; resultless terminal results stay visible.
       const subagentResultIds = new Set<string>()
       for (const [id, sub] of mirror.activeSubagents) {
-        if (sub.result) subagentResultIds.add(id)
+        if (consumesSubagentRootResult(sub)) {
+          subagentResultIds.add(id)
+        }
       }
       const counts = { running: 0, success: 0, error: 0 }
       for (const status of mirror.toolStatus.values()) {

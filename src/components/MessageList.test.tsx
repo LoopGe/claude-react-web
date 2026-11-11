@@ -863,6 +863,7 @@ describe('MessageList', () => {
         items={toItems(msgs as SdkMessage[])}
         parentToolUseIdFilter="agent-1"
         subagent={subagentRecord('agent-1', {
+          status: 'done',
           isAsync: false,
           result: { content: 'Subagent final output', isError: false },
         })}
@@ -876,22 +877,42 @@ describe('MessageList', () => {
   it('does NOT append the result row for an async subagent (already streamed as a child)', () => {
     const { container } = render(
       <MessageList
-        items={toItems([
+        items={toStableItems([
           makeMsg('assistant', {
+            uuid: 'child-1',
             parent_tool_use_id: 'agent-1',
             message: { content: [{ type: 'text', text: 'Streamed child reply' }] },
           }),
         ] as SdkMessage[])}
         parentToolUseIdFilter="agent-1"
         subagent={subagentRecord('agent-1', {
+          status: 'done',
           isAsync: true,
-          result: { content: 'Would duplicate', isError: false },
+          resultOrigin: 'streamed',
+          result: { content: 'Streamed child reply', isError: false },
         })}
       />,
     )
 
     expect(container.textContent).toContain('Streamed child reply')
-    expect(container.textContent).not.toContain('Would duplicate')
+    expect(container.querySelectorAll('[data-message-id]')).toHaveLength(1)
+  })
+
+  it('appends a terminal async notification result that has no streamed source row', () => {
+    const { container } = render(
+      <MessageList
+        items={[]}
+        parentToolUseIdFilter="agent-1"
+        subagent={subagentRecord('agent-1', {
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'notification',
+          result: { content: 'Notification-only result', isError: false },
+        })}
+      />,
+    )
+
+    expect(container.textContent).toContain('Notification-only result')
   })
 
   it('keeps each row on its own DOM node when a row is removed from the MIDDLE of the list', () => {
@@ -4394,10 +4415,9 @@ describe('MessageList', () => {
       expect(container.textContent).not.toContain('tool result')
     })
 
-    it('keeps the bubble while the subagent is still running (no result captured yet)', () => {
-      // A running subagent has no result on its record yet, so there is
-      // nothing merged into the card — the bubble (if any result arrives
-      // mid-stream) must not be suppressed prematurely.
+    it('keeps a running subagent tool_result visible as a search target', () => {
+      // A running record has no captured result, so the root bubble remains
+      // available for search navigation before the detail view owns it.
       const msgs = [
         makeMsg('user', {
           message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'subagent out' }] },
@@ -4412,6 +4432,87 @@ describe('MessageList', () => {
         </SubagentProvider>,
       )
       expect(container.textContent).toContain('tool result')
+    })
+
+    it('exposes a terminal search target while hiding background launch metadata', () => {
+      const msgs = [
+        makeMsg('user', { message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'subagent out' }] } }),
+        makeMsg('user', { message: { content: [{ type: 'tool_result', tool_use_id: 'sub-2', content: 'Async agent launched successfully' }] } }),
+      ]
+      const index = new Map<string, ActiveSubagent>([
+        ['sub-1', { toolUseId: 'sub-1', label: 'done agent', status: 'done', toolCount: 0 }],
+        ['sub-2', { toolUseId: 'sub-2', label: 'background agent', status: 'background', toolCount: 0 }],
+      ])
+      const { container } = render(
+        <SubagentProvider value={{ index, messages: [], open: () => {} }}>
+          <MessageList items={toItems(msgs as SdkMessage[])} searchQuery="subagent" />
+        </SubagentProvider>,
+      )
+      expect(container.textContent).toContain('subagent out')
+      expect(container.textContent).not.toContain('Async agent launched successfully')
+    })
+
+    it('keeps a resultless synchronous terminal result visible', () => {
+      const msgs = [
+        makeMsg('user', { message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'recovered output' }] } }),
+      ]
+      const index = new Map<string, ActiveSubagent>([
+        ['sub-1', { toolUseId: 'sub-1', label: 'done agent', status: 'done', isAsync: false, toolCount: 0 }],
+      ])
+      const { container } = render(
+        <SubagentProvider value={{ index, messages: [], open: () => {} }}>
+          <MessageList items={toItems(msgs as SdkMessage[])} />
+        </SubagentProvider>,
+      )
+      expect(container.textContent).toContain('recovered output')
+    })
+
+    it('hides resultless async launch metadata during search', () => {
+      const msgs = [
+        makeMsg('user', { message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'Async agent launched successfully' }] } }),
+      ]
+      const index = new Map<string, ActiveSubagent>([
+        ['sub-1', {
+          toolUseId: 'sub-1', label: 'async agent', status: 'done', isAsync: true,
+          resultOrigin: 'async_metadata', toolCount: 0,
+        }],
+      ])
+      const { container } = render(
+        <SubagentProvider value={{ index, messages: [], open: () => {} }}>
+          <MessageList items={toItems(msgs as SdkMessage[])} searchQuery="Async" />
+        </SubagentProvider>,
+      )
+      expect(container.textContent).not.toContain('Async agent launched successfully')
+    })
+
+    it('hides launch metadata for a dismissed async subagent', () => {
+      const msgs = [
+        makeMsg('user', { message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'Async agent launched successfully' }] } }),
+      ]
+      const index = new Map<string, ActiveSubagent>([
+        ['sub-1', { toolUseId: 'sub-1', label: 'async agent', status: 'dismissed', isAsync: true, resultOrigin: 'async_metadata', toolCount: 0 }],
+      ])
+      const { container } = render(
+        <SubagentProvider value={{ index, messages: [], open: () => {} }}>
+          <MessageList items={toItems(msgs as SdkMessage[])} />
+        </SubagentProvider>,
+      )
+      expect(container.textContent).not.toContain('Async agent launched successfully')
+    })
+
+    it('keeps a genuine result visible for a dismissed async subagent', () => {
+      const msgs = [
+        makeMsg('user', { message: { content: [{ type: 'tool_result', tool_use_id: 'sub-1', content: 'late real output' }] } }),
+      ]
+      const index = new Map<string, ActiveSubagent>([
+        ['sub-1', { toolUseId: 'sub-1', label: 'async agent', status: 'dismissed', isAsync: true, toolCount: 0 }],
+      ])
+      const { container } = render(
+        <SubagentProvider value={{ index, messages: [], open: () => {} }}>
+          <MessageList items={toItems(msgs as SdkMessage[])} />
+        </SubagentProvider>,
+      )
+      expect(container.textContent).toContain('late real output')
     })
 
     it('drops an assistant frame with only an empty (signature-only) thinking block', () => {

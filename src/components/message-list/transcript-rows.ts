@@ -429,9 +429,10 @@ export function buildTranscriptRows({
 //
 //   result  A SYNCHRONOUS subagent's reply lands as the Agent tool_result on
 //           the MAIN thread (parent_tool_use_id = null), so the filter hides
-//           it and the overlay would show a prompt with no answer. Skipped for
-//           async subagents, whose reply streams as a child assistant frame
-//           and is therefore already in the slice.
+//           it and the overlay would show a prompt with no answer. An ASYNC
+//           reply normally streams as a child assistant frame; when it does
+//           not (for example a notification-only completion), the captured
+//           notification result supplies the missing trailing row instead.
 //
 // These live here rather than in SubagentOverlay so the whole "which rows
 // exist" question has one home, and so the referential-stability contract (I2)
@@ -495,34 +496,139 @@ export function subagentPromptItem(
   } as TranscriptItem
 }
 
-/**
- * Flatten a synchronous subagent's captured result to plain text, or undefined
- * when there is nothing to show (still running, async, empty, or an unexpected
- * content shape).
- *
- * Returning a STRING rather than the row itself is deliberate: `ActiveSubagent`
- * records are re-cloned on nearly every reducer pass, so callers memoise the
- * row on this primitive instead of on the record (see I2).
- */
-export function subagentResultText(record: ActiveSubagent | undefined): string | undefined {
-  if (!record) return undefined
-  if (record.isAsync === true) return undefined
-  const content = record.result?.content
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return undefined
-  const parts: string[] = []
-  for (const b of content as Array<Record<string, unknown>>) {
-    if (b?.type === 'text' && typeof b.text === 'string') parts.push(b.text)
+function missingResultText(text: string, sidechainText: string): string {
+  const result = text.trim()
+  const visible = sidechainText.trim()
+  if (!result || !visible) return result
+  if (visible === result || visible.endsWith(`\n${result}`)) return ''
+
+  // Longest suffix-of-visible / prefix-of-result overlap, computed in linear
+  // time. Only paragraph-boundary overlaps are removable; repeated slicing and
+  // joining would make paragraph-heavy transcripts quadratic.
+  const combined = `${result}\0${visible}`
+  const prefix = new Array<number>(combined.length).fill(0)
+  for (let i = 1, matched = 0; i < combined.length; i++) {
+    while (matched > 0 && combined[i] !== combined[matched]) matched = prefix[matched - 1]
+    if (combined[i] === combined[matched]) matched++
+    prefix[i] = matched
   }
-  return parts.join('\n\n')
+  let overlap = prefix[prefix.length - 1]
+  while (overlap > 0) {
+    const visibleStart = visible.length - overlap
+    const startsAtParagraph = visibleStart === 0 ||
+      (visible[visibleStart - 2] === '\n' && visible[visibleStart - 1] === '\n')
+    if (startsAtParagraph && result[overlap] === '\n') {
+      return result.slice(overlap).trim()
+    }
+    overlap = prefix[overlap - 1]
+  }
+  return result
+}
+
+interface SidechainResultProjection {
+  text: string
+  /** NUL-separated block keys, kept primitive for the hook's I2 dependencies. */
+  nonTextKeys?: string
+}
+
+function resultBlockKey(block: unknown): string {
+  return JSON.stringify(block) ?? ''
+}
+
+/**
+ * Project a terminal result into the rows missing from the visible sidechain.
+ * Matching text already present in the sidechain is omitted; supplemental
+ * image and other blocks remain. If the source row was trimmed or is outside a
+ * bounded preview, the captured result becomes the fallback row instead.
+ */
+export function subagentResultContent(record: Pick<ActiveSubagent, 'status' | 'resultOrigin' | 'isAsync' | 'result'> | undefined, sidechain: SidechainResultProjection = { text: '' }): {
+  content: NonNullable<ActiveSubagent['result']>['content']
+  text: string
+} | undefined {
+  if (!record || (record.status !== 'done' && record.status !== 'rejected' && record.status !== 'interrupted' && record.status !== 'dismissed')) {
+    return undefined
+  }
+  if (record.status === 'done' && record.result?.isError) return undefined
+  if (record.resultOrigin === 'async_metadata') return undefined
+  if (record.isAsync === true && record.resultOrigin == null) {
+    // An async main-thread tool_result without provenance is launch/detach
+    // metadata, not a final assistant response.
+    return undefined
+  }
+  const content = record.result?.content
+  if (typeof content !== 'string' && !Array.isArray(content)) return undefined
+  const parts: string[] = []
+  let hasRenderableBlock = false
+  if (typeof content === 'string') {
+    parts.push(content)
+    hasRenderableBlock = content.trim().length > 0
+  } else {
+    for (const b of content as Array<Record<string, unknown>>) {
+      if (b?.type === 'text' && typeof b.text === 'string') {
+        parts.push(b.text)
+        if (b.text.trim()) hasRenderableBlock = true
+      } else {
+        hasRenderableBlock = true
+      }
+    }
+  }
+  if (!hasRenderableBlock) return undefined
+  const text = parts.join('\n\n')
+  const normalizedText = typeof content === 'string'
+    ? content.trim()
+    : (content as Array<Record<string, unknown>>)
+        .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b) => (b.text as string).trim())
+        .filter(Boolean)
+        .join('\n\n')
+  const projectedText = missingResultText(normalizedText, sidechain.text)
+  const hasCoveredText = normalizedText.length > 0 && projectedText !== normalizedText
+  if (typeof content === 'string') {
+    return hasCoveredText
+      ? (projectedText ? { content: projectedText, text: projectedText } : undefined)
+      : { content, text }
+  }
+
+  const visibleNonText = new Set(sidechain.nonTextKeys ? sidechain.nonTextKeys.split('\0') : [])
+  if (!hasCoveredText) {
+    const projected = content.filter((b) => b?.type === 'text' || !visibleNonText.has(resultBlockKey(b)))
+    return projected.length === content.length
+      ? { content, text }
+      : (projected.length > 0 ? { content: projected, text } : undefined)
+  }
+
+  // Keep the uncovered suffix at its original block positions; non-text
+  // blocks already visible in the sidechain drop out too.
+  const coveredLength = normalizedText.length - projectedText.length
+  let offset = 0
+  const projectedBlocks: Array<Record<string, unknown>> = []
+  for (const block of content as Array<Record<string, unknown>>) {
+    if (block?.type !== 'text' || typeof block.text !== 'string') {
+      if (!visibleNonText.has(resultBlockKey(block))) projectedBlocks.push(block)
+      continue
+    }
+    const blockText = block.text.trim()
+    const start = offset
+    offset += blockText.length + 2
+    if (!blockText || start + blockText.length <= coveredLength) continue
+    if (start < coveredLength) {
+      const remaining = blockText.slice(coveredLength - start).trim()
+      if (remaining) projectedBlocks.push({ ...block, text: remaining })
+    } else {
+      projectedBlocks.push(block)
+    }
+  }
+  return projectedBlocks.length > 0 ? { content: projectedBlocks, text: projectedText } : undefined
 }
 
 /** The subagent's reply as a synthetic trailing row. */
 export function subagentResultItem(
   toolUseId: string,
+  content: NonNullable<ActiveSubagent['result']>['content'],
   text: string,
   receivedAt: number | undefined,
 ): TranscriptItem {
+  const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : content
   return {
     id: subagentResultRowId(toolUseId),
     msg: {
@@ -530,7 +636,7 @@ export function subagentResultItem(
       uuid: subagentResultRowId(toolUseId),
       parent_tool_use_id: toolUseId,
       receivedAt,
-      message: { role: 'assistant', content: [{ type: 'text', text }] },
+      message: { role: 'assistant', content: blocks },
     } as unknown as SdkMessage,
     plainText: text,
     isCompactSummary: false,

@@ -638,7 +638,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     // user-role XML injection carrying the originating Agent tool_use_id.
     // It must flip 'background' → 'done', stamp endedAt to the notification's
     // receivedAt, and leave the already-captured child-text result in place
-    // (don't clobber the streamed output with the repackaged notification).
+    // (don't clobber the streamed output when the notification repackages it).
     const toolUse: SdkMessage = {
       type: 'assistant',
       uuid: 'a-1',
@@ -673,7 +673,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
       receivedAt: doneAt,
       message: {
         role: 'user',
-        content: '<task-notification>\n<task-id>t-1</task-id>\n<tool-use-id>tu_async</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n<result>repackaged</result>\n</task-notification>',
+        content: '<task-notification>\n<task-id>t-1</task-id>\n<tool-use-id>tu_async</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n<result>real output</result>\n</task-notification>',
       },
     } as unknown as SdkMessage
 
@@ -695,6 +695,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     // Child-text result is NOT clobbered by the notification's <result>.
     expect(record?.result?.content).toEqual([{ type: 'text', text: 'real output' }])
     expect(record?.result?.isError).toBe(false)
+    expect(record?.resultOrigin).toBe('streamed')
   })
 
   it('flips a background subagent to done via the SDK system/task_notification frame', () => {
@@ -750,6 +751,7 @@ describe('reducer: subagent records survive turn end (result frame)', () => {
     // No child text → result falls back to the summary string.
     expect(record?.result?.content).toBe('all done')
     expect(record?.result?.isError).toBe(false)
+    expect(record?.resultOrigin).toBe('summary')
   })
 
   it('recovers a lost ack: completion flips a still-running record to done', () => {

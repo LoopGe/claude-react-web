@@ -186,7 +186,7 @@ describe('SessionSearchPreview', () => {
     expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
   })
 
-  it('settles a subagent from the replayed sidechain index', () => {
+  it('settles a subagent summary without inlining its replayed result', () => {
     const agentPage = {
       ...PAGE,
       messages: [
@@ -230,7 +230,7 @@ describe('SessionSearchPreview', () => {
     )
 
     expect(container.querySelector('.subagent-card-done')).toBeTruthy()
-    expect(container.textContent).toContain('agent output')
+    expect(container.textContent).not.toContain('agent output')
   })
 
   it('drills into a sidechain inside the preview instead of the live overlay', () => {
@@ -290,6 +290,210 @@ describe('SessionSearchPreview', () => {
 
     expect(screen.getByText('Review')).toBeTruthy()
     expect(container.textContent).toContain('child work')
+    expect(container.textContent).toContain('agent output')
+  })
+
+  it('keeps a child tool result active after drilling into its sidechain', () => {
+    const agentPage = {
+      ...PAGE,
+      messages: [
+        {
+          seq: 5,
+          uuid: 'a5',
+          msg: {
+            type: 'assistant', uuid: 'a5',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-agent', name: 'Agent', input: { description: 'Review', prompt: 'review' } }] },
+          },
+        },
+        {
+          seq: 6,
+          uuid: 'c6',
+          msg: {
+            type: 'assistant', uuid: 'c6', parent_tool_use_id: 'tu-agent',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'child-1', name: 'Bash', input: { command: 'pwd' } }] },
+          },
+        },
+        {
+          seq: 7,
+          uuid: 'c7',
+          msg: {
+            type: 'user', uuid: 'c7', parent_tool_use_id: 'tu-agent',
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'child-1', content: 'child output' }] },
+          },
+        },
+      ],
+    }
+    const { container } = renderPreview(
+      { page: agentPage as MessagePreviewState['page'] },
+      {
+        target: {
+          kind: 'hit',
+          hit: { ...HIT, seq: 7, messageSeq: 7, messageUuid: 'c7', ownerToolUseId: 'child-1' },
+          query: 'child output',
+        },
+        toolGroupCards: false,
+      },
+    )
+
+    fireEvent.click(container.querySelector('.subagent-card-header')!)
+
+    expect(container.textContent).toContain('child output')
+    expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
+  })
+
+  it('keeps an async launch acknowledgement visible when it is the search target', () => {
+    const agentPage = {
+      ...PAGE,
+      messages: [
+        {
+          seq: 5,
+          uuid: 'a5',
+          msg: {
+            type: 'assistant',
+            uuid: 'a5',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 'tu-agent', name: 'Agent', input: { description: 'Review', prompt: 'review' } }],
+            },
+          },
+        },
+        {
+          seq: 6,
+          uuid: 'u6',
+          msg: {
+            type: 'user',
+            uuid: 'u6',
+            message: {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'tu-agent', content: 'Async agent launched successfully' }],
+            },
+          },
+        },
+      ],
+    }
+    const { container } = renderPreview(
+      { page: agentPage as MessagePreviewState['page'] },
+      {
+        target: {
+          kind: 'hit',
+          hit: { ...HIT, seq: 6, messageSeq: 6, messageUuid: 'u6', ownerToolUseId: 'tu-agent' },
+          query: 'Async',
+        },
+        toolGroupCards: false,
+      },
+    )
+
+    expect(container.textContent).toContain('Async agent launched successfully')
+  })
+
+  it('uses the reducer-selected canonical result in the sidechain detail', () => {
+    const agentPage = {
+      ...PAGE,
+      messages: [
+        {
+          seq: 5,
+          uuid: 'a5',
+          msg: {
+            type: 'assistant',
+            uuid: 'a5',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 'tu-agent', name: 'Agent', input: { description: 'Review', prompt: 'review' } }],
+            },
+          },
+        },
+        {
+          seq: 6,
+          uuid: 'n6',
+          msg: {
+            type: 'user',
+            uuid: 'n6',
+            receivedAt: 6_000,
+            message: {
+              role: 'user',
+              content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu-agent</tool-use-id><status>completed</status><result>old output</result></task-notification>',
+            },
+          },
+        },
+        {
+          seq: 7,
+          uuid: 'u7',
+          msg: {
+            type: 'user',
+            uuid: 'u7',
+            receivedAt: 7_000,
+            message: {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'tu-agent', content: 'canonical output' }],
+            },
+          },
+        },
+      ],
+    }
+    const { container } = renderPreview(
+      { page: agentPage as MessagePreviewState['page'] },
+      {
+        target: {
+          kind: 'hit',
+          hit: { ...HIT, seq: 7, messageSeq: 7, messageUuid: 'u7', ownerToolUseId: 'tu-agent' },
+          query: 'canonical',
+        },
+        toolGroupCards: false,
+      },
+    )
+
+    fireEvent.click(container.querySelector('.subagent-card-header')!)
+
+    expect(container.textContent).toContain('canonical output')
+    expect(container.textContent).not.toContain('old output')
+    expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
+  })
+
+  it('keeps an errored main-thread result available in the sidechain detail', () => {
+    const agentPage = {
+      ...PAGE,
+      messages: [
+        {
+          seq: 5,
+          uuid: 'a5',
+          msg: {
+            type: 'assistant',
+            uuid: 'a5',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 'tu-agent', name: 'Agent', input: { description: 'Review', prompt: 'review' } }],
+            },
+          },
+        },
+        {
+          seq: 6,
+          uuid: 'u6',
+          msg: {
+            type: 'user',
+            uuid: 'u6',
+            message: {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'tu-agent', content: 'agent failed: boom', is_error: true }],
+            },
+          },
+        },
+      ],
+    }
+    const { container } = renderPreview(
+      { page: agentPage as MessagePreviewState['page'] },
+      {
+        target: {
+          kind: 'hit',
+          hit: { ...HIT, seq: 6, messageSeq: 6, messageUuid: 'u6', ownerToolUseId: 'tu-agent' },
+          query: 'boom',
+        },
+        toolGroupCards: false,
+      },
+    )
+
+    fireEvent.click(container.querySelector('.subagent-card-header')!)
+
+    expect(container.textContent).toContain('agent failed: boom')
   })
 
   it('previews a message without a uuid', () => {

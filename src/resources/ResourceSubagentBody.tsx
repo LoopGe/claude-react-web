@@ -88,6 +88,7 @@ function AgentBody({
         <SubagentTranscriptBody
           sessionId={sessionId}
           agentId={taskId!}
+          subagent={current}
           variant="fill"
           cwd={cwd}
         />

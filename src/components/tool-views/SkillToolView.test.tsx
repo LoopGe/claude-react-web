@@ -115,8 +115,8 @@ describe('skillRecordAsSubagent', () => {
       startedAt: 1_000,
       endedAt: 5_000,
       toolCount: 2,
-      // Not filler: subagentResultText() returns undefined for an async record,
-      // which would drop the fork's final report from the overlay's last row.
+      // Not filler: subagentResultContent() returns undefined for an async record
+      // without result provenance, which would drop the fork's final report from the overlay's last row.
       isAsync: false,
       result: { content: 'Skill "code-review" completed (forked execution).', isError: false },
     })

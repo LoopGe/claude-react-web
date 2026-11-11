@@ -1,48 +1,15 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { SubagentCard } from './SubagentCard'
+import { BackgroundToolProvider } from '../hooks/useBackgroundTool'
 import { SubagentProvider, type SubagentContextValue } from '../hooks/useSubagentContext'
-import type { ActiveSubagent, SubagentChildCall } from '../session-store/types'
-
-// AnimatedDetails wraps AnimatedCollapse, which uses ResizeObserver +
-// matchMedia; jsdom lacks both. Provide minimal stubs so the details
-// content renders synchronously.
-beforeAll(() => {
-  if (!('ResizeObserver' in window)) {
-    // @ts-expect-error test stub
-    window.ResizeObserver = class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    }
-  }
-  if (!window.matchMedia) {
-    // @ts-expect-error test stub
-    window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} })
-  }
-})
-
-afterEach(cleanup)
+import type { ActiveSubagent, SubagentChildCall, SubagentStatus } from '../session-store/types'
 
 const child = (over: Partial<SubagentChildCall> & { toolUseId: string; toolName: string }): SubagentChildCall => ({
   argSummary: '',
   status: 'success',
   ...over,
 })
-
-function renderCard(record: ActiveSubagent) {
-  const ctx: SubagentContextValue = {
-    index: new Map([[record.toolUseId, record]]),
-    messages: [],
-    open: vi.fn(),
-  }
-  render(
-    <SubagentProvider value={ctx}>
-      <SubagentCard toolUseId={record.toolUseId} />
-    </SubagentProvider>,
-  )
-  return ctx
-}
 
 const base = (over: Partial<ActiveSubagent> = {}): ActiveSubagent => ({
   toolUseId: 'tu_sa',
@@ -52,161 +19,207 @@ const base = (over: Partial<ActiveSubagent> = {}): ActiveSubagent => ({
   ...over,
 })
 
-describe('SubagentCard child-call list', () => {
-  it('renders a row per child tool call with its name + arg summary', () => {
-    renderCard(base({
-      status: 'done',
-      childToolCalls: [
-        child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls server/auth' }),
-        child({ toolUseId: 'c2', toolName: 'Read', argSummary: 'middleware.ts' }),
-      ],
-    }))
-    expect(screen.getByText('Bash')).toBeTruthy()
-    expect(screen.getByText('ls server/auth')).toBeTruthy()
-    expect(screen.getByText('Read')).toBeTruthy()
-    // Summary count reflects settled/total.
-    expect(screen.getByText('2/2')).toBeTruthy()
-  })
-
-  it('renders running and settled calls as one list, in call order', () => {
-    renderCard(base({
-      status: 'running',
-      childToolCalls: [
-        child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls', status: 'success' }),
-        child({ toolUseId: 'c2', toolName: 'Grep', argSummary: 'skipAuth', status: 'running' }),
-      ],
-    }))
-    // Unified list: both are rows. The running one carries the pulse modifier
-    // and an accent name tint (via .subagent-child-row-running); it is NOT
-    // hoisted into a separate live-highlight block.
-    const rowNames = Array.from(document.querySelectorAll('.subagent-child-name')).map((n) => n.textContent)
-    expect(rowNames).toEqual(['Bash', 'Grep'])
-    expect(document.querySelector('.subagent-child-row-running .subagent-child-name')?.textContent).toBe('Grep')
-    expect(document.querySelector('.subagent-child-row-running .subagent-child-dot-pulse')).toBeTruthy()
-    expect(document.querySelector('.subagent-child-row-success .subagent-child-name')?.textContent).toBe('Bash')
-    expect(screen.getByText('1/2 · running')).toBeTruthy()
-    // Each tool name appears once — no dual rendering of the running call.
-    expect(screen.getAllByText('Grep')).toHaveLength(1)
-  })
-
-  it('expands a settled row to reveal its result', () => {
-    renderCard(base({
-      status: 'done',
-      childToolCalls: [
-        child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls', result: { content: 'RESULT_BODY_XYZ', isError: false } }),
-      ],
-    }))
-    // Result hidden until the row is clicked.
-    expect(screen.queryByText('RESULT_BODY_XYZ')).toBeNull()
-    fireEvent.click(screen.getByText('Bash'))
-    // ToolResultSection may render the body across preview + full nodes.
-    expect(screen.getAllByText('RESULT_BODY_XYZ').length).toBeGreaterThan(0)
-  })
-
-  it('renders no child list when there are no child tool calls', () => {
-    renderCard(base({ status: 'done', childToolCalls: [] }))
-    expect(screen.queryByText(/tool calls?$/)).toBeNull()
-  })
-
-  it('auto-expands while the subagent is live and auto-collapses once it settles', () => {
-    // The open/collapse wiring is the behaviour the user asked for ("运行时展开,
-    // 完成后折叠"); asserting on rendered text alone passes either way, so check
-    // the <details> state directly.
-    const calls = [child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls', status: 'running' })]
-    renderCard(base({ status: 'running', childToolCalls: calls }))
-    expect(document.querySelector('details.subagent-children')?.getAttribute('data-state')).toBe('open')
-
-    cleanup()
-    renderCard(base({ status: 'done', childToolCalls: [child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls' })] }))
-    expect(document.querySelector('details.subagent-children')?.getAttribute('data-state')).toBe('closed')
-  })
-
-  it('shows EVERY in-flight call as a row (parallel tool calls)', () => {
-    // A subagent routinely emits several tool_use blocks in one frame. Each
-    // gets its own row — none are collapsed into a single "current tool" line.
-    renderCard(base({
-      status: 'running',
-      childToolCalls: [
-        child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls', status: 'running' }),
-        child({ toolUseId: 'c2', toolName: 'Read', argSummary: 'a.ts', status: 'running' }),
-      ],
-    }))
-    const runningNames = Array.from(
-      document.querySelectorAll('.subagent-child-row-running .subagent-child-name'),
-    ).map((n) => n.textContent)
-    expect(runningNames).toEqual(['Bash', 'Read'])
-    expect(screen.getByText('0/2 · running')).toBeTruthy()
-  })
-
-  it('does NOT advertise in-flight work on a settled record with a stranded running row', () => {
-    // Three reducer paths can terminate a subagent while leaving a `running`
-    // child row (dismiss / pending-timeout / task-notification). The row stays
-    // visible (so the tool isn't hidden) but must not pulse or carry an accent
-    // "· running" count on a done card.
-    renderCard(base({
-      status: 'done',
-      childToolCalls: [
-        child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls' }),
-        child({ toolUseId: 'c2', toolName: 'Grep', argSummary: 'x', status: 'running' }),
-      ],
-    }))
-    expect(document.querySelector('.subagent-child-row-running .subagent-child-name')?.textContent).toBe('Grep')
-    expect(document.querySelector('.subagent-child-dot-pulse')).toBeNull()
-    expect(screen.getByText('1/2')).toBeTruthy()
-    expect(screen.queryByText('1/2 · running')).toBeNull()
-  })
-
-  it('does not replay the row entrance animation on a fresh mount (scroll-back)', () => {
-    // GridClipEnter seeds `revealing` from `entering`, so an unseeded arrival
-    // gate re-animated the whole list every time the virtualized transcript
-    // scrolled the card back into view.
-    renderCard(base({
-      status: 'done',
-      childToolCalls: [child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls' })],
-    }))
-    expect(document.querySelector('.grid-clip-entering')).toBeNull()
-  })
-
-  it('does not re-play entrance when a row flips running → success in place', () => {
-    // The whole point of the unified list: the same toolUseId stays mounted
-    // through the status flip. If `seen` were keyed on settle (the old dual-
-    // list contract) the flip would look like a new arrival and re-animate.
-    const ctx: SubagentContextValue = {
-      index: new Map([['tu_sa', base({
-        status: 'running',
-        childToolCalls: [child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'ls', status: 'running' })],
-      })]]),
-      messages: [],
-      open: vi.fn(),
-    }
-    const { rerender } = render(
+function renderCard(
+  record: ActiveSubagent,
+  backgroundTool?: (toolUseId: string) => void,
+) {
+  const ctx: SubagentContextValue = {
+    index: new Map([[record.toolUseId, record]]),
+    messages: [],
+    open: vi.fn(),
+  }
+  render(
+    <BackgroundToolProvider value={backgroundTool}>
       <SubagentProvider value={ctx}>
-        <SubagentCard toolUseId="tu_sa" />
-      </SubagentProvider>,
-    )
-    expect(document.querySelector('.subagent-child-row-running')).toBeTruthy()
+        <SubagentCard toolUseId={record.toolUseId} />
+      </SubagentProvider>
+    </BackgroundToolProvider>,
+  )
+  return ctx
+}
 
-    const next: ActiveSubagent = {
-      ...base({ status: 'running' }),
-      childToolCalls: [child({
-        toolUseId: 'c1',
-        toolName: 'Bash',
-        argSummary: 'ls',
-        status: 'success',
-        result: { content: 'ok', isError: false },
-      })],
-    }
-    // New value object — mutating the old one wouldn't notify context consumers.
-    rerender(
-      <SubagentProvider value={{ ...ctx, index: new Map([['tu_sa', next]]) }}>
-        <SubagentCard toolUseId="tu_sa" />
-      </SubagentProvider>,
-    )
+describe('SubagentCard summary header', () => {
+  it('puts the task first and opens the side detail from the header', () => {
+    const ctx = renderCard(base({ isAsync: false, toolCount: 2, startedAt: 1_000, endedAt: 5_000 }))
+    const header = document.querySelector<HTMLButtonElement>('.subagent-card-header')!
+    const status = document.querySelector('.subagent-card-status-dot')!
+    const label = document.querySelector('.subagent-card-label')!
+    const title = document.querySelector('.subagent-card-title')!
+    const meta = document.querySelector('.subagent-card-meta')!
 
-    // Same row flipped in place — no entrance replay, still expandable.
-    expect(document.querySelector('.subagent-child-row-running')).toBeNull()
-    expect(document.querySelector('.subagent-child-row-success .subagent-child-name')?.textContent).toBe('Bash')
-    expect(document.querySelector('.grid-clip-entering')).toBeNull()
-    expect(document.querySelectorAll('.subagent-child-row')).toHaveLength(1)
+    expect(label.textContent).toBe('analyze auth')
+    expect(title.textContent).toBe('Subagent')
+    expect(screen.getByRole('img', { name: 'Subagent status: running' })).toBeTruthy()
+    expect(status.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(label.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(title.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(document.querySelector('.subagent-card-mode-sync')).toBeTruthy()
+    expect(document.querySelector('.subagent-card-elapsed')).toBeTruthy()
+    expect(screen.getByText('2 tools')).toBeTruthy()
+    expect(document.querySelector('.subagent-card-open')).toBeTruthy()
+
+    fireEvent.click(header)
+    expect(ctx.open).toHaveBeenCalledExactlyOnceWith('tu_sa')
+  })
+
+  it('uses singular tool count and the async mode label', () => {
+    renderCard(base({ isAsync: true, toolCount: 1 }))
+    expect(screen.getByText('1 tool')).toBeTruthy()
+    expect(document.querySelector('.subagent-card-mode-async')).toBeTruthy()
+  })
+})
+
+describe('SubagentCard latest activity', () => {
+  it.each<SubagentStatus>(['running', 'background', 'pending'])(
+    'shows only the most recent child while %s',
+    (status) => {
+      renderCard(base({
+        status,
+        toolCount: 3,
+        childToolCalls: [
+          child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'npm test' }),
+          child({ toolUseId: 'c2', toolName: 'Read', argSummary: 'auth.ts' }),
+          child({
+            toolUseId: 'c3',
+            toolName: 'Grep',
+            argSummary: 'session-store',
+            status: 'running',
+            result: { content: 'CHILD_RESULT', isError: false },
+          }),
+        ],
+      }))
+
+      const latest = document.querySelector('.subagent-card-latest')!
+      expect(latest.tagName).toBe('DIV')
+      expect(latest.getAttribute('aria-busy')).toBe('true')
+      expect(document.querySelectorAll('.subagent-card-latest')).toHaveLength(1)
+      expect(Array.from(document.querySelectorAll('.subagent-child-name')).map((el) => el.textContent)).toEqual(['Grep'])
+      expect(screen.getByText('session-store')).toBeTruthy()
+      expect(screen.queryByText('Bash')).toBeNull()
+      expect(screen.queryByText('Read')).toBeNull()
+      expect(screen.queryByText('CHILD_RESULT')).toBeNull()
+      expect(latest.querySelector('button')).toBeNull()
+      expect(document.querySelector('details')).toBeNull()
+      expect(document.querySelector('.subagent-children')).toBeNull()
+      expect(document.querySelector('.subagent-child-result')).toBeNull()
+      expect(document.querySelector('.subagent-child-dot-pulse')).toBeTruthy()
+    },
+  )
+
+  it('prefers an in-flight child over a newer settled child', () => {
+    renderCard(base({
+      status: 'running',
+      childToolCalls: [
+        child({ toolUseId: 'c1', toolName: 'Bash', argSummary: 'npm test', status: 'running' }),
+        child({ toolUseId: 'c2', toolName: 'Read', argSummary: 'auth.ts', status: 'success' }),
+      ],
+    }))
+
+    expect(document.querySelector('.subagent-card-latest .subagent-child-name')?.textContent).toBe('Bash')
+    expect(screen.queryByText('Read')).toBeNull()
+    expect(document.querySelector('.subagent-child-dot-pulse')).toBeTruthy()
+    expect(document.querySelector('.subagent-card-latest')?.getAttribute('aria-busy')).toBe('true')
+  })
+
+  it.each([
+    { childStatus: 'success', expectedClass: 'subagent-child-row-success' },
+    { childStatus: 'error', expectedClass: 'subagent-child-row-error' },
+  ] as const)('renders a settled latest child as $childStatus without pulsing', ({ childStatus, expectedClass }) => {
+    renderCard(base({
+      status: 'running',
+      childToolCalls: [child({ toolUseId: 'c1', toolName: 'Read', argSummary: 'auth.ts', status: childStatus })],
+    }))
+
+    expect(document.querySelector(`.${expectedClass}`)).toBeTruthy()
+    expect(document.querySelector('.subagent-card-latest')?.getAttribute('aria-busy')).toBeNull()
+    expect(document.querySelector('.subagent-child-dot-pulse')).toBeNull()
+  })
+
+  it.each<SubagentStatus>(['running', 'background', 'pending'])('reserves no activity row without tools while %s', (status) => {
+    renderCard(base({ status, childToolCalls: [] }))
+    expect(document.querySelector('.subagent-card-latest')).toBeNull()
+    expect(document.querySelector('.subagent-child-name')).toBeNull()
+  })
+
+  it('omits an empty argument summary', () => {
+    renderCard(base({
+      childToolCalls: [child({ toolUseId: 'c1', toolName: 'Read', argSummary: '' })],
+    }))
+    expect(document.querySelector('.subagent-child-arg')).toBeNull()
+  })
+})
+
+describe('SubagentCard progress and terminal states', () => {
+  it.each<SubagentStatus>(['running', 'background'])('shows progress while %s', (status) => {
+    renderCard(base({ status, progressSummary: 'Tracing message rows' }))
+    expect(document.querySelector('.subagent-card-progress')?.textContent).toBe('Tracing message rows')
+  })
+
+  it('keeps latest activity but hides progress while pending', () => {
+    renderCard(base({
+      status: 'pending',
+      progressSummary: 'Stale progress',
+      childToolCalls: [child({ toolUseId: 'c1', toolName: 'Read', argSummary: 'auth.ts' })],
+    }))
+    expect(document.querySelector('.subagent-card-progress')).toBeNull()
+    expect(document.querySelector('.subagent-card-latest')).toBeTruthy()
+  })
+
+  it.each([
+    { status: 'done', icon: 'check' },
+    { status: 'rejected', icon: 'triangle-alert' },
+    { status: 'interrupted', icon: 'triangle-alert' },
+  ] as const)('uses a $icon shape instead of color alone for $status', ({ status, icon }) => {
+    renderCard(base({ status }))
+    expect(document.querySelector('.subagent-card-status-icon')).toBeTruthy()
+    expect(document.querySelector(`.lucide-${icon}`)).toBeTruthy()
+    expect(document.querySelector('.subagent-card-status-dot')).toBeNull()
+    expect(screen.getByRole('img', { name: `Subagent status: ${status}` })).toBeTruthy()
+  })
+
+  it.each<SubagentStatus>(['done', 'rejected', 'interrupted', 'dismissed'])(
+    'keeps only the summary header after %s',
+    (status) => {
+      renderCard(base({
+        status,
+        progressSummary: 'Stale progress',
+        result: { content: 'PARENT_RESULT', isError: status !== 'done' },
+        childToolCalls: [child({
+          toolUseId: 'c1',
+          toolName: 'Read',
+          argSummary: 'auth.ts',
+          status: 'running',
+          result: { content: 'CHILD_RESULT', isError: false },
+        })],
+      }), vi.fn())
+
+      expect(document.querySelector(`.subagent-card-${status}`)).toBeTruthy()
+      expect(document.querySelector('.subagent-card-header')).toBeTruthy()
+      expect(document.querySelector('.subagent-card-latest')).toBeNull()
+      expect(document.querySelector('.subagent-card-progress')).toBeNull()
+      expect(document.querySelector('.subagent-card-actions')).toBeNull()
+      expect(document.querySelector('details')).toBeNull()
+      expect(screen.queryByText('PARENT_RESULT')).toBeNull()
+      expect(screen.queryByText('CHILD_RESULT')).toBeNull()
+    },
+  )
+})
+
+describe('SubagentCard background action', () => {
+  it('backgrounds a synchronous running subagent by tool id', () => {
+    const backgroundTool = vi.fn()
+    renderCard(base({ status: 'running', isAsync: false }), backgroundTool)
+    fireEvent.click(screen.getByRole('button', { name: 'Background this subagent' }))
+    expect(backgroundTool).toHaveBeenCalledExactlyOnceWith('tu_sa')
+  })
+
+  it('hides the action for async or already-background subagents', () => {
+    renderCard(base({ status: 'background', isAsync: true }), vi.fn())
+    expect(screen.queryByRole('button', { name: 'Background this subagent' })).toBeNull()
+  })
+
+  it('hides the action when the host does not provide backgrounding', () => {
+    renderCard(base({ status: 'running', isAsync: false }))
+    expect(screen.queryByRole('button', { name: 'Background this subagent' })).toBeNull()
   })
 })

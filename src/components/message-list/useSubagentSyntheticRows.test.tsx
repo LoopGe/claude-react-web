@@ -29,6 +29,14 @@ function child(id: string, text: string, type = 'assistant'): TranscriptItem {
   } as TranscriptItem
 }
 
+function childWithBlocks(id: string, blocks: Array<Record<string, unknown>>): TranscriptItem {
+  const base = child(id, '')
+  return {
+    ...base,
+    msg: { ...base.msg, message: { role: 'assistant', content: blocks } } as unknown as SdkMessage,
+  }
+}
+
 /** A child user frame that is a tool_result, not a prompt echo. */
 function toolResultChild(id: string): TranscriptItem {
   return {
@@ -90,6 +98,7 @@ describe('useSubagentSyntheticRows: content', () => {
         'agent-1',
         record({
           isAsync: false,
+          status: 'done',
           startedAt: 1,
           endedAt: 9,
           result: {
@@ -110,11 +119,299 @@ describe('useSubagentSyntheticRows: content', () => {
     expect(row?.receivedAt).toBe(9)
   })
 
-  it('skips the result row for an async subagent (its reply already streamed)', () => {
+  it('appends an async notification result when no reply streamed as child text', () => {
     const { result } = renderHook(() =>
       useSubagentSyntheticRows(
         'agent-1',
-        record({ isAsync: true, result: { content: 'ack', isError: false } as ActiveSubagent['result'] }),
+        record({ status: 'done', isAsync: true, resultOrigin: 'notification', result: { content: 'notification result', isError: false } as ActiveSubagent['result'] }),
+        [toolResultChild('tr')],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.plainText).toBe('notification result')
+  })
+
+  it('keeps a genuine async main-thread tool_result available in detail', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'tool_result',
+          result: { content: 'real main-thread output', isError: false } as ActiveSubagent['result'],
+        }),
+        [],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.plainText).toBe('real main-thread output')
+  })
+
+  it('uses a summary when no fuller notification output is available', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'summary',
+          result: { content: 'all done', isError: false } as ActiveSubagent['result'],
+        }),
+        [],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.plainText).toBe('all done')
+  })
+
+  it('suppresses async launch metadata that is not a notification result', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          result: { content: 'Async agent launched successfully', isError: false } as ActiveSubagent['result'],
+        }),
+        [],
+      ),
+    )
+    expect(result.current.trailingItems).toBeUndefined()
+  })
+
+  it('keeps streamed output in its original sidechain instead of synthesizing it', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'streamed',
+          result: { content: 'uuid-less reply', isError: false } as ActiveSubagent['result'],
+        }),
+        [child('c-reply', 'uuid-less reply')],
+      ),
+    )
+    expect(result.current.trailingItems).toBeUndefined()
+  })
+
+  it('restores a streamed result when its original sidechain row is trimmed', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'streamed',
+          result: { content: 'trimmed reply', isError: false } as ActiveSubagent['result'],
+        }),
+        [],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.plainText).toBe('trimmed reply')
+  })
+
+  it('does not duplicate a notification whose reply spans multiple sidechain frames', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'notification',
+          result: { content: 'first half\n\nsecond half', isError: false } as ActiveSubagent['result'],
+        }),
+        [child('c-first', 'first half'), child('c-second', 'second half')],
+      ),
+    )
+    expect(result.current.trailingItems).toBeUndefined()
+  })
+
+  it('appends only the missing suffix when a full result repeats streamed progress', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'notification',
+          result: { content: 'Working on it\n\nFinal answer', isError: false } as ActiveSubagent['result'],
+        }),
+        [child('c-progress', 'Working on it')],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.plainText).toBe('Final answer')
+  })
+
+  it('keeps only supplemental blocks when sidechain text matches a mixed result', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          resultOrigin: 'tool_result',
+          result: { content: [{ type: 'text', text: 'captured image' }, image], isError: false } as ActiveSubagent['result'],
+        }),
+        [child('c-image', 'captured image')],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.msg.message?.content).toEqual([image])
+  })
+
+  it('omits non-text blocks already present in the sidechain', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          resultOrigin: 'tool_result',
+          result: { content: [{ type: 'text', text: 'captured image' }, image], isError: false } as ActiveSubagent['result'],
+        }),
+        [childWithBlocks('c-image', [{ type: 'text', text: 'captured image' }, image])],
+      ),
+    )
+    expect(result.current.trailingItems).toBeUndefined()
+  })
+
+  it('preserves block order when projecting a partially covered mixed result', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          resultOrigin: 'tool_result',
+          result: {
+            content: [{ type: 'text', text: 'Working' }, image, { type: 'text', text: 'Final answer' }],
+            isError: false,
+          } as ActiveSubagent['result'],
+        }),
+        [child('c-progress', 'Working')],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.msg.message?.content).toEqual([
+      image,
+      { type: 'text', text: 'Final answer' },
+    ])
+  })
+
+  it('retains intermediate text with trailing whitespace during projection', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          resultOrigin: 'tool_result',
+          result: {
+            content: [{ type: 'text', text: 'Working' }, { type: 'text', text: 'Final\n' }, { type: 'text', text: 'Appendix' }],
+            isError: false,
+          } as ActiveSubagent['result'],
+        }),
+        [child('c-progress', 'Working')],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.plainText).toBe('Final\n\nAppendix')
+    expect(result.current.trailingItems?.[0]?.msg.message?.content).toEqual([
+      { type: 'text', text: 'Final\n' },
+      { type: 'text', text: 'Appendix' },
+    ])
+  })
+
+  it('removes streamed progress followed by a single newline', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'notification',
+          result: { content: 'Working\nFinal answer', isError: false } as ActiveSubagent['result'],
+        }),
+        [child('c-progress', 'Working')],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.plainText).toBe('Final answer')
+  })
+
+  it('retains projected text blocks with leading whitespace', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          resultOrigin: 'tool_result',
+          result: {
+            content: [{ type: 'text', text: 'Working' }, { type: 'text', text: 'Final' }, { type: 'text', text: ' Appendix' }],
+            isError: false,
+          } as ActiveSubagent['result'],
+        }),
+        [child('c-progress', 'Working')],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.msg.message?.content).toEqual([
+      { type: 'text', text: 'Final' },
+      { type: 'text', text: ' Appendix' },
+    ])
+  })
+
+  it('does not duplicate a result after a single newline in the sidechain', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'notification',
+          result: { content: 'Final answer', isError: false } as ActiveSubagent['result'],
+        }),
+        [child('c-reply', 'Working\nFinal answer')],
+      ),
+    )
+    expect(result.current.trailingItems).toBeUndefined()
+  })
+
+  it('suppresses a stale error after a resultless successful recovery', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          resultOrigin: 'tool_result',
+          result: { content: 'stale failure', isError: true } as ActiveSubagent['result'],
+        }),
+        [],
+      ),
+    )
+    expect(result.current.trailingItems).toBeUndefined()
+  })
+
+  it('normalizes sidechain block boundaries before comparing results', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: true,
+          resultOrigin: 'notification',
+          result: { content: 'first half\n\nsecond half', isError: false } as ActiveSubagent['result'],
+        }),
+        [child('c-first', 'first half\n'), child('c-second', 'second half')],
+      ),
+    )
+    expect(result.current.trailingItems).toBeUndefined()
+  })
+
+  it('skips an interim async result while the subagent is still running', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({ status: 'running', isAsync: true, result: { content: 'interim reply', isError: false } as ActiveSubagent['result'] }),
         [],
       ),
     )
@@ -128,11 +425,60 @@ describe('useSubagentSyntheticRows: content', () => {
     expect(result.current.trailingItems).toBeUndefined()
   })
 
+  it('preserves the complete result in the detail view', () => {
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          result: { content: 'x'.repeat(5000), isError: false } as ActiveSubagent['result'],
+        }),
+        [],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.plainText).toHaveLength(5000)
+  })
+
+  it('preserves non-text blocks in a mixed result', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          result: { content: [{ type: 'text', text: 'captured image' }, image], isError: false } as ActiveSubagent['result'],
+        }),
+        [],
+      ),
+    )
+    const row = result.current.trailingItems?.[0]
+    expect(row?.plainText).toBe('captured image')
+    expect(row?.msg.message?.content).toEqual([{ type: 'text', text: 'captured image' }, image])
+  })
+
+  it('keeps an image-only result', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }
+    const { result } = renderHook(() =>
+      useSubagentSyntheticRows(
+        'agent-1',
+        record({
+          status: 'done',
+          isAsync: false,
+          result: { content: [image], isError: false } as ActiveSubagent['result'],
+        }),
+        [],
+      ),
+    )
+    expect(result.current.trailingItems?.[0]?.msg.message?.content).toEqual([image])
+  })
+
   it('skips a whitespace-only result', () => {
     const { result } = renderHook(() =>
       useSubagentSyntheticRows(
         'agent-1',
-        record({ isAsync: false, result: { content: '   \n ', isError: false } as ActiveSubagent['result'] }),
+        record({ status: 'done', isAsync: false, result: { content: '   \n ', isError: false } as ActiveSubagent['result'] }),
         [],
       ),
     )
@@ -169,6 +515,7 @@ describe('useSubagentSyntheticRows: referential stability (invariant I2)', () =>
     // toolCount}, status sweeps, TASKS_SNAPSHOT enrichment).
     const base = {
       isAsync: false as const,
+      status: 'done' as const,
       startedAt: 1,
       endedAt: 9,
       result: { content: 'the answer', isError: false } as ActiveSubagent['result'],
@@ -191,6 +538,7 @@ describe('useSubagentSyntheticRows: referential stability (invariant I2)', () =>
           'agent-1',
           record({
             isAsync: false,
+            status: 'done',
             result: { content: text, isError: false } as ActiveSubagent['result'],
           }),
           [],
@@ -201,6 +549,48 @@ describe('useSubagentSyntheticRows: referential stability (invariant I2)', () =>
     rerender({ text: 'second' })
     expect(result.current.trailingItems).not.toBe(before)
     expect(result.current.trailingItems?.[0]?.plainText).toBe('second')
+  })
+
+  it('keeps a projected block result stable when the record is re-cloned', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }
+    const base = {
+      status: 'done' as const,
+      isAsync: false,
+      resultOrigin: 'tool_result' as const,
+      result: {
+        content: [{ type: 'text', text: 'Working' }, image, { type: 'text', text: 'Final answer' }],
+        isError: false,
+      } as ActiveSubagent['result'],
+    }
+    const { result, rerender } = renderHook(
+      ({ rec }: { rec: ActiveSubagent }) => useSubagentSyntheticRows('agent-1', rec, [child('c-progress', 'Working')]),
+      { initialProps: { rec: record(base) } },
+    )
+    const before = result.current.trailingItems
+    rerender({ rec: record({ ...base, toolCount: 7 }) })
+    expect(result.current.trailingItems).toBe(before)
+  })
+
+  it('keeps a projected result stable across unrelated item updates', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }
+    const rec = record({
+      status: 'done',
+      isAsync: false,
+      resultOrigin: 'tool_result',
+      result: {
+        content: [{ type: 'text', text: 'Working' }, image, { type: 'text', text: 'Final answer' }],
+        isError: false,
+      } as ActiveSubagent['result'],
+    })
+    const sidechain = child('c-progress', 'Working')
+    const unrelated = { ...child('root', 'unrelated'), msg: { ...child('root', 'unrelated').msg, parent_tool_use_id: null } }
+    const { result, rerender } = renderHook(
+      ({ items }: { items: TranscriptItem[] }) => useSubagentSyntheticRows('agent-1', rec, items),
+      { initialProps: { items: [sidechain] } },
+    )
+    const before = result.current.trailingItems
+    rerender({ items: [sidechain, unrelated] })
+    expect(result.current.trailingItems).toBe(before)
   })
 
   it('keeps the returned object stable so downstream memos do not churn', () => {

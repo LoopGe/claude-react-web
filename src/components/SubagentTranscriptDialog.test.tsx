@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
+import { SubagentTranscriptBody } from './SubagentTranscriptBody'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { subagentStoreId } from '../hooks/useSubagentTranscriptStore'
 import { api } from '../hooks/useApi'
@@ -60,6 +61,90 @@ describe('SubagentTranscriptDialog', () => {
     expect(screen.getByText('review this diff')).toBeTruthy()
     // 工具卡:工具名出现(旧渲染器只有 "(non-text turn …)" 占位)
     expect(screen.getByText(/Bash/)).toBeTruthy()
+  })
+
+  it('renders a notification-only result in the disk transcript body', () => {
+    seedStore('s1', 'notification')
+    render(
+      <SubagentTranscriptBody
+        sessionId="s1"
+        agentId="notification"
+        subagent={{
+          toolUseId: 'tu-notification',
+          label: 'background agent',
+          status: 'done',
+          isAsync: true,
+          toolCount: 0,
+          resultOrigin: 'notification',
+          result: { content: 'notification-only answer', isError: false },
+        }}
+      />,
+    )
+    expect(screen.getByText('notification-only answer')).toBeTruthy()
+  })
+
+  it('does not duplicate a result already present in disk assistant rows', () => {
+    const store = sessionStoreRegistry.getOrCreate(subagentStoreId('s1', 'disk-reply'))
+    store.dispatch({
+      type: 'REPLAY_REPLACE',
+      permissions: [],
+      messages: [
+        { type: 'assistant', uuid: 'disk-final', restoredFromDisk: true, parent_tool_use_id: null, session_id: 's1', message: { role: 'assistant', content: [{ type: 'text', text: 'final answer' }] } },
+      ],
+    })
+    render(
+      <SubagentTranscriptBody
+        sessionId="s1"
+        agentId="disk-reply"
+        subagent={{
+          toolUseId: 'tu-disk-reply',
+          label: 'background agent',
+          status: 'done',
+          isAsync: true,
+          toolCount: 0,
+          resultOrigin: 'notification',
+          result: { content: 'final answer', isError: false },
+        }}
+      />,
+    )
+    expect(screen.getAllByText('final answer')).toHaveLength(1)
+  })
+
+  it('uses the session task record to restore a dialog result', () => {
+    seedStore('tasks-dialog', 'task-1')
+    const sessionStore = sessionStoreRegistry.getOrCreate('tasks-dialog')
+    sessionStore.dispatch({
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{
+        taskId: 'task-1', toolUseId: 'tu-task', description: 'background work', status: 'completed',
+        isBackgrounded: true, result: 'dialog notification answer', updatedAt: 9_000, endedAt: 9_000,
+      }],
+    })
+    render(<SubagentTranscriptDialog sessionId="tasks-dialog" agentId="task-1" label="background work" onClose={() => {}} />)
+    expect(screen.getByText('dialog notification answer')).toBeTruthy()
+  })
+
+  it('uses a late task result when the indexed record stayed resultless', () => {
+    seedStore('dismissed-dialog', 'task-late')
+    const sessionStore = sessionStoreRegistry.getOrCreate('dismissed-dialog')
+    sessionStore.dispatch({
+      type: 'REPLAY_REPLACE',
+      permissions: [],
+      messages: [{
+        type: 'assistant', uuid: 'agent-start', parent_tool_use_id: null,
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-late', name: 'Agent', input: { description: 'background work', prompt: 'work' } }] },
+      }],
+    })
+    sessionStore.dispatch({ type: 'DISMISS_SUBAGENT', toolUseId: 'tu-late' })
+    sessionStore.dispatch({
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{
+        taskId: 'task-late', toolUseId: 'tu-late', description: 'background work', status: 'completed',
+        isBackgrounded: true, result: 'late task output', updatedAt: 9_000, endedAt: 9_000,
+      }],
+    })
+    render(<SubagentTranscriptDialog sessionId="dismissed-dialog" agentId="task-late" label="background work" onClose={() => {}} />)
+    expect(screen.getByText('late task output')).toBeTruthy()
   })
 
   it('shows the empty state for a transcript-less agent (only after the REST bootstrap lands)', async () => {

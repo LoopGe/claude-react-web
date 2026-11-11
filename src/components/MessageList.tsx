@@ -24,6 +24,7 @@ import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
+import { consumesSubagentRootResult } from '../session-store/sidechain-index'
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
 import { useWorkflowContext } from '../hooks/useWorkflowContext'
@@ -510,33 +511,29 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     return set
   }, [items]))
 
-  // Subagent (Agent/Task/Explore) results are merged inline into SubagentCard
-  // once captured (record.result set). Fold those ids into the predicate so
-  // their standalone orphan bubble is suppressed — same merge treatment as a
-  // generic tool card. Only ids whose result has actually landed count; a
-  // still-running subagent has no result bubble to suppress yet.
+  // Subagent (Agent/Task/Explore) results belong to the detail view. Keep
+  // their ids in the consumed predicate so the main transcript doesn't also
+  // show a standalone result bubble. The compact SubagentCard itself does
+  // not render result content.
   const subagentCtx = useSubagentContext()
   const subagentResultIds = useStableSet(useMemo(() => {
     const set = new Set<string>()
     if (subagentCtx) {
       for (const [id, record] of subagentCtx.index) {
-        // A record with a captured result is merged into SubagentCard →
-        // suppress its standalone orphan. A 'background' record has had its
-        // launch-ack tool_result land (the ack IS the tool_result for this
-        // id), so the ack orphan must also be suppressed even though the ack
-        // text is deliberately NOT stored as `result` — the SubagentCard
-        // represents the subagent, and the ack is internal launch metadata.
-        // 'pending' (the post-turn-end form of 'background') and 'dismissed'
-        // (user stopped tracking a pending chip) suppress the ack orphan for
-        // the same reason — the card is still the subagent's surfacing.
-        if (record.result || record.status === 'background' || record.status === 'pending' || record.status === 'dismissed') set.add(id)
+        // Captured results and async launch metadata belong to the detail
+        // view. A resultless terminal record keeps its root result visible:
+        // it may be the only remaining copy after out-of-order replay.
+        if (consumesSubagentRootResult(record)) {
+          set.add(id)
+        }
       }
     }
     return set
   }, [subagentCtx]))
 
   // Workflow results are merged inline into WorkflowCard once captured
-  // (record.result set), exactly like subagent results into SubagentCard.
+  // (record.result set). Unlike subagent results, which now belong to the
+  // detail view, workflow results stay in their inline card.
   // Fold those ids into the predicate so the Workflow's synthesized tool_result
   // doesn't also render a standalone orphan bubble. Also fold in every child
   // agent's result id: a child's tool_result would otherwise surface as an
@@ -1359,7 +1356,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     // resolution we'd be stuck at message granularity.
     const isActiveItem =
       sami != null &&
-      sami >= 0 &&
+      (sami >= 0 || sami === -1000) &&
       item.itemIndex === sami
     const activeMatchInItem = isActiveItem ? samii : undefined
     // One-shot entrance animation for genuinely-new arrivals. The flag is
@@ -1421,7 +1418,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
         ? searchActiveMsgIdx
         : undefined
     const activeRowIdx =
-      searchActiveMsgIdx != null && searchActiveMsgIdx >= 0 && item.itemIndex === searchActiveMsgIdx
+      searchActiveMsgIdx != null && (searchActiveMsgIdx >= 0 || searchActiveMsgIdx === -1000) && item.itemIndex === searchActiveMsgIdx
         ? searchActiveMsgIdx
         : undefined
     // Only forward `searchQuery` to rows that actually carry a match (or

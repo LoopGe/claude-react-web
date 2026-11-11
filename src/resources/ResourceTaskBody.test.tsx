@@ -19,8 +19,8 @@ vi.mock('../session-store/selectors', () => ({
 }))
 vi.mock('./context', () => ({ useOptionalOpenResource: () => mockOpen }))
 vi.mock('../components/SubagentTranscriptBody', () => ({
-  SubagentTranscriptBody: ({ sessionId, agentId }: { sessionId: string; agentId: string }) => (
-    <div data-testid="transcript">
+  SubagentTranscriptBody: ({ sessionId, agentId, suppressResult }: { sessionId: string; agentId: string; suppressResult?: boolean }) => (
+    <div data-testid="transcript" data-suppress-result={String(suppressResult)}>
       {sessionId}:{agentId}
     </div>
   ),
@@ -83,6 +83,7 @@ describe('ResourceTaskBody', () => {
     ]
     render(<ResourceTaskBody address={taskResource('s1', 'agent-2')} />)
     expect(screen.getByTestId('transcript').textContent).toBe('s1:agent-2')
+    expect(screen.getByTestId('transcript').dataset.suppressResult).toBe('true')
     expect(screen.getByText('final answer')).toBeTruthy()
     expect(screen.getByRole('button', { name: /open agent/i })).toBeTruthy()
   })

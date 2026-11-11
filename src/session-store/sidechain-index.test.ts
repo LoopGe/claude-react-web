@@ -130,6 +130,51 @@ describe('updateSidechainIndexMirror: Subagent seed/result/child folds', () => {
     expect(m.activeSubagents.get('tu_a')?.status).toBe('interrupted')
   })
 
+  it('preserves a canonical mixed main-thread result alongside matching streamed text', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'captured image' }], 'c-image', 'tu_a', 4_000))
+    const content = [
+      { type: 'text', text: 'captured image' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+    ]
+    m = updateSidechainIndexMirror(m, user([toolResult('tu_a', { content })], 'u-main', null, 9_000))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content, isError: false },
+      resultOrigin: 'tool_result',
+    })
+  })
+
+  it('does not let an older main-thread result overwrite a newer completion', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 9_000, result: { content: 'final answer', isError: false }, resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, user([toolResult('tu_a', { content: 'older output' })], 'u-old', null, 5_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      endedAt: 9_000,
+      result: { content: 'final answer', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('ignores an older main-thread result after a resultless completion', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 9_000, resultOrigin: 'async_metadata',
+    })
+    const after = updateSidechainIndexMirror(m, user([toolResult('tu_a', { content: 'older output' })], 'u-old', null, 5_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      endedAt: 9_000,
+      resultOrigin: 'async_metadata',
+    })
+    expect(after.activeSubagents.get('tu_a')?.result).toBeUndefined()
+  })
+
   it('preserves startedAt and isAsync across a replay re-encounter (no clobber)', () => {
     let m = fresh()
     m = updateSidechainIndexMirror(m, agentStart('tu_a'))
@@ -141,6 +186,12 @@ describe('updateSidechainIndexMirror: Subagent seed/result/child folds', () => {
       startedAt: 999,
       endedAt: 1_999,
       isAsync: true,
+      result: { content: [{ type: 'text', text: 'streamed output' }], isError: false },
+      resultOrigin: 'streamed',
+      childToolCalls: [{ toolUseId: 'child-1', toolName: 'Read', argSummary: 'a.ts', status: 'success' }],
+      taskId: 't-1',
+      progressSummary: 'Checking output',
+      lastToolName: 'Read',
     })
     m = { ...m, activeSubagents: settled }
     // Re-encounter the same tool_use: identity fields refresh but lifecycle
@@ -151,6 +202,12 @@ describe('updateSidechainIndexMirror: Subagent seed/result/child folds', () => {
     expect(rec?.startedAt).toBe(999)
     expect(rec?.endedAt).toBe(1_999)
     expect(rec?.isAsync).toBe(true)
+    expect(rec?.result).toEqual({ content: [{ type: 'text', text: 'streamed output' }], isError: false })
+    expect(rec?.resultOrigin).toBe('streamed')
+    expect(rec?.childToolCalls).toEqual([{ toolUseId: 'child-1', toolName: 'Read', argSummary: 'a.ts', status: 'success' }])
+    expect(rec?.taskId).toBe('t-1')
+    expect(rec?.progressSummary).toBe('Checking output')
+    expect(rec?.lastToolName).toBe('Read')
   })
 
   it('indexes child tool calls from sidechain assistant frames and flips them on their result', () => {
@@ -164,9 +221,532 @@ describe('updateSidechainIndexMirror: Subagent seed/result/child folds', () => {
     expect(rec?.toolCount).toBe(1)
     // Child result flips the row to success and captures the payload.
     m = updateSidechainIndexMirror(m, user([toolResult('tu_child', { content: 'file.txt' })], 'u-child', 'tu_a'))
-    const after = m.activeSubagents.get('tu_a')
-    expect(after?.childToolCalls?.[0]?.status).toBe('success')
-    expect(after?.childToolCalls?.[0]?.result).toEqual({ content: 'file.txt', isError: false })
+    const after = m.activeSubagents.get('tu_a')!
+    expect(after.childToolCalls?.[0]?.status).toBe('success')
+    expect(after.childToolCalls?.[0]?.result).toEqual({ content: 'file.txt', isError: false })
+
+    const replayed = updateSidechainIndexMirror(m, assistant([toolUse('Bash', 'tu_child', { command: 'ls' })], 'a-child', 'tu_a'))
+    expect(replayed.activeSubagents.get('tu_a')?.toolCount).toBe(1)
+    expect(replayed.activeSubagents.get('tu_a')?.childToolCalls).toHaveLength(1)
+  })
+
+  it('tracks streamed result provenance and clears it for a main-thread result', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'streamed reply' }], 'a-reply', 'tu_a'))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'streamed reply' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+
+    m = updateSidechainIndexMirror(m, user([toolResult('tu_a', { content: 'main result' })], 'u-main'))
+    expect(m.activeSubagents.get('tu_a')?.resultOrigin).toBe('tool_result')
+  })
+
+  it('preserves streamed output and provenance when a summary-only notification follows a terminal snapshot', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a',
+      label: 'do work',
+      status: 'done',
+      isAsync: true,
+      toolCount: 0,
+      childToolCalls: [],
+      result: { content: [{ type: 'text', text: 'real output' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'system',
+      subtype: 'task_notification',
+      uuid: 'n-1',
+      task_id: 't-1',
+      tool_use_id: 'tu_a',
+      status: 'completed',
+      summary: 'all done',
+      receivedAt: 9_000,
+    } as unknown as SdkMessage)
+
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      resultOrigin: 'streamed',
+      result: { content: [{ type: 'text', text: 'real output' }], isError: false },
+    })
+  })
+
+  it('lets a matching late streamed source supersede a notification result instead of duplicating it', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a',
+      label: 'do work',
+      status: 'done',
+      isAsync: true,
+      toolCount: 0,
+      childToolCalls: [],
+      result: { content: 'notification output', isError: false },
+      resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'notification output' }], 'c-late', 'tu_a'))
+
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'notification output' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('lets streamed output supersede a detach-ack result before notification', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a',
+      label: 'do work',
+      status: 'done',
+      isAsync: true,
+      toolCount: 0,
+      childToolCalls: [],
+      result: { content: 'detached', isError: false },
+      resultOrigin: 'async_metadata',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'streamed output' }], 'c-late', 'tu_a'))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'streamed output' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('does not replace a full notification result with a later summary-only notification', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a',
+      label: 'do work',
+      status: 'done',
+      isAsync: true,
+      toolCount: 0,
+      childToolCalls: [],
+      result: { content: 'the full final report', isError: false },
+      resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-summary', task_id: 't-1', tool_use_id: 'tu_a',
+      status: 'completed', summary: 'all done', receivedAt: 9_000,
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: 'the full final report', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('does not erase a notification result for an empty late text block', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a',
+      label: 'do work',
+      status: 'done',
+      isAsync: true,
+      toolCount: 0,
+      childToolCalls: [],
+      result: { content: 'notification output', isError: false },
+      resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: '' }], 'c-empty', 'tu_a'))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: 'notification output', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('does not let older sidechain text supersede a newer notification result', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a',
+      label: 'do work',
+      status: 'done',
+      isAsync: true,
+      toolCount: 0,
+      childToolCalls: [],
+      endedAt: 9_000,
+      result: { content: 'notification output', isError: false },
+      resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'older progress' }], 'c-old', 'tu_a', 5_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: 'notification output', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('accepts an identical streamed source even when replay delivers it after the notification', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a',
+      label: 'do work',
+      status: 'done',
+      isAsync: true,
+      toolCount: 0,
+      childToolCalls: [],
+      endedAt: 9_000,
+      result: { content: 'same output', isError: false },
+      resultOrigin: 'summary',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'same output' }], 'c-same', 'tu_a', 5_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'same output' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('lets a full notification replace earlier streamed progress', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'background',
+      isAsync: true,
+    })
+    m = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'Working on it' }], 'c-progress', 'tu_a', 4_000))
+    m = updateSidechainIndexMirror(m, {
+      type: 'user', uuid: 'n-final', parent_tool_use_id: null, receivedAt: 9_000,
+      message: { role: 'user', content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu_a</tool-use-id><status>completed</status><result>final answer</result></task-notification>' },
+    } as unknown as SdkMessage)
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'final answer', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('does not replace a synchronous main-thread result with a summary-only notification', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a',
+      label: 'do work',
+      status: 'done',
+      isAsync: false,
+      toolCount: 0,
+      childToolCalls: [],
+      result: { content: 'full synchronous result', isError: false },
+      resultOrigin: 'tool_result',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-summary', task_id: 't-1', tool_use_id: 'tu_a',
+      status: 'completed', summary: 'all done', receivedAt: 9_000,
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')?.result).toEqual({ content: 'full synchronous result', isError: false })
+  })
+
+  it('settles an early summary but still lets the canonical main tool_result win', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', { ...m.activeSubagents.get('tu_a')!, isAsync: false })
+    m = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-early', task_id: 't-1', tool_use_id: 'tu_a',
+      status: 'completed', summary: 'early done', receivedAt: 5_000,
+    } as unknown as SdkMessage)
+    expect(m.activeSubagents.get('tu_a')?.status).toBe('done')
+
+    m = updateSidechainIndexMirror(m, user([toolResult('tu_a', { content: 'main output' })], 'u-main', null, 10_000))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'main output', isError: false },
+    })
+  })
+
+  it('lets a full notification complete a synchronous record when its main result is lost', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'running', isAsync: false, toolCount: 0, childToolCalls: [],
+    })
+    const withSummary = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-early', task_id: 't-1', tool_use_id: 'tu_a',
+      status: 'completed', summary: 'early summary', receivedAt: 5_000,
+    } as unknown as SdkMessage)
+    expect(withSummary.activeSubagents.get('tu_a')?.status).toBe('done')
+    const after = updateSidechainIndexMirror(withSummary, {
+      type: 'user', uuid: 'n-full', parent_tool_use_id: null, receivedAt: 9_000,
+      message: { role: 'user', content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu_a</tool-use-id><status>completed</status><summary>done</summary><result>notification output</result></task-notification>' },
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'notification output', isError: false },
+      resultOrigin: 'notification',
+    })
+
+    const canonical = updateSidechainIndexMirror(after, user([toolResult('tu_a', { content: 'canonical output' })], 'u-main', null, 10_000))
+    expect(canonical.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'canonical output', isError: false },
+      resultOrigin: 'tool_result',
+    })
+  })
+
+  it('maps a stopped notification with output to done and non-error', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'background', isAsync: true, toolCount: 0, childToolCalls: [],
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'user', uuid: 'n-stop', parent_tool_use_id: null, receivedAt: 9_000,
+      message: { role: 'user', content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu_a</tool-use-id><status>stopped</status><summary>stopped</summary><result>partial output</result></task-notification>' },
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'partial output', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('does not replace an existing failure with a stopped notification result', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'interrupted', isAsync: true, toolCount: 0, childToolCalls: [],
+      result: { content: 'original failure', isError: true }, resultOrigin: 'tool_result',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'user', uuid: 'n-stop', parent_tool_use_id: null, receivedAt: 9_000,
+      message: { role: 'user', content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu_a</tool-use-id><status>stopped</status><summary>stopped</summary><result>partial output</result></task-notification>' },
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'interrupted',
+      result: { content: 'original failure', isError: true },
+    })
+  })
+
+  it('keeps a summary-only stopped notification interrupted', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'background', isAsync: true, toolCount: 0, childToolCalls: [],
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-stop', task_id: 't-1', tool_use_id: 'tu_a',
+      status: 'stopped', summary: 'Task stopped', receivedAt: 9_000,
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')?.status).toBe('interrupted')
+  })
+
+  it('does not replace a successful main-thread result with stopped partial output', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: false, toolCount: 0, childToolCalls: [],
+      endedAt: 5_000, result: { content: 'full report', isError: false }, resultOrigin: 'tool_result',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'user', uuid: 'n-stopped', parent_tool_use_id: null, receivedAt: 9_000,
+      message: { role: 'user', content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu_a</tool-use-id><status>stopped</status><result>partial</result></task-notification>' },
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'full report', isError: false },
+      resultOrigin: 'tool_result',
+    })
+  })
+
+  it('does not replace a settled streamed answer with stopped partial output', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 5_000, result: { content: [{ type: 'text', text: 'final report' }], isError: false }, resultOrigin: 'streamed',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'user', uuid: 'n-stopped-streamed', parent_tool_use_id: null, receivedAt: 9_000,
+      message: { role: 'user', content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu_a</tool-use-id><status>stopped</status><result>partial</result></task-notification>' },
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'final report' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('does not replace a richer main-thread result with identical notification text', () => {
+    const content = [
+      { type: 'text', text: 'report' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } },
+    ]
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: false, toolCount: 0, childToolCalls: [],
+      endedAt: 5_000, result: { content, isError: false }, resultOrigin: 'tool_result',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'user', uuid: 'n-same', parent_tool_use_id: null, receivedAt: 9_000,
+      message: { role: 'user', content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu_a</tool-use-id><status>completed</status><result>report</result></task-notification>' },
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content, isError: false },
+      resultOrigin: 'tool_result',
+    })
+  })
+
+  it('ignores an older failed notification after a newer completion', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 9_000, result: { content: 'final answer', isError: false }, resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-old', task_id: 't-1', tool_use_id: 'tu_a',
+      status: 'failed', summary: 'older failure', receivedAt: 5_000,
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      endedAt: 9_000,
+      result: { content: 'final answer', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('does not replace a genuine async main-thread result with later sidechain progress', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 5_000, result: { content: 'canonical report', isError: false }, resultOrigin: 'tool_result',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'earlier progress' }], 'c-progress', 'tu_a', 9_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: 'canonical report', isError: false },
+      resultOrigin: 'tool_result',
+    })
+  })
+
+  it('accepts a historical completion after a timestampless child frame', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = updateSidechainIndexMirror(m, {
+      ...assistant([{ type: 'text', text: 'timeless output' }], 'c-timeless', 'tu_a'),
+      receivedAt: undefined,
+    })
+    m = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-historical', task_id: 't-1', tool_use_id: 'tu_a',
+      status: 'completed', summary: 'done', receivedAt: 5_000,
+    } as unknown as SdkMessage)
+    expect(m.activeSubagents.get('tu_a')?.status).toBe('done')
+  })
+
+  it('does not let equal-timestamp streamed progress replace a terminal result', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 9_000, result: { content: 'final answer', isError: false }, resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'earlier progress' }], 'c-progress', 'tu_a', 9_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: 'final answer', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('keeps a full notification when delayed text is only its progress prefix', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 9_000, result: { content: 'Working\n\nFinal', isError: false }, resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'Working' }], 'c-progress', 'tu_a', 10_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: 'Working\n\nFinal', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('lets the original final response supersede an older summary', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 9_000, result: { content: 'all done', isError: false }, resultOrigin: 'summary',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'actual final response' }], 'c-final', 'tu_a', 5_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'actual final response' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('lets timestampless streamed output supersede a notification during replay', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 5_000, result: { content: 'short report', isError: false }, resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      ...assistant([{ type: 'text', text: 'full final report' }], 'c-final', 'tu_a'),
+      receivedAt: undefined,
+    })
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'full final report' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('lets a newer full streamed result supersede a repackaged notification', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'done', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 5_000, result: { content: 'short report', isError: false }, resultOrigin: 'notification',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'full final report' }], 'c-final', 'tu_a', 9_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'full final report' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('replaces stale stopped output when a real completion arrives', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'interrupted', isAsync: true, toolCount: 0, childToolCalls: [],
+      result: { content: 'Task stopped', isError: true }, resultOrigin: 'summary',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'user', uuid: 'n-real', parent_tool_use_id: null, receivedAt: 9_000,
+      message: { role: 'user', content: '<task-notification><task-id>t-1</task-id><tool-use-id>tu_a</tool-use-id><status>completed</status><summary>done</summary><result>actual output</result></task-notification>' },
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'actual output', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('lets late streamed output supersede an interrupted summary', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'interrupted', isAsync: true, toolCount: 0, childToolCalls: [],
+      endedAt: 5_000, result: { content: 'Task stopped', isError: true }, resultOrigin: 'summary',
+    })
+    const after = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'final answer' }], 'c-final', 'tu_a', 9_000))
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'final answer' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('lets a late completed summary recover a synchronous interrupted record', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'interrupted', isAsync: false, toolCount: 0, childToolCalls: [],
+      result: { content: 'stopped', isError: true }, resultOrigin: 'summary',
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-recover', task_id: 't-1', tool_use_id: 'tu_a',
+      status: 'completed', summary: 'actual output', receivedAt: 9_000,
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'actual output', isError: false },
+      resultOrigin: 'summary',
+    })
+  })
+
+  it('marks string-shaped sidechain assistant content as streamed output', () => {
+    const m = fresh()
+    m.activeSubagents.set('tu_a', {
+      toolUseId: 'tu_a', label: 'do work', status: 'running', isAsync: true, toolCount: 0, childToolCalls: [],
+    })
+    const after = updateSidechainIndexMirror(m, {
+      type: 'assistant', uuid: 'c-string', parent_tool_use_id: 'tu_a', receivedAt: 5_000,
+      message: { role: 'assistant', content: 'string output' },
+    } as unknown as SdkMessage)
+    expect(after.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'string output' }], isError: false },
+      resultOrigin: 'streamed',
+    })
   })
 
   it('extends endedAt to the latest child frame for a live record', () => {
@@ -308,6 +888,28 @@ describe('updateSidechainIndexMirror: launch-ack skipping', () => {
     expect(m.activeSubagents.get('tu_a')?.endedAt).toBeUndefined()
   })
 
+  it('marks a skipped launch ack as async metadata without settling the record', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = updateSidechainIndexMirror(m, launchAck('tu_a'))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'running',
+      result: undefined,
+      resultOrigin: 'async_metadata',
+    })
+  })
+
+  it('marks a launch ack as metadata even after the subagent was dismissed', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = dismissSubagent({ ...createInitialSessionState('s1'), mirror: m }, 'tu_a').mirror
+    m = updateSidechainIndexMirror(m, launchAck('tu_a'))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'dismissed',
+      resultOrigin: 'async_metadata',
+    })
+  })
+
   it('a non-ack tool_result still settles the record', () => {
     let m = fresh()
     m = updateSidechainIndexMirror(m, agentStart('tu_a'))
@@ -433,6 +1035,362 @@ describe('applyTasksSnapshot: isAsync authority', () => {
     expect(m.activeSubagents.get('tu_a')?.status).toBe('done')
     // isAsync stays true (the snapshot wrote it for the terminal record too).
     expect(m.activeSubagents.get('tu_a')?.isAsync).toBe(true)
+  })
+
+  it('captures a terminal task result when no child text or notification arrived', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'running', isBackgrounded: true },
+    ]))
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: true, result: 'snapshot output' },
+    ]))
+
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'snapshot output', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('keeps a stopped task with output done and its result non-error', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'running', isBackgrounded: true },
+    ]))
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'stopped', isBackgrounded: true, result: 'partial output' },
+    ]))
+
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'partial output', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('does not mark an already-failed record done on a stopped snapshot', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'interrupted',
+      isAsync: true,
+      result: { content: 'boom', isError: true },
+      resultOrigin: 'tool_result',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'stopped', isBackgrounded: true },
+    ]))
+    expect(m.activeSubagents.get('tu_a')?.status).toBe('interrupted')
+  })
+
+  it('does not replace an existing failure with partial stopped output', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'interrupted',
+      isAsync: true,
+      result: { content: 'original failure', isError: true },
+      resultOrigin: 'tool_result',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'stopped', isBackgrounded: true, result: 'partial output' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'interrupted',
+      result: { content: 'original failure', isError: true },
+    })
+  })
+
+  it('lets a completed snapshot replace a stale error result', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'interrupted',
+      isAsync: true,
+      result: { content: 'stopped', isError: true },
+      resultOrigin: 'summary',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: true, result: 'real output' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'real output', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('lets a terminal snapshot replace a summary with the full result', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'done',
+      isAsync: true,
+      result: { content: 'done', isError: false },
+      resultOrigin: 'summary',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: true, result: 'full final report' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'full final report', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('aligns an already-settled record with a failed terminal snapshot', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'done',
+      isAsync: true,
+      result: { content: 'detached', isError: false },
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'failed', isBackgrounded: true, result: 'boom' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'interrupted',
+      result: { content: 'boom', isError: true },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('recovers a synchronous subagent from a terminal snapshot carrying its result', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', { ...m.activeSubagents.get('tu_a')!, isAsync: false })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: false, result: 'snapshot output' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'snapshot output', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('lets a completed snapshot replace a successful main-thread result with the full output', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'done',
+      isAsync: false,
+      result: { content: 'short result', isError: false },
+      resultOrigin: 'tool_result',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: false, result: 'full final report' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'full final report', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('lets a completed snapshot recover identical errored text as successful output', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'interrupted',
+      isAsync: false,
+      result: { content: 'boom', isError: true },
+      resultOrigin: 'tool_result',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: false, result: 'boom' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'boom', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('uses terminal updatedAt to reject a stale snapshot without endedAt', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'done',
+      isAsync: true,
+      endedAt: 5_000,
+      result: { content: 'short report', isError: false },
+      resultOrigin: 'notification',
+    })
+    const snapshot = tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: true, result: 'short report', updatedAt: 5_000 },
+    ])
+    m = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'full final report' }], 'c-final', 'tu_a', 9_000))
+    m = applyTasksSnapshot(m, snapshot)
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      endedAt: 9_000,
+      result: { content: [{ type: 'text', text: 'full final report' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('preserves result identity when a terminal snapshot repeats identical output', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'done',
+      isAsync: true,
+      endedAt: 5_000,
+      result: { content: 'final report', isError: false },
+      resultOrigin: 'notification',
+    })
+    const before = m.activeSubagents.get('tu_a')?.result
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: true, result: 'final report', endedAt: 5_000 },
+    ]))
+    expect(m.activeSubagents.get('tu_a')?.result).toBe(before)
+  })
+
+  it('does not let a repeated terminal snapshot undo newer streamed output', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', { ...m.activeSubagents.get('tu_a')!, isAsync: true })
+    const snapshot = tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: true, result: 'short report', endedAt: 5_000 },
+    ])
+    m = applyTasksSnapshot(m, snapshot)
+    m = updateSidechainIndexMirror(m, assistant([{ type: 'text', text: 'full final report' }], 'c-final', 'tu_a', 9_000))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      endedAt: 9_000,
+      resultOrigin: 'streamed',
+    })
+
+    m = applyTasksSnapshot(m, snapshot)
+
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      endedAt: 9_000,
+      result: { content: [{ type: 'text', text: 'full final report' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('does not let a stopped snapshot replace a settled streamed answer', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'done',
+      isAsync: true,
+      endedAt: 5_000,
+      result: { content: [{ type: 'text', text: 'final report' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'stopped', isBackgrounded: true, result: 'partial', endedAt: 9_000 },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: [{ type: 'text', text: 'final report' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+  })
+
+  it('lets a completed snapshot replace earlier streamed progress with the full output', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'done',
+      isAsync: true,
+      result: { content: [{ type: 'text', text: 'Working on it' }], isError: false },
+      resultOrigin: 'streamed',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: true, result: 'full final report' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      result: { content: 'full final report', isError: false },
+      resultOrigin: 'notification',
+    })
+  })
+
+  it('settles a synchronous failure without a result as interrupted', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', { ...m.activeSubagents.get('tu_a')!, isAsync: false })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'failed', isBackgrounded: false },
+    ]))
+    expect(m.activeSubagents.get('tu_a')?.status).toBe('interrupted')
+  })
+
+  it('recovers an interrupted synchronous subagent from a completed resultless snapshot', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'interrupted',
+      isAsync: false,
+      result: { content: 'stale failure', isError: true },
+      resultOrigin: 'tool_result',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: false },
+    ]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      result: { content: 'stale failure', isError: true },
+      resultOrigin: 'tool_result',
+    })
+  })
+
+  it('leaves a running synchronous subagent live on a completed resultless snapshot', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', { ...m.activeSubagents.get('tu_a')!, isAsync: false })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: false },
+    ]))
+    expect(m.activeSubagents.get('tu_a')?.status).toBe('running')
+  })
+
+  it('does not treat a summary as captured output when settling a stopped task', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      status: 'interrupted',
+      isAsync: true,
+      result: { content: 'stopped', isError: true },
+      resultOrigin: 'summary',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'stopped', isBackgrounded: true },
+    ]))
+    expect(m.activeSubagents.get('tu_a')?.status).toBe('interrupted')
+  })
+
+  it('does not capture a new terminal result after the user dismissed tracking', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'running', isBackgrounded: true },
+    ]))
+    m = dismissSubagent({ ...createInitialSessionState('s1'), mirror: m }, 'tu_a').mirror
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'completed', isBackgrounded: true, result: 'late output' },
+    ]))
+
+    expect(m.activeSubagents.get('tu_a')?.status).toBe('dismissed')
+    expect(m.activeSubagents.get('tu_a')?.result).toBeUndefined()
   })
 
   it('preserves existing isAsync when the snapshot omits isBackgrounded', () => {

@@ -57,9 +57,9 @@ export type SubagentStatus = 'running' | 'background' | 'pending' | 'dismissed' 
 export type SubagentChildStatus = 'running' | 'success' | 'error'
 
 /** One tool call executed INSIDE a subagent (Bash / Read / Grep / Edit / …),
- *  indexed per-parent so SubagentCard can render a structured child-call list
- *  without re-scanning the transcript. The subagent analogue of a single row
- *  in WorkflowRecord.childAgents, but for the subagent's OWN internal tool
+ *  indexed per-parent so SubagentCard can select current activity without
+ *  re-scanning the transcript. The subagent analogue of a single row in
+ *  WorkflowRecord.childAgents, but for the subagent's OWN internal tool
  *  calls rather than nested sub-subagents.
  *
  *  Populated incrementally in the reducer (updateIndexesMirror): the tool_use
@@ -77,8 +77,8 @@ export interface SubagentChildCall {
   status: SubagentChildStatus
   startedAt?: number
   endedAt?: number
-  /** Captured tool_result payload — lets a row expand to show the result
-   *  inline. Set when the matching tool_result lands. */
+  /** Captured tool_result payload retained with the child lifecycle record.
+   *  Detail rows render through mirror.toolResults, not the compact card. */
   result?: ToolResultEntry
 }
 
@@ -88,6 +88,9 @@ export interface ActiveSubagent {
   startedAt?: number
   /** Set when the matching tool_result lands. Undefined while running. */
   endedAt?: number
+  /** True when endedAt was estimated from a timestampless frame. Stale-frame
+   *  ordering checks only compare timestamps supplied by real frames. */
+  endedAtEstimated?: boolean
   /** Lifecycle status. Drives the popover-row color and the overlay header.
    *
    *  `background` is exclusive to async/background subagents: their Agent
@@ -136,11 +139,15 @@ export interface ActiveSubagent {
    *  SubagentCard surfaces it as an async/sync chip. */
   isAsync?: boolean
   /** Captured tool_result payload of the subagent call itself (the Agent/
-   *  Task/Explore result that lands on the MAIN thread). Set when the
-   *  matching tool_result arrives. Lets SubagentCard render the subagent's
-   *  returned output inline at the bottom of the card — same merge pattern
-   *  as generic ToolCard, so the standalone orphan bubble is suppressed. */
+   *  Task/Explore result that lands on the MAIN thread). Used by the detail
+   *  view's terminal result row and by MessageList's orphan-result suppression;
+   *  the compact SubagentCard deliberately does not render it. */
   result?: ToolResultEntry
+  /** Provenance of `result`. Streamed text, main-thread tool_results, and
+   *  task-notification output are renderable in the detail view; 'summary' is
+   *  a summary-only notification that a terminal snapshot may enrich. Legacy
+   *  async main-thread metadata without an origin is not synthesized. */
+  resultOrigin?: 'streamed' | 'notification' | 'summary' | 'tool_result' | 'async_metadata'
   /** The matching TaskRecordUi.taskId, joined in when a tasks-snapshot
    *  arrives carrying this record's tool_use_id. Enables the TasksPanel
    *  stop button to target this subagent. Undefined for sync subagents
@@ -154,11 +161,10 @@ export interface ActiveSubagent {
    *  the WorkingBubble pill's popover. */
   lastToolName?: string
   /** Structured list of the tool calls this subagent ran internally, in
-   *  arrival order. Drives SubagentCard's expandable child-call list (方案B)
-   *  so the card can show "which tools ran, each with its status + result"
-   *  without re-scanning the transcript. Empty until the first child tool_use
-   *  frame arrives. Indexed the same way WorkflowRecord.childAgents is, but
-   *  keyed to this subagent's own internal tools. Optional so pre-existing
+   *  arrival order. The compact card reads only the newest active call; the
+   *  complete lifecycle records remain available for detail rendering and
+   *  replay. Indexed the same way WorkflowRecord.childAgents is, but keyed to
+   *  this subagent's own internal tools. Optional so pre-existing
    *  ActiveSubagent literals (tests, older serialized state) stay valid; the
    *  reducer always writes an array and readers default to []. */
   childToolCalls?: SubagentChildCall[]

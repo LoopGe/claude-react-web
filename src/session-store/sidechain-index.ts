@@ -77,6 +77,59 @@ export function sweepRunningChildCalls(
 // Identity-stable: returns the original mirror when nothing touched the three
 // sidechain maps (the common case — most frames carry no sidechain blocks).
 
+function comparableResultText(content: unknown): string {
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return ''
+  return content
+    .filter((b): b is { type: 'text'; text: string } =>
+      b != null && typeof b === 'object' && (b as { type?: unknown }).type === 'text' && typeof (b as { text?: unknown }).text === 'string',
+    )
+    .map((b) => b.text)
+    .join('\n\n')
+    .trim()
+}
+
+function isTextOnlyResult(content: unknown): boolean {
+  if (typeof content === 'string') return true
+  return Array.isArray(content) && content.every((b) =>
+    b != null && typeof b === 'object' && (b as { type?: unknown }).type === 'text',
+  )
+}
+
+function shouldWriteTerminalResult(
+  record: ActiveSubagent,
+  status: string,
+  text: string,
+  fullResult: boolean,
+): boolean {
+  if (!text.trim()) return false
+  const existing = record.result
+  if (status === 'stopped' && record.status === 'done' && existing && !existing.isError &&
+    (record.resultOrigin === 'notification' || record.resultOrigin === 'tool_result' || record.resultOrigin === 'streamed')) {
+    return false
+  }
+  if (record.resultOrigin === 'streamed') {
+    if (comparableResultText(existing?.content) === text.trim()) return false
+    if (!fullResult) return false
+  }
+  if (record.resultOrigin === 'notification' && existing && !existing.isError &&
+    comparableResultText(existing.content) === text.trim()) return false
+  if (record.resultOrigin === 'notification' && !fullResult && existing &&
+    !(status === 'completed' && existing.isError)) return false
+  if (record.resultOrigin === 'tool_result') {
+    if (!existing?.isError && comparableResultText(existing?.content) === text.trim()) return false
+    if (!fullResult && !(status === 'completed' && existing?.isError)) return false
+  }
+  if (existing?.isError && status !== 'completed') return false
+  return fullResult || !existing || record.status === 'done' ||
+    (record.status === 'interrupted' && status === 'completed')
+}
+
+export function consumesSubagentRootResult(record: ActiveSubagent): boolean {
+  return record.result != null || record.resultOrigin === 'async_metadata' ||
+    record.status === 'background' || record.status === 'pending'
+}
+
 export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMessage): ServerMirror {
   let changed = false
   let activeSubagents = mirror.activeSubagents
@@ -107,6 +160,12 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
         // TASKS_SNAPSHOT is the sole isAsync authority, so preserve any
         // existing value across replay re-encounters.
         isAsync: existing?.isAsync ?? subagent.isAsync,
+        result: existing?.result,
+        resultOrigin: existing?.resultOrigin,
+        childToolCalls: existing?.childToolCalls ?? subagent.childToolCalls,
+        taskId: existing?.taskId,
+        progressSummary: existing?.progressSummary,
+        lastToolName: existing?.lastToolName,
       })
     }
     changed = true
@@ -117,12 +176,10 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
     // Don't delete on tool_result — keep the record around so the
     // overlay can be reopened after completion. Flip status to 'done'
     // ('interrupted' when the result carries is_error, so a failed
-    // subagent doesn't show a green check) and stamp endedAt. Also
-    // capture the result payload so SubagentCard can merge the
-    // subagent's returned output inline at the bottom of the card —
-    // mirrors the generic ToolCard merge. The "running"/"background"
-    // filter elsewhere drops completed subagents from the WorkingBubble's
-    // subagent pill automatically.
+    // subagent doesn't show a green check) and stamp endedAt. Capture the
+    // result for the detail view's terminal row and for MessageList's
+    // standalone-result suppression. The "running"/"background" filter
+    // elsewhere drops completed subagents from the WorkingBubble's pill.
     //
     // EXCEPTION — async/background launch ack: an async subagent's Agent
     // tool_result is a launch acknowledgement, not completion. Skip it
@@ -140,7 +197,6 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
     const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
     for (const { toolUseId, content, isError } of subagentResultEntries) {
       const existing = activeSubagents.get(toolUseId)
-      if (!existing || existing.status !== 'running') continue
       // D2-B launch-ack guard (pure regex, no seed immunity): an ack
       // tool_result is NOT real output — skip it entirely so the record
       // stays 'running'. TASKS_SNAPSHOT (isBackgrounded) is the sole
@@ -149,16 +205,46 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
       const ackText = typeof content === 'string' ? content : resultContentToText(content)
       const isAck = !isError && typeof ackText === 'string' &&
         /^async agent launched successfully/i.test(ackText)
-      if (isAck) continue
+      const isDetachAck = !isError && typeof ackText === 'string' && /^subagent moved to background/i.test(ackText)
+      if (existing?.status === 'dismissed') {
+        if ((isAck || isDetachAck) && existing.resultOrigin == null) {
+          if (!touched) {
+            if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+            touched = true
+          }
+          activeSubagents.set(toolUseId, { ...existing, resultOrigin: 'async_metadata' })
+        }
+        continue
+      }
+      const canMergeResult = existing && (existing.status === 'running' || existing.status === 'background' || existing.status === 'pending' ||
+        ((existing.status === 'done' || existing.status === 'interrupted') &&
+          (existing.resultOrigin == null || existing.resultOrigin === 'notification' || existing.resultOrigin === 'summary' || existing.resultOrigin === 'async_metadata' || existing.resultOrigin === 'streamed')))
+      if (!canMergeResult) continue
+      if ((existing.status === 'done' || existing.status === 'interrupted') && !existing.endedAtEstimated && existing.endedAt != null && typeof message.receivedAt === 'number' && message.receivedAt < existing.endedAt) continue
+      if (isAck || (isDetachAck && (existing.result || existing.status === 'background' || existing.status === 'pending'))) {
+        if (!existing.result && existing.resultOrigin == null) {
+          if (!touched) {
+            if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
+            touched = true
+          }
+          activeSubagents.set(toolUseId, { ...existing, resultOrigin: 'async_metadata' })
+        }
+        continue
+      }
       if (!touched) {
         if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
         touched = true
       }
+      const streamedTextMatches = existing.resultOrigin === 'streamed' && !isError &&
+        comparableResultText(existing.result?.content) === comparableResultText(content)
+      const preserveStreamed = streamedTextMatches && isTextOnlyResult(content)
       activeSubagents.set(toolUseId, {
         ...existing,
         status: isError ? 'interrupted' : 'done',
         endedAt: stamp,
-        result: { content, isError },
+        endedAtEstimated: typeof message.receivedAt !== 'number',
+        result: preserveStreamed ? existing.result : { content, isError },
+        resultOrigin: preserveStreamed ? 'streamed' : (isDetachAck ? 'async_metadata' : 'tool_result'),
       })
     }
     changed = changed || touched
@@ -196,7 +282,11 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
         const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
         if (existing.endedAt == null || stamp > existing.endedAt) {
           if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
-          activeSubagents.set(parentId, { ...existing, endedAt: stamp })
+          activeSubagents.set(parentId, {
+            ...existing,
+            endedAt: stamp,
+            endedAtEstimated: typeof message.receivedAt !== 'number',
+          })
           changed = true
         }
       }
@@ -211,66 +301,77 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
   // async/background subagent the Agent tool_result is just a launch ack
   // (internal metadata — "Async agent launched successfully … agentId"),
   // not the real output; the real output streams as text blocks in these
-  // child assistant frames. The last text-bearing child frame wins, which
-  // is the subagent's final response. Processing order makes this safe for
-  // both shapes: sync subagent → tool_result lands LAST and re-overrides
-  // `result` via the merge branch above; async subagent → ack lands first,
-  // child text overrides it here.
+  // child assistant frames. The last text-bearing child frame is the latest
+  // streamed output candidate; a different full notification or terminal
+  // snapshot can still replace earlier progress with the final answer. A
+  // synchronous main-thread tool_result retains its final write.
   if (message.type === 'assistant' && activeSubagents.size > 0) {
     const parentId = message.parent_tool_use_id
     if (typeof parentId === 'string') {
       const existing = activeSubagents.get(parentId)
-      // Same non-live guard as the endedAt-advancement block above: don't mutate settled
-      // (done/interrupted/dismissed/rejected) records — late child frames
-      // from an async subagent that completed or was dismissed must not
-      // advance toolCount/result or churn the Map identity.
-      if (existing && (existing.status === 'running' || existing.status === 'background' || existing.status === 'pending')) {
+      // Live frames update the full record. Once a notification supplied the
+      // result, a late sidechain text frame may still supersede it: original
+      // conversation output outranks a repackaged notification or detach ack
+      // and prevents the detail view from rendering both copies. Other settled
+      // fields stay frozen.
+      const isLive = existing?.status === 'running' || existing?.status === 'background' || existing?.status === 'pending'
+      const hasRepackagedResult = existing?.resultOrigin === 'notification' || existing?.resultOrigin === 'summary'
+      const canSupersedeResult = hasRepackagedResult || existing?.resultOrigin === 'async_metadata' ||
+        (existing?.isAsync === true && existing.status === 'done' && existing.resultOrigin == null)
+      if (existing && (isLive || canSupersedeResult)) {
         const content = message.message?.content
-        if (Array.isArray(content)) {
-          let newTools = 0
-          const textBlocks: Array<{ type: 'text'; text: string }> = []
-          for (const b of content as Array<{ type?: string; text?: unknown }>) {
-            if (b.type === 'tool_use') newTools++
-            else if (b.type === 'text' && typeof b.text === 'string') {
-              textBlocks.push({ type: 'text', text: b.text })
-            }
+        const textBlocks: Array<{ type: 'text'; text: string }> = typeof content === 'string' && content.trim().length > 0
+          ? [{ type: 'text', text: content }]
+          : []
+        for (const b of (Array.isArray(content) ? content : []) as Array<{ type?: string; text?: unknown }>) {
+          if (b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0) {
+            textBlocks.push({ type: 'text', text: b.text })
           }
-          // Structured child-call index (方案B): fold the frame's tool_use
-          // blocks into childToolCalls so SubagentCard can list them without
-          // re-scanning the transcript. Dedup by toolUseId (a replay may
-          // re-deliver the same frame) preserving each row's existing
-          // status/result — only new rows are appended, mirroring the
-          // Workflow child-index byId merge. `newTools` (the raw count above)
-          // stays the authority for toolCount so the header number is
-          // unaffected even if childToolCalls dedup drops a re-delivery.
+        }
+          // Fold new child tool_use ids into childToolCalls. Both the row list
+          // and the header count use only newly-seen ids, so replaying a frame
+          // cannot inflate either one.
           const childStarts = getSubagentChildStarts(message)
           const prevChildCalls = existing.childToolCalls ?? []
           let nextChildCalls = prevChildCalls
+          let addedCount = 0
           if (childStarts.children.length > 0) {
             const byId = new Map(prevChildCalls.map((c) => [c.toolUseId, c]))
-            let added = false
             const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
             for (const child of childStarts.children) {
               if (byId.has(child.toolUseId)) continue // preserve existing row (status/result)
               byId.set(child.toolUseId, { ...child, startedAt: stamp })
-              added = true
+              addedCount++
             }
-            if (added) nextChildCalls = Array.from(byId.values())
+            if (addedCount > 0) nextChildCalls = Array.from(byId.values())
           }
-          const childCallsChanged = nextChildCalls !== prevChildCalls
-          if (newTools > 0 || textBlocks.length > 0 || childCallsChanged) {
+          const childCallsChanged = isLive && addedCount > 0
+          const childText = textBlocks.map((b) => b.text).join('\n\n').trim()
+          const notificationIsNewer = typeof message.receivedAt === 'number' &&
+            (existing.endedAt == null || message.receivedAt > existing.endedAt)
+          const isNotificationProgressPrefix = existing.resultOrigin === 'notification' && childText.length > 0 &&
+            comparableResultText(existing.result?.content).startsWith(`${childText}\n`)
+          const notificationMatches = !hasRepackagedResult || existing.resultOrigin === 'summary' ||
+            (!isNotificationProgressPrefix && (notificationIsNewer || typeof message.receivedAt !== 'number')) ||
+            (textBlocks.length > 0 && comparableResultText(existing.result?.content) === childText)
+          if ((isLive && childCallsChanged) || (textBlocks.length > 0 && notificationMatches)) {
             if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
             activeSubagents.set(parentId, {
               ...existing,
-              toolCount: existing.toolCount + newTools,
+              toolCount: isLive ? existing.toolCount + addedCount : existing.toolCount,
               ...(childCallsChanged ? { childToolCalls: nextChildCalls } : {}),
-              ...(textBlocks.length > 0
-                ? { result: { content: textBlocks, isError: false } }
+              ...(textBlocks.length > 0 && notificationMatches
+                ? {
+                    result: { content: textBlocks, isError: false },
+                    resultOrigin: 'streamed',
+                    ...(notificationIsNewer && typeof message.receivedAt === 'number'
+                      ? { endedAt: message.receivedAt, endedAtEstimated: false }
+                      : {}),
+                  }
                 : {}),
             })
             changed = true
           }
-        }
       }
     }
   }
@@ -328,16 +429,14 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
   // record and flip to 'done' ('interrupted' on failed/stopped), stamping
   // endedAt to the notification's receivedAt (the true completion moment, ≥
   // the last child frame the endedAt-advancement block above advanced endedAt to).
-  // Mirrors the synchronous result-merge so SubagentCard merges the output
-  // inline. `isAsync` is NOT touched here — it is the sole authority of
+  // `isAsync` is NOT touched here — it is the sole authority of
   // TASKS_SNAPSHOT (the `isBackgrounded` field), so a pure-foreground sync
   // subagent that receives a notification stays isAsync:false.
   //
-  // `result` is only filled when no child text frame already captured it:
-  // the async subagent's real output streamed as child assistant text
-  // (authoritative), and the notification's <result> is the same content
-  // repackaged — don't clobber. The SDK system-frame path carries no inline
-  // result body (it lives in output_file), so fall back to summary.
+  // Matching streamed text stays in its original sidechain row. A different
+  // full notification result replaces earlier streamed progress; a summary
+  // alone does not. The SDK system-frame path carries no inline result body
+  // (it lives in output_file), so it falls back to summary.
   // parseTaskNotification returns null for shapes without a matchable
   // tool_use_id (notably the system frame when its optional tool_use_id is
   // absent) — the XML path then carries completion.
@@ -374,29 +473,41 @@ export function updateSidechainIndexMirror(mirror: ServerMirror, message: SdkMes
     // it; the notification is the only frame carrying the real result, so it
     // must overwrite the bogus ack). 'dismissed' stays excluded: an explicit user dismiss
     // is a deliberate terminal state a late notification must not revive.
-    if (existing && (existing.status === 'background' || existing.status === 'running' || existing.status === 'pending' || existing.status === 'interrupted' || existing.status === 'done')) {
+    const isStaleNotification = existing && typeof message.receivedAt === 'number' &&
+      !existing.endedAtEstimated && existing.endedAt != null && message.receivedAt < existing.endedAt
+    if (existing && !isStaleNotification && (existing.status === 'background' || existing.status === 'running' || existing.status === 'pending' || existing.status === 'interrupted' || existing.status === 'done')) {
       if (activeSubagents === mirror.activeSubagents) activeSubagents = new Map(activeSubagents)
       const stamp = typeof message.receivedAt === 'number' ? message.receivedAt : Date.now()
-      const isError = taskNotification.status !== 'completed'
       const resultContent = taskNotification.result ?? taskNotification.summary ?? ''
-      // A 'done' record reached here is the replay-ordering hole: on replay
-      // the detach ack mis-settles the record 'done' with the ack text as its
-      // result, and the terminal tasks-snapshot (which arrives after this
-      // frame) can't rescue it — rescueSettled needs a NON-terminal
-      // is_backgrounded snapshot. The existing result is therefore the bogus
-      // ack text: overwrite it. Every other status keeps the
-      // child-text-preserving guard below.
-      const overwriteResult = existing.status === 'done' || !existing.result
+      const hasCompletedOutput = existing.result != null && !existing.result.isError &&
+        existing.resultOrigin !== 'summary' && existing.resultOrigin !== 'async_metadata'
+      const stoppedWithOutput = taskNotification.status === 'stopped' &&
+        ((taskNotification.result != null && taskNotification.result.trim() !== '') || hasCompletedOutput)
+      const isError = existing.result?.isError === true && taskNotification.status !== 'completed' ||
+        (taskNotification.status !== 'completed' && !stoppedWithOutput)
+      const overwriteResult = shouldWriteTerminalResult(
+        existing,
+        taskNotification.status,
+        resultContent,
+        taskNotification.result != null,
+      )
+      const nextStatus = isError ? 'interrupted' as const : 'done' as const
       activeSubagents.set(taskNotification.toolUseId, {
         ...existing,
-        status: isError ? 'interrupted' : 'done',
+        status: nextStatus,
         endedAt: stamp,
+        endedAtEstimated: typeof message.receivedAt !== 'number',
         // Don't clobber an existing (child-text-captured) result, AND don't
         // set a result when the notification carries no content (notably a
         // synthesized `stopped` from the watcher backstop, whose summary is
         // '') — otherwise the empty result would block a later REAL
         // completion from populating the subagent's actual output.
-        ...(overwriteResult && resultContent !== '' ? { result: { content: resultContent, isError } } : {}),
+        ...(overwriteResult && resultContent !== ''
+          ? {
+              result: { content: resultContent, isError },
+              resultOrigin: taskNotification.result != null ? 'notification' as const : 'summary' as const,
+            }
+          : {}),
       })
       changed = true
     }
@@ -792,30 +903,52 @@ export function applyTasksSnapshot(mirror: ServerMirror, tasks: TaskRecordUi[]):
     // 'stopped' maps to 'done' when a result was captured (the work landed,
     // only the bookend was lost) and 'interrupted' otherwise; a later REAL
     // task_notification can still overwrite either (its branch accepts
-    // 'done' and 'interrupted').
-    const settleStranded = isTerminal && (
-      record.status === 'background' ||
-      record.status === 'pending' ||
-      (record.status === 'running' && nextIsAsync === true)
-    )
-    const settledStatus = task.status === 'completed'
-      ? 'done' as const
-      : task.status === 'stopped' && record.result
+    // 'done' and 'interrupted'). A completed resultless snapshot can also
+    // recover an already-interrupted sync record, but must not settle a
+    // running one before its canonical tool_result arrives.
+    const terminalTaskTime = task.endedAt ?? (task.updatedAt > 0 ? task.updatedAt : undefined)
+    const staleTerminalTask = isTerminal && typeof terminalTaskTime === 'number' &&
+      !record.endedAtEstimated && record.endedAt != null && terminalTaskTime < record.endedAt
+    const settleFromTerminalTask = isTerminal && !staleTerminalTask && record.status !== 'dismissed' &&
+      (nextIsAsync === true || record.status === 'background' || record.status === 'pending' ||
+        (record.status === 'interrupted' && task.status === 'completed') ||
+        (typeof task.result === 'string' && task.result.trim() !== '') || task.status !== 'completed')
+    const notificationResult = isTerminal && !staleTerminalTask && record.status !== 'dismissed' &&
+      shouldWriteTerminalResult(record, task.status, task.result ?? '', true)
+      ? {
+          result: { content: task.result, isError: task.status !== 'completed' && task.status !== 'stopped' },
+          resultOrigin: 'notification' as const,
+        }
+      : null
+    const hasCapturedOutput = notificationResult != null ||
+      (record.result != null && !record.result.isError && record.resultOrigin !== 'summary' && record.resultOrigin !== 'async_metadata')
+    const settledStatus = task.status === 'stopped' && record.result?.isError === true
+      ? 'interrupted' as const
+      : task.status === 'completed'
         ? 'done' as const
-        : 'interrupted' as const
+        : task.status === 'stopped' && hasCapturedOutput
+          ? 'done' as const
+          : 'interrupted' as const
     activeSubagents.set(task.toolUseId, {
       ...record,
       taskId: task.taskId,
       progressSummary: isTerminal ? undefined : task.progressSummary ?? record.progressSummary,
       lastToolName: isTerminal ? undefined : task.lastToolName ?? record.lastToolName,
       isAsync: nextIsAsync,
+      ...(notificationResult
+        ? { result: { ...notificationResult.result, isError: settledStatus !== 'done' }, resultOrigin: 'notification' as const }
+        : {}),
       ...(flipToBackground
         ? rescueSettled
-          ? { status: 'background' as const, endedAt: undefined, result: undefined }
+          ? { status: 'background' as const, endedAt: undefined, result: undefined, resultOrigin: undefined }
           : { status: 'background' as const }
         : {}),
-      ...(settleStranded
-        ? { status: settledStatus, endedAt: task.endedAt ?? record.endedAt ?? Date.now() }
+      ...(settleFromTerminalTask
+        ? {
+            status: settledStatus,
+            endedAt: task.endedAt ?? record.endedAt ?? Date.now(),
+            endedAtEstimated: task.endedAt != null ? false : (record.endedAt != null ? record.endedAtEstimated : true),
+          }
         : {}),
     })
   }

@@ -94,6 +94,7 @@ function TaskBody({
           <SubagentTranscriptBody
             sessionId={sessionId}
             agentId={record.taskId}
+            suppressResult={Boolean(record.result)}
             variant="fill"
             cwd={cwd}
           />
