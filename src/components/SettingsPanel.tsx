@@ -111,6 +111,14 @@ const SESSION_TAB_GROUPS: SettingsNavGroup<SettingsTab>[] = [
   },
 ]
 
+/** Same groups without the Plugins leaf. Native sessions have no CLI plugin
+ *  pipeline (`supportsPlugins: false`), and opening the tab would fire a
+ *  reload that the server answers 501. A module-level constant keeps the
+ *  props identity stable for the memoized nav. */
+const SESSION_TAB_GROUPS_NO_PLUGINS: SettingsNavGroup<SettingsTab>[] = SESSION_TAB_GROUPS.map(
+  (group) => ({ ...group, tabs: group.tabs.filter((entry) => entry.key !== 'plugins') }),
+)
+
 interface Props {
   session: SessionInfo
   /** Global UI-pref defaults (server-backed). Used to compute the effective
@@ -256,6 +264,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // session panel reads as one long scroll no more — each concern is its
   // own tab (General controls, Context usage, Plugins, MCP servers).
   const [tab, setTab] = useState<SettingsTab>('general')
+  // Native sessions have no plugin pipeline (`supportsPlugins: false`), so the
+  // Plugins leaf and its panel are unavailable. Claude (provider undefined or
+  // 'claude') keeps the tab unchanged.
+  const pluginsSupported = session.provider !== 'native'
 
   // Effective UI prefs: a per-session override wins, else the global default.
   // Resolved via the shared resolver so the override UI hints stay in sync
@@ -340,6 +352,10 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     setAppliedTabNonce(tabRequest.nonce)
     setTab(tabRequest.tab)
   }
+  // A deep link (or a stale tab from a provider change) must not leave a
+  // native session on the removed Plugins tab. General always exists, and the
+  // next render clears the condition (no loop).
+  if (!pluginsSupported && tab === 'plugins') setTab('general')
 
   // The marketplace overlay is portaled to <body>, so it lives OUTSIDE App's
   // global Escape chain (which would otherwise close the settings panel
@@ -1013,6 +1029,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   // session, so a new session re-loads. Skipped if a manual reload already
   // populated the list.
   useEffect(() => {
+    if (!pluginsSupported) return
     if (tab !== 'plugins') return
     if (pluginsAutoLoadedRef.current) return
     if (!session.running || session.terminated) return
@@ -1023,7 +1040,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     const t = setTimeout(() => { void reloadPlugins() }, 0)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, session.running, session.terminated])
+  }, [pluginsSupported, tab, session.running, session.terminated])
 
   const handleMcpInstallerSave = () => {
     setShowMcpInstaller(false)
@@ -1090,7 +1107,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
 
   // Module-level SESSION_TAB_GROUPS: fully static, and a stable identity
   // keeps the memoized SettingsTabNav from re-diffing on WS-driven re-renders.
-  const tabGroups = SESSION_TAB_GROUPS
+  // Native sessions get the pre-filtered variant (also a module constant).
+  const tabGroups = pluginsSupported ? SESSION_TAB_GROUPS : SESSION_TAB_GROUPS_NO_PLUGINS
 
   const panelBodyRef = useRef<HTMLDivElement | null>(null)
   const setPanelBodyOs = useOverlayScrollbar({ autoHide: 'leave' })

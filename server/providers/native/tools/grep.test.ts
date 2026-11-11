@@ -8,7 +8,7 @@ import { grepTool } from './grep.js'
 
 let dir: string
 afterEach(async () => { if (dir) await rm(dir, { recursive: true, force: true }) })
-const ctx = (cwd: string) => ({ cwd, signal: new AbortController().signal })
+const ctx = (cwd: string, signal = new AbortController().signal) => ({ cwd, signal })
 
 describe('grepTool', () => {
   it('finds matches with line numbers', async () => {
@@ -45,5 +45,14 @@ describe('grepTool', () => {
   it('throws ToolInputError on an invalid regex', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-grep-'))
     await expect(grepTool.run({ pattern: '(' }, ctx(dir))).rejects.toThrow(ToolInputError)
+  })
+
+  it('stops the walk when the turn signal aborts', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-grep-'))
+    await writeFile(join(dir, 'a.ts'), 'target\n')
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(grepTool.run({ pattern: 'target' }, ctx(dir, controller.signal))).rejects.toThrow(/abort/i)
   })
 })

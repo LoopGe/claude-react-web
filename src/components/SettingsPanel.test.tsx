@@ -1156,6 +1156,56 @@ describe('SettingsPanel plugins tab — per-session enabled state', () => {
   })
 })
 
+describe('SettingsPanel native provider — Plugins tab availability', () => {
+  const nativeSession = {
+    id: 's1',
+    provider: 'native',
+    running: true,
+    terminated: false,
+  } as unknown as SessionInfo
+  const claudeSession = { ...mkSession(), provider: 'claude' } as SessionInfo
+  const leaves = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>('.settings-tab-leaves button')].map((b) => b.textContent)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [] })
+      if (url === '/mcp-config') return Promise.resolve({ servers: [] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+    ;(api.post as ReturnType<typeof vi.fn>).mockResolvedValue({})
+  })
+
+  it('hides the Plugins leaf for a native session', async () => {
+    const { container } = renderPanel({ session: nativeSession, tab: 'mcp' })
+    await waitFor(() => expect(container.querySelector('.settings-tab-leaves')).not.toBeNull())
+    expect(leaves(container)).toEqual(['MCP Servers'])
+  })
+
+  it('keeps the Plugins leaf for a claude session', async () => {
+    const { container } = renderPanel({ session: claudeSession, tab: 'mcp' })
+    await waitFor(() => expect(container.querySelector('.settings-tab-leaves')).not.toBeNull())
+    expect(leaves(container)).toEqual(['MCP Servers', 'Plugins'])
+  })
+
+  it('redirects a Plugins deep link to General and never reloads plugins', async () => {
+    const { container } = renderPanel({ session: nativeSession, tab: 'plugins' })
+    await waitFor(() =>
+      expect(container.querySelector('.settings-tab-leaves .active')?.textContent).toBe('General'),
+    )
+    // Let the deferred auto-reload effect (setTimeout 0) run if it were armed.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+    const reloadCalls = (api.post as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
+      String(url).endsWith('/plugins/reload'),
+    )
+    expect(reloadCalls).toHaveLength(0)
+  })
+})
+
 describe('SettingsPanel Loaded skills preview', () => {
   /** The filesystem record the /skills list resolves 'commit-helper' to. */
   const fsSkill = mkSkillRecord({

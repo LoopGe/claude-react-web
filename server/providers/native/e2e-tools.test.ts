@@ -22,12 +22,25 @@ import { SessionStore } from '../../persistence.js'
 import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
+import { fakeWebCalls, resetFakeWebTransport, setFakeWebHandler } from './tools/web-test-transport.js'
 import type { CanonicalEvent } from './canonical.js'
 
-// Never resolve a real hostname. Every web request in this file is answered by
-// the stubbed global fetch; the lookup only has to clear the SSRF check.
+// Never resolve a real hostname. The auxiliary Anthropic/title calls still go
+// through the stubbed global fetch; WebFetch/WebSearch page requests go through
+// the built-in node:http(s) transport, stubbed to the same handler. DNS is
+// stubbed for the pre-check (the Agent's pinned lookup runs against it too).
 const lookupMock = vi.hoisted(() => vi.fn())
 vi.mock('node:dns/promises', () => ({ lookup: lookupMock }))
+vi.mock('node:https', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:https')>()
+  const { fakeRequest } = await import('./tools/web-test-transport.js')
+  return { ...actual, request: fakeRequest }
+})
+vi.mock('node:http', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:http')>()
+  const { fakeRequest } = await import('./tools/web-test-transport.js')
+  return { ...actual, request: fakeRequest }
+})
 
 const PUBLIC_ADDRESS = [{ address: '93.184.216.34', family: 4 }]
 
@@ -187,19 +200,20 @@ function htmlResponse(html: string): Response {
   return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } })
 }
 
-/** Route the auxiliary `/v1/messages` calls to `answer` and every other
- *  request to `handler`; installed as the global fetch for the test. */
+/** Route the auxiliary `/v1/messages` calls to `answer` and every page/search
+ *  request to `handler`. Aux calls use global fetch; page requests reach the
+ *  stubbed node:http(s) transport. */
 function stubFetch(
   handler: (url: string) => Response,
   answer = 'AUX_ANSWER',
 ): FetchMock {
+  resetFakeWebTransport()
+  setFakeWebHandler((url) => handler(url))
   const mock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError')
-    if (url.endsWith('/v1/messages')) {
-      return jsonResponse({ content: [{ type: 'text', text: answer }] })
-    }
-    return handler(url)
+    if (!url.endsWith('/v1/messages')) throw new Error(`unexpected global fetch ${url}`)
+    return jsonResponse({ content: [{ type: 'text', text: answer }] })
   })
   vi.stubGlobal('fetch', mock)
   return mock
@@ -473,7 +487,7 @@ describe('native P1.6 tools end to end through SessionManager', () => {
     ])
     expect(searched.searchCount).toBe(1)
     // The query went out URL-encoded to DuckDuckGo's HTML endpoint.
-    expect(fetchMock.mock.calls.map(([u]) => String(u))).toContain(
+    expect(fakeWebCalls().map((call) => call.url)).toContain(
       'https://html.duckduckgo.com/html/?q=native%20tools',
     )
 

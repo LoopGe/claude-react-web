@@ -46,13 +46,17 @@ export function globToRegExp(glob: string): RegExp {
 
 /** Recursive file walk from `root`, skipping SKIP_DIRS. Yields absolute paths.
  *  Shared by Grep and Glob; Glob normalizes them to walk-relative paths so a
- *  pattern is matched against the tree rather than the filesystem path. */
-export async function* walk(root: string): AsyncGenerator<string> {
+ *  pattern is matched against the tree rather than the filesystem path. The
+ *  turn signal is checked before every directory read and entry, so an
+ *  interrupt stops the walk instead of letting a large tree finish. */
+export async function* walk(root: string, signal?: AbortSignal): AsyncGenerator<string> {
+  signal?.throwIfAborted()
   const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
   for (const entry of entries) {
+    signal?.throwIfAborted()
     if (entry.isDirectory()) {
       if (SKIP_DIRS.has(entry.name)) continue
-      yield* walk(join(root, entry.name))
+      yield* walk(join(root, entry.name), signal)
     } else if (entry.isFile()) {
       yield join(root, entry.name)
     }
@@ -88,7 +92,7 @@ export const grepTool: ToolDef<{ pattern: string; path?: string; include?: strin
     const rootStat = await stat(root)
     const candidates: AsyncIterable<string> = rootStat.isFile()
       ? (async function* () { yield root })()
-      : walk(root)
+      : walk(root, ctx.signal)
     for await (const file of candidates) {
       if (files >= MAX_FILES) break
       if (includeRe && !includeRe.test(file.split('/').pop() ?? file)) continue

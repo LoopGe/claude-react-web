@@ -6,14 +6,25 @@
 //   - HTTP(S) only, URL ≤ 2048 chars, no embedded credentials;
 //   - non-public IP targets blocked (SSRF), on the first hop AND every
 //     redirect hop, including literal addresses and DNS-resolved hostnames;
-//   - `redirect: 'manual'` with per-hop re-validation, ≤ 5 redirects, and no
-//     origin changes (a redirect may move within its origin, never to another
-//     scheme/host/port);
-//   - response body ≤ 5 MiB and decoded text ≤ 100k chars;
+//   - redirects followed manually with per-hop re-validation, ≤ 5 redirects,
+//     and no origin changes (a redirect may move within its origin, never to
+//     another scheme/host/port);
+//   - response body ≤ 5 MiB and a decoded-text window of ≤ 100k chars,
+//     applied AFTER `offset`;
 //   - one deadline for the whole chain, combined with the turn's interrupt
 //     signal through `AbortSignal.any`.
+//
+// Transport is the built-in `node:http` / `node:https` request API, not global
+// `fetch`, because each Agent carries a custom `lookup` that resolves the
+// hostname and returns ONLY verified addresses. Node connects to those
+// addresses without re-resolving, so a DNS answer that flips from public to
+// private between validation and connect (DNS rebinding) cannot land. `fetch`
+// re-resolves independently and would reopen that TOCTOU on every hop.
+import { request as httpRequest, Agent as HttpAgent, type IncomingMessage } from 'node:http'
+import { request as httpsRequest, Agent as HttpsAgent } from 'node:https'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import { createSafeLookup } from '../../../safe-dns.js'
 import { ToolInputError } from './types.js'
 
 export const MAX_URL_LENGTH = 2048
@@ -159,10 +170,22 @@ export function isNonPublicIp(ip: string): boolean {
   return !isIP(host)
 }
 
+/** The connection-time gate for both web Agents. It shares the implementation
+ *  (and the Node ≥20 Happy Eyeballs `all: true` handling) with the app-plugin
+ *  network broker; only the IP predicate differs — every address the socket
+ *  may connect to must be public. */
+export const webSafeLookup = createSafeLookup(isNonPublicIp)
+
+/** No keep-alive: web requests are one-shot and must not leave idle sockets
+ *  holding the process open. */
+const httpAgent = new HttpAgent({ lookup: webSafeLookup as never })
+const httpsAgent = new HttpsAgent({ lookup: webSafeLookup as never })
+
 /** Resolve a hostname (or classify an IP literal) and refuse every host that
- *  maps onto non-public space. Resolution failure is a tool error: the
- *  request cannot succeed and must not fall through to a bare `fetch`, which
- *  would resolve the name a second time with no check. */
+ *  maps onto non-public space. This is the early policy check that yields a
+ *  tool error before a connection is attempted; the same predicate is also
+ *  applied by the transport Agent's `lookup`, which pins the connection to the
+ *  verified address and cannot be flipped by a second DNS answer. */
 export async function assertPublicHost(hostname: string): Promise<void> {
   const host = hostname.replace(/^\[|\]$/g, '')
   if (isIP(host)) {
@@ -251,6 +274,9 @@ export interface FetchWebOptions {
   format?: 'text' | 'html'
   /** Extra request headers (merged over the defaults). */
   headers?: Record<string, string>
+  /** Character offset into the decoded text. Applied BEFORE the 100k window
+   *  cap, so a model can page past the first window of a long document. */
+  offset?: number
 }
 
 export interface WebResponse {
@@ -261,32 +287,69 @@ export interface WebResponse {
   contentType: string
   /** Bytes read from the body (before any text decoding). */
   bytes: number
-  /** Decoded content, capped at `MAX_TEXT_CHARS`. */
+  /** The decoded window: `MAX_TEXT_CHARS` characters starting at `offset`. */
   text: string
 }
 
-async function readBodyCapped(res: Response): Promise<Uint8Array> {
-  const declared = res.headers.get('content-length')
-  if (declared !== null) {
+/** The slice of a Node `IncomingMessage` the policy needs. Kept structural so
+ *  tests can answer with a plain object. */
+interface RawResponse {
+  status: number
+  statusText: string
+  headers: Record<string, string | undefined>
+  body: AsyncIterable<Uint8Array>
+  destroy(): void
+}
+
+/** One GET over the pinned Agent. No redirect following happens here — Node's
+ *  request API never follows, which gives us the same manual-redirect
+ *  contract the policy needs. The Agent's `lookup` is the DNS gate. */
+function requestWeb(
+  url: URL,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<RawResponse> {
+  const https = url.protocol === 'https:'
+  return new Promise((resolve, reject) => {
+    const onResponse = (res: IncomingMessage) => {
+      const out: Record<string, string | undefined> = {}
+      for (const [key, value] of Object.entries(res.headers)) {
+        out[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : value
+      }
+      resolve({
+        status: res.statusCode ?? 0,
+        statusText: res.statusMessage ?? '',
+        headers: out,
+        body: res as unknown as AsyncIterable<Uint8Array>,
+        destroy: () => res.destroy(),
+      })
+    }
+    const req = https
+      ? httpsRequest(url, { method: 'GET', headers, agent: httpsAgent, signal }, onResponse)
+      : httpRequest(url, { method: 'GET', headers, agent: httpAgent, signal }, onResponse)
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+async function readBodyCapped(res: RawResponse): Promise<Buffer> {
+  const declared = res.headers['content-length']
+  if (declared !== undefined) {
     const size = Number(declared)
     if (Number.isFinite(size) && size > MAX_RESPONSE_BYTES) {
+      res.destroy()
       throw new ToolInputError(`response exceeds ${MAX_RESPONSE_BYTES} bytes`)
     }
   }
-  if (!res.body) return new Uint8Array(0)
-  const reader = res.body.getReader()
   const chunks: Uint8Array[] = []
   let total = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    if (!value) continue
-    total += value.byteLength
+  for await (const chunk of res.body) {
+    total += chunk.byteLength
     if (total > MAX_RESPONSE_BYTES) {
-      await reader.cancel().catch(() => {})
+      res.destroy()
       throw new ToolInputError(`response exceeds ${MAX_RESPONSE_BYTES} bytes`)
     }
-    chunks.push(value)
+    chunks.push(chunk)
   }
   return Buffer.concat(chunks)
 }
@@ -299,28 +362,25 @@ export async function fetchWeb(rawUrl: string, opts: FetchWebOptions): Promise<W
   const signal = AbortSignal.any([opts.signal, AbortSignal.timeout(WEB_TIMEOUT_MS)])
   let current = await validateWebUrl(rawUrl)
   const origin = current.origin
+  const requestHeaders: Record<string, string> = {
+    'user-agent': WEB_USER_AGENT,
+    accept: ACCEPT_HEADER,
+    ...opts.headers,
+  }
   for (let redirects = 0; ; redirects++) {
-    const res = await fetch(current.href, {
-      method: 'GET',
-      redirect: 'manual',
-      signal,
-      headers: {
-        'user-agent': WEB_USER_AGENT,
-        accept: ACCEPT_HEADER,
-        ...opts.headers,
-      },
-    })
+    const res = await requestWeb(current, requestHeaders, signal)
     if (REDIRECT_STATUSES.has(res.status)) {
-      void res.body?.cancel().catch(() => {})
-      const location = res.headers.get('location')
+      res.destroy()
+      const location = res.headers.location
       if (!location) {
         throw new ToolInputError(`HTTP ${res.status} redirect without a Location header`)
       }
       if (redirects >= MAX_REDIRECTS) {
         throw new ToolInputError(`too many redirects (limit ${MAX_REDIRECTS})`)
       }
-      // Re-validate the hop before connecting: scheme, credentials, length
-      // and the resolved address are all checked again.
+      // Re-validate the hop before connecting: scheme, credentials, length,
+      // the resolved address pre-check, and (at connect time) the Agent's
+      // pinned lookup all run again.
       let nextHref: string
       try {
         nextHref = new URL(location, current).href
@@ -334,23 +394,24 @@ export async function fetchWeb(rawUrl: string, opts: FetchWebOptions): Promise<W
       current = next
       continue
     }
-    if (!res.ok) {
-      void res.body?.cancel().catch(() => {})
+    if (res.status < 200 || res.status >= 300) {
+      res.destroy()
       const detail = res.statusText ? ` ${res.statusText}` : ''
       throw new ToolInputError(`HTTP ${res.status}${detail} for ${current.href}`)
     }
     const bytes = await readBodyCapped(res)
-    const contentType = res.headers.get('content-type') ?? ''
+    const contentType = res.headers['content-type'] ?? ''
     const decoded = new TextDecoder('utf-8').decode(bytes)
-    const text =
+    const fullText =
       opts.format === 'html' || !isHtml(contentType) ? decoded : htmlToText(decoded)
+    const offset = opts.offset ?? 0
     return {
       url: current.href,
       status: res.status,
       statusText: res.statusText,
       contentType,
       bytes: bytes.byteLength,
-      text: text.slice(0, MAX_TEXT_CHARS),
+      text: fullText.slice(offset, offset + MAX_TEXT_CHARS),
     }
   }
 }

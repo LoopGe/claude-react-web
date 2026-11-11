@@ -73,14 +73,19 @@ export function createWebFetchTool(deps: WebFetchDeps): ToolDef<WebFetchInput> {
         throw new ToolInputError('offset must be a non-negative integer')
       }
       const started = Date.now()
-      const page = await fetchWeb(input.url, { signal: ctx.signal })
-      const body = offset > 0 ? page.text.slice(offset) : page.text
-      if (body.trim() === '') {
-        throw new ToolInputError(`no text content at ${page.url}`)
+      const page = await fetchWeb(input.url, { signal: ctx.signal, offset })
+      if (page.text.trim() === '') {
+        // The window starts at `offset`, so an offset past the end of the page
+        // is distinguished from a page with no text at all.
+        throw new ToolInputError(
+          offset > 0
+            ? `no text content at ${page.url} from offset ${offset}`
+            : `no text content at ${page.url}`,
+        )
       }
       const result = await callAnthropicMessages({
         model: deps.profile?.recapModel || deps.model(),
-        system: body,
+        system: page.text,
         userContent: input.prompt,
         maxTokens: 1024,
         temperature: 0.2,

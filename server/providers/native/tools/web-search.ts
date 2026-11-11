@@ -110,7 +110,10 @@ function hostMatches(host: string, domain: string): boolean {
 }
 
 function hostOf(url: string): string {
-  return new URL(url).hostname.toLowerCase()
+  // Same normalization as the filter domains: a result URL's hostname keeps a
+  // trailing dot (`https://evil.com./`), which would otherwise dodge a
+  // `blocked_domains: ['evil.com']` entry.
+  return normalizeDomain(new URL(url).hostname)
 }
 
 /** `searchCount` lives in the factory closure, so it is scoped to one

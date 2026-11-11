@@ -2,14 +2,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderProfile } from '../../../config.js'
 import { ToolInputError, type ToolContext } from './types.js'
-import { htmlToText, isNonPublicIp } from './web.js'
+import { htmlToText, isNonPublicIp, webSafeLookup } from './web.js'
 import { createWebFetchTool, WEB_FETCH_GUIDANCE } from './web-fetch.js'
 import { parseDuckDuckGoResults, createWebSearchTool } from './web-search.js'
+import { fakeWebCalls, resetFakeWebTransport, setFakeWebHandler } from './web-test-transport.js'
 
-// Every request in this file is answered by the stubbed global `fetch`; DNS is
-// stubbed too so a hostname never leaves the process.
+// WebFetch/WebSearch page requests go through the built-in node:http(s)
+// transport, so the tests stub `request` on those modules (the real Agents
+// stay in place — their `lookup` is the production DNS gate). The auxiliary
+// Anthropic call still uses global `fetch`, stubbed separately. DNS is stubbed
+// so a hostname never leaves the process.
 const lookupMock = vi.hoisted(() => vi.fn())
 vi.mock('node:dns/promises', () => ({ lookup: lookupMock }))
+vi.mock('node:https', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:https')>()
+  const { fakeRequest } = await import('./web-test-transport.js')
+  return { ...actual, request: fakeRequest }
+})
+vi.mock('node:http', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:http')>()
+  const { fakeRequest } = await import('./web-test-transport.js')
+  return { ...actual, request: fakeRequest }
+})
 
 const PUBLIC_ADDRESS = [{ address: '93.184.216.34', family: 4 }]
 
@@ -63,6 +77,10 @@ let fetchMock: FetchMock
 function stubFetch(
   handler: (url: string, init: RequestInit | undefined) => Response | Promise<Response>,
 ): FetchMock {
+  resetFakeWebTransport()
+  // Page requests reach the fake transport; global fetch only sees the
+  // auxiliary `/v1/messages` call (and routes through the same handler).
+  setFakeWebHandler((url) => handler(url, undefined))
   fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     if (init?.signal?.aborted) throw new DOMException('aborted', 'AbortError')
     return handler(String(input), init)
@@ -95,6 +113,7 @@ function auxRequest(mock: FetchMock): { url: string; body: Record<string, unknow
 beforeEach(() => {
   lookupMock.mockReset()
   lookupMock.mockResolvedValue(PUBLIC_ADDRESS)
+  resetFakeWebTransport()
 })
 
 afterEach(() => {
@@ -157,6 +176,36 @@ describe('isNonPublicIp', () => {
   })
 })
 
+describe('webSafeLookup — the connection-time gate', () => {
+  function lookup(host: string, all: boolean): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      webSafeLookup(host, { all }, (err, addresses) => (err ? reject(err) : resolve(addresses)))
+    })
+  }
+
+  it('rejects a hostname whose resolved address fails the web predicate', async () => {
+    lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }])
+    await expect(lookup('internal.example.test', true)).rejects.toThrow(
+      /resolves to a disallowed address \(10\.0\.0\.5\)/,
+    )
+  })
+
+  it('handles the Node ≥20 Happy Eyeballs all:true shape with only verified addresses', async () => {
+    const addrs = [
+      { address: '93.184.216.34', family: 4 },
+      { address: '2606:2800:220:1:248:1893:25c8:1946', family: 6 },
+    ]
+    lookupMock.mockResolvedValue(addrs)
+    await expect(lookup('docs.example.test', true)).resolves.toEqual(addrs)
+  })
+
+  it('classifies an IP literal with the web predicate without resolving', async () => {
+    lookupMock.mockClear()
+    await expect(lookup('127.0.0.1', false)).rejects.toThrow(/not allowed/)
+    expect(lookupMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('createWebFetchTool', () => {
   it('fetches the page, applies the prompt over its text, and returns the aux answer', async () => {
     stubPage(() => htmlResponse(PAGE_HTML))
@@ -179,11 +228,10 @@ describe('createWebFetchTool', () => {
     expect((aux.body.messages as Array<{ content: string }>)[0].content).toBe('Summarize')
     expect((aux.init.headers as Record<string, string>).Authorization).toBe('Bearer tok')
 
-    // The page request itself used manual redirect handling and a browser UA.
-    const pageCall = fetchMock.mock.calls.find(([url]) => String(url).includes('docs.example.test'))!
-    const pageInit = pageCall[1] as RequestInit
-    expect(pageInit.redirect).toBe('manual')
-    expect((pageInit.headers as Record<string, string>)['user-agent']).toContain('Mozilla')
+    // The page request used the browser UA and the pinned transport agent.
+    const pageCall = fakeWebCalls().find((call) => call.url.includes('docs.example.test'))!
+    expect(pageCall.headers['user-agent']).toContain('Mozilla')
+    expect((pageCall.agent as { options: { lookup?: unknown } }).options.lookup).toBe(webSafeLookup)
   })
 
   it('prefers the profile recap model for the auxiliary call', async () => {
@@ -200,6 +248,24 @@ describe('createWebFetchTool', () => {
     expect(auxRequest(fetchMock).body.system).toBe('456789')
   })
 
+  it('applies offset BEFORE the 100k window cap', async () => {
+    const body = `${'a'.repeat(100_050)}TAIL`
+    stubPage(() => new Response(body, { headers: { 'content-type': 'text/plain' } }))
+    const tool = webFetch()
+    await tool.run({ url: 'https://docs.example.test/long', prompt: 'q', offset: 100_000 }, ctx())
+    const system = auxRequest(fetchMock).body.system as string
+    expect(system).toBe(`${'a'.repeat(50)}TAIL`)
+    expect(system).toHaveLength(54)
+  })
+
+  it('reports a truthful error when offset is past the end of the page', async () => {
+    stubPage(() => new Response('short', { headers: { 'content-type': 'text/plain' } }))
+    const tool = webFetch()
+    await expect(
+      tool.run({ url: 'https://docs.example.test/short', prompt: 'q', offset: 999 }, ctx()),
+    ).rejects.toThrow(/no text content .* from offset 999/)
+  })
+
   it('rejects a non-HTTP URL without touching the network', async () => {
     stubFetch(() => {
       throw new Error('fetch must not run')
@@ -208,6 +274,7 @@ describe('createWebFetchTool', () => {
       /only HTTP\(S\) URLs/,
     )
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(fakeWebCalls()).toHaveLength(0)
   })
 
   it('rejects a URL with embedded credentials without touching the network', async () => {
@@ -218,6 +285,7 @@ describe('createWebFetchTool', () => {
       webFetch().run({ url: 'https://user:pass@example.test/page', prompt: 'q' }, ctx()),
     ).rejects.toThrow(/embedded credentials/)
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(fakeWebCalls()).toHaveLength(0)
   })
 
   it('rejects a URL longer than 2048 characters', async () => {
@@ -227,6 +295,7 @@ describe('createWebFetchTool', () => {
     const url = `https://example.test/${'a'.repeat(2048)}`
     await expect(webFetch().run({ url, prompt: 'q' }, ctx())).rejects.toThrow(/exceeds 2048/)
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(fakeWebCalls()).toHaveLength(0)
   })
 
   it('blocks private IP literals before connecting', async () => {
@@ -239,6 +308,7 @@ describe('createWebFetchTool', () => {
       )
     }
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(fakeWebCalls()).toHaveLength(0)
   })
 
   it('blocks a hostname that resolves to a private address', async () => {
@@ -250,6 +320,7 @@ describe('createWebFetchTool', () => {
       webFetch().run({ url: 'https://internal.example.test/', prompt: 'q' }, ctx()),
     ).rejects.toThrow(/blocked non-public address 10\.0\.0\.5/)
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(fakeWebCalls()).toHaveLength(0)
   })
 
   it('rejects a cross-origin redirect', async () => {
@@ -271,7 +342,7 @@ describe('createWebFetchTool', () => {
     })
     const out = parse<{ url: string }>((await webFetch().run({ url: 'https://a.example.test/start', prompt: 'q' }, ctx())).text)
     expect(out.url).toBe('https://a.example.test/final')
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain('https://a.example.test/final')
+    expect(fakeWebCalls().map((call) => call.url)).toContain('https://a.example.test/final')
   })
 
   it('rejects a non-2xx response', async () => {
@@ -320,7 +391,7 @@ describe('createWebFetchTool', () => {
     ).rejects.toThrow(/too many redirects/)
     // Six requests: the initial hop plus the five followed redirects; the
     // sixth redirect response is refused instead of followed.
-    expect(fetchMock).toHaveBeenCalledTimes(6)
+    expect(fakeWebCalls()).toHaveLength(6)
   })
 
   it('rejects a redirect that resolves to a private address', async () => {
@@ -331,7 +402,7 @@ describe('createWebFetchTool', () => {
     await expect(
       webFetch().run({ url: 'https://a.example.test/start', prompt: 'q' }, ctx()),
     ).rejects.toThrow(/blocked non-public address: 127\.0\.0\.1/)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fakeWebCalls()).toHaveLength(1)
   })
 
   it('reports a malformed Location header as a tool input error', async () => {
@@ -428,7 +499,7 @@ describe('webSearchTool', () => {
   ]
 
   it('queries DuckDuckGo, parses results and sets searchCount', async () => {
-    const mock = searchResponse(ddgHtml(rows))
+    searchResponse(ddgHtml(rows))
     const tool = createWebSearchTool()
     const out = parse<{
       query: string
@@ -443,12 +514,9 @@ describe('webSearchTool', () => {
     expect(typeof out.searchCount).toBe('number')
     expect(out.searchCount).toBeGreaterThan(0)
 
-    const [url, init] = mock.mock.calls[0]
-    expect(String(url)).toBe('https://html.duckduckgo.com/html/?q=example%20query')
-    expect((init as RequestInit).redirect).toBe('manual')
-    expect((init as RequestInit).headers as Record<string, string>).toMatchObject({
-      'user-agent': expect.stringContaining('Mozilla'),
-    })
+    const [call] = fakeWebCalls()
+    expect(call.url).toBe('https://html.duckduckgo.com/html/?q=example%20query')
+    expect(call.headers['user-agent']).toContain('Mozilla')
   })
 
   it('increments searchCount per invocation', async () => {
@@ -504,6 +572,26 @@ describe('webSearchTool', () => {
     expect(both.results.map((result) => result.url)).toEqual(['https://example.com/page'])
   })
 
+  it('normalizes a trailing-dot result host before applying the filters', async () => {
+    searchResponse(
+      ddgHtml([
+        { title: 'Dot evil', url: 'https://evil.com./x', snippet: 'blocked' },
+        { title: 'Good', url: 'https://good.test/y', snippet: 'kept' },
+      ]),
+    )
+    const tool = createWebSearchTool()
+    const blocked = parse<{ results: FixtureRow[] }>(
+      (await tool.run({ query: 'q', blocked_domains: ['evil.com'] }, ctx())).text,
+    )
+    expect(blocked.results.map((result) => result.url)).toEqual(['https://good.test/y'])
+
+    // The same normalization keeps an allowed_domains entry matching.
+    const allowed = parse<{ results: FixtureRow[] }>(
+      (await tool.run({ query: 'q', allowed_domains: ['evil.com'] }, ctx())).text,
+    )
+    expect(allowed.results.map((result) => result.url)).toEqual(['https://evil.com./x'])
+  })
+
   it('caps results at ten', async () => {
     const many = Array.from({ length: 12 }, (_, index) => ({
       title: `Result ${index}`,
@@ -537,6 +625,7 @@ describe('webSearchTool', () => {
     const tool = createWebSearchTool()
     await expect(tool.run({ query: '   ' }, ctx())).rejects.toThrow(/non-empty/)
     expect(fetchMock).not.toHaveBeenCalled()
+    expect(fakeWebCalls()).toHaveLength(0)
   })
 
   it('registers the WebSearch prompt section order', () => {

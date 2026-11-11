@@ -488,7 +488,7 @@ P1.6 让 native 会话补齐日常工具（Glob、LS、WebFetch、WebSearch、To
 
 ### 工具契约与边界
 
-- `Glob`（`server/providers/native/tools/glob.ts`）：独立实现的纯 Node 递归 walker（复用 `grep.ts` 抽出的 `walk` / `globToRegExp`，**不 spawn ripgrep**），支持 `**` / `?`；匹配对象是相对搜索根的路径，输出是相对 cwd 的 `/` 分隔路径。跳过 `node_modules`、`.git`、`dist`；最多返回 100 个文件名，超出时 `truncated: true` 并附 `totalMatches`。输出 JSON `{durationMs, numFiles, filenames, truncated, totalMatches?}`。`path` 指向单个文件时按 basename 匹配自身。
+- `Glob`（`server/providers/native/tools/glob.ts`）：独立实现的纯 Node 递归 walker（复用 `grep.ts` 抽出的 `walk` / `globToRegExp`，**不 spawn ripgrep**），支持 `**` / `?`；匹配对象是相对搜索根的路径，输出是相对 cwd 的 `/` 分隔路径。跳过 `node_modules`、`.git`、`dist`；最多返回 100 个已排序的文件名，收集到 101 个匹配就停止遍历，因此超出时 `truncated: true` 且 `totalMatches` 是**观察到**的计数（≤101，不是全树精确计数）。`walk` 接受 turn signal，在每次目录读取 / 条目迭代前检查中断。输出 JSON `{durationMs, numFiles, filenames, truncated, totalMatches?}`。`path` 指向单个文件时按 basename 匹配自身。
 - `LS`（`ls.ts`）：只列一层，条目按名字排序，`.git` 永远排除，`ignore` 是子串过滤；文件条目带 `size`，目录 / 其它 dirent 分别是 `dir` / `link`。最多 100 条并置 `truncated`。输出 JSON `{path, entries: Array<{name, type, size?}>, truncated}`。
 - 两个路径型工具都经 `resolveAgainstCwd` 解析，逃逸 cwd 的路径抛 `ToolInputError`；所有输出再走 `capToolText`。
 - `TodoWrite`（`todo-write.ts`）是**每会话工厂**（列表状态封闭在工具实例里，两个会话不共享）：每次调用整表替换；校验 trim 后的非空且唯一 `content`、`status ∈ pending|in_progress|completed`、非空 `activeForm`。多个 `in_progress` 不是输入错误，而是规划气味：接受并返回 `{oldTodos, newTodos, warning}`，warning **在 JSON 内部**，保证结果整体可解析。
@@ -497,8 +497,8 @@ P1.6 让 native 会话补齐日常工具（Glob、LS、WebFetch、WebSearch、To
 
 ### Web 策略与 SSRF
 
-- WebFetch / WebSearch 共用 `web.ts` 的 HTTP 策略：仅 HTTP(S)；URL ≤2048 字符；拒绝 URL 内嵌凭证；目标地址必须是公网（IPv4 / IPv6，含 `169.254.169.254`、`::1` 与 NAT64/6to4/Teredo 等 IPv4 编码过渡前缀），**连接前**校验且每次重定向都重新校验；`redirect: 'manual'`，最多 5 跳，且不允许跨 origin；响应 ≤5 MiB、解码文本 ≤100k 字符；整个链路一个 30s 截止时间，与 turn 的 interrupt signal 用 `AbortSignal.any` 合并。hostname 解析失败按工具错误处理，不放行到底层 `fetch` 的第二次解析。
-- `WebFetch`（`web-fetch.ts`）是每会话工厂（辅助调用需要本会话的 model 与 profile 凭证）：抓取页面 → HTML 转文本（去 script/style/注释/标签、解码常见实体、折叠空白）→ 用辅助 Anthropic 调用按 `prompt` 提炼答案。辅助调用模型取 `profile.recapModel || 当前 model`（**调用时**解析，live 切模型会生效），`maxTokens: 1024`、`temperature: 0.2`、`caller: 'web-fetch'`，凭证走会话 profile。`offset` 在辅助调用前切掉已读过的文本。输出 JSON `{bytes, code, codeText, result, durationMs, url}`。
+- WebFetch / WebSearch 共用 `web.ts` 的 HTTP 策略：仅 HTTP(S)；URL ≤2048 字符；拒绝 URL 内嵌凭证；目标地址必须是公网（IPv4 / IPv6，含 `169.254.169.254`、`::1` 与 NAT64/6to4/Teredo 等 IPv4 编码过渡前缀），每次重定向都重新校验，并且**连接期**由内置 `node:http` / `node:https` 的 Agent 自定义 `lookup` 只返回已验证地址——Node 不会再解析一次，封死 resolve→connect 的 DNS rebinding TOCTOU（与 app-plugin network broker 共用 `server/safe-dns.ts` 的实现，只是 IP 谓词不同）。不使用全局 `fetch` 抓取页面内容。不自动跟随重定向，最多 5 跳，且不允许跨 origin；响应 ≤5 MiB、解码文本窗口 ≤100k 字符（窗口在 `offset` **之后**裁剪）；整个链路一个 30s 截止时间，与 turn 的 interrupt signal 用 `AbortSignal.any` 合并。hostname 解析失败按工具错误处理。
+- `WebFetch`（`web-fetch.ts`）是每会话工厂（辅助调用需要本会话的 model 与 profile 凭证）：抓取页面 → HTML 转文本（去 script/style/注释/标签、解码常见实体、折叠空白）→ 用辅助 Anthropic 调用按 `prompt` 提炼答案。辅助调用模型取 `profile.recapModel || 当前 model`（**调用时**解析，live 切模型会生效），`maxTokens: 1024`、`temperature: 0.2`、`caller: 'web-fetch'`，凭证走会话 profile。`offset` 在 100k 窗口裁剪之前应用（可读取超过前 100k 的页面）；越界 offset 报 "no text content … from offset N"。输出 JSON `{bytes, code, codeText, result, durationMs, url}`。
 - `WebSearch`（`web-search.ts`）走 DuckDuckGo HTML（无需 API key），查询用 `encodeURIComponent`，带浏览器 User-Agent；结果在本地按 host 过滤 `allowed_domains` / `blocked_domains`（子域包含在内，blocked 优先），最多 10 条。非 2xx 是错误而不是静默空结果。输出 `{query, results: Array<{title, url, snippet}>, durationSeconds, searchCount}`；`searchCount` 在同一会话的工具实例内累加，跨会话独立。
 
 ### AskUserQuestion：显式 marker 区分「答案」与「控制性拒绝」

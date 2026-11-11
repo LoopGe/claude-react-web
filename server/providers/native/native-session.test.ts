@@ -20,6 +20,7 @@ import { NativeSkillCatalog } from './skills.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
+import { setFakeWebHandler } from './tools/web-test-transport.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
 import { TODO_WRITE_GUIDANCE } from './tools/todo-write.js'
@@ -48,6 +49,19 @@ vi.mock('./anthropic-stream.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('./anthropic-stream.js')>()
   originalStreamAnthropicMessages.fn = original.streamAnthropicMessages
   return { ...original, streamAnthropicMessages: streamAnthropicMessagesMock }
+})
+
+// WebFetch/WebSearch page requests use the built-in node:http(s) transport;
+// stub it so the WebFetch model test never dials the public IP literal.
+vi.mock('node:https', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:https')>()
+  const { fakeRequest } = await import('./tools/web-test-transport.js')
+  return { ...actual, request: fakeRequest }
+})
+vi.mock('node:http', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:http')>()
+  const { fakeRequest } = await import('./tools/web-test-transport.js')
+  return { ...actual, request: fakeRequest }
 })
 
 function textTurn(text: string): CanonicalEvent[] {
@@ -949,16 +963,17 @@ describe('NativeSession', () => {
       for (const ev of scripts.shift() ?? []) yield ev
     }
     const auxRequests: Array<Record<string, unknown>> = []
+    setFakeWebHandler(() => new Response('<p>page text</p>', { headers: { 'content-type': 'text/html' } }))
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-        if (String(input).endsWith('/v1/messages')) {
-          auxRequests.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
-          return new Response(JSON.stringify({ content: [{ type: 'text', text: 'AUX' }] }), {
-            headers: { 'content-type': 'application/json' },
-          })
+        if (!String(input).endsWith('/v1/messages')) {
+          throw new Error(`unexpected global fetch ${String(input)}`)
         }
-        return new Response('<p>page text</p>', { headers: { 'content-type': 'text/html' } })
+        auxRequests.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        return new Response(JSON.stringify({ content: [{ type: 'text', text: 'AUX' }] }), {
+          headers: { 'content-type': 'application/json' },
+        })
       }),
     )
     const session = provider.createSession({

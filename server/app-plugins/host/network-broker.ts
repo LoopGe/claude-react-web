@@ -20,9 +20,8 @@
 // resolve independently and reopen the TOCTOU.
 
 import { request as httpsRequest, type RequestOptions, Agent } from 'node:https'
-import { lookup as dnsLookup } from 'node:dns/promises'
-import { isIP } from 'node:net'
 import { isPrivateIP } from '../../ssrf.js'
+import { createSafeLookup } from '../../safe-dns.js'
 import type { PermissionChecker } from '../permission-manager.js'
 
 const MAX_REDIRECTS = 5
@@ -144,36 +143,9 @@ export class NetworkBroker {
  *  resolve-then-re-resolve TOCTOU (DNS rebinding). IP-literal hostnames are
  *  checked directly (brackets stripped for IPv6).
  *
- *  Node ≥20 enables Happy Eyeballs (`autoSelectFamily`) by default, which
- *  invokes the custom lookup with `all: true` and expects a callback of the
- *  form `(err, addresses: {address, family}[])` — NOT `(err, ip, family)`.
- *  Both shapes must be handled, or the socket fails with
- *  `ERR_INVALID_IP_ADDRESS` because it destructures `addresses[0]` off a
- *  plain string. When `all` is set, the FULL array is returned (still
- *  pre-validated against the private/loopback check above). */
-export function safeLookup(
-  hostname: string,
-  opts: { all?: boolean } | null,
-  cb: (err: NodeJS.ErrnoException | null, addresses: unknown, family?: number) => void,
-): void {
-  const host = hostname.replace(/^\[|\]$/g, '') // strip IPv6 brackets
-  const ver = isIP(host)
-  if (ver > 0) {
-    if (isPrivateIP(host)) return cb(new Error(`target IP is not allowed: ${host}`) as NodeJS.ErrnoException, '', 0)
-    if (opts?.all) return cb(null, [{ address: host, family: ver }])
-    return cb(null, host, ver)
-  }
-  void dnsLookup(host, { all: true }).then(
-    (addrs) => {
-      const unsafe = addrs.find((a) => isPrivateIP(a.address))
-      if (unsafe) return cb(new Error(`host ${host} resolves to a disallowed address (${unsafe.address})`) as NodeJS.ErrnoException, '', 0)
-      if (opts?.all) return cb(null, addrs)
-      const first = addrs[0]
-      if (!first) return cb(new Error(`host ${host} did not resolve`) as NodeJS.ErrnoException, '', 0)
-      cb(null, first.address, first.family === 6 ? 6 : 4)
-    },
-    (err) => cb(err as NodeJS.ErrnoException, '', 0),
-  )
-}
+ *  The lookup implementation (including the Node ≥20 Happy Eyeballs
+ *  `all: true` shape) is shared with the native web tools in `safe-dns.ts`;
+ *  only the IP predicate differs (see `createSafeLookup`). */
+export const safeLookup = createSafeLookup(isPrivateIP)
 
 

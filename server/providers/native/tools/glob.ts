@@ -7,6 +7,9 @@ import { globToRegExp, walk } from './grep.js'
 import { capToolText } from './bash.js'
 
 const MAX_FILES = 100
+/** One past the cap: enough to observe that the result set is larger without
+ *  walking the rest of the tree. */
+const MAX_COLLECTED = MAX_FILES + 1
 
 /** Paths are matched with `/` separators on every platform; Windows walker
  *  output uses `\`, so normalize before matching and output. */
@@ -19,6 +22,8 @@ interface GlobOutput {
   numFiles: number
   filenames: string[]
   truncated: boolean
+  /** OBSERVED match count when truncated. The walk stops at MAX_COLLECTED, so
+   *  this is a lower bound (≤101), not an exact full-tree count. */
   totalMatches?: number
 }
 
@@ -58,10 +63,14 @@ export const globTool: ToolDef<{ pattern: string; path?: string }> = {
     if (rootStat.isFile()) {
       if (matcher.test(toPosix(basename(root)))) matches.push(toPosix(relative(ctx.cwd, root)))
     } else {
-      for await (const file of walk(root)) {
+      for await (const file of walk(root, ctx.signal)) {
         const walkRelative = toPosix(relative(root, file))
         if (!matcher.test(walkRelative)) continue
         matches.push(toPosix(relative(ctx.cwd, file)))
+        // Stop as soon as truncation is certain: sorting these collected
+        // paths gives the same first-100 contract without scanning the rest
+        // of a potentially huge tree.
+        if (matches.length >= MAX_COLLECTED) break
       }
     }
     matches.sort()

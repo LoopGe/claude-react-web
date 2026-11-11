@@ -9,7 +9,7 @@ import { lsTool } from './ls.js'
 
 let dir: string
 afterEach(async () => { if (dir) await rm(dir, { recursive: true, force: true }) })
-const ctx = (cwd: string) => ({ cwd, signal: new AbortController().signal })
+const ctx = (cwd: string, signal = new AbortController().signal) => ({ cwd, signal })
 
 function parse<T>(text: string): T {
   return JSON.parse(text) as T
@@ -91,6 +91,31 @@ describe('globTool', () => {
     expect(out.numFiles).toBe(100)
     expect(out.truncated).toBe(true)
     expect(out.totalMatches).toBe(101)
+  })
+
+  it('stops after the first 101 observed matches instead of walking the whole tree', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-glob-'))
+    for (let i = 0; i < 150; i++) {
+      await writeFile(join(dir, `f${String(i).padStart(3, '0')}.txt`), 'x')
+    }
+
+    const out = parse<GlobOutput>((await globTool.run({ pattern: '*.txt' }, ctx(dir))).text)
+    expect(out.filenames).toHaveLength(100)
+    expect(out.truncated).toBe(true)
+    // Old behavior reported all 150; the observed count is bounded by the
+    // early stop at MAX_FILES + 1.
+    expect(out.totalMatches).toBe(101)
+  })
+
+  it('stops the walk when the turn signal aborts', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-glob-'))
+    await writeFile(join(dir, 'a.ts'), 'x')
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      globTool.run({ pattern: '**/*.ts' }, ctx(dir, controller.signal)),
+    ).rejects.toThrow(/abort/i)
   })
 
   it('errors when the search root does not exist', async () => {
