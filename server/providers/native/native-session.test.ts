@@ -87,6 +87,16 @@ function toolTurn(toolUseId: string): CanonicalEvent[] {
   ]
 }
 
+function skillTurn(toolUseId: string, skill: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'Skill' } },
+    { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify({ skill }) } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
+}
+
 /** A WebFetch tool call over a public IP literal, so the tool's own SSRF
  *  check needs no DNS. */
 function webFetchTurn(toolUseId: string): CanonicalEvent[] {
@@ -759,6 +769,7 @@ describe('NativeSession', () => {
     expect(permissionCtx).toEqual({
       signal: expect.anything(),
       toolUseID: 'm1',
+      permissionMode: 'default',
       mcpServer: { name: 'a', source: 'sdk' },
     })
     // The second request carries the echo result as the tool_result.
@@ -915,6 +926,9 @@ describe('NativeSession', () => {
         },
       },
     })
+    expect(loadNativeSessionLogSync(dir, 'preset')!.events.some(
+      (event) => event.type === 'session/agent' && event.name === 'reviewer',
+    )).toBe(true)
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
 
@@ -1174,6 +1188,35 @@ describe('NativeSession', () => {
     }
   })
 
+  it('keeps model and effort unchanged when their base snapshot cannot become durable', async () => {
+    const dir = await tempDir('native-base-durable-failure-')
+    const definition = agentDefinition({ prompt: 'PROMPT-ONLY' })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const session = provider.createSession({
+      id: 'base-durable-failure',
+      cwd: dir,
+      agent: 'reviewer',
+      model: 'base-model',
+      effortLevel: 'high',
+    })
+    const log = (session as unknown as { log: NativeSessionLog }).log
+    const original = (log as unknown as { appendDurable?: unknown }).appendDurable
+    ;(log as unknown as { appendDurable?: unknown }).appendDurable = async () => {
+      throw new Error('durable write failed')
+    }
+    try {
+      const before = effectiveSettingsOf(session)
+      await expect(session.setModel?.('next-model')).rejects.toThrow('durable write failed')
+      expect(effectiveSettingsOf(session)).toEqual(before)
+      await expect(session.applyFlagSettings?.({ effortLevel: 'low' })).rejects.toThrow('durable write failed')
+      expect(effectiveSettingsOf(session)).toEqual(before)
+      expect(log.events.filter((event) => event.type === 'session/agent')).toHaveLength(1)
+    } finally {
+      ;(log as unknown as { appendDurable?: unknown }).appendDurable = original
+      await session.destroy()
+    }
+  })
+
   it('keeps the create-body tool and skill policies when no main persona is selected', async () => {
     const dir = await tempDir('native-base-policy-')
     await writeProjectSkill(dir, 'demo')
@@ -1336,6 +1379,67 @@ describe('NativeSession', () => {
     expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
     expect(effectiveSettingsOf(forked)?.model).toBe('before-model')
     await forked.destroy()
+  })
+
+  it('seeds an explicit pre-persona clear when a fork cut precedes the first selection', async () => {
+    const dir = await tempDir('native-preset-fork-before-selection-')
+    const definition = agentDefinition({
+      prompt: 'LATER-PERSONA', model: 'persona-model', permissionMode: 'bypassPermissions', tools: ['Bash'],
+    })
+    const source = NativeSessionLog.open({ stateDir: dir, id: 'source-before-selection', cwd: dir, resume: false })
+    source.append({ type: 'session/context', text: 'ctx' })
+    source.append({
+      type: 'assistant',
+      uuid: 'before-selection-cut',
+      session_id: 'source-before-selection',
+      parent_tool_use_id: null,
+      timestamp: '2026-11-11T00:00:00.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'plain cut' }] },
+    })
+    source.append({
+      type: 'session/agent',
+      name: 'reviewer',
+      definition,
+      base: { model: 'base-model', permissionMode: 'default', effortLevel: 'high' },
+      timestamp: '2026-11-11T00:00:01.000Z',
+    })
+    await source.flush()
+    await source.close()
+
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('forked')], requests)
+    const forked = provider.createSession({
+      id: 'fork-before-selection',
+      cwd: dir,
+      resume: 'source-before-selection',
+      forkSession: true,
+      resumeSessionAt: 'before-selection-cut',
+      agent: 'reviewer',
+      model: 'fork-option-model',
+      permissionMode: 'bypassPermissions',
+      effortLevel: 'low',
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of forked.messages) frames.push(frame as Frame) })()
+    try {
+      expect(effectiveSettingsOf(forked)).toEqual({
+        model: 'base-model', permissionMode: 'default', effortLevel: 'high', agent: null,
+      })
+      const selections = logOf(forked).events.filter((event) => event.type === 'session/agent')
+      expect(selections).toHaveLength(1)
+      expect(selections[0]).toMatchObject({
+        name: null,
+        base: { model: 'base-model', permissionMode: 'default', effortLevel: 'high' },
+      })
+
+      forked.enqueueUserMessage(userMsg('next') as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+      expect(requests[0].model).toBe('base-model')
+      expect(requests[0].system).not.toContain('LATER-PERSONA')
+    } finally {
+      await forked.destroy()
+    }
   })
 
   it('maps a main maxTurns cutoff to an error turn/end and keeps a natural completion completed', async () => {
@@ -1767,6 +1871,52 @@ describe('NativeSession', () => {
     await expect(session.applyFlagSettings?.({ model: 'claude-opus-4-8' })).rejects.toThrow(/model/)
     expect(catalog.skills.section()).toBe('<available_skills>\n- demo\n</available_skills>')
     await session.destroy()
+  })
+
+  it.each(['switch', 'clear'] as const)('keeps the turn-start Skill view during a mid-turn %s', async (action) => {
+    const dir = await tempDir(`native-skill-turn-${action}-`)
+    await writeProjectSkill(dir, 'demo')
+    await writeProjectSkill(dir, 'other')
+    const definition = agentDefinition({ skills: [action === 'switch' ? 'other' : 'demo'] })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    let requests = 0
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      requests++
+      if (requests === 1) {
+        await session.applyFlagSettings?.({ agent: action === 'switch' ? 'reviewer' : null })
+        for (const ev of skillTurn('skill-current', 'demo')) yield ev
+      } else if (requests === 2) {
+        for (const ev of textTurn('current-done')) yield ev
+      } else if (requests === 3) {
+        for (const ev of skillTurn('skill-next', 'other')) yield ev
+      } else {
+        for (const ev of textTurn('next-done')) yield ev
+      }
+    }
+    const session = provider.createSession({
+      id: `skill-turn-${action}`,
+      cwd: dir,
+      agent: action === 'clear' ? 'reviewer' : undefined,
+      providerExtras: { sdkOptions: { skills: [action === 'switch' ? 'demo' : 'other'] } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('current') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+      session.enqueueUserMessage(userMsg('next') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
+
+      const results = frames.filter((frame) => frame.type === 'user')
+      expect(results).toHaveLength(2)
+      expect(JSON.stringify(results[0].message.content)).toContain('# demo')
+      expect(JSON.stringify(results[0].message.content)).not.toContain('unknown skill')
+      expect(JSON.stringify(results[1].message.content)).toContain('# other')
+      expect(JSON.stringify(results[1].message.content)).not.toContain('unknown skill')
+    } finally {
+      await session.destroy()
+    }
   })
 
   it('expands a `/name args` turn into the skill body for the model and the log', async () => {

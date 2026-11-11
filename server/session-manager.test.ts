@@ -442,6 +442,20 @@ function nativeTextTurn(text: string): CanonicalEvent[] {
   ]
 }
 
+function nativeWriteTurn(toolUseId: string, filePath: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 1, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'Write' } },
+    {
+      kind: 'block_delta',
+      index: 0,
+      delta: { type: 'tool_input', json: JSON.stringify({ file_path: filePath, content: 'x' }) },
+    },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 1 } },
+  ]
+}
+
 async function seedPreSelectionNativeLog(
   stateDir: string,
   id: string,
@@ -6570,6 +6584,89 @@ describe('SessionManager', () => {
     expect(pending).toHaveLength(1)
     await sm.decide(created.id, pending[0].id, { behavior: 'deny', message: 'test complete' })
     expect((await permission).behavior).toBe('deny')
+  })
+
+  it.each(['bypassPermissions', 'acceptEdits'] as const)(
+    'keeps an in-flight default permission prompt when next-turn mode becomes %s',
+    async (nextMode) => {
+      const info = await sm.create({ provider: 'native', cwd: TEST_CWD, permissionMode: 'default' })
+      const provider = (sm as unknown as { providers: { get(name: string): NativeProvider } }).providers.get('native')
+      const filePath = join(TEST_CWD, `mode-${nextMode}.txt`)
+      let requests = 0
+      provider._testStream = async function* () {
+        requests++
+        if (requests === 1) {
+          await sm.setPermissionMode(info.id, nextMode)
+          for (const event of nativeWriteTurn('write-current', filePath)) yield event
+        } else if (requests === 2) {
+          for (const event of nativeTextTurn('current-done')) yield event
+        } else if (requests === 3) {
+          for (const event of nativeWriteTurn('write-next', filePath)) yield event
+        } else {
+          for (const event of nativeTextTurn('next-done')) yield event
+        }
+      }
+
+      sm.send(info.id, 'current')
+      await waitFor(() => sm.listPending(info.id).length === 1)
+      await sm.decide(info.id, sm.listPending(info.id)[0].id, { behavior: 'allow' })
+      await waitFor(() => requests === 2 && sm.get(info.id).phase === 'idle')
+
+      sm.send(info.id, 'next')
+      await waitFor(() => requests === 4 && sm.get(info.id).phase === 'idle')
+      expect(sm.listPending(info.id)).toHaveLength(0)
+      expect(sm.get(info.id).permissionMode).toBe(nextMode)
+    },
+  )
+
+  it.each([
+    { initial: 'default', target: 'bypassPermissions' },
+    { initial: 'bypassPermissions', target: 'default' },
+  ] as const)('keeps local $target enforcement when native permission persistence fails from $initial', async ({ initial, target }) => {
+    const definition = {
+      name: 'reviewer', description: 'Reviews', prompt: 'PROMPT-ONLY', enabled: true, createdAt: 1, updatedAt: 1,
+    }
+    const agentStore = {
+      get: (name: string) => name === 'reviewer' ? definition : undefined,
+    } as unknown as AgentDefinitionStore
+    sm = new SessionManager({ store, agentStore })
+    const info = await sm.create({
+      provider: 'native', cwd: TEST_CWD, agent: 'reviewer', permissionMode: initial,
+    })
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    const log = (live.handle as unknown as { log: NativeSessionLog }).log
+    const original = (log as unknown as { appendDurable?: unknown }).appendDurable
+    ;(log as unknown as { appendDurable?: unknown }).appendDurable = async () => {
+      throw new Error('selection durable failed')
+    }
+    try {
+      const updated = await sm.setPermissionMode(info.id, target)
+      expect(updated.permissionMode).toBe(target)
+      expect(log.events.filter((event) => event.type === 'session/agent')).toHaveLength(1)
+
+      const canUseTool = live.canUseTool as (
+        tool: string,
+        input: unknown,
+        ctx: { signal: AbortSignal; toolUseID: string },
+      ) => Promise<{ behavior: string }>
+      const resultPromise = canUseTool(
+        'Write',
+        { file_path: join(TEST_CWD, 'provider-failure.txt'), content: 'x' },
+        { signal: new AbortController().signal, toolUseID: 'tu-provider-failure' },
+      )
+      if (target === 'bypassPermissions') {
+        expect((await resultPromise).behavior).toBe('allow')
+        expect(sm.listPending(info.id)).toHaveLength(0)
+      } else {
+        await tick()
+        const pending = sm.listPending(info.id)
+        expect(pending).toHaveLength(1)
+        await sm.decide(info.id, pending[0].id, { behavior: 'deny', message: 'done' })
+        expect((await resultPromise).behavior).toBe('deny')
+      }
+    } finally {
+      ;(log as unknown as { appendDurable?: unknown }).appendDurable = original
+    }
   })
 
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {

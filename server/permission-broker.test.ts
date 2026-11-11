@@ -170,6 +170,30 @@ describe('PermissionBroker', () => {
       })
     })
 
+    it('uses one explicit per-call mode for dontAsk, bypass, and acceptEdits decisions', async () => {
+      const session = makeFakeSession({ permissionMode: 'bypassPermissions', cwd: '/work/app' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const input = { file_path: '/work/app/src/x.ts', content: 'x' }
+      const options = {
+        toolUseID: 'tu-mode-override',
+        requestId: 'req-mode-override',
+        signal: new AbortController().signal,
+        title: 'Write file', displayName: 'Write', description: '', suggestions: [],
+      }
+
+      const locked = await canUseTool('Write', input, { ...options, permissionMode: 'dontAsk' })
+      expect(locked.behavior).toBe('deny')
+
+      session.permissionMode = 'dontAsk'
+      const bypassed = await canUseTool('Write', input, { ...options, permissionMode: 'bypassPermissions' })
+      expect(bypassed.behavior).toBe('allow')
+
+      session.permissionMode = 'default'
+      const accepted = await canUseTool('Write', input, { ...options, permissionMode: 'acceptEdits' })
+      expect(accepted.behavior).toBe('allow')
+      expect(session.pending.size).toBe(0)
+    })
+
     it('still prompts for sensitive paths in bypassPermissions mode by default', () => {
       const session = makeFakeSession({ permissionMode: 'bypassPermissions', cwd: '/work/app' })
       const canUseTool = broker.buildCanUseTool(session, vi.fn())

@@ -249,6 +249,41 @@ export class NativeSessionLog {
     return event
   }
 
+  /** Append one control event as an atomic durable reservation. Ordinary
+   *  append/flush keeps its crash-recovery semantics; this stricter path is for
+   *  selections that must not become visible in memory OR replay after a
+   *  rejected write. Later in-memory events are preserved with fresh seqs. */
+  async appendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
+    await this.flush()
+    this.assertDurableWriterActive()
+    const preSize = (await stat(this.path)).size
+    this.assertDurableWriterActive()
+    const reservationIndex = this.events.length
+    try {
+      const event = this.append(input)
+      await this.flush()
+      return event
+    } catch (err) {
+      const later = this.events.splice(reservationIndex)
+      try {
+        this.pending = []
+        truncateSync(this.path, preSize)
+        for (const event of later.slice(1)) {
+          const { seq: _seq, ...rest } = event
+          this.append(rest as NativeEventInput)
+        }
+      } catch (rollbackErr) {
+        throw new AggregateError([err, rollbackErr], `failed to roll back durable append: ${this.path}`)
+      }
+      throw err
+    }
+  }
+
+  private assertDurableWriterActive(): void {
+    if (this.superseded) throw new Error(`session log writer is superseded: ${this.path}`)
+    if (this.closed) throw new Error(`session log writer is closed: ${this.path}`)
+  }
+
   flush(): Promise<void> {
     return this.enqueueFlush(false)
   }

@@ -84,7 +84,7 @@ export function isQuestionResult(result: unknown): boolean {
 export type BrokerCanUseTool = (
   toolName: string,
   input: Record<string, unknown>,
-  options: Parameters<CanUseTool>[2],
+  options: Parameters<CanUseTool>[2] & { permissionMode?: string },
 ) => Promise<BrokerPermissionResult>
 
 const log = createLogger('broker')
@@ -254,6 +254,9 @@ export class PermissionBroker {
     }
 
     const canUseTool: BrokerCanUseTool = async (toolName, toolInput, ctx) => {
+      // One call uses one mode: native main turns pass their start snapshot,
+      // while all other callers retain the session's current next-turn value.
+      const mode = ctx.permissionMode ?? session.permissionMode ?? 'default'
       // Per-call trace ?gated through the scope logger. To enable just
       // this scope without flooding the rest:
       //   LOG_LEVEL=debug LOG_SCOPES=broker
@@ -263,7 +266,7 @@ export class PermissionBroker {
       log.debug(
         `canUseTool fired ?tool=${toolName} ` +
         `agentID=${ctx.agentID ?? 'main'} ` +
-        `sessionMode=${session.permissionMode ?? 'default'} ` +
+        `sessionMode=${mode} ` +
         `toolUseID=${ctx.toolUseID}`,
       )
       // `AskUserQuestion` is an interactive tool (not a permission check)
@@ -352,7 +355,7 @@ export class PermissionBroker {
       // EVERY tool through us, so its built-in acceptEdits auto-allow never
       // fires. Placed AFTER the ExitPlanMode check so plan review is never
       // skipped.
-      if (session.permissionMode === 'acceptEdits') {
+      if (mode === 'acceptEdits') {
         // When the global `allowSensitivePathEdits` opt-in is on, the
         // sensitive-path exclusion (.git/, .claude/, shell configs, …) is
         // relaxed — edits/commands still must target paths inside cwd, but
@@ -402,7 +405,7 @@ export class PermissionBroker {
       // own callback we can flip the behaviour on the fly — session state
       // (`permissionMode`) is the single source of truth, no CLI-side
       // --dangerously-skip-permissions plumbing required.
-      if (session.permissionMode === 'bypassPermissions') {
+      if (mode === 'bypassPermissions') {
         // Global opt-in: when `allowSensitivePathEdits` is on, the
         // bypass-immune sensitive-path checks below are skipped entirely —
         // bypass mode auto-approves everything (including .git/, .claude/,
@@ -453,7 +456,7 @@ export class PermissionBroker {
       // are the sole auto-approve paths). Mirrors official Claude Code
       // semantics. Placed AFTER ExitPlanMode/AskUserQuestion so interactive
       // and plan-review flows are never silently denied.
-      if (session.permissionMode === 'dontAsk') {
+      if (mode === 'dontAsk') {
         const isReadOnlyTool = READONLY_TOOL_NAMES.has(toolName) || firstPartyReadOnlyTools().has(toolName)
         const isReadOnlyBashCmd =
           toolName === 'Bash' &&
@@ -481,7 +484,7 @@ export class PermissionBroker {
       // circuit-breaker → AI classifier → fall back to human prompt.
       // Placed AFTER ExitPlanMode/AskUserQuestion so interactive and
       // plan-review flows are never silently handled by the classifier.
-      if (session.permissionMode === 'auto') {
+      if (mode === 'auto') {
         const tracker = this.getDenialTracker(session.id)
 
         // 1. Safe tools — always allow, no classifier needed.

@@ -281,10 +281,6 @@ export class NativeSession implements ProviderSessionHandle {
   /** Local SKILL.md catalog. Discovery is kicked off at construction and
    *  awaited per turn, the same shape as MCP's `whenReady`. */
   private readonly skills: NativeSkillCatalog
-  /** The Skill tool this session hands the model. Built once; it rides every
-   *  tool list (nested ones too — a subagent may load a skill) and its
-   *  guidance is the provider's static prompt section. */
-  private readonly skillTool: ToolDef
   /** WebFetch reads the LIVE model through its getter at call time (a model
    *  switch must reach the auxiliary call) and the session's profile
    *  credentials. Prompt sections are registered by the provider from the
@@ -385,12 +381,6 @@ export class NativeSession implements ProviderSessionHandle {
     // lazily), so configure-before/after-reload makes no difference.
     this.skills = new NativeSkillCatalog(opts.cwd)
     this.skills.configure(opts.skills)
-    // The main Skill tool resolves its view at call time: a persona allowlist
-    // is a hard filter over the SAME discovery cache and override layer. The
-    // small structural adapter keeps createSkillTool's catalog API unchanged.
-    this.skillTool = createSkillTool({
-      bodyOf: (name: string) => this.currentSkillView().bodyOf(name),
-    } as NativeSkillCatalog)
     this.skillsReady = this.startSkillReload()
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
     this.taskOutputTool = createTaskOutputTool(this.tasks)
@@ -443,6 +433,12 @@ export class NativeSession implements ProviderSessionHandle {
 
   private currentSkillView(): ReturnType<NativeSkillCatalog['view']> {
     return this.skills.view(this.currentProfile?.skills ?? this.baseSkillPolicy)
+  }
+
+  private skillToolFor(view: ReturnType<NativeSkillCatalog['view']>): ToolDef {
+    return createSkillTool({
+      bodyOf: (name: string) => view.bodyOf(name),
+    } as NativeSkillCatalog)
   }
 
   private applyEffectiveProfile(): void {
@@ -502,14 +498,13 @@ export class NativeSession implements ProviderSessionHandle {
     definition: NativeAgentSelectionEvent['definition'],
     base: NativeAgentBase,
   ): Promise<void> {
-    const selection = this.log.append({
+    const selection = await this.log.appendDurable({
       type: 'session/agent',
       name,
       ...(definition ? { definition: structuredClone(definition) } : {}),
       base,
       timestamp: new Date().toISOString(),
     }) as NativeAgentSelectionEvent
-    await this.log.flush()
     this.applyAgentSelection(selection)
   }
 
@@ -566,7 +561,7 @@ export class NativeSession implements ProviderSessionHandle {
    *  message — history-only, per the DSH design, never a frame. An existing
    *  log for this id is left untouched: `open` throws `kind: 'exists'`. */
   private openFreshLog(opts: NativeSessionOptions): NativeSessionLog {
-    let selection: Omit<NativeAgentSelectionEvent, 'seq'> | undefined
+    let selection: NativeAgentSelectionEvent | undefined
     if (opts.agent !== undefined) {
       const reason = agentUnusableReason(opts.agentStore, opts.agent)
       if (reason) throw new Error(reason)
@@ -575,6 +570,7 @@ export class NativeSession implements ProviderSessionHandle {
       // leave a turn-less log that a later resume could mistake for a session.
       assertAgentProfileSupported(definition)
       selection = {
+        seq: 1,
         type: 'session/agent',
         name: definition.name,
         definition: structuredClone(definition),
@@ -592,14 +588,13 @@ export class NativeSession implements ProviderSessionHandle {
       id: opts.id,
       cwd: opts.cwd,
       resume: false,
-      seed: { events: [context], inheritedEventCount: 0, isSeeded: false },
+      seed: { events: selection ? [context, selection] : [context], inheritedEventCount: 0, isSeeded: false },
     })
     this.history.push(...historyFromEvents([context]))
     if (selection) {
-      // The next turn's ordinary pre-request flush covers this append too, so
-      // the selection is durable before the first model request. It never
-      // becomes a model message or a UI frame.
-      this.applyAgentSelection(log.append(selection) as NativeAgentSelectionEvent)
+      // Context and selection share the initial synchronous seed write: the
+      // next-turn profile is durable before createSession returns.
+      this.applyAgentSelection(selection)
     }
     return log
   }
@@ -646,6 +641,21 @@ export class NativeSession implements ProviderSessionHandle {
       cwd: opts.cwd,
       resumeSessionAt: opts.resumeSessionAt,
     })
+    const firstSelection = source.events.find(
+      (event): event is NativeAgentSelectionEvent => event.type === 'session/agent',
+    )
+    if (firstSelection && !agentSelectionFromEvents(seed.events)) {
+      // The cut predates the persona, but later source metadata must not leak
+      // into the child. Preserve the pre-persona base carried by the FIRST
+      // selection and synchronously seed an explicit clear for replay.
+      seed.events.push({
+        seq: seed.events.length,
+        type: 'session/agent',
+        name: null,
+        base: structuredClone(firstSelection.base),
+        timestamp: new Date().toISOString(),
+      })
+    }
     const log = NativeSessionLog.open({
       stateDir: opts.stateDir,
       id: opts.id,
@@ -756,6 +766,7 @@ export class NativeSession implements ProviderSessionHandle {
     const result = (await this.opts.canUseTool(toolName, input, {
       signal,
       toolUseID: toolUseId,
+      permissionMode,
       ...(mcpServer ? { mcpServer } : {}),
     })) as { behavior?: string; updatedInput?: Record<string, unknown>; message?: string }
     if (result?.behavior === 'allow') {
@@ -916,7 +927,7 @@ export class NativeSession implements ProviderSessionHandle {
    *  connection state. Runs before every turn and after every live MCP
    *  mutation; `this.tools` is replaced (not mutated) so a running turn keeps
    *  the snapshot it was handed. */
-  private rebuildTools(): void {
+  private rebuildTools(skillTool = this.skillToolFor(this.currentSkillView())): void {
     this.mcpToolServers.clear()
     // The Agent and Skill tools ride EVERY list, MCP-less sessions included —
     // otherwise the model loses delegation exactly when it has no servers to
@@ -928,7 +939,7 @@ export class NativeSession implements ProviderSessionHandle {
       this.todoWriteTool,
       this.agentTool,
       this.taskOutputTool,
-      this.skillTool,
+      skillTool,
     ]
     if (this.mcp) {
       const infos = this.mcp.tools()
@@ -1005,11 +1016,12 @@ export class NativeSession implements ProviderSessionHandle {
         // delays session creation, and a mid-turn replace/toggle only lands
         // on the next turn (the turn below runs on this snapshot).
         await this.mcp?.whenReady()
-        this.rebuildTools()
         // Everything a preset can override is captured together. Live controls
         // update the next-turn fields immediately, but this turn keeps the
-        // model/profile/permission/effort values it started with.
+        // model/profile/permission/effort and Skill view it started with.
         const turnProfile = this.currentProfile
+        const turnSkillView = this.skills.view(turnProfile?.skills ?? this.baseSkillPolicy)
+        this.rebuildTools(this.skillToolFor(turnSkillView))
         const turnModel = this.model
         const turnPermissionMode = this.permissionMode
         const turnEffortLevel = this.effortLevel
@@ -1017,7 +1029,7 @@ export class NativeSession implements ProviderSessionHandle {
           turnProfile?.instruction
             ? `${this.baseSystem}\n\n${turnProfile.instruction}`
             : this.baseSystem,
-          this.skills.view(turnProfile?.skills ?? this.baseSkillPolicy).section(),
+          turnSkillView.section(),
         )
         const res = await runTurn(
           {
@@ -1261,7 +1273,17 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   async setPermissionMode(mode: string): Promise<void> {
-    await this.updateAgentBase({ permissionMode: mode })
+    try {
+      await this.updateAgentBase({ permissionMode: mode })
+    } catch (err) {
+      // The manager's permission contract is local enforcement even when the
+      // provider write fails. Apply ONLY the requested base locally, then
+      // rethrow so the manager keeps its requested mode and skips effective
+      // synchronization. appendDurable has already removed the reservation.
+      this.basePermissionMode = mode
+      this.applyEffectiveProfile()
+      throw err
+    }
   }
 
   /** Runtime extended-thinking change (the SDK's setMaxThinkingTokens

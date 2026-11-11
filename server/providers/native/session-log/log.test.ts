@@ -124,6 +124,75 @@ describe('NativeSessionLog', () => {
     expect(persisted).not.toContain('�')
     await log.close()
   })
+  it('appendDurable rolls back a partial selection and resequences later appends', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('committed'))
+    await log.flush()
+    log.append(userEvent('prior-pending'))
+    const path = nativeSessionLogPath(stateDir, 's1')
+    let selectionStartSize = 0
+    let selectionWrites = 0
+    const handle = {
+      write: async (chunk: Buffer, offset: number, length: number) => {
+        if (chunk.toString('utf8').includes('"type":"session/agent"')) {
+          selectionWrites++
+          if (selectionWrites === 1) selectionStartSize = (await stat(path)).size
+          const bytes = chunk.subarray(offset, offset + Math.min(5, length))
+          await writeFile(path, bytes, { flag: 'a' })
+          if (selectionWrites === 1) return { bytesWritten: bytes.length, buffer: chunk }
+          log.append({ type: 'turn/end', reason: 'completed' })
+          throw new Error('partial selection write')
+        }
+        await writeFile(path, chunk.subarray(offset, offset + length), { flag: 'a' })
+        return { bytesWritten: length, buffer: chunk }
+      },
+      sync: async () => undefined,
+    }
+    ;(log as unknown as { ensureHandle: () => Promise<unknown> }).ensureHandle = async () => handle
+
+    await expect(log.appendDurable({
+      type: 'session/agent',
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })).rejects.toThrow('partial selection write')
+
+    expect((await stat(path)).size).toBe(selectionStartSize)
+    expect(log.events.map((event) => event.type)).toEqual(['user', 'user', 'turn/end'])
+    expect(log.events.map((event) => event.seq)).toEqual([0, 1, 2])
+    expect(log.events.some((event) => event.type === 'session/agent')).toBe(false)
+
+    await log.flush()
+    const persisted = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(persisted.events.map((event) => event.type)).toEqual(['user', 'user', 'turn/end'])
+    expect(persisted.events.map((event) => event.seq)).toEqual([0, 1, 2])
+    expect(persisted.events.some((event) => event.type === 'session/agent')).toBe(false)
+    await log.close()
+  })
+
+  it('appendDurable refuses closed and superseded writers without reserving an event', async () => {
+    const stateDir = await fresh()
+    const original = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    const replacement = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: true })
+    const selection = {
+      type: 'session/agent' as const,
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    }
+    await expect(original.appendDurable(selection)).rejects.toThrow(/superseded/)
+    expect(original.events).toHaveLength(0)
+
+    replacement.append({ type: 'turn/end', reason: 'completed' })
+    await replacement.flush()
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((event) => event.seq)).toEqual([0])
+    await replacement.close()
+    await expect(replacement.appendDurable(selection)).rejects.toThrow(/closed/)
+    expect(replacement.events.map((event) => event.type)).toEqual(['turn/end'])
+    await original.close()
+  })
+
   it('refuses a fresh open over an existing log', async () => {
     const stateDir = await fresh()
     const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
