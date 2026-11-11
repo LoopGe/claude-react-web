@@ -6435,10 +6435,13 @@ describe('SessionManager', () => {
     expect(store.get(id)?.agent).toBeUndefined()
   })
 
-  it('keeps an unspecified native permission intent unset at spawn', async () => {
+  it('keeps an unspecified native permission intent unset at spawn and across base controls', async () => {
     const info = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
 
     expect(info.permissionMode).toBeUndefined()
+    expect(store.get(info.id)?.permissionMode).toBeUndefined()
+    expect((await sm.setModel(info.id, 'next-model')).permissionMode).toBeUndefined()
+    expect((await sm.setEffortLevel(info.id, 'high')).permissionMode).toBeUndefined()
     expect(store.get(info.id)?.permissionMode).toBeUndefined()
   })
 
@@ -6493,6 +6496,80 @@ describe('SessionManager', () => {
     )
     expect(result.behavior).toBe('allow')
     expect(sm.listPending(info.id)).toHaveLength(0)
+  })
+
+  it('syncs native effective controls after model, permission, effort, and agent changes', async () => {
+    const definition = {
+      name: 'reviewer',
+      description: 'Reviews code',
+      prompt: 'REVIEW-PROMPT',
+      model: 'persona-model',
+      permissionMode: 'bypassPermissions',
+      effort: 'xhigh',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const agentStore = {
+      get: (name: string) => name === 'reviewer' ? definition : undefined,
+    } as unknown as AgentDefinitionStore
+    sm = new SessionManager({ store, agentStore })
+    const created = await sm.create({
+      provider: 'native',
+      cwd: TEST_CWD,
+      model: 'base-model',
+      agent: 'reviewer',
+      permissionMode: 'default',
+      effort: 'low',
+    })
+
+    expect((await sm.setModel(created.id, 'base-next')).model).toBe('persona-model')
+    expect((await sm.setPermissionMode(created.id, 'acceptEdits')).permissionMode).toBe('bypassPermissions')
+    expect((await sm.setEffortLevel(created.id, 'medium')).effortLevel).toBe('xhigh')
+    expect(store.get(created.id)).toMatchObject({
+      model: 'persona-model',
+      permissionMode: 'bypassPermissions',
+      effortLevel: 'xhigh',
+      agent: 'reviewer',
+    })
+
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(created.id)!
+    const canUseTool = live.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<{ behavior: string }>
+    const bypass = await canUseTool(
+      'Bash',
+      { command: 'echo hi' },
+      { signal: new AbortController().signal, toolUseID: 'tu-persona-still-bypass' },
+    )
+    expect(bypass.behavior).toBe('allow')
+
+    const cleared = await sm.setAgent(created.id, null)
+    expect(cleared).toMatchObject({
+      model: 'base-next',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'medium',
+    })
+    expect(cleared.agent).toBeUndefined()
+    expect(store.get(created.id)).toMatchObject({
+      model: 'base-next',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'medium',
+    })
+    expect(store.get(created.id)?.agent).toBeUndefined()
+
+    const permission = canUseTool(
+      'Bash',
+      { command: 'echo hi' },
+      { signal: new AbortController().signal, toolUseID: 'tu-clear-restores-base-permission' },
+    )
+    await tick()
+    const pending = sm.listPending(created.id)
+    expect(pending).toHaveLength(1)
+    await sm.decide(created.id, pending[0].id, { behavior: 'deny', message: 'test complete' })
+    expect((await permission).behavior).toBe('deny')
   })
 
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {

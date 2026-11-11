@@ -451,20 +451,22 @@ export class NativeSession implements ProviderSessionHandle {
     this.effortLevel = this.currentProfile?.effort ?? this.baseEffortLevel
   }
 
-  private applyAgentSelection(selection: NativeAgentSelectionEvent): void {
-    this.hasAgentSelectionEvent = true
-    this.baseModel = selection.base.model
-    this.basePermissionMode = selection.base.permissionMode
-    this.baseEffortLevel = selection.base.effortLevel as EffortLevel | undefined
-    this.baseSkillPolicy = Array.isArray(selection.base.skillPolicy)
-      ? [...selection.base.skillPolicy]
-      : selection.base.skillPolicy
+  private applyAgentBase(base: NativeAgentBase): void {
+    this.baseModel = base.model
+    this.basePermissionMode = base.permissionMode
+    this.baseEffortLevel = base.effortLevel as EffortLevel | undefined
+    this.baseSkillPolicy = Array.isArray(base.skillPolicy) ? [...base.skillPolicy] : base.skillPolicy
     this.skills.configure(
       this.baseSkillPolicy === 'all' || this.baseSkillPolicy === undefined
         ? this.baseSkillPolicy
         : [...this.baseSkillPolicy],
     )
-    this.baseToolProfile = selection.base.toolProfile ? structuredClone(selection.base.toolProfile) : undefined
+    this.baseToolProfile = base.toolProfile ? structuredClone(base.toolProfile) : undefined
+  }
+
+  private applyAgentSelection(selection: NativeAgentSelectionEvent): void {
+    this.hasAgentSelectionEvent = true
+    this.applyAgentBase(selection.base)
     if (selection.name === null) {
       this.currentProfile = null
     } else {
@@ -491,6 +493,58 @@ export class NativeSession implements ProviderSessionHandle {
         : {}),
       ...(this.baseToolProfile !== undefined ? { toolProfile: structuredClone(this.baseToolProfile) } : {}),
     }
+  }
+
+  /** A selection becomes visible only after its definition and latest base are
+   *  durable. The same path serves clear (name null, no definition). */
+  private async appendAgentSelection(
+    name: string | null,
+    definition: NativeAgentSelectionEvent['definition'],
+    base: NativeAgentBase,
+  ): Promise<void> {
+    const selection = this.log.append({
+      type: 'session/agent',
+      name,
+      ...(definition ? { definition: structuredClone(definition) } : {}),
+      base,
+      timestamp: new Date().toISOString(),
+    }) as NativeAgentSelectionEvent
+    await this.log.flush()
+    this.applyAgentSelection(selection)
+  }
+
+  /** Base-only controls append a fresh copy of the CURRENT selection so a
+   *  later resume → clear cannot resurrect the base captured at selection time.
+   *  Pre-event logs keep their legacy no-event shape until an explicit switch. */
+  private async updateAgentBase(changes: Partial<NativeAgentBase>): Promise<void> {
+    if (!this.hasAgentSelectionEvent) {
+      if (changes.model !== undefined) this.baseModel = changes.model
+      if (changes.permissionMode !== undefined) this.basePermissionMode = changes.permissionMode
+      if ('effortLevel' in changes) this.baseEffortLevel = changes.effortLevel as EffortLevel | undefined
+      if ('skillPolicy' in changes) {
+        this.baseSkillPolicy = Array.isArray(changes.skillPolicy) ? [...changes.skillPolicy] : changes.skillPolicy
+        this.skills.configure(
+          this.baseSkillPolicy === 'all' || this.baseSkillPolicy === undefined
+            ? this.baseSkillPolicy
+            : [...this.baseSkillPolicy],
+        )
+      }
+      if ('toolProfile' in changes) {
+        this.baseToolProfile = changes.toolProfile ? structuredClone(changes.toolProfile) : undefined
+      }
+      this.applyEffectiveProfile()
+      return
+    }
+    const previous = agentSelectionFromEvents(this.log.events)
+    if (!previous) throw new Error('agent selection state has no persisted snapshot')
+    if (this.currentProfile && !previous.definition) {
+      throw new Error(`agent selection "${this.currentProfile.name}" has no definition snapshot`)
+    }
+    await this.appendAgentSelection(
+      this.currentProfile?.name ?? null,
+      this.currentProfile ? structuredClone(previous.definition!) : undefined,
+      { ...this.agentBaseSnapshot(), ...changes },
+    )
   }
 
   getEffectiveSettings(): { model: string; permissionMode?: string; effortLevel?: string; agent: string | null } {
@@ -668,7 +722,13 @@ export class NativeSession implements ProviderSessionHandle {
     return this._closed
   }
 
-  private requestPermission: LoopDeps['requestPermission'] = async (toolName, input, toolUseId, signal) => {
+  private requestPermission = async (
+    toolName: string,
+    input: Record<string, unknown>,
+    toolUseId: string,
+    signal: AbortSignal,
+    permissionMode = this.permissionMode,
+  ) => {
     // Guard against an abort that fired while the previous tool executed: an
     // already-aborted signal never fires the broker's abort listener, so
     // without this check the permission promise could never settle and the
@@ -687,7 +747,7 @@ export class NativeSession implements ProviderSessionHandle {
     if (signal.aborted) return { allowed: false, input, message: 'aborted' }
     // Live mode, not the spawn-time opts value: a bypass session downgraded
     // to default must stop auto-allowing.
-    if (this.permissionMode === 'bypassPermissions') return { allowed: true, input }
+    if (permissionMode === 'bypassPermissions') return { allowed: true, input }
     // Fail closed: without a handler there is nothing to ask.
     if (!this.opts.canUseTool) {
       return { allowed: false, input, message: 'no permission handler registered for this session' }
@@ -719,7 +779,7 @@ export class NativeSession implements ProviderSessionHandle {
    *  retry in the UI. */
   private defaultStream(
     req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
-    opts?: { suppressRetryFrames?: boolean },
+    opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined },
   ): AsyncIterable<CanonicalEvent> {
     return streamAnthropicMessages(
       {
@@ -731,7 +791,7 @@ export class NativeSession implements ProviderSessionHandle {
         maxTokens: DEFAULT_MAX_TOKENS,
         thinking: this.thinking,
         thinkingDisplay: this.thinkingDisplay,
-        effort: this.effortLevel,
+        effort: opts?.effortLevel ? opts.effortLevel() : this.effortLevel,
         fastMode: this.fastMode,
         signal: req.signal,
       },
@@ -743,7 +803,7 @@ export class NativeSession implements ProviderSessionHandle {
 
   private streamFor(
     req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
-    opts?: { suppressRetryFrames?: boolean },
+    opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined },
   ): AsyncIterable<CanonicalEvent> {
     // The test seam ignores opts: scripted streams have no retry path.
     const testStream = this.opts.streamSupplier?.()
@@ -946,31 +1006,40 @@ export class NativeSession implements ProviderSessionHandle {
         // on the next turn (the turn below runs on this snapshot).
         await this.mcp?.whenReady()
         this.rebuildTools()
+        // Everything a preset can override is captured together. Live controls
+        // update the next-turn fields immediately, but this turn keeps the
+        // model/profile/permission/effort values it started with.
+        const turnProfile = this.currentProfile
+        const turnModel = this.model
+        const turnPermissionMode = this.permissionMode
+        const turnEffortLevel = this.effortLevel
+        const turnSystem = withSkillsSection(
+          turnProfile?.instruction
+            ? `${this.baseSystem}\n\n${turnProfile.instruction}`
+            : this.baseSystem,
+          this.skills.view(turnProfile?.skills ?? this.baseSkillPolicy).section(),
+        )
         const res = await runTurn(
           {
-            stream: (req) => this.streamFor(req),
+            stream: (req) => this.streamFor(req, { effortLevel: () => turnEffortLevel }),
             tools: [...this.tools],
-            maxTurns: this.currentProfile?.maxTurns,
+            maxTurns: turnProfile?.maxTurns,
             tasks: this.tasks,
             cwd: this.opts.cwd,
-            requestPermission: this.requestPermission,
+            requestPermission: (toolName, input, toolUseId, signal) =>
+              this.requestPermission(toolName, input, toolUseId, signal, turnPermissionMode),
             emit: (frame) => {
               this.persistFrame(frame)
               this.output.push(frame)
             },
-            system: withSkillsSection(
-              this.currentProfile?.instruction
-                ? `${this.baseSystem}\n\n${this.currentProfile.instruction}`
-                : this.baseSystem,
-              this.currentSkillView().section(),
-            ),
+            system: turnSystem,
             fastModeState: () => (this.fastMode ? 'on' : 'off'),
             drainSupplement: () => this.injectSupplements(),
           },
           this.ctx,
           this.history,
           { role: 'user', content: turnContent } as { role: 'user'; content: unknown[] },
-          this.model,
+          turnModel,
           turnSignal,
         )
         // Success-path result frame was already emitted by runTurn; only the
@@ -1188,13 +1257,11 @@ export class NativeSession implements ProviderSessionHandle {
 
   async setModel(model?: string): Promise<void> {
     if (!model) return
-    this.baseModel = model
-    this.applyEffectiveProfile()
+    await this.updateAgentBase({ model })
   }
 
   async setPermissionMode(mode: string): Promise<void> {
-    this.basePermissionMode = mode
-    this.applyEffectiveProfile()
+    await this.updateAgentBase({ permissionMode: mode })
   }
 
   /** Runtime extended-thinking change (the SDK's setMaxThinkingTokens
@@ -1325,40 +1392,72 @@ export class NativeSession implements ProviderSessionHandle {
     return { skills: this.skills.commands() }
   }
 
-  /** The flag-settings layer for the three keys this provider supports.
+  /** The flag-settings layer for the keys this provider supports.
    *  `skillOverrides` replaces the per-skill override map (`{}` restores the
    *  spawn default); `effortLevel` takes a level from the API's ladder or null
    *  (clear back to the model default — anything else throws); `fastMode`
-   *  takes true to enable and false/null to clear.
-   *  Both new values are LIVE fields read when the next request is built, and
-   *  are omitted at build time when the current model cannot serve them.
-   *  Every other key must fail loudly: `supportsPlugins` is false, so
-   *  silently accepting a plugin toggle would report a change that never
-   *  happened. */
+   *  takes true to enable and false/null to clear; `agent` selects a stored
+   *  main-thread persona or clears it with null.
+   *
+   *  Every key and any incoming definition is validated BEFORE state changes.
+   *  Agent/base snapshots take effect on the next turn; fast mode and skill
+   *  overrides keep their existing live-field behavior. Every other key fails
+   *  loudly rather than reporting a change the native provider cannot honor. */
   async applyFlagSettings(settings: Record<string, unknown>): Promise<void> {
-    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode'])
+    const supported = new Set(['skillOverrides', 'effortLevel', 'fastMode', 'agent'])
     const unknownKeys = Object.keys(settings).filter((key) => !supported.has(key))
     if (unknownKeys.length > 0) {
       throw new Error(`native provider does not support flag settings: ${unknownKeys.join(', ')}`)
     }
+
     const level = settings.effortLevel
+    let nextEffort = this.baseEffortLevel
     if (level !== undefined) {
       if (level === null) {
-        this.baseEffortLevel = undefined
+        nextEffort = undefined
       } else if (typeof level === 'string' && (EFFORT_LEVELS as readonly string[]).includes(level)) {
-        this.baseEffortLevel = level as EffortLevel
+        nextEffort = level as EffortLevel
       } else {
         throw new Error(`native provider does not support effort level: ${String(level)}`)
       }
-      this.applyEffectiveProfile()
     }
-    if (settings.fastMode !== undefined) {
-      const fastMode = settings.fastMode
-      if (fastMode !== null && typeof fastMode !== 'boolean') {
-        throw new Error(`native provider does not support fast mode: ${String(fastMode)}`)
+
+    const fastMode = settings.fastMode
+    if (fastMode !== undefined && fastMode !== null && typeof fastMode !== 'boolean') {
+      throw new Error(`native provider does not support fast mode: ${String(fastMode)}`)
+    }
+
+    let agentIntent: {
+      name: string | null
+      definition?: NativeAgentSelectionEvent['definition']
+    } | undefined
+    if ('agent' in settings) {
+      const name = settings.agent
+      if (name !== null && typeof name !== 'string') {
+        throw new Error(`native provider does not support agent: ${String(name)}`)
       }
-      this.fastMode = fastMode === true
+      agentIntent = { name }
+      if (name !== null) {
+        const reason = agentUnusableReason(this.opts.agentStore, name)
+        if (reason) throw new Error(reason)
+        const definition = this.opts.agentStore!.get(name)!
+        assertAgentProfileSupported(definition)
+        agentIntent.definition = definition
+      }
     }
+
+    const nextBase = this.agentBaseSnapshot()
+    if (level !== undefined) {
+      if (nextEffort === undefined) delete nextBase.effortLevel
+      else nextBase.effortLevel = nextEffort
+    }
+    if (agentIntent) {
+      await this.appendAgentSelection(agentIntent.name, agentIntent.definition, nextBase)
+    } else if (level !== undefined) {
+      await this.updateAgentBase({ effortLevel: nextEffort })
+    }
+    if (fastMode !== undefined) this.fastMode = fastMode === true
+
     const overrides = settings.skillOverrides
     if (overrides === undefined) return
     this.skills.applyOverrides(overrides as Record<string, 'on' | 'name-only' | 'user-invocable-only' | 'off'>)

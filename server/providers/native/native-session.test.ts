@@ -958,6 +958,222 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('switches the main agent only for the next turn and durably before its first request', async () => {
+    const dir = await tempDir('native-preset-switch-')
+    const definition = agentDefinition({ prompt: 'NEXT-PERSONA', model: 'persona-model', tools: ['Read'] })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const requests: CapturedRequest[] = []
+    const firstStarted = deferred<void>()
+    const releaseFirst = deferred<void>()
+    let selectionDurableAtSecondRequest = false
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: CapturedRequest) {
+      requests.push(structuredClone(req))
+      if (requests.length === 1) {
+        firstStarted.resolve()
+        await releaseFirst.promise
+      } else if (requests.length === 2) {
+        const selections = loadNativeSessionLogSync(dir, 'preset-switch')!.events
+          .filter((event) => event.type === 'session/agent')
+        selectionDurableAtSecondRequest = selections.at(-1)?.name === 'reviewer'
+      }
+      for (const ev of textTurn(`done-${requests.length}`)) yield ev
+    }
+    const session = provider.createSession({
+      id: 'preset-switch',
+      cwd: dir,
+      model: 'base-model',
+      providerExtras: { sdkOptions: { tools: ['Bash'] } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await firstStarted.promise
+      await session.applyFlagSettings?.({ agent: 'reviewer' })
+
+      expect(requests[0].model).toBe('base-model')
+      expect(requests[0].system).not.toContain('NEXT-PERSONA')
+      expect(effectiveSettingsOf(session)).toMatchObject({ model: 'persona-model', agent: 'reviewer' })
+      releaseFirst.resolve()
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
+      expect(requests[1].model).toBe('persona-model')
+      expect(requests[1].system).toContain('NEXT-PERSONA')
+      expect(requests[1].tools.map((tool) => tool.name)).toEqual(['Read'])
+      expect(selectionDurableAtSecondRequest).toBe(true)
+    } finally {
+      releaseFirst.resolve()
+      await session.destroy()
+    }
+  })
+
+  it('clears the main agent back to every base setting', async () => {
+    const dir = await tempDir('native-preset-clear-')
+    await writeProjectSkill(dir, 'demo')
+    await writeProjectSkill(dir, 'other')
+    const definition = agentDefinition({
+      prompt: 'PERSONA-PROMPT',
+      model: 'persona-model',
+      tools: ['Read'],
+      skills: ['demo'],
+      permissionMode: 'bypassPermissions',
+      effort: 'xhigh',
+    })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('done')], requests)
+    const session = provider.createSession({
+      id: 'preset-clear',
+      cwd: dir,
+      agent: 'reviewer',
+      model: 'base-model',
+      permissionMode: 'plan',
+      effortLevel: 'high',
+      providerExtras: { sdkOptions: { tools: ['Bash', 'Read', 'Skill'], skills: 'all' } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      await session.applyFlagSettings?.({ agent: null })
+      expect(effectiveSettingsOf(session)).toEqual({
+        model: 'base-model',
+        permissionMode: 'plan',
+        effortLevel: 'high',
+        agent: null,
+      })
+
+      session.enqueueUserMessage(userMsg('plain') as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+      expect(requests[0].model).toBe('base-model')
+      expect(requests[0].system).not.toContain('PERSONA-PROMPT')
+      expect(requests[0].system).toContain('- demo: demo description')
+      expect(requests[0].system).toContain('- other: other description')
+      expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Bash', 'Read', 'Skill'])
+      expect(logOf(session).events.at(-1)).toMatchObject({
+        type: 'turn/end',
+      })
+      const selections = logOf(session).events.filter((event) => event.type === 'session/agent')
+      expect(selections.at(-1)).toMatchObject({
+        name: null,
+        base: {
+          model: 'base-model',
+          permissionMode: 'plan',
+          effortLevel: 'high',
+          skillPolicy: 'all',
+          toolProfile: { tools: ['Bash', 'Read', 'Skill'] },
+        },
+      })
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('keeps persona controls effective while recording the latest base across restart and clear', async () => {
+    const dir = await tempDir('native-preset-latest-base-')
+    const definition = agentDefinition({
+      model: 'persona-model',
+      permissionMode: 'bypassPermissions',
+      effort: 'xhigh',
+    })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const original = provider.createSession({
+      id: 'preset-latest-base',
+      cwd: dir,
+      agent: 'reviewer',
+      model: 'base-old',
+      permissionMode: 'plan',
+      effortLevel: 'high',
+    })
+    await original.setModel?.('base-new')
+    await original.setPermissionMode?.('acceptEdits')
+    await original.applyFlagSettings?.({ effortLevel: 'low' })
+    expect(effectiveSettingsOf(original)).toEqual({
+      model: 'persona-model',
+      permissionMode: 'bypassPermissions',
+      effortLevel: 'xhigh',
+      agent: 'reviewer',
+    })
+    expect(logOf(original).events.filter((event) => event.type === 'session/agent')).toHaveLength(4)
+    await original.destroy()
+
+    const resumed = provider.createSession({ id: 'preset-latest-base', cwd: dir, resume: 'preset-latest-base' })
+    try {
+      expect(effectiveSettingsOf(resumed)).toEqual({
+        model: 'persona-model',
+        permissionMode: 'bypassPermissions',
+        effortLevel: 'xhigh',
+        agent: 'reviewer',
+      })
+      await resumed.applyFlagSettings?.({ agent: null })
+      expect(effectiveSettingsOf(resumed)).toEqual({
+        model: 'base-new',
+        permissionMode: 'acceptEdits',
+        effortLevel: 'low',
+        agent: null,
+      })
+      const selections = logOf(resumed).events.filter((event) => event.type === 'session/agent')
+      expect(selections.at(-1)).toMatchObject({
+        name: null,
+        base: { model: 'base-new', permissionMode: 'acceptEdits', effortLevel: 'low' },
+      })
+    } finally {
+      await resumed.destroy()
+    }
+  })
+
+  it('updates base and effective controls together when the persona does not override them', async () => {
+    const dir = await tempDir('native-preset-unpinned-controls-')
+    const definition = agentDefinition({ prompt: 'PROMPT-ONLY' })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const session = provider.createSession({
+      id: 'preset-unpinned-controls',
+      cwd: dir,
+      agent: 'reviewer',
+      model: 'base-old',
+      permissionMode: 'plan',
+      effortLevel: 'high',
+    })
+    try {
+      await session.setModel?.('base-new')
+      await session.setPermissionMode?.('acceptEdits')
+      await session.applyFlagSettings?.({ effortLevel: 'low' })
+      expect(effectiveSettingsOf(session)).toEqual({
+        model: 'base-new',
+        permissionMode: 'acceptEdits',
+        effortLevel: 'low',
+        agent: 'reviewer',
+      })
+      expect(logOf(session).events.filter((event) => event.type === 'session/agent')).toHaveLength(4)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('rejects an unsupported agent switch without changing flags, base state, or the log', async () => {
+    const dir = await tempDir('native-preset-switch-invalid-')
+    const invalid = agentDefinition({ name: 'invalid', background: true })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ invalid }) })
+    const session = provider.createSession({
+      id: 'preset-switch-invalid',
+      cwd: dir,
+      model: 'base-model',
+      permissionMode: 'plan',
+      effortLevel: 'low',
+    })
+    try {
+      const before = effectiveSettingsOf(session)
+      await expect(session.applyFlagSettings?.({ agent: 'invalid', effortLevel: 'high', fastMode: true }))
+        .rejects.toThrow(/background/)
+      expect(effectiveSettingsOf(session)).toEqual(before)
+      expect((session as unknown as { fastMode: boolean }).fastMode).toBe(false)
+      expect(logOf(session).events.some((event) => event.type === 'session/agent')).toBe(false)
+    } finally {
+      await session.destroy()
+    }
+  })
+
   it('keeps the create-body tool and skill policies when no main persona is selected', async () => {
     const dir = await tempDir('native-base-policy-')
     await writeProjectSkill(dir, 'demo')
@@ -1153,6 +1369,46 @@ describe('NativeSession', () => {
     expect(results[0].is_error).toBe(true)
     expect(results[1].is_error).toBe(false)
     await currentSession.destroy()
+  })
+
+  it('keeps the turn-start permission mode until the next turn', async () => {
+    const dir = await tempDir('native-turn-permission-snapshot-')
+    const provider = new NativeProvider({ stateDir: dir })
+    let requestCount = 0
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      requestCount++
+      if (requestCount === 1) {
+        await session.setPermissionMode?.('default')
+        for (const ev of toolTurn('snapshot-read')) yield ev
+      } else if (requestCount === 2) {
+        for (const ev of textTurn('first-done')) yield ev
+      } else if (requestCount === 3) {
+        for (const ev of toolTurn('next-turn-read')) yield ev
+      } else {
+        for (const ev of textTurn('second-done')) yield ev
+      }
+    }
+    const session = provider.createSession({
+      id: 'turn-permission-snapshot',
+      cwd: process.cwd(),
+      permissionMode: 'bypassPermissions',
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
+
+      const toolResults = frames.filter((frame) => frame.type === 'user')
+      expect(toolResults).toHaveLength(2)
+      expect(toolResults[0].message.content[0]).not.toMatchObject({ is_error: true })
+      expect(toolResults[1].message.content[0]).toMatchObject({ is_error: true })
+      expect(JSON.stringify(toolResults[1].message.content[0])).toContain('no permission handler')
+    } finally {
+      await session.destroy()
+    }
   })
 
   it('rejects unsupported main preset fields before creating a session log', async () => {
@@ -2883,6 +3139,49 @@ describe('NativeSession', () => {
       await session.applyFlagSettings?.({ fastMode: null })
       await nextRequest('sixth', 6)
       expect(wire(5)).not.toHaveProperty('speed')
+    } finally {
+      await session.destroy()
+      streamAnthropicMessagesMock.mockReset()
+      streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+      __setConfigForTest(origConfig)
+    }
+  })
+
+  it('keeps the turn-start effort across rounds and applies a change next turn', async () => {
+    const dir = await tempDir('native-turn-effort-snapshot-')
+    const origConfig = { ...config }
+    __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+    const requests: Array<Parameters<typeof buildRequestBody>[0]> = []
+    streamAnthropicMessagesMock.mockImplementation(async function* (req: Parameters<typeof buildRequestBody>[0]) {
+      requests.push(req)
+      if (requests.length === 1) {
+        await session.applyFlagSettings?.({ effortLevel: 'low' })
+        for (const ev of toolTurn('effort-read')) yield ev
+      } else {
+        for (const ev of textTurn(`done-${requests.length}`)) yield ev
+      }
+    })
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({
+      id: 'turn-effort-snapshot',
+      cwd: process.cwd(),
+      model: 'claude-opus-4-8',
+      effortLevel: 'high',
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    const wire = (index: number): { output_config?: unknown } =>
+      buildRequestBody(requests[index]) as { output_config?: unknown }
+    try {
+      session.enqueueUserMessage(userMsg('first') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+      expect(wire(0).output_config).toEqual({ effort: 'high' })
+      expect(wire(1).output_config).toEqual({ effort: 'high' })
+
+      session.enqueueUserMessage(userMsg('second') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
+      expect(wire(2).output_config).toEqual({ effort: 'low' })
     } finally {
       await session.destroy()
       streamAnthropicMessagesMock.mockReset()

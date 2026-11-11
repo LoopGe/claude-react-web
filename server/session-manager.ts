@@ -5002,12 +5002,12 @@ export class SessionManager {
    *     persist a persona the CLI didn't take. Such a definition becomes
    *     usable after the session re-spawns. Same caveat for an EDITED
    *     definition: the switch applies the spawn-time copy.
-   *  4. `s.model` is deliberately left alone even though the persona pins the
-   *     model CLI-side. `s.model` is the session's BASE model (what a respawn
-   *     starts from and what clearing the persona returns to); the persona's
-   *     model is an override on top, and the ContextBar already reports the
-   *     SDK's real per-turn model. Mirroring it into `s.model` would need a
-   *     separate "model before the persona" slot to restore on clear.
+   *  4. For Claude, `s.model` is deliberately left alone even though the
+   *     persona pins the model CLI-side: it is the base model a respawn starts
+   *     from and clearing returns to. Native instead exposes the provider's
+   *     next-turn effective model here through syncEffectiveSettings, while
+   *     its durable session/agent snapshots retain the base independently.
+   *     The ContextBar still reports the actual per-turn model.
    *
    *  No capability gate: `applyFlagSettings` on the handle is the only
    *  prerequisite (same as setSandbox / setMemorySettings). Deliberately NOT
@@ -5051,6 +5051,7 @@ export class SessionManager {
         )({ fallbackModel: null })
       }
       s.model = model
+      this.syncEffectiveSettings(s)
       s.modelGroupId = undefined
       s.lastActivityAt = Date.now()
       // The model changed — recompute its effort capability (keyword-based,
@@ -5344,6 +5345,9 @@ export class SessionManager {
     // Any SDK error is swallowed: local state already took effect, so the
     // switch never fails.
     const forwarded: PermissionMode = isSdkForwardedMode(mode) ? mode : 'default'
+    // Native has no CLI-side plan steering: its handle owns the actual base
+    // mode, including acceptEdits/bypassPermissions, so clear can restore it.
+    const providerMode = s.provider === 'native' ? mode : forwarded
     // Lazy resolution keeps the sync 501/capability throw inside the awaited
     // try below, so a provider without this method still can't fail the switch.
     const setSdkMode = () =>
@@ -5354,7 +5358,7 @@ export class SessionManager {
         'supportsFineGrainedPermissions',
       )
     try {
-      await setSdkMode()(forwarded)
+      await setSdkMode()(providerMode)
     } catch (err) {
       // The only CLI-side lock that silently bricks the session is plan
       // steering (the broker has no app-side plan enforcement — the model
@@ -5364,9 +5368,9 @@ export class SessionManager {
       // enforces it locally, and releasing on an ambiguous error (e.g. a
       // control-request timeout after the CLI already applied the new mode)
       // would strip a mode that actually engaged.
-      if (forwarded === 'default' || previousMode !== 'plan') {
+      if (s.provider === 'native' || forwarded === 'default' || previousMode !== 'plan') {
         log.warn(
-          `[session ${id}] SDK setPermissionMode(${forwarded}) failed; ` +
+          `[session ${id}] SDK setPermissionMode(${providerMode}) failed; ` +
           `mode kept locally and enforced via canUseTool:`,
           err,
         )
@@ -5386,6 +5390,7 @@ export class SessionManager {
         }
       }
     }
+    this.syncEffectiveSettings(s)
     this.persist(s)
     return this.info(s)
   }
@@ -5635,6 +5640,7 @@ export class SessionManager {
         capability,
       )(flags)
       mutate(s)
+      this.syncEffectiveSettings(s)
       s.lastActivityAt = Date.now()
       this.persist(s)
       return this.info(s)
