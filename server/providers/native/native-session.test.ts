@@ -1756,6 +1756,171 @@ describe('NativeSession', () => {
     }
   })
 
+  it.each([
+    { label: 'resume', fork: false },
+    { label: 'fork', fork: true },
+  ])('migrates a supported legacy preset on $label and persists its selection snapshot', async ({ fork }) => {
+    const dir = await tempDir(`native-legacy-supported-${fork ? 'fork' : 'resume'}-`)
+    const sourceId = `legacy-supported-${fork ? 'source' : 'resume'}`
+    const definition = agentDefinition({
+      prompt: 'MIGRATED-PERSONA',
+      model: 'persona-model',
+      tools: ['Read'],
+      permissionMode: 'plan',
+      effort: 'xhigh',
+    })
+    const legacy = NativeSessionLog.open({ stateDir: dir, id: sourceId, cwd: dir, resume: false })
+    legacy.append({ type: 'session/context', text: 'legacy context' })
+    await legacy.flush()
+    await legacy.close()
+
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('done')], requests)
+    const session = provider.createSession({
+      id: fork ? 'legacy-supported-fork' : sourceId,
+      cwd: dir,
+      resume: sourceId,
+      forkSession: fork,
+      agent: 'reviewer',
+      model: 'base-model',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'high',
+      providerExtras: { sdkOptions: { tools: ['Bash'], skills: 'all' } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      expect(effectiveSettingsOf(session)).toEqual({
+        model: 'persona-model',
+        permissionMode: 'plan',
+        effortLevel: 'xhigh',
+        agent: 'reviewer',
+      })
+      const selections = (logOf(session).events as NativeLogEvent[])
+        .filter((event) => event.type === 'session/agent')
+      expect(selections).toHaveLength(1)
+      expect(selections[0]).toMatchObject({
+        name: 'reviewer',
+        definition: { prompt: 'MIGRATED-PERSONA', model: 'persona-model', tools: ['Read'] },
+        base: {
+          model: 'base-model',
+          permissionMode: 'acceptEdits',
+          effortLevel: 'high',
+          skillPolicy: 'all',
+          toolProfile: { tools: ['Bash'] },
+        },
+      })
+
+      session.enqueueUserMessage(userMsg('next') as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+      expect(requests[0].model).toBe('persona-model')
+      expect(requests[0].system).toContain('MIGRATED-PERSONA')
+      expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
+      expect(frames[0]).toMatchObject({ type: 'system', subtype: 'init' })
+      expect(frames.filter((frame) => frame.subtype === 'informational')).toHaveLength(0)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it.each([
+    { label: 'resume', fork: false },
+    { label: 'fork', fork: true },
+  ])('drops an unsupported legacy preset atomically on $label and announces every dropped field', async ({ fork }) => {
+    const dir = await tempDir(`native-legacy-unsupported-${fork ? 'fork' : 'resume'}-`)
+    const sourceId = `legacy-unsupported-${fork ? 'source' : 'resume'}`
+    const definition = agentDefinition({
+      prompt: 'MUST-NOT-APPLY',
+      model: 'persona-model',
+      tools: ['Read'],
+      permissionMode: 'plan',
+      background: true,
+      memory: 'project',
+      effort: 3,
+    })
+    const legacy = NativeSessionLog.open({ stateDir: dir, id: sourceId, cwd: dir, resume: false })
+    legacy.append({ type: 'session/context', text: 'legacy context' })
+    await legacy.flush()
+    await legacy.close()
+
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('done')], requests)
+    const session = provider.createSession({
+      id: fork ? 'legacy-unsupported-fork' : sourceId,
+      cwd: dir,
+      resume: sourceId,
+      forkSession: fork,
+      agent: 'reviewer',
+      model: 'base-model',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'high',
+      providerExtras: { sdkOptions: { tools: ['Bash'] } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      expect(effectiveSettingsOf(session)).toEqual({
+        model: 'base-model',
+        permissionMode: 'acceptEdits',
+        effortLevel: 'high',
+        agent: null,
+      })
+      const selections = (logOf(session).events as NativeLogEvent[])
+        .filter((event) => event.type === 'session/agent')
+      expect(selections).toHaveLength(1)
+      expect(selections[0]).toMatchObject({
+        name: null,
+        droppedAgent: { name: 'reviewer', unsupportedFields: ['background', 'memory', 'effort'] },
+        base: { model: 'base-model', permissionMode: 'acceptEdits', effortLevel: 'high' },
+      })
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThanOrEqual(2))
+      expect(frames.slice(0, 2).map((frame) => frame.subtype)).toEqual(['init', 'informational'])
+      const notice = frames[1].content as string
+      expect(notice).toContain('reviewer')
+      for (const field of ['background', 'memory', 'effort']) expect(notice).toContain(field)
+
+      session.enqueueUserMessage(userMsg('next') as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+      expect(requests[0].model).toBe('base-model')
+      expect(requests[0].system).not.toContain('MUST-NOT-APPLY')
+      expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Bash'])
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('does not run legacy migration when a selection event already exists', async () => {
+    const dir = await tempDir('native-preset-existing-selection-')
+    const definition = agentDefinition({ prompt: 'SNAPSHOT-PERSONA', model: 'snapshot-model' })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const original = provider.createSession({
+      id: 'existing-selection', cwd: dir, agent: 'reviewer', model: 'base-model',
+    })
+    await original.destroy()
+    Object.assign(definition, {
+      prompt: 'CURRENT-UNSUPPORTED-PERSONA', model: 'current-model', background: true, effort: 3,
+    })
+
+    const resumed = provider.createSession({
+      id: 'existing-selection', cwd: dir, resume: 'existing-selection', agent: 'reviewer',
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of resumed.messages) frames.push(frame as Frame) })()
+    try {
+      await vi.waitFor(() => expect(frames.length).toBeGreaterThan(0))
+      expect(effectiveSettingsOf(resumed)).toMatchObject({ model: 'snapshot-model', agent: 'reviewer' })
+      const selections = (logOf(resumed).events as NativeLogEvent[])
+        .filter((event) => event.type === 'session/agent')
+      expect(selections).toHaveLength(1)
+      expect(selections[0]).toMatchObject({ name: 'reviewer', definition: { prompt: 'SNAPSHOT-PERSONA' } })
+      expect(frames.map((frame) => frame.subtype)).toEqual(['init'])
+    } finally {
+      await resumed.destroy()
+    }
+  })
+
   it('maps a main maxTurns cutoff to an error turn/end and keeps a natural completion completed', async () => {
     const dir = await tempDir('native-main-max-turns-')
     const definition = agentDefinition({ maxTurns: 1 })

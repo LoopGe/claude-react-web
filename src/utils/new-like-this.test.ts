@@ -144,6 +144,7 @@ describe('buildRestartSessionBody', () => {
         cwd: '/repo',
         model: 'claude-sonnet-4-6',
         permissionMode: 'acceptEdits',
+        agent: 'reviewer',
         title: 'Fix bug',
         betas: ['context-1m-2025-08-07'],
         mcpServerNames: ['srvA'],
@@ -161,6 +162,7 @@ describe('buildRestartSessionBody', () => {
       cwd: '/repo',
       model: 'claude-sonnet-4-6',
       permissionMode: 'acceptEdits',
+      agent: 'reviewer',
       title: 'Fix bug',
       betas: ['context-1m-2025-08-07'],
       enabledMcpServers: ['srvA'],
@@ -174,6 +176,11 @@ describe('buildRestartSessionBody', () => {
       joinGroupOf: 's1',
       evictingSource: true,
     })
+  })
+
+  it.each(['claude', 'native'] as const)('leaves agent undefined for a %s source without a persona', (provider) => {
+    const body = buildRestartSessionBody(mkSource({ id: 's1', provider }))
+    expect(body.agent).toBeUndefined()
   })
 
   it('maps an isolated source cwd to the main repo (never the live worktree)', () => {

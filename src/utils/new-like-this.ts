@@ -56,7 +56,7 @@ export function buildNewLikeThisForm(
 /** The `POST /sessions` body for the "Restart" action: create the replacement
  *  Y, then delete the source X. It carries the former inline restart payload's
  *  fields plus `provider` — NOT every per-session choice; legacy omissions
- *  (agent, systemPrompt, thinking, sandbox, …) are unchanged here.
+ *  (systemPrompt, thinking, sandbox, …) are unchanged here.
  *  Y gets a fresh id with no persisted meta, so an omitted field that DOES
  *  belong to this payload silently reverts to the global default.
  *  `joinGroupOf` / `evictingSource` make the server tag the
@@ -67,6 +67,7 @@ export type RestartSessionBody = Pick<
   | 'provider'
   | 'cwd'
   | 'model'
+  | 'agent'
   | 'permissionMode'
   | 'betas'
   | 'firstPartyTools'
@@ -93,6 +94,9 @@ export function buildRestartSessionBody(source: SessionInfo): RestartSessionBody
     // spawned into). Mirrors the server fork rule.
     cwd: source.worktree?.mainRepoPath ?? source.cwd,
     model: source.model,
+    // Restart Y has no persisted selection log, so carry the persona name just
+    // like "New like this" instead of silently reverting to a plain session.
+    agent: source.agent,
     permissionMode: source.permissionMode,
     // Preserve beta flags (notably `context-1m-...`) so restart doesn't
     // silently drop the window from 1M back to 200k.

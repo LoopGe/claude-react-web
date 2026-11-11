@@ -27,7 +27,7 @@ import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.j
 import { runTurn, type LoopDeps } from './loop.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
-import { apiRetryFrame, defaultFrameContext, resultFrame, type Frame, type FrameContext, type Usage } from './frames.js'
+import { apiRetryFrame, defaultFrameContext, informationalFrame, resultFrame, type Frame, type FrameContext, type Usage } from './frames.js'
 import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js'
 import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
@@ -51,6 +51,7 @@ import {
   agentSelectionFromEvents,
   assertAgentProfileSupported,
   profileFromDefinition,
+  unsupportedAgentFields,
   type NativeAgentBase,
   type NativeAgentProfile,
   type NativeAgentSelectionEvent,
@@ -182,8 +183,9 @@ export interface NativeSessionOptions {
   /** Fork cut point: the assistant message uuid to keep, inclusive. */
   resumeSessionAt?: string
   model?: string
-  /** Main-thread agent to resolve at fresh create. Resume/fork ignore this
-   *  name and restore the selection snapshot from the copied log prefix. */
+  /** Main-thread agent to resolve at fresh create. Resume/fork restore the
+   *  selection snapshot from the copied log prefix; a pre-selection legacy log
+   *  migrates this metadata name against the current enabled definition. */
   agent?: string
   permissionMode?: string
   /** Extended-thinking config carried over from `SessionMeta.thinking`.
@@ -316,6 +318,8 @@ export class NativeSession implements ProviderSessionHandle {
   /** Distinguishes an explicit logged clear from a pre-selection legacy log.
    *  Only the former may erase the legacy metadata name at manager sync. */
   private hasAgentSelectionEvent = false
+  /** A legacy unsupported-preset drop is visible only after system/init. */
+  private legacyAgentDropNotice: string | undefined
   private model: string
   /** Live permission mode: setPermissionMode keeps it current for the lifetime
    *  of the session — the spawn-time opts value is only the starting point, so
@@ -437,6 +441,9 @@ export class NativeSession implements ProviderSessionHandle {
       parent_tool_use_id: null,
       fast_mode_state: this.fastMode ? 'on' : 'off',
     } as unknown as AgentMessage)
+    if (this.legacyAgentDropNotice !== undefined) {
+      this.output.push(informationalFrame(this.ctx, this.legacyAgentDropNotice))
+    }
     // `tools` is now the effective list from birth, not builtins-only until
     // the first turn: the invariant tools = builtins + Agent + MCP defs must
     // hold for every reader, not just the pump after discovery.
@@ -484,11 +491,34 @@ export class NativeSession implements ProviderSessionHandle {
     this.applyEffectiveProfile()
   }
 
-  private restoreAgentSelection(events: readonly NativeLogEvent[]): void {
+  private restoreAgentSelection(events: readonly NativeLogEvent[], sessionLog: NativeSessionLog): void {
     const selection = agentSelectionFromEvents(events)
-    // Pre-selection logs deliberately keep their old no-persona behavior.
-    // Task 6 owns SessionMeta.agent migration and its visible drop path.
-    if (selection) this.applyAgentSelection(selection)
+    if (selection) {
+      this.applyAgentSelection(selection)
+      return
+    }
+    if (this.opts.agent === undefined) return
+    const definition = this.opts.agentStore?.get(this.opts.agent)
+    if (definition?.enabled !== true) return
+
+    const unsupportedFields = unsupportedAgentFields(definition)
+    const dropped = unsupportedFields.length > 0
+    const migrated = sessionLog.append({
+      type: 'session/agent',
+      name: dropped ? null : definition.name,
+      ...(dropped
+        ? { droppedAgent: { name: definition.name, unsupportedFields } }
+        : { definition: structuredClone(definition) }),
+      base: this.agentBaseSnapshot(),
+      timestamp: new Date().toISOString(),
+    }) as NativeAgentSelectionEvent
+    flushInBackground(sessionLog, this.opts.id, 'legacy agent migration')
+    this.applyAgentSelection(migrated)
+    if (dropped) {
+      this.legacyAgentDropNotice =
+        `Legacy agent "${definition.name}" was dropped because the native provider does not support: ` +
+        `${unsupportedFields.join(', ')}. The session will continue without an agent preset.`
+    }
   }
 
   private agentBaseSnapshot(): NativeAgentBase {
@@ -628,7 +658,7 @@ export class NativeSession implements ProviderSessionHandle {
     // synthetic results (now seq-numbered). `turn/end` is bookkeeping and is
     // skipped by `historyFromEvents`.
     this.history.push(...historyFromEvents(log.events))
-    this.restoreAgentSelection(log.events)
+    this.restoreAgentSelection(log.events, log)
     this.restoreUsage(events)
     return log
   }
@@ -676,7 +706,7 @@ export class NativeSession implements ProviderSessionHandle {
       seed,
     })
     this.history.push(...historyFromEvents(seed.events))
-    this.restoreAgentSelection(seed.events)
+    this.restoreAgentSelection(seed.events, log)
     // Match what a restart of this child would see: its copied prefix's
     // usage-bearing `turn/end` events define last/total (the `{forked}` close
     // carries none and is skipped). Without this the fork reports 0 until the

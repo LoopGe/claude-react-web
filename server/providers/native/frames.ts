@@ -93,6 +93,15 @@ export function apiRetryFrame(
   } as AgentMessage
 }
 
+export function informationalFrame(ctx: FrameContext, text: string): Frame {
+  return {
+    ...base(ctx, 'system'),
+    subtype: 'informational',
+    content: text,
+    level: 'warning',
+  } as AgentMessage
+}
+
 export function taskStartedFrame(opts: {
   taskId: string
   toolUseId: string
