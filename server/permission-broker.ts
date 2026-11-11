@@ -76,6 +76,8 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Read',
   'Grep',
   'Glob',
+  // Directory listing: read-only entry metadata, no file contents.
+  'LS',
   'NotebookRead',
   // A skill load only reads the SKILL.md body into the conversation — no
   // mutation, no network. Applies to the native provider's Skill tool too.
@@ -90,7 +92,7 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
  *  Aligned with SDK's SAFE_YOLO_ALLOWLISTED_TOOLS. */
 const SAFE_AUTO_TOOLS: ReadonlySet<string> = new Set([
   // Read-only
-  'Read', 'Grep', 'Glob', 'NotebookRead',
+  'Read', 'Grep', 'Glob', 'LS', 'NotebookRead',
   // A skill load only reads SKILL.md into the conversation (both providers).
   'Skill',
   // Code intelligence (read-only)

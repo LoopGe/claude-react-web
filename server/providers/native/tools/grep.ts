@@ -9,12 +9,41 @@ const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_MATCHES = 200
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist'])
 
-function globToRegExp(glob: string): RegExp {
-  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')
-  return new RegExp(`^${escaped}$`)
+/** Translate a glob into an anchored RegExp. `*` matches within one path
+ *  segment, `?` matches one character, and `**` matches any depth (a
+ *  following `/` may therefore match zero segments). A pattern containing no
+ *  `/` is effectively a basename match when the caller passes a basename. */
+export function globToRegExp(glob: string): RegExp {
+  let out = ''
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i]
+    if (ch === '*') {
+      if (glob[i + 1] === '*') {
+        while (glob[i + 1] === '*') i++
+        if (glob[i + 1] === '/') {
+          i++
+          out += '(?:.*/)?'
+        } else {
+          out += '.*'
+        }
+      } else {
+        out += '[^/]*'
+      }
+    } else if (ch === '?') {
+      out += '[^/]'
+    } else if ('\\^$.|+()[]{}'.includes(ch)) {
+      out += `\\${ch}`
+    } else {
+      out += ch
+    }
+  }
+  return new RegExp(`^${out}$`)
 }
 
-async function* walk(root: string): AsyncGenerator<string> {
+/** Recursive file walk from `root`, skipping SKIP_DIRS. Yields absolute paths.
+ *  Shared by Grep and Glob; Glob normalizes them to walk-relative paths so a
+ *  pattern is matched against the tree rather than the filesystem path. */
+export async function* walk(root: string): AsyncGenerator<string> {
   const entries = await readdir(root, { withFileTypes: true }).catch(() => [])
   for (const entry of entries) {
     if (entry.isDirectory()) {

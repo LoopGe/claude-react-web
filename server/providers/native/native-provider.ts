@@ -24,10 +24,12 @@ import { readTool } from './tools/read.js'
 import { writeTool } from './tools/write.js'
 import { editTool } from './tools/edit.js'
 import { grepTool } from './tools/grep.js'
+import { globTool } from './tools/glob.js'
+import { lsTool } from './tools/ls.js'
 import type { ToolDef } from './tools/types.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 
-const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool]
+const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool]
 
 /** The Agent tool's prompt section. The text is the tool def's own guidance
  *  (one exported constant), so the section and the schema cannot drift. */

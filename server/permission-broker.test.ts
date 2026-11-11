@@ -412,6 +412,14 @@ describe('PermissionBroker', () => {
       expect(session.pending.size).toBe(0)
     })
 
+    it('dontAsk auto-allows the LS tool (a directory listing is read-only)', async () => {
+      const session = makeFakeSession({ permissionMode: 'dontAsk' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('LS', { path: '.' }, ctx())
+      expect(result).toMatchObject({ behavior: 'allow' })
+      expect(session.pending.size).toBe(0)
+    })
+
     it('auto auto-allows the Skill tool without consulting the classifier', async () => {
       // A skill load is read-only, so it belongs in SAFE_AUTO_TOOLS like
       // Read/Grep — no classifier round-trip, no prompt.
@@ -421,6 +429,18 @@ describe('PermissionBroker', () => {
       const session = makeFakeSession({ permissionMode: 'auto' })
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
       const result = await canUseTool('Skill', { skill: 'demo' }, ctx())
+      expect(result).toMatchObject({ behavior: 'allow' })
+      expect(session.pending.size).toBe(0)
+      expect(mockClassify).not.toHaveBeenCalled()
+    })
+
+    it('auto auto-allows the LS tool without consulting the classifier', async () => {
+      const { classifyToolAction } = await import('./auto-classifier.js')
+      const mockClassify = vi.mocked(classifyToolAction)
+      mockClassify.mockClear()
+      const session = makeFakeSession({ permissionMode: 'auto' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('LS', { path: '.' }, ctx())
       expect(result).toMatchObject({ behavior: 'allow' })
       expect(session.pending.size).toBe(0)
       expect(mockClassify).not.toHaveBeenCalled()
