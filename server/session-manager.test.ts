@@ -11013,8 +11013,8 @@ describe('create() worktree isolation', () => {
       sandbox: { enabled: true },
     } as unknown as Parameters<SessionManager['create']>[0]))
       .rejects.toMatchObject({ status: 501, message: 'provider native does not support sandbox' })
-    // No side effects: the guard runs before provisionWorktree, so neither a
-    // worktree dir nor a spawned session exists.
+    // No side effects: the guard runs before provisionWorktree, so no worktree
+    // dir exists and no Claude subprocess handle was spawned either.
     expect(existsSync(join(dir, 'worktrees'))).toBe(false)
     expect(mockHandles).toHaveLength(0)
   })

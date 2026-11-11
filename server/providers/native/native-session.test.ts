@@ -2623,6 +2623,7 @@ describe('NativeSession', () => {
     it('generateTitle asks the aux caller with profile.recapModel', async () => {
       const dir = await tempDir('native-title-')
       const provider = new NativeProvider({ stateDir: dir })
+      expect(provider.capabilities.supportsSessionTitle).toBe(true)
       const session = provider.createSession({
         id: 'title-1',
         cwd: dir,
@@ -2673,6 +2674,7 @@ describe('NativeSession', () => {
     it('accountInfo resolves undefined', async () => {
       const dir = await tempDir('native-account-')
       const provider = new NativeProvider({ stateDir: dir })
+      expect(provider.capabilities.supportsAccountInfo).toBe(true)
       const session = provider.createSession({ id: 'account-1', cwd: dir })
       try {
         await expect(session.accountInfo?.()).resolves.toBeUndefined()
