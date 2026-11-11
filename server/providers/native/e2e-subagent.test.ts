@@ -114,7 +114,18 @@ type Frame = Record<string, any>
 interface LiveSession {
   history: Frame[]
   subagentHistory: Frame[]
-  handle: { history: unknown[] }
+  tasks: Map<string, {
+    taskId: string
+    toolUseId?: string
+    description: string
+    taskType?: string
+    subagentType?: string
+    isBackgrounded?: boolean
+  }>
+  handle: {
+    history: unknown[]
+    backgroundTasks?(toolUseId?: string): Promise<boolean>
+  }
 }
 
 /** Narrow read of the manager's live session map (private by design). */
@@ -319,6 +330,133 @@ describe('native subagents end to end through SessionManager', () => {
     expect(resumedLive.subagentHistory).toHaveLength(SIDECHAIN_FRAMES)
     expect(resumedLive.subagentHistory.every((f) => f.parent_tool_use_id === AGENT_ID)).toBe(true)
     expect(JSON.stringify(resumedLive.subagentHistory)).toContain(NESTED_REPORT)
+  }, 30000)
+})
+
+describe('native synchronous Agent detach', () => {
+  it('returns a TaskOutput acknowledgement, then delivers the real final report', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-subagent-detach-'))
+    dirs.push(dir)
+
+    let markNestedStarted!: () => void
+    const nestedStarted = new Promise<void>((resolve) => { markNestedStarted = resolve })
+    let releaseNested!: () => void
+    const nestedGate = new Promise<void>((resolve) => { releaseNested = resolve })
+    let parentRounds = 0
+    const first = await makeFixture(dir)
+    ;(first.provider as unknown as { _testStream: unknown })._testStream = async function* (
+      req: StreamReq,
+    ) {
+      if (isNestedRequest(req)) {
+        markNestedStarted()
+        await nestedGate
+        for (const ev of textTurn('real final report')) yield ev
+        return
+      }
+      parentRounds++
+      const script = parentRounds === 1
+        ? agentTurn(AGENT_ID, { description: 'research the code', prompt: 'p' })
+        : textTurn(PARENT_DONE)
+      for (const ev of script) yield ev
+    }
+
+    const info = await first.sm.create({
+      cwd: dir,
+      model: 'test-model',
+      provider: 'native',
+      title: 'subagent-detach',
+      canUseTool: allowingCanUseTool(),
+    })
+    sessionIds.push({ sm: first.sm, id: info.id })
+    const sub = first.sm.subscribe(info.id)
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of sub.iterable) frames.push(f as Frame)
+    })()
+
+    await first.sm.send(info.id, PROMPT)
+    await nestedStarted
+    try {
+      expect(await liveSession(first.sm, info.id).handle.backgroundTasks!(AGENT_ID)).toBe(true)
+      await vi.waitFor(() => {
+        expect(frames.filter((f) => f.type === 'result' && f.parent_tool_use_id == null)).toHaveLength(1)
+      }, { timeout: 5000 })
+
+      const parentToolResult = frames.find(
+        (f) => f.type === 'user' && f.parent_tool_use_id == null
+          && f.message?.content?.[0]?.tool_use_id === AGENT_ID,
+      )?.message.content[0]
+      expect(parentToolResult.is_error).toBe(false)
+      expect(parentToolResult.content[0].text).toContain('TaskOutput')
+      expect(liveSession(first.sm, info.id).tasks.get(AGENT_ID)).toMatchObject({
+        taskId: AGENT_ID,
+        toolUseId: AGENT_ID,
+        taskType: 'subagent',
+        description: 'research the code',
+        subagentType: 'general-purpose',
+        isBackgrounded: true,
+      })
+    } finally {
+      releaseNested()
+    }
+
+    await vi.waitFor(() => {
+      expect(frames.some((f) => f.subtype === 'task_notification')).toBe(true)
+    }, { timeout: 5000 })
+    sub.unsubscribe()
+
+    const sidechainFrames = frames.filter((f) => f.parent_tool_use_id != null)
+    expect(sidechainFrames.length).toBeGreaterThan(0)
+    expect(sidechainFrames.every((f) => f.parent_tool_use_id === AGENT_ID)).toBe(true)
+    const topLevelResultFrames = frames.filter((f) => f.type === 'result' && f.parent_tool_use_id == null)
+    expect(topLevelResultFrames).toHaveLength(1)
+    const notification = frames.find((f) => f.subtype === 'task_notification')
+    expect(notification?.result).toBe('real final report')
+    expect(notification?.result).not.toContain('running in the background')
+  }, 30000)
+
+  it('keeps nested Bash foreground when the outer Agent is not detached', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sm-native-subagent-nested-bash-'))
+    dirs.push(dir)
+    const scripts: CanonicalEvent[][] = [
+      agentTurn(AGENT_ID, { description: 'd', prompt: 'p' }),
+      toolUseTurn('nested-bash', 'Bash', JSON.stringify({ command: 'echo nested-bash-output' })),
+      textTurn('nested Bash complete'),
+      textTurn(PARENT_DONE),
+    ]
+    const first = await makeFixture(dir, scripts)
+    const info = await first.sm.create({
+      cwd: dir,
+      model: 'test-model',
+      provider: 'native',
+      title: 'subagent-nested-bash',
+      canUseTool: allowingCanUseTool(),
+    })
+    sessionIds.push({ sm: first.sm, id: info.id })
+    const sub = first.sm.subscribe(info.id)
+    const frames: Frame[] = []
+    void (async () => {
+      for await (const f of sub.iterable) frames.push(f as Frame)
+    })()
+
+    await first.sm.send(info.id, PROMPT)
+    await vi.waitFor(() => {
+      expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
+    }, { timeout: 5000 })
+    sub.unsubscribe()
+
+    const parentToolResult = frames.find(
+      (f) => f.type === 'user' && f.parent_tool_use_id == null
+        && f.message?.content?.[0]?.tool_use_id === AGENT_ID,
+    )?.message.content[0]
+    expect(parentToolResult.is_error).toBe(false)
+    expect(parentToolResult.content[0].text).toBe('nested Bash complete')
+    expect(frames.some((f) => f.subtype === 'task_started' || f.subtype === 'task_notification')).toBe(false)
+    const nestedResult = frames.find(
+      (f) => f.type === 'user' && f.message?.content?.[0]?.tool_use_id === 'nested-bash',
+    )
+    expect(nestedResult?.parent_tool_use_id).toBe(AGENT_ID)
+    expect(JSON.stringify(nestedResult)).toContain('nested-bash-output')
   }, 30000)
 })
 

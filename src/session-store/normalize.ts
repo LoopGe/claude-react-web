@@ -305,11 +305,11 @@ export function topLevelUserPromptSignature(
 /** A parsed task-notification completion signal, matchable back to the
  *  originating Agent subagent via `toolUseId`.
  *
- *  `result` is the subagent's returned output (only the harness XML path
- *  carries it inline; the SDK system frame keeps the body in `output_file`).
- *  `summary` is the human-readable one-liner both paths carry. Callers that
- *  merge the completion into a SubagentCard should prefer `result` and fall
- *  back to `summary` so the SDK-frame path still surfaces something. */
+ *  `result` is the subagent's returned output when the harness XML or native
+ *  system frame carries it inline; older SDK system frames keep the body in
+ *  `output_file`. `summary` is the human-readable one-liner all paths carry.
+ *  Callers that merge the completion into a SubagentCard should prefer
+ *  `result` and fall back to `summary` so every path surfaces something. */
 export interface ParsedTaskNotification {
   toolUseId: string
   status: TaskNotificationStatus
@@ -334,12 +334,13 @@ export interface ParsedTaskNotification {
  *  signal; the system frame is a best-effort supplement. */
 export function parseTaskNotification(msg: SdkMessage): ParsedTaskNotification | null {
   if (msg.type === 'system' && (msg as { subtype?: unknown }).subtype === 'task_notification') {
-    const m = msg as { tool_use_id?: unknown; status?: unknown; summary?: unknown }
+    const m = msg as { tool_use_id?: unknown; status?: unknown; summary?: unknown; result?: unknown }
     if (typeof m.tool_use_id !== 'string') return null
     return {
       toolUseId: m.tool_use_id,
       status: normalizeTaskStatus(typeof m.status === 'string' ? m.status : undefined),
       summary: typeof m.summary === 'string' ? m.summary : undefined,
+      result: typeof m.result === 'string' ? m.result : undefined,
     }
   }
   const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])

@@ -8,6 +8,7 @@ import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-de
 import { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 import { readTool } from './tools/read.js'
+import { bashTool } from './tools/bash.js'
 
 type StreamReq = { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }
 
@@ -110,6 +111,22 @@ describe('createAgentTool', () => {
     })
   })
 
+  it('declares subagent background metadata from the description and validated type', () => {
+    const agent = createAgentTool(baseDeps())
+
+    expect(agent.backgroundable?.taskType).toBe('subagent')
+    expect(agent.backgroundable?.describe({ description: 'inspect the parser', prompt: 'p' }))
+      .toBe('inspect the parser')
+    expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p', subagent_type: ' reviewer ' }))
+      .toBe('reviewer')
+    expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p' }))
+      .toBe('general-purpose')
+    expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p', subagent_type: '   ' }))
+      .toBe('general-purpose')
+    expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p', subagent_type: 42 }))
+      .toBe('general-purpose')
+  })
+
   it('forwards nested frames with the parent tool_use id and no result frame', async () => {
     const s = scriptedStreamer([[startStop, ...textBlock(0, 'nested answer'), deltaStop('end_turn')]])
     const emitted: Frame[] = []
@@ -201,6 +218,31 @@ describe('createAgentTool', () => {
     const toolResult = emitted.find((f) => f.type === 'user') as Frame
     expect(toolResult.parent_tool_use_id).toBe('tu-parent')
     expect(toolResult.message.content[0]).toMatchObject({ type: 'tool_result', tool_use_id: 'inner-1' })
+  })
+
+  it('runs nested Bash to completion without detaching the outer Agent', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'nested-bash', 'Bash', '{"command":"echo nested-bash-output"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'nested Bash complete'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    const agent = createAgentTool(baseDeps({
+      tools: () => [bashTool],
+      streamFor: s.streamFor.bind(s),
+      emit: (f) => emitted.push(f as Frame),
+    }))
+
+    const outcome = await runAgent(agent, { description: 'd', prompt: 'p' })
+
+    expect(outcome).toEqual({ text: 'nested Bash complete' })
+    expect(emitted.some((f) => f.type === 'system' && f.subtype === 'task_started')).toBe(false)
+    expect(emitted.some((f) => f.type === 'system' && f.subtype === 'task_notification')).toBe(false)
+    const nestedResult = emitted.find(
+      (f) => f.type === 'user'
+        && (f.message.content[0] as { tool_use_id?: string } | undefined)?.tool_use_id === 'nested-bash',
+    )
+    expect(nestedResult?.parent_tool_use_id).toBe('tu-parent')
+    expect(JSON.stringify(nestedResult)).toContain('nested-bash-output')
   })
 
   it('reads the tools getter at call time', async () => {

@@ -35,7 +35,7 @@ export interface AgentToolDeps {
 }
 
 interface AgentToolInput {
-  description?: string
+  description: string
   prompt: unknown
   subagent_type?: unknown
   model?: string
@@ -71,6 +71,14 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
         model: { type: 'string', description: 'Model override for the subagent.' },
       },
       required: ['description', 'prompt'],
+    },
+    backgroundable: {
+      taskType: 'subagent',
+      describe: (raw) => (raw as unknown as AgentToolInput).description,
+      subagentType: (raw) => {
+        const value = (raw as unknown as AgentToolInput).subagent_type
+        return typeof value === 'string' && value.trim() ? value.trim() : 'general-purpose'
+      },
     },
     async run(raw, ctx) {
       const input = raw as unknown as AgentToolInput

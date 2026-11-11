@@ -1407,14 +1407,16 @@ describe('applyTasksSnapshot: isAsync authority', () => {
     expect(m.activeSubagents.get('tu_a')?.isAsync).toBe(true)
   })
 
-  it('rescues a record mis-settled by a detach ack back to background', () => {
+  it('rescues a detach ack to background, then replaces it with the system result without changing isAsync', () => {
     // Ctrl+B detach ack: the ack tool_result doesn't match the launch-ack
     // signature, so the record was mis-settled to 'done' with a fake result.
     // A live isBackgrounded=true snapshot must rescue it back to 'background'.
     let m = fresh()
     m = updateSidechainIndexMirror(m, agentStart('tu_a'))
     // Mis-settle: a non-ack result that shouldn't have completed the record.
-    m = updateSidechainIndexMirror(m, user([toolResult('tu_a', { content: 'detached' })], 'u-det'))
+    m = updateSidechainIndexMirror(m, user([toolResult('tu_a', {
+      content: 'Task tu_a is running in the background. Use TaskOutput to retrieve its final output.',
+    })], 'u-det'))
     expect(m.activeSubagents.get('tu_a')?.status).toBe('done')
     // Rescue snapshot: isBackgrounded=true, not terminal → flip back.
     m = applyTasksSnapshot(m, tasksOf([
@@ -1423,6 +1425,19 @@ describe('applyTasksSnapshot: isAsync authority', () => {
     expect(m.activeSubagents.get('tu_a')?.status).toBe('background')
     expect(m.activeSubagents.get('tu_a')?.result).toBeUndefined()
     expect(m.activeSubagents.get('tu_a')?.endedAt).toBeUndefined()
+    expect(m.activeSubagents.get('tu_a')?.isAsync).toBe(true)
+
+    m = updateSidechainIndexMirror(m, {
+      type: 'system', subtype: 'task_notification', uuid: 'n-final', task_id: 'tu_a', tool_use_id: 'tu_a',
+      status: 'completed', summary: 'Agent finished', result: 'real final report', receivedAt: 9_000,
+    } as unknown as SdkMessage)
+
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({
+      status: 'done',
+      isAsync: true,
+      result: { content: 'real final report', isError: false },
+      resultOrigin: 'notification',
+    })
   })
 })
 

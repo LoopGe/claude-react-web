@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, computeTurnActive, countTaskActivity, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem, autoTitleDescription } from './normalize'
+import { shouldHideByDefault, isLocalCommandLogUserMessage, isHumanUserMessage, computeWaiting, computeTurnActive, countTaskActivity, countQueuedUserTurns, getActiveWorktree, subagentChildArgSummary, getSubagentChildStarts, toTranscriptItem, autoTitleDescription, parseTaskNotification } from './normalize'
 import type { SdkMessage, TaskRecordUi } from '../types'
 import { TERMINAL_TASK_STATUSES } from '../../shared/tasks.js'
 
@@ -41,6 +41,25 @@ function asstTools(blocks: Array<Record<string, unknown>>, uuid = 'a1'): SdkMess
 
 const enterWorktree = (input: Record<string, unknown>, id = 'wt-1') => ({ type: 'tool_use', id, name: 'EnterWorktree', input })
 const exitWorktree = (id = 'wt-x') => ({ type: 'tool_use', id, name: 'ExitWorktree', input: { action: 'keep' } })
+
+describe('parseTaskNotification', () => {
+  it('forwards the inline result from a system task notification', () => {
+    expect(parseTaskNotification({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'agent-1',
+      tool_use_id: 'tu-agent',
+      status: 'completed',
+      summary: 'Agent finished',
+      result: 'real final report',
+    } as unknown as SdkMessage)).toEqual({
+      toolUseId: 'tu-agent',
+      status: 'completed',
+      summary: 'Agent finished',
+      result: 'real final report',
+    })
+  })
+})
 
 describe('computeWaiting', () => {
   it('is false while the turn is active', () => {
