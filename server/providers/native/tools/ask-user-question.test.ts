@@ -39,6 +39,10 @@ describe('askUserQuestionTool', () => {
     })
   })
 
+  it('pins prompt order 195 so it sorts after NotebookEdit and before the MCP base', () => {
+    expect(askUserQuestionTool.promptOrder).toBe(195)
+  })
+
   it('fails loudly in bypassPermissions, where no dialog exists', async () => {
     const result = await askUserQuestionTool.run({ questions: [] }, ctx())
     expect(result).toEqual({

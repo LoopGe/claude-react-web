@@ -52,6 +52,28 @@ import { ClassifierLimiter } from './auto-classifier-limiter.js'
 import { getMessagesForClassifier } from './session-utils.js'
 import { AutoDenialTracker } from './auto-denial-tracker.js'
 
+/** Host-internal marker on a broker denial that carries the user's ANSWER to
+ *  an AskUserQuestion (answer / clarify / malformed) rather than a permission
+ *  failure. Symbol-keyed, so spreading or JSON-serializing the result (the
+ *  SDK's control-response path) drops it: this is not part of the wire
+ *  protocol and the Claude provider's behavior is unchanged. The native
+ *  loop is the only consumer. */
+export const QUESTION_RESULT: unique symbol = Symbol.for('claude-react-web.question-result')
+
+/** A broker result that may carry the internal question-result marker. */
+export type BrokerPermissionResult = PermissionResult & { [QUESTION_RESULT]?: true }
+
+/** True when a broker result carries an AskUserQuestion ANSWER rather than a
+ *  permission failure. Interrupt/abort, `denyAll`, missing-handler and
+ *  ordinary permission denials never set the marker. */
+export function isQuestionResult(result: unknown): boolean {
+  return (
+    typeof result === 'object' &&
+    result !== null &&
+    (result as Record<PropertyKey, unknown>)[QUESTION_RESULT] === true
+  )
+}
+
 /** The SDK's `CanUseTool` with the return narrowed to non-nullable. SDK
  *  ≥0.3.25x allows a callback to return null under the out-of-band protocol
  *  (the host has already echoed `options.requestId` via its own transport, so
@@ -64,7 +86,7 @@ export type BrokerCanUseTool = (
   toolName: string,
   input: Record<string, unknown>,
   options: Parameters<CanUseTool>[2],
-) => Promise<PermissionResult>
+) => Promise<BrokerPermissionResult>
 
 const log = createLogger('broker')
 
@@ -266,7 +288,10 @@ export class PermissionBroker {
             }),
             interrupt: false,
             toolUseID: ctx.toolUseID,
-          }
+            // Malformed input is still an ANSWER payload for the model (the
+            // note explains why no dialog appeared), not a permission error.
+            [QUESTION_RESULT]: true,
+          } satisfies BrokerPermissionResult
         }
         // All permission requests wait indefinitely for user input,
         // matching Claude Code CLI behaviour. No auto-deny timer.
@@ -660,12 +685,15 @@ export class PermissionBroker {
     session.pending.delete(pid)
 
     const message = formatQuestionAnswers(p.questions, answers)
-    p.resolve({
+    const result: BrokerPermissionResult = {
       behavior: 'deny',
       message,
       interrupt: false,
       toolUseID: p.toolUseID,
-    })
+      // The denial IS the answer — only this path marks it as a question result.
+      [QUESTION_RESULT]: true,
+    }
+    p.resolve(result)
     this.broadcastPermissionResolved(session, pid, {
       behavior: 'deny',
       persisted: false,
@@ -686,7 +714,16 @@ export class PermissionBroker {
     this.cleanupPending(p)
     session.pending.delete(pid)
     const message = formatQuestionClarification(p.questions, normalized)
-    p.resolve({ behavior: 'deny', message, interrupt: false, toolUseID: p.toolUseID })
+    const result: BrokerPermissionResult = {
+      behavior: 'deny',
+      message,
+      interrupt: false,
+      toolUseID: p.toolUseID,
+      // Clarification is deliberately plain text, so the marker — never the
+      // message shape — is what tells the loop this is an answer.
+      [QUESTION_RESULT]: true,
+    }
+    p.resolve(result)
     this.broadcastPermissionResolved(session, pid, {
       behavior: 'deny', persisted: false, message, questionResolution: 'clarified',
     })

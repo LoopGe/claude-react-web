@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { PermissionBroker, firstPartyReadOnlyTools } from './permission-broker.js'
+import { PermissionBroker, firstPartyReadOnlyTools, isQuestionResult } from './permission-broker.js'
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 import type { Session, PendingPermission } from './session-types.js'
 import { __setConfigForTest } from './config.js'
@@ -634,6 +634,97 @@ describe('PermissionBroker', () => {
         expect(result.message).toContain('Red')
       }
       expect(session.pending.size).toBe(0)
+    })
+
+    // ─── AskUserQuestion answer marker ───────────────────────────────
+    //
+    // The native loop treats a denial as the ANSWER only when the broker
+    // sets the internal question-result marker. Answered, clarified and
+    // malformed results carry it; aborts and denyAll must not.
+
+    const askOptions = (signal: AbortSignal) => ({
+      toolUseID: 'tu-q1',
+      requestId: 'req-tu-q1',
+      signal,
+      title: 'Ask',
+      displayName: 'AskUserQuestion',
+      description: '',
+      suggestions: [],
+    })
+
+    it('marks an answered question as a question result', async () => {
+      const session = makeFakeSession()
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const promise = canUseTool(
+        'AskUserQuestion',
+        { questions: [{ question: 'Color?', options: [{ label: 'Red' }] }] },
+        askOptions(new AbortController().signal),
+      )
+      const pending = Array.from(session.pending.values())[0]
+      broker.answerQuestion(session, pending.id, ['Red'])
+
+      const result = await promise
+      expect(result.behavior).toBe('deny')
+      expect(isQuestionResult(result)).toBe(true)
+    })
+
+    it('marks a clarified question as a question result', async () => {
+      const session = makeFakeSession()
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const promise = canUseTool(
+        'AskUserQuestion',
+        { questions: [{ question: 'Color?', options: [{ label: 'Red' }] }] },
+        askOptions(new AbortController().signal),
+      )
+      const pending = Array.from(session.pending.values())[0]
+      broker.clarifyQuestion(session, pending.id, 'tell me more')
+
+      const result = await promise
+      expect(result.behavior).toBe('deny')
+      expect(isQuestionResult(result)).toBe(true)
+    })
+
+    it('marks a malformed immediate denial as a question result', async () => {
+      const session = makeFakeSession()
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool(
+        'AskUserQuestion',
+        { garbage: true },
+        askOptions(new AbortController().signal),
+      )
+      expect(result.behavior).toBe('deny')
+      expect(isQuestionResult(result)).toBe(true)
+    })
+
+    it('does not mark an aborted question as a question result', async () => {
+      const session = makeFakeSession()
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const ac = new AbortController()
+      const promise = canUseTool(
+        'AskUserQuestion',
+        { questions: [{ question: 'Color?', options: [{ label: 'Red' }] }] },
+        askOptions(ac.signal),
+      )
+      ac.abort()
+
+      const result = await promise
+      expect(result.behavior).toBe('deny')
+      expect(isQuestionResult(result)).toBe(false)
+    })
+
+    it('does not mark a denyAll session-close question as a question result', async () => {
+      const session = makeFakeSession()
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const promise = canUseTool(
+        'AskUserQuestion',
+        { questions: [{ question: 'Color?', options: [{ label: 'Red' }] }] },
+        askOptions(new AbortController().signal),
+      )
+      broker.denyAll(session)
+
+      const result = await promise
+      expect(result.behavior).toBe('deny')
+      expect(isQuestionResult(result)).toBe(false)
     })
 
     it('auto-approves whitelisted PowerShell edit commands in acceptEdits mode', async () => {

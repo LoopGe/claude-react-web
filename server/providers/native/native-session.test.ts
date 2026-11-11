@@ -30,6 +30,7 @@ import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
 import type { Frame } from './frames.js'
 import { config, __setConfigForTest } from '../../config.js'
+import { QUESTION_RESULT } from '../../permission-broker.js'
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
@@ -78,6 +79,21 @@ function webFetchTurn(toolUseId: string): CanonicalEvent[] {
       kind: 'block_delta',
       index: 0,
       delta: { type: 'tool_input', json: '{"url":"https://93.184.216.34/page","prompt":"Q"}' },
+    },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
+}
+
+/** One assistant round whose only call is AskUserQuestion. */
+function askUserQuestionTurn(toolUseId: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'AskUserQuestion' } },
+    {
+      kind: 'block_delta',
+      index: 0,
+      delta: { type: 'tool_input', json: '{"questions":[{"question":"q1","options":[{"label":"a"}]}]}' },
     },
     { kind: 'block_end', index: 0 },
     { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
@@ -967,6 +983,96 @@ describe('NativeSession', () => {
     } finally {
       await session.destroy()
       vi.unstubAllGlobals()
+    }
+  })
+
+  it('routes AskUserQuestion to the tool in bypassPermissions, where it fails loudly', async () => {
+    const dir = await tempDir('native-ask-bypass-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const scripts: CanonicalEvent[][] = [askUserQuestionTurn('ask-1'), textTurn('DONE')]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    // No canUseTool: requestPermission short-circuits bypass BEFORE the
+    // broker, so this is the one path that reaches the tool's own `run`.
+    const session = provider.createSession({ id: 'ask-bypass', cwd: dir, permissionMode: 'bypassPermissions' })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('ask') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
+      const toolResult = frames.find((f) => f.type === 'user'
+        && f.parent_tool_use_id == null
+        && (f.message.content[0] as { tool_use_id?: string }).tool_use_id === 'ask-1')
+      expect(toolResult?.message.content[0]).toEqual({
+        type: 'tool_result',
+        tool_use_id: 'ask-1',
+        content: [{ type: 'text', text: 'AskUserQuestion requires an interactive dialog; bypassPermissions has no dialog' }],
+        is_error: true,
+      })
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('threads the broker question-result marker into a non-error tool_result', async () => {
+    const dir = await tempDir('native-ask-answered-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const scripts: CanonicalEvent[][] = [askUserQuestionTurn('ask-1'), textTurn('DONE')]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const session = provider.createSession({
+      id: 'ask-answered',
+      cwd: dir,
+      canUseTool: async (_toolName: unknown, _input: unknown) => ({
+        behavior: 'deny',
+        message: JSON.stringify({ note: 'ok', answers: [{ question: 'q1', answer: 'a' }] }),
+        interrupt: false,
+        [QUESTION_RESULT]: true,
+      }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('ask') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
+      const toolResult = frames.find((f) => f.type === 'user'
+        && f.parent_tool_use_id == null
+        && (f.message.content[0] as { tool_use_id?: string }).tool_use_id === 'ask-1')
+      expect(toolResult?.message.content[0]).toMatchObject({ is_error: false })
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('keeps an unmarked AskUserQuestion denial an error through NativeSession', async () => {
+    const dir = await tempDir('native-ask-denied-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const scripts: CanonicalEvent[][] = [askUserQuestionTurn('ask-1'), textTurn('DONE')]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const session = provider.createSession({
+      id: 'ask-denied',
+      cwd: dir,
+      canUseTool: async (_toolName: unknown, _input: unknown) => ({
+        behavior: 'deny',
+        message: 'aborted',
+        interrupt: false,
+      }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('ask') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
+      const toolResult = frames.find((f) => f.type === 'user'
+        && f.parent_tool_use_id == null
+        && (f.message.content[0] as { tool_use_id?: string }).tool_use_id === 'ask-1')
+      expect(toolResult?.message.content[0]).toMatchObject({ is_error: true })
+    } finally {
+      await session.destroy()
     }
   })
 

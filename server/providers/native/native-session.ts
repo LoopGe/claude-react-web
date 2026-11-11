@@ -44,6 +44,7 @@ import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
+import { isQuestionResult } from '../../permission-broker.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 
 const log = createLogger('native')
@@ -556,7 +557,15 @@ export class NativeSession implements ProviderSessionHandle {
     if (result?.behavior === 'allow') {
       return { allowed: true, input: result.updatedInput ?? input }
     }
-    return { allowed: false, input, message: result?.message ?? 'permission denied' }
+    // The broker marks answer/clarify/malformed AskUserQuestion denials as
+    // question RESULTS (the denial message IS the answer). Aborts, denyAll,
+    // missing handlers and ordinary denials carry no marker and stay errors.
+    return {
+      allowed: false,
+      input,
+      message: result?.message ?? 'permission denied',
+      questionResult: isQuestionResult(result),
+    }
   }
 
   /** The real network streamer: Task 2's caller with retry, whose onRetry

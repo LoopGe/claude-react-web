@@ -132,11 +132,11 @@ describe('runTurn', () => {
     expect(JSON.stringify(toolResult.message.content[0])).toContain('nope')
   })
 
-  it('AskUserQuestion denial is the answer payload, not an error', async () => {
-    // The broker's question path resolves AskUserQuestion as a deny whose
-    // `message` carries {note, answers}; the loop must emit it as a normal
-    // tool result or the model would read the user's answer as a failure.
-    const answer = JSON.stringify({ note: 'ok', answers: [{ question: 'q1', answer: 'a' }] })
+  /** Run one scripted AskUserQuestion call whose permission decision is
+   *  `decision`, and return its tool_result block. */
+  async function runAskUserQuestion(
+    decision: { message?: string; questionResult?: boolean },
+  ): Promise<{ tool_use_id: string; content: Array<{ text: string }>; is_error: boolean }> {
     const s = scriptedStreamer([
       [startStop, ...toolUseBlock(0, 't1', 'AskUserQuestion', '{"questions":[{"question":"q1","options":[{"label":"a"}]}]}'), deltaStop('tool_use')],
       [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
@@ -147,18 +147,65 @@ describe('runTurn', () => {
         stream: s.stream.bind(s),
         emit: (f) => emitted.push(f as Frame),
         tools: [askUserQuestionTool],
-        requestPermission: async (_t, input, _id, _signal) => ({ allowed: false, input, message: answer }),
+        requestPermission: async (_t, input, _id, _signal) => ({ allowed: false, input, ...decision }),
       }),
       defaultFrameContext('sess-1'),
       [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
     )
     const toolResult = emitted.find((f) => f.type === 'user') as Frame
-    expect(toolResult.message.content[0]).toEqual({
+    return toolResult.message.content[0] as { tool_use_id: string; content: Array<{ text: string }>; is_error: boolean }
+  }
+
+  it('a marked AskUserQuestion denial is the answer payload, not an error', async () => {
+    const answer = JSON.stringify({ note: 'ok', answers: [{ question: 'q1', answer: 'a' }] })
+    const result = await runAskUserQuestion({ message: answer, questionResult: true })
+    expect(result).toEqual({
       type: 'tool_result',
       tool_use_id: 't1',
       content: [{ type: 'text', text: answer }],
       is_error: false,
     })
+  })
+
+  it('a marked clarification (plain text) is also a normal tool result', async () => {
+    const clarification = 'User wants to clarify: focus on the second option.'
+    const result = await runAskUserQuestion({ message: clarification, questionResult: true })
+    expect(result.is_error).toBe(false)
+    expect(result.content[0].text).toBe(clarification)
+  })
+
+  it('an aborted AskUserQuestion denial stays an error', async () => {
+    const result = await runAskUserQuestion({ message: 'aborted' })
+    expect(result.is_error).toBe(true)
+  })
+
+  it('a session-closed AskUserQuestion denial stays an error', async () => {
+    const result = await runAskUserQuestion({ message: 'session closed' })
+    expect(result.is_error).toBe(true)
+  })
+
+  it('an unmarked (missing-handler / ordinary) AskUserQuestion denial stays an error', async () => {
+    const result = await runAskUserQuestion({ message: 'no permission handler registered for this session' })
+    expect(result.is_error).toBe(true)
+  })
+
+  it('the question-result marker never downgrades another tool denial', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    await runTurn(
+      baseDeps({
+        stream: s.stream.bind(s),
+        emit: (f) => emitted.push(f as Frame),
+        requestPermission: async (_t, input, _id, _signal) => ({ allowed: false, input, message: 'nope', questionResult: true }),
+      }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    const toolResult = emitted.find((f) => f.type === 'user') as Frame
+    expect(toolResult.message.content[0].is_error).toBe(true)
   })
 
   it('unknown tool name yields an error tool_result', async () => {

@@ -9,7 +9,11 @@ export interface LoopDeps {
   tools: ToolDef[]
   /** The session's working directory; every ToolContext is built from it. */
   cwd: string
-  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string }>
+  /** `questionResult` is the broker's internal marker for an AskUserQuestion
+   *  denial that carries the user's ANSWER (answer / clarify / malformed).
+   *  It is never set for aborts, session-close denials, missing handlers or
+   *  ordinary permission denials. */
+  requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean }>
   emit(frame: AgentMessage): void
   system: string
   /** Emit the terminal result frame at the end of the turn (default true). A
@@ -158,13 +162,15 @@ export async function runTurn(
       }
       const decision = await deps.requestPermission(call.name, call.input, call.id, signal)
       if (!decision.allowed) {
-        // The broker resolves AskUserQuestion as a DENIAL carrying the user's
-        // answers — that message IS the tool's output, not a permission error.
+        // The broker resolves an ANSWERED AskUserQuestion as a marked denial:
+        // the message IS the tool's output, not a permission error. Only that
+        // explicit marker qualifies — aborts, session-close denials and
+        // ordinary permission denials stay errors for every tool.
         results.push({
           type: 'tool_result',
           tool_use_id: call.id,
           content: [{ type: 'text', text: decision.message ?? 'permission denied' }],
-          is_error: call.name !== 'AskUserQuestion',
+          is_error: !(call.name === 'AskUserQuestion' && decision.questionResult === true),
         })
         continue
       }
