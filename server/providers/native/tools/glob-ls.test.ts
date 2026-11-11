@@ -104,6 +104,16 @@ describe('globTool', () => {
     await expect(globTool.run({ pattern: '*', path: '../outside' }, ctx(dir))).rejects.toThrow(ToolInputError)
   })
 
+  it('matches a file root by its own basename', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-glob-'))
+    await writeFile(join(dir, 'a.ts'), 'x')
+    await writeFile(join(dir, 'b.md'), 'x')
+
+    const out = parse<GlobOutput>((await globTool.run({ pattern: 'a.ts', path: 'a.ts' }, ctx(dir))).text)
+    expect(out.filenames).toEqual(['a.ts'])
+    expect(out.numFiles).toBe(1)
+  })
+
   it('declares its prompt-section slot', () => {
     expect(globTool.promptOrder).toBe(140)
     expect(globTool.guidance).not.toBe('')

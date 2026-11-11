@@ -1,7 +1,7 @@
 // server/providers/native/tools/glob.ts
 import { stat } from 'node:fs/promises'
 import { basename, relative, sep } from 'node:path'
-import { ToolInputError, type ToolDef } from './types.js'
+import { ToolInputError, statError, type ToolDef } from './types.js'
 import { resolveAgainstCwd } from './read.js'
 import { globToRegExp, walk } from './grep.js'
 import { capToolText } from './bash.js'
@@ -12,13 +12,6 @@ const MAX_FILES = 100
  *  output uses `\`, so normalize before matching and output. */
 function toPosix(p: string): string {
   return sep === '/' ? p : p.split(sep).join('/')
-}
-
-/** Map a stat failure onto a tool error: a missing root is the model's input
- *  error, everything else keeps the OS message (EACCES, ELOOP, ENOTDIR, ...). */
-function pathError(err: unknown, missingMessage: string): ToolInputError {
-  const e = err as NodeJS.ErrnoException
-  return new ToolInputError(e.code === 'ENOENT' ? missingMessage : e.message)
 }
 
 interface GlobOutput {
@@ -43,7 +36,7 @@ export const globTool: ToolDef<{ pattern: string; path?: string }> = {
         type: 'string',
         description: 'Glob pattern matched against the path relative to the search root, e.g. **/*.ts.',
       },
-      path: { type: 'string', description: 'Directory to search. Defaults to the session working directory.' },
+      path: { type: 'string', description: 'Directory (or a single file) to search. Defaults to the session working directory.' },
     },
     required: ['pattern'],
   },
@@ -56,7 +49,7 @@ export const globTool: ToolDef<{ pattern: string; path?: string }> = {
     try {
       rootStat = await stat(root)
     } catch (err) {
-      throw pathError(err, `path not found: ${input.path ?? '.'}`)
+      throw statError(err, `path not found: ${input.path ?? '.'}`)
     }
     const matcher = globToRegExp(input.pattern)
     const started = Date.now()

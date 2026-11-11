@@ -1,6 +1,13 @@
 // server/providers/native/tools/types.ts
 export class ToolInputError extends Error {}
 
+/** Map a stat failure onto a tool error: a missing target is the model's input
+ *  error, everything else keeps the OS message (EACCES, ELOOP, ENOTDIR, ...). */
+export function statError(err: unknown, missingMessage: string): ToolInputError {
+  const e = err as NodeJS.ErrnoException
+  return new ToolInputError(e.code === 'ENOENT' ? missingMessage : e.message)
+}
+
 export interface ToolContext {
   cwd: string
   signal: AbortSignal

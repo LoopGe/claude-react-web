@@ -1,7 +1,7 @@
 // server/providers/native/tools/ls.ts
 import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { ToolInputError, type ToolDef } from './types.js'
+import { ToolInputError, statError, type ToolDef } from './types.js'
 import { resolveAgainstCwd } from './read.js'
 import { capToolText } from './bash.js'
 
@@ -13,13 +13,6 @@ interface LsEntry {
    *  type, so a linked directory stays visible in the listing. */
   type: 'file' | 'dir' | 'link'
   size?: number
-}
-
-/** Map a stat failure onto a tool error: a missing target is the model's input
- *  error, everything else keeps the OS message (EACCES, ELOOP, ENOTDIR, ...). */
-function pathError(err: unknown, missingMessage: string): ToolInputError {
-  const e = err as NodeJS.ErrnoException
-  return new ToolInputError(e.code === 'ENOENT' ? missingMessage : e.message)
 }
 
 export const lsTool: ToolDef<{ path?: string; ignore?: string[] }> = {
@@ -45,7 +38,7 @@ export const lsTool: ToolDef<{ path?: string; ignore?: string[] }> = {
     try {
       info = await stat(abs)
     } catch (err) {
-      throw pathError(err, `directory not found: ${input.path ?? '.'}`)
+      throw statError(err, `directory not found: ${input.path ?? '.'}`)
     }
     if (!info.isDirectory()) throw new ToolInputError(`not a directory: ${input.path ?? '.'}`)
 
@@ -66,7 +59,7 @@ export const lsTool: ToolDef<{ path?: string; ignore?: string[] }> = {
         try {
           fileStat = await stat(join(abs, entry.name))
         } catch (err) {
-          throw pathError(err, `file vanished while listing: ${entry.name}`)
+          throw statError(err, `file vanished while listing: ${entry.name}`)
         }
         entries.push({ name: entry.name, type: 'file', size: fileStat.size })
       } else {
