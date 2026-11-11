@@ -18,6 +18,8 @@ import { formatSupplementInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { NativeSkillCatalog } from './skills.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
+import { globTool } from './tools/glob.js'
+import { lsTool } from './tools/ls.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
@@ -831,6 +833,12 @@ describe('NativeSession', () => {
     // cannot call Agent, so advertising it would be misleading.
     expect(requests[0].system).toContain(AGENT_GUIDANCE)
     expect(nested.system).not.toContain(AGENT_GUIDANCE)
+    // Glob/LS are offered at both depths, and their guidance is registered as
+    // a prompt section from the same constant as the tool def.
+    expect(requests[0].system).toContain(globTool.guidance)
+    expect(requests[0].system).toContain(lsTool.guidance)
+    expect(nested.system).toContain(globTool.guidance)
+    expect(nested.system).toContain(lsTool.guidance)
     await session.destroy()
   })
 

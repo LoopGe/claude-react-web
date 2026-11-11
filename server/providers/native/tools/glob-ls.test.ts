@@ -1,5 +1,5 @@
 // server/providers/native/tools/glob-ls.test.ts
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -25,7 +25,7 @@ interface GlobOutput {
 
 interface LsOutput {
   path: string
-  entries: Array<{ name: string; type: 'file' | 'dir'; size?: number }>
+  entries: Array<{ name: string; type: 'file' | 'dir' | 'link'; size?: number }>
   truncated: boolean
 }
 
@@ -46,13 +46,16 @@ describe('globTool', () => {
     expect(typeof out.durationMs).toBe('number')
   })
 
-  it('matches ? as exactly one character', async () => {
+  it('matches ? as exactly one character and never spans a slash', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-glob-'))
-    await writeFile(join(dir, 'a.ts'), 'x')
-    await writeFile(join(dir, 'ab.ts'), 'x')
+    await mkdir(join(dir, 'src'), { recursive: true })
+    await writeFile(join(dir, 'src', 'a.ts'), 'x')
+    await writeFile(join(dir, 'srcXa.ts'), 'x')
 
-    const out = parse<GlobOutput>((await globTool.run({ pattern: '?.ts' }, ctx(dir))).text)
-    expect(out.filenames).toEqual(['a.ts'])
+    // `src/a.ts` is the same character count as the pattern would allow if `?`
+    // could consume `/`; it must not match.
+    const out = parse<GlobOutput>((await globTool.run({ pattern: 'src?a.ts' }, ctx(dir))).text)
+    expect(out.filenames).toEqual(['srcXa.ts'])
   })
 
   it('matches the pattern against the walk-relative path under path', async () => {
@@ -68,6 +71,15 @@ describe('globTool', () => {
     expect(out.filenames).toEqual(['src/a.ts'])
   })
 
+  it('collapses consecutive **/ segments instead of backtracking over them', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-glob-'))
+    await mkdir(join(dir, 'a', 'b'), { recursive: true })
+    await writeFile(join(dir, 'a', 'b', 'c.ts'), 'x')
+
+    const out = parse<GlobOutput>((await globTool.run({ pattern: '**/**/**/**/*.ts' }, ctx(dir))).text)
+    expect(out.filenames).toEqual(['a/b/c.ts'])
+  })
+
   it('caps filenames at 100 and reports the full match count', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-glob-'))
     for (let i = 0; i < 101; i++) {
@@ -81,14 +93,27 @@ describe('globTool', () => {
     expect(out.totalMatches).toBe(101)
   })
 
+  it('errors when the search root does not exist', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-glob-'))
+    await expect(globTool.run({ pattern: '*', path: 'missing' }, ctx(dir)))
+      .rejects.toThrow('path not found: missing')
+  })
+
   it('rejects a path that escapes the working directory', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-glob-'))
     await expect(globTool.run({ pattern: '*', path: '../outside' }, ctx(dir))).rejects.toThrow(ToolInputError)
   })
 
+  it('declares its prompt-section slot', () => {
+    expect(globTool.promptOrder).toBe(140)
+    expect(globTool.guidance).not.toBe('')
+  })
+
   it('never spawns a subprocess (pure-Node walk, no ripgrep)', async () => {
-    const source = await readFile(new URL('./glob.ts', import.meta.url), 'utf-8')
-    expect(source).not.toMatch(/node:child_process|execFile|spawn\(/)
+    for (const file of ['./glob.ts', './grep.ts'] as const) {
+      const source = await readFile(new URL(file, import.meta.url), 'utf-8')
+      expect(source).not.toMatch(/node:child_process|execFile|spawn\(/)
+    }
   })
 })
 
@@ -107,6 +132,18 @@ describe('lsTool', () => {
       { name: 'sub', type: 'dir' },
     ])
     expect(out.truncated).toBe(false)
+  })
+
+  it('reports a symlinked directory as type link', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-ls-'))
+    await mkdir(join(dir, 'target'), { recursive: true })
+    await writeFile(join(dir, 'target', 'x.txt'), 'x')
+    // A junction keeps this working on Windows without elevation.
+    await symlink(join(dir, 'target'), join(dir, 'link-dir'), process.platform === 'win32' ? 'junction' : 'dir')
+
+    const out = parse<LsOutput>((await lsTool.run({}, ctx(dir))).text)
+    expect(out.entries).toContainEqual({ name: 'link-dir', type: 'link' })
+    expect(out.entries).toContainEqual({ name: 'target', type: 'dir' })
   })
 
   it('excludes .git and applies ignore substring filters', async () => {
@@ -132,6 +169,20 @@ describe('lsTool', () => {
     expect(out.truncated).toBe(true)
   })
 
+  it('reports a missing directory as directory not found', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-ls-'))
+    await expect(lsTool.run({ path: 'missing' }, ctx(dir))).rejects.toThrow('directory not found: missing')
+  })
+
+  it('surfaces non-ENOENT stat errors with the real message', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-ls-'))
+    const err: unknown = await lsTool.run({ path: 'bad\u0000name' }, ctx(dir)).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ToolInputError)
+    const message = (err as Error).message
+    expect(message).not.toContain('directory not found')
+    expect(message).toMatch(/null bytes|ERR_INVALID_ARG_VALUE/i)
+  })
+
   it('rejects a path that escapes the working directory', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-ls-'))
     await expect(lsTool.run({ path: '../outside' }, ctx(dir))).rejects.toThrow(ToolInputError)
@@ -141,5 +192,10 @@ describe('lsTool', () => {
     dir = await mkdtemp(join(tmpdir(), 'native-ls-'))
     await writeFile(join(dir, 'a.txt'), 'x')
     await expect(lsTool.run({ path: 'a.txt' }, ctx(dir))).rejects.toThrow(ToolInputError)
+  })
+
+  it('declares its prompt-section slot', () => {
+    expect(lsTool.promptOrder).toBe(150)
+    expect(lsTool.guidance).not.toBe('')
   })
 })

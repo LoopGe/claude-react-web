@@ -14,6 +14,10 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'dist'])
  *  following `/` may therefore match zero segments). A pattern containing no
  *  `/` is effectively a basename match when the caller passes a basename. */
 export function globToRegExp(glob: string): RegExp {
+  // Collapse repeated any-depth segments (`**/**/x`): each `**/` compiles to
+  // an optional group, and a run of them multiplies an anchored match's
+  // backtracking paths.
+  glob = glob.replace(/(?:\*\*\/)+/g, '**/')
   let out = ''
   for (let i = 0; i < glob.length; i++) {
     const ch = glob[i]

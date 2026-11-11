@@ -1,8 +1,10 @@
 // server/providers/native/tools/glob.ts
-import { relative, sep } from 'node:path'
+import { stat } from 'node:fs/promises'
+import { basename, relative, sep } from 'node:path'
 import { ToolInputError, type ToolDef } from './types.js'
 import { resolveAgainstCwd } from './read.js'
 import { globToRegExp, walk } from './grep.js'
+import { capToolText } from './bash.js'
 
 const MAX_FILES = 100
 
@@ -10,6 +12,13 @@ const MAX_FILES = 100
  *  output uses `\`, so normalize before matching and output. */
 function toPosix(p: string): string {
   return sep === '/' ? p : p.split(sep).join('/')
+}
+
+/** Map a stat failure onto a tool error: a missing root is the model's input
+ *  error, everything else keeps the OS message (EACCES, ELOOP, ENOTDIR, ...). */
+function pathError(err: unknown, missingMessage: string): ToolInputError {
+  const e = err as NodeJS.ErrnoException
+  return new ToolInputError(e.code === 'ENOENT' ? missingMessage : e.message)
 }
 
 interface GlobOutput {
@@ -43,13 +52,24 @@ export const globTool: ToolDef<{ pattern: string; path?: string }> = {
       throw new ToolInputError('pattern is required')
     }
     const root = resolveAgainstCwd(ctx.cwd, input.path ?? '.')
+    let rootStat
+    try {
+      rootStat = await stat(root)
+    } catch (err) {
+      throw pathError(err, `path not found: ${input.path ?? '.'}`)
+    }
     const matcher = globToRegExp(input.pattern)
     const started = Date.now()
     const matches: string[] = []
-    for await (const file of walk(root)) {
-      const walkRelative = toPosix(relative(root, file))
-      if (!matcher.test(walkRelative)) continue
-      matches.push(toPosix(relative(ctx.cwd, file)))
+    // A file root is matched by its own basename (its walk-relative path).
+    if (rootStat.isFile()) {
+      if (matcher.test(toPosix(basename(root)))) matches.push(toPosix(relative(ctx.cwd, root)))
+    } else {
+      for await (const file of walk(root)) {
+        const walkRelative = toPosix(relative(root, file))
+        if (!matcher.test(walkRelative)) continue
+        matches.push(toPosix(relative(ctx.cwd, file)))
+      }
     }
     matches.sort()
     const filenames = matches.slice(0, MAX_FILES)
@@ -61,6 +81,6 @@ export const globTool: ToolDef<{ pattern: string; path?: string }> = {
       truncated,
     }
     if (truncated) output.totalMatches = matches.length
-    return { text: JSON.stringify(output) }
+    return { text: capToolText(JSON.stringify(output)) }
   },
 }
