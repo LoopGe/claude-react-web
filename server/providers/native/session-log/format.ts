@@ -6,6 +6,12 @@
 // reader. It performs no I/O.
 
 import { NativeSessionStorageError } from './errors.js'
+import { AGENT_FIELDS } from '../../../agent-definition-store.js'
+import type { StoredAgentDefinition } from '../../../agent-definition-store.js'
+import { isSdkAgentPermissionMode } from '../../../../shared/agent-definitions.js'
+import type { SessionToolProfile } from '../../../../shared/tool-profile.js'
+import { NATIVE_AGENT_EFFORT_LEVELS } from '../agent-profile.js'
+import type { NativeAgentBase, NativeAgentSelectionEvent } from '../agent-profile.js'
 
 export const NATIVE_SESSION_LOG_VERSION = 1
 
@@ -110,6 +116,7 @@ export type NativeLogEvent =
   | NativeSeedEndEvent
   | NativeCompactEvent
   | NativeSupplementEvent
+  | NativeAgentSelectionEvent
 
 export type NativeEventInput =
   | Omit<NativeUserEvent, 'seq'>
@@ -119,6 +126,7 @@ export type NativeEventInput =
   | Omit<NativeSeedEndEvent, 'seq'>
   | Omit<NativeCompactEvent, 'seq'>
   | Omit<NativeSupplementEvent, 'seq'>
+  | Omit<NativeAgentSelectionEvent, 'seq'>
 
 /** True for a sidechain (nested-runner) user/assistant frame — one carrying a
  *  non-null `parent_tool_use_id`. Works for both persisted log events and raw
@@ -178,6 +186,231 @@ function requireNonEmptyString(raw: JsonObject, field: string, sessionId: string
   const value = requireString(raw, field, sessionId, path)
   if (value.length === 0) corrupt(sessionId, path, `${raw.type} event ${field} must be a non-empty string`)
   return value
+}
+
+const AGENT_DEFINITION_KEYS = new Set<string>([
+  'name',
+  'enabled',
+  'createdAt',
+  'updatedAt',
+  ...AGENT_FIELDS,
+])
+const AGENT_EVENT_KEYS = new Set(['seq', 'type', 'name', 'definition', 'base', 'droppedAgent', 'timestamp'])
+const AGENT_BASE_KEYS = new Set(['model', 'permissionMode', 'effortLevel', 'skillPolicy', 'toolProfile'])
+const TOOL_PROFILE_KEYS = new Set(['tools', 'allowedTools', 'disallowedTools', 'toolAliases', 'toolConfig'])
+const AGENT_MEMORY_VALUES = ['user', 'project', 'local']
+
+function requireKnownKeys(
+  raw: JsonObject,
+  allowed: ReadonlySet<string>,
+  label: string,
+  sessionId: string,
+  path: string,
+): void {
+  for (const key of Object.keys(raw)) {
+    if (!allowed.has(key)) corrupt(sessionId, path, `${label} has unknown field '${key}'`)
+  }
+}
+
+function requireSnapshotString(
+  raw: JsonObject,
+  field: string,
+  label: string,
+  sessionId: string,
+  path: string,
+): string {
+  const value = raw[field]
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    corrupt(sessionId, path, `${label} ${field} must be a non-empty string`)
+  }
+  return value
+}
+
+function requireSnapshotStringArray(
+  value: unknown,
+  label: string,
+  sessionId: string,
+  path: string,
+  nonEmptyItems = true,
+): string[] {
+  if (!Array.isArray(value) || value.some((item) =>
+    typeof item !== 'string' || (nonEmptyItems && item.trim().length === 0))) {
+    corrupt(sessionId, path, `${label} must be an array of ${nonEmptyItems ? 'non-empty ' : ''}strings`)
+  }
+  return [...value]
+}
+
+function parseAgentToolProfile(
+  raw: unknown,
+  sessionId: string,
+  path: string,
+): SessionToolProfile {
+  if (!isObject(raw)) corrupt(sessionId, path, 'session/agent event base.toolProfile must be an object')
+  requireKnownKeys(raw, TOOL_PROFILE_KEYS, 'session/agent event base.toolProfile', sessionId, path)
+  const profile: SessionToolProfile = {}
+  for (const field of ['tools', 'allowedTools', 'disallowedTools'] as const) {
+    if (raw[field] !== undefined) {
+      profile[field] = requireSnapshotStringArray(
+        raw[field],
+        `session/agent event base.toolProfile.${field}`,
+        sessionId,
+        path,
+        false,
+      )
+    }
+  }
+  if (raw.toolAliases !== undefined) {
+    if (!isObject(raw.toolAliases) || Object.values(raw.toolAliases).some((value) => typeof value !== 'string')) {
+      corrupt(sessionId, path, 'session/agent event base.toolProfile.toolAliases must map strings to strings')
+    }
+    profile.toolAliases = { ...raw.toolAliases } as Record<string, string>
+  }
+  if (raw.toolConfig !== undefined) {
+    if (!isObject(raw.toolConfig)) {
+      corrupt(sessionId, path, 'session/agent event base.toolProfile.toolConfig must be an object')
+    }
+    profile.toolConfig = { ...raw.toolConfig }
+  }
+  return profile
+}
+
+function parseAgentBase(raw: unknown, sessionId: string, path: string): NativeAgentBase {
+  if (!isObject(raw)) corrupt(sessionId, path, 'session/agent event base must be an object')
+  requireKnownKeys(raw, AGENT_BASE_KEYS, 'session/agent event base', sessionId, path)
+  const base: NativeAgentBase = {
+    model: requireSnapshotString(raw, 'model', 'session/agent event base', sessionId, path),
+    permissionMode: requireSnapshotString(raw, 'permissionMode', 'session/agent event base', sessionId, path),
+  }
+  if (raw.effortLevel !== undefined) {
+    base.effortLevel = requireSnapshotString(raw, 'effortLevel', 'session/agent event base', sessionId, path)
+  }
+  if (raw.skillPolicy !== undefined) {
+    base.skillPolicy = raw.skillPolicy === 'all'
+      ? 'all'
+      : requireSnapshotStringArray(raw.skillPolicy, 'session/agent event base.skillPolicy', sessionId, path)
+  }
+  if (raw.toolProfile !== undefined) base.toolProfile = parseAgentToolProfile(raw.toolProfile, sessionId, path)
+  return base
+}
+
+/** Strict counterpart of the store's request-time coercion: persisted snapshots
+ *  must not lose malformed enum values or unknown fields on the way back in. */
+function parseAgentDefinitionSnapshot(
+  raw: unknown,
+  sessionId: string,
+  path: string,
+): StoredAgentDefinition {
+  if (!isObject(raw)) corrupt(sessionId, path, 'session/agent event definition must be an object')
+  requireKnownKeys(raw, AGENT_DEFINITION_KEYS, 'session/agent event definition', sessionId, path)
+  for (const field of ['name', 'description', 'prompt'] as const) {
+    requireSnapshotString(raw, field, 'session/agent event definition', sessionId, path)
+  }
+  if (typeof raw.enabled !== 'boolean') {
+    corrupt(sessionId, path, 'session/agent event definition.enabled must be a boolean')
+  }
+  for (const field of ['createdAt', 'updatedAt'] as const) {
+    if (typeof raw[field] !== 'number' || !Number.isFinite(raw[field])) {
+      corrupt(sessionId, path, `session/agent event definition.${field} must be a finite number`)
+    }
+  }
+  for (const field of [
+    'model',
+    'initialPrompt',
+    'observer',
+    'observerMessage',
+    'criticalSystemReminder_EXPERIMENTAL',
+  ] as const) {
+    if (raw[field] !== undefined) {
+      requireSnapshotString(raw, field, 'session/agent event definition', sessionId, path)
+    }
+  }
+  for (const field of ['tools', 'disallowedTools', 'mcpServers', 'skills'] as const) {
+    if (raw[field] !== undefined) {
+      requireSnapshotStringArray(raw[field], `session/agent event definition.${field}`, sessionId, path)
+    }
+  }
+  if (raw.memory !== undefined && !AGENT_MEMORY_VALUES.includes(raw.memory as string)) {
+    corrupt(sessionId, path, 'session/agent event definition.memory is invalid')
+  }
+  if (raw.effort !== undefined) {
+    const valid = typeof raw.effort === 'number'
+      ? Number.isFinite(raw.effort)
+      : typeof raw.effort === 'string' &&
+        (NATIVE_AGENT_EFFORT_LEVELS as readonly string[]).includes(raw.effort)
+    if (!valid) corrupt(sessionId, path, 'session/agent event definition.effort is invalid')
+  }
+  if (raw.permissionMode !== undefined && !isSdkAgentPermissionMode(raw.permissionMode)) {
+    corrupt(sessionId, path, 'session/agent event definition.permissionMode is invalid')
+  }
+  if (raw.maxTurns !== undefined && (typeof raw.maxTurns !== 'number' || !Number.isFinite(raw.maxTurns))) {
+    corrupt(sessionId, path, 'session/agent event definition.maxTurns must be a finite number')
+  }
+  for (const field of ['background', 'omitClaudeMd'] as const) {
+    if (raw[field] !== undefined && typeof raw[field] !== 'boolean') {
+      corrupt(sessionId, path, `session/agent event definition.${field} must be a boolean`)
+    }
+  }
+  return { ...raw } as unknown as StoredAgentDefinition
+}
+
+function parseDroppedAgent(
+  raw: unknown,
+  sessionId: string,
+  path: string,
+): NonNullable<NativeAgentSelectionEvent['droppedAgent']> {
+  if (!isObject(raw)) corrupt(sessionId, path, 'session/agent event droppedAgent must be an object')
+  requireKnownKeys(raw, new Set(['name', 'unsupportedFields']), 'session/agent event droppedAgent', sessionId, path)
+  const name = requireSnapshotString(raw, 'name', 'session/agent event droppedAgent', sessionId, path)
+  const unsupportedFields = requireSnapshotStringArray(
+    raw.unsupportedFields,
+    'session/agent event droppedAgent.unsupportedFields',
+    sessionId,
+    path,
+  )
+  if (unsupportedFields.length === 0) {
+    corrupt(sessionId, path, 'session/agent event droppedAgent.unsupportedFields must not be empty')
+  }
+  return { name, unsupportedFields }
+}
+
+function parseAgentSelection(
+  raw: JsonObject,
+  seq: number,
+  sessionId: string,
+  path: string,
+): NativeAgentSelectionEvent {
+  requireKnownKeys(raw, AGENT_EVENT_KEYS, 'session/agent event', sessionId, path)
+  const name = raw.name
+  if (name !== null && (typeof name !== 'string' || name.trim().length === 0)) {
+    corrupt(sessionId, path, 'session/agent event name must be a non-empty string or null')
+  }
+  if (name === null && raw.definition !== undefined) {
+    corrupt(sessionId, path, 'session/agent event with name null must not carry a definition')
+  }
+  let definition: StoredAgentDefinition | undefined
+  if (name !== null) {
+    if (raw.definition === undefined) {
+      corrupt(sessionId, path, 'session/agent event with a name requires a definition')
+    }
+    definition = parseAgentDefinitionSnapshot(raw.definition, sessionId, path)
+    if (definition.name !== name) {
+      corrupt(sessionId, path, 'session/agent event definition.name must match name')
+    }
+  }
+  let droppedAgent: NativeAgentSelectionEvent['droppedAgent']
+  if (raw.droppedAgent !== undefined) {
+    if (name !== null) corrupt(sessionId, path, 'session/agent event droppedAgent requires name null')
+    droppedAgent = parseDroppedAgent(raw.droppedAgent, sessionId, path)
+  }
+  return {
+    seq,
+    type: 'session/agent',
+    name,
+    ...(definition === undefined ? {} : { definition }),
+    base: parseAgentBase(raw.base, sessionId, path),
+    ...(droppedAgent === undefined ? {} : { droppedAgent }),
+    timestamp: requireNonEmptyString(raw, 'timestamp', sessionId, path),
+  }
 }
 
 export function parseHeaderLine(raw: unknown, sessionId: string, path: string): NativeSessionHeader {
@@ -304,6 +537,9 @@ export function parseEventLine(
         text: requireNonEmptyString(raw, 'text', sessionId, path),
         timestamp: requireNonEmptyString(raw, 'timestamp', sessionId, path),
       }
+
+    case 'session/agent':
+      return parseAgentSelection(raw, seq, sessionId, path)
 
     default:
       return corrupt(sessionId, path, `unknown event type '${String(raw.type)}'`)

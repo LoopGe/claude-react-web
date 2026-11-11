@@ -70,6 +70,8 @@ export function contextSnapshot(cwd: string): string {
  *   user message — the API requires every tool_result for an assistant turn
  *   in a single user message.
  * - `turn/end` and `session/end-seed` are log bookkeeping, not model messages.
+ * - `session/agent` is history-only selection state, not a model message. It
+ *   neither enters the rebuilt history nor closes an open tool-result group.
  * - a `session/compact` event is a floor: everything before the LAST one is
  *   superseded by the captured context snapshot and the summary, so replay
  *   starts there instead of rebuilding the pre-compact conversation.
@@ -152,6 +154,8 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
         if (userUuids.has(event.uuid)) break
         messages.push({ role: 'user', content: [{ type: 'text', text: event.text }] })
         openResults = null
+        break
+      case 'session/agent':
         break
       default:
         break

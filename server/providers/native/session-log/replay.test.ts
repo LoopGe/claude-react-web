@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn, repairRenderableLines } from './replay.js'
+import { parseEventLine } from './format.js'
 import type { NativeLogEvent } from './format.js'
 import type { RawLine } from '../../../history-reader.js'
 
@@ -18,6 +19,24 @@ const userWithUuid = (seq: number, text: string, uuid: string): NativeLogEvent =
   message: { role: 'user', content: [{ type: 'text', text }] },
 })
 
+const agentSelection = (seq: number, name: string | null): NativeLogEvent => parseEventLine({
+  seq,
+  type: 'session/agent',
+  name,
+  ...(name === null ? {} : {
+    definition: {
+      name,
+      description: 'Reviews code',
+      prompt: 'Review the change carefully.',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 2,
+    },
+  }),
+  base: { model: 'claude-sonnet-4-5', permissionMode: 'default' },
+  timestamp: 't',
+}, seq, 's', 'p')
+
 describe('replay', () => {
   it('rebuilds history, strips unsigned thinking and merges consecutive tool results', () => {
     const events = [
@@ -31,6 +50,41 @@ describe('replay', () => {
     expect(messages).toHaveLength(5) // ctx, user, assistant, merged tool results, assistant
     expect(messages[2].content.some((b) => (b as { type: string }).type === 'thinking')).toBe(false)
     expect(messages[3].content).toHaveLength(2)
+  })
+  it('ignores agent selections without changing user, assistant, supplement, or tool-result replay', () => {
+    const events = [
+      user(0, 'go'),
+      assistant(1, [
+        { type: 'tool_use', id: 't1', name: 'Read', input: {} },
+        { type: 'tool_use', id: 't2', name: 'Read', input: {} },
+      ]),
+      agentSelection(2, 'reviewer'),
+      result(3, 't1'),
+      agentSelection(4, null),
+      result(5, 't2'),
+      supplement(6, 'WRAPPED GUIDANCE'),
+      assistant(7, [{ type: 'text', text: 'done' }]),
+    ]
+
+    expect(historyFromEvents(events)).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 't1', name: 'Read', input: {} },
+          { type: 'tool_use', id: 't2', name: 'Read', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'ok' }], is_error: false },
+          { type: 'tool_result', tool_use_id: 't2', content: [{ type: 'text', text: 'ok' }], is_error: false },
+        ],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'WRAPPED GUIDANCE' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+    ])
   })
   it('keeps a signed thinking block in the rebuilt history', () => {
     const events = [

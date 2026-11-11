@@ -1,8 +1,56 @@
 import { describe, expect, it } from 'vitest'
+import type { StoredAgentDefinition } from '../../../agent-definition-store.js'
 import { NATIVE_SESSION_LOG_VERSION, parseEventLine, parseHeaderLine, serializeEvent, serializeHeader } from './format.js'
+import type { NativeEventInput, NativeLogEvent } from './format.js'
 import { NativeSessionStorageError } from './errors.js'
 
 const header = { type: 'session/header', v: 1, id: 's1', cwd: '/repo', createdAt: 1, isSeeded: false, inheritedEventCount: 0 } as const
+
+const agentDefinition: StoredAgentDefinition = {
+  name: 'reviewer',
+  description: 'Reviews code',
+  prompt: 'Review the change carefully.',
+  enabled: true,
+  createdAt: 1,
+  updatedAt: 2,
+  model: 'claude-opus-4-1',
+  tools: [],
+  disallowedTools: ['Bash'],
+  mcpServers: ['workspace'],
+  skills: ['code-review'],
+  permissionMode: 'plan',
+  maxTurns: 5,
+  effort: 'high',
+}
+
+const selectionInput: NativeEventInput = {
+  type: 'session/agent',
+  name: 'reviewer',
+  definition: agentDefinition,
+  base: {
+    model: 'claude-sonnet-4-5',
+    permissionMode: 'default',
+    effortLevel: 'medium',
+    skillPolicy: ['code-review'],
+    toolProfile: {
+      tools: ['Read', 'Grep'],
+      allowedTools: ['Read'],
+      disallowedTools: ['Bash'],
+      toolAliases: { Search: 'Grep' },
+      toolConfig: { askUserQuestion: { previewFormat: 'markdown' } },
+    },
+  },
+  timestamp: '2026-11-11T00:00:00.000Z',
+}
+
+function expectCorrupt(raw: unknown): void {
+  expect(() => parseEventLine(raw, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
+  try {
+    parseEventLine(raw, 0, 's1', 'p')
+  } catch (error) {
+    expect((error as NativeSessionStorageError).kind).toBe('corrupt')
+  }
+}
 
 describe('session log format', () => {
   it('round-trips the header', () => {
@@ -33,6 +81,79 @@ describe('session log format', () => {
     expect(parseEventLine(events[1], 1, 's1', 'p')).toMatchObject({
       message: { id: 'msg_1', model: 'm' },
     })
+  })
+  it('round-trips an appended agent selection with its definition and base snapshots', () => {
+    const appended = { ...selectionInput, seq: 7 }
+    const serialized = serializeEvent(appended)
+    expect(parseEventLine(JSON.parse(serialized), 7, 's1', 'p')).toEqual(appended)
+  })
+  it('round-trips a compatibility drop event', () => {
+    const event: NativeLogEvent = {
+      seq: 0,
+      type: 'session/agent',
+      name: null,
+      base: { model: 'claude-sonnet-4-5', permissionMode: 'default', skillPolicy: 'all' },
+      droppedAgent: { name: 'legacy', unsupportedFields: ['memory', 'effort'] },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    }
+    expect(parseEventLine(JSON.parse(serializeEvent(event)), 0, 's1', 'p')).toEqual(event)
+  })
+  it('rejects malformed agent selection base snapshots as corrupt', () => {
+    const valid = { seq: 0, type: 'session/agent', name: null, timestamp: 't' }
+    const cases = [
+      { ...valid },
+      { ...valid, base: null },
+      { ...valid, base: { permissionMode: 'default' } },
+      { ...valid, base: { model: 1, permissionMode: 'default' } },
+      { ...valid, base: { model: 'm', permissionMode: 'default', effortLevel: 2 } },
+      { ...valid, base: { model: 'm', permissionMode: 'default', skillPolicy: 'some' } },
+      { ...valid, base: { model: 'm', permissionMode: 'default', skillPolicy: ['ok', 2] } },
+      { ...valid, base: { model: 'm', permissionMode: 'default', toolProfile: { tools: ['Read', 2] } } },
+      { ...valid, base: { model: 'm', permissionMode: 'default', toolProfile: { toolAliases: { Search: 2 } } } },
+      { ...valid, base: { model: 'm', permissionMode: 'default', injected: true } },
+    ]
+    for (const raw of cases) expectCorrupt(raw)
+  })
+  it('rejects malformed or inconsistent definition snapshots instead of stripping fields', () => {
+    const valid = {
+      seq: 0,
+      type: 'session/agent',
+      name: 'reviewer',
+      base: { model: 'm', permissionMode: 'default' },
+      timestamp: 't',
+    }
+    const cases = [
+      { ...valid },
+      { ...valid, definition: null },
+      { ...valid, definition: { ...agentDefinition, name: 'other' } },
+      { ...valid, definition: { ...agentDefinition, memory: 'invalid' } },
+      { ...valid, definition: { ...agentDefinition, effort: 'ultra' } },
+      { ...valid, definition: { ...agentDefinition, permissionMode: 'disabled' } },
+      { ...valid, definition: { ...agentDefinition, maxTurns: '5' } },
+      { ...valid, definition: { ...agentDefinition, injected: 'do not strip me' } },
+      { seq: 0, type: 'session/agent', name: null, definition: agentDefinition, base: valid.base, timestamp: 't' },
+    ]
+    for (const raw of cases) expectCorrupt(raw)
+  })
+  it('rejects malformed or misplaced droppedAgent metadata as corrupt', () => {
+    const clear = {
+      seq: 0,
+      type: 'session/agent',
+      name: null,
+      base: { model: 'm', permissionMode: 'default' },
+      timestamp: 't',
+    }
+    const selected = { ...clear, name: 'reviewer', definition: agentDefinition }
+    const cases = [
+      { ...clear, droppedAgent: null },
+      { ...clear, droppedAgent: { unsupportedFields: ['memory'] } },
+      { ...clear, droppedAgent: { name: 'legacy', unsupportedFields: 'memory' } },
+      { ...clear, droppedAgent: { name: 'legacy', unsupportedFields: ['memory', 2] } },
+      { ...clear, droppedAgent: { name: 'legacy', unsupportedFields: [] } },
+      { ...selected, droppedAgent: { name: 'legacy', unsupportedFields: ['memory'] } },
+      { ...clear, definition: agentDefinition, droppedAgent: { name: 'legacy', unsupportedFields: ['memory'] } },
+    ]
+    for (const raw of cases) expectCorrupt(raw)
   })
   it('rejects an empty session/compact field', () => {
     const compact = { seq: 0, type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: 't' }
