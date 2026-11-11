@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   applyBackgroundTasksChanged,
@@ -41,6 +44,19 @@ import { isTranscriptMessage, shouldBroadcastMessage, trimLargeToolResults } fro
 
 function userMsg(content: unknown): SDKMessage {
   return { type: 'user', message: { role: 'user', content } } as unknown as SDKMessage
+}
+
+function backgroundAcknowledgement(toolUseId: string, taskId: string, content: string): SDKMessage {
+  return {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: false }],
+    },
+    tool_use_result: {
+      stdout: '', stderr: '', interrupted: false, backgroundTaskId: taskId,
+    },
+  } as unknown as SDKMessage
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +280,13 @@ describe('backgroundSubagentLaunches', () => {
       { type: 'tool_result', tool_use_id: 'tu_arr', content: [{ type: 'text', text: ackContent }] },
     ]) as unknown as SDKMessage
     expect(backgroundSubagentLaunches(msg)).toEqual([{ toolUseId: 'tu_arr', agentId: 'ace1f1c484c82bcdf' }])
+  })
+
+  it('handles a bare single-text-block ack', () => {
+    const msg = userMsg([
+      { type: 'tool_result', tool_use_id: 'tu_bare', content: { type: 'text', text: ackContent } },
+    ]) as unknown as SDKMessage
+    expect(backgroundSubagentLaunches(msg)).toEqual([{ toolUseId: 'tu_bare', agentId: 'ace1f1c484c82bcdf' }])
   })
 })
 
@@ -1427,6 +1450,19 @@ describe('applyTaskEvent', () => {
     expect(session.tasks.get('t1')?.status).toBe('completed')
   })
 
+  it('clears the previous run result when a new run starts', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'd', run_id: 'run-a' }))
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 't1', status: 'completed', result: 'old output', run_id: 'run-a',
+    }))
+
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'd', run_id: 'run-b' }))
+
+    expect(session.tasks.get('t1')?.runId).toBe('run-b')
+    expect(session.tasks.get('t1')?.result).toBeUndefined()
+  })
+
   it('drops a late frame from a superseded run (run_id sorts before the record)', () => {
     const { session, snapshots } = makeTaskSession()
     applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'd', run_id: 'run-b' }))
@@ -1919,7 +1955,9 @@ describe('applyBackgroundTasksChanged', () => {
   it('advances runId to a LATER snapshot run (reconnect reconciliation for a missed new-run start)', () => {
     const { session } = makeTaskSession()
     applyTaskEvent(session, sysFrame('task_started', { task_id: 'a0', description: 'v1', run_id: 'run-b' }))
-    applyTaskEvent(session, sysFrame('task_updated', { task_id: 'a0', patch: { status: 'completed' }, run_id: 'run-b' }))
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 'a0', status: 'completed', result: 'old run output', run_id: 'run-b',
+    }))
 
     // The task resumes as run-c while disconnected: run-c's task_started is
     // lost, so the background_tasks_changed snapshot is the only signal.
@@ -1927,6 +1965,7 @@ describe('applyBackgroundTasksChanged', () => {
       tasks: [{ task_id: 'a0', description: 'v1', run_id: 'run-c' }],
     }))
     expect(session.tasks.get('a0')?.runId).toBe('run-c')
+    expect(session.tasks.get('a0')?.result).toBeUndefined()
 
     // Now a late frame from the dead run-b must trip the stale guard —
     // without the runId advance above, it would pass by equality.
@@ -2648,6 +2687,161 @@ describe('pump: task lifecycle frames', () => {
     // next user message.
     expect(onTaskListChanged).toHaveBeenCalledTimes(1)
     expect(onTaskListChanged).toHaveBeenCalledWith('s-pump')
+  })
+
+  it('folds a foreground subagent shell tool_result into the task and persists it before completion', async () => {
+    const output = 'Exit code 2\nserver/providers/native/tools/web.ts(188,70): error TS1128: Declaration or statement expected.'
+    const bashResult = {
+      type: 'user',
+      parent_tool_use_id: 'agent-1',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'toolu_90997a764b314bdfbd37d028',
+          content: output,
+          is_error: true,
+        }],
+      },
+    } as unknown as SDKMessage
+    const { session } = makePumpSession([
+      sysFrame('task_started', {
+        task_id: 'b0qa0uex5',
+        tool_use_id: 'toolu_90997a764b314bdfbd37d028',
+        description: 'Both typechecks',
+        task_type: 'local_bash',
+        is_backgrounded: false,
+      }),
+      bashResult,
+      sysFrame('task_notification', {
+        task_id: 'b0qa0uex5',
+        tool_use_id: 'toolu_90997a764b314bdfbd37d028',
+        status: 'failed',
+        output_file: '',
+        summary: 'Both typechecks',
+      }),
+    ])
+    const persistedResults: Array<string | undefined> = []
+    await pump(session, makePumpDeps({
+      recordTasksSnapshot: () => {
+        persistedResults.push(session.tasks.get('b0qa0uex5')?.result)
+      },
+    }))
+
+    expect(session.tasks.get('b0qa0uex5')).toMatchObject({
+      status: 'failed',
+      result: output,
+    })
+    expect(persistedResults).toEqual([undefined, output, output])
+  })
+
+  it('captures a bare text-block foreground shell tool_result', async () => {
+    const { session } = makePumpSession([
+      sysFrame('task_started', {
+        task_id: 't-bare', tool_use_id: 'tu-bare', task_type: 'local_bash', is_backgrounded: false,
+      }),
+      userMsg([{
+        type: 'tool_result',
+        tool_use_id: 'tu-bare',
+        content: { type: 'text', text: 'bare block output' },
+      }]),
+      sysFrame('task_notification', {
+        task_id: 't-bare', tool_use_id: 'tu-bare', status: 'completed', output_file: '',
+      }),
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(session.tasks.get('t-bare')?.result).toBe('bare block output')
+  })
+
+  it('captures foreground output when is_backgrounded is absent', async () => {
+    const { session } = makePumpSession([
+      sysFrame('task_started', {
+        task_id: 't-legacy', tool_use_id: 'tu-legacy', task_type: 'local_bash',
+      }),
+      userMsg([{
+        type: 'tool_result', tool_use_id: 'tu-legacy', content: 'legacy foreground output',
+      }]),
+      sysFrame('task_notification', {
+        task_id: 't-legacy', tool_use_id: 'tu-legacy', status: 'completed', output_file: '',
+      }),
+    ])
+    await pump(session, makePumpDeps())
+
+    expect(session.tasks.get('t-legacy')?.result).toBe('legacy foreground output')
+  })
+
+  it.each([
+    'Command running in background with ID: t-detach.',
+    'Command running in background with ID: t-detach',
+    'Command did not complete within its 2s timeout and was moved to the background (ID: t-detach).',
+  ])('does not retain a detach acknowledgement while the task is still marked foreground: %s', async (acknowledgement) => {
+    const { session } = makePumpSession([
+      sysFrame('task_started', {
+        task_id: 't-detach', tool_use_id: 'tu-detach', task_type: 'local_bash', is_backgrounded: false,
+      }),
+      backgroundAcknowledgement('tu-detach', 't-detach', acknowledgement),
+      sysFrame('task_updated', {
+        task_id: 't-detach', patch: { is_backgrounded: true },
+      }),
+      sysFrame('task_notification', {
+        task_id: 't-detach', tool_use_id: 'tu-detach', status: 'completed', output_file: '',
+      }),
+    ])
+    const persistedResults: Array<string | undefined> = []
+    await pump(session, makePumpDeps({
+      recordTasksSnapshot: () => {
+        persistedResults.push(session.tasks.get('t-detach')?.result)
+      },
+    }))
+
+    expect(session.tasks.get('t-detach')?.result).toBeUndefined()
+    expect(persistedResults).toEqual([undefined, undefined, undefined])
+  })
+
+  it('reads a background shell output_file before folding and persisting its notification', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pump-task-output-'))
+    try {
+      const outputFile = join(dir, 'task.output')
+      const output = 'Tests: 41 failed, 2013 passed\n[exit code: 1]'
+      await writeFile(outputFile, output, 'utf8')
+      const { session } = makePumpSession([
+        sysFrame('task_started', {
+          task_id: 'bygdsikzs',
+          tool_use_id: 'Bash_210_ac3ef276',
+          description: 'Run final full test suite',
+          task_type: 'local_bash',
+          is_backgrounded: true,
+        }),
+        backgroundAcknowledgement(
+          'Bash_210_ac3ef276',
+          'bygdsikzs',
+          'Command running in background with ID: bygdsikzs',
+        ),
+        sysFrame('task_notification', {
+          task_id: 'bygdsikzs',
+          tool_use_id: 'Bash_210_ac3ef276',
+          status: 'failed',
+          output_file: outputFile,
+          summary: 'Background command "Run final full test suite" failed with exit code 1',
+        }),
+      ])
+      const persistedResults: Array<string | undefined> = []
+      await pump(session, makePumpDeps({
+        recordTasksSnapshot: () => {
+          persistedResults.push(session.tasks.get('bygdsikzs')?.result)
+        },
+      }))
+
+      expect(session.tasks.get('bygdsikzs')).toMatchObject({
+        status: 'failed',
+        isBackgrounded: true,
+        result: output,
+      })
+      expect(persistedResults).toEqual([undefined, output])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('skips the onTaskNotification dep when the notification carries no tool_use_id', async () => {

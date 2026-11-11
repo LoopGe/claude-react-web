@@ -124,9 +124,9 @@ export interface TaskRecordUi {
    *  set only when the task did not end through an ordinary completion /
    *  failure / stop. Currently only 'worker_restart'. */
   reason?: 'worker_restart'
-  /** The completion's output body (harness `<task-notification>` injection's
-   *  `<result>`, entity-unescaped). Absent when the completion carries none —
-   *  the `system/task_notification` path keeps the body in output_file. */
+  /** The completion's output body. Sources: harness `<task-notification>`
+   *  `<result>`, native inline results, a foreground shell's tool_result, or
+   *  a background task's output_file (read by the pump before the task fold). */
   result?: string
   /** Files a backgrounded MCP task returned by reference (SDK 0.3.257
    *  `task_notification.resource_links`). */

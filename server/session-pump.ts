@@ -7,6 +7,7 @@
 // mark session as terminated, persist final state).
 
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import type { FastModeState, SDKMessage, SlashCommand } from '@anthropic-ai/claude-agent-sdk'
 import type { Session, SessionBroadcaster } from './session-types.js'
 import { endAllSubscribers } from './session-types.js'
@@ -81,6 +82,55 @@ export function toolResultIds(msg: SDKMessage): string[] {
   return ids
 }
 
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (content && typeof content === 'object' && !Array.isArray(content)) {
+    const block = content as { type?: unknown; text?: unknown }
+    return block.type === 'text' && typeof block.text === 'string' ? block.text : ''
+  }
+  if (!Array.isArray(content)) return ''
+  return (content as Array<{ type?: string; text?: unknown }>)
+    .filter((x) => x?.type === 'text' && typeof x.text === 'string')
+    .map((x) => x.text as string)
+    .join('\n')
+}
+
+function backgroundTaskIdOf(msg: SDKMessage): string | undefined {
+  const result = (msg as { tool_use_result?: unknown }).tool_use_result
+  if (!result || typeof result !== 'object') return undefined
+  const id = (result as { backgroundTaskId?: unknown }).backgroundTaskId
+  return typeof id === 'string' ? id : undefined
+}
+
+/** Foreground shell completion frames carry no inline result and an empty
+ * output_file: their stdout/stderr arrives only in the ordinary tool_result.
+ * Join that payload to the task record before the transcript copy is trimmed,
+ * so the Tasks preview and its durable sidecar retain the same output.
+ * Background shell launch acknowledgements are deliberately excluded — their
+ * final output comes from output_file on task_notification. */
+function applyTaskToolResults(session: Session, msg: SDKMessage): boolean {
+  if (msg.type !== 'user') return false
+  const content = (msg as { message?: { content?: unknown } }).message?.content
+  if (!Array.isArray(content)) return false
+  const backgroundTaskId = backgroundTaskIdOf(msg)
+  let changed = false
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue
+    const b = block as { type?: unknown; tool_use_id?: unknown; content?: unknown }
+    if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue
+    for (const rec of session.tasks.values()) {
+      if (rec.taskType !== 'shell' || rec.isBackgrounded === true || rec.toolUseId !== b.tool_use_id) continue
+      const text = toolResultText(b.content)
+      if (!text || backgroundTaskId === rec.taskId || rec.result === text) break
+      session.tasks.set(rec.taskId, { ...rec, result: text, updatedAt: Date.now() })
+      changed = true
+      break
+    }
+  }
+  if (changed) pushTasksSnapshot(session)
+  return changed
+}
+
 /** Detect async/background subagent LAUNCH acks in a user message. An ack is
  *  a tool_result block whose content starts with "Async agent launched
  *  successfully" and carries an `agentId: <id>` line. Returns the
@@ -99,14 +149,7 @@ export function backgroundSubagentLaunches(
     if (!block || typeof block !== 'object') continue
     const b = block as { type: unknown; tool_use_id?: unknown; content?: unknown }
     if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue
-    const text = typeof b.content === 'string'
-      ? b.content
-      : Array.isArray(b.content)
-        ? (b.content as Array<{ type?: string; text?: unknown }>)
-            .filter((x) => x?.type === 'text' && typeof x.text === 'string')
-            .map((x) => x.text as string)
-            .join('\n')
-        : ''
+    const text = toolResultText(b.content)
     if (!text || !LAUNCH_ACK_RE.test(text)) continue
     const agentId = parseAckAgentId(text)
     if (agentId) out.push({ toolUseId: b.tool_use_id, agentId })
@@ -243,6 +286,10 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
         ? raw.is_backgrounded
         : existing?.isBackgrounded,
       startedAt: frameTime ?? existing?.startedAt,
+      // A genuinely new run starts with no output. A duplicate start for the
+      // same run (or an untagged older-CLI start) keeps any already-folded
+      // tool_result, while a restarted task can never show the prior run's.
+      result: nextRunId !== existing?.runId ? undefined : existing?.result,
       endedAt: undefined,
       updatedAt: now,
     })
@@ -309,6 +356,23 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
   }
 
   pruneAndBroadcastTasks(session)
+}
+
+/** Resolve the file-backed body of a system/task_notification before the
+ * synchronous task fold. The original frame still flows to the transcript
+ * unchanged; the clone exists only to pass the body through applyTaskEvent's
+ * established result narrowing and snapshot persistence path. */
+async function taskNotificationWithOutput(session: Session, msg: SDKMessage): Promise<SDKMessage> {
+  const raw = msg as { task_id?: unknown; output_file?: unknown; result?: unknown }
+  if (typeof raw.output_file !== 'string' || raw.output_file === '') return msg
+  if (typeof raw.result === 'string' && raw.result !== '') return msg
+  try {
+    const result = await readFile(raw.output_file, 'utf8')
+    return { ...msg, result } as unknown as SDKMessage
+  } catch (err) {
+    log.warn(`[session ${session.id}] failed reading output for task ${String(raw.task_id ?? '')}:`, err)
+    return msg
+  }
 }
 
 /** Narrow the SDK's `resource_link` blocks to the fields the UI renders,
@@ -381,8 +445,9 @@ export function pruneAndBroadcastTasks(session: Session): void {
  *  and reuse its map key; only when no match exists do we write a new entry
  *  under `inj.taskId`.
  *
- *  `result` is the inline `<result>` body; the `system/task_notification`
- *  path keeps its body in `output_file` and is left empty here (spec §2 Out). */
+ *  `result` is the inline `<result>` body. The `system/task_notification`
+ *  path is hydrated separately by the pump from a foreground tool_result or
+ *  the completion's output_file before applyTaskEvent folds it. */
 export function applyTaskNotificationInjection(session: Session, msg: SDKMessage): void {
   const inj = parseTaskNotificationInjection(msg as Parameters<typeof parseTaskNotificationInjection>[0])
   if (!inj) return
@@ -465,7 +530,10 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
       // new run whose task_started was missed during a disconnect — advance
       // to it, or the stale guard would keep accepting the dead run's late
       // frames by equality. (Same-run re-emissions are equal: no-op.)
-      if (entryRunId !== undefined && (next.runId === undefined || entryRunId > next.runId)) next.runId = entryRunId
+      if (entryRunId !== undefined && (next.runId === undefined || entryRunId > next.runId)) {
+        next.runId = entryRunId
+        next.result = undefined
+      }
       if (t.ambient === true) next.ambient = true
       next.updatedAt = now
       session.tasks.set(taskId, next)
@@ -1195,6 +1263,10 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
         // above). We don't care about the result content here — just that
         // it landed (the worktree is now in its post-mutation state).
         if (msg.type === 'user') {
+          if (applyTaskToolResults(session, msg)) {
+            try { deps.recordTasksSnapshot?.(session.id) }
+            catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
+          }
           for (const id of toolResultIds(msg)) {
             if (pendingMutatingToolUses.has(id)) {
               pendingMutatingToolUses.delete(id)
@@ -1438,7 +1510,8 @@ export async function pump(session: Session, deps: PumpDeps): Promise<void> {
             continue
           }
           if (subtype === 'task_notification') {
-            applyTaskEvent(session, msg)
+            const taskMsg = await taskNotificationWithOutput(session, msg)
+            applyTaskEvent(session, taskMsg)
             try { deps.recordTasksSnapshot?.(session.id) }
             catch (err) { log.warn(`[session ${session.id}] recordTasksSnapshot threw: ${err}`) }
             const toolUseId = (msg as { tool_use_id?: string }).tool_use_id
