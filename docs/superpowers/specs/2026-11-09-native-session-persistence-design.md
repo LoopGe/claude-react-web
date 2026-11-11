@@ -481,3 +481,53 @@ P1.5 让 native 会话拥有与 claude 会话同等的三项能力：扩展思�
 
 - native 的 `capabilities` 打开 `supportsThinkingControl` / `supportsEffortLevel` / `supportsFastMode` / `supportsSteering`，manager 对应的控制方法因此不再被 capability gate 拒绝。上述全部路径由 `server/providers/native/e2e-thinking-effort.test.ts` 经 `SessionManager` 端到端覆盖。
 - **延迟**：per-model effort 降级（不支持就省略，不降到最近的可用级别）；`'summarized'` / `'omitted'` 之外的 display 值；`supportedModels` 里 SDK 上报的其余字段；fast-mode 的资格规则（`model_not_allowed` 等 org 能力）；generic `/settings` 的其余 key（autoCompactEnabled / agent / hooks / sandbox / memory 继续响亮拒绝）。
+
+## P1.6 — Extra tools, title and provider selection
+
+P1.6 让 native 会话补齐日常工具（Glob、LS、WebFetch、WebSearch、TodoWrite、NotebookEdit、AskUserQuestion）、自动标题与诚实的 `accountInfo`，并在新建会话对话框里显式选择 provider（restart / new-like-this 保留来源 provider）。sandbox 不在本批实现范围内：本轮只把现状变诚实——native 的 create 明确拒绝 `sandbox.enabled`，sandbox 本身作为独立的安全项目。
+
+### 工具契约与边界
+
+- `Glob`（`server/providers/native/tools/glob.ts`）：独立实现的纯 Node 递归 walker（复用 `grep.ts` 抽出的 `walk` / `globToRegExp`，**不 spawn ripgrep**），支持 `**` / `?`；匹配对象是相对搜索根的路径，输出是相对 cwd 的 `/` 分隔路径。跳过 `node_modules`、`.git`、`dist`；最多返回 100 个文件名，超出时 `truncated: true` 并附 `totalMatches`。输出 JSON `{durationMs, numFiles, filenames, truncated, totalMatches?}`。`path` 指向单个文件时按 basename 匹配自身。
+- `LS`（`ls.ts`）：只列一层，条目按名字排序，`.git` 永远排除，`ignore` 是子串过滤；文件条目带 `size`，目录 / 其它 dirent 分别是 `dir` / `link`。最多 100 条并置 `truncated`。输出 JSON `{path, entries: Array<{name, type, size?}>, truncated}`。
+- 两个路径型工具都经 `resolveAgainstCwd` 解析，逃逸 cwd 的路径抛 `ToolInputError`；所有输出再走 `capToolText`。
+- `TodoWrite`（`todo-write.ts`）是**每会话工厂**（列表状态封闭在工具实例里，两个会话不共享）：每次调用整表替换；校验 trim 后的非空且唯一 `content`、`status ∈ pending|in_progress|completed`、非空 `activeForm`。多个 `in_progress` 不是输入错误，而是规划气味：接受并返回 `{oldTodos, newTodos, warning}`，warning **在 JSON 内部**，保证结果整体可解析。
+- `NotebookEdit`（`notebook-edit.ts`）按 nbformat 4.5 的 `id` 定位单元格：`replace`（默认）/ `insert` / `delete`；`insert` 必须给 `cell_type`（`code` / `markdown`），有锚点时插在锚点之后、无锚点时插到最前；`replace` / `delete` 必须给 `cell_id`。只返回被改动的那一格：`{new_source, old_source, cell_id, cell_type, language: 'jupyter', edit_mode, notebook_path}`，**不含** `original_file` / `updated_file` 整文件正文；`cell_type` 报告单元格自身的原始类型（`raw` 也照实返回，只有 insert 的输入被限制为 code/markdown）。文件以 1 空格缩进 JSON 写回。
+- `AskUserQuestion`（`ask-user-question.ts`）的 schema 与 broker 的解析器完全一致（`questions[]`，每项 `{question, header?, options[{label, description?, preview?}], multiSelect?}`，`required: ['questions']`）。它不是一个文件操作：除 `bypassPermissions` 外，broker 会在 `run` 之前拦截并把它变成待回答的 `kind: 'question'`；`bypassPermissions` 没有对话框，`run` 返回显式的 "dialog unavailable" 错误。
+
+### Web 策略与 SSRF
+
+- WebFetch / WebSearch 共用 `web.ts` 的 HTTP 策略：仅 HTTP(S)；URL ≤2048 字符；拒绝 URL 内嵌凭证；目标地址必须是公网（IPv4 / IPv6，含 `169.254.169.254`、`::1` 与 NAT64/6to4/Teredo 等 IPv4 编码过渡前缀），**连接前**校验且每次重定向都重新校验；`redirect: 'manual'`，最多 5 跳，且不允许跨 origin；响应 ≤5 MiB、解码文本 ≤100k 字符；整个链路一个 30s 截止时间，与 turn 的 interrupt signal 用 `AbortSignal.any` 合并。hostname 解析失败按工具错误处理，不放行到底层 `fetch` 的第二次解析。
+- `WebFetch`（`web-fetch.ts`）是每会话工厂（辅助调用需要本会话的 model 与 profile 凭证）：抓取页面 → HTML 转文本（去 script/style/注释/标签、解码常见实体、折叠空白）→ 用辅助 Anthropic 调用按 `prompt` 提炼答案。辅助调用模型取 `profile.recapModel || 当前 model`（**调用时**解析，live 切模型会生效），`maxTokens: 1024`、`temperature: 0.2`、`caller: 'web-fetch'`，凭证走会话 profile。`offset` 在辅助调用前切掉已读过的文本。输出 JSON `{bytes, code, codeText, result, durationMs, url}`。
+- `WebSearch`（`web-search.ts`）走 DuckDuckGo HTML（无需 API key），查询用 `encodeURIComponent`，带浏览器 User-Agent；结果在本地按 host 过滤 `allowed_domains` / `blocked_domains`（子域包含在内，blocked 优先），最多 10 条。非 2xx 是错误而不是静默空结果。输出 `{query, results: Array<{title, url, snippet}>, durationSeconds, searchCount}`；`searchCount` 在同一会话的工具实例内累加，跨会话独立。
+
+### AskUserQuestion：显式 marker 区分「答案」与「控制性拒绝」
+
+- broker 在答案路径上把 `{behavior:'deny', message}` 当作工具输出：`answerQuestion` / `clarifyQuestion` / malformed input 三条路径给结果对象打上宿主内部的 symbol marker（`QUESTION_RESULT`），native 的 `requestPermission` 用 `isQuestionResult` 转成 `questionResult: true`。
+- loop 只在 `call.name === 'AskUserQuestion'` **且** `decision.questionResult === true` 时把 deny 结果发成 `is_error: false`；interrupt / abort、`denyAll`（session closed）、缺少 permission handler、普通权限拒绝都不带 marker，仍是 `is_error: true`。marker 是 symbol-keyed，JSON 序列化到 SDK control-response 时自然消失，claude provider 的线上行为不变。
+- 回答的正文是 `{note, answers: [{question, answer}]}`（单选取字符串、多选取数组、跳过为 `null`），note 明确说明这是来自 AskUserQuestion 的用户答案。客户端 `QuestionDialog` / `QuestionCard` 因此无需变化。
+
+### 标题：复用辅助调用
+
+- `generateTitle(description)` 走共享的 `callAnthropicMessages`：模型 `profile.recapModel || this.model`（调用时解析）、`system` 为固定标题 prompt（要求只返回标题本身）、`maxTokens: 64`、`temperature: 0.3`、`caller: 'session-title'`、目标为会话 profile 的 `credentials()`；返回辅助响应的首个 text block。
+- manager 的 `autoGenerateTitle` 在**调用前**与**await 之后**各检查一次 `s.title`：用户命名或上一次自动标题已经落地的标题永不被覆盖；非空结果 trim 后写入 `SessionMeta` 并 `persist()`（随之广播 `session-update`）。`capabilities.supportsSessionTitle = true`。
+
+### `accountInfo` 诚实为空
+
+- native 没有 CLI 账号状态（`ProviderProfile` 里没有 email / org / subscription / token source），`accountInfo()` 直接 resolve `undefined`，不发明任何字段。`capabilities.supportsAccountInfo = true`，所以 `/sessions/:id/account` 返回 `{account: null}`，而不是一个没有意义的 501。
+
+### Provider 选择与保留
+
+- `NewSessionDialog` 增加 provider 下拉（`Claude CLI` / `Native in-process`），表单总是提交 `provider`，默认 `'claude'`；native 选中时隐藏 `enabledPlugins` 区块（native 不支持插件），其它 create 字段不变。
+- restart 与 new-like-this 现在携带 `source.provider`（此前会丢掉并静默回退到 claude）。在 `defaultProvider` 配置项出现之前，服务端的默认 provider 保持显式的 `'claude'`。
+
+### Sandbox：create 明确拒绝，实现属于独立安全项目
+
+- `SessionManager.create` 在 **worktree provisioning 之前**拒绝 native + `sandbox.enabled === true`（`501 provider native does not support sandbox`），因此不会留下孤儿的 worktree / 分支；native provider 的 `createSession` 对直接调用者做同样的守卫。
+- `SettingsPanel` 对 native 会话隐藏 sandbox 区块（不再提供一个必然失败的控件）；`applyFlagSettings({sandbox})` 继续抛错。
+- DSH 级隔离（Linux bubblewrap/Landlock、macOS Seatbelt、Windows restricted-token ACL runner 且只能部分强制）超出 P1.6 范围。未来项目应先确定单一平台/后端与显式 fail-closed 语义，再把该设置暴露给 native 会话。
+- 上述全部路径由 `server/providers/native/e2e-tools.test.ts` 经 `SessionManager` 端到端覆盖（真实 PermissionBroker 的问答路径、stubbed `fetch` / DNS，无真实网络）。
+
+### 延迟项
+
+- sandboxing 本身（独立项目）；create 拒绝之外的 `Options.sandbox`；`renameSession` / provider transcript 的改标题；`GET /api/providers` 端点；ChatPanel 的 provider chip；`defaultProvider` 配置项。
