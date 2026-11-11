@@ -226,6 +226,15 @@ export interface ProviderSessionHandle {
   setModel?(model?: string): Promise<void>
   setPermissionMode?(mode: string): Promise<void>
   applyFlagSettings?(settings: Record<string, unknown>): Promise<void>
+  /** Values the NEXT main-thread turn will actually use after any provider-
+   *  internal preset overrides. Synchronous because the handle already owns
+   *  this state; the manager mirrors it into SessionInfo and its broker. */
+  getEffectiveSettings?(): {
+    model: string
+    permissionMode?: string
+    effortLevel?: string
+    agent: string | null
+  }
   supportedModels?(): Promise<unknown>
   supportedCommands?(): Promise<unknown>
   supportedAgents?(): Promise<unknown>

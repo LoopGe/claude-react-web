@@ -6284,6 +6284,66 @@ describe('SessionManager', () => {
     })
   })
 
+  it('keeps an unspecified native permission intent unset at spawn', async () => {
+    const info = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+
+    expect(info.permissionMode).toBeUndefined()
+    expect(store.get(info.id)?.permissionMode).toBeUndefined()
+  })
+
+  it('syncs native effective settings into SessionInfo and the permission broker at spawn', async () => {
+    const definition = {
+      name: 'reviewer',
+      description: 'Reviews code',
+      prompt: 'REVIEW-PROMPT',
+      model: 'persona-model',
+      permissionMode: 'bypassPermissions',
+      effort: 'xhigh',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const agentStore = {
+      get: (name: string) => name === 'reviewer' ? definition : undefined,
+    } as unknown as AgentDefinitionStore
+    sm = new SessionManager({ store, agentStore })
+    const info = await sm.create({
+      provider: 'native',
+      cwd: TEST_CWD,
+      model: 'base-model',
+      agent: 'reviewer',
+      permissionMode: 'default',
+      effort: 'low',
+    })
+
+    expect(info).toMatchObject({
+      model: 'persona-model',
+      permissionMode: 'bypassPermissions',
+      effortLevel: 'xhigh',
+      agent: 'reviewer',
+    })
+    expect(store.get(info.id)).toMatchObject({
+      model: 'persona-model',
+      permissionMode: 'bypassPermissions',
+      effortLevel: 'xhigh',
+      agent: 'reviewer',
+    })
+    const session = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    const canUseTool = session.canUseTool as (
+      tool: string,
+      input: unknown,
+      ctx: { signal: AbortSignal; toolUseID: string },
+    ) => Promise<{ behavior: string }>
+    const ctrl = new AbortController()
+    const result = await canUseTool(
+      'Bash',
+      { command: 'echo hi' },
+      { signal: ctrl.signal, toolUseID: 'tu-effective-preset' },
+    )
+    expect(result.behavior).toBe('allow')
+    expect(sm.listPending(info.id)).toHaveLength(0)
+  })
+
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {
     const info = await sm.create({})
     await sm.setPermissionMode(info.id, 'bypassPermissions')

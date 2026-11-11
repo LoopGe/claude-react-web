@@ -236,6 +236,40 @@ function userMsg(text: string) {
   }
 }
 
+function agentDefinition(overrides: Partial<StoredAgentDefinition> = {}): StoredAgentDefinition {
+  return {
+    name: 'reviewer',
+    description: 'Reviews code',
+    prompt: 'REVIEW-PROMPT',
+    enabled: true,
+    createdAt: 1,
+    updatedAt: 1,
+    ...overrides,
+  } as StoredAgentDefinition
+}
+
+function agentStoreOf(defs: Record<string, StoredAgentDefinition>): AgentDefinitionStore {
+  return { get: (name: string) => defs[name] } as unknown as AgentDefinitionStore
+}
+
+type CapturedRequest = {
+  messages: unknown[]
+  system: string
+  model: string
+  tools: Array<{ name: string }>
+} & Record<string, unknown>
+
+function effectiveSettingsOf(session: unknown) {
+  return (session as {
+    getEffectiveSettings?: () => {
+      model: string
+      permissionMode?: string
+      effortLevel?: string
+      agent: string | null
+    }
+  }).getEffectiveSettings?.()
+}
+
 /** The manager's primary send path (and `seedCompactSummary`) hand the
  *  provider `content: text` as a bare string, not a block array. */
 function stringUserMsg(text: string) {
@@ -843,6 +877,292 @@ describe('NativeSession', () => {
     expect(JSON.stringify(mainHistory)).toContain('NESTED-REPORT')
 
     await session.destroy()
+  })
+
+  it('applies a main agent preset before the first request and persists its history-only selection', async () => {
+    const dir = await tempDir('native-main-preset-')
+    await writeProjectSkill(dir, 'demo')
+    await writeProjectSkill(dir, 'other')
+    const definition = agentDefinition({
+      model: 'reviewer-model',
+      tools: ['Read', 'Skill', 'Bash'],
+      disallowedTools: ['Bash'],
+      skills: ['demo'],
+      permissionMode: 'plan',
+      effort: 'xhigh',
+    })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const requests: CapturedRequest[] = []
+    let selectionDurableAtRequest = false
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: CapturedRequest) {
+      requests.push(structuredClone(req))
+      selectionDurableAtRequest = loadNativeSessionLogSync(dir, 'preset')!.events
+        .some((event) => event.type === 'session/agent')
+      for (const ev of textTurn('done')) yield ev
+    }
+    const session = provider.createSession({
+      id: 'preset',
+      cwd: dir,
+      agent: 'reviewer',
+      model: 'base-model',
+      permissionMode: 'default',
+      effortLevel: 'high',
+      providerExtras: {
+        sdkOptions: {
+          skills: 'all',
+          tools: ['Bash'],
+          disallowedTools: ['Read'],
+        },
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+
+    expect(effectiveSettingsOf(session)).toEqual({
+      model: 'reviewer-model',
+      permissionMode: 'plan',
+      effortLevel: 'xhigh',
+      agent: 'reviewer',
+    })
+    session.enqueueUserMessage(userMsg('review') as never)
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+
+    expect(requests).toHaveLength(1)
+    expect(requests[0].model).toBe('reviewer-model')
+    expect(requests[0].system).toContain('REVIEW-PROMPT')
+    expect(requests[0].system).toContain('- demo: demo description')
+    expect(requests[0].system).not.toContain('- other')
+    // Persona fields win field-wise over the base tool profile: the base
+    // disallowedTools ['Read'] must not remove the persona-allowed Read tool.
+    expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read', 'Skill'])
+    expect(selectionDurableAtRequest).toBe(true)
+
+    const events = logOf(session).events
+    const selectionIndex = events.findIndex((event) => event.type === 'session/agent')
+    const userIndex = events.findIndex((event) => event.type === 'user')
+    expect(selectionIndex).toBeGreaterThanOrEqual(0)
+    expect(selectionIndex).toBeLessThan(userIndex)
+    expect(events[selectionIndex]).toMatchObject({
+      type: 'session/agent',
+      name: 'reviewer',
+      definition: { prompt: 'REVIEW-PROMPT', model: 'reviewer-model' },
+      base: {
+        model: 'base-model',
+        permissionMode: 'default',
+        effortLevel: 'high',
+        skillPolicy: 'all',
+        toolProfile: { tools: ['Bash'], disallowedTools: ['Read'] },
+      },
+    })
+    expect(frames.some((frame) => (frame as unknown as { type: string }).type === 'session/agent')).toBe(false)
+    await session.destroy()
+  })
+
+  it('keeps the create-body tool and skill policies when no main persona is selected', async () => {
+    const dir = await tempDir('native-base-policy-')
+    await writeProjectSkill(dir, 'demo')
+    await writeProjectSkill(dir, 'other')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [textTurn('done')],
+      requests,
+    )
+    const session = provider.createSession({
+      id: 'base-policy',
+      cwd: dir,
+      model: 'base-model',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'medium',
+      providerExtras: { sdkOptions: { tools: ['Read'], skills: ['demo'] } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    session.enqueueUserMessage(userMsg('go') as never)
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+
+    expect(requests[0].model).toBe('base-model')
+    expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
+    expect(requests[0].system).toContain('- demo: demo description')
+    expect(requests[0].system).not.toContain('- other')
+    expect(effectiveSettingsOf(session)).toEqual({
+      model: 'base-model',
+      permissionMode: 'acceptEdits',
+      effortLevel: 'medium',
+      agent: null,
+    })
+    expect(logOf(session).events.some((event) => event.type === 'session/agent')).toBe(false)
+    await session.destroy()
+  })
+
+  it('restores the logged definition and base snapshots instead of edited store or resume options', async () => {
+    const dir = await tempDir('native-preset-resume-')
+    await writeProjectSkill(dir, 'demo')
+    await writeProjectSkill(dir, 'other')
+    const definition = agentDefinition({
+      prompt: 'OLD-REVIEW-PROMPT',
+      model: 'reviewer-old',
+      tools: ['Read'],
+      permissionMode: 'plan',
+      effort: 'xhigh',
+    })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const original = provider.createSession({
+      id: 'preset-resume',
+      cwd: dir,
+      agent: 'reviewer',
+      model: 'base-old',
+      permissionMode: 'default',
+      effortLevel: 'high',
+      providerExtras: { sdkOptions: { skills: ['demo'] } },
+    })
+    await original.destroy()
+
+    Object.assign(definition, {
+      prompt: 'NEW-REVIEW-PROMPT',
+      model: 'reviewer-new',
+      tools: ['Bash'],
+      permissionMode: 'bypassPermissions',
+      effort: 'low',
+    })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [textTurn('resumed')],
+      requests,
+    )
+    const resumed = provider.createSession({
+      id: 'preset-resume',
+      cwd: dir,
+      resume: 'preset-resume',
+      model: 'resume-option-model',
+      permissionMode: 'bypassPermissions',
+      effortLevel: 'low',
+      providerExtras: { sdkOptions: { skills: ['other'] } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of resumed.messages) frames.push(frame as Frame) })()
+    resumed.enqueueUserMessage(userMsg('next') as never)
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+
+    expect(requests[0].model).toBe('reviewer-old')
+    expect(requests[0].system).toContain('OLD-REVIEW-PROMPT')
+    expect(requests[0].system).not.toContain('NEW-REVIEW-PROMPT')
+    expect(requests[0].system).toContain('- demo: demo description')
+    expect(requests[0].system).not.toContain('- other')
+    expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
+    expect(effectiveSettingsOf(resumed)).toEqual({
+      model: 'reviewer-old',
+      permissionMode: 'plan',
+      effortLevel: 'xhigh',
+      agent: 'reviewer',
+    })
+    expect(await resumed.supportedCommands?.()).toEqual([
+      { name: 'demo', description: 'demo description', argumentHint: '' },
+    ])
+    await resumed.destroy()
+  })
+
+  it('uses only the latest agent selection at or before a fork cut', async () => {
+    const dir = await tempDir('native-preset-fork-')
+    const base = { model: 'base-model', permissionMode: 'default' }
+    const firstDefinition = agentDefinition({ prompt: 'BEFORE-CUT', model: 'before-model', tools: ['Read'] })
+    const laterDefinition = agentDefinition({ prompt: 'AFTER-CUT', model: 'after-model', tools: ['Bash'] })
+    const seed = NativeSessionLog.open({ stateDir: dir, id: 'source-preset', cwd: dir, resume: false })
+    seed.append({ type: 'session/context', text: 'ctx' })
+    seed.append({
+      type: 'session/agent',
+      name: 'reviewer',
+      definition: firstDefinition,
+      base,
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })
+    seed.append({
+      type: 'assistant',
+      uuid: 'cut-assistant',
+      session_id: 'source-preset',
+      parent_tool_use_id: null,
+      timestamp: '2026-11-11T00:00:01.000Z',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'cut' }] },
+    })
+    seed.append({
+      type: 'session/agent',
+      name: 'reviewer',
+      definition: laterDefinition,
+      base,
+      timestamp: '2026-11-11T00:00:02.000Z',
+    })
+    await seed.flush()
+    await seed.close()
+
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: laterDefinition }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [textTurn('forked')],
+      requests,
+    )
+    const forked = provider.createSession({
+      id: 'forked-preset',
+      cwd: dir,
+      resume: 'source-preset',
+      forkSession: true,
+      resumeSessionAt: 'cut-assistant',
+      agent: 'reviewer',
+      model: 'fork-option-model',
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of forked.messages) frames.push(frame as Frame) })()
+    forked.enqueueUserMessage(userMsg('next') as never)
+    await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+
+    expect(requests[0].model).toBe('before-model')
+    expect(requests[0].system).toContain('BEFORE-CUT')
+    expect(requests[0].system).not.toContain('AFTER-CUT')
+    expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read'])
+    expect(effectiveSettingsOf(forked)?.model).toBe('before-model')
+    await forked.destroy()
+  })
+
+  it('maps a main maxTurns cutoff to an error turn/end and keeps a natural completion completed', async () => {
+    const dir = await tempDir('native-main-max-turns-')
+    const definition = agentDefinition({ maxTurns: 1 })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      // The first round is capped; the second ends naturally at the same cap.
+      const script = logOf(currentSession).events.some((event) => event.type === 'turn/end')
+        ? textTurn('done')
+        : toolTurn('capped-read')
+      for (const ev of script) yield ev
+    }
+    const currentSession = provider.createSession({ id: 'main-max-turns', cwd: dir, agent: 'reviewer' })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of currentSession.messages) frames.push(frame as Frame) })()
+
+    currentSession.enqueueUserMessage(userMsg('first') as never)
+    await vi.waitFor(() => expect(logOf(currentSession).events.some(
+      (event) => event.type === 'turn/end' && event.reason === 'error',
+    )).toBe(true))
+    currentSession.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => expect(logOf(currentSession).events.filter(
+      (event) => event.type === 'turn/end',
+    )).toHaveLength(2))
+
+    expect(logOf(currentSession).events.filter((event) => event.type === 'turn/end').map((event) => event.reason))
+      .toEqual(['error', 'completed'])
+    const results = frames.filter((frame) => frame.type === 'result')
+    expect(results).toHaveLength(2)
+    expect(results[0].is_error).toBe(true)
+    expect(results[1].is_error).toBe(false)
+    await currentSession.destroy()
+  })
+
+  it('rejects unsupported main preset fields before creating a session log', async () => {
+    const dir = await tempDir('native-main-preset-invalid-')
+    const definition = agentDefinition({ background: true })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+
+    expect(() => provider.createSession({ id: 'invalid-preset', cwd: dir, agent: 'reviewer' }))
+      .toThrow(/background/)
+    expect(loadNativeSessionLogSync(dir, 'invalid-preset')).toBeNull()
   })
 
   it('honors an enabled custom agent definition for the nested run', async () => {

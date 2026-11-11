@@ -46,6 +46,17 @@ import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
+import { agentUnusableReason } from '../../agent-definition-store.js'
+import {
+  agentSelectionFromEvents,
+  assertAgentProfileSupported,
+  profileFromDefinition,
+  type NativeAgentBase,
+  type NativeAgentProfile,
+  type NativeAgentSelectionEvent,
+} from './agent-profile.js'
+import { filterToolsForProfile } from './agent-tools.js'
+import type { SessionToolProfile } from '../../../shared/tool-profile.js'
 import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
 import { isQuestionResult } from '../../permission-broker.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
@@ -171,6 +182,9 @@ export interface NativeSessionOptions {
   /** Fork cut point: the assistant message uuid to keep, inclusive. */
   resumeSessionAt?: string
   model?: string
+  /** Main-thread agent to resolve at fresh create. Resume/fork ignore this
+   *  name and restore the selection snapshot from the copied log prefix. */
+  agent?: string
   permissionMode?: string
   /** Extended-thinking config carried over from `SessionMeta.thinking`.
    *  Only the starting point: `setMaxThinkingTokens` keeps a live field. */
@@ -200,6 +214,10 @@ export interface NativeSessionOptions {
   /** Spawn `Options.skills` policy: `undefined` = the CLI's name-only
    *  default, `'all'` = list with descriptions, `string[]` = allowlist. */
   skills?: string[] | 'all'
+  /** Create-body tool surface, merged field-wise with the selected persona.
+   *  The native loop honors the allow/deny lists; permission aliases/config
+   *  remain SDK-only fields and do not affect this in-process tool list. */
+  toolProfile?: SessionToolProfile
   system: string
   /** The prompt a nested (Agent) run gets: the parent system WITHOUT the
    *  `tool:Agent` section, since nested tools exclude Agent and a subagent
@@ -287,6 +305,15 @@ export class NativeSession implements ProviderSessionHandle {
    *  FQN (it may be truncated and hashed). */
   private readonly mcpToolServers = new Map<string, { name: string; source: 'sdk' | 'dynamic' }>()
   private readonly mcp: NativeMcpConnections | undefined
+  /** Base values survive independently of the selected persona. The effective
+   *  fields below are what the next request and permission broker observe. */
+  private readonly baseSystem: string
+  private baseModel: string
+  private basePermissionMode: string | undefined
+  private baseEffortLevel: EffortLevel | undefined
+  private baseSkillPolicy: readonly string[] | 'all' | undefined
+  private baseToolProfile: SessionToolProfile | undefined
+  private currentProfile: NativeAgentProfile | null = null
   private model: string
   /** Live permission mode: setPermissionMode keeps it current for the lifetime
    *  of the session — the spawn-time opts value is only the starting point, so
@@ -329,11 +356,17 @@ export class NativeSession implements ProviderSessionHandle {
     this.ctx = defaultFrameContext(opts.id)
     this.mcp = opts.mcp
     this.tools = [...opts.tools]
-    this.model = opts.model ?? DEFAULT_MODEL
-    this.permissionMode = opts.permissionMode ?? 'default'
+    this.baseSystem = opts.system
+    this.baseModel = opts.model ?? DEFAULT_MODEL
+    this.basePermissionMode = opts.permissionMode
+    this.baseEffortLevel = opts.effortLevel as EffortLevel | undefined
+    this.baseSkillPolicy = Array.isArray(opts.skills) ? [...opts.skills] : opts.skills
+    this.baseToolProfile = opts.toolProfile ? structuredClone(opts.toolProfile) : undefined
+    this.model = this.baseModel
+    this.permissionMode = this.basePermissionMode ?? 'default'
     this.thinking = opts.thinking
     this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
-    this.effortLevel = opts.effortLevel as EffortLevel | undefined
+    this.effortLevel = this.baseEffortLevel
     this.fastMode = opts.fastMode === true
     // Built after `this.model` is bound: the model getter must observe a live
     // switch, not the spawn-time value.
@@ -349,7 +382,12 @@ export class NativeSession implements ProviderSessionHandle {
     // lazily), so configure-before/after-reload makes no difference.
     this.skills = new NativeSkillCatalog(opts.cwd)
     this.skills.configure(opts.skills)
-    this.skillTool = createSkillTool(this.skills)
+    // The main Skill tool resolves its view at call time: a persona allowlist
+    // is a hard filter over the SAME discovery cache and override layer. The
+    // small structural adapter keeps createSkillTool's catalog API unchanged.
+    this.skillTool = createSkillTool({
+      bodyOf: (name: string) => this.currentSkillView().bodyOf(name),
+    } as NativeSkillCatalog)
     this.skillsReady = this.startSkillReload()
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
     this.taskOutputTool = createTaskOutputTool(this.tasks)
@@ -400,6 +438,69 @@ export class NativeSession implements ProviderSessionHandle {
     this.rebuildTools()
   }
 
+  private currentSkillView(): ReturnType<NativeSkillCatalog['view']> {
+    return this.skills.view(this.currentProfile?.skills ?? this.baseSkillPolicy)
+  }
+
+  private applyEffectiveProfile(): void {
+    this.model = this.currentProfile?.model ?? this.baseModel
+    this.permissionMode = this.currentProfile?.permissionMode ?? this.basePermissionMode ?? 'default'
+    this.effortLevel = this.currentProfile?.effort ?? this.baseEffortLevel
+  }
+
+  private applyAgentSelection(selection: NativeAgentSelectionEvent): void {
+    this.baseModel = selection.base.model
+    this.basePermissionMode = selection.base.permissionMode
+    this.baseEffortLevel = selection.base.effortLevel as EffortLevel | undefined
+    this.baseSkillPolicy = Array.isArray(selection.base.skillPolicy)
+      ? [...selection.base.skillPolicy]
+      : selection.base.skillPolicy
+    this.skills.configure(
+      this.baseSkillPolicy === 'all' || this.baseSkillPolicy === undefined
+        ? this.baseSkillPolicy
+        : [...this.baseSkillPolicy],
+    )
+    this.baseToolProfile = selection.base.toolProfile ? structuredClone(selection.base.toolProfile) : undefined
+    if (selection.name === null) {
+      this.currentProfile = null
+    } else {
+      if (!selection.definition) throw new Error(`agent selection "${selection.name}" has no definition snapshot`)
+      this.currentProfile = profileFromDefinition(selection.definition)
+    }
+    this.applyEffectiveProfile()
+  }
+
+  private restoreAgentSelection(events: readonly NativeLogEvent[]): void {
+    const selection = agentSelectionFromEvents(events)
+    // Pre-selection logs deliberately keep their old no-persona behavior.
+    // Task 6 owns SessionMeta.agent migration and its visible drop path.
+    if (selection) this.applyAgentSelection(selection)
+  }
+
+  private agentBaseSnapshot(): NativeAgentBase {
+    return {
+      model: this.baseModel,
+      permissionMode: this.basePermissionMode ?? 'default',
+      ...(this.baseEffortLevel !== undefined ? { effortLevel: this.baseEffortLevel } : {}),
+      ...(this.baseSkillPolicy !== undefined
+        ? { skillPolicy: Array.isArray(this.baseSkillPolicy) ? [...this.baseSkillPolicy] : this.baseSkillPolicy }
+        : {}),
+      ...(this.baseToolProfile !== undefined ? { toolProfile: structuredClone(this.baseToolProfile) } : {}),
+    }
+  }
+
+  getEffectiveSettings(): { model: string; permissionMode?: string; effortLevel?: string; agent: string | null } {
+    const permissionMode = this.currentProfile?.permissionMode ?? this.basePermissionMode
+    return {
+      model: this.model,
+      // Undefined is meaningful intent: the manager must not persist an
+      // invented 'default' that would override the caller's next resume mode.
+      ...(permissionMode !== undefined ? { permissionMode } : {}),
+      ...(this.effortLevel !== undefined ? { effortLevel: this.effortLevel } : {}),
+      agent: this.currentProfile?.name ?? null,
+    }
+  }
+
   /** Fresh session: the log is created here, with its opening `session/context`
    *  written through the seed path so the header AND the context are durable
    *  synchronously at open (a crash before the first turn must still leave a
@@ -407,6 +508,22 @@ export class NativeSession implements ProviderSessionHandle {
    *  message — history-only, per the DSH design, never a frame. An existing
    *  log for this id is left untouched: `open` throws `kind: 'exists'`. */
   private openFreshLog(opts: NativeSessionOptions): NativeSessionLog {
+    let selection: Omit<NativeAgentSelectionEvent, 'seq'> | undefined
+    if (opts.agent !== undefined) {
+      const reason = agentUnusableReason(opts.agentStore, opts.agent)
+      if (reason) throw new Error(reason)
+      const definition = opts.agentStore!.get(opts.agent)!
+      // Validate BEFORE opening the file: a rejected fresh selection must not
+      // leave a turn-less log that a later resume could mistake for a session.
+      assertAgentProfileSupported(definition)
+      selection = {
+        type: 'session/agent',
+        name: definition.name,
+        definition: structuredClone(definition),
+        base: this.agentBaseSnapshot(),
+        timestamp: new Date().toISOString(),
+      }
+    }
     const context: NativeLogEvent = {
       seq: 0,
       type: 'session/context',
@@ -420,6 +537,12 @@ export class NativeSession implements ProviderSessionHandle {
       seed: { events: [context], inheritedEventCount: 0, isSeeded: false },
     })
     this.history.push(...historyFromEvents([context]))
+    if (selection) {
+      // The next turn's ordinary pre-request flush covers this append too, so
+      // the selection is durable before the first model request. It never
+      // becomes a model message or a UI frame.
+      this.applyAgentSelection(log.append(selection) as NativeAgentSelectionEvent)
+    }
     return log
   }
 
@@ -440,6 +563,7 @@ export class NativeSession implements ProviderSessionHandle {
     // synthetic results (now seq-numbered). `turn/end` is bookkeeping and is
     // skipped by `historyFromEvents`.
     this.history.push(...historyFromEvents(log.events))
+    this.restoreAgentSelection(log.events)
     this.restoreUsage(events)
     return log
   }
@@ -472,6 +596,7 @@ export class NativeSession implements ProviderSessionHandle {
       seed,
     })
     this.history.push(...historyFromEvents(seed.events))
+    this.restoreAgentSelection(seed.events)
     // Match what a restart of this child would see: its copied prefix's
     // usage-bearing `turn/end` events define last/total (the `{forked}` close
     // carries none and is skipped). Without this the fork reports 0 until the
@@ -717,7 +842,10 @@ export class NativeSession implements ProviderSessionHandle {
    *  section, read at call time so a reload/override reaches the next nested
    *  run. The parent system is built per turn in `pumpLoop`. */
   private subagentSystem(): string {
-    return withSkillsSection(this.opts.subagentSystem ?? this.opts.system, this.skills.section())
+    return withSkillsSection(
+      this.opts.subagentSystem ?? this.baseSystem,
+      this.skills.view(this.baseSkillPolicy).section(),
+    )
   }
 
   /** Rebuild the tool list and the FQN → server map from the current
@@ -729,20 +857,7 @@ export class NativeSession implements ProviderSessionHandle {
     // The Agent and Skill tools ride EVERY list, MCP-less sessions included —
     // otherwise the model loses delegation exactly when it has no servers to
     // call, and a subagent could never load a skill.
-    if (!this.mcp) {
-      this.tools = [
-        ...this.opts.tools,
-        this.webFetchTool,
-        this.webSearchTool,
-        this.todoWriteTool,
-        this.agentTool,
-        this.taskOutputTool,
-        this.skillTool,
-      ]
-      return
-    }
-    const infos = this.mcp.tools()
-    this.tools = [
+    const fullTools: ToolDef[] = [
       ...this.opts.tools,
       this.webFetchTool,
       this.webSearchTool,
@@ -750,17 +865,28 @@ export class NativeSession implements ProviderSessionHandle {
       this.agentTool,
       this.taskOutputTool,
       this.skillTool,
-      ...mcpToolDefs(this.mcp),
     ]
-    const sdkServers = new Set(
-      this.mcp.statuses().filter((status) => status.source === 'sdk').map((status) => status.name),
-    )
-    for (const info of infos) {
-      this.mcpToolServers.set(info.fqn, {
-        name: info.server,
-        source: sdkServers.has(info.server) ? 'sdk' : 'dynamic',
-      })
+    if (this.mcp) {
+      const infos = this.mcp.tools()
+      fullTools.push(...mcpToolDefs(this.mcp))
+      const sdkServers = new Set(
+        this.mcp.statuses().filter((status) => status.source === 'sdk').map((status) => status.name),
+      )
+      for (const info of infos) {
+        this.mcpToolServers.set(info.fqn, {
+          name: info.server,
+          source: sdkServers.has(info.server) ? 'sdk' : 'dynamic',
+        })
+      }
     }
+    // Rebuild the COMPLETE builtin + current MCP snapshot first, then apply
+    // the base/persona policy. Each field wins independently; in particular a
+    // persona [] is an explicit empty allowlist, not "fall back to base".
+    this.tools = filterToolsForProfile(fullTools, {
+      tools: this.currentProfile?.tools ?? this.baseToolProfile?.tools,
+      disallowedTools: this.currentProfile?.disallowedTools ?? this.baseToolProfile?.disallowedTools,
+      mcpServers: this.currentProfile?.mcpServers,
+    }, this.mcpToolServers)
   }
 
   private async pumpLoop(): Promise<void> {
@@ -820,6 +946,7 @@ export class NativeSession implements ProviderSessionHandle {
           {
             stream: (req) => this.streamFor(req),
             tools: [...this.tools],
+            maxTurns: this.currentProfile?.maxTurns,
             tasks: this.tasks,
             cwd: this.opts.cwd,
             requestPermission: this.requestPermission,
@@ -827,7 +954,12 @@ export class NativeSession implements ProviderSessionHandle {
               this.persistFrame(frame)
               this.output.push(frame)
             },
-            system: withSkillsSection(this.opts.system, this.skills.section()),
+            system: withSkillsSection(
+              this.currentProfile?.instruction
+                ? `${this.baseSystem}\n\n${this.currentProfile.instruction}`
+                : this.baseSystem,
+              this.currentSkillView().section(),
+            ),
             fastModeState: () => (this.fastMode ? 'on' : 'off'),
             drainSupplement: () => this.injectSupplements(),
           },
@@ -842,8 +974,8 @@ export class NativeSession implements ProviderSessionHandle {
         // from the persisted assistant frames in `persistFrame`, so the live
         // value and a restart's rebuild are identical.
         this.lastUsage = res.usage
-        endReason = 'completed'
-        endUsage = res.usage
+        endReason = res.isError ? 'error' : 'completed'
+        if (!res.isError) endUsage = res.usage
       } catch (err) {
         // The assistant message may already be in `history` with unanswered
         // tool calls (the failure can land at the pre-tool barrier); close
@@ -1051,11 +1183,14 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   async setModel(model?: string): Promise<void> {
-    if (model) this.model = model
+    if (!model) return
+    this.baseModel = model
+    this.applyEffectiveProfile()
   }
 
   async setPermissionMode(mode: string): Promise<void> {
-    this.permissionMode = mode
+    this.basePermissionMode = mode
+    this.applyEffectiveProfile()
   }
 
   /** Runtime extended-thinking change (the SDK's setMaxThinkingTokens
@@ -1205,12 +1340,13 @@ export class NativeSession implements ProviderSessionHandle {
     const level = settings.effortLevel
     if (level !== undefined) {
       if (level === null) {
-        this.effortLevel = undefined
+        this.baseEffortLevel = undefined
       } else if (typeof level === 'string' && (EFFORT_LEVELS as readonly string[]).includes(level)) {
-        this.effortLevel = level as EffortLevel
+        this.baseEffortLevel = level as EffortLevel
       } else {
         throw new Error(`native provider does not support effort level: ${String(level)}`)
       }
+      this.applyEffectiveProfile()
     }
     if (settings.fastMode !== undefined) {
       const fastMode = settings.fastMode

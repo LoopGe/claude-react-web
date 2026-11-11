@@ -3101,6 +3101,19 @@ export class SessionManager {
     }
   }
 
+  /** Mirror the provider's next-turn values into the one Session object read
+   *  by SessionInfo, persistence, auxiliary calls, and the permission broker. */
+  private syncEffectiveSettings(session: Session): void {
+    const settings = session.handle.getEffectiveSettings?.()
+    if (!settings) return
+    session.model = settings.model
+    if (settings.permissionMode !== undefined) {
+      session.permissionMode = settings.permissionMode as Session['permissionMode']
+    }
+    session.effortLevel = settings.effortLevel as Session['effortLevel']
+    session.agent = settings.agent ?? undefined
+  }
+
   /** Shared spawn path for create(), resume(), and fork(). */
   private spawn(
     id: string,
@@ -3551,6 +3564,7 @@ export class SessionManager {
       providerExtras: { sdkOptions, modelGroupId: session.modelGroupId },
     })
     session.handle = handle
+    this.syncEffectiveSettings(session)
 
     // Same-id replacement (resume()/respawnFresh() spawn with an existing
     // id): if a live handle already sits in the map under this id, destroy it

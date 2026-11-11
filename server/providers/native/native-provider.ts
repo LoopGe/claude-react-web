@@ -35,6 +35,7 @@ import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import type { ToolDef } from './tools/types.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
+import { extractToolProfile } from '../../../shared/tool-profile.js'
 
 const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool, notebookEditTool, askUserQuestionTool]
 
@@ -152,7 +153,7 @@ export class NativeProvider implements AgentProvider {
     mcp.load(opts.mcpServers as Record<string, unknown> | undefined)
     // Spawn skill policy rides the SDK-shaped create body the manager already
     // forwards through providerExtras (`Options.skills`).
-    const sdkOptions = opts.providerExtras?.sdkOptions as { skills?: string[] | 'all' } | undefined
+    const sdkOptions = opts.providerExtras?.sdkOptions as ({ skills?: string[] | 'all' } & Record<string, unknown>) | undefined
     // The constructor can throw on real paths (corrupt/unsupported log, missing
     // fork log). The queued connect has no owner then, so it must be torn down
     // here or it would run forever and leak its children.
@@ -169,6 +170,7 @@ export class NativeProvider implements AgentProvider {
         forkSession: opts.forkSession,
         resumeSessionAt: opts.resumeSessionAt,
         model: opts.model,
+        agent: opts.agent,
         permissionMode: opts.permissionMode,
         thinking: opts.thinking,
         effortLevel: opts.effortLevel,
@@ -179,6 +181,7 @@ export class NativeProvider implements AgentProvider {
         mcp,
         agentStore: this.agentStore,
         skills: sdkOptions?.skills,
+        toolProfile: extractToolProfile(sdkOptions),
         system,
         subagentSystem,
         canUseTool: opts.canUseTool,
