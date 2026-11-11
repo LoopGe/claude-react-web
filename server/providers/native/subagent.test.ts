@@ -90,7 +90,7 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
     system: () => 'PARENT-SYS',
     frameCtx: defaultFrameContext('sess-1'),
     tools: () => [noopTool],
-    mcpToolServers: new Map(),
+    mcpToolServers: () => new Map(),
     skillView,
     skillToolFor: (view) => createSkillTool(view as unknown as NativeSkillCatalog),
     tasks: new NativeTaskManager(() => {}),
@@ -325,7 +325,7 @@ describe('createAgentTool', () => {
         namedTool('mcp__a__echo'),
         namedTool('mcp__b__echo'),
       ],
-      mcpToolServers: new Map([
+      mcpToolServers: () => new Map([
         ['mcp__a__echo', { name: 'a', source: 'sdk' }],
         ['mcp__b__echo', { name: 'b', source: 'dynamic' }],
       ]),

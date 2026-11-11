@@ -31,8 +31,8 @@ export interface AgentToolDeps {
   /** LIVE getter: the session's builtins plus its current MCP/first-party
    *  defs. Read per call so a mid-session MCP change is honoured. */
   tools: () => ToolDef[]
-  /** Tool ownership metadata from the same MCP discovery snapshot. */
-  mcpToolServers: ReadonlyMap<string, { name: string }>
+  /** LIVE getter for ownership metadata paired with the current full snapshot. */
+  mcpToolServers: () => ReadonlyMap<string, { name: string }>
   /** A scoped view over the parent's shared discovery cache. */
   skillView(policy?: readonly string[] | 'all'): NativeSkillView
   /** Nested runs never retain the parent view's stateful Skill tool instance. */
@@ -137,7 +137,7 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
           .filter((tool) => tool.name !== 'Agent')
           .map((tool) => tool.name === 'Skill' ? deps.skillToolFor(skillView) : tool),
         profile ?? {},
-        deps.mcpToolServers,
+        deps.mcpToolServers(),
       )
       // The schema declares a string, but a model can still emit a number or
       // blank string. Treat both as absent so the nested run inherits the

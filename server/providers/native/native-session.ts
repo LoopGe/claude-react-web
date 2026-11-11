@@ -270,11 +270,14 @@ export class NativeSession implements ProviderSessionHandle {
    *  (never mutated) so a mid-turn `setServers`/toggle only affects the NEXT
    *  turn: the running turn holds the snapshot its `runTurn` started with. */
   private tools: ToolDef[]
+  /** The same full discovery snapshot with ONLY session-base tool constraints
+   *  applied. Nested profiles start here, independently of the MAIN persona. */
+  private nestedTools: ToolDef[]
   /** Every detachable execution in this session, shared with nested loops. */
   private readonly tasks: NativeTaskManager
   /** The Agent tool this session hands the model. Built once (not per turn) so
-   *  its live getters keep tracking `model` and the rebuilt `tools` list; it
-   *  is appended in `rebuildTools` alongside the builtins. */
+   *  its live getters keep tracking `model` and the rebuilt nested-tool
+   *  snapshots; it is appended in `rebuildTools` alongside the builtins. */
   private readonly agentTool: ToolDef
   /** Reads this session's detached Bash/Agent outcomes through the shared manager. */
   private readonly taskOutputTool: ToolDef
@@ -299,7 +302,7 @@ export class NativeSession implements ProviderSessionHandle {
   /** Model-facing tool name → owning server, for the permission request's
    *  `mcpServer` field. Built from discovery metadata, never by parsing the
    *  FQN (it may be truncated and hashed). */
-  private readonly mcpToolServers = new Map<string, { name: string; source: 'sdk' | 'dynamic' }>()
+  private mcpToolServers: ReadonlyMap<string, { name: string; source: 'sdk' | 'dynamic' }> = new Map()
   private readonly mcp: NativeMcpConnections | undefined
   /** Base values survive independently of the selected persona. The effective
    *  fields below are what the next request and permission broker observe. */
@@ -355,6 +358,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.ctx = defaultFrameContext(opts.id)
     this.mcp = opts.mcp
     this.tools = [...opts.tools]
+    this.nestedTools = [...opts.tools]
     this.baseSystem = opts.system
     this.baseModel = opts.model ?? DEFAULT_MODEL
     this.basePermissionMode = opts.permissionMode
@@ -394,8 +398,8 @@ export class NativeSession implements ProviderSessionHandle {
       permissionMode: () => this.permissionMode,
       system: (skillView) => this.subagentSystem(skillView),
       frameCtx: this.ctx,
-      tools: () => this.tools,
-      mcpToolServers: this.mcpToolServers,
+      tools: () => this.nestedTools,
+      mcpToolServers: () => this.mcpToolServers,
       skillView: (policy) => this.skills.view(policy ?? this.baseSkillPolicy),
       skillToolFor: (view) => this.skillToolFor(view),
       tasks: this.tasks,
@@ -931,16 +935,17 @@ export class NativeSession implements ProviderSessionHandle {
     )
   }
 
-  /** Rebuild the tool list and the FQN → server map from the current
-   *  connection state. Runs before every turn and after every live MCP
-   *  mutation; `this.tools` is replaced (not mutated) so a running turn keeps
-   *  the snapshot it was handed. */
-  private rebuildTools(skillTool = this.skillToolFor(this.currentSkillView())): void {
-    this.mcpToolServers.clear()
+  /** Construct the complete builtin + current MCP discovery snapshot and its
+   *  ownership metadata together. Both lists and the map are fresh, so a later
+   *  rebuild cannot mutate a parent or nested run already using an older one. */
+  private buildFullTools(skillTool: ToolDef): {
+    tools: ToolDef[]
+    mcpToolServers: Map<string, { name: string; source: 'sdk' | 'dynamic' }>
+  } {
     // The Agent and Skill tools ride EVERY list, MCP-less sessions included —
     // otherwise the model loses delegation exactly when it has no servers to
     // call, and a subagent could never load a skill.
-    const fullTools: ToolDef[] = [
+    const tools: ToolDef[] = [
       ...this.opts.tools,
       this.webFetchTool,
       this.webSearchTool,
@@ -949,22 +954,39 @@ export class NativeSession implements ProviderSessionHandle {
       this.taskOutputTool,
       skillTool,
     ]
+    const mcpToolServers = new Map<string, { name: string; source: 'sdk' | 'dynamic' }>()
     if (this.mcp) {
       const infos = this.mcp.tools()
-      fullTools.push(...mcpToolDefs(this.mcp))
+      tools.push(...mcpToolDefs(this.mcp))
       const sdkServers = new Set(
         this.mcp.statuses().filter((status) => status.source === 'sdk').map((status) => status.name),
       )
       for (const info of infos) {
-        this.mcpToolServers.set(info.fqn, {
+        mcpToolServers.set(info.fqn, {
           name: info.server,
           source: sdkServers.has(info.server) ? 'sdk' : 'dynamic',
         })
       }
     }
-    // Rebuild the COMPLETE builtin + current MCP snapshot first, then apply
-    // the base/persona policy. Each field wins independently; in particular a
-    // persona [] is an explicit empty allowlist, not "fall back to base".
+    return { tools, mcpToolServers }
+  }
+
+  /** Rebuild the tool list and the FQN → server map from the current
+   *  connection state. Runs before every turn and after every live MCP
+   *  mutation; all snapshots are replaced (never mutated) so a running turn
+   *  keeps the arrays and ownership map it started with. */
+  private rebuildTools(skillTool = this.skillToolFor(this.currentSkillView())): void {
+    const { tools: fullTools, mcpToolServers } = this.buildFullTools(skillTool)
+    this.mcpToolServers = mcpToolServers
+    // Nested profiles start from the COMPLETE discovery snapshot, but session-
+    // base restrictions remain hard boundaries for every child. The MAIN
+    // persona is deliberately absent from this filter.
+    this.nestedTools = filterToolsForProfile(fullTools, {
+      tools: this.baseToolProfile?.tools,
+      disallowedTools: this.baseToolProfile?.disallowedTools,
+    }, this.mcpToolServers)
+    // The main turn keeps its existing field-wise base/persona merge. Each
+    // field wins independently; a persona [] is an explicit empty allowlist.
     this.tools = filterToolsForProfile(fullTools, {
       tools: this.currentProfile?.tools ?? this.baseToolProfile?.tools,
       disallowedTools: this.currentProfile?.disallowedTools ?? this.baseToolProfile?.disallowedTools,

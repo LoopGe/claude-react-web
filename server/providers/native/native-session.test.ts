@@ -988,6 +988,109 @@ describe('NativeSession', () => {
     }
   })
 
+  it('builds a child tool profile from the full snapshot under a restrictive parent preset', async () => {
+    const dir = await tempDir('native-parent-child-tools-')
+    const parent = agentDefinition({ name: 'parent', tools: ['Agent', 'Read'] })
+    const child = agentDefinition({ name: 'child', tools: ['Write'] })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
+      agentTurn('agent-1', { description: 'd', prompt: 'p', subagent_type: 'child' }),
+      textTurn('CHILD-DONE'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const session = provider.createSession({
+      id: 'parent-child-tools', cwd: dir, agent: 'parent',
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('delegate') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+
+      expect(requests).toHaveLength(3)
+      expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read', 'Agent'])
+      expect(requests[1].tools.map((tool) => tool.name)).toEqual(['Write'])
+      expect(requests[2].tools.map((tool) => tool.name)).toEqual(['Read', 'Agent'])
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('builds a child MCP scope from all discovered servers despite parent persona exclusion', async () => {
+    const dir = await tempDir('native-parent-child-mcp-')
+    const parent = agentDefinition({
+      name: 'parent', tools: ['Agent', 'mcp__a__echo'], mcpServers: ['a'],
+    })
+    const child = agentDefinition({
+      name: 'child', tools: ['mcp__b__echo'], mcpServers: ['b'],
+    })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
+      agentTurn('agent-1', { description: 'd', prompt: 'p', subagent_type: 'child' }),
+      textTurn('CHILD-DONE'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const session = provider.createSession({
+      id: 'parent-child-mcp',
+      cwd: dir,
+      agent: 'parent',
+      mcpServers: {
+        a: { type: 'sdk', instance: echoServer() },
+        b: { type: 'sdk', instance: echoServer() },
+      },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('delegate') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+
+      expect(requests).toHaveLength(3)
+      expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Agent', 'mcp__a__echo'])
+      expect(requests[1].tools.map((tool) => tool.name)).toEqual(['mcp__b__echo'])
+      expect(requests[2].tools.map((tool) => tool.name)).toEqual(['Agent', 'mcp__a__echo'])
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('does not let a child profile bypass session-base tool restrictions', async () => {
+    const dir = await tempDir('native-parent-child-base-tools-')
+    const parent = agentDefinition({ name: 'parent', tools: ['Agent', 'Read'] })
+    const child = agentDefinition({ name: 'child', tools: ['Write'] })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ parent, child }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
+      agentTurn('agent-1', { description: 'd', prompt: 'p', subagent_type: 'child' }),
+      textTurn('CHILD-DONE'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const session = provider.createSession({
+      id: 'parent-child-base-tools',
+      cwd: dir,
+      agent: 'parent',
+      providerExtras: { sdkOptions: { tools: ['Agent', 'Read'] } },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('delegate') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+
+      expect(requests).toHaveLength(3)
+      expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read', 'Agent'])
+      expect(requests[1].tools.map((tool) => tool.name)).toEqual([])
+      expect(requests[2].tools.map((tool) => tool.name)).toEqual(['Read', 'Agent'])
+    } finally {
+      await session.destroy()
+    }
+  })
+
   it('auto-allows a nested bypass profile without widening the parent default mode', async () => {
     const dir = await tempDir('native-nested-bypass-')
     const trace = await nestedPermissionTrace(
