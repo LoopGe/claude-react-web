@@ -113,58 +113,59 @@ function hostOf(url: string): string {
   return new URL(url).hostname.toLowerCase()
 }
 
-/** `searchCount` is the process-wide number of WebSearch invocations. The
- *  tool is static (no per-session state), so a shared counter is what the
- *  model observes; it lets a long session tell repeated searches apart. */
-let searchCount = 0
-
-export const webSearchTool: ToolDef<WebSearchInput> = {
-  name: 'WebSearch',
-  description: 'Search the web with DuckDuckGo and return result titles, URLs and snippets.',
-  guidance: WEB_SEARCH_GUIDANCE,
-  promptOrder: 170,
-  schema: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'Search query.' },
-      allowed_domains: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Only return results from these hosts (subdomains included).',
+/** `searchCount` lives in the factory closure, so it is scoped to one
+ *  session's tool instance: two sessions running searches never see each
+ *  other's counts. */
+export function createWebSearchTool(): ToolDef<WebSearchInput> {
+  let searchCount = 0
+  return {
+    name: 'WebSearch',
+    description: 'Search the web with DuckDuckGo and return result titles, URLs and snippets.',
+    guidance: WEB_SEARCH_GUIDANCE,
+    promptOrder: 170,
+    schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query.' },
+        allowed_domains: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Only return results from these hosts (subdomains included).',
+        },
+        blocked_domains: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Drop results from these hosts (subdomains included).',
+        },
       },
-      blocked_domains: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Drop results from these hosts (subdomains included).',
-      },
+      required: ['query'],
     },
-    required: ['query'],
-  },
-  async run(input, ctx) {
-    const query = typeof input.query === 'string' ? input.query.trim() : ''
-    if (query === '') throw new ToolInputError('query must be a non-empty string')
-    const started = Date.now()
-    searchCount++
-    const response = await fetchWeb(`${SEARCH_URL}?q=${encodeURIComponent(query)}`, {
-      signal: ctx.signal,
-      format: 'html',
-    })
-    const allowed = (input.allowed_domains ?? []).filter((domain) => normalizeDomain(domain) !== '')
-    const blocked = (input.blocked_domains ?? []).filter((domain) => normalizeDomain(domain) !== '')
-    const results = parseDuckDuckGoResults(response.text)
-      .filter((result) => {
-        const host = hostOf(result.url)
-        if (allowed.length > 0 && !allowed.some((domain) => hostMatches(host, domain))) return false
-        if (blocked.some((domain) => hostMatches(host, domain))) return false
-        return true
+    async run(input, ctx) {
+      const query = typeof input.query === 'string' ? input.query.trim() : ''
+      if (query === '') throw new ToolInputError('query must be a non-empty string')
+      const started = Date.now()
+      searchCount++
+      const response = await fetchWeb(`${SEARCH_URL}?q=${encodeURIComponent(query)}`, {
+        signal: ctx.signal,
+        format: 'html',
       })
-      .slice(0, MAX_RESULTS)
-    const output: WebSearchOutput = {
-      query,
-      results,
-      durationSeconds: (Date.now() - started) / 1000,
-      searchCount,
-    }
-    return { text: capToolText(JSON.stringify(output)) }
-  },
+      const allowed = (input.allowed_domains ?? []).filter((domain) => normalizeDomain(domain) !== '')
+      const blocked = (input.blocked_domains ?? []).filter((domain) => normalizeDomain(domain) !== '')
+      const results = parseDuckDuckGoResults(response.text)
+        .filter((result) => {
+          const host = hostOf(result.url)
+          if (allowed.length > 0 && !allowed.some((domain) => hostMatches(host, domain))) return false
+          if (blocked.some((domain) => hostMatches(host, domain))) return false
+          return true
+        })
+        .slice(0, MAX_RESULTS)
+      const output: WebSearchOutput = {
+        query,
+        results,
+        durationSeconds: (Date.now() - started) / 1000,
+        searchCount,
+      }
+      return { text: capToolText(JSON.stringify(output)) }
+    },
+  }
 }

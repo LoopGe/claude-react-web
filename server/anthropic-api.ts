@@ -50,7 +50,8 @@ interface CallOptions {
   messages?: Array<{ role: string; content: string }>
   /** Metrics label for the observability histogram — which server feature
    *  is calling. Finite enum: 'recap' | 'commit-message' | 'auto-classifier'
-   *  | 'compact-summary' | 'app-plugin-ai' | 'unknown'. */
+   *  | 'compact-summary' | 'app-plugin-ai' | 'web-fetch' | 'session-title'
+   *  | 'unknown'. */
   caller?: string
   /** Per-session endpoint + credential. See AuxLlmTarget. */
   target?: AuxLlmTarget

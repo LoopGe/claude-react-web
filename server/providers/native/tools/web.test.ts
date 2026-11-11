@@ -4,7 +4,7 @@ import type { ProviderProfile } from '../../../config.js'
 import { ToolInputError, type ToolContext } from './types.js'
 import { htmlToText, isNonPublicIp } from './web.js'
 import { createWebFetchTool, WEB_FETCH_GUIDANCE } from './web-fetch.js'
-import { parseDuckDuckGoResults, webSearchTool } from './web-search.js'
+import { parseDuckDuckGoResults, createWebSearchTool } from './web-search.js'
 
 // Every request in this file is answered by the stubbed global `fetch`; DNS is
 // stubbed too so a hostname never leaves the process.
@@ -146,6 +146,15 @@ describe('isNonPublicIp', () => {
       expect(isNonPublicIp(ip), ip).toBe(false)
     }
   })
+
+  it('blocks IPv4-encoding transition prefixes (NAT64, 6to4, Teredo)', () => {
+    for (const ip of ['64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe', '2002:7f00:1::', '2002:a9fe:a9fe::1', '2001::1', '2001:0:4136:e378:8000:63bf:3fff:fdd2']) {
+      expect(isNonPublicIp(ip), ip).toBe(true)
+    }
+    for (const ip of ['64:ff9b:1::1', '2606:4700:4700::1111', '2001:4860:4860::8888']) {
+      expect(isNonPublicIp(ip), ip).toBe(false)
+    }
+  })
 })
 
 describe('createWebFetchTool', () => {
@@ -284,6 +293,59 @@ describe('createWebFetchTool', () => {
     ).rejects.toThrow(/exceeds .* bytes/)
   })
 
+  it('rejects a streamed body larger than 5 MiB when content-length is absent', async () => {
+    stubPage(() => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const chunk = new Uint8Array(1024 * 1024)
+          for (let index = 0; index < 6; index++) controller.enqueue(chunk)
+          controller.close()
+        },
+      })
+      return new Response(stream, { headers: { 'content-type': 'text/html' } })
+    })
+    await expect(
+      webFetch().run({ url: 'https://docs.example.test/stream', prompt: 'q' }, ctx()),
+    ).rejects.toThrow(/exceeds .* bytes/)
+  })
+
+  it('stops after five redirects', async () => {
+    stubFetch((url) => {
+      const match = /^https:\/\/loop\.example\.test\/(\d+)$/.exec(url)
+      if (match) return redirect(`/${Number(match[1]) + 1}`)
+      throw new Error(`unexpected url ${url}`)
+    })
+    await expect(
+      webFetch().run({ url: 'https://loop.example.test/0', prompt: 'q' }, ctx()),
+    ).rejects.toThrow(/too many redirects/)
+    // Six requests: the initial hop plus the five followed redirects; the
+    // sixth redirect response is refused instead of followed.
+    expect(fetchMock).toHaveBeenCalledTimes(6)
+  })
+
+  it('rejects a redirect that resolves to a private address', async () => {
+    stubFetch((url) => {
+      if (url === 'https://a.example.test/start') return redirect('http://127.0.0.1/')
+      throw new Error(`unexpected url ${url}`)
+    })
+    await expect(
+      webFetch().run({ url: 'https://a.example.test/start', prompt: 'q' }, ctx()),
+    ).rejects.toThrow(/blocked non-public address: 127\.0\.0\.1/)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports a malformed Location header as a tool input error', async () => {
+    stubFetch((url) => {
+      if (url === 'https://a.example.test/start') {
+        return new Response(null, { status: 302, headers: { location: 'http://[bad' } })
+      }
+      throw new Error(`unexpected url ${url}`)
+    })
+    await expect(
+      webFetch().run({ url: 'https://a.example.test/start', prompt: 'q' }, ctx()),
+    ).rejects.toThrow(/invalid redirect location/)
+  })
+
   it('honors the interrupt signal', async () => {
     stubPage(() => htmlResponse(PAGE_HTML))
     const controller = new AbortController()
@@ -367,12 +429,13 @@ describe('webSearchTool', () => {
 
   it('queries DuckDuckGo, parses results and sets searchCount', async () => {
     const mock = searchResponse(ddgHtml(rows))
+    const tool = createWebSearchTool()
     const out = parse<{
       query: string
       results: FixtureRow[]
       durationSeconds: number
       searchCount: number
-    }>((await webSearchTool.run({ query: 'example query' }, ctx())).text)
+    }>((await tool.run({ query: 'example query' }, ctx())).text)
 
     expect(out.query).toBe('example query')
     expect(out.results).toEqual(rows)
@@ -390,15 +453,28 @@ describe('webSearchTool', () => {
 
   it('increments searchCount per invocation', async () => {
     searchResponse(ddgHtml(rows))
-    const first = parse<{ searchCount: number }>((await webSearchTool.run({ query: 'one' }, ctx())).text)
-    const second = parse<{ searchCount: number }>((await webSearchTool.run({ query: 'two' }, ctx())).text)
+    const tool = createWebSearchTool()
+    const first = parse<{ searchCount: number }>((await tool.run({ query: 'one' }, ctx())).text)
+    const second = parse<{ searchCount: number }>((await tool.run({ query: 'two' }, ctx())).text)
     expect(second.searchCount).toBe(first.searchCount + 1)
+  })
+
+  it('keeps searchCount independent between two sessions', async () => {
+    searchResponse(ddgHtml(rows))
+    const firstSession = createWebSearchTool()
+    const secondSession = createWebSearchTool()
+    await firstSession.run({ query: 'a' }, ctx())
+    const firstCount = parse<{ searchCount: number }>((await firstSession.run({ query: 'b' }, ctx())).text)
+    const secondCount = parse<{ searchCount: number }>((await secondSession.run({ query: 'c' }, ctx())).text)
+    expect(firstCount.searchCount).toBe(2)
+    expect(secondCount.searchCount).toBe(1)
   })
 
   it('applies the allowed_domains allowlist, including subdomains', async () => {
     searchResponse(ddgHtml(rows))
+    const tool = createWebSearchTool()
     const out = parse<{ results: FixtureRow[] }>(
-      (await webSearchTool.run({ query: 'q', allowed_domains: ['example.com'] }, ctx())).text,
+      (await tool.run({ query: 'q', allowed_domains: ['example.com'] }, ctx())).text,
     )
     expect(out.results.map((result) => result.url)).toEqual([
       'https://example.com/page',
@@ -408,8 +484,9 @@ describe('webSearchTool', () => {
 
   it('applies the blocked_domains blocklist and lets it win over the allowlist', async () => {
     searchResponse(ddgHtml(rows))
+    const tool = createWebSearchTool()
     const blocked = parse<{ results: FixtureRow[] }>(
-      (await webSearchTool.run({ query: 'q', blocked_domains: ['other.test'] }, ctx())).text,
+      (await tool.run({ query: 'q', blocked_domains: ['other.test'] }, ctx())).text,
     )
     expect(blocked.results.map((result) => result.url)).toEqual([
       'https://example.com/page',
@@ -418,7 +495,7 @@ describe('webSearchTool', () => {
 
     const both = parse<{ results: FixtureRow[] }>(
       (
-        await webSearchTool.run(
+        await tool.run(
           { query: 'q', allowed_domains: ['example.com'], blocked_domains: ['docs.example.com'] },
           ctx(),
         )
@@ -434,36 +511,37 @@ describe('webSearchTool', () => {
       snippet: `Snippet ${index}`,
     }))
     searchResponse(ddgHtml(many))
-    const out = parse<{ results: FixtureRow[] }>(
-      (await webSearchTool.run({ query: 'q' }, ctx())).text,
-    )
+    const tool = createWebSearchTool()
+    const out = parse<{ results: FixtureRow[] }>((await tool.run({ query: 'q' }, ctx())).text)
     expect(out.results).toHaveLength(10)
     expect(out.results[0].title).toBe('Result 0')
   })
 
   it('returns an empty result list when the page has no rows', async () => {
     searchResponse('<html><body><div class="no-results">No results.</div></body></html>')
-    const out = parse<{ results: FixtureRow[] }>(
-      (await webSearchTool.run({ query: 'nothing' }, ctx())).text,
-    )
+    const tool = createWebSearchTool()
+    const out = parse<{ results: FixtureRow[] }>((await tool.run({ query: 'nothing' }, ctx())).text)
     expect(out.results).toEqual([])
   })
 
   it('rejects a non-2xx response instead of returning an empty list', async () => {
     stubFetch(() => new Response('rate limited', { status: 429, statusText: 'Too Many Requests' }))
-    await expect(webSearchTool.run({ query: 'q' }, ctx())).rejects.toThrow(/HTTP 429/)
+    const tool = createWebSearchTool()
+    await expect(tool.run({ query: 'q' }, ctx())).rejects.toThrow(/HTTP 429/)
   })
 
   it('rejects an empty query without touching the network', async () => {
     stubFetch(() => {
       throw new Error('fetch must not run')
     })
-    await expect(webSearchTool.run({ query: '   ' }, ctx())).rejects.toThrow(/non-empty/)
+    const tool = createWebSearchTool()
+    await expect(tool.run({ query: '   ' }, ctx())).rejects.toThrow(/non-empty/)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('registers the WebSearch prompt section order', () => {
-    expect(webSearchTool.name).toBe('WebSearch')
-    expect(webSearchTool.promptOrder).toBe(170)
+    const tool = createWebSearchTool()
+    expect(tool.name).toBe('WebSearch')
+    expect(tool.promptOrder).toBe(170)
   })
 })

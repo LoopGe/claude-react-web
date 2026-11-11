@@ -115,6 +115,21 @@ function isNonPublicIpv6(groups: readonly number[]): boolean {
   if ((groups[0] & 0xffc0) === 0xfe80) return true // fe80::/10 link-local
   if ((groups[0] & 0xff00) === 0xff00) return true // ff00::/8 multicast
   if (groups[0] === 0x2001 && groups[1] === 0x0db8) return true // 2001:db8::/32
+  // IPv6 transition prefixes that encode an IPv4 destination: NAT64's
+  // well-known prefix, 6to4 and Teredo. A URL like http://[64:ff9b::7f00:1]/
+  // reaches 127.0.0.1 on a NAT64 host, so the whole prefix is refused.
+  if (
+    groups[0] === 0x0064 && // 64:ff9b::/96
+    groups[1] === 0xff9b &&
+    groups[2] === 0 &&
+    groups[3] === 0 &&
+    groups[4] === 0 &&
+    groups[5] === 0
+  ) {
+    return true
+  }
+  if (groups[0] === 0x2002) return true // 2002::/16 6to4
+  if (groups[0] === 0x2001 && groups[1] === 0) return true // 2001::/32 Teredo
   // IPv4-mapped (::ffff:a.b.c.d) and deprecated IPv4-compatible addresses:
   // classify the embedded address, not the v6 wrapper.
   const embedded: [number, number, number, number] = [
@@ -305,7 +320,13 @@ export async function fetchWeb(rawUrl: string, opts: FetchWebOptions): Promise<W
       }
       // Re-validate the hop before connecting: scheme, credentials, length
       // and the resolved address are all checked again.
-      const next = await validateWebUrl(new URL(location, current).href)
+      let nextHref: string
+      try {
+        nextHref = new URL(location, current).href
+      } catch {
+        throw new ToolInputError(`invalid redirect location: ${location}`)
+      }
+      const next = await validateWebUrl(nextHref)
       if (next.origin !== origin) {
         throw new ToolInputError(`cross-origin redirect rejected (${origin} -> ${next.origin})`)
       }

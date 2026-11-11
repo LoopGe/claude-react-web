@@ -20,6 +20,8 @@ import { NativeSkillCatalog } from './skills.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
+import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
+import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
@@ -58,6 +60,22 @@ function toolTurn(toolUseId: string): CanonicalEvent[] {
     { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
     { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'Read' } },
     { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: '{"file_path":"package.json"}' } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
+}
+
+/** A WebFetch tool call over a public IP literal, so the tool's own SSRF
+ *  check needs no DNS. */
+function webFetchTurn(toolUseId: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'WebFetch' } },
+    {
+      kind: 'block_delta',
+      index: 0,
+      delta: { type: 'tool_input', json: '{"url":"https://93.184.216.34/page","prompt":"Q"}' },
+    },
     { kind: 'block_end', index: 0 },
     { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
   ]
@@ -657,7 +675,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'Agent', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Agent', 'Skill', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -754,12 +772,12 @@ describe('NativeSession', () => {
     // The parent advertises Agent + the discovered MCP tool; every nested
     // request drops Agent (depth cap 1) but keeps the MCP and Skill tools.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'Agent', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Agent', 'Skill', 'mcp__a__echo',
     ])
     const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
     expect(nestedRequests).toHaveLength(2)
     for (const r of nestedRequests) {
-      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'Skill', 'mcp__a__echo'])
+      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Skill', 'mcp__a__echo'])
     }
 
     // Persistence: sidechain events carry the real parent on disk...
@@ -823,7 +841,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('review') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
 
-    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'Agent', 'Skill'])
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Agent', 'Skill'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
     // The definition's prompt is the nested instruction suffix and its model the
     // default nested model...
@@ -839,6 +857,12 @@ describe('NativeSession', () => {
     expect(requests[0].system).toContain(lsTool.guidance)
     expect(nested.system).toContain(globTool.guidance)
     expect(nested.system).toContain(lsTool.guidance)
+    // The two web tools are per-session factories, so their sections are
+    // registered manually — also at both depths.
+    expect(requests[0].system).toContain(WEB_FETCH_GUIDANCE)
+    expect(requests[0].system).toContain(WEB_SEARCH_GUIDANCE)
+    expect(nested.system).toContain(WEB_FETCH_GUIDANCE)
+    expect(nested.system).toContain(WEB_SEARCH_GUIDANCE)
     await session.destroy()
   })
 
@@ -880,6 +904,60 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('reads the session model at WebFetch call time, not at construction', async () => {
+    const dir = await tempDir('native-web-fetch-model-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const scripts: CanonicalEvent[][] = [webFetchTurn('web-1'), textTurn('DONE')]
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const ev of scripts.shift() ?? []) yield ev
+    }
+    const auxRequests: Array<Record<string, unknown>> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).endsWith('/v1/messages')) {
+          auxRequests.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+          return new Response(JSON.stringify({ content: [{ type: 'text', text: 'AUX' }] }), {
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response('<p>page text</p>', { headers: { 'content-type': 'text/html' } })
+      }),
+    )
+    const session = provider.createSession({
+      id: 'web-model',
+      cwd: dir,
+      model: 'm1',
+      profile: {
+        id: 'p1',
+        name: 'Profile 1',
+        authToken: 'tok',
+        baseUrl: 'https://api.example.test',
+        modelList: [],
+        modelGroups: [],
+        recapModel: '',
+        commitMessageModel: '',
+      },
+      canUseTool: async (_toolName: unknown, input: unknown) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    try {
+      // The switch happens AFTER the tool was constructed: a snapshotted model
+      // would leave the summarization call on m1.
+      await session.setModel?.('m2')
+      const frames: Frame[] = []
+      void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+
+      session.enqueueUserMessage(userMsg('go') as never)
+      await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
+
+      expect(auxRequests).toHaveLength(1)
+      expect(auxRequests[0].model).toBe('m2')
+    } finally {
+      await session.destroy()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('declares Agent support and lists the built-in general-purpose agent', async () => {
     const dir = await tempDir('native-agents-cap-')
     const provider = new NativeProvider({ stateDir: dir })
@@ -891,7 +969,7 @@ describe('NativeSession', () => {
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
     expect((session as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
-      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'Agent', 'Skill'])
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Agent', 'Skill'])
     expect(await session.supportedAgents?.()).toEqual([
       { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
     ])

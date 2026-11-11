@@ -13,6 +13,12 @@ import { fetchWeb } from './web.js'
 export const WEB_FETCH_GUIDANCE =
   'WebFetch fetches a public HTTP(S) page, reduces it to text, and answers the prompt from that text; private addresses, credentials in the URL and cross-origin redirects are refused.'
 
+/** The auxiliary call gets the turn's signal AND its own deadline:
+ *  `callAnthropicMessages` replaces its built-in 30s timeout whenever a
+ *  signal is supplied, so combining both keeps an interrupt able to cancel
+ *  the call while a stalled endpoint still times out. */
+const AUX_TIMEOUT_MS = 30_000
+
 export interface WebFetchDeps {
   /** The session's current model — used when the profile has no recap model. */
   model: () => string
@@ -80,7 +86,7 @@ export function createWebFetchTool(deps: WebFetchDeps): ToolDef<WebFetchInput> {
         temperature: 0.2,
         caller: 'web-fetch',
         target: deps.credentials(),
-        signal: ctx.signal,
+        signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(AUX_TIMEOUT_MS)]),
       })
       const output: WebFetchOutput = {
         bytes: page.bytes,

@@ -39,6 +39,8 @@ import type { ToolDef } from './tools/types.js'
 import { createAgentTool } from './subagent.js'
 import { NativeSkillCatalog } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
+import { createWebFetchTool } from './tools/web-fetch.js'
+import { createWebSearchTool } from './tools/web-search.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
@@ -251,6 +253,14 @@ export class NativeSession implements ProviderSessionHandle {
    *  tool list (nested ones too — a subagent may load a skill) and its
    *  guidance is the provider's static prompt section. */
   private readonly skillTool: ToolDef
+  /** WebFetch reads the LIVE model through its getter at call time (a model
+   *  switch must reach the auxiliary call) and the session's profile
+   *  credentials. Prompt sections are registered by the provider from the
+   *  tools' own guidance constants. */
+  private readonly webFetchTool: ToolDef
+  /** WebSearch is per-session so its `searchCount` counter is scoped to one
+   *  conversation instead of being shared process-wide. */
+  private readonly webSearchTool: ToolDef
   /** The CURRENT discovery/reload in flight. Re-assigned by `reloadSkills`, so
    *  a manual reload supersedes the construction one (and can recover from a
    *  transient construction failure) for every per-turn await. */
@@ -308,6 +318,14 @@ export class NativeSession implements ProviderSessionHandle {
     this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
     this.effortLevel = opts.effortLevel as EffortLevel | undefined
     this.fastMode = opts.fastMode === true
+    // Built after `this.model` is bound: the model getter must observe a live
+    // switch, not the spawn-time value.
+    this.webFetchTool = createWebFetchTool({
+      model: () => this.model,
+      profile: opts.profile,
+      credentials: opts.credentials,
+    })
+    this.webSearchTool = createWebSearchTool()
     // Skills are discovered before the first turn can ask for them. The
     // policy is stored separately from discovery (the catalog resolves state
     // lazily), so configure-before/after-reload makes no difference.
@@ -683,11 +701,18 @@ export class NativeSession implements ProviderSessionHandle {
     // otherwise the model loses delegation exactly when it has no servers to
     // call, and a subagent could never load a skill.
     if (!this.mcp) {
-      this.tools = [...this.opts.tools, this.agentTool, this.skillTool]
+      this.tools = [...this.opts.tools, this.webFetchTool, this.webSearchTool, this.agentTool, this.skillTool]
       return
     }
     const infos = this.mcp.tools()
-    this.tools = [...this.opts.tools, this.agentTool, this.skillTool, ...mcpToolDefs(this.mcp)]
+    this.tools = [
+      ...this.opts.tools,
+      this.webFetchTool,
+      this.webSearchTool,
+      this.agentTool,
+      this.skillTool,
+      ...mcpToolDefs(this.mcp),
+    ]
     const sdkServers = new Set(
       this.mcp.statuses().filter((status) => status.source === 'sdk').map((status) => status.name),
     )
