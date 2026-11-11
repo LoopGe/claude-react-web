@@ -478,9 +478,9 @@ describe('SessionManager', () => {
     expect(claude.taskControlSupported).toBe(true)
 
     const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
-    expect(native.taskControlSupported).toBe(false)
+    expect(native.taskControlSupported).toBe(true)
     await sm.unload(native.id)
-    expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(false)
+    expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(true)
   })
 
   it('create() defaults betas to the 1M-context flag when none is supplied', async () => {

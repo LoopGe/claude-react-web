@@ -131,11 +131,10 @@ export class NativeTaskManager {
 
     return new Promise((resolve) => {
       let finished = false
-      let timer: ReturnType<typeof setTimeout> | undefined
       const finish = (outcome: ToolOutcome) => {
         if (finished) return
         finished = true
-        if (timer !== undefined) clearTimeout(timer)
+        clearTimeout(timer)
         signal.removeEventListener('abort', onAbort)
         record.outputWaiters.delete(finish)
         resolve(outcome)
@@ -143,7 +142,7 @@ export class NativeTaskManager {
       const onAbort = () => finish({ text: 'TaskOutput aborted', isError: true })
       record.outputWaiters.add(finish)
       signal.addEventListener('abort', onAbort, { once: true })
-      timer = setTimeout(
+      const timer = setTimeout(
         () => finish(runningTaskOutcome(taskId)),
         Math.min(options.timeout ?? DEFAULT_OUTPUT_TIMEOUT, MAX_OUTPUT_TIMEOUT),
       )
