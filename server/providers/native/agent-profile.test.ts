@@ -74,6 +74,34 @@ describe('native agent profiles', () => {
     })
   })
 
+  it('clones every definition array so source and profile mutations stay isolated', () => {
+    const def = definition({
+      tools: ['Read'],
+      disallowedTools: ['Bash'],
+      mcpServers: ['workspace'],
+      skills: ['code-review'],
+    })
+    const profile = profileFromDefinition(def)
+
+    def.tools!.push('Grep')
+    def.disallowedTools!.push('Write')
+    def.mcpServers!.push('extra-server')
+    def.skills!.push('testing')
+    expect(profile.tools).toEqual(['Read'])
+    expect(profile.disallowedTools).toEqual(['Bash'])
+    expect(profile.mcpServers).toEqual(['workspace'])
+    expect(profile.skills).toEqual(['code-review'])
+
+    profile.tools!.push('Glob')
+    profile.disallowedTools!.push('Edit')
+    profile.mcpServers!.push('profile-server')
+    profile.skills!.push('profile-skill')
+    expect(def.tools).toEqual(['Read', 'Grep'])
+    expect(def.disallowedTools).toEqual(['Bash', 'Write'])
+    expect(def.mcpServers).toEqual(['workspace', 'extra-server'])
+    expect(def.skills).toEqual(['code-review', 'testing'])
+  })
+
   it('lists every unsupported field and numeric effort by name', () => {
     const def = definition({
       background: true,
