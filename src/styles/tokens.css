@@ -63,6 +63,16 @@
   --ansi-muted: #aab0bb;
   --accent: #7b8cde;
   --accent-strong: #5b6fc7;
+  /* Brand marks for the "Open in …" targets (BrandIcons.tsx fills with these).
+     Official brand hexes below; a mark whose official hex is too dark for the
+     dark surfaces carries a LIGHTENED variant here (same hue, contrast chosen
+     against --bg) while the light theme keeps the official value. Both blocks
+     must stay paired — tokens.brand-vars.test.ts pins the set and the hexes. */
+  --brand-vscode: #007acc;         /* official #007ACC: safe on both themes */
+  --brand-cursor: #ffffff;         /* official #000000: invisible on dark */
+  --brand-zed: #4b80f2;            /* official #084CCF lightened, same hue */
+  --brand-iterm2: #ffffff;         /* official #000000: invisible on dark */
+  --brand-windowsterminal: #cccccc; /* official #4D4D4D → official light gray */
   /* Ink for accent-coloured COPY and glyphs — same contract as the other
      *-text families: >= 4.5:1 against every flat surface, checked by
      status-ink-contrast.test.ts. Where the accent itself already clears it
@@ -399,6 +409,12 @@
   --ansi-muted: #535a66;
   --accent: #4f62c8;
   --accent-strong: #3b4ea8;
+  /* Brand marks — official hexes (see the :root block for provenance). */
+  --brand-vscode: #007acc;
+  --brand-cursor: #000000;
+  --brand-zed: #084ccf;
+  --brand-iterm2: #000000;
+  --brand-windowsterminal: #4d4d4d;
   --on-accent: #ffffff;
   --accent-text: var(--accent-strong);
   --danger: #d93b3b;
