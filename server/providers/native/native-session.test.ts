@@ -35,7 +35,7 @@ import { config, __setConfigForTest } from '../../config.js'
 import { HttpError } from '../../errors.js'
 import { QUESTION_RESULT } from '../../permission-broker.js'
 import type { NativeTaskManager } from './task-manager.js'
-import type { ToolOutcome } from './tools/types.js'
+import type { ToolDef, ToolOutcome } from './tools/types.js'
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
@@ -83,6 +83,19 @@ function toolTurn(toolUseId: string): CanonicalEvent[] {
     { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'Read' } },
     { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: '{"file_path":"package.json"}' } },
     { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
+}
+
+function textAndToolTurn(text: string, toolUseId: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'text' } },
+    { kind: 'block_delta', index: 0, delta: { type: 'text', text } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'block_start', index: 1, block: { type: 'tool_use', id: toolUseId, name: 'Read' } },
+    { kind: 'block_delta', index: 1, delta: { type: 'tool_input', json: '{"file_path":"package.json"}' } },
+    { kind: 'block_end', index: 1 },
     { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
   ]
 }
@@ -308,6 +321,47 @@ interface LogLike {
 
 function logOf(session: unknown): LogLike {
   return (session as { log: LogLike }).log
+}
+
+function runNestedAgent(session: unknown, cwd: string, input: Record<string, unknown>) {
+  const agent = (session as { agentTool: ToolDef }).agentTool
+  return agent.run(input as never, {
+    cwd,
+    signal: new AbortController().signal,
+    toolUseId: 'tu-parent',
+  })
+}
+
+async function nestedPermissionTrace(
+  dir: string,
+  parentMode: string,
+  definition: StoredAgentDefinition,
+) {
+  await writeFile(join(dir, 'package.json'), '{}', 'utf8')
+  const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+  const requests: CapturedRequest[] = []
+  ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+    [toolTurn('nested-read'), textTurn('done')],
+    requests,
+  )
+  const contexts: Array<Record<string, unknown>> = []
+  const session = provider.createSession({
+    id: `nested-${parentMode}-${definition.permissionMode}`,
+    cwd: dir,
+    permissionMode: parentMode,
+    canUseTool: async (_toolName: unknown, input: unknown, context: unknown) => {
+      contexts.push(context as Record<string, unknown>)
+      return { behavior: 'allow', updatedInput: input }
+    },
+  })
+  try {
+    const outcome = await runNestedAgent(session, dir, {
+      description: 'd', prompt: 'p', subagent_type: 'reviewer',
+    })
+    return { contexts, outcome, effective: effectiveSettingsOf(session) }
+  } finally {
+    await session.destroy()
+  }
 }
 
 /** Text blocks carried by persisted user events, in order. */
@@ -888,6 +942,163 @@ describe('NativeSession', () => {
     expect(JSON.stringify(mainHistory)).toContain('NESTED-REPORT')
 
     await session.destroy()
+  })
+
+  it('scopes nested profile tools and Skill view independently of parent overrides', async () => {
+    const dir = await tempDir('native-nested-skills-')
+    await writeProjectSkill(dir, 'demo')
+    await writeProjectSkill(dir, 'other')
+    const definition = agentDefinition({ tools: ['Skill'], skills: ['demo'] })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [skillTurn('nested-skill', 'other'), textTurn('done')],
+      requests,
+    )
+    const session = provider.createSession({
+      id: 'nested-skills',
+      cwd: dir,
+      permissionMode: 'bypassPermissions',
+      providerExtras: { sdkOptions: { skills: 'all' } },
+    })
+    try {
+      await session.supportedCommands?.()
+      await session.applyFlagSettings?.({ skillOverrides: { other: 'on' } })
+      const outcome = await runNestedAgent(session, dir, {
+        description: 'd', prompt: 'p', subagent_type: 'reviewer',
+      })
+
+      expect(outcome).toEqual({ text: 'done' })
+      expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Skill'])
+      expect(requests[0].system).toContain('REVIEW-PROMPT')
+      expect(requests[0].system).toContain('- demo: demo description')
+      expect(requests[0].system).not.toContain('- other')
+      const skillResult = logOf(session).events.find((event) =>
+        event.type === 'user' && event.parent_tool_use_id === 'tu-parent')
+      expect(skillResult?.message?.content?.[0]).toMatchObject({
+        type: 'tool_result',
+        tool_use_id: 'nested-skill',
+        is_error: true,
+      })
+      expect(JSON.stringify(skillResult)).toContain('unknown skill: other')
+      const parentCommands = await session.supportedCommands?.() as Array<{ name: string }>
+      expect(parentCommands.map((command) => command.name)).toContain('other')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('auto-allows a nested bypass profile without widening the parent default mode', async () => {
+    const dir = await tempDir('native-nested-bypass-')
+    const trace = await nestedPermissionTrace(
+      dir,
+      'default',
+      agentDefinition({ permissionMode: 'bypassPermissions' }),
+    )
+
+    expect(trace.outcome).toEqual({ text: 'done' })
+    expect(trace.contexts).toEqual([])
+    expect(trace.effective).toMatchObject({ permissionMode: 'default', agent: null })
+  })
+
+  it('still requests permission for a nested default profile under a bypass parent', async () => {
+    const dir = await tempDir('native-nested-default-')
+    const trace = await nestedPermissionTrace(
+      dir,
+      'bypassPermissions',
+      agentDefinition({ permissionMode: 'default' }),
+    )
+
+    expect(trace.outcome).toEqual({ text: 'done' })
+    expect(trace.contexts).toHaveLength(1)
+    expect(trace.contexts[0]).toMatchObject({ toolUseID: 'nested-read', permissionMode: 'default' })
+    expect(trace.effective).toMatchObject({ permissionMode: 'bypassPermissions', agent: null })
+  })
+
+  it('returns a max-turn nested error with its partial report and paired sidechain history', async () => {
+    const dir = await tempDir('native-nested-max-turns-')
+    const definition = agentDefinition({ tools: ['Read'], maxTurns: 1 })
+    const provider = new NativeProvider({ stateDir: dir, agentStore: agentStoreOf({ reviewer: definition }) })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
+      agentTurn('agent-1', { description: 'd', prompt: 'p', subagent_type: 'reviewer' }),
+      textAndToolTurn('PARTIAL-REPORT', 'nested-read'),
+      textTurn('UNEXPECTED-SECOND-ROUND'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const permissionIds: string[] = []
+    const session = provider.createSession({
+      id: 'nested-max-turns',
+      cwd: dir,
+      canUseTool: async (_toolName: unknown, input: unknown, context: unknown) => {
+        permissionIds.push((context as { toolUseID: string }).toolUseID)
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('delegate') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+      await vi.waitFor(() => expect(logOf(session).events.some((event) => event.type === 'turn/end')).toBe(true))
+
+      const parentResult = frames.find((frame) => frame.type === 'user'
+        && frame.parent_tool_use_id == null
+        && (frame.message.content[0] as { tool_use_id?: string }).tool_use_id === 'agent-1')
+      expect(parentResult?.message.content[0]).toMatchObject({
+        type: 'tool_result',
+        tool_use_id: 'agent-1',
+        is_error: true,
+      })
+      expect(JSON.stringify(parentResult)).toContain('max turns reached (1)')
+      expect(JSON.stringify(parentResult)).toContain('PARTIAL-REPORT')
+      expect(permissionIds).toEqual(['agent-1'])
+
+      const sidechain = logOf(session).events.filter((event) => event.parent_tool_use_id === 'agent-1')
+      const assistantCall = sidechain.find((event) => event.type === 'assistant')
+      const syntheticResult = sidechain.find((event) => event.type === 'user')
+      expect(assistantCall?.message?.content?.[1]).toMatchObject({ type: 'tool_use', id: 'nested-read' })
+      expect(syntheticResult?.message?.content?.[0]).toMatchObject({
+        type: 'tool_result', tool_use_id: 'nested-read', is_error: true,
+      })
+      expect(JSON.stringify(syntheticResult)).toContain('max turns reached (1); tool not executed')
+      expect(requests).toHaveLength(3)
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('forwards nested effort overrides through the real stream and otherwise inherits parent effort', async () => {
+    const dir = await tempDir('native-nested-effort-')
+    const origConfig = { ...config }
+    __setConfigForTest({ authToken: 'test-token', baseUrl: 'https://api.anthropic.com' })
+    const efforts: unknown[] = []
+    streamAnthropicMessagesMock.mockImplementation(async function* (req: { effort?: unknown }) {
+      efforts.push(req.effort)
+      for (const ev of textTurn('done')) yield ev
+    })
+    const scoped = agentDefinition({ name: 'scoped', effort: 'low' })
+    const inherit = agentDefinition({ name: 'inherit' })
+    const provider = new NativeProvider({
+      stateDir: dir,
+      agentStore: agentStoreOf({ scoped, inherit }),
+    })
+    const session = provider.createSession({
+      id: 'nested-effort', cwd: dir, effortLevel: 'high', permissionMode: 'bypassPermissions',
+    })
+    try {
+      await runNestedAgent(session, dir, { description: 'd', prompt: 'p', subagent_type: 'scoped' })
+      await session.applyFlagSettings?.({ effortLevel: 'max' })
+      await runNestedAgent(session, dir, { description: 'd', prompt: 'p', subagent_type: 'inherit' })
+
+      expect(efforts).toEqual(['low', 'max'])
+      expect(effectiveSettingsOf(session)).toMatchObject({ effortLevel: 'max', agent: null })
+    } finally {
+      await session.destroy()
+      streamAnthropicMessagesMock.mockReset()
+      streamAnthropicMessagesMock.mockImplementation(originalStreamAnthropicMessages.fn)
+      __setConfigForTest(origConfig)
+    }
   })
 
   it('applies a main agent preset before the first request and persists its history-only selection', async () => {

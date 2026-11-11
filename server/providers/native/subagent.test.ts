@@ -9,8 +9,12 @@ import { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 import { readTool } from './tools/read.js'
 import { bashTool } from './tools/bash.js'
+import { createSkillTool } from './tools/skill.js'
+import type { NativeSkillCatalog, NativeSkillView } from './skills.js'
+import type { EffortLevel } from './anthropic-stream.js'
 
 type StreamReq = { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }
+type StreamOpts = { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined }
 
 /** One entry per nested API round-trip; captures the request and the opts so
  *  the tests can assert what the nested loop asked for. */
@@ -18,8 +22,8 @@ function scriptedStreamer(scripts: CanonicalEvent[][]) {
   let call = 0
   const streamer = {
     calls: [] as StreamReq[],
-    opts: [] as Array<{ suppressRetryFrames?: boolean } | undefined>,
-    async *streamFor(req: StreamReq, opts?: { suppressRetryFrames?: boolean }) {
+    opts: [] as Array<StreamOpts | undefined>,
+    async *streamFor(req: StreamReq, opts?: StreamOpts) {
       streamer.calls.push({ ...req, messages: structuredClone(req.messages), tools: structuredClone(req.tools) })
       streamer.opts.push(opts)
       for (const ev of scripts[call++] ?? []) yield ev
@@ -65,13 +69,30 @@ const extraTool: ToolDef = {
   async run() { return { text: 'ok' } },
 }
 
+function namedTool(name: string): ToolDef {
+  return { ...noopTool, name, description: `${name} tool.` }
+}
+
+function skillView(policy?: readonly string[] | 'all'): NativeSkillView {
+  return {
+    section: () => '',
+    bodyOf: (name) => ({ text: `${Array.isArray(policy) ? policy.join(',') : policy}: ${name}` }),
+    commands: () => [],
+  }
+}
+
 function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
   return {
     cwd: process.cwd(),
     model: () => 'parent-model',
+    effortLevel: () => 'high',
+    permissionMode: () => 'default',
     system: () => 'PARENT-SYS',
     frameCtx: defaultFrameContext('sess-1'),
     tools: () => [noopTool],
+    mcpToolServers: new Map(),
+    skillView,
+    skillToolFor: (view) => createSkillTool(view as unknown as NativeSkillCatalog),
     tasks: new NativeTaskManager(() => {}),
     streamFor: async function* () { /* replaced by tests */ },
     requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
@@ -152,7 +173,7 @@ describe('createAgentTool', () => {
     expect(req.system.length).toBeGreaterThan('PARENT-SYS\n\n'.length)
     expect((req.tools as Array<{ name: string }>).map((t) => t.name)).toEqual(['Noop'])
     expect(req.model).toBe('parent-model')
-    expect(s.opts[0]).toEqual({ suppressRetryFrames: true })
+    expect(s.opts[0]).toMatchObject({ suppressRetryFrames: true })
   })
 
   it('lets input.model win over the parent model', async () => {
@@ -289,6 +310,133 @@ describe('createAgentTool', () => {
     await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'reviewer', model: 'm3' })
 
     expect(s.calls[0].model).toBe('m3')
+  })
+
+  it('filters the complete nested tool snapshot in allow, deny, MCP ownership order', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')]])
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      tools: () => [
+        namedTool('Agent'),
+        namedTool('Read'),
+        namedTool('Write'),
+        namedTool('Edit'),
+        namedTool('Skill'),
+        namedTool('mcp__a__echo'),
+        namedTool('mcp__b__echo'),
+      ],
+      mcpToolServers: new Map([
+        ['mcp__a__echo', { name: 'a', source: 'sdk' }],
+        ['mcp__b__echo', { name: 'b', source: 'dynamic' }],
+      ]),
+      agentStore: fakeStore({
+        readonly: {
+          name: 'readonly', description: 'Read only', prompt: 'READONLY', enabled: true,
+          tools: ['Agent', 'Read', 'Write', 'Skill', 'mcp__a__echo', 'mcp__b__echo'],
+          disallowedTools: ['Write'],
+          mcpServers: ['a'],
+          permissionMode: 'bypassPermissions',
+        },
+      }),
+    }))
+
+    const outcome = await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'readonly' })
+
+    expect(outcome.isError).toBeUndefined()
+    expect((s.calls[0].tools as Array<{ name: string }>).map((tool) => tool.name))
+      .toEqual(['Read', 'Skill', 'mcp__a__echo'])
+  })
+
+  it('uses profile effort for one nested run and inherits the current parent effort otherwise', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...textBlock(0, 'one'), deltaStop('end_turn')],
+      [startStop, ...textBlock(0, 'two'), deltaStop('end_turn')],
+    ])
+    let parentEffort: EffortLevel = 'high'
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      effortLevel: () => parentEffort,
+      agentStore: fakeStore({
+        scoped: { name: 'scoped', description: 'Scoped', prompt: 'SCOPED', enabled: true, effort: 'low' },
+        inherit: { name: 'inherit', description: 'Inherit', prompt: 'INHERIT', enabled: true },
+      }),
+    }))
+
+    await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'scoped' })
+    parentEffort = 'max'
+    await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'inherit' })
+
+    expect(s.opts[0]).toMatchObject({ suppressRetryFrames: true })
+    expect(s.opts[0]?.effortLevel?.()).toBe('low')
+    expect(s.opts[1]).toMatchObject({ suppressRetryFrames: true })
+    expect(s.opts[1]?.effortLevel?.()).toBe('max')
+  })
+
+  it('snapshots inherited parent permission for the whole nested run', async () => {
+    const s = scriptedStreamer([
+      [
+        startStop,
+        ...toolUseBlock(0, 'one', 'Noop', '{}'),
+        ...toolUseBlock(1, 'two', 'Noop', '{}'),
+        deltaStop('tool_use'),
+      ],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    let parentMode = 'default'
+    const modes: string[] = []
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      permissionMode: () => parentMode,
+      requestPermission: async (_tool, input, _id, _signal, mode = parentMode) => {
+        modes.push(mode)
+        parentMode = 'bypassPermissions'
+        return { allowed: true, input }
+      },
+      agentStore: fakeStore({
+        inherit: { name: 'inherit', description: 'Inherit', prompt: 'INHERIT', enabled: true },
+      }),
+    }))
+
+    await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'inherit' })
+
+    expect(modes).toEqual(['default', 'default'])
+  })
+
+  it('reports a non-natural final round as an error without claiming a tool was blocked', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'PARTIAL'), deltaStop('max_tokens')]])
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      agentStore: fakeStore({
+        capped: { name: 'capped', description: 'Capped', prompt: 'CAPPED', enabled: true, maxTurns: 1 },
+      }),
+    }))
+
+    const outcome = await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'capped' })
+
+    expect(outcome).toEqual({ text: 'max turns reached (1)\n\nPARTIAL', isError: true })
+    expect(outcome.text).not.toContain('tool not executed')
+    expect(s.calls).toHaveLength(1)
+  })
+
+  it('rejects unsupported definition fields before starting a nested stream', async () => {
+    const s = scriptedStreamer([])
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      agentStore: fakeStore({
+        invalid: {
+          name: 'invalid', description: 'Invalid', prompt: 'INVALID', enabled: true,
+          background: true, effort: 3,
+        },
+      }),
+    }))
+
+    const outcome = await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'invalid' })
+
+    expect(outcome.isError).toBe(true)
+    expect(outcome.text).toContain('background')
+    expect(outcome.text).toContain('effort')
+    expect(outcome.text).toContain('Supported fields:')
+    expect(s.calls).toHaveLength(0)
   })
 
   it('rejects an unknown or disabled subagent_type without running', async () => {

@@ -6,6 +6,10 @@ import type { CanonicalEvent } from './canonical.js'
 import type { Frame, FrameContext } from './frames.js'
 import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
+import type { EffortLevel } from './anthropic-stream.js'
+import { profileFromDefinition, type NativeAgentProfile } from './agent-profile.js'
+import { filterToolsForProfile } from './agent-tools.js'
+import type { NativeSkillView } from './skills.js'
 
 /** Everything the Agent tool needs from the session that owns it. All fields
  *  are read at call time (except frameCtx, which is the session's frame
@@ -15,19 +19,36 @@ export interface AgentToolDeps {
   /** LIVE getter: a later `setModel` on the session must move the Agent's
    *  fallback, not leave it at the spawn-time model. */
   model: () => string
-  /** LIVE getter: the subagent prompt plus the CURRENT skills section, so a
-   *  `reloadSkills`/`applyFlagSettings` change reaches the next nested run. */
-  system: () => string
+  /** LIVE getter: an agent without an effort override inherits the parent's
+   *  current effective effort, captured when this nested run starts. */
+  effortLevel: () => EffortLevel | undefined
+  /** LIVE getter: an agent without a permission override inherits the parent's
+   *  current effective mode, captured when this nested run starts. */
+  permissionMode: () => string
+  /** LIVE getter: the subagent prompt plus the scoped Skill section. */
+  system: (skillView: NativeSkillView) => string
   frameCtx: FrameContext
   /** LIVE getter: the session's builtins plus its current MCP/first-party
    *  defs. Read per call so a mid-session MCP change is honoured. */
   tools: () => ToolDef[]
+  /** Tool ownership metadata from the same MCP discovery snapshot. */
+  mcpToolServers: ReadonlyMap<string, { name: string }>
+  /** A scoped view over the parent's shared discovery cache. */
+  skillView(policy?: readonly string[] | 'all'): NativeSkillView
+  /** Nested runs never retain the parent view's stateful Skill tool instance. */
+  skillToolFor(view: NativeSkillView): ToolDef
   tasks: NativeTaskManager
   streamFor(
     req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
-    opts?: { suppressRetryFrames?: boolean },
+    opts?: { suppressRetryFrames?: boolean; effortLevel?: () => EffortLevel | undefined },
   ): AsyncIterable<CanonicalEvent>
-  requestPermission: LoopDeps['requestPermission']
+  requestPermission(
+    toolName: string,
+    input: Record<string, unknown>,
+    toolUseId: string,
+    signal: AbortSignal,
+    permissionMode?: string,
+  ): ReturnType<LoopDeps['requestPermission']>
   /** The session's persist+push path. Parentage comes from the nested frame
    *  context, so this is forwarded unchanged. */
   emit(frame: AgentMessage): void
@@ -92,27 +113,40 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
       }
 
       const requested = typeof input.subagent_type === 'string' ? input.subagent_type.trim() : ''
-      let instruction = DEFAULT_AGENT_INSTRUCTION
-      let defModel: string | undefined
+      let profile: NativeAgentProfile | undefined
       if (requested && requested !== 'general-purpose') {
         const def = deps.agentStore?.get(requested)
         if (!def || !def.enabled) {
           return { text: `unknown subagent_type: ${requested}`, isError: true }
         }
-        instruction = def.prompt
-        defModel = def.model
+        try {
+          profile = profileFromDefinition(def)
+        } catch (err) {
+          return { text: err instanceof Error ? err.message : String(err), isError: true }
+        }
       }
 
-      const nestedSystem = `${deps.system()}\n\n${instruction}`
-      // Depth is capped at one by construction: the subagent never sees the
-      // Agent tool, so it cannot fan out again.
-      const nestedTools = deps.tools().filter((t) => t.name !== 'Agent')
+      const instruction = profile?.instruction ?? DEFAULT_AGENT_INSTRUCTION
+      const skillView = deps.skillView(profile?.skills)
+      const nestedSystem = `${deps.system(skillView)}\n\n${instruction}`
+      // Depth is capped at one by construction. Replace the stateful Skill
+      // instance BEFORE filtering so the scoped view and allow/deny/MCP policy
+      // both apply to the complete current nested snapshot.
+      const nestedTools = filterToolsForProfile(
+        deps.tools()
+          .filter((tool) => tool.name !== 'Agent')
+          .map((tool) => tool.name === 'Skill' ? deps.skillToolFor(skillView) : tool),
+        profile ?? {},
+        deps.mcpToolServers,
+      )
       // The schema declares a string, but a model can still emit a number or
       // blank string. Treat both as absent so the nested run inherits the
       // definition/parent model instead of sending an invalid id to the API.
       const requestedModel =
         typeof input.model === 'string' && input.model.trim() ? input.model : undefined
-      const nestedModel = requestedModel ?? defModel ?? deps.model()
+      const nestedModel = requestedModel ?? profile?.model ?? deps.model()
+      const nestedEffort = profile?.effort ?? deps.effortLevel()
+      const nestedPermissionMode = profile?.permissionMode ?? deps.permissionMode()
       const nestedCtx: FrameContext = { ...deps.frameCtx, parentToolUseId: ctx.toolUseId }
 
       if (ctx.signal.aborted) return { text: 'aborted', isError: true }
@@ -120,14 +154,20 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
       // Observe assistant text for the result; every frame still goes through
       // the session's own emit (parentage is stamped by nestedCtx).
       const assistantTexts: string[] = []
+      let turn: Awaited<ReturnType<typeof runTurn>>
       try {
-        await runTurn(
+        turn = await runTurn(
           {
-            stream: (req) => deps.streamFor(req, { suppressRetryFrames: true }),
+            stream: (req) => deps.streamFor(req, {
+              suppressRetryFrames: true,
+              effortLevel: () => nestedEffort,
+            }),
             tools: nestedTools,
+            maxTurns: profile?.maxTurns,
             tasks: deps.tasks,
             cwd: deps.cwd,
-            requestPermission: deps.requestPermission,
+            requestPermission: (toolName, toolInput, toolUseId, signal) =>
+              deps.requestPermission(toolName, toolInput, toolUseId, signal, nestedPermissionMode),
             emit: (frame) => {
               const f = frame as Frame
               if (f.type === 'assistant') {
@@ -153,10 +193,18 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
       // checked again before the report is handed back as a tool_result.
       if (ctx.signal.aborted) return { text: 'aborted', isError: true }
 
+      let finalReport = ''
       for (let i = assistantTexts.length - 1; i >= 0; i--) {
-        if (assistantTexts[i].trim()) return { text: assistantTexts[i] }
+        if (assistantTexts[i].trim()) {
+          finalReport = assistantTexts[i]
+          break
+        }
       }
-      return { text: '(no output)' }
+      if (turn.isError) {
+        const cutoff = `max turns reached (${turn.numTurns})`
+        return { text: finalReport ? `${cutoff}\n\n${finalReport}` : cutoff, isError: true }
+      }
+      return { text: finalReport || '(no output)' }
     },
   }
 }

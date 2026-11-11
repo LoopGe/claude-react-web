@@ -390,11 +390,19 @@ export class NativeSession implements ProviderSessionHandle {
     this.agentTool = createAgentTool({
       cwd: opts.cwd,
       model: () => this.model,
-      system: () => this.subagentSystem(),
+      effortLevel: () => this.effortLevel,
+      permissionMode: () => this.permissionMode,
+      system: (skillView) => this.subagentSystem(skillView),
       frameCtx: this.ctx,
       tools: () => this.tools,
+      mcpToolServers: this.mcpToolServers,
+      skillView: (policy) => this.skills.view(policy ?? this.baseSkillPolicy),
+      skillToolFor: (view) => this.skillToolFor(view),
       tasks: this.tasks,
-      streamFor: (req) => this.streamFor(req, { suppressRetryFrames: true }),
+      streamFor: (req, streamOpts) => this.streamFor(req, {
+        ...streamOpts,
+        suppressRetryFrames: true,
+      }),
       requestPermission: this.requestPermission,
       emit: (frame) => {
         this.persistFrame(frame)
@@ -913,13 +921,13 @@ export class NativeSession implements ProviderSessionHandle {
     return reload
   }
 
-  /** The nested (Agent) prompt: the subagent system plus the CURRENT skills
-   *  section, read at call time so a reload/override reaches the next nested
-   *  run. The parent system is built per turn in `pumpLoop`. */
-  private subagentSystem(): string {
+  /** The nested (Agent) prompt: the subagent system plus the nested run's
+   *  scoped Skill section. The view reads the shared catalog at call time, so
+   *  a reload reaches the next run without reviving an excluded skill. */
+  private subagentSystem(skillView: ReturnType<NativeSkillCatalog['view']>): string {
     return withSkillsSection(
       this.opts.subagentSystem ?? this.baseSystem,
-      this.skills.view(this.baseSkillPolicy).section(),
+      skillView.section(),
     )
   }
 
