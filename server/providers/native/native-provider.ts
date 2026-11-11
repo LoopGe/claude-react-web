@@ -26,10 +26,12 @@ import { editTool } from './tools/edit.js'
 import { grepTool } from './tools/grep.js'
 import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
+import { webSearchTool } from './tools/web-search.js'
+import { createWebFetchTool, WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import type { ToolDef } from './tools/types.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 
-const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool]
+const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool, webSearchTool]
 
 /** The Agent tool's prompt section. The text is the tool def's own guidance
  *  (one exported constant), so the section and the schema cannot drift. */
@@ -39,6 +41,12 @@ const AGENT_SECTION: PromptSection = { name: 'tool:Agent', order: 80, text: AGEN
  *  BOTH prompts: the Skill tool is still in a subagent's tool list. */
 const SKILL_SECTION: PromptSection = { name: 'tool:Skill', order: 85, text: SKILL_GUIDANCE }
 
+/** WebFetch is a per-session factory (its aux call needs the session's model
+ *  and credentials), so its section is registered from the same guidance
+ *  constant instead of riding the static `TOOLS` loop. WebSearch is static and
+ *  registers through `TOOLS` with order 170. */
+const WEB_FETCH_SECTION: PromptSection = { name: 'tool:WebFetch', order: 160, text: WEB_FETCH_GUIDANCE }
+
 /** Build this session's system prompt (plus any per-session append). The
  *  subagent variant omits the Agent section — see createSession. */
 function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }): string {
@@ -47,6 +55,7 @@ function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: st
   for (const tool of TOOLS) {
     registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
   }
+  registry.register(WEB_FETCH_SECTION)
   if (opts.withAgentSection) registry.register(AGENT_SECTION)
   registry.register(SKILL_SECTION)
   const rendered = registry.render()
@@ -123,6 +132,17 @@ export class NativeProvider implements AgentProvider {
     // The constructor can throw on real paths (corrupt/unsupported log, missing
     // fork log). The queued connect has no owner then, so it must be torn down
     // here or it would run forever and leak its children.
+    const credentials = () => ({
+      baseUrl: opts.profile?.baseUrl ?? config.baseUrl,
+      authToken: opts.profile?.authToken ?? requireAuthToken(),
+    })
+    // WebFetch is per-session: its summarization call runs on the session's
+    // profile credentials and the profile's recap model (or the session model).
+    const webFetchTool = createWebFetchTool({
+      model: () => opts.model ?? '',
+      profile: opts.profile,
+      credentials,
+    })
     try {
       return new NativeSession({
         id: opts.id,
@@ -137,11 +157,8 @@ export class NativeProvider implements AgentProvider {
         effortLevel: opts.effortLevel,
         fastMode: opts.fastMode,
         profile: opts.profile,
-        credentials: () => ({
-          baseUrl: opts.profile?.baseUrl ?? config.baseUrl,
-          authToken: opts.profile?.authToken ?? requireAuthToken(),
-        }),
-        tools: TOOLS,
+        credentials,
+        tools: [...TOOLS, webFetchTool],
         mcp,
         agentStore: this.agentStore,
         skills: sdkOptions?.skills,
