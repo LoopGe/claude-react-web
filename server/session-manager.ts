@@ -4426,13 +4426,17 @@ export class SessionManager {
       s.handle.clearQueuedInput?.()
 
       // Capture the settings to clone into the fresh session BEFORE unloading
-      // X (unload destroys the handle and removes X from the live map).
+      // X (unload destroys the handle and removes X from the live map). A
+      // provider with base/effective persona state supplies the pre-persona
+      // base; its explicit undefined fields must not fall back to SessionInfo,
+      // which exposes effective values. Other providers keep the old settings.
+      const resetBase = s.handle.getResetBaseSettings?.()
       const settings = {
         provider: s.provider,
         cwd: s.cwd,
-        model: s.model,
+        model: resetBase ? resetBase.model : s.model,
         modelGroupId: s.modelGroupId,
-        permissionMode: s.permissionMode,
+        permissionMode: (resetBase ? resetBase.permissionMode : s.permissionMode) as Session['permissionMode'],
         // Plain /clear starts a FRESH conversation, so Y is untitled — the
         // sidebar falls back to the id prefix and the first post-clear message
         // auto-titles it. Carrying X's title over would stick a stale label on
@@ -4442,7 +4446,8 @@ export class SessionManager {
         // suppressed by the seeded summary, so a compacted Y would otherwise
         // stay untitled forever.
         title: opts?.seedText ? s.title : undefined,
-        effortLevel: s.effortLevel,
+        effortLevel: (resetBase ? resetBase.effortLevel : s.effortLevel) as Session['effortLevel'],
+        skills: resetBase?.skills,
         thinking: s.thinking,
         taskBudget: s.taskBudget,
         autoCompactWindow: s.autoCompactWindow,
@@ -4464,7 +4469,7 @@ export class SessionManager {
         skillOverride: s.skillOverride,
         // Carry X's tool-surface profile onto Y the same way (tool surface is
         // spawn-time, so a fresh spawn would lose a configured tool set).
-        toolProfile: s.toolProfile,
+        toolProfile: resetBase ? resetBase.toolProfile : s.toolProfile,
         // Carry X's main-thread persona onto Y for the same reason: /clear
         // (and compact, which shares this path) resets the CONVERSATION, not
         // the session's configuration. Dropping it here would silently hand
@@ -4536,6 +4541,10 @@ export class SessionManager {
         // inherited worktree dir.
         worktree: settings.worktree,
       }) as Options & { provider?: string; modelGroupId?: string; enabledPlugins?: string[]; memory?: unknown; sandbox?: SandboxSetting; parentId?: string }
+      // Carry the base spawn-time skill policy separately from skillOverride.
+      // Only a provider that exposes reset-base state owns this field; an
+      // explicit undefined still takes the ordinary override/default path.
+      if (resetBase) freshOpts.skills = settings.skills
       // Carry the auto-memory intent onto the fresh session (new id —
       // snapshotMeta captures it from here, same as fork).
       freshOpts.memory = settings.memory
@@ -4584,6 +4593,18 @@ export class SessionManager {
         settings.toolProfile,
       )
       const newYId = newY.id
+
+      // A reset base carries its own spawn-time skill policy, which deliberately
+      // outranks the spawn projection of skillOverride. Re-apply that RAM-only
+      // dynamic layer as fork() does, so the override still wins without
+      // replacing the base policy that clearing the override must reveal.
+      if (resetBase && settings.skillOverride && settings.skillOverride.kind !== 'inherit') {
+        try {
+          await this.applyDynamicSkillOverrides(this.requireLive(newYId))
+        } catch (err) {
+          log.warn(`[session ${newYId}] clear: re-applying skillOverride failed:`, err)
+        }
+      }
 
       // fastMode is runtime state re-applied via applyFlagSettings, not an
       // Options field spawn() reads (it only carries forward from an existing

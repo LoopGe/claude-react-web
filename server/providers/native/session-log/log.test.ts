@@ -176,6 +176,65 @@ describe('NativeSessionLog', () => {
     await log.close()
   })
 
+  it('appendDurable preserves an ordinary append that lands during the initial baseline flush', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('pre-existing-pending'))
+    const path = nativeSessionLogPath(stateDir, 's1')
+    let injected = false
+    let selectionWrites = 0
+    const handle = {
+      write: async (chunk: Buffer, offset: number, length: number) => {
+        const bytes = chunk.subarray(offset, offset + length)
+        const text = chunk.toString('utf8')
+        if (!injected && text.includes('"uuid":"pre-existing-pending"') && !text.includes('"type":"session/agent"')) {
+          injected = true
+          // This lands AFTER the initial flush captured its chunk but BEFORE
+          // that write resolves. Its bytes belong to a later queued flush.
+          log.append(userEvent('ordinary-during-initial-flush'))
+        }
+        if (text.includes('"type":"session/agent"')) {
+          selectionWrites++
+          if (selectionWrites > 1) throw new Error('selection failed after initial-flush append')
+          const partial = bytes.subarray(0, Math.min(5, bytes.length))
+          await writeFile(path, partial, { flag: 'a' })
+          return { bytesWritten: partial.length, buffer: chunk }
+        }
+        await writeFile(path, bytes, { flag: 'a' })
+        return { bytesWritten: length, buffer: chunk }
+      },
+      sync: async () => undefined,
+    }
+    ;(log as unknown as { ensureHandle: () => Promise<unknown> }).ensureHandle = async () => handle
+
+    await expect(log.appendDurable({
+      type: 'session/agent',
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })).rejects.toThrow('selection failed after initial-flush append')
+
+    expect(log.events.map((event) => event.type)).toEqual(['user', 'user'])
+    expect(log.events.map((event) => event.seq)).toEqual([0, 1])
+    expect(log.events.map((event) => event.type === 'user' && event.uuid)).toEqual([
+      'pre-existing-pending',
+      'ordinary-during-initial-flush',
+    ])
+    expect(log.events.some((event) => event.type === 'session/agent')).toBe(false)
+
+    await log.flush()
+    const persisted = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(persisted.events.map((event) => event.seq)).toEqual([0, 1])
+    expect(persisted.events.map((event) => event.type === 'user' && event.uuid)).toEqual([
+      'pre-existing-pending',
+      'ordinary-during-initial-flush',
+    ])
+    log.append(userEvent('after-rollback'))
+    await log.flush()
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((event) => event.seq)).toEqual([0, 1, 2])
+    await log.close()
+  })
+
   it('appendDurable preserves an ordinary append that lands between preSize and reservation', async () => {
     const stateDir = await fresh()
     const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })

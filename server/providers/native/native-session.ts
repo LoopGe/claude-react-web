@@ -23,7 +23,7 @@ import { callAnthropicMessages } from '../../anthropic-api.js'
 import { config, type ProviderProfile } from '../../config.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
-import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.js'
+import type { ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
 import { runTurn, type LoopDeps } from './loop.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -593,6 +593,18 @@ export class NativeSession implements ProviderSessionHandle {
       ...(permissionMode !== undefined ? { permissionMode } : {}),
       ...(this.effortLevel !== undefined ? { effortLevel: this.effortLevel } : {}),
       agent: this.hasAgentSelectionEvent ? (this.currentProfile?.name ?? null) : (this.opts.agent ?? null),
+    }
+  }
+
+  getResetBaseSettings(): ProviderResetBaseSettings {
+    return {
+      model: this.baseModel,
+      permissionMode: this.basePermissionMode,
+      effortLevel: this.baseEffortLevel,
+      skills: this.baseSkillPolicy === 'all' || this.baseSkillPolicy === undefined
+        ? this.baseSkillPolicy
+        : [...this.baseSkillPolicy],
+      toolProfile: this.baseToolProfile ? structuredClone(this.baseToolProfile) : undefined,
     }
   }
 

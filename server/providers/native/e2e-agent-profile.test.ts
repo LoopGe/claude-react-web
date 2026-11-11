@@ -376,6 +376,69 @@ describe('native agent profiles end to end through SessionManager', () => {
     })
   }, 30_000)
 
+  it('uses the pre-persona base for a real manager clear while keeping the persona selected', async () => {
+    const { cwd, stateDir } = await makeEnv('sm-native-agent-manager-clear-')
+    await writeProjectSkill(cwd, 'demo')
+    await writeProjectSkill(cwd, 'other')
+    const fx = await makeFixture(stateDir)
+    fx.agentStore.upsert(definition('reviewer', {
+      prompt: 'CLEAR-PERSONA-PROMPT',
+      model: 'persona-model',
+      tools: ['Write'],
+      skills: ['other'],
+      permissionMode: 'bypassPermissions',
+      effort: 'max',
+    }))
+    const id = await createSession(fx, cwd, {
+      permissionMode: 'default',
+      effort: 'high',
+      tools: ['Read', 'Skill'],
+      skills: ['demo'],
+    })
+    await fx.sm.setAgent(id, 'reviewer')
+    await fx.sm.setSkillOverride(id, { kind: 'disabled' })
+    expect(fx.sm.get(id)).toMatchObject({
+      agent: 'reviewer', model: 'persona-model', permissionMode: 'bypassPermissions', effortLevel: 'max',
+    })
+
+    const next = await fx.sm.clear(id)
+    remember(fx.sm, next.id)
+    expect(next.id).not.toBe(id)
+    expect(next).toMatchObject({
+      agent: 'reviewer', model: 'persona-model', permissionMode: 'bypassPermissions', effortLevel: 'max',
+    })
+    expect(await fx.sm.supportedCommands(next.id)).toEqual([])
+    const selection = loadNativeSessionLogSync(stateDir, next.id)!.events
+      .find((event) => event.type === 'session/agent')
+    expect(selection).toMatchObject({
+      name: 'reviewer',
+      definition: {
+        prompt: 'CLEAR-PERSONA-PROMPT', model: 'persona-model', tools: ['Write'], skills: ['other'],
+        permissionMode: 'bypassPermissions', effort: 'max',
+      },
+      base: {
+        model: 'base-model', permissionMode: 'default', effortLevel: 'high',
+        skillPolicy: ['demo'], toolProfile: { tools: ['Read', 'Skill'] },
+      },
+    })
+
+    await fx.sm.setSkillOverride(next.id, undefined)
+    await fx.sm.setAgent(next.id, null)
+    expect(fx.sm.get(next.id)).toMatchObject({
+      model: 'base-model', permissionMode: 'default', effortLevel: 'high',
+    })
+    expect(fx.sm.get(next.id).agent).toBeUndefined()
+    const seen = collect(fx.sm, next.id)
+    fx.scripts.push(textTurn('base restored after manager clear'))
+    await sendAndWait(fx.sm, next.id, seen.frames, 'plain after clear', 1)
+    seen.unsubscribe()
+    expect(fx.requests[0].model).toBe('base-model')
+    expect(fx.requests[0].system).not.toContain('CLEAR-PERSONA-PROMPT')
+    expect(fx.requests[0].system).toContain('- demo: demo description')
+    expect(fx.requests[0].system).not.toContain('other description')
+    expect([...toolNames(fx.requests[0])].sort()).toEqual(['Read', 'Skill'])
+  }, 30_000)
+
   it('keeps a nested read-only profile read-only and asks under nested default despite parent bypass', async () => {
     const { cwd, stateDir } = await makeEnv('sm-native-agent-nested-')
     const fx = await makeFixture(stateDir)

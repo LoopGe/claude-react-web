@@ -255,8 +255,18 @@ export class NativeSessionLog {
    *  genuine write failure. Every non-rejected event appended after the prior
    *  flush is preserved with a fresh contiguous seq on rollback. */
   async appendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
-    await this.flush()
-    this.assertDurableWriterActive()
+    // A resolved flush can still leave pending bytes: its captured chunk may
+    // have excluded an ordinary append that landed while the write was in
+    // flight. Drain until the buffer is quiescent, checking writer ownership
+    // after every await so a close/superseded no-op flush cannot spin here.
+    while (true) {
+      await this.flush()
+      this.assertDurableWriterActive()
+      if (this.pending.length === 0) break
+    }
+    // No await between the quiescence check and this snapshot: every earlier
+    // ordinary event is in the durable baseline. Appends during the async stat
+    // are after the baseline and will be restored by rollback below.
     const preEventCount = this.events.length
     const preSize = (await stat(this.path)).size
     this.assertDurableWriterActive()

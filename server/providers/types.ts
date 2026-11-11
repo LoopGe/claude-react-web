@@ -7,6 +7,7 @@ import type { ProviderProfile } from '../config.js'
 import type { StructuredRunRequest, StructuredRunResult } from '../../shared/structured.js'
 import type { SandboxSetting } from '../../shared/sandbox.js'
 import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './claude/inprocess-hooks.js'
+import type { SessionToolProfile } from '../../shared/tool-profile.js'
 import type { SupplementOutcome } from './steering-format.js'
 
 export type { SupplementOutcome } from './steering-format.js'
@@ -128,6 +129,14 @@ export interface ProviderInterruptReceipt {
   cancelledQueued?: string[]
 }
 
+export interface ProviderResetBaseSettings {
+  model: string
+  permissionMode: string | undefined
+  effortLevel: string | undefined
+  skills: string[] | 'all' | undefined
+  toolProfile: SessionToolProfile | undefined
+}
+
 export interface ProviderSessionHandle {
   readonly provider?: string
   /** False when the provider never replays a top-level user prompt through its
@@ -235,6 +244,11 @@ export interface ProviderSessionHandle {
     effortLevel?: string
     agent: string | null
   }
+  /** Pre-persona values for rebuilding the same base configuration when the
+   *  manager resets the conversation. Every field is present, including an
+   *  explicit undefined: the manager must not substitute effective values.
+   *  Providers without a base/effective split omit this method. */
+  getResetBaseSettings?(): ProviderResetBaseSettings
   supportedModels?(): Promise<unknown>
   supportedCommands?(): Promise<unknown>
   supportedAgents?(): Promise<unknown>
