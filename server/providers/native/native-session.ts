@@ -1278,8 +1278,8 @@ export class NativeSession implements ProviderSessionHandle {
     } catch (err) {
       // The manager's permission contract is local enforcement even when the
       // provider write fails. Apply ONLY the requested base locally, then
-      // rethrow so the manager keeps its requested mode and skips effective
-      // synchronization. appendDurable has already removed the reservation.
+      // rethrow so the manager resynchronizes the ACTUAL next-turn effective
+      // mode (requested base without a persona override, persona otherwise).
       this.basePermissionMode = mode
       this.applyEffectiveProfile()
       throw err

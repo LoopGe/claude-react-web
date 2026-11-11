@@ -252,23 +252,32 @@ export class NativeSessionLog {
   /** Append one control event as an atomic durable reservation. Ordinary
    *  append/flush keeps its crash-recovery semantics; this stricter path is for
    *  selections that must not become visible in memory OR replay after a
-   *  rejected write. Later in-memory events are preserved with fresh seqs. */
+   *  rejected write. Every non-rejected event appended after the prior flush is
+   *  preserved with a fresh contiguous seq on rollback. */
   async appendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
     await this.flush()
     this.assertDurableWriterActive()
+    const preEventCount = this.events.length
     const preSize = (await stat(this.path)).size
     this.assertDurableWriterActive()
-    const reservationIndex = this.events.length
+    let reservation: NativeLogEvent | undefined
     try {
-      const event = this.append(input)
+      reservation = this.append(input)
       await this.flush()
-      return event
+      // writePending deliberately no-ops after takeover/close. A resolved flush
+      // is durable only while this writer still owns the path.
+      this.assertDurableWriterActive()
+      return reservation
     } catch (err) {
-      const later = this.events.splice(reservationIndex)
+      const appended = this.events.splice(preEventCount)
+      this.pending = []
+      // A replacement writer may already have committed newer events. Never
+      // truncate its file; only discard this stale writer's uncommitted state.
+      if (this.superseded) throw err
       try {
-        this.pending = []
         truncateSync(this.path, preSize)
-        for (const event of later.slice(1)) {
+        for (const event of appended) {
+          if (event === reservation) continue
           const { seq: _seq, ...rest } = event
           this.append(rest as NativeEventInput)
         }

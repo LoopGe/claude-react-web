@@ -5357,10 +5357,8 @@ export class SessionManager {
         'permission mode switching',
         'supportsFineGrainedPermissions',
       )
-    let providerSucceeded = false
     try {
       await setSdkMode()(providerMode)
-      providerSucceeded = true
     } catch (err) {
       // The only CLI-side lock that silently bricks the session is plan
       // steering (the broker has no app-side plan enforcement — the model
@@ -5392,7 +5390,7 @@ export class SessionManager {
         }
       }
     }
-    if (providerSucceeded) this.syncEffectiveSettings(s)
+    this.syncEffectiveSettings(s)
     this.persist(s)
     return this.info(s)
   }

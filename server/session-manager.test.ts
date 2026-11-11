@@ -6669,6 +6669,49 @@ describe('SessionManager', () => {
     }
   })
 
+  it('keeps a pinned persona effective after base permission persistence fails and restores that base on clear', async () => {
+    const definition = {
+      name: 'reviewer', description: 'Reviews', prompt: 'PROMPT-ONLY', permissionMode: 'bypassPermissions',
+      enabled: true, createdAt: 1, updatedAt: 1,
+    }
+    const agentStore = {
+      get: (name: string) => name === 'reviewer' ? definition : undefined,
+    } as unknown as AgentDefinitionStore
+    sm = new SessionManager({ store, agentStore })
+    const info = await sm.create({
+      provider: 'native', cwd: TEST_CWD, agent: 'reviewer', permissionMode: 'default',
+    })
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    const log = (live.handle as unknown as { log: NativeSessionLog }).log
+    const original = log.appendDurable.bind(log)
+    log.appendDurable = async () => { throw new Error('base permission write failed') }
+    try {
+      const updated = await sm.setPermissionMode(info.id, 'acceptEdits')
+      expect(updated.permissionMode).toBe('bypassPermissions')
+      expect(sm.get(info.id).permissionMode).toBe('bypassPermissions')
+      expect(store.get(info.id)?.permissionMode).toBe('bypassPermissions')
+      expect(log.events.filter((event) => event.type === 'session/agent')).toHaveLength(1)
+
+      const canUseTool = live.canUseTool as (
+        tool: string,
+        input: unknown,
+        ctx: { signal: AbortSignal; toolUseID: string },
+      ) => Promise<{ behavior: string }>
+      const allowed = await canUseTool(
+        'Write',
+        { file_path: join(TEST_CWD, 'pinned-failure.txt'), content: 'x' },
+        { signal: new AbortController().signal, toolUseID: 'tu-pinned-failure' },
+      )
+      expect(allowed.behavior).toBe('allow')
+    } finally {
+      log.appendDurable = original
+    }
+
+    const cleared = await sm.setAgent(info.id, null)
+    expect(cleared.permissionMode).toBe('acceptEdits')
+    expect(sm.get(info.id).permissionMode).toBe('acceptEdits')
+  })
+
   it('canUseTool short-circuits when permissionMode is bypassPermissions', async () => {
     const info = await sm.create({})
     await sm.setPermissionMode(info.id, 'bypassPermissions')
