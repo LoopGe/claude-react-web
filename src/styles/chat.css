@@ -2371,6 +2371,11 @@ button.chat-empty-env-chip:hover {
   background: var(--bg-elev);
   border-bottom-left-radius: var(--radius-3xs);
 }
+/* Inline-size containers contribute zero intrinsic width, so a tool-bearing
+   bubble needs a definite inline size. Text-only bubbles stay shrink-wrapped. */
+.msg.assistant:has(> .msg-body > .tool-card) {
+  width: 100%;
+}
 .msg.assistant .msg-header {
   color: var(--assistant-header-fg);
   font-weight: 600;

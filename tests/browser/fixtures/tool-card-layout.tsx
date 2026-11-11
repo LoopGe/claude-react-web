@@ -3,6 +3,7 @@
 
 import { createRoot } from 'react-dom/client'
 import { ToolUseBlock } from '../../../src/components/ToolUseBlock'
+import { MessageView } from '../../../src/components/message-list/MessageView'
 import { BackgroundToolProvider } from '../../../src/hooks/useBackgroundTool'
 import { ToolStatusProvider } from '../../../src/hooks/usePlanStatus'
 import type { Block } from '../../../src/types'
@@ -63,9 +64,28 @@ const block = (() => {
 createRoot(document.getElementById('root')!).render(
   <BackgroundToolProvider value={() => { document.body.dataset.backgroundCalled = 'true' }}>
     <ToolStatusProvider value={new Map([[toolUseId, 'running']])}>
-      <div style={{ width: '100%' }}>
-        <ToolUseBlock block={block} />
-      </div>
+      {params.has('bubble') ? (
+        <div className="chat" style={{ width: 400 }}>
+          <div className="virtuoso-item-wrapper">
+            <MessageView
+              msg={{
+                type: 'assistant',
+                parent_tool_use_id: 'Skill_layout',
+                message: { role: 'assistant', content: [block] },
+              }}
+              showMessageHeaders={false}
+              foldExpanded={false}
+              foldSearchHit={false}
+              onToggleFold={() => {}}
+              consumedKey=""
+            />
+          </div>
+        </div>
+      ) : (
+        <div style={{ width: '100%' }}>
+          <ToolUseBlock block={block} />
+        </div>
+      )}
     </ToolStatusProvider>
   </BackgroundToolProvider>,
 )

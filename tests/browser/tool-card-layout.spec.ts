@@ -11,7 +11,7 @@ const HEADER_PARTS = [
   '.tool-copy-btn',
 ] as const
 
-async function openFixture(page: import('@playwright/test').Page, variant?: 'file' | 'edit' | 'write' | 'notebook') {
+async function openFixture(page: import('@playwright/test').Page, variant?: 'file' | 'edit' | 'write' | 'notebook' | 'bubble') {
   const query = variant ? `?${variant}=1` : ''
   await page.goto(`/tests/browser/fixtures/tool-card-layout.html${query}`, { waitUntil: 'domcontentloaded' })
   await expect(page.locator('.tool-card-header')).toBeVisible()
@@ -27,6 +27,29 @@ async function centers(page: import('@playwright/test').Page, selectors: readonl
     }),
   ), selectors)
 }
+
+test('tool-use assistant bubbles give contained cards a definite inline size', async ({ page }) => {
+  await page.setViewportSize({ width: 875, height: 400 })
+  await openFixture(page, 'bubble')
+
+  const geometry = await page.locator('.msg.assistant.subagent').evaluate((message) => {
+    const row = message.parentElement!
+    const body = message.querySelector('.msg-body')!
+    const card = message.querySelector('.tool-card')!
+    const rowStyle = getComputedStyle(row)
+    return {
+      availableWidth: row.clientWidth - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight),
+      messageWidth: message.getBoundingClientRect().width,
+      bodyWidth: body.getBoundingClientRect().width,
+      cardWidth: card.getBoundingClientRect().width,
+      cardClientWidth: card.clientWidth,
+    }
+  })
+
+  expect(geometry.messageWidth).toBeCloseTo(geometry.availableWidth, 0)
+  expect(geometry.cardWidth).toBeCloseTo(geometry.bodyWidth, 0)
+  expect(geometry.cardClientWidth).toBeGreaterThan(300)
+})
 
 test('long shell command shrinks instead of wrapping the header into separate rows', async ({ page }) => {
   await page.setViewportSize({ width: 875, height: 400 })
