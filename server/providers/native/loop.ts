@@ -158,7 +158,14 @@ export async function runTurn(
       }
       const decision = await deps.requestPermission(call.name, call.input, call.id, signal)
       if (!decision.allowed) {
-        results.push({ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: decision.message ?? 'permission denied' }], is_error: true })
+        // The broker resolves AskUserQuestion as a DENIAL carrying the user's
+        // answers — that message IS the tool's output, not a permission error.
+        results.push({
+          type: 'tool_result',
+          tool_use_id: call.id,
+          content: [{ type: 'text', text: decision.message ?? 'permission denied' }],
+          is_error: call.name !== 'AskUserQuestion',
+        })
         continue
       }
       let text: string

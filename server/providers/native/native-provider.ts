@@ -27,13 +27,14 @@ import { grepTool } from './tools/grep.js'
 import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
 import { notebookEditTool } from './tools/notebook-edit.js'
+import { askUserQuestionTool } from './tools/ask-user-question.js'
 import { TODO_WRITE_GUIDANCE } from './tools/todo-write.js'
 import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import type { ToolDef } from './tools/types.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 
-const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool, notebookEditTool]
+const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool, notebookEditTool, askUserQuestionTool]
 
 /** The Agent tool's prompt section. The text is the tool def's own guidance
  *  (one exported constant), so the section and the schema cannot drift. */

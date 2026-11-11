@@ -4,6 +4,7 @@ import { runTurn, type LoopDeps } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, isRetainedThinkingBlock, type Frame } from './frames.js'
 import { readTool } from './tools/read.js'
+import { askUserQuestionTool } from './tools/ask-user-question.js'
 import type { ToolContext, ToolDef } from './tools/types.js'
 
 /** Scripted fake streamer: one entry per API round-trip in the turn. Yields
@@ -129,6 +130,35 @@ describe('runTurn', () => {
     const toolResult = emitted.find((f) => f.type === 'user') as Frame
     expect(toolResult.message.content[0].is_error).toBe(true)
     expect(JSON.stringify(toolResult.message.content[0])).toContain('nope')
+  })
+
+  it('AskUserQuestion denial is the answer payload, not an error', async () => {
+    // The broker's question path resolves AskUserQuestion as a deny whose
+    // `message` carries {note, answers}; the loop must emit it as a normal
+    // tool result or the model would read the user's answer as a failure.
+    const answer = JSON.stringify({ note: 'ok', answers: [{ question: 'q1', answer: 'a' }] })
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'AskUserQuestion', '{"questions":[{"question":"q1","options":[{"label":"a"}]}]}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    await runTurn(
+      baseDeps({
+        stream: s.stream.bind(s),
+        emit: (f) => emitted.push(f as Frame),
+        tools: [askUserQuestionTool],
+        requestPermission: async (_t, input, _id, _signal) => ({ allowed: false, input, message: answer }),
+      }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+    const toolResult = emitted.find((f) => f.type === 'user') as Frame
+    expect(toolResult.message.content[0]).toEqual({
+      type: 'tool_result',
+      tool_use_id: 't1',
+      content: [{ type: 'text', text: answer }],
+      is_error: false,
+    })
   })
 
   it('unknown tool name yields an error tool_result', async () => {
