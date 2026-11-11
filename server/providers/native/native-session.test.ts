@@ -22,6 +22,8 @@ import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
+import { TODO_WRITE_GUIDANCE } from './tools/todo-write.js'
+import { NOTEBOOK_EDIT_GUIDANCE } from './tools/notebook-edit.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
@@ -675,7 +677,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Agent', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Skill', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -772,12 +774,12 @@ describe('NativeSession', () => {
     // The parent advertises Agent + the discovered MCP tool; every nested
     // request drops Agent (depth cap 1) but keeps the MCP and Skill tools.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Agent', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Skill', 'mcp__a__echo',
     ])
     const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
     expect(nestedRequests).toHaveLength(2)
     for (const r of nestedRequests) {
-      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Skill', 'mcp__a__echo'])
+      expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite', 'Skill', 'mcp__a__echo'])
     }
 
     // Persistence: sidechain events carry the real parent on disk...
@@ -841,7 +843,7 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('review') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
 
-    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Agent', 'Skill'])
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Skill'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
     // The definition's prompt is the nested instruction suffix and its model the
     // default nested model...
@@ -863,6 +865,12 @@ describe('NativeSession', () => {
     expect(requests[0].system).toContain(WEB_SEARCH_GUIDANCE)
     expect(nested.system).toContain(WEB_FETCH_GUIDANCE)
     expect(nested.system).toContain(WEB_SEARCH_GUIDANCE)
+    // TodoWrite is also session-owned, and NotebookEdit is static; both prompt
+    // sections must reach parent and nested requests.
+    expect(requests[0].system).toContain(TODO_WRITE_GUIDANCE)
+    expect(requests[0].system).toContain(NOTEBOOK_EDIT_GUIDANCE)
+    expect(nested.system).toContain(TODO_WRITE_GUIDANCE)
+    expect(nested.system).toContain(NOTEBOOK_EDIT_GUIDANCE)
     await session.destroy()
   })
 
@@ -969,7 +977,11 @@ describe('NativeSession', () => {
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
     expect((session as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
-      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Agent', 'Skill'])
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Skill'])
+    const other = provider.createSession({ id: 'agents-cap-other', cwd: dir })
+    expect((session as unknown as { todoWriteTool: unknown }).todoWriteTool)
+      .not.toBe((other as unknown as { todoWriteTool: unknown }).todoWriteTool)
+    await other.destroy()
     expect(await session.supportedAgents?.()).toEqual([
       { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
     ])

@@ -82,14 +82,19 @@ export function createTodoWriteTool(state: { todos: TodoItem[] }): ToolDef<{ tod
       const todos = validateTodos(input.todos)
       const oldTodos = state.todos
       state.todos = todos
-      let text = JSON.stringify({ oldTodos, newTodos: todos })
       // More than one in_progress task is accepted — it is a planning smell,
-      // not a malformed call, so the model gets the new list plus a warning.
+      // not a malformed call, so the model gets the new list plus a warning
+      // inside the same JSON payload as the snapshots.
       const inProgress = todos.filter((todo) => todo.status === 'in_progress').length
-      if (inProgress > 1) {
-        text += `\n\nWarning: ${inProgress} todos are in_progress; keep only one task in progress at a time.`
+      return {
+        text: JSON.stringify({
+          oldTodos,
+          newTodos: todos,
+          ...(inProgress > 1
+            ? { warning: `${inProgress} todos are in_progress; keep only one task in progress at a time.` }
+            : {}),
+        }),
       }
-      return { text }
     },
   }
 }

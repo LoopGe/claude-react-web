@@ -18,12 +18,7 @@ function parse<T>(text: string): T {
 interface TodoWriteOutput {
   oldTodos: TodoItem[]
   newTodos: TodoItem[]
-}
-
-/** The warning, when present, is appended after a blank line; the first
- *  segment is always the JSON payload. */
-function todoOutput(text: string): TodoWriteOutput {
-  return parse<TodoWriteOutput>(text.split('\n\n')[0])
+  warning?: string
 }
 
 const todo = (content: string, status: TodoItem['status'] = 'pending', activeForm = `Doing ${content}`): TodoItem =>
@@ -36,10 +31,10 @@ describe('createTodoWriteTool', () => {
       { todos: [todo('first', 'completed'), todo('second', 'in_progress')] },
       ctx(process.cwd()),
     )
-    const out = todoOutput(result.text)
+    const out = parse<TodoWriteOutput>(result.text)
     expect(out.oldTodos).toEqual([todo('first')])
     expect(out.newTodos).toEqual([todo('first', 'completed'), todo('second', 'in_progress')])
-    expect(result.text).not.toContain('Warning')
+    expect(out.warning).toBeUndefined()
   })
 
   it('rejects empty and duplicate content', async () => {
@@ -50,21 +45,22 @@ describe('createTodoWriteTool', () => {
       .rejects.toThrow('duplicate todo content: same')
   })
 
-  it('accepts multiple in_progress items with a warning appended to the result', async () => {
+  it('accepts multiple in_progress items with a warning inside the JSON result', async () => {
     const tool = createTodoWriteTool({ todos: [] })
     const todos = [todo('a', 'in_progress'), todo('b', 'in_progress')]
     const result = await tool.run({ todos }, ctx(process.cwd()))
-    // Not a hard rejection: the new list is returned intact…
-    expect(todoOutput(result.text).newTodos).toEqual(todos)
-    // …and a warning about the planning smell is appended.
-    expect(result.text).toContain('Warning: 2 todos are in_progress')
+    // Not a hard rejection: the new list is returned intact, and the complete
+    // result remains JSON-parseable when the planning warning fires.
+    const out = parse<TodoWriteOutput>(result.text)
+    expect(out.newTodos).toEqual(todos)
+    expect(out.warning).toBe('2 todos are in_progress; keep only one task in progress at a time.')
   })
 
   it('keeps state per session — two tool instances do not share the list', async () => {
     const a = createTodoWriteTool({ todos: [] })
     const b = createTodoWriteTool({ todos: [] })
     await a.run({ todos: [todo('only in a')] }, ctx(process.cwd()))
-    const out = todoOutput((await b.run({ todos: [todo('only in b')] }, ctx(process.cwd()))).text)
+    const out = parse<TodoWriteOutput>((await b.run({ todos: [todo('only in b')] }, ctx(process.cwd()))).text)
     expect(out.oldTodos).toEqual([])
     expect(out.newTodos).toEqual([todo('only in b')])
   })
@@ -211,5 +207,17 @@ describe('notebookEditTool', () => {
       { notebook_path: 'nb.ipynb', cell_id: 'cell-a', new_source: 'x' },
       ctx(dir),
     )).rejects.toThrow('not a valid notebook JSON')
+  })
+
+  it('reports the raw type when replacing a raw cell', async () => {
+    const cwd = await writeNotebook([
+      { cell_type: 'raw', id: 'raw-cell', metadata: {}, source: ['raw text\n'] },
+    ])
+    const out = parse<NotebookEditOutput>((await notebookEditTool.run(
+      { notebook_path: 'nb.ipynb', cell_id: 'raw-cell', new_source: 'updated' },
+      ctx(cwd),
+    )).text)
+    expect(out.cell_type).toBe('raw')
+    expect(cellSource((await readNotebook(cwd)).cells[0])).toBe('updated')
   })
 })

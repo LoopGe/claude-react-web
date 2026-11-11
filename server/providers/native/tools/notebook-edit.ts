@@ -9,14 +9,15 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { resolveAgainstCwd } from './read.js'
 import { statError, ToolInputError, type ToolDef } from './types.js'
 
-export type NotebookCellType = 'code' | 'markdown'
+export type NotebookCellType = 'code' | 'markdown' | 'raw'
+export type NotebookInsertCellType = Exclude<NotebookCellType, 'raw'>
 export type NotebookEditMode = 'replace' | 'insert' | 'delete'
 
 export type NotebookEditInput = {
   notebook_path: string
   cell_id?: string
   new_source: string
-  cell_type?: NotebookCellType
+  cell_type?: NotebookInsertCellType
   edit_mode?: NotebookEditMode
 }
 
@@ -46,7 +47,7 @@ interface NotebookEditOutput {
 }
 
 const EDIT_MODES: readonly NotebookEditMode[] = ['replace', 'insert', 'delete']
-const CELL_TYPES: readonly NotebookCellType[] = ['code', 'markdown']
+const CELL_TYPES: readonly NotebookInsertCellType[] = ['code', 'markdown']
 
 /** The NotebookEdit prompt-section guidance (registered by the provider's
  *  static `TOOLS` loop through `promptOrder`). */
@@ -85,7 +86,7 @@ function cellIndex(cells: NotebookCell[], cellId: string | undefined, mode: Note
   return index
 }
 
-function newCell(type: NotebookCellType, text: string): NotebookCell {
+function newCell(type: NotebookInsertCellType, text: string): NotebookCell {
   return {
     cell_type: type,
     id: randomUUID().replace(/-/g, '').slice(0, 8),
@@ -160,7 +161,7 @@ export const notebookEditTool: ToolDef<NotebookEditInput> = {
       // anchor (cellIndex returns the anchor's index).
       const anchored = input.cell_id !== undefined && input.cell_id !== ''
       const index = cellIndex(cells, input.cell_id, 'insert')
-      const type = input.cell_type as NotebookCellType
+      const type = input.cell_type as NotebookInsertCellType
       const cell = newCell(type, input.new_source)
       cells.splice(anchored ? index + 1 : 0, 0, cell)
       output = {
