@@ -116,12 +116,13 @@ function isNonPublicIpv6(groups: readonly number[]): boolean {
   if ((groups[0] & 0xff00) === 0xff00) return true // ff00::/8 multicast
   if (groups[0] === 0x2001 && groups[1] === 0x0db8) return true // 2001:db8::/32
   // IPv6 transition prefixes that encode an IPv4 destination: NAT64's
-  // well-known prefix, 6to4 and Teredo. A URL like http://[64:ff9b::7f00:1]/
-  // reaches 127.0.0.1 on a NAT64 host, so the whole prefix is refused.
+  // well-known prefix AND its RFC 8215 local-use prefix, 6to4 and Teredo.
+  // A URL like http://[64:ff9b::7f00:1]/ or http://[64:ff9b:1::7f00:1]/
+  // reaches 127.0.0.1 on a NAT64 host, so both prefixes are refused.
   if (
-    groups[0] === 0x0064 && // 64:ff9b::/96
+    groups[0] === 0x0064 && // 64:ff9b::/96 and 64:ff9b:1::/48
     groups[1] === 0xff9b &&
-    groups[2] === 0 &&
+    (groups[2] === 0 || groups[2] === 1) &&
     groups[3] === 0 &&
     groups[4] === 0 &&
     groups[5] === 0

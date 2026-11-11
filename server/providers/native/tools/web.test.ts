@@ -148,10 +148,10 @@ describe('isNonPublicIp', () => {
   })
 
   it('blocks IPv4-encoding transition prefixes (NAT64, 6to4, Teredo)', () => {
-    for (const ip of ['64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe', '2002:7f00:1::', '2002:a9fe:a9fe::1', '2001::1', '2001:0:4136:e378:8000:63bf:3fff:fdd2']) {
+    for (const ip of ['64:ff9b::7f00:1', '64:ff9b:1::7f00:1', '64:ff9b:1::1', '2002:7f00:1::', '2002:a9fe:a9fe::1', '2001::1', '2001:0:4136:e378:8000:63bf:3fff:fdd2']) {
       expect(isNonPublicIp(ip), ip).toBe(true)
     }
-    for (const ip of ['64:ff9b:1::1', '2606:4700:4700::1111', '2001:4860:4860::8888']) {
+    for (const ip of ['2606:4700:4700::1111', '2001:4860:4860::8888']) {
       expect(isNonPublicIp(ip), ip).toBe(false)
     }
   })
