@@ -41,6 +41,7 @@ import { createAgentTool } from './subagent.js'
 import { NativeTaskManager } from './task-manager.js'
 import { NativeSkillCatalog } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
+import { createTaskOutputTool } from './tools/task-output.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
 import { createWebSearchTool } from './tools/web-search.js'
 import { createTodoWriteTool } from './tools/todo-write.js'
@@ -257,6 +258,8 @@ export class NativeSession implements ProviderSessionHandle {
    *  its live getters keep tracking `model` and the rebuilt `tools` list; it
    *  is appended in `rebuildTools` alongside the builtins. */
   private readonly agentTool: ToolDef
+  /** Reads this session's detached Bash/Agent outcomes through the shared manager. */
+  private readonly taskOutputTool: ToolDef
   /** Local SKILL.md catalog. Discovery is kicked off at construction and
    *  awaited per turn, the same shape as MCP's `whenReady`. */
   private readonly skills: NativeSkillCatalog
@@ -349,6 +352,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.skillTool = createSkillTool(this.skills)
     this.skillsReady = this.startSkillReload()
     this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
+    this.taskOutputTool = createTaskOutputTool(this.tasks)
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
     // land in the transcript with their real parent. Built after `ctx` exists.
@@ -732,6 +736,7 @@ export class NativeSession implements ProviderSessionHandle {
         this.webSearchTool,
         this.todoWriteTool,
         this.agentTool,
+        this.taskOutputTool,
         this.skillTool,
       ]
       return
@@ -743,6 +748,7 @@ export class NativeSession implements ProviderSessionHandle {
       this.webSearchTool,
       this.todoWriteTool,
       this.agentTool,
+      this.taskOutputTool,
       this.skillTool,
       ...mcpToolDefs(this.mcp),
     ]

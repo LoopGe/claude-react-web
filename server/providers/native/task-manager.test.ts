@@ -1,5 +1,5 @@
 // server/providers/native/task-manager.test.ts
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Frame } from './frames.js'
 import { NativeTaskManager, type NativeTaskMetadata } from './task-manager.js'
 import type { ToolOutcome } from './tools/types.js'
@@ -282,6 +282,171 @@ describe('NativeTaskManager', () => {
     await flush()
 
     expect(notifications(frames)[0]).toMatchObject({ status: 'failed', result: 'worker crashed' })
+  })
+
+  it('returns an error for an unknown output task id', async () => {
+    const { manager } = setup()
+
+    await expect(manager.output('missing', {}, new AbortController().signal)).resolves.toMatchObject({
+      text: expect.stringMatching(/unknown or expired/i),
+      isError: true,
+    })
+  })
+
+  it('reads running and terminal outcomes without blocking', async () => {
+    const { manager } = setup()
+    const running = deferred<ToolOutcome>()
+    const completed = deferred<ToolOutcome>()
+    const failed = deferred<ToolOutcome>()
+    const waits = [
+      manager.runForeground(metadata('tu-running'), () => running.promise, new AbortController().signal),
+      manager.runForeground(metadata('tu-read-completed'), () => completed.promise, new AbortController().signal),
+      manager.runForeground(metadata('tu-read-failed'), () => failed.promise, new AbortController().signal),
+    ]
+    manager.background()
+    await Promise.all(waits)
+
+    await expect(manager.output('tu-running', {}, new AbortController().signal)).resolves.toEqual({
+      text: 'Task tu-running is still running.',
+      isError: false,
+    })
+    completed.resolve({ text: 'completed output' })
+    failed.resolve({ text: 'failed output', isError: true })
+    await flush()
+    await expect(manager.output('tu-read-completed', {}, new AbortController().signal)).resolves.toEqual({
+      text: 'Task tu-read-completed completed.\ncompleted output',
+      isError: false,
+    })
+    await expect(manager.output('tu-read-failed', {}, new AbortController().signal)).resolves.toEqual({
+      text: 'Task tu-read-failed failed.\nfailed output',
+      isError: true,
+    })
+
+    running.resolve({ text: 'eventually done' })
+    await flush()
+  })
+
+  it('resolves a blocking output read with the terminal outcome', async () => {
+    const { manager } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-blocking'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-blocking')
+    await waiting
+
+    const reading = manager.output('tu-blocking', { block: true }, new AbortController().signal)
+    execution.resolve({ text: 'blocking final output' })
+
+    await expect(reading).resolves.toEqual({
+      text: 'Task tu-blocking completed.\nblocking final output',
+      isError: false,
+    })
+  })
+
+  it('times out as a non-error running outcome without changing task state', async () => {
+    vi.useFakeTimers()
+    try {
+      const { manager, frames } = setup()
+      const execution = deferred<ToolOutcome>()
+      const waiting = manager.runForeground(metadata('tu-timeout'), () => execution.promise, new AbortController().signal)
+      manager.background('tu-timeout')
+      await waiting
+
+      let settled = false
+      const reading = manager.output('tu-timeout', { block: true, timeout: 25 }, new AbortController().signal)
+        .then((outcome) => { settled = true; return outcome })
+      await vi.advanceTimersByTimeAsync(24)
+      expect(settled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+
+      await expect(reading).resolves.toEqual({
+        text: 'Task tu-timeout is still running.',
+        isError: false,
+      })
+      await expect(manager.output('tu-timeout', {}, new AbortController().signal)).resolves.toMatchObject({
+        text: expect.stringContaining('still running'),
+        isError: false,
+      })
+      expect(notifications(frames)).toEqual([])
+      expect(vi.getTimerCount()).toBe(0)
+
+      execution.resolve({ text: 'completed after timeout' })
+      await flush()
+      expect(notifications(frames)[0]).toMatchObject({ status: 'completed', result: 'completed after timeout' })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('aborts only the blocking output read and leaves the task running', async () => {
+    const { manager } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-output-abort'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-output-abort')
+    await waiting
+    const caller = new AbortController()
+
+    const reading = manager.output('tu-output-abort', { block: true }, caller.signal)
+    caller.abort()
+
+    await expect(reading).resolves.toEqual({ text: 'TaskOutput aborted', isError: true })
+    await expect(manager.output('tu-output-abort', {}, new AbortController().signal)).resolves.toMatchObject({
+      text: expect.stringContaining('still running'),
+      isError: false,
+    })
+    execution.resolve({ text: 'survived output abort' })
+    await flush()
+  })
+
+  it('returns stopped status and output produced before the stop', async () => {
+    const { manager } = setup()
+    const execution = deferred<ToolOutcome>()
+    const waiting = manager.runForeground(metadata('tu-stopped-output'), () => execution.promise, new AbortController().signal)
+    manager.background('tu-stopped-output')
+    await waiting
+
+    const stopping = manager.stop('tu-stopped-output')
+    execution.resolve({ text: 'partial stopped output', isError: true })
+    await stopping
+
+    await expect(manager.output('tu-stopped-output', {}, new AbortController().signal)).resolves.toEqual({
+      text: 'Task tu-stopped-output stopped.\npartial stopped output',
+      isError: false,
+    })
+  })
+
+  it('evicts the oldest of 51 terminal outputs while an older active task survives', async () => {
+    const { manager } = setup()
+    const active = deferred<ToolOutcome>()
+    const executions = Array.from({ length: 51 }, () => deferred<ToolOutcome>())
+    const waits = [
+      manager.runForeground(metadata('tu-active-survivor'), () => active.promise, new AbortController().signal),
+      ...executions.map((execution, index) => manager.runForeground(
+        metadata(`tu-terminal-${index}`),
+        () => execution.promise,
+        new AbortController().signal,
+      )),
+    ]
+    manager.background()
+    await Promise.all(waits)
+
+    for (const execution of executions) execution.resolve({ text: 'terminal output' })
+    await flush()
+
+    await expect(manager.output('tu-terminal-0', {}, new AbortController().signal)).resolves.toMatchObject({
+      text: expect.stringMatching(/unknown or expired/i),
+      isError: true,
+    })
+    await expect(manager.output('tu-terminal-1', {}, new AbortController().signal)).resolves.toMatchObject({
+      text: expect.stringContaining('completed'),
+      isError: false,
+    })
+    await expect(manager.output('tu-active-survivor', {}, new AbortController().signal)).resolves.toEqual({
+      text: 'Task tu-active-survivor is still running.',
+      isError: false,
+    })
+
+    active.resolve({ text: 'active completed' })
+    await flush()
   })
 
   it('destroy aborts all active records, awaits them, and emits only detached terminal frames', async () => {

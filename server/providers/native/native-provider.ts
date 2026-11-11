@@ -16,6 +16,7 @@ import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './p
 import { NativeSession } from './native-session.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
+import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import { deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
@@ -40,6 +41,9 @@ const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, glo
 /** The Agent tool's prompt section. The text is the tool def's own guidance
  *  (one exported constant), so the section and the schema cannot drift. */
 const AGENT_SECTION: PromptSection = { name: 'tool:Agent', order: 80, text: AGENT_GUIDANCE }
+
+/** TaskOutput is available to parent and nested loops through the shared manager. */
+const TASK_OUTPUT_SECTION: PromptSection = { name: 'tool:TaskOutput', order: 82, text: TASK_OUTPUT_GUIDANCE }
 
 /** The Skill tool's prompt section, same single-source rule. Registered in
  *  BOTH prompts: the Skill tool is still in a subagent's tool list. */
@@ -69,6 +73,7 @@ function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: st
   registry.register(WEB_SEARCH_SECTION)
   registry.register(TODO_WRITE_SECTION)
   if (opts.withAgentSection) registry.register(AGENT_SECTION)
+  registry.register(TASK_OUTPUT_SECTION)
   registry.register(SKILL_SECTION)
   const rendered = registry.render()
   return opts.systemPromptAppend ? `${rendered}\n\n${opts.systemPromptAppend}` : rendered

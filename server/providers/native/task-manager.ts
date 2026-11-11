@@ -22,6 +22,7 @@ interface TaskRecord {
   stopRequested: boolean
   outcome?: ToolOutcome
   status?: TerminalStatus
+  outputWaiters: Set<(outcome: ToolOutcome) => void>
   removeParentListener(): void
   resolveLoop(outcome: ToolOutcome): void
   settled: Promise<void>
@@ -30,6 +31,17 @@ interface TaskRecord {
 function errorOutcome(error: unknown): ToolOutcome {
   return { text: error instanceof Error ? error.message : String(error), isError: true }
 }
+
+function unknownTaskOutcome(taskId: string): ToolOutcome {
+  return { text: `Unknown or expired task ${taskId}`, isError: true }
+}
+
+function runningTaskOutcome(taskId: string): ToolOutcome {
+  return { text: `Task ${taskId} is still running.`, isError: false }
+}
+
+const DEFAULT_OUTPUT_TIMEOUT = 30_000
+const MAX_OUTPUT_TIMEOUT = 600_000
 
 export class NativeTaskManager {
   private readonly records = new Map<string, TaskRecord>()
@@ -56,6 +68,7 @@ export class NativeTaskManager {
       startedAt: Date.now(),
       state: 'foreground',
       stopRequested: false,
+      outputWaiters: new Set(),
       removeParentListener: () => parentSignal.removeEventListener('abort', onParentAbort),
       resolveLoop,
       settled: Promise.resolve(),
@@ -78,6 +91,7 @@ export class NativeTaskManager {
       record.status = record.stopRequested ? 'stopped' : outcome.isError ? 'failed' : 'completed'
       const wasForeground = record.state === 'foreground'
       record.state = 'terminal'
+      this.resolveOutputWaiters(record, this.terminalOutcome(record))
       if (wasForeground) {
         record.resolveLoop(outcome)
       } else {
@@ -104,6 +118,38 @@ export class NativeTaskManager {
     return detached
   }
 
+  output(
+    taskId: string,
+    options: { block?: boolean; timeout?: number },
+    signal: AbortSignal,
+  ): Promise<ToolOutcome> {
+    const record = this.records.get(taskId)
+    if (!record) return Promise.resolve(unknownTaskOutcome(taskId))
+    if (record.state === 'terminal') return Promise.resolve(this.terminalOutcome(record))
+    if (options.block !== true) return Promise.resolve(runningTaskOutcome(taskId))
+    if (signal.aborted) return Promise.resolve({ text: 'TaskOutput aborted', isError: true })
+
+    return new Promise((resolve) => {
+      let finished = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (outcome: ToolOutcome) => {
+        if (finished) return
+        finished = true
+        if (timer !== undefined) clearTimeout(timer)
+        signal.removeEventListener('abort', onAbort)
+        record.outputWaiters.delete(finish)
+        resolve(outcome)
+      }
+      const onAbort = () => finish({ text: 'TaskOutput aborted', isError: true })
+      record.outputWaiters.add(finish)
+      signal.addEventListener('abort', onAbort, { once: true })
+      timer = setTimeout(
+        () => finish(runningTaskOutcome(taskId)),
+        Math.min(options.timeout ?? DEFAULT_OUTPUT_TIMEOUT, MAX_OUTPUT_TIMEOUT),
+      )
+    })
+  }
+
   async stop(taskId: string): Promise<void> {
     const record = this.records.get(taskId)
     if (!record) throw new Error(`Unknown task ${taskId}`)
@@ -120,6 +166,17 @@ export class NativeTaskManager {
       record.controller.abort()
     }
     await Promise.all(active.map((record) => record.settled))
+  }
+
+  private terminalOutcome(record: TaskRecord): ToolOutcome {
+    return {
+      text: `Task ${record.metadata.toolUseId} ${record.status!}.\n${record.outcome!.text}`,
+      isError: record.status === 'failed',
+    }
+  }
+
+  private resolveOutputWaiters(record: TaskRecord, outcome: ToolOutcome): void {
+    for (const waiter of [...record.outputWaiters]) waiter(outcome)
   }
 
   private detach(record: TaskRecord | undefined): boolean {
@@ -150,6 +207,7 @@ export class NativeTaskManager {
     for (const [taskId, record] of this.records) {
       if (terminals <= MAX_TERMINAL_TASKS) break
       if (record.state === 'terminal') {
+        this.resolveOutputWaiters(record, unknownTaskOutcome(taskId))
         this.records.delete(taskId)
         terminals--
       }
