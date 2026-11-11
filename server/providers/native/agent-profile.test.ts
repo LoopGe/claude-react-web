@@ -74,7 +74,7 @@ describe('native agent profiles', () => {
     })
   })
 
-  it('clones every definition array so source and profile mutations stay isolated', () => {
+  it('keeps profile arrays unchanged when source definition arrays mutate', () => {
     const def = definition({
       tools: ['Read'],
       disallowedTools: ['Bash'],
@@ -87,19 +87,45 @@ describe('native agent profiles', () => {
     def.disallowedTools!.push('Write')
     def.mcpServers!.push('extra-server')
     def.skills!.push('testing')
-    expect(profile.tools).toEqual(['Read'])
-    expect(profile.disallowedTools).toEqual(['Bash'])
-    expect(profile.mcpServers).toEqual(['workspace'])
-    expect(profile.skills).toEqual(['code-review'])
+
+    expect({
+      tools: profile.tools,
+      disallowedTools: profile.disallowedTools,
+      mcpServers: profile.mcpServers,
+      skills: profile.skills,
+    }).toEqual({
+      tools: ['Read'],
+      disallowedTools: ['Bash'],
+      mcpServers: ['workspace'],
+      skills: ['code-review'],
+    })
+  })
+
+  it('keeps source definition arrays unchanged when profile arrays mutate', () => {
+    const def = definition({
+      tools: ['Read'],
+      disallowedTools: ['Bash'],
+      mcpServers: ['workspace'],
+      skills: ['code-review'],
+    })
+    const profile = profileFromDefinition(def)
 
     profile.tools!.push('Glob')
     profile.disallowedTools!.push('Edit')
     profile.mcpServers!.push('profile-server')
     profile.skills!.push('profile-skill')
-    expect(def.tools).toEqual(['Read', 'Grep'])
-    expect(def.disallowedTools).toEqual(['Bash', 'Write'])
-    expect(def.mcpServers).toEqual(['workspace', 'extra-server'])
-    expect(def.skills).toEqual(['code-review', 'testing'])
+
+    expect({
+      tools: def.tools,
+      disallowedTools: def.disallowedTools,
+      mcpServers: def.mcpServers,
+      skills: def.skills,
+    }).toEqual({
+      tools: ['Read'],
+      disallowedTools: ['Bash'],
+      mcpServers: ['workspace'],
+      skills: ['code-review'],
+    })
   })
 
   it('lists every unsupported field and numeric effort by name', () => {
