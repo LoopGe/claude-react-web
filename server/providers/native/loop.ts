@@ -2,11 +2,13 @@
 import type { AgentMessage } from '../../agent-message.js'
 import { assistantFrame, isRetainedThinkingBlock, resultFrame, streamEventFrame, toolResultFrame, type ContentBlock, type FrameContext, type Usage } from './frames.js'
 import type { CanonicalEvent, CanonicalUsagePartial } from './canonical.js'
+import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 
 export interface LoopDeps {
   stream(req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }): AsyncIterable<CanonicalEvent>
   tools: ToolDef[]
+  tasks: NativeTaskManager
   /** The session's working directory; every ToolContext is built from it. */
   cwd: string
   /** `questionResult` is the broker's internal marker for an AskUserQuestion
@@ -177,7 +179,17 @@ export async function runTurn(
       let text: string
       let runFailed = false
       try {
-        const outcome = await tool.run(decision.input as never, { cwd: deps.cwd, signal, toolUseId: call.id })
+        const execute = (taskSignal: AbortSignal) =>
+          tool.run(decision.input as never, { cwd: deps.cwd, signal: taskSignal, toolUseId: call.id })
+        const backgroundable = tool.backgroundable
+        const outcome = backgroundable
+          ? await deps.tasks.runForeground({
+              toolUseId: call.id,
+              taskType: backgroundable.taskType,
+              description: backgroundable.describe(decision.input),
+              subagentType: backgroundable.subagentType?.(decision.input),
+            }, execute, signal, ctx.parentToolUseId ?? undefined)
+          : await execute(signal)
         text = outcome.text
         runFailed = outcome.isError ?? false
       } catch (err) {

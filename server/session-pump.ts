@@ -188,6 +188,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
     summary?: unknown
     last_tool_name?: unknown
     status?: unknown
+    result?: unknown
     reason?: unknown
     resource_links?: unknown
     receivedAt?: unknown
@@ -290,6 +291,7 @@ export function applyTaskEvent(session: Session, msg: SDKMessage): void {
       description: str(raw.description) ?? rec.description,
       runId: nextRunId,
       status,
+      result: str(raw.result) ?? rec.result,
       // `summary` is a COMPLETION note, not live progress, so it is not folded
       // into progressSummary — that slot is exclusively task_progress.summary
       // (see shared/tasks.ts). For a shell task the CLI echoes the task's own

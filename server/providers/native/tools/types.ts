@@ -28,5 +28,10 @@ export interface ToolDef<In = Record<string, unknown>> {
   guidance: string
   promptOrder: number
   schema: Record<string, unknown>
+  backgroundable?: {
+    taskType: 'shell' | 'subagent'
+    describe(input: In): string
+    subagentType?(input: In): string | undefined
+  }
   run(input: In, ctx: ToolContext): Promise<ToolOutcome>
 }

@@ -32,6 +32,8 @@ import type { Frame } from './frames.js'
 import { config, __setConfigForTest } from '../../config.js'
 import { HttpError } from '../../errors.js'
 import { QUESTION_RESULT } from '../../permission-broker.js'
+import type { NativeTaskManager } from './task-manager.js'
+import type { ToolOutcome } from './tools/types.js'
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
@@ -155,6 +157,12 @@ async function tempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), prefix))
   tempDirs.push(dir)
   return dir
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
 }
 
 afterEach(async () => {
@@ -1556,6 +1564,64 @@ describe('NativeSession', () => {
     await session.destroy()
 
     expect(closeAll).toHaveBeenCalledTimes(1)
+  })
+
+  it('delegates exact-id, no-id, and stop controls to the same task manager', async () => {
+    const dir = await tempDir('native-task-controls-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'task-controls', cwd: dir })
+    const tasks = (session as unknown as { tasks: NativeTaskManager }).tasks
+    const background = vi.spyOn(tasks, 'background')
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false)
+    const stop = vi.spyOn(tasks, 'stop').mockResolvedValue(undefined)
+
+    try {
+      await expect(session.backgroundTasks!('tu-exact')).resolves.toBe(true)
+      await expect(session.backgroundTasks!()).resolves.toBe(false)
+      await session.stopTask!('tu-exact')
+
+      expect(background).toHaveBeenNthCalledWith(1, 'tu-exact')
+      expect(background).toHaveBeenNthCalledWith(2)
+      expect(stop).toHaveBeenCalledWith('tu-exact')
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('destroy aborts detached work and waits for its real execution to settle', async () => {
+    const dir = await tempDir('native-task-destroy-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'task-destroy', cwd: dir })
+    const tasks = (session as unknown as { tasks: NativeTaskManager }).tasks
+    const execution = deferred<ToolOutcome>()
+    let taskSignal!: AbortSignal
+
+    try {
+      const waiting = tasks.runForeground(
+        { toolUseId: 'tu-detached', taskType: 'shell', description: 'detached command' },
+        (signal) => {
+          taskSignal = signal
+          return execution.promise
+        },
+        new AbortController().signal,
+      )
+      await expect(session.backgroundTasks!('tu-detached')).resolves.toBe(true)
+      await expect(waiting).resolves.toMatchObject({ isError: false })
+
+      let destroyReturned = false
+      const destroying = Promise.resolve(session.destroy()).then(() => { destroyReturned = true })
+      await vi.waitFor(() => expect(taskSignal.aborted).toBe(true))
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(destroyReturned).toBe(false)
+
+      execution.resolve({ text: 'stopped output', isError: true })
+      await destroying
+      expect(destroyReturned).toBe(true)
+    } finally {
+      execution.resolve({ text: 'cleanup', isError: true })
+      await session.destroy()
+    }
   })
 
   it('persists a turn and resumes it with model history', async () => {

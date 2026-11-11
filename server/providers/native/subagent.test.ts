@@ -5,6 +5,7 @@ import { defaultFrameContext, type Frame } from './frames.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { AgentMessage } from '../../agent-message.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
+import { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 import { readTool } from './tools/read.js'
 
@@ -70,6 +71,7 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
     system: () => 'PARENT-SYS',
     frameCtx: defaultFrameContext('sess-1'),
     tools: () => [noopTool],
+    tasks: new NativeTaskManager(() => {}),
     streamFor: async function* () { /* replaced by tests */ },
     requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
     emit: () => {},

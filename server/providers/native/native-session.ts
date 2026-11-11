@@ -38,6 +38,7 @@ import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
 import { createAgentTool } from './subagent.js'
+import { NativeTaskManager } from './task-manager.js'
 import { NativeSkillCatalog } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
@@ -250,6 +251,8 @@ export class NativeSession implements ProviderSessionHandle {
    *  (never mutated) so a mid-turn `setServers`/toggle only affects the NEXT
    *  turn: the running turn holds the snapshot its `runTurn` started with. */
   private tools: ToolDef[]
+  /** Every detachable execution in this session, shared with nested loops. */
+  private readonly tasks: NativeTaskManager
   /** The Agent tool this session hands the model. Built once (not per turn) so
    *  its live getters keep tracking `model` and the rebuilt `tools` list; it
    *  is appended in `rebuildTools` alongside the builtins. */
@@ -345,6 +348,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.skills.configure(opts.skills)
     this.skillTool = createSkillTool(this.skills)
     this.skillsReady = this.startSkillReload()
+    this.tasks = new NativeTaskManager((frame) => this.output.push(frame))
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
     // land in the transcript with their real parent. Built after `ctx` exists.
@@ -354,6 +358,7 @@ export class NativeSession implements ProviderSessionHandle {
       system: () => this.subagentSystem(),
       frameCtx: this.ctx,
       tools: () => this.tools,
+      tasks: this.tasks,
       streamFor: (req) => this.streamFor(req, { suppressRetryFrames: true }),
       requestPermission: this.requestPermission,
       emit: (frame) => {
@@ -809,6 +814,7 @@ export class NativeSession implements ProviderSessionHandle {
           {
             stream: (req) => this.streamFor(req),
             tools: [...this.tools],
+            tasks: this.tasks,
             cwd: this.opts.cwd,
             requestPermission: this.requestPermission,
             emit: (frame) => {
@@ -1017,6 +1023,14 @@ export class NativeSession implements ProviderSessionHandle {
       this.opts.onSupplementDelivered?.(entry.uuid, { ok: true, boundary: 'PreToolUse' })
     }
     return retained
+  }
+
+  async backgroundTasks(toolUseId?: string): Promise<boolean> {
+    return toolUseId === undefined ? this.tasks.background() : this.tasks.background(toolUseId)
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    return this.tasks.stop(taskId)
   }
 
   async interrupt(opts?: { cancelQueued?: boolean }): Promise<ProviderInterruptReceipt | void> {
@@ -1251,6 +1265,7 @@ export class NativeSession implements ProviderSessionHandle {
     // Abort first, then close: closeAll aborts every record synchronously, so
     // a hung handshake / in-flight call cannot hold teardown open. Idempotent.
     await this.mcp?.closeAll()
+    await this.tasks.destroy()
     this.output.end()
     await this.log.close()
   }

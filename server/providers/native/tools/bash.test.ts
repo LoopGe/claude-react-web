@@ -6,6 +6,11 @@ import { ToolInputError } from './types.js'
 const ctx = (cwd: string, signal = new AbortController().signal) => ({ cwd, signal })
 
 describe('bashTool', () => {
+  it('declares shell background metadata using the command as its description', () => {
+    expect(bashTool.backgroundable?.taskType).toBe('shell')
+    expect(bashTool.backgroundable?.describe({ command: 'sleep 10' })).toBe('sleep 10')
+  })
+
   it('runs a command and appends the exit marker', async () => {
     const res = await bashTool.run({ command: 'echo hello' }, ctx(process.cwd()))
     expect(res.text).toContain('hello')

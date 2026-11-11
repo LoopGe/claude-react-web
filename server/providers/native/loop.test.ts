@@ -1,11 +1,12 @@
 // server/providers/native/loop.test.ts
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { runTurn, type LoopDeps } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, isRetainedThinkingBlock, type Frame } from './frames.js'
+import { NativeTaskManager } from './task-manager.js'
 import { readTool } from './tools/read.js'
 import { askUserQuestionTool } from './tools/ask-user-question.js'
-import type { ToolContext, ToolDef } from './tools/types.js'
+import type { ToolContext, ToolDef, ToolOutcome } from './tools/types.js'
 
 /** Scripted fake streamer: one entry per API round-trip in the turn. Yields
  *  canonical events directly — the loop's actual contract. */
@@ -60,11 +61,32 @@ const baseDeps = (over: Partial<LoopDeps>): LoopDeps => ({
   stream: async function* () { /* replaced by tests */ },
   tools: [readTool],
   cwd: process.cwd(),
+  tasks: new NativeTaskManager(() => {}),
   requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
   emit: () => {},
   system: 'SYS',
   ...over,
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}
+
+interface ToolResultBlock {
+  type: 'tool_result'
+  tool_use_id: string
+  content: Array<{ type: 'text'; text: string }>
+  is_error: boolean
+}
+
+function toolResultsOf(request: unknown): ToolResultBlock[] {
+  const messages = request as Array<{ role: string; content: unknown[] }>
+  return messages.at(-1)!.content.filter(
+    (block): block is ToolResultBlock => (block as { type?: string }).type === 'tool_result',
+  )
+}
 
 describe('runTurn', () => {
   it('single text response: emits stream events, assistant frame, result frame', async () => {
@@ -110,6 +132,98 @@ describe('runTurn', () => {
     const toolResult = emitted.find((f) => f.type === 'user') as Frame
     expect(toolResult.message.content[0].type).toBe('tool_result')
     expect(toolResult.message.content[0].tool_use_id).toBe('t1')
+  })
+
+  it('detaches a backgroundable tool and continues with its TaskOutput acknowledgement', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'tu-1', 'Detachable', '{"command":"original"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const execution = deferred<ToolOutcome>()
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => { markStarted = resolve })
+    let taskSignal: AbortSignal | undefined
+    const tool: ToolDef<{ command: string }> = {
+      name: 'Detachable',
+      description: 'd',
+      guidance: 'g',
+      promptOrder: 1,
+      schema: {},
+      backgroundable: {
+        taskType: 'shell',
+        describe: (input) => `run ${input.command}`,
+      },
+      async run(_input, ctx) {
+        taskSignal = ctx.signal
+        markStarted()
+        return execution.promise
+      },
+    }
+    const taskFrames: Frame[] = []
+    const tasks = new NativeTaskManager((frame) => taskFrames.push(frame as Frame))
+    const turn = new AbortController()
+    const deps = baseDeps({
+      stream: s.stream.bind(s),
+      tools: [tool],
+      tasks,
+      requestPermission: async () => ({ allowed: true, input: { command: 'updated' } }),
+    })
+
+    const waiting = runTurn(
+      deps,
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', turn.signal,
+    )
+    await started
+    expect(taskSignal).not.toBe(turn.signal)
+    expect(tasks.background('tu-1')).toBe(true)
+    await vi.waitFor(() => expect(s.calls).toHaveLength(2))
+
+    const results = toolResultsOf(s.calls[1])
+    expect(results).toEqual([
+      expect.objectContaining({ tool_use_id: 'tu-1', is_error: false }),
+    ])
+    expect(results[0].content[0].text).toContain('TaskOutput')
+    expect(taskFrames[0]).toMatchObject({
+      subtype: 'task_started',
+      task_id: 'tu-1',
+      description: 'run updated',
+      task_type: 'local_bash',
+    })
+
+    execution.resolve({ text: 'eventual output' })
+    await expect(waiting).resolves.toMatchObject({ finalText: 'done' })
+  })
+
+  it('keeps non-backgroundable tools on the direct path with the original turn signal', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'tu-direct', 'Direct', '{}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const tasks = new NativeTaskManager(() => {})
+    const runForeground = vi.spyOn(tasks, 'runForeground')
+    const turn = new AbortController()
+    let toolSignal: AbortSignal | undefined
+    const tool: ToolDef = {
+      name: 'Direct',
+      description: 'd',
+      guidance: 'g',
+      promptOrder: 1,
+      schema: {},
+      async run(_input, ctx) {
+        toolSignal = ctx.signal
+        return { text: 'direct output' }
+      },
+    }
+
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s), tools: [tool], tasks }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', turn.signal,
+    )
+
+    expect(toolSignal).toBe(turn.signal)
+    expect(runForeground).not.toHaveBeenCalled()
   })
 
   it('denied permission produces an error tool_result and continues', async () => {

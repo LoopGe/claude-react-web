@@ -1641,6 +1641,19 @@ describe('applyTaskEvent', () => {
     })
   })
 
+  it('task_notification preserves its inline result', () => {
+    const { session } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', receivedAt: 100 }))
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 't1',
+      status: 'completed',
+      result: 'final output',
+      receivedAt: 999,
+    }))
+
+    expect(session.tasks.get('t1')?.result).toBe('final output')
+  })
+
   // `progressSummary` is the LIVE progress slot (task_progress.summary — the
   // agentProgressSummaries output, refreshed ~every 30s). `task_notification`'s
   // own `summary` is a completion note the CLI writes at settle time, and for a

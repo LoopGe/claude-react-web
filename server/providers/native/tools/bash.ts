@@ -92,6 +92,10 @@ export const bashTool: ToolDef<{ command: string; timeout_ms?: number }> = {
     },
     required: ['command'],
   },
+  backgroundable: {
+    taskType: 'shell',
+    describe: (input) => input.command,
+  },
   async run(input, ctx) {
     if (typeof input.command !== 'string' || input.command.trim() === '') {
       throw new ToolInputError('command is required')

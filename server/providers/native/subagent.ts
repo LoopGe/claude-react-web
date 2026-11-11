@@ -4,6 +4,7 @@ import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import { runTurn, type LoopDeps } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { Frame, FrameContext } from './frames.js'
+import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
 
 /** Everything the Agent tool needs from the session that owns it. All fields
@@ -21,6 +22,7 @@ export interface AgentToolDeps {
   /** LIVE getter: the session's builtins plus its current MCP/first-party
    *  defs. Read per call so a mid-session MCP change is honoured. */
   tools: () => ToolDef[]
+  tasks: NativeTaskManager
   streamFor(
     req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
     opts?: { suppressRetryFrames?: boolean },
@@ -115,6 +117,7 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
           {
             stream: (req) => deps.streamFor(req, { suppressRetryFrames: true }),
             tools: nestedTools,
+            tasks: deps.tasks,
             cwd: deps.cwd,
             requestPermission: deps.requestPermission,
             emit: (frame) => {
