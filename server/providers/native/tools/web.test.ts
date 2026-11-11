@@ -1,5 +1,6 @@
 // server/providers/native/tools/web.test.ts
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { brotliCompressSync, deflateSync, gzipSync } from 'node:zlib'
 import type { ProviderProfile } from '../../../config.js'
 import { ToolInputError, type ToolContext } from './types.js'
 import { htmlToText, isNonPublicIp, webSafeLookup } from './web.js'
@@ -378,6 +379,53 @@ describe('createWebFetchTool', () => {
     await expect(
       webFetch().run({ url: 'https://docs.example.test/stream', prompt: 'q' }, ctx()),
     ).rejects.toThrow(/exceeds .* bytes/)
+  })
+
+  it('decodes gzip, deflate and br bodies and advertises those encodings', async () => {
+    const page = '<p>compressed hello</p>'
+    const cases = [
+      ['gzip', gzipSync],
+      ['deflate', deflateSync],
+      ['br', brotliCompressSync],
+    ] as const
+    for (const [encoding, compress] of cases) {
+      stubPage(() =>
+        new Response(compress(page), {
+          headers: { 'content-type': 'text/html', 'content-encoding': encoding },
+        }),
+      )
+      const tool = webFetch()
+      const out = parse<{ bytes: number }>((await tool.run({ url: 'https://docs.example.test/page', prompt: 'q' }, ctx())).text)
+      expect(auxRequest(fetchMock).body.system, encoding).toContain('compressed hello')
+      // `bytes` keeps fetch-like semantics: decoded (decompressed) bytes.
+      expect(out.bytes, encoding).toBe(Buffer.byteLength(page))
+      expect(fakeWebCalls()[0].headers['accept-encoding'], encoding).toBe('gzip, deflate, br')
+    }
+  })
+
+  it('caps DEcompressed bytes, not the compressed wire size', async () => {
+    // ~6 MiB of 'a' gzips to a few KB: a cap on the wire bytes would pass.
+    const gz = gzipSync('a'.repeat(6 * 1024 * 1024))
+    expect(gz.byteLength).toBeLessThan(1024 * 1024)
+    stubPage(() =>
+      new Response(gz, {
+        headers: { 'content-type': 'text/plain', 'content-encoding': 'gzip' },
+      }),
+    )
+    await expect(
+      webFetch().run({ url: 'https://docs.example.test/bomb', prompt: 'q' }, ctx()),
+    ).rejects.toThrow(/exceeds .* bytes/)
+  })
+
+  it('rejects an unsupported content-encoding instead of decoding mojibake', async () => {
+    stubPage(() =>
+      new Response('not zstd', {
+        headers: { 'content-type': 'text/plain', 'content-encoding': 'zstd' },
+      }),
+    )
+    await expect(
+      webFetch().run({ url: 'https://docs.example.test/zstd', prompt: 'q' }, ctx()),
+    ).rejects.toThrow(/unsupported content-encoding: zstd/)
   })
 
   it('stops after five redirects', async () => {

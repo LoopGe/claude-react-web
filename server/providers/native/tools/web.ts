@@ -24,6 +24,8 @@ import { request as httpRequest, Agent as HttpAgent, type IncomingMessage } from
 import { request as httpsRequest, Agent as HttpsAgent } from 'node:https'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
+import { Readable, type Transform } from 'node:stream'
+import { createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
 import { createSafeLookup } from '../../../safe-dns.js'
 import { ToolInputError } from './types.js'
 
@@ -42,6 +44,11 @@ export const WEB_USER_AGENT =
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
 const ACCEPT_HEADER = 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5'
+
+/** Ask for the encodings the decoder below knows. Without this Node's request
+ *  sends nothing and servers generally answer identity, but a proxy/CDN may
+ *  still compress. */
+const ACCEPT_ENCODING = 'gzip, deflate, br'
 
 // ── Address classification ──────────────────────────────────────────
 
@@ -332,24 +339,77 @@ function requestWeb(
   })
 }
 
-async function readBodyCapped(res: RawResponse): Promise<Buffer> {
-  const declared = res.headers['content-length']
-  if (declared !== undefined) {
-    const size = Number(declared)
-    if (Number.isFinite(size) && size > MAX_RESPONSE_BYTES) {
+const DECODERS: Record<string, () => Transform> = {
+  gzip: createGunzip,
+  deflate: createInflate,
+  br: createBrotliDecompress,
+}
+
+interface DecodedBody {
+  body: AsyncIterable<Uint8Array>
+  /** True when the body is still compressed on the wire; the 5 MiB cap and
+   *  `bytes` both apply to the DECODED stream. */
+  compressed: boolean
+  destroy(): void
+}
+
+/** `fetch` decompresses transparently; the node:http(s) rewrite has to do it
+ *  explicitly. Unknown encodings fail loudly rather than being handed to the
+ *  model as mojibake. */
+function decodeResponseBody(res: RawResponse): DecodedBody {
+  const encoding = (res.headers['content-encoding'] ?? '').trim().toLowerCase()
+  if (encoding === '' || encoding === 'identity') {
+    return { body: res.body, compressed: false, destroy: () => res.destroy() }
+  }
+  const makeDecoder = DECODERS[encoding]
+  if (!makeDecoder) {
+    res.destroy()
+    throw new ToolInputError(`unsupported content-encoding: ${encoding}`)
+  }
+  const source = Readable.from(res.body)
+  const decompressor = makeDecoder()
+  // `pipe` does not forward errors; route a source failure (abort, socket
+  // reset) into the decompressor so the reader sees it instead of hanging.
+  source.on('error', (err) => decompressor.destroy(err))
+  source.pipe(decompressor)
+  return {
+    body: decompressor as unknown as AsyncIterable<Uint8Array>,
+    compressed: true,
+    destroy: () => {
+      source.destroy()
+      decompressor.destroy()
       res.destroy()
-      throw new ToolInputError(`response exceeds ${MAX_RESPONSE_BYTES} bytes`)
+    },
+  }
+}
+
+async function readBodyCapped(res: RawResponse, decoded: DecodedBody): Promise<Buffer> {
+  // `content-length` describes the wire (possibly compressed) body, so it can
+  // only bound the decoded one when no decoding happens.
+  if (!decoded.compressed) {
+    const declared = res.headers['content-length']
+    if (declared !== undefined) {
+      const size = Number(declared)
+      if (Number.isFinite(size) && size > MAX_RESPONSE_BYTES) {
+        decoded.destroy()
+        throw new ToolInputError(`response exceeds ${MAX_RESPONSE_BYTES} bytes`)
+      }
     }
   }
   const chunks: Uint8Array[] = []
   let total = 0
-  for await (const chunk of res.body) {
-    total += chunk.byteLength
-    if (total > MAX_RESPONSE_BYTES) {
-      res.destroy()
-      throw new ToolInputError(`response exceeds ${MAX_RESPONSE_BYTES} bytes`)
+  try {
+    for await (const chunk of decoded.body) {
+      total += chunk.byteLength
+      if (total > MAX_RESPONSE_BYTES) {
+        decoded.destroy()
+        throw new ToolInputError(`response exceeds ${MAX_RESPONSE_BYTES} bytes`)
+      }
+      chunks.push(chunk)
     }
-    chunks.push(chunk)
+  } catch (err) {
+    decoded.destroy()
+    throw err
   }
   return Buffer.concat(chunks)
 }
@@ -365,6 +425,7 @@ export async function fetchWeb(rawUrl: string, opts: FetchWebOptions): Promise<W
   const requestHeaders: Record<string, string> = {
     'user-agent': WEB_USER_AGENT,
     accept: ACCEPT_HEADER,
+    'accept-encoding': ACCEPT_ENCODING,
     ...opts.headers,
   }
   for (let redirects = 0; ; redirects++) {
@@ -399,11 +460,12 @@ export async function fetchWeb(rawUrl: string, opts: FetchWebOptions): Promise<W
       const detail = res.statusText ? ` ${res.statusText}` : ''
       throw new ToolInputError(`HTTP ${res.status}${detail} for ${current.href}`)
     }
-    const bytes = await readBodyCapped(res)
+    const decoded = decodeResponseBody(res)
+    const bytes = await readBodyCapped(res, decoded)
     const contentType = res.headers['content-type'] ?? ''
-    const decoded = new TextDecoder('utf-8').decode(bytes)
+    const decompressed = new TextDecoder('utf-8').decode(bytes)
     const fullText =
-      opts.format === 'html' || !isHtml(contentType) ? decoded : htmlToText(decoded)
+      opts.format === 'html' || !isHtml(contentType) ? decompressed : htmlToText(decompressed)
     const offset = opts.offset ?? 0
     return {
       url: current.href,

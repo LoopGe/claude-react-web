@@ -46,9 +46,13 @@ export function createSafeLookup(isBlocked: (ip: string) => boolean): SafeLookup
       (addrs) => {
         const unsafe = addrs.find((a) => isBlocked(a.address))
         if (unsafe) return cb(new Error(`host ${host} resolves to a disallowed address (${unsafe.address})`) as NodeJS.ErrnoException, '', 0)
+        // Node's `net` emitLookup destructures `addresses[0]` when the socket
+        // requested Happy Eyeballs, so an empty array is not a successful
+        // "no addresses" answer — it throws an uncaught TypeError. Fail here
+        // for both callback shapes.
+        if (addrs.length === 0) return cb(new Error(`host ${host} did not resolve`) as NodeJS.ErrnoException, '', 0)
         if (opts?.all) return cb(null, addrs)
         const first = addrs[0]
-        if (!first) return cb(new Error(`host ${host} did not resolve`) as NodeJS.ErrnoException, '', 0)
         cb(null, first.address, first.family === 6 ? 6 : 4)
       },
       (err) => cb(err as NodeJS.ErrnoException, '', 0),

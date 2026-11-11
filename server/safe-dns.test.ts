@@ -100,7 +100,10 @@ describe('createSafeLookup', () => {
   it('fails closed when resolution returns no usable address', async () => {
     dns().mockResolvedValue([])
     const lookup = createSafeLookup(ALLOW_ALL)
-    await expect(runLookup(lookup, 'empty.example', { all: true })).resolves.toEqual({ addresses: [] })
+    // An empty answer must be an error in BOTH shapes. Node's Happy Eyeballs
+    // path (`all: true`) destructures addresses[0], so resolving `[]` there
+    // would crash the process with an uncaught TypeError.
+    await expect(runLookup(lookup, 'empty.example', { all: true })).rejects.toThrow(/did not resolve/)
     await expect(runLookup(lookup, 'empty.example', null)).rejects.toThrow(/did not resolve/)
   })
 
