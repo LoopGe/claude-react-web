@@ -93,6 +93,49 @@ export function apiRetryFrame(
   } as AgentMessage
 }
 
+export function taskStartedFrame(opts: {
+  taskId: string
+  toolUseId: string
+  taskType: 'local_bash' | 'local_agent'
+  description: string
+  subagentType?: string
+  receivedAt: number
+}): Frame {
+  return {
+    type: 'system',
+    subtype: 'task_started',
+    task_id: opts.taskId,
+    tool_use_id: opts.toolUseId,
+    task_type: opts.taskType,
+    description: opts.description,
+    ...(opts.subagentType !== undefined ? { subagent_type: opts.subagentType } : {}),
+    is_backgrounded: true,
+    receivedAt: opts.receivedAt,
+  } as unknown as AgentMessage
+}
+
+export function taskNotificationFrame(opts: {
+  taskId: string
+  toolUseId: string
+  description: string
+  status: 'completed' | 'failed' | 'stopped'
+  result?: string
+  reason?: 'worker_restart'
+  receivedAt: number
+}): Frame {
+  return {
+    type: 'system',
+    subtype: 'task_notification',
+    task_id: opts.taskId,
+    tool_use_id: opts.toolUseId,
+    description: opts.description,
+    status: opts.status,
+    ...(opts.result ? { result: opts.result } : {}),
+    ...(opts.reason !== undefined ? { reason: opts.reason } : {}),
+    receivedAt: opts.receivedAt,
+  } as unknown as AgentMessage
+}
+
 export function resultFrame(
   ctx: FrameContext,
   opts: {

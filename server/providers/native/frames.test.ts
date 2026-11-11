@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   apiRetryFrame, assistantFrame, defaultFrameContext, resultFrame,
-  streamEventFrame, toolResultFrame, type FrameContext,
+  streamEventFrame, taskNotificationFrame, taskStartedFrame, toolResultFrame, type FrameContext,
 } from './frames.js'
 
 const ctx: FrameContext = defaultFrameContext('sess-1')
@@ -50,6 +50,33 @@ describe('frames', () => {
     const f = streamEventFrame(ctx, { type: 'message_start' })
     expect(f.type).toBe('stream_event')
     expect(f.event.type).toBe('message_start')
+  })
+
+  it('task_started frame carries native task metadata and its original start time', () => {
+    const f = taskStartedFrame({
+      taskId: 'task-1', toolUseId: 'tu-1', taskType: 'local_agent',
+      description: 'inspect the repo', subagentType: 'Explore', receivedAt: 1234,
+    })
+    expect(f).toMatchObject({
+      type: 'system', subtype: 'task_started', task_id: 'task-1', tool_use_id: 'tu-1',
+      task_type: 'local_agent', description: 'inspect the repo', subagent_type: 'Explore',
+      is_backgrounded: true, receivedAt: 1234,
+    })
+  })
+
+  it('task_notification frame carries terminal status, inline result, and completion time', () => {
+    const f = taskNotificationFrame({
+      taskId: 'task-1', toolUseId: 'tu-1', description: 'inspect the repo',
+      status: 'completed', result: 'final report', receivedAt: 5678,
+    })
+    expect(f).toMatchObject({
+      type: 'system', subtype: 'task_notification', task_id: 'task-1', tool_use_id: 'tu-1',
+      description: 'inspect the repo', status: 'completed', result: 'final report', receivedAt: 5678,
+    })
+    expect(taskNotificationFrame({
+      taskId: 'task-2', toolUseId: 'tu-2', description: 'empty output',
+      status: 'stopped', result: '', receivedAt: 9999,
+    }).result).toBeUndefined()
   })
 
   it('every factory carries the frame context parent (sidechain runner)', () => {
