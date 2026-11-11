@@ -54,10 +54,9 @@ import { AutoDenialTracker } from './auto-denial-tracker.js'
 
 /** Host-internal marker on a broker denial that carries the user's ANSWER to
  *  an AskUserQuestion (answer / clarify / malformed) rather than a permission
- *  failure. Symbol-keyed, so spreading or JSON-serializing the result (the
- *  SDK's control-response path) drops it: this is not part of the wire
- *  protocol and the Claude provider's behavior is unchanged. The native
- *  loop is the only consumer. */
+ *  failure. Symbol-keyed, so JSON serialization onto the SDK's control-response
+ *  wire drops it: this is not part of the wire protocol and the Claude
+ *  provider's behavior is unchanged. The native loop is the only consumer. */
 export const QUESTION_RESULT: unique symbol = Symbol.for('claude-react-web.question-result')
 
 /** A broker result that may carry the internal question-result marker. */
