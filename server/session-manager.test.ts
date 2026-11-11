@@ -472,6 +472,16 @@ describe('SessionManager', () => {
     expect(mockHandles[0].options.sessionId).toBe(info.id)
   })
 
+  it('projects provider task-control capability for live and dormant sessions', async () => {
+    const claude = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+    expect(claude.taskControlSupported).toBe(true)
+
+    const native = await sm.create({ provider: 'native', cwd: TEST_CWD, model: 'test-model' })
+    expect(native.taskControlSupported).toBe(false)
+    await sm.unload(native.id)
+    expect(sm.list().find((session) => session.id === native.id)?.taskControlSupported).toBe(false)
+  })
+
   it('create() defaults betas to the 1M-context flag when none is supplied', async () => {
     const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
     // The SDK subprocess must be spawned with the 1M beta, exactly like the

@@ -17,6 +17,7 @@ import { useDialogHosts } from './hooks/useDialogHosts'
 import { sidebarMoveTarget } from './utils/sidebar-move'
 import { PANEL_CACHE_EXTRA, evictFromCache, ghostableIds, mergeOpenIntoCache, renderedPanelIds, scrollerSnapshot, type PanelScrollSnapshot } from './utils/panel-cache'
 import { SessionDeleteQueue } from './utils/session-delete-queue'
+import { shouldRunBackgroundShortcut } from './utils/task-actions'
 import { ChatPanel } from './components/ChatPanel'
 import { PanelSlot } from './components/PanelSlot'
 import { SessionCard } from './components/session-list/SessionCard'
@@ -3017,6 +3018,8 @@ export function App() {
   // every already-open tab.
   const stripPoppedIdsRef = useRef(new Set<string>())
 
+  const focusedTaskControlSupported = sessions.find((session) => session.id === focusedId)?.taskControlSupported !== false
+
   const shortcuts = useMemo(
     () => [
       // Alt+1..Alt+9 activate the Nth group. Generated dynamically so the
@@ -3254,7 +3257,7 @@ export function App() {
           allowInInput: true,
           description: 'Refresh session recap',
         },
-        {
+        ...(focusedTaskControlSupported ? [{
           // Background in-flight tasks for the focused session (Ctrl+B
           // semantics). This is the ONLY UI entry point: the Composer's
           // shared Send/Interrupt control used to morph into a third
@@ -3272,12 +3275,17 @@ export function App() {
             // terminated session (setLocalError renders a persistent red
             // banner) or just toasts noise on an idle one.
             const focused = sessionsRef.current.find((s) => s.id === fid)
-            if (!focused?.working && !turnActiveFnsRef.current.get(fid)?.()) return
+            const turnActive = turnActiveFnsRef.current.get(fid)?.() ?? false
+            if (!shouldRunBackgroundShortcut({
+              supported: focused?.taskControlSupported !== false,
+              working: focused?.working ?? false,
+              turnActive,
+            })) return
             backgroundFnsRef.current.get(fid)?.()
           },
           allowInInput: true,
           description: 'Background current tasks',
-        },
+        }] : []),
         // Jump the focused panel's transcript to the previous / next user
         // message. Built by the tested factory; both args are plain values
         // (react-hooks/refs — no ref reads during render): focusedId is
@@ -3365,7 +3373,7 @@ export function App() {
       // [handleCloseSettings, handleCloseGitPanel]), so the omission only
       // affects eslint's static analysis, not runtime behaviour.
       // eslint-disable-next-line react-hooks/exhaustive-deps
-      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed, focusedId, scrollNavRegistry, sideChat],
+      [groups.length, handleActivateGroup, closeSession, toggleShortcutHelp, handleCloseSettings, handleCloseGitPanel, handleCloseWorktree, toggleSidebarCollapsed, focusedId, focusedTaskControlSupported, scrollNavRegistry, sideChat],
     )
   useKeyboardShortcuts(shortcuts)
 

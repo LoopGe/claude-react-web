@@ -246,6 +246,26 @@ describe('Composer', () => {
     }
   })
 
+  it('omits the background shortcut advertisement when task control is unsupported', () => {
+    const { container } = render(
+      <Composer {...defaultProps} canInterrupt backgroundTasksSupported={false} />,
+    )
+    const btn = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Interrupt the current turn"]',
+    )!
+    vi.useFakeTimers()
+    try {
+      fireEvent.pointerEnter(btn)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(document.querySelector('.hover-pop')?.textContent).toContain('Interrupt the current turn')
+      expect(document.querySelector('.hover-pop')?.textContent).not.toContain('(Alt+B backgrounds it)')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('slash-picker Escape is consumed by the escape stack and never reaches window', () => {
     Element.prototype.scrollIntoView = vi.fn()
     const windowKeydown = vi.fn()

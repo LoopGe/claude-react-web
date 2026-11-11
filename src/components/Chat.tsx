@@ -1867,6 +1867,7 @@ export const Chat = memo(function Chat({
     turnActive,
     terminated: session.terminated,
     hasLiveSyncSubagent,
+    taskControlSupported: session.taskControlSupported !== false,
   }) ? handleBackgroundTool : undefined
 
   // Expose the backgroundTasks callback to the parent so the Alt+B shortcut
@@ -2375,6 +2376,7 @@ export const Chat = memo(function Chat({
               onSend={handleSend}
               onInterrupt={handleInterrupt}
               canInterrupt={session.working}
+              backgroundTasksSupported={session.taskControlSupported !== false}
               queuedCount={queuedCount}
               focusSignal={effectiveComposerFocusSignal}
               onRecap={recap.refresh}

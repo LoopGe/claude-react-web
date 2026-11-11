@@ -8595,6 +8595,7 @@ export class SessionManager {
       effortLevel: x.effortLevel,
       thinking: x.thinking,
       taskBudget: x.taskBudget,
+      taskControlSupported: this.providers.get(x.provider ?? 'claude').capabilities.supportsTaskControl,
       terminated: x.terminated,
       terminatedReason: x.terminatedReason,
       canRetryResume: x.terminated && isTransientTerminatedReason(x.terminatedReason),

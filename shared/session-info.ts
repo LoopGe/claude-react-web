@@ -263,6 +263,11 @@ export interface SessionInfoBase<PM = string> {
    *  on gateway deployments). undefined = unknown → UI shows the chip;
    *  false = hide it. Not persisted. */
   thinkingSupported?: boolean
+  /** Whether this session's provider supports backgrounding and stopping
+   *  in-flight tasks. Undefined on legacy frames retains the Claude-compatible
+   *  UI; explicit false hides mutation controls. Not persisted — re-derived
+   *  from the provider registry on every live and dormant projection. */
+  taskControlSupported?: boolean
   /** Whether this session's provider implements mid-run steering (the
    *  claude provider does; runtime degradation on old CLIs is handled inside
    *  the handle, so this is the provider mechanism flag — spec §9). Drives

@@ -104,6 +104,8 @@ interface Props {
    *  When no turn is in flight, Interrupt is a no-op, and leaving the
    *  button active just confuses users. */
   canInterrupt: boolean
+  /** False when the session provider cannot background in-flight tasks. */
+  backgroundTasksSupported?: boolean
   /** Top-level user turns queued behind the in-flight turn. When > 0, the
    *  interrupt the parent fires also withdraws them (cancelQueued) — the
    *  tooltip says so instead of leaving the queued messages' fate ambiguous. */
@@ -199,6 +201,7 @@ export const Composer = memo(function Composer({
   onSend,
   onInterrupt,
   canInterrupt,
+  backgroundTasksSupported = true,
   queuedCount,
   focusSignal,
   onRecap,
@@ -1098,7 +1101,7 @@ export const Composer = memo(function Composer({
         <HoverHint
           label={
             canInterrupt
-              ? `Interrupt the current turn${queueNote} (Alt+B backgrounds it)`
+              ? `Interrupt the current turn${queueNote}${backgroundTasksSupported ? ' (Alt+B backgrounds it)' : ''}`
               : blockedReason ?? 'Send message (Enter)'
           }
           side="top"

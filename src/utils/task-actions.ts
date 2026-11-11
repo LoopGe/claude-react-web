@@ -88,8 +88,19 @@ export function shouldOfferBackgroundAction(args: {
   turnActive: boolean
   terminated: boolean
   hasLiveSyncSubagent: boolean
+  taskControlSupported?: boolean
 }): boolean {
-  return args.turnActive || (!args.terminated && args.hasLiveSyncSubagent)
+  return args.taskControlSupported !== false
+    && (args.turnActive || (!args.terminated && args.hasLiveSyncSubagent))
+}
+
+/** Whether Alt+B should invoke the focused session's background action. */
+export function shouldRunBackgroundShortcut(args: {
+  supported: boolean
+  working: boolean
+  turnActive: boolean
+}): boolean {
+  return args.supported && (args.working || args.turnActive)
 }
 
 /** Whether Chat should mount the WorkingBubble at all. A live turn mounts it

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction } from './task-actions'
+import { createDedupGuard, shouldMountWorkingBubble, shouldOfferBackgroundAction, shouldRunBackgroundShortcut } from './task-actions'
 import { computeWaiting, countTaskActivity } from '../session-store/normalize'
 import type { TaskRecordUi } from '../types'
 
@@ -89,8 +89,29 @@ describe('shouldOfferBackgroundAction', () => {
     expect(shouldOfferBackgroundAction({ turnActive: false, terminated: true, hasLiveSyncSubagent: true })).toBe(false)
   })
 
+  it('does not offer the action when the provider lacks task control', () => {
+    expect(shouldOfferBackgroundAction({
+      turnActive: true, terminated: false, hasLiveSyncSubagent: false,
+      taskControlSupported: false,
+    })).toBe(false)
+  })
+
   it('does not offer when idle with nothing running', () => {
     expect(shouldOfferBackgroundAction({ turnActive: false, terminated: false, hasLiveSyncSubagent: false })).toBe(false)
+  })
+})
+
+describe('shouldRunBackgroundShortcut', () => {
+  it('does not run when the provider lacks task control', () => {
+    expect(shouldRunBackgroundShortcut({
+      supported: false, working: true, turnActive: true,
+    })).toBe(false)
+  })
+
+  it('runs for a supported session with a live or optimistic turn', () => {
+    expect(shouldRunBackgroundShortcut({ supported: true, working: true, turnActive: false })).toBe(true)
+    expect(shouldRunBackgroundShortcut({ supported: true, working: false, turnActive: true })).toBe(true)
+    expect(shouldRunBackgroundShortcut({ supported: true, working: false, turnActive: false })).toBe(false)
   })
 })
 
