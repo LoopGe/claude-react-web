@@ -225,6 +225,14 @@ describe('NewSessionDialog provider picker', () => {
 
   const providerTrigger = () => screen.getByLabelText('Provider') as HTMLButtonElement
   const fieldItems = () => Array.from(document.querySelectorAll('.field-picker-item')) as HTMLButtonElement[]
+  const providerRow = (label: string) =>
+    fieldItems().find(
+      (el) => el.querySelector('.field-picker-item-name')?.textContent === label,
+    )!
+  /** The plugin cluster's own heading label (exact text — the hint and other
+   *  labels share the word region but not the exact match). */
+  const pluginCluster = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll('label')).find((l) => l.textContent?.trim() === 'Plugins')
 
   const clickCreate = async (onSubmit: ReturnType<typeof vi.fn>) => {
     const createBtn = Array.from(document.body.querySelectorAll('button')).find(
@@ -238,8 +246,9 @@ describe('NewSessionDialog provider picker', () => {
   it('defaults to Claude CLI and keeps the plugin cluster visible', async () => {
     const { baseElement } = render(<NewSessionDialog {...baseProps} />)
     expect(providerTrigger().textContent).toContain('Claude CLI')
-    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
-    expect(baseElement.textContent).toContain('Plugins')
+    await waitFor(() => expect(pluginCluster(baseElement)).toBeDefined())
+    // The cluster's own control (not a stray "Plugins" mention) holds the rows.
+    expect(pluginCluster(baseElement)!.parentElement!.textContent).toContain('plugA')
   })
 
   it('submits provider: claude by default', async () => {
@@ -252,18 +261,37 @@ describe('NewSessionDialog provider picker', () => {
   it('submits provider: native and hides the plugin cluster', async () => {
     const onSubmit = vi.fn()
     const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
-    await waitFor(() => expect(baseElement.textContent).toContain('plugA'))
+    await waitFor(() => expect(pluginCluster(baseElement)).toBeDefined())
 
     fireEvent.click(providerTrigger())
-    fireEvent.click(fieldItems().find((el) => el.textContent?.includes('Native in-process'))!)
+    fireEvent.click(providerRow('Native in-process'))
     expect(providerTrigger().textContent).toContain('Native in-process')
 
     // Native ignores plugins — the cluster (and its rows) must be hidden.
-    await waitFor(() => expect(baseElement.textContent).not.toContain('Plugins'))
+    await waitFor(() => expect(pluginCluster(baseElement)).toBeUndefined())
     expect(baseElement.textContent).not.toContain('plugA')
 
     const form = await clickCreate(onSubmit)
     expect(form.provider).toBe('native')
+  })
+
+  it('restores the plugin cluster when switching back to Claude', async () => {
+    const onSubmit = vi.fn()
+    const { baseElement } = render(<NewSessionDialog {...baseProps} onSubmit={onSubmit} />)
+    await waitFor(() => expect(pluginCluster(baseElement)).toBeDefined())
+
+    fireEvent.click(providerTrigger())
+    fireEvent.click(providerRow('Native in-process'))
+    await waitFor(() => expect(pluginCluster(baseElement)).toBeUndefined())
+
+    fireEvent.click(providerTrigger())
+    fireEvent.click(providerRow('Claude CLI'))
+    expect(providerTrigger().textContent).toContain('Claude CLI')
+    await waitFor(() => expect(pluginCluster(baseElement)).toBeDefined())
+    expect(pluginCluster(baseElement)!.parentElement!.textContent).toContain('plugA')
+
+    const form = await clickCreate(onSubmit)
+    expect(form.provider).toBe('claude')
   })
 
   it('offers exactly the two provider labels', () => {

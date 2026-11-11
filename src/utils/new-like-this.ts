@@ -54,11 +54,14 @@ export function buildNewLikeThisForm(
 }
 
 /** The `POST /sessions` body for the "Restart" action: create the replacement
- *  Y, then delete the source X. Y gets a fresh id with no persisted meta, so
- *  every per-session choice must be carried explicitly here — an omitted field
- *  silently reverts to the global default. `joinGroupOf` / `evictingSource`
- *  make the server tag the `session-created(Y)` broadcast so every connected
- *  tab slots Y where X was instead of appending it beside the doomed source. */
+ *  Y, then delete the source X. It carries exactly the fields the former
+ *  inline restart payload carried — NOT every per-session choice; legacy
+ *  omissions (agent, systemPrompt, thinking, sandbox, …) are unchanged here.
+ *  Y gets a fresh id with no persisted meta, so an omitted field that DOES
+ *  belong to this payload silently reverts to the global default.
+ *  `joinGroupOf` / `evictingSource` make the server tag the
+ *  `session-created(Y)` broadcast so every connected tab slots Y where X was
+ *  instead of appending it beside the doomed source. */
 export type RestartSessionBody = Pick<
   NewSessionForm,
   | 'provider'
