@@ -224,6 +224,39 @@ describe('NativeSkillCatalog — overrides', () => {
   })
 })
 
+describe('NativeSkillCatalog — scoped views', () => {
+  it('keeps an excluded skill hidden when the parent override turns it on', async () => {
+    await writeSkill('alpha')
+    await writeSkill('beta')
+    const catalog = await load(undefined)
+    catalog.applyOverrides({ alpha: 'on', beta: 'on' })
+
+    const view = catalog.view(['alpha'])
+
+    expect(view.section()).toBe('<available_skills>\n- alpha: alpha description\n</available_skills>')
+    expect(view.commands().map((command) => command.name)).toEqual(['alpha'])
+    expect(view.bodyOf('beta')).toEqual({ text: 'unknown skill: beta', isError: true })
+    expect(catalog.section()).toBe('<available_skills>\n- alpha: alpha description\n- beta: beta description\n</available_skills>')
+  })
+
+  it('reads the reloaded discovery cache through the same view', async () => {
+    await writeSkill('alpha', { body: 'Alpha v1.' })
+    const catalog = await load('all')
+    const view = catalog.view(['alpha', 'beta'])
+
+    expect(view.bodyOf('alpha').text).toContain('Alpha v1.')
+    expect(view.bodyOf('beta')).toEqual({ text: 'unknown skill: beta', isError: true })
+
+    await writeSkill('alpha', { body: 'Alpha v2.', description: 'alpha v2' })
+    await writeSkill('beta')
+    await catalog.reload()
+
+    expect(view.section()).toBe('<available_skills>\n- alpha: alpha v2\n- beta: beta description\n</available_skills>')
+    expect(view.bodyOf('alpha').text).toContain('Alpha v2.')
+    expect(view.commands().map((command) => command.name)).toEqual(['alpha', 'beta'])
+  })
+})
+
 describe('NativeSkillCatalog — frontmatter flags', () => {
   it('disable-model-invocation clamps the skill to user-invocable-only', async () => {
     await writeSkill('alpha', { frontmatter: { 'disable-model-invocation': 'true' } })

@@ -8,6 +8,9 @@ import type { ToolDef } from './tools/types.js'
 export interface LoopDeps {
   stream(req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }): AsyncIterable<CanonicalEvent>
   tools: ToolDef[]
+  /** Maximum number of model API rounds for this prompt. A final-round
+   *  tool_use receives a synthetic error result instead of being executed. */
+  maxTurns?: number
   tasks: NativeTaskManager
   /** The session's working directory; every ToolContext is built from it. */
   cwd: string
@@ -59,6 +62,9 @@ export async function runTurn(
   model: string,
   signal: AbortSignal,
 ): Promise<TurnResult> {
+  if (deps.maxTurns !== undefined && (!Number.isInteger(deps.maxTurns) || deps.maxTurns <= 0)) {
+    throw new Error('maxTurns must be a positive integer')
+  }
   const ctx = frameCtx
   const toolByName = new Map(deps.tools.map((t) => [t.name, t]))
   let usage: Usage = { input_tokens: 0, output_tokens: 0 }
@@ -66,7 +72,8 @@ export async function runTurn(
   let finalText = ''
   // P1 never marks the whole turn as an error: tool failures surface as
   // error tool_results and the model gets to recover in the next round.
-  const isError = false
+  // Exhausting maxTurns is the exception: the model gets no recovery round.
+  let isError = false
   history.push(turnInput)
   for (;;) {
     // Mid-run steering: anything queued since the previous round joins the
@@ -146,12 +153,26 @@ export async function runTurn(
     // UI-facing assistant frame above keeps every block.
     history.push({ role: 'assistant', content: content.filter(isRetainedThinkingBlock) })
     const toolUses = content.filter((b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use')
+    const capped = deps.maxTurns !== undefined && numTurns === deps.maxTurns
     if (toolUses.length === 0) {
       finalText = content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('')
+      if (capped && stopReason !== 'end_turn') isError = true
       break
     }
     const results: unknown[] = []
-    for (const call of toolUses) {
+    if (capped) {
+      isError = true
+      finalText = content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('')
+      for (const call of toolUses) {
+        results.push({
+          type: 'tool_result',
+          tool_use_id: call.id,
+          content: [{ type: 'text', text: `max turns reached (${deps.maxTurns}); tool not executed` }],
+          is_error: true,
+        })
+      }
+    }
+    for (const call of toolUses.slice(results.length)) {
       // Abort during a previous tool's execution (or its permission): do NOT
       // run any further tool — an already-aborted signal would park the
       // permission request forever. Results gathered so far still get their
@@ -211,6 +232,7 @@ export async function runTurn(
       deps.emit(toolResultFrame(ctx, (r as { tool_use_id: string }).tool_use_id, (r as { content: Array<{ text: string }> }).content[0].text, (r as { is_error?: boolean }).is_error ?? false))
     }
     history.push({ role: 'user', content: results })
+    if (capped) break
   }
   if (deps.emitResult !== false) {
     deps.emit(resultFrame(ctx, {

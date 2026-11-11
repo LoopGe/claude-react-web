@@ -134,6 +134,118 @@ describe('runTurn', () => {
     expect(toolResult.message.content[0].tool_use_id).toBe('t1')
   })
 
+  it('caps model rounds without permitting or executing final-round tool calls', async () => {
+    const run = vi.fn(async () => ({ text: 'ran' }))
+    const tool: ToolDef = {
+      name: 'Capped',
+      description: 'd',
+      guidance: 'g',
+      promptOrder: 1,
+      schema: {},
+      run,
+    }
+    const requestPermission = vi.fn(async (_name: string, input: Record<string, unknown>) => ({ allowed: true, input }))
+    const s = scriptedStreamer([
+      [
+        startStop,
+        ...textBlock(0, 'partial report'),
+        ...toolUseBlock(1, 't1', 'Capped', '{}'),
+        ...toolUseBlock(2, 't2', 'Capped', '{}'),
+        deltaStop('tool_use'),
+      ],
+    ])
+    const emitted: Frame[] = []
+    const history: unknown[] = []
+
+    const res = await runTurn(
+      baseDeps({
+        stream: s.stream.bind(s),
+        tools: [tool],
+        requestPermission,
+        emit: (frame) => emitted.push(frame as Frame),
+        maxTurns: 1,
+      }),
+      defaultFrameContext('sess-1'),
+      history, { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+
+    expect(requestPermission).not.toHaveBeenCalled()
+    expect(run).not.toHaveBeenCalled()
+    expect(res).toMatchObject({ isError: true, numTurns: 1, finalText: 'partial report' })
+    expect(history).toHaveLength(3)
+    const assistant = history[1] as { role: string; content: Array<{ type: string; id: string }> }
+    expect(assistant.content.filter((block) => block.type === 'tool_use').map((block) => [block.type, block.id])).toEqual([['tool_use', 't1'], ['tool_use', 't2']])
+    const results = (history[2] as { content: ToolResultBlock[] }).content
+    expect(results).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 't1',
+        content: [{ type: 'text', text: 'max turns reached (1); tool not executed' }],
+        is_error: true,
+      },
+      {
+        type: 'tool_result',
+        tool_use_id: 't2',
+        content: [{ type: 'text', text: 'max turns reached (1); tool not executed' }],
+        is_error: true,
+      },
+    ])
+    const toolResultFrames = emitted.filter((frame) => frame.type === 'user')
+    expect(toolResultFrames.map((frame) => frame.message.content[0])).toEqual(results)
+    const terminal = emitted.filter((frame) => frame.type === 'result')
+    expect(terminal).toHaveLength(1)
+    expect(terminal[0]).toMatchObject({ is_error: true, subtype: 'error_during_execution' })
+  })
+
+  it('completes normally when the final allowed round ends without tool calls', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+
+    const res = await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (frame) => emitted.push(frame as Frame), maxTurns: 1 }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+
+    expect(res).toMatchObject({ finalText: 'done', isError: false, numTurns: 1 })
+    expect(emitted.filter((frame) => frame.type === 'result')).toHaveLength(1)
+    expect(emitted.find((frame) => frame.type === 'result')).toMatchObject({ is_error: false, subtype: 'success' })
+  })
+
+  it('marks a final allowed round without natural end_turn as an error', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...textBlock(0, 'truncated'), deltaStop('max_tokens')],
+    ])
+    const emitted: Frame[] = []
+
+    const res = await runTurn(
+      baseDeps({ stream: s.stream.bind(s), emit: (frame) => emitted.push(frame as Frame), maxTurns: 1 }),
+      defaultFrameContext('sess-1'),
+      [], { role: 'user', content: [{ type: 'text', text: 'hi' }] }, 'm1', new AbortController().signal,
+    )
+
+    expect(res).toMatchObject({ finalText: 'truncated', isError: true, numTurns: 1 })
+    expect(emitted.filter((frame) => frame.type === 'result')).toHaveLength(1)
+    expect(emitted.find((frame) => frame.type === 'result')).toMatchObject({ is_error: true, subtype: 'error_during_execution' })
+  })
+
+  it.each([0, -1, 1.5])('rejects invalid maxTurns %s before writing history', async (maxTurns) => {
+    const s = scriptedStreamer([])
+    const history: unknown[] = []
+    const input = { role: 'user' as const, content: [{ type: 'text', text: 'hi' }] }
+
+    await expect(runTurn(
+      baseDeps({ stream: s.stream.bind(s), maxTurns }),
+      defaultFrameContext('sess-1'),
+      history, input, 'm1', new AbortController().signal,
+    )).rejects.toThrow(/maxTurns.*positive integer/)
+
+    expect(history).toEqual([])
+    expect(s.calls).toEqual([])
+  })
+
   it('detaches a backgroundable tool and continues with its TaskOutput acknowledgement', async () => {
     const s = scriptedStreamer([
       [startStop, ...toolUseBlock(0, 'tu-1', 'Detachable', '{"command":"original"}'), deltaStop('tool_use')],

@@ -37,6 +37,12 @@ interface CatalogEntry {
   body: string
 }
 
+export interface NativeSkillView {
+  section(): string
+  bodyOf(name: string): { text: string; isError?: boolean }
+  commands(): NativeSkillCommand[]
+}
+
 export class NativeSkillCatalog {
   private readonly cwd: string | undefined
   /** Spawn `Options.skills`. `undefined` keeps the CLI default: every skill
@@ -96,11 +102,49 @@ export class NativeSkillCatalog {
     this.byName = new Map(entries.map((entry) => [entry.record.name, entry]))
   }
 
+  /** A scoped policy over the same discovery cache. The view reads the
+   *  catalog's current entries on every call, so reloads are visible without
+   *  another disk scan. */
+  view(policy?: readonly string[] | 'all'): NativeSkillView {
+    const scopedPolicy = Array.isArray(policy) ? [...policy] : policy
+    return {
+      section: () => this.sectionFor(scopedPolicy),
+      bodyOf: (name) => this.bodyOfFor(name, scopedPolicy),
+      commands: () => this.commandsFor(scopedPolicy),
+    }
+  }
+
   /** The `<available_skills>` block, or `''` when nothing is listable. */
   section(): string {
+    return this.view(this.policy).section()
+  }
+
+  /** The `/` command catalog: everything the user can still type. */
+  commands(): NativeSkillCommand[] {
+    return this.view(this.policy).commands()
+  }
+
+  /** Body for the model-facing Skill tool. Refused unless the skill is
+   *  model-listable (`disable-model-invocation` is clamped out of that set by
+   *  {@link stateOf}). */
+  bodyOf(name: string): { text: string; isError?: boolean } {
+    return this.view(this.policy).bodyOf(name)
+  }
+
+  /** Body for a user `/name` turn. Works for every state except `off`, and
+   *  ignores `disable-model-invocation` (that flag governs the model only). */
+  expand(name: string): { body: string } | null {
+    const entry = this.byName.get(name)
+    if (!entry) return null
+    if (this.stateOf(entry, this.policy) === 'off') return null
+    if (entry.record.userInvocable === false) return null
+    return { body: entry.body }
+  }
+
+  private sectionFor(policy: readonly string[] | 'all' | undefined): string {
     const lines: string[] = []
     for (const entry of this.entries) {
-      const state = this.stateOf(entry)
+      const state = this.stateOf(entry, policy)
       if (state === 'on') lines.push(`- ${entry.record.name}: ${entry.record.description}`)
       else if (state === 'name-only') lines.push(`- ${entry.record.name}`)
     }
@@ -108,11 +152,10 @@ export class NativeSkillCatalog {
     return `<available_skills>\n${lines.join('\n')}\n</available_skills>`
   }
 
-  /** The `/` command catalog: everything the user can still type. */
-  commands(): NativeSkillCommand[] {
+  private commandsFor(policy: readonly string[] | 'all' | undefined): NativeSkillCommand[] {
     const out: NativeSkillCommand[] = []
     for (const entry of this.entries) {
-      if (this.stateOf(entry) === 'off') continue
+      if (this.stateOf(entry, policy) === 'off') continue
       if (entry.record.userInvocable === false) continue
       out.push({
         name: entry.record.name,
@@ -123,30 +166,16 @@ export class NativeSkillCatalog {
     return out
   }
 
-  /** Body for the model-facing Skill tool. Refused unless the skill is
-   *  model-listable (`disable-model-invocation` is clamped out of that set by
-   *  {@link stateOf}). */
-  bodyOf(name: string): { text: string; isError?: boolean } {
+  private bodyOfFor(name: string, policy: readonly string[] | 'all' | undefined): { text: string; isError?: boolean } {
     const entry = this.byName.get(name)
     if (!entry) return unknownSkill(name)
-    const state = this.stateOf(entry)
+    const state = this.stateOf(entry, policy)
     if (state !== 'on' && state !== 'name-only') return unknownSkill(name)
     return { text: entry.body }
   }
 
-  /** Body for a user `/name` turn. Works for every state except `off`, and
-   *  ignores `disable-model-invocation` (that flag governs the model only). */
-  expand(name: string): { body: string } | null {
-    const entry = this.byName.get(name)
-    if (!entry) return null
-    if (this.stateOf(entry) === 'off') return null
-    if (entry.record.userInvocable === false) return null
-    return { body: entry.body }
-  }
-
-  private stateOf(entry: CatalogEntry): NativeSkillState {
+  private stateOf(entry: CatalogEntry, policy: readonly string[] | 'all' | undefined): NativeSkillState {
     const name = entry.record.name
-    const policy = this.policy
     let base: NativeSkillState
     if (policy === 'all') {
       base = 'on'
