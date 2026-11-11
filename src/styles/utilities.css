@@ -535,7 +535,6 @@
    stretching it would push the margin-left:auto .diff-stat-hint to the
    far edge of the scroll area on wide diffs. */
 .diff-block-inner {
-  padding: var(--space-1) 0;
   min-width: max-content;
 }
 .diff-chunk-label {

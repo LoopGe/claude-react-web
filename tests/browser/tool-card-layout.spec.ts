@@ -11,8 +11,9 @@ const HEADER_PARTS = [
   '.tool-copy-btn',
 ] as const
 
-async function openFixture(page: import('@playwright/test').Page, fileVariant = false) {
-  await page.goto(`/tests/browser/fixtures/tool-card-layout.html${fileVariant ? '?file=1' : ''}`, { waitUntil: 'domcontentloaded' })
+async function openFixture(page: import('@playwright/test').Page, variant?: 'file' | 'edit' | 'write' | 'notebook') {
+  const query = variant ? `?${variant}=1` : ''
+  await page.goto(`/tests/browser/fixtures/tool-card-layout.html${query}`, { waitUntil: 'domcontentloaded' })
   await expect(page.locator('.tool-card-header')).toBeVisible()
 }
 
@@ -83,8 +84,30 @@ test('very narrow cards compact action labels without clipping the copy button',
 
 test('a short file path does not turn blank title space into a copy target', async ({ page }) => {
   await page.setViewportSize({ width: 875, height: 400 })
-  await openFixture(page, true)
+  await openFixture(page, 'file')
 
   const copyTargetWidth = await page.locator('.tool-card-read .tool-card-filepath').evaluate((element) => element.getBoundingClientRect().width)
   expect(copyTargetWidth).toBeLessThan(300)
 })
+
+for (const variant of ['edit', 'write', 'notebook'] as const) {
+  test(`${variant} keeps one 4px padding layer above and below the diff`, async ({ page }) => {
+    await page.setViewportSize({ width: 875, height: 400 })
+    await openFixture(page, variant)
+    if (variant === 'edit') await page.locator('.edit-diff-summary').click()
+
+    const inner = page.locator('.diff-block-inner')
+    await expect(inner).toBeVisible()
+    await expect.poll(() => inner.evaluate((element) => {
+      const rows = element.querySelectorAll('.diff-line')
+      if (rows.length === 0) return null
+      const outer = element.getBoundingClientRect()
+      const first = rows[0]!.getBoundingClientRect()
+      const last = rows[rows.length - 1]!.getBoundingClientRect()
+      return {
+        top: Math.round(first.top - outer.top),
+        bottom: Math.round(outer.bottom - last.bottom),
+      }
+    })).toEqual({ top: 4, bottom: 4 })
+  })
+}
