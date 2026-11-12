@@ -10,6 +10,7 @@ import type { EffortLevel } from './anthropic-stream.js'
 import { profileFromDefinition, type NativeAgentProfile } from './agent-profile.js'
 import { filterToolsForProfile } from './agent-tools.js'
 import type { NativeSkillView } from './skills.js'
+import { isValidNativeMaxTurns } from './session-log/format.js'
 import type { NativeSubagentDescriptorEvent } from './session-log/format.js'
 
 /** Everything the Agent tool needs from the session that owns it. All fields
@@ -132,6 +133,10 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
         }
       }
 
+      if (profile?.maxTurns !== undefined && !isValidNativeMaxTurns(profile.maxTurns)) {
+        return { text: 'maxTurns must be a positive integer', isError: true }
+      }
+
       const instruction = profile?.instruction ?? DEFAULT_AGENT_INSTRUCTION
       const skillView = deps.skillView(profile?.skills)
       const nestedSystem = `${deps.system(skillView)}\n\n${instruction}`
@@ -173,6 +178,7 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
           depth: 1,
           profile: profile ? structuredClone(profile) : null,
         })
+        if (ctx.signal.aborted) return { text: 'aborted', isError: true }
         turn = await runTurn(
           {
             stream: (req) => deps.streamFor(req, {

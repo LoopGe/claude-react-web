@@ -181,6 +181,32 @@ describe('createAgentTool', () => {
     expect(s.calls).toHaveLength(1)
   })
 
+  it('does not stream when the signal aborts while descriptor persistence is pending', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'must not stream'), deltaStop('end_turn')]])
+    let releaseDescriptor!: () => void
+    const gate = new Promise<void>((resolve) => { releaseDescriptor = resolve })
+    const appendDescriptor = vi.fn(async (input: Parameters<AgentToolDeps['appendDescriptor']>[0]) => {
+      await gate
+      return { ...input, seq: 4, timestamp: 't' }
+    })
+    const emitted: Frame[] = []
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      appendDescriptor,
+      emit: (frame) => emitted.push(frame as Frame),
+    }))
+    const ac = new AbortController()
+
+    const pending = runAgent(agent, { description: 'd', prompt: 'p' }, ac.signal)
+    await vi.waitFor(() => expect(appendDescriptor).toHaveBeenCalledOnce())
+    ac.abort()
+    releaseDescriptor()
+
+    expect(await pending).toEqual({ text: 'aborted', isError: true })
+    expect(s.calls).toHaveLength(0)
+    expect(emitted).toHaveLength(0)
+  })
+
   it('returns an outer error without streaming when descriptor persistence fails', async () => {
     const s = scriptedStreamer([])
     const emitted: Frame[] = []
@@ -502,6 +528,26 @@ describe('createAgentTool', () => {
     expect(outcome).toEqual({ text: 'max turns reached (1)\n\nPARTIAL', isError: true })
     expect(outcome.text).not.toContain('tool not executed')
     expect(s.calls).toHaveLength(1)
+  })
+
+  it.each([0, -1, 1.5])('rejects invalid profile maxTurns %s before appending or streaming', async (maxTurns) => {
+    const s = scriptedStreamer([])
+    const appendDescriptor = vi.fn(baseDeps().appendDescriptor)
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      appendDescriptor,
+      agentStore: fakeStore({
+        invalid: {
+          name: 'invalid', description: 'Invalid', prompt: 'INVALID', enabled: true, maxTurns,
+        },
+      }),
+    }))
+
+    const outcome = await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'invalid' })
+
+    expect(outcome).toEqual({ text: 'maxTurns must be a positive integer', isError: true })
+    expect(appendDescriptor).not.toHaveBeenCalled()
+    expect(s.calls).toHaveLength(0)
   })
 
   it('rejects unsupported definition fields before appending or starting a nested stream', async () => {

@@ -15,6 +15,12 @@ import type { NativeAgentBase, NativeAgentProfile, NativeAgentSelectionEvent } f
 
 export const NATIVE_SESSION_LOG_VERSION = 1
 
+/** Execution values shared by descriptor persistence and Agent admission:
+ *  only a positive integer can bound a nested run. */
+export function isValidNativeMaxTurns(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+}
+
 export interface NativeSessionHeader {
   type: 'session/header'
   v: number
@@ -412,8 +418,8 @@ function parseDescriptorProfile(
     profile.permissionMode = raw.permissionMode
   }
   if (raw.maxTurns !== undefined) {
-    if (typeof raw.maxTurns !== 'number' || !Number.isFinite(raw.maxTurns)) {
-      corrupt(sessionId, path, 'subagent/descriptor event profile.maxTurns must be a finite number')
+    if (!isValidNativeMaxTurns(raw.maxTurns)) {
+      corrupt(sessionId, path, 'subagent/descriptor event profile.maxTurns must be a positive integer')
     }
     profile.maxTurns = raw.maxTurns
   }
