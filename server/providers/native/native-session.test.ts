@@ -2736,6 +2736,36 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('exposes durable skill bodies across catalog reload and resume for compaction', async () => {
+    const dir = await tempDir('native-skill-compaction-entries-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    const provider = new NativeProvider({ stateDir: dir })
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('ok')], [])
+    const session = provider.createSession({ id: 'skill-compaction-entries', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
+    session.enqueueUserMessage({ ...userMsg('/demo do this'), uuid: 'skill-anchor' } as never)
+    await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
+
+    const expected = canonicalSkillBody(dir, 'demo', '# demo body')
+    const getEntries = () => (session as unknown as {
+      getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[]
+    }).getSkillCompactionEntries()
+    expect(getEntries()).toEqual([{ afterUserUuid: 'skill-anchor', body: expected }])
+
+    // The durable body, not a later catalog rendering, is the compaction input.
+    await writeProjectSkill(dir, 'demo', { body: '# replacement body' })
+    await session.reloadSkills?.()
+    expect(getEntries()).toEqual([{ afterUserUuid: 'skill-anchor', body: expected }])
+
+    await session.destroy()
+    const resumed = provider.createSession({ id: 'skill-compaction-entries', cwd: dir, resume: 'skill-compaction-entries' })
+    expect((resumed as unknown as { getSkillCompactionEntries(): unknown }).getSkillCompactionEntries())
+      .toEqual([{ afterUserUuid: 'skill-anchor', body: expected }])
+    await resumed.destroy()
+  })
+
   it('persists the consumed prompt when skill discovery fails, then replays it exactly once', async () => {
     const dir = await tempDir('native-skill-expand-fail-')
     // Fail the constructor's discovery pass; the session is otherwise healthy.
@@ -3396,6 +3426,15 @@ describe('NativeSession', () => {
     expect((frames.find((frame) => frame.type === 'result') as Frame).result).toBe('MCP not ready')
     expect(requests).toEqual([])
     await vi.waitFor(() => expect(internals.pumping).toBe(false))
+
+    const expected = canonicalSkillBody(dir, 'demo', '# demo body')
+    expect((session as unknown as {
+      getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[]
+    }).getSkillCompactionEntries()).toEqual([
+      { afterUserUuid: 'u1', body: expected },
+    ])
+    expect(JSON.stringify((session as unknown as { history: unknown[] }).history)
+      .match(/# demo body/g)).toHaveLength(1)
 
     internals.mcp = undefined
     session.enqueueUserMessage(userMsg('second') as never)

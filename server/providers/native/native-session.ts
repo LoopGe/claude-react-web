@@ -1251,6 +1251,21 @@ export class NativeSession implements ProviderSessionHandle {
     this.history.push({ role: 'user', content: message.message.content })
   }
 
+  /** Compaction-only projection of the durable raw-user → instruction pairs.
+   *  Adjacency is the pairing contract: a raw-only crash prefix or an unrelated
+   *  later skill event must never synthesize an invocation. */
+  getSkillCompactionEntries(): readonly { afterUserUuid: string; body: string }[] {
+    const entries: Array<{ afterUserUuid: string; body: string }> = []
+    for (let index = 0; index < this.log.events.length - 1; index++) {
+      const user = this.log.events[index]
+      const skill = this.log.events[index + 1]
+      if (user.type === 'user' && user.parent_tool_use_id === null && skill.type === 'session/skill') {
+        entries.push({ afterUserUuid: user.uuid, body: skill.body })
+      }
+    }
+    return entries
+  }
+
   /** Compact the conversation in place (P1.1 auto-compact): append the
    *  append-only `session/compact` boundary, then restart the model history
    *  from the captured context snapshot plus the summary. Only legal while the

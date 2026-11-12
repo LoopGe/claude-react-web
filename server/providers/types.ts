@@ -275,6 +275,10 @@ export interface ProviderSessionHandle {
    *  token-count API calls — used by the fire-and-forget auto-compact probe.
    *  The REST breakdown endpoint calls it with no args (`'full'`). */
   getContextUsage?(opts?: { detail?: 'summary' | 'full' }): Promise<unknown>
+  /** Durable raw-user → skill-instruction pairs for compaction-only history
+   *  projection. The manager anchors each canonical body to the original user
+   *  UUID without exposing the instruction in UI history or search. */
+  getSkillCompactionEntries?(): readonly { afterUserUuid: string; body: string }[]
   /** Compact the conversation in place (P1.1 auto-compact): append the
    *  provider's compact boundary, then restart the model history from the
    *  provider's captured context snapshot plus `summary`. Only legal while the

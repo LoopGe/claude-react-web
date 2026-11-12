@@ -2380,6 +2380,92 @@ describe('SessionManager', () => {
     expect(sm.get(next.id).phase).toBe('idle')
   })
 
+  it('compact() projects durable skill bodies after their raw user anchors without changing UI history', async () => {
+    const info = await sm.create({})
+    sm.send(info.id, '/demo do this')
+    const rawUuid = (sm.getHistory(info.id)![0] as { uuid: string }).uuid
+    mockHandles[0].emit({
+      type: 'user', uuid: 'subagent-frame', parent_tool_use_id: 'agent-1',
+      message: { role: 'user', content: [{ type: 'text', text: 'SUBAGENT CONTEXT' }] },
+    })
+    mockHandles[0].emit({ type: 'result', uuid: 'turn-result', session_id: info.id })
+    await tick()
+
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    live.handle.getSkillCompactionEntries = () => [
+      { afterUserUuid: rawUuid, body: 'DURABLE SKILL BODY' },
+      { afterUserUuid: 'not-in-the-compaction-window', body: 'ORPHAN BODY' },
+    ]
+    const uiBefore = sm.getHistory(info.id)!
+    expect(JSON.stringify(uiBefore)).not.toContain('DURABLE SKILL BODY')
+
+    await sm.compact(info.id)
+
+    const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
+    expect(input).toHaveLength(4)
+    expect(input[0]).toMatchObject({ uuid: rawUuid, parent_tool_use_id: null })
+    expect(input[1]).toMatchObject({
+      type: 'user', parent_tool_use_id: null,
+      message: { role: 'user', content: [{ type: 'text', text: 'DURABLE SKILL BODY' }] },
+    })
+    expect(input[2]).toMatchObject({ uuid: 'subagent-frame', parent_tool_use_id: 'agent-1' })
+    expect(input[3]).toMatchObject({ uuid: 'turn-result', type: 'result' })
+    expect(JSON.stringify(input)).not.toContain('ORPHAN BODY')
+    expect(sm.getHistory(info.id)).toBeNull()
+    expect(uiBefore).toHaveLength(3)
+    expect(JSON.stringify(uiBefore)).not.toContain('DURABLE SKILL BODY')
+  })
+
+  it('native auto-compact uses the same skill projection and keeps it out of the replacement UI history', async () => {
+    const info = await sm.create({})
+    sm.send(info.id, '/demo do this')
+    const rawUuid = (sm.getHistory(info.id)![0] as { uuid: string }).uuid
+    mockHandles[0].emit({
+      type: 'user', uuid: 'auto-subagent-frame', parent_tool_use_id: 'agent-1',
+      message: { role: 'user', content: [{ type: 'text', text: 'AUTO SUBAGENT CONTEXT' }] },
+    })
+    mockHandles[0].emit({ type: 'result', uuid: 'auto-turn-result', session_id: info.id })
+    await tick()
+
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    live.handle.getSkillCompactionEntries = () => [{ afterUserUuid: rawUuid, body: 'AUTO SKILL BODY' }]
+    const compactInPlace = vi.fn(async () => {})
+    live.handle.compactInPlace = compactInPlace
+    live.lastContextUsage = {
+      totalTokens: 90, maxTokens: 100, rawMaxTokens: 100, percentage: 90, model: 'test-model',
+    }
+
+    await (sm as unknown as { maybeAutoCompact(session: Session): Promise<void> }).maybeAutoCompact(live)
+
+    const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
+    expect(input).toHaveLength(4)
+    expect(input[0]).toMatchObject({ uuid: rawUuid })
+    expect(input[1]).toMatchObject({
+      type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'AUTO SKILL BODY' }] },
+    })
+    expect(input[2]).toMatchObject({ uuid: 'auto-subagent-frame', parent_tool_use_id: 'agent-1' })
+    expect(input[3]).toMatchObject({ uuid: 'auto-turn-result', type: 'result' })
+    expect(compactInPlace).toHaveBeenCalledWith('MOCK SUMMARY', {
+      uuid: expect.any(String), timestamp: expect.any(String),
+    })
+    const replacementHistory = sm.getHistory(info.id)!
+    expect(replacementHistory).toHaveLength(2)
+    expect(JSON.stringify(replacementHistory)).not.toContain('AUTO SKILL BODY')
+  })
+
+  it('compact() keeps Claude summarizer input byte-for-byte unchanged without the optional provider method', async () => {
+    const info = await sm.create({})
+    sm.send(info.id, 'ordinary turn')
+    mockHandles[0].emit({ type: 'result', uuid: 'claude-result', session_id: info.id })
+    await tick()
+    const before = sm.getHistory(info.id)!
+    const serialized = JSON.stringify(before)
+
+    await sm.compact(info.id)
+
+    expect(JSON.stringify(vi.mocked(summarizeForCompact).mock.calls[0][0])).toBe(serialized)
+  })
+
   it('compact() falls back to a plain clear when the summary is empty', async () => {
     vi.mocked(summarizeForCompact).mockResolvedValueOnce('')
     const info = await sm.create({})

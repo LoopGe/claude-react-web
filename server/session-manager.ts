@@ -4699,7 +4699,7 @@ export class SessionManager {
     // Merged view — behavior parity with the old single mixed ring (the
     // summarizer always saw subagent tool frames; it still sees subagent
     // frames, including the now-forwarded text/thinking ones).
-    const merged = this.mergedHistory(s)
+    const merged = this.mergedHistoryForCompaction(s)
     const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'))
     // No post-await phase re-check here: doClear owns that invariant (a
     // seeded clear 409s when input raced the summarize window) and runs it
@@ -4838,7 +4838,7 @@ export class SessionManager {
       const threshold = s.autoCompactWindow
         ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
       if (usage.totalTokens < threshold) return
-      const summary = await summarizeForCompact(this.mergedHistory(s), this.auxTargetFor(s.id, 'recap'))
+      const summary = await summarizeForCompact(this.mergedHistoryForCompaction(s), this.auxTargetFor(s.id, 'recap'))
       if (!summary) return
       // A user turn (or a load/clear/delete) can win the summarization window.
       // Re-check identity and phase before touching anything.
@@ -7239,6 +7239,40 @@ export class SessionManager {
     // Global session-update — sidebar / other tabs see the new recap
     // through the same SessionInfo projection used everywhere else.
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
+  }
+
+  /** Compact summarizer input: the ordinary main+subagent merged view plus
+   *  durable native skill instructions anchored to their raw user turns. The
+   *  projection is deliberately a copy — the rings, disk history and search
+   *  continue to expose only the user's original invocation. */
+  private mergedHistoryForCompaction(s: Session): SDKMessage[] {
+    const merged = this.mergedHistory(s)
+    const entries = s.handle.getSkillCompactionEntries?.()
+    if (!entries?.length) return merged
+
+    const bodiesByAnchor = new Map<string, string[]>()
+    for (const entry of entries) {
+      const bodies = bodiesByAnchor.get(entry.afterUserUuid)
+      if (bodies) bodies.push(entry.body)
+      else bodiesByAnchor.set(entry.afterUserUuid, [entry.body])
+    }
+    const projected: SDKMessage[] = []
+    for (const message of merged) {
+      projected.push(message)
+      if (message.type !== 'user' || message.parent_tool_use_id !== null || !message.uuid) continue
+      const bodies = bodiesByAnchor.get(message.uuid)
+      if (!bodies) continue
+      for (const body of bodies) {
+        projected.push({
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'text', text: body }] },
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: s.id,
+        })
+      }
+    }
+    return projected
   }
 
   /** Chronological merged view of both history rings (sort by receivedAt).
