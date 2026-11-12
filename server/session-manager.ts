@@ -23,14 +23,14 @@ import {
 } from '@anthropic-ai/claude-agent-sdk'
 import type { ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
-import { sameCwd } from './cwd-equality.js'
+import { sameCwd, canonicalCwd } from './cwd-equality.js'
 import { isEmptyResultFrame } from '../shared/results.js'
 import type { FileAttachmentRef } from '../shared/attachments.js'
 import { fileHandleText } from '../shared/upload-handle.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { SessionStore, coerceMemory, coerceTaskBudget, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { SteeredStore, spliceSteeredIntoPage } from './steered-store.js'
@@ -55,7 +55,7 @@ import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessag
 import type { TurnChangesPayload, TurnDiffOptions, TurnDiffPayload, WsTurnChanges } from '../shared/turn-changes.js'
 import { toolTargetPaths } from './snapshot/tool-targets.js'
 import { isInsideWorkTree, tryCaptureGitHead, tryCaptureRepoRoot } from './git.js'
-import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees } from './session-worktree.js'
+import { ensureWorktreeForResume, provisionWorktree, removeWorktreeForSession, sweepOrphanWorktrees, worktreePathOf } from './session-worktree.js'
 import { cancelGitBroadcast } from './git-broadcast.js'
 import { metrics } from './metrics.js'
 import { ringImagePayload } from './ring-metrics.js'
@@ -830,6 +830,9 @@ export class SessionManager {
    *  confirm its exit. Their tombstone lifts once every real process is gone;
    *  completed ordinary deletes must stay tombstoned until explicit adoption. */
   private resumeAfterProcessExit = new Set<string>()
+  /** Failed permanent clears retain their already-created replacement so a
+   *  repeated command retries deletion instead of accumulating empty sessions. */
+  private permanentClearReplacementIds = new Map<string, string>()
   private pendingTitleWrites = new Map<string, Promise<void>>()
   private historyCap: number
   private subagentHistoryCap: number
@@ -4362,14 +4365,16 @@ export class SessionManager {
    *  REPL-only feature in non-interactive mode), so we drive the reset
    *  ourselves. Rather than destroy the pre-clear conversation P1, we spawn a
    *  **brand-new fresh conversation Y under a new id** in this tab and detach
-   *  X. P1's on-disk transcript is ALWAYS left intact so resume(X) re-adopts
-   *  it and recovers the conversation; the cleared tab gets a clean slate.
+   *  X. By default, X's on-disk transcript is left intact so resume(X) can
+   *  re-adopt the pre-clear conversation. With `deleteTranscript`, the same
+   *  locked permanent-delete path as explicit session deletion removes X's
+   *  transcript and app sidecars while retaining the worktree inherited by Y.
    *
    *  X is REMOVED from the store + broadcasts `removed` so it leaves the
    *  sidebar — /clear should not leave a dormant clone cluttering the list.
-   *  Mental model: "spawn fresh Y + unload X (removed, transcript kept)".
-   *  This mirrors how the `claude` CLI treats /clear (a new session) and
-   *  aligns with fork()/create().
+   *  Mental model: "spawn fresh Y + unload X (removed, transcript kept by
+   *  default)". This mirrors how the `claude` CLI treats /clear and aligns
+   *  with fork()/create().
    *
    *  No `session-cleared` frame is emitted for this — Y is a fresh session
    *  with no pre-clear content to hide, so the client simply swaps the panel
@@ -4379,18 +4384,57 @@ export class SessionManager {
    *
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
-  async clear(id: string, opts?: { seedText?: string; handoff?: boolean }): Promise<SessionInfo> {
+  async clear(id: string, opts?: { seedText?: string; handoff?: boolean; deleteTranscript?: boolean }): Promise<SessionInfo> {
     // Idempotency fast path BEFORE queueing on the op lock: a second clear()
     // while one is in flight returns the current info at once, as it always
     // has, instead of waiting for the first to remove X and then 404ing.
     const inFlight = this.sessions.get(id)
-    if (inFlight?.clearing) return this.info(inFlight)
-    return this.opLock.run(id, () => this.doClear(id, opts))
+    if (inFlight?.clearing) {
+      if (opts?.deleteTranscript) {
+        throw new HttpError(409, `session ${id} is already clearing; retry permanent clear after it finishes`)
+      }
+      return this.info(inFlight)
+    }
+    return this.opLock.run(id, () => this.doClear(
+      id,
+      opts,
+      opts?.deleteTranscript ? this.permanentClearReplacementIds.get(id) : undefined,
+    ))
   }
 
-  private async doClear(id: string, opts?: { seedText?: string; handoff?: boolean }): Promise<SessionInfo> {
+  private async doClear(
+    id: string,
+    opts?: { seedText?: string; handoff?: boolean; deleteTranscript?: boolean },
+    replacementId?: string,
+  ): Promise<SessionInfo> {
+    if (replacementId) {
+      const replacement = this.sessions.get(replacementId)
+      if (!replacement && this.store?.has(replacementId)) {
+        throw new HttpError(409, `replacement session ${replacementId} is dormant; resume it or permanently delete session ${id} directly`)
+      }
+      if (replacement) {
+        const source = this.sessions.get(id)
+        if (source?.clearing) {
+          throw new HttpError(409, `session ${id} is already clearing; retry permanent clear after it finishes`)
+        }
+        if (source) source.clearing = true
+        try {
+          await this.deleteSourceForPermanentClear(id, replacementId)
+          return this.info(this.requireRunnable(replacementId))
+        } finally {
+          if (source) source.clearing = false
+        }
+      }
+      this.permanentClearReplacementIds.delete(id)
+    }
+
     const s = this.requireRunnable(id)
-    if (s.clearing) return this.info(s)
+    if (s.clearing) {
+      if (opts?.deleteTranscript) {
+        throw new HttpError(409, `session ${id} is already clearing; retry permanent clear after it finishes`)
+      }
+      return this.info(s)
+    }
 
     // A SEEDED clear (the /handoff continuation, also the idle-compact
     // plugin's automatic compaction) must not drain input that arrived while
@@ -4647,25 +4691,31 @@ export class SessionManager {
         }
       }
 
-      // Detach X now that Y is live. unload() destroys the live Query (the
-      // subprocess exits asynchronously, releasing the transcript file
-      // handle), marks the session not-running, and removes it from the live
-      // map. The transcript file is NEVER touched — P1 survives on disk so
-      // resume(X) re-adopts it via adoptDiskSession and recovers the pre-clear
-      // conversation.
+      // Detach X now that Y is live. The ordinary path destroys the live
+      // Query, removes X from the store, and leaves its transcript resumable.
+      // The permanent path instead shares delete()'s process-exit barrier and
+      // strict transcript/app-sidecar cleanup, but never removes the worktree
+      // inherited by Y.
       //
-      // removeFromStore drops X from sessions.json + broadcasts `removed` so it
-      // leaves the sidebar — /clear should not leave a dormant clone cluttering
-      // the list. The trade-off is resume(X) loses app-level config (model/
+      // Both paths remove X from sessions.json and broadcast `removed` only
+      // after their cleanup succeeds, so X leaves the sidebar. The ordinary
+      // trade-off is that resume(X) loses app-level config (model/
       // permissionMode/plugins/hooks/skillOverride), rebuilt from SDK disk
-      // metadata by adoptDiskSession; the conversation content is intact, which
-      // is the valuable part. (Side Chats can't be /clear'd from the UI — their
-      // composer bypasses local-command processing — so the parentId branch is
-      // defensive only; if side-chat /clear is ever wired, Y still inherits
-      // parentId via the freshOpts block above.)
-      await this.unload(id, { removeFromStore: true })
+      // metadata by adoptDiskSession; the conversation content is intact,
+      // which is the valuable part. (Side Chats can't be /clear'd from the UI
+      // — their composer bypasses local-command processing — so the parentId
+      // branch is defensive only; if side-chat /clear is ever wired, Y still
+      // inherits parentId via the freshOpts block above.)
+      if (opts?.deleteTranscript) {
+        this.permanentClearReplacementIds.set(id, newYId)
+        await this.deleteSourceForPermanentClear(id, newYId)
+      } else {
+        this.permanentClearReplacementIds.delete(id)
+        await this.unload(id, { removeFromStore: true })
+      }
 
       log.info(`[session ${id}] clear: detached (fresh session=${newYId})`)
+      if (opts?.deleteTranscript) return this.info(this.requireRunnable(newYId))
       return newY
     } finally {
       s.clearing = false
@@ -7873,7 +7923,58 @@ export class SessionManager {
     // an SDK control request that never answers holds the lock forever, and
     // delete must still work then — it already tolerates running alongside
     // other work (unload is idempotent; the health monitor calls it unlocked).
-    return this.opLock.run(id, async () => {
+    return this.opLock.run(
+      id,
+      () => this.doDeleteLocked(id, {
+        deleteTranscript: opts?.deleteTranscript === true,
+        cleanupWorktree: true,
+      }),
+      { maxWaitMs: this.deleteLockMaxWaitMs },
+    )
+  }
+
+  private async hasSurvivingWorktreeConsumer(id: string, meta: SessionMeta): Promise<boolean> {
+    if (!this.store || !meta.worktree) return false
+    const stateDir = this.store.getDir()
+    const target = resolve(await canonicalCwd(worktreePathOf(stateDir, id, meta.worktree, meta.cwd)))
+    for (const other of this.store.list()) {
+      if (other.id === id) continue
+      const otherPath = other.worktree
+        ? worktreePathOf(stateDir, other.id, other.worktree, other.cwd)
+        : other.cwd
+      if (!otherPath) continue
+      const candidate = resolve(await canonicalCwd(otherPath))
+      if (candidate === target || candidate.startsWith(target + sep)) return true
+    }
+    return false
+  }
+
+  private async deleteSourceForPermanentClear(id: string, replacementId: string): Promise<void> {
+    // Never destroy the recoverable source when its replacement is already
+    // dead. The same preflight covers initial clear and command-driven retry.
+    this.requireRunnable(replacementId)
+    try {
+      await this.doDeleteLocked(id, { deleteTranscript: true, cleanupWorktree: false })
+    } catch (err) {
+      // Y already exists. Make its latest state visible in X's slot without
+      // hiding the failed deletion or resurrecting a deleted replacement.
+      const liveY = this.sessions.get(replacementId)
+      const metaY = this.store?.get(replacementId)
+      const latestY = liveY ? this.info(liveY) : metaY ? this.infoFromMeta(metaY) : undefined
+      if (latestY) {
+        this.broadcastGlobal({ kind: 'created', session: latestY, joinGroupOf: id, replacesSource: true })
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      throw new HttpError(500, `Created replacement session ${replacementId}, but permanent deletion of session ${id} failed: ${message}`)
+    }
+  }
+
+  /** Delete while the caller owns the session op lock. clear-permanent uses
+   *  the same lifecycle but retains the worktree inherited by its replacement. */
+  private async doDeleteLocked(
+    id: string,
+    opts: { deleteTranscript: boolean; cleanupWorktree: boolean },
+  ): Promise<void> {
       this.beginPermanentDelete(id)
       // Read the meta BEFORE store.remove drops the entry — the worktree
       // info must survive long enough to drive the cleanup below.
@@ -8015,10 +8116,11 @@ export class SessionManager {
       }
       // Best-effort worktree teardown (dir removed, branch kept). A failure
       // only warns — deletion must not be blocked by it.
-      if (meta?.worktree && this.store) {
+      if (opts.cleanupWorktree && meta?.worktree && this.store && !(await this.hasSurvivingWorktreeConsumer(id, meta))) {
         await removeWorktreeForSession(this.store.getDir(), id, meta.worktree, log, meta.cwd)
       }
       this.store?.remove(id)
+      this.permanentClearReplacementIds.delete(id)
       if (!opts?.deleteTranscript) {
         void this.promptUuidStore.remove(id)
         void this.steeredStore.remove(id)
@@ -8036,7 +8138,6 @@ export class SessionManager {
       if (opts?.deleteTranscript) this.finishPermanentDelete(id)
       else this.finishOrdinaryDelete(id)
       this.broadcastGlobal({ kind: 'removed', id })
-    }, { maxWaitMs: this.deleteLockMaxWaitMs })
   }
 
   /** Destroy a provider handle and retain it until its real process exit.

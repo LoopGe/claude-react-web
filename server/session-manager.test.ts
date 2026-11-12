@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, t
 vi.setConfig({ testTimeout: 30_000 })
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -1909,6 +1909,282 @@ describe('SessionManager', () => {
     expect(store.get(info.id)).toBeDefined()
   })
 
+  it('rejects a permanent clear while an ordinary clear is already in flight', async () => {
+    const info = await sm.create({})
+    const live = (sm as unknown as { sessions: Map<string, { clearing: boolean }> }).sessions.get(info.id)!
+    live.clearing = true
+    try {
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toMatchObject({ status: 409 })
+    } finally {
+      live.clearing = false
+    }
+  })
+
+  it('clear({ deleteTranscript: true }) removes the old transcript and starts an empty replacement', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      const { mainPath, sessionDir } = writeTranscriptArtifacts(dir, info.id)
+      const next = await sm.clear(info.id, { deleteTranscript: true })
+
+      expect(next.id).not.toBe(info.id)
+      expect(sm.getHistory(next.id)!).toHaveLength(0)
+      expect(existsSync(mainPath)).toBe(false)
+      expect(existsSync(sessionDir)).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+      expect(store.get(next.id)).toBeDefined()
+      await expect(sm.resume(info.id, { allowAdopt: true })).rejects.toThrow(/not found|deleted|cannot be resumed/i)
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent-clear failure exposes the same replacement and retries deletion without another spawn', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const rmSpy = vi.spyOn(nodeFs, 'rm').mockImplementationOnce(async () => {
+      const replacement = mockHandles[1].options.sessionId as string
+      await sm.rename(replacement, 'Latest replacement')
+      throw new Error('transcript directory locked')
+    })
+    const sub = sm.subscribeGlobal()
+    const iter = sub.iterable[Symbol.asyncIterator]()
+    try {
+      const { mainPath, sessionDir } = writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow('transcript directory locked')
+
+      expect(mockHandles).toHaveLength(2)
+      const replacement = mockHandles[1].options.sessionId as string
+      expect(store.get(info.id)).toBeDefined()
+      expect(store.get(replacement)).toBeDefined()
+      expect(existsSync(mainPath)).toBe(true)
+      const events: Array<{ kind: string; id?: string; replacesSource?: boolean; session?: { id: string; title?: string } }> = []
+      for (let i = 0; i < 4; i++) {
+        const event = await Promise.race([
+          iter.next().then((result) => result.done ? null : result.value),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 25)),
+        ])
+        if (event) events.push(event)
+      }
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'created',
+        session: expect.objectContaining({ id: replacement, title: 'Latest replacement' }),
+        replacesSource: true,
+      }))
+      expect(events).not.toContainEqual(expect.objectContaining({ kind: 'removed', id: info.id }))
+
+      rmSpy.mockRestore()
+      await sm.delete(info.id, { deleteTranscript: true })
+      expect(mockHandles).toHaveLength(2)
+      expect(existsSync(mainPath)).toBe(false)
+      expect(existsSync(sessionDir)).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+      expect(store.get(replacement)).toBeDefined()
+    } finally {
+      rmSpy.mockRestore()
+      sub.unsubscribe()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('repeating permanent clear after an early failure reuses its replacement', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const smPrivate = sm as unknown as { pendingTitleWrites: Map<string, Promise<void>> }
+    let rejectTitleWrite!: (err: Error) => void
+    const titleWrite = new Promise<void>((_resolve, reject) => { rejectTitleWrite = reject })
+    smPrivate.pendingTitleWrites.set(info.id, titleWrite)
+    // clear reaches the barrier after spawning Y; keep the rejection observed
+    // during that synchronous setup window as well as by the barrier itself.
+    void titleWrite.catch(() => {})
+    try {
+      const { mainPath, sessionDir } = writeTranscriptArtifacts(dir, info.id)
+      const first = sm.clear(info.id, { deleteTranscript: true })
+      rejectTitleWrite(new Error('title write failed'))
+      await expect(first).rejects.toThrow('title write failed')
+      const replacement = mockHandles[1].options.sessionId as string
+      expect(sm.get(info.id).terminated).toBe(false)
+      smPrivate.pendingTitleWrites.delete(info.id)
+
+      const next = await sm.clear(info.id, { deleteTranscript: true })
+
+      expect(next.id).toBe(replacement)
+      expect(mockHandles).toHaveLength(2)
+      expect(existsSync(mainPath)).toBe(false)
+      expect(existsSync(sessionDir)).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+      expect(store.get(replacement)).toBeDefined()
+    } finally {
+      rejectTitleWrite(new Error('cleanup'))
+      smPrivate.pendingTitleWrites.delete(info.id)
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('repeating permanent clear after an unload failure also reuses its replacement', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const rmSpy = vi.spyOn(nodeFs, 'rm').mockRejectedValueOnce(new Error('transcript directory locked'))
+    try {
+      const { mainPath } = writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow('transcript directory locked')
+      const replacement = mockHandles[1].options.sessionId as string
+      expect(sm.getHistory(info.id)).toBeNull()
+      rmSpy.mockRestore()
+
+      const next = await sm.clear(info.id, { deleteTranscript: true })
+
+      expect(next.id).toBe(replacement)
+      expect(mockHandles).toHaveLength(2)
+      expect(existsSync(mainPath)).toBe(false)
+      expect(store.get(info.id)).toBeUndefined()
+    } finally {
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('queued permanent clears resolve the replacement after acquiring the source lock', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const smPrivate = sm as unknown as {
+      opLock: { run: <T>(id: string, fn: () => Promise<T>) => Promise<T> }
+      pendingTitleWrites: Map<string, Promise<void>>
+    }
+    let releaseLock!: () => void
+    const lockGate = new Promise<void>((resolve) => { releaseLock = resolve })
+    const titleFailure = Promise.reject(new Error('title write failed'))
+    void titleFailure.catch(() => {})
+    smPrivate.pendingTitleWrites.set(info.id, titleFailure)
+    const holder = smPrivate.opLock.run(info.id, () => lockGate)
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      const first = sm.clear(info.id, { deleteTranscript: true })
+      const second = sm.clear(info.id, { deleteTranscript: true })
+      releaseLock()
+      await holder
+      await Promise.allSettled([first, second])
+
+      expect(mockHandles).toHaveLength(2)
+    } finally {
+      releaseLock()
+      smPrivate.pendingTitleWrites.delete(info.id)
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent-clear retry does not return a replacement deleted during the wait', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const smPrivate = sm as unknown as { pendingTitleWrites: Map<string, Promise<void>> }
+    const titleFailure = Promise.reject(new Error('title write failed'))
+    void titleFailure.catch(() => {})
+    smPrivate.pendingTitleWrites.set(info.id, titleFailure)
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow('title write failed')
+      const replacement = mockHandles[1].options.sessionId as string
+      smPrivate.pendingTitleWrites.delete(info.id)
+      const rmSpy = vi.spyOn(nodeFs, 'rm').mockImplementationOnce(async () => {
+        await sm.delete(replacement)
+      })
+      try {
+        await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow(/not found|ended/i)
+        expect(store.get(info.id)).toBeUndefined()
+        expect(store.get(replacement)).toBeUndefined()
+      } finally {
+        rmSpy.mockRestore()
+      }
+    } finally {
+      smPrivate.pendingTitleWrites.delete(info.id)
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('initial permanent clear does not return a replacement deleted during the wait', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const rmSpy = vi.spyOn(nodeFs, 'rm').mockImplementationOnce(async () => {
+      await sm.delete(mockHandles[1].options.sessionId as string)
+    })
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow(/not found|ended/i)
+      expect(store.get(info.id)).toBeUndefined()
+      expect(mockHandles).toHaveLength(2)
+    } finally {
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent clear rejects a dormant replacement instead of spawning a duplicate', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const smPrivate = sm as unknown as { pendingTitleWrites: Map<string, Promise<void>> }
+    const titleFailure = Promise.reject(new Error('title write failed'))
+    void titleFailure.catch(() => {})
+    smPrivate.pendingTitleWrites.set(info.id, titleFailure)
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow('title write failed')
+      const replacement = mockHandles[1].options.sessionId as string
+      smPrivate.pendingTitleWrites.delete(info.id)
+      await sm.sleep(replacement)
+
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toMatchObject({ status: 409 })
+      expect(mockHandles).toHaveLength(2)
+      expect(store.get(replacement)).toBeDefined()
+    } finally {
+      smPrivate.pendingTitleWrites.delete(info.id)
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('permanent-clear retry checks replacement health before deleting the source', async () => {
+    const info = await sm.create({})
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const smPrivate = sm as unknown as {
+      pendingTitleWrites: Map<string, Promise<void>>
+      sessions: Map<string, { terminated: boolean }>
+    }
+    const titleFailure = Promise.reject(new Error('title write failed'))
+    void titleFailure.catch(() => {})
+    smPrivate.pendingTitleWrites.set(info.id, titleFailure)
+    try {
+      const { mainPath } = writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow('title write failed')
+      const replacement = mockHandles[1].options.sessionId as string
+      smPrivate.pendingTitleWrites.delete(info.id)
+      smPrivate.sessions.get(replacement)!.terminated = true
+
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow(/ended|terminated/i)
+      expect(existsSync(mainPath)).toBe(true)
+      expect(store.get(info.id)).toBeDefined()
+    } finally {
+      smPrivate.pendingTitleWrites.delete(info.id)
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
   it('resume() after /clear maps the transcript SHORT model id back to the configured FULL id', async () => {
     // Regression for "executing /clear reports a model error": the CLI writes
     // the SHORT model id (deepseek-v4-flash) into the on-disk transcript's
@@ -2396,24 +2672,51 @@ describe('SessionManager', () => {
       { afterUserUuid: rawUuid, body: 'DURABLE SKILL BODY' },
       { afterUserUuid: 'not-in-the-compaction-window', body: 'ORPHAN BODY' },
     ]
-    const uiBefore = sm.getHistory(info.id)!
-    expect(JSON.stringify(uiBefore)).not.toContain('DURABLE SKILL BODY')
+    const transcriptSpy = vi.spyOn(
+      sm as unknown as { recordTranscriptFor: (sessionId: string, message: SDKMessage) => void },
+      'recordTranscriptFor',
+    )
+    transcriptSpy.mockClear()
+    const subscriber = sm.subscribe(info.id)
+    const broadcasts: SDKMessage[] = []
+    void (async () => { for await (const frame of subscriber.iterable) broadcasts.push(frame) })()
+    let releaseSummary!: (summary: string) => void
+    vi.mocked(summarizeForCompact).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { releaseSummary = resolve }),
+    )
+    const pendingCompact = sm.compact(info.id)
+    await vi.waitFor(() => expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1))
+    await tick()
 
-    await sm.compact(info.id)
+    try {
+      const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
+      expect(input).toHaveLength(4)
+      expect(input[0]).toMatchObject({ uuid: rawUuid, parent_tool_use_id: null })
+      expect(input[1]).toMatchObject({
+        type: 'user', parent_tool_use_id: null,
+        message: { role: 'user', content: [{ type: 'text', text: 'DURABLE SKILL BODY' }] },
+      })
+      expect(input[2]).toMatchObject({ uuid: 'subagent-frame', parent_tool_use_id: 'agent-1' })
+      expect(input[3]).toMatchObject({ uuid: 'turn-result', type: 'result' })
+      expect(JSON.stringify(input)).not.toContain('ORPHAN BODY')
 
-    const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
-    expect(input).toHaveLength(4)
-    expect(input[0]).toMatchObject({ uuid: rawUuid, parent_tool_use_id: null })
-    expect(input[1]).toMatchObject({
-      type: 'user', parent_tool_use_id: null,
-      message: { role: 'user', content: [{ type: 'text', text: 'DURABLE SKILL BODY' }] },
-    })
-    expect(input[2]).toMatchObject({ uuid: 'subagent-frame', parent_tool_use_id: 'agent-1' })
-    expect(input[3]).toMatchObject({ uuid: 'turn-result', type: 'result' })
-    expect(JSON.stringify(input)).not.toContain('ORPHAN BODY')
+      // The projection must stop at the summarizer input: neither real ring,
+      // the live subscriber, nor transcript recording may see the hidden body.
+      expect(live.history).toHaveLength(2)
+      expect(live.subagentHistory).toHaveLength(1)
+      expect(JSON.stringify(live.history)).not.toContain('DURABLE SKILL BODY')
+      expect(JSON.stringify(live.subagentHistory)).not.toContain('DURABLE SKILL BODY')
+      expect(broadcasts).toEqual([])
+      expect(transcriptSpy).not.toHaveBeenCalled()
+
+      releaseSummary('MOCK SUMMARY')
+      await pendingCompact
+    } finally {
+      releaseSummary('MOCK SUMMARY')
+      subscriber.unsubscribe()
+      transcriptSpy.mockRestore()
+    }
     expect(sm.getHistory(info.id)).toBeNull()
-    expect(uiBefore).toHaveLength(3)
-    expect(JSON.stringify(uiBefore)).not.toContain('DURABLE SKILL BODY')
   })
 
   it('native auto-compact uses the same skill projection and keeps it out of the replacement UI history', async () => {
@@ -2435,16 +2738,51 @@ describe('SessionManager', () => {
       totalTokens: 90, maxTokens: 100, rawMaxTokens: 100, percentage: 90, model: 'test-model',
     }
 
-    await (sm as unknown as { maybeAutoCompact(session: Session): Promise<void> }).maybeAutoCompact(live)
+    const transcriptSpy = vi.spyOn(
+      sm as unknown as { recordTranscriptFor: (sessionId: string, message: SDKMessage) => void },
+      'recordTranscriptFor',
+    )
+    transcriptSpy.mockClear()
+    const subscriber = sm.subscribe(info.id)
+    const broadcasts: SDKMessage[] = []
+    void (async () => { for await (const frame of subscriber.iterable) broadcasts.push(frame) })()
+    let releaseSummary!: (summary: string) => void
+    vi.mocked(summarizeForCompact).mockImplementationOnce(
+      () => new Promise<string>((resolve) => { releaseSummary = resolve }),
+    )
+    const pendingCompact = (sm as unknown as { maybeAutoCompact(session: Session): Promise<void> })
+      .maybeAutoCompact(live)
+    await vi.waitFor(() => expect(vi.mocked(summarizeForCompact)).toHaveBeenCalledTimes(1))
+    await tick()
 
-    const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
-    expect(input).toHaveLength(4)
-    expect(input[0]).toMatchObject({ uuid: rawUuid })
-    expect(input[1]).toMatchObject({
-      type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'AUTO SKILL BODY' }] },
-    })
-    expect(input[2]).toMatchObject({ uuid: 'auto-subagent-frame', parent_tool_use_id: 'agent-1' })
-    expect(input[3]).toMatchObject({ uuid: 'auto-turn-result', type: 'result' })
+    try {
+      const input = vi.mocked(summarizeForCompact).mock.calls[0][0]
+      expect(input).toHaveLength(4)
+      expect(input[0]).toMatchObject({ uuid: rawUuid })
+      expect(input[1]).toMatchObject({
+        type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'AUTO SKILL BODY' }] },
+      })
+      expect(input[2]).toMatchObject({ uuid: 'auto-subagent-frame', parent_tool_use_id: 'agent-1' })
+      expect(input[3]).toMatchObject({ uuid: 'auto-turn-result', type: 'result' })
+
+      // Inspect before compactInPlace clears the rings: a hidden-body append or
+      // broadcast during projection would otherwise be erased by the reset.
+      expect(live.history).toHaveLength(2)
+      expect(live.subagentHistory).toHaveLength(1)
+      expect(JSON.stringify(live.history)).not.toContain('AUTO SKILL BODY')
+      expect(JSON.stringify(live.subagentHistory)).not.toContain('AUTO SKILL BODY')
+      expect(broadcasts).toEqual([])
+      expect(transcriptSpy).not.toHaveBeenCalled()
+      expect(compactInPlace).not.toHaveBeenCalled()
+
+      releaseSummary('MOCK SUMMARY')
+      await pendingCompact
+    } finally {
+      releaseSummary('MOCK SUMMARY')
+      subscriber.unsubscribe()
+      transcriptSpy.mockRestore()
+    }
+
     expect(compactInPlace).toHaveBeenCalledWith('MOCK SUMMARY', {
       uuid: expect.any(String), timestamp: expect.any(String),
     })
@@ -12144,6 +12482,102 @@ describe('clear() worktree isolation', () => {
     expect(next.cwd).toBe(repo)
     expect(next.worktree).toBeUndefined()
     expect(store.get(next.id)?.worktree).toBeUndefined()
+  })
+
+  it('successful permanent clear preserves the inherited worktree', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    const wtPath = join(dir, 'worktrees', info.id)
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      const next = await sm.clear(info.id, { deleteTranscript: true })
+
+      expect(next.cwd).toBe(wtPath)
+      expect(existsSync(wtPath)).toBe(true)
+      expect(store.get(info.id)).toBeUndefined()
+      expect(store.get(next.id)?.cwd).toBe(wtPath)
+    } finally {
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
+  })
+
+  it('recognizes a surviving worktree consumer through a filesystem alias', async () => {
+    const wtPath = join(dir, 'worktrees', 'source')
+    const aliasPath = join(dir, 'worktrees', 'alias')
+    mkdirSync(wtPath, { recursive: true })
+    symlinkSync(wtPath, aliasPath, process.platform === 'win32' ? 'junction' : 'dir')
+    const worktree = { mainRepoPath: repo, branch: 'crw/test', baseSha: '0'.repeat(40), path: wtPath }
+    store.upsert({ id: 'source', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, cwd: wtPath, worktree })
+    store.upsert({
+      id: 'survivor', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false,
+      cwd: aliasPath, worktree: { ...worktree, path: aliasPath },
+    })
+    const smPrivate = sm as unknown as {
+      hasSurvivingWorktreeConsumer: (id: string, meta: unknown) => Promise<boolean>
+    }
+
+    expect(await smPrivate.hasSurvivingWorktreeConsumer('source', store.get('source')!)).toBe(true)
+  })
+
+  it('protects a worktree used as another session plain cwd', async () => {
+    const wtPath = join(dir, 'worktrees', 'source')
+    mkdirSync(wtPath, { recursive: true })
+    const worktree = { mainRepoPath: repo, branch: 'crw/test', baseSha: '0'.repeat(40), path: wtPath }
+    store.upsert({ id: 'source', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, cwd: wtPath, worktree })
+    store.upsert({ id: 'plain-cwd', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, cwd: wtPath })
+    const smPrivate = sm as unknown as {
+      hasSurvivingWorktreeConsumer: (id: string, meta: unknown) => Promise<boolean>
+    }
+
+    expect(await smPrivate.hasSurvivingWorktreeConsumer('source', store.get('source')!)).toBe(true)
+  })
+
+  it('protects a worktree containing another session nested plain cwd', async () => {
+    const wtPath = join(dir, 'worktrees', 'source')
+    const nestedCwd = join(wtPath, 'nested')
+    mkdirSync(nestedCwd, { recursive: true })
+    const worktree = { mainRepoPath: repo, branch: 'crw/test', baseSha: '0'.repeat(40), path: wtPath }
+    store.upsert({ id: 'source', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, cwd: wtPath, worktree })
+    store.upsert({ id: 'nested-cwd', createdAt: 1, lastActivityAt: 1, messageCount: 0, terminated: false, cwd: nestedCwd })
+    const smPrivate = sm as unknown as {
+      hasSurvivingWorktreeConsumer: (id: string, meta: unknown) => Promise<boolean>
+    }
+
+    expect(await smPrivate.hasSurvivingWorktreeConsumer('source', store.get('source')!)).toBe(true)
+  })
+
+  it('permanent clear and its deletion retry preserve the replacement worktree', async () => {
+    const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
+    const wtPath = join(dir, 'worktrees', info.id)
+    sm.send(info.id, 'hi')
+    mockHandles[0].emit({ type: 'result' })
+    await tick()
+    const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = dir
+    const rmSpy = vi.spyOn(nodeFs, 'rm').mockRejectedValueOnce(new Error('transcript directory locked'))
+    try {
+      writeTranscriptArtifacts(dir, info.id)
+      await expect(sm.clear(info.id, { deleteTranscript: true })).rejects.toThrow('transcript directory locked')
+      const replacement = mockHandles[1].options.sessionId as string
+      expect(existsSync(wtPath)).toBe(true)
+      expect(store.get(replacement)?.cwd).toBe(wtPath)
+
+      rmSpy.mockRestore()
+      await sm.delete(info.id, { deleteTranscript: true })
+
+      expect(existsSync(wtPath)).toBe(true)
+      expect(store.get(info.id)).toBeUndefined()
+      expect(store.get(replacement)?.cwd).toBe(wtPath)
+    } finally {
+      rmSpy.mockRestore()
+      if (realConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+      else process.env.CLAUDE_CONFIG_DIR = realConfigDir
+    }
   })
 })
 

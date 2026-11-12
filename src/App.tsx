@@ -65,6 +65,7 @@ import type { WsServerFrame } from './ws-types'
 import type { MessageSearchHit } from '../shared/search-results'
 import type { MessageJumpTarget } from '../shared/message-jump'
 import type { NewSessionForm, PermissionMode, SessionInfo, SessionGroup, SidebarSection } from './types'
+import type { ClearSessionOptions } from './local-commands'
 import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
 import { AppearancePanel } from './components/AppearancePanel'
@@ -141,7 +142,7 @@ import { applyAnimationSpeedToDocument } from './utils/motion-preference-dom'
 import { setMaxUploadBytes, setMaxPastedImageBytes } from './hooks/config-store'
 import { closeGroupPanelsState } from './utils/group-panels'
 import { evictFromGroups, inheritGroupId, inheritSidebarOrderId, joinGroupOfSource, placeInGroupId } from './utils/session-slot'
-import { resetCompletion } from './utils/reset-completion'
+import { resetCompletion, reconcileSnapshotPending, shouldClearResetPendingOnError } from './utils/reset-completion'
 import { buildNewLikeThisForm, buildRestartSessionBody } from './utils/new-like-this'
 import { notificationTooltip } from './utils/notifications'
 import { computeUnread, bumpLastSeen, pruneLastSeen } from './utils/unread'
@@ -1025,17 +1026,11 @@ export function App() {
           const isFirstSnapshot = !firstSnapshotSeenRef.current
           firstSnapshotSeenRef.current = true
           setSessions(frame.sessions)
-          setPendingGroupInheritance((prev) => {
-            const liveIds = new Set(frame.sessions.map((s) => s.id))
-            const next = new Map(prev)
-            for (const [newId, pending] of next) {
-              // A reconnect snapshot is authoritative for the live session
-              // set. If either side of the inheritance is gone, no later
-              // session-removed frame can resolve this marker.
-              if (!liveIds.has(newId) || !liveIds.has(pending.sourceId)) next.delete(newId)
-            }
-            return next.size === prev.size ? prev : next
-          })
+          // A reconnect snapshot cannot guarantee a later removed(X). Preserve
+          // replacement relationships so either outcome keeps Y in X's slot.
+          setPendingGroupInheritance((prev) =>
+            reconcileSnapshotPending(prev, new Set(frame.sessions.map((s) => s.id))),
+          )
           setSessionsLoaded(true)
           // Reconcile open/focused against whatever the server reports.
           const ids = new Set(frame.sessions.map((s) => s.id))
@@ -4567,15 +4562,16 @@ export function App() {
    *  as an in-place X-out/Y-in; data commits right after the fade. The WS
    *  session-created(Y) / session-removed(X) frames are idempotent
    *  confirmations (the clearingIdsRef guard keeps X fully alive until the
-   *  swap). X's transcript survives on disk, recoverable via the resume
-   *  picker. The panel blurs (view-only, via `clearingIds`) during the POST —
+   *  swap). Ordinary clear keeps X's transcript recoverable via the resume
+   *  picker; clear-permanent deletes it through the same server lifecycle.
+   *  The panel blurs (view-only, via `clearingIds`) during the POST —
    *  for BOTH kinds: handoff's summarize leg can run tens of seconds, and an
    *  unmarked wait reads as a frozen panel. `handoffingIds` mirrors the same
    *  lifecycle for the "Handing off…" pill + composer lockout in Chat.
    *  Y mounts fresh and plays `.entering`. */
 
   const resetSession = useCallback(
-    async (id: string, kind: 'clear' | 'handoff') => {
+    async (id: string, kind: 'clear' | 'handoff', opts?: ClearSessionOptions) => {
       // Guard: the server broadcasts session-removed(X) during the reset; the
       // guarded handler skips ALL teardown (incl. setSessions) so X stays
       // fully alive until swapSession replaces it — no sidebar churn, no
@@ -4592,7 +4588,13 @@ export function App() {
       clearingInFlightRef.current.set(id, (clearingInFlightRef.current.get(id) ?? 0) + 1)
       try {
         // POST only — no 180 ms veil gate. Data swaps the instant Y is known.
-        const res = await api.post<{ session: SessionInfo }>(`/sessions/${id}/${kind}`, {})
+        const res = await api.post<{ session: SessionInfo }>(
+          `/sessions/${id}/${kind}`,
+          opts?.deleteTranscript === true ? { deleteTranscript: true } : {},
+          // Process-exit waits and filesystem deletion can exceed the default
+          // HTTP timeout; a premature client error would orphan the late swap.
+          opts?.deleteTranscript === true ? { timeoutMs: 0 } : undefined,
+        )
         const newId = res.session.id
         // The panel may have been closed while the POST was in flight — a
         // window the /handoff summarize leg widens from ~100ms (/clear) to
@@ -4657,18 +4659,24 @@ export function App() {
           // server never acted (network error before processing) — X is still
           // live; leave the panel as-is. The evicting replacement marker for Y
           // was never consumed (batch1 no longer appends Y), so clear it —
-          // otherwise Y stays hidden forever.
-          setPendingGroupInheritance((prev) => {
-            let changed = false
-            const next = new Map(prev)
-            for (const [newId, pending] of next) {
-              if (pending.evicting && pending.sourceId === id) {
-                next.delete(newId)
-                changed = true
+          // otherwise Y stays hidden forever. A concurrent permanent-clear 409
+          // is the exception: the other in-flight clear still owns that marker.
+          if (shouldClearResetPendingOnError({
+            deleteTranscript: opts?.deleteTranscript,
+            status: (e as { status?: number }).status,
+          })) {
+            setPendingGroupInheritance((prev) => {
+              let changed = false
+              const next = new Map(prev)
+              for (const [newId, pending] of next) {
+                if (pending.evicting && pending.sourceId === id) {
+                  next.delete(newId)
+                  changed = true
+                }
               }
-            }
-            return changed ? next : prev
-          })
+              return changed ? next : prev
+            })
+          }
         }
         toast.error(`Couldn't ${kind} session: ${(e as Error).message}`)
       } finally {
@@ -4691,7 +4699,7 @@ export function App() {
     [toast, cleanupSideChat, swapSession, teardownRemovedSession, pruneSession, setGroups, setSidebarOrder],
   )
 
-  const handleClear = useCallback((id: string) => resetSession(id, 'clear'), [resetSession])
+  const handleClear = useCallback((id: string, opts?: ClearSessionOptions) => resetSession(id, 'clear', opts), [resetSession])
   const handleHandoff = useCallback((id: string) => resetSession(id, 'handoff'), [resetSession])
 
   /** Discard every message after a given assistant message (right-click

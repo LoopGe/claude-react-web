@@ -43,7 +43,7 @@ import { useAgentDefinitions } from '../hooks/useAgentDefinitions'
 import { PermissionModeIcon, permissionModeLabel, permissionModeShortLabel } from './permission-mode-display'
 import type { EffortLevel, PermissionMode, SessionInfo, SlashCommand, ThinkingDisplay, ThinkingSetting } from '../types'
 import type { Skin } from '../utils/theme'
-import type { SettingsTabName } from '../local-commands'
+import type { ClearSessionOptions, SettingsTabName } from '../local-commands'
 import { PERMISSION_MODES, EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from '../types'
 import type { GitStatus } from '../../shared/git-types'
 import type { MessageJumpTarget } from '../../shared/message-jump'
@@ -186,7 +186,7 @@ export interface ChatPanelProps {
   /** `/clear` this panel — the server detaches the pre-clear conversation
    *  and returns a fresh session; App swaps the panel id. Triggered by the
    *  `/clear` local command. */
-  onClearSession: (panelSessionId: string) => void
+  onClearSession: (panelSessionId: string, opts?: ClearSessionOptions) => void
   /** `/handoff` this panel — the server summarizes the conversation and
    *  returns a fresh seeded continuation session; App swaps the panel id.
    *  Triggered by the `/handoff` local command. */

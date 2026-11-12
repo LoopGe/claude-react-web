@@ -79,6 +79,22 @@ describe('matchLocalCommand', () => {
     expect(cleared).toBe('sess-1')
   })
 
+  it('/clear-permanent starts fresh with transcript deletion enabled', () => {
+    const cmd = matchLocalCommand('/clear-permanent')!
+    let cleared: { id: string; opts?: { deleteTranscript?: boolean } } | null = null
+    cmd.run({
+      sessionId: 'sess-1',
+      commands: [],
+      requestResumeForPanel: () => {},
+      openSettingsTab: () => {},
+      showHelp: () => {},
+      clearSession: (id, opts) => { cleared = { id, opts } },
+      handoffSession: () => {},
+    })
+    expect(cleared).toEqual({ id: 'sess-1', opts: { deleteTranscript: true } })
+    expect(matchLocalCommand('/clear-permanently')).toBeNull()
+  })
+
   it('matches with surrounding whitespace', () => {
     expect(matchLocalCommand('  /resume  ')?.name).toBe('resume')
   })

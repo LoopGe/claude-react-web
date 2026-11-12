@@ -833,8 +833,17 @@ export function buildSessionRouter(
   })
 
   // Clear conversation context without rendering `/clear` as a user bubble.
+  // The opt-in permanent variant also removes the old provider transcript.
   app.post('/sessions/:id/clear', async (c) => {
-    const session = await sm.clear(c.req.param('id'))
+    const body: { deleteTranscript?: unknown } = await safeJsonOptional<{ deleteTranscript?: unknown }>(c.req, {}).catch((err: unknown) => {
+      // This route ignored bodies before the permanent option existed; keep
+      // legacy non-JSON callers on the ordinary-clear path.
+      if (err instanceof HttpError && err.status === 415) return {}
+      throw err
+    })
+    const session = body.deleteTranscript === true
+      ? await sm.clear(c.req.param('id'), { deleteTranscript: true })
+      : await sm.clear(c.req.param('id'))
     return c.json({ ok: true, session })
   })
 

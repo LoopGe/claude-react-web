@@ -118,7 +118,7 @@ import { buildOutgoingBody } from '../utils/message-body'
 import { intakeComposerFiles } from '../utils/image-intake'
 import type { MessageJumpTarget } from '../../shared/message-jump'
 import { LOCAL_COMMANDS, matchLocalCommand } from '../local-commands'
-import type { SettingsTabName } from '../local-commands'
+import type { ClearSessionOptions, SettingsTabName } from '../local-commands'
 import { DRAFT_KEY_PREFIX, DRAFT_BODIES_KEY_PREFIX, DRAFT_WRITE_DEBOUNCE_MS } from '../constants/storageKeys'
 
 // Module-level predicates for the three minimize/reopen sets (questions,
@@ -250,7 +250,7 @@ interface Props {
   /** `/clear` this panel. App owns the POST + panel id-swap (the server
    *  detaches the pre-clear conversation and returns a fresh session under a
    *  new id). Invoked by the `/clear` local command. */
-  onClearSession: (panelSessionId: string) => void
+  onClearSession: (panelSessionId: string, opts?: ClearSessionOptions) => void
   /** `/handoff` this panel. App owns the POST + panel id-swap (the server
    *  summarizes the conversation, spawns a fresh seeded continuation session
    *  and returns it). Invoked by the `/handoff` local command. Required (like
@@ -1422,17 +1422,17 @@ export const Chat = memo(function Chat({
     [onFilesPicked],
   )
 
-  const requestClearSession = useCallback((sessionId: string) => {
-    // App owns the POST + panel id-swap: the server detaches the pre-clear
-    // conversation as a dormant resumable session and returns a fresh session
-    // Y under a new id; App swaps this panel from X to Y. X unmounts (its
-    // transcript/permissions state is discarded), Y mounts fresh.
+  const requestClearSession = useCallback((sessionId: string, opts?: ClearSessionOptions) => {
+    // App owns the POST + panel id-swap. The ordinary clear detaches a
+    // resumable pre-clear conversation; the permanent variant deletes its
+    // transcript. Both return a fresh session Y under a new id and swap this
+    // panel from X to Y.
     // We deliberately do NOT set `clearing` here — the blur-fade was tied to
     // the old same-id wipe, and a stuck "Clearing…" veil on a failed POST
     // (onCleared never fires for a local /clear) isn't worth the transition.
     // `clearing` remains wired for the SDK's own in-band `cleared` event.
     clearError()
-    onClearSession(sessionId)
+    onClearSession(sessionId, opts)
   }, [clearError, onClearSession])
 
   const requestHandoffSession = useCallback((sessionId: string) => {

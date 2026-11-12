@@ -31,6 +31,10 @@ import type { SlashCommand } from './types'
  *  adding a panel tab does not imply a member here. */
 export type SettingsTabName = 'general' | 'context' | 'hooks' | 'plugins' | 'mcp'
 
+export interface ClearSessionOptions {
+  deleteTranscript?: boolean
+}
+
 export interface LocalCommandContext {
   /** Session id of the panel the command was type in. */
   sessionId: string
@@ -46,7 +50,7 @@ export interface LocalCommandContext {
    *  global keyboard shortcuts. */
   showHelp: (commands: SlashCommand[]) => void
   /** Clear this session's conversation context via the server control path. */
-  clearSession: (sessionId: string) => void
+  clearSession: (sessionId: string, opts?: ClearSessionOptions) => void
   /** `/handoff` this panel — POST /sessions/:id/handoff (summarize + spawn a
    *  fresh seeded continuation session Y) and swap X → Y like /clear.
    *  Required (like /clear) so a missing pass-through fails loudly rather
@@ -83,6 +87,11 @@ export const LOCAL_COMMANDS: LocalCommand[] = [
     description: 'Clear conversation history and context',
     aliases: ['reset', 'new'],
     run: (ctx) => ctx.clearSession(ctx.sessionId),
+  },
+  {
+    name: 'clear-permanent',
+    description: 'Start fresh and permanently delete the old session transcript',
+    run: (ctx) => ctx.clearSession(ctx.sessionId, { deleteTranscript: true }),
   },
   {
     name: 'handoff',
