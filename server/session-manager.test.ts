@@ -11,6 +11,7 @@ import * as nodeFs from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rmRf } from './__test-utils__/index.js'
+import { SUBSCRIBER_QUEUE_CAP } from './async-subscription.js'
 import { encodeCwd, subagentTranscriptPath } from './subagent-watcher.js'
 import type { ProcessExitInfo } from './process-monitor.js'
 import type { AgentProvider, ProviderSessionHandle } from './providers/types.js'
@@ -9256,8 +9257,13 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const info = await sm.create({ cwd: TEST_CWD })
     const subscribe = vi.spyOn(sm, 'subscribe')
     const emitted: SDKMessage[] = []
+    const terminated: Error[] = []
 
-    const cleanup = sm.subscribeLiveSubagentFrames(info.id, (frame) => emitted.push(frame))
+    const cleanup = sm.subscribeLiveSubagentFrames(
+      info.id,
+      (frame) => emitted.push(frame),
+      (error) => terminated.push(error),
+    )
     expect(cleanup).toEqual(expect.any(Function))
     expect(subscribe).toHaveBeenCalledWith(info.id)
 
@@ -9280,6 +9286,34 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     })
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect(emitted.map((frame) => frame.uuid)).not.toContain('after-cleanup')
+    expect(terminated).toEqual([])
+  })
+
+  it('reports a real inner subscriber overflow and removes the terminated subscription', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    const terminated: Error[] = []
+    const cleanup = sm.subscribeLiveSubagentFrames(info.id, () => {}, (error) => terminated.push(error))
+    const session = (sm as unknown as {
+      sessions: Map<string, { subscribers: Map<string, { push: (frame: SDKMessage) => void }> }>
+    }).sessions.get(info.id)!
+    const subscriber = [...session.subscribers.values()][0]
+    const frame = {
+      type: 'assistant',
+      uuid: 'overflow',
+      session_id: info.id,
+      parent_tool_use_id: 'agent-1',
+      message: { role: 'assistant', content: [] },
+    } as unknown as SDKMessage
+
+    // The first push satisfies the parked next(); the remaining synchronous
+    // pushes exceed the real createAsyncSubscription queue cap.
+    for (let i = 0; i < SUBSCRIBER_QUEUE_CAP + 2; i++) subscriber.push(frame)
+
+    await vi.waitFor(() => expect(terminated).toHaveLength(1))
+    expect(terminated[0].message).toMatch(/ended unexpectedly/i)
+    expect(session.subscribers.size).toBe(0)
+    cleanup!()
+    expect(terminated).toHaveLength(1)
   })
 
   it('returns null for a dormant subagent live subscription without resuming or throwing 404', async () => {
@@ -9287,9 +9321,9 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     await sm.unload(info.id)
     const resume = vi.spyOn(sm, 'resume')
 
-    expect(sm.subscribeLiveSubagentFrames(info.id, () => {})).toBeNull()
+    expect(sm.subscribeLiveSubagentFrames(info.id, () => {}, () => {})).toBeNull()
     expect(resume).not.toHaveBeenCalled()
-    expect(() => sm.subscribeLiveSubagentFrames('ghost', () => {})).toThrowError(
+    expect(() => sm.subscribeLiveSubagentFrames('ghost', () => {}, () => {})).toThrowError(
       expect.objectContaining({ status: 404 }),
     )
   })

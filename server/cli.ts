@@ -252,7 +252,7 @@ async function runServer(args: CliArgs): Promise<void> {
     claude: claudeSubagentTranscriptHub,
     native: new NativeSubagentTranscriptSource({
       stateDir: ctx.stateDir,
-      subscribeLive: (id, emit) => sessionManager.subscribeLiveSubagentFrames(id, emit),
+      subscribeLive: (id, emit, onTermination) => sessionManager.subscribeLiveSubagentFrames(id, emit, onTermination),
     }),
   })
   const wsShutdown = attachWebSocket(

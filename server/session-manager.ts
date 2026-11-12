@@ -7290,21 +7290,39 @@ export class SessionManager {
   /** Attach a callback to the existing per-session live fan-out for a
    *  provider-owned subagent transcript source. Dormant sessions deliberately
    *  return null: their source serves a disk reset and must not resume them.
-   *  Unknown ids remain a real 404 rather than being mislabeled as dormant. */
-  subscribeLiveSubagentFrames(id: string, emit: (frame: SDKMessage) => void): (() => void) | null {
+   *  Unknown ids remain a real 404 rather than being mislabeled as dormant.
+   *  `onTermination` receives unexpected EOF (including queue overflow) and
+   *  callback failures; normal cleanup suppresses any late notification. */
+  subscribeLiveSubagentFrames(
+    id: string,
+    emit: (frame: SDKMessage) => void,
+    onTermination: (error: Error) => void,
+  ): (() => void) | null {
     if (!this.sessions.has(id)) {
       this.requireKnownSession(id)
       return null
     }
     const sub = this.subscribe(id)
+    let stopped = false
+    const stop = () => {
+      if (stopped) return
+      stopped = true
+      sub.unsubscribe()
+    }
+    const terminate = (error: Error) => {
+      if (stopped) return
+      stop()
+      onTermination(error)
+    }
     void (async () => {
       try {
         for await (const frame of sub.iterable) emit(frame)
+        terminate(new Error(`live subagent frame subscription for session ${id} ended unexpectedly`))
       } catch (err) {
-        log.warn(`[session ${id}] live subagent frame subscription failed: ${(err as Error).message}`)
+        terminate(err instanceof Error ? err : new Error(String(err)))
       }
     })()
-    return () => sub.unsubscribe()
+    return stop
   }
 
   /** One orphan-worktree sweep, invoked by the health monitor's 60s GC

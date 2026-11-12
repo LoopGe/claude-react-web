@@ -14,9 +14,16 @@ const AGENT = 'agent-live'
 const PROMPT_UUID = `native-subagent-prompt:${AGENT}`
 
 type LiveEmit = (frame: AgentMessage) => void
+type LiveTerminate = (error: Error) => void
+
+interface LiveListener {
+  emit: LiveEmit
+  terminate?: LiveTerminate
+}
 
 interface Collector {
   frames: SubagentTranscriptFrame[]
+  errors: Error[]
   done: Promise<void>
 }
 
@@ -24,16 +31,21 @@ const sources = new Set<NativeSubagentTranscriptSource>()
 const collectors: Collector[] = []
 let stateDir: string
 let log: NativeSessionLog
-let listeners: Set<LiveEmit>
-let subscribeLive: ReturnType<typeof vi.fn<(sessionId: string, emit: LiveEmit) => (() => void) | null>>
+let listeners: Set<LiveListener>
+let subscribeLive: ReturnType<typeof vi.fn<(
+  sessionId: string,
+  emit: LiveEmit,
+  terminate?: LiveTerminate,
+) => (() => void) | null>>
 
 beforeEach(async () => {
   stateDir = await mkdtemp(join(tmpdir(), 'native-subagent-live-'))
   log = NativeSessionLog.open({ stateDir, id: SESSION, cwd: '/repo', resume: false })
   listeners = new Set()
-  subscribeLive = vi.fn((_sessionId: string, emit: LiveEmit) => {
-    listeners.add(emit)
-    return () => { listeners.delete(emit) }
+  subscribeLive = vi.fn((_sessionId: string, emit: LiveEmit, terminate?: LiveTerminate) => {
+    const listener = { emit, terminate }
+    listeners.add(listener)
+    return () => { listeners.delete(listener) }
   })
 })
 
@@ -48,7 +60,11 @@ afterEach(async () => {
 })
 
 function makeSource(
-  subscribe: (sessionId: string, emit: LiveEmit) => (() => void) | null = subscribeLive,
+  subscribe: (
+    sessionId: string,
+    emit: LiveEmit,
+    terminate?: LiveTerminate,
+  ) => (() => void) | null = subscribeLive,
 ): NativeSubagentTranscriptSource {
   const source = new NativeSubagentTranscriptSource({ stateDir, subscribeLive: subscribe })
   sources.add(source)
@@ -57,16 +73,28 @@ function makeSource(
 
 function collect(sub: SubagentTranscriptSub): Collector {
   const frames: SubagentTranscriptFrame[] = []
+  const errors: Error[] = []
   const done = (async () => {
-    for await (const frame of sub.iterable) frames.push(frame)
+    try {
+      for await (const frame of sub.iterable) frames.push(frame)
+    } catch (err) {
+      errors.push(err as Error)
+    }
   })()
-  const collector = { frames, done }
+  const collector = { frames, errors, done }
   collectors.push(collector)
   return collector
 }
 
 function publish(frame: unknown): void {
-  for (const emit of [...listeners]) emit(frame as AgentMessage)
+  for (const listener of [...listeners]) listener.emit(frame as AgentMessage)
+}
+
+function terminateLive(error: Error): void {
+  for (const listener of [...listeners]) {
+    if (!listener.terminate) throw new Error('live termination callback was not registered')
+    listener.terminate(error)
+  }
 }
 
 async function append(events: NativeEventInput[]): Promise<void> {
@@ -162,10 +190,11 @@ describe('NativeSubagentTranscriptSource', () => {
       }
       return realLoad(...args)
     })
-    subscribeLive.mockImplementation(((_sessionId: string, emit: LiveEmit) => {
+    subscribeLive.mockImplementation(((_sessionId: string, emit: LiveEmit, terminate?: LiveTerminate) => {
       events.push('subscribe')
-      listeners.add(emit)
-      return () => { listeners.delete(emit) }
+      const listener = { emit, terminate }
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
     }) as typeof subscribeLive)
 
     const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
@@ -229,16 +258,69 @@ describe('NativeSubagentTranscriptSource', () => {
     loadSpy.mockRestore()
   })
 
+  it('fails the output and detaches live delivery when snapshot initialization rejects', async () => {
+    vi.spyOn(nativeHistoryCache, 'load').mockRejectedValue(new Error('snapshot read exploded'))
+    const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
+    const received = collect(sub)
+
+    await vi.waitFor(() => expect(received.errors.map((error) => error.message)).toEqual(['snapshot read exploded']))
+    await received.done
+    expect(listeners.size).toBe(0)
+    publish(assistant('after-snapshot-failure'))
+    expect(uuids(received.frames)).toEqual([])
+  })
+
+  it('fails the output instead of dropping a frame when a catalog re-read rejects', async () => {
+    const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
+    const received = collect(sub)
+    await vi.waitFor(() => expect(received.frames).toHaveLength(1))
+    vi.spyOn(nativeHistoryCache, 'load').mockRejectedValue(new Error('catalog read exploded'))
+
+    publish(assistant('frame-a'))
+    publish(assistant('frame-b'))
+
+    await vi.waitFor(() => expect(received.errors.map((error) => error.message)).toEqual(['catalog read exploded']))
+    await received.done
+    expect(listeners.size).toBe(0)
+    expect(uuids(received.frames)).toEqual([])
+  })
+
+  it('propagates unexpected inner termination as an output error and cleans up', async () => {
+    const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
+    const received = collect(sub)
+    await vi.waitFor(() => expect(received.frames).toHaveLength(1))
+
+    terminateLive(new Error('inner subscriber overflow'))
+
+    await vi.waitFor(() => expect(received.errors.map((error) => error.message)).toEqual(['inner subscriber overflow']))
+    await received.done
+    expect(listeners.size).toBe(0)
+    publish(assistant('after-inner-termination'))
+    expect(uuids(received.frames)).toEqual([])
+  })
+
+  it('ignores a late inner termination after normal unsubscribe', async () => {
+    const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
+    const received = collect(sub)
+    await vi.waitFor(() => expect(received.frames).toHaveLength(1))
+    const terminate = [...listeners][0].terminate
+    sub.unsubscribe()
+    await received.done
+
+    terminate?.(new Error('late termination'))
+    expect(received.errors).toEqual([])
+  })
+
   it('serves only a disk reset for a dormant session without resuming it', async () => {
     await append([origin(), descriptor(), assistant('disk-1')])
-    const dormantSubscribe = vi.fn((_sessionId: string, _emit: LiveEmit) => null)
+    const dormantSubscribe = vi.fn((_sessionId: string, _emit: LiveEmit, _terminate?: LiveTerminate) => null)
     const sub = makeSource(dormantSubscribe).subscribeSubagentTranscript(SESSION, AGENT)
     const received = collect(sub)
 
     await vi.waitFor(() => expect(received.frames).toHaveLength(1))
     expect(received.frames[0]).toMatchObject({ reset: true })
     expect(uuids(received.frames)).toEqual([PROMPT_UUID, 'disk-1'])
-    expect(dormantSubscribe).toHaveBeenCalledWith(SESSION, expect.any(Function))
+    expect(dormantSubscribe).toHaveBeenCalledWith(SESSION, expect.any(Function), expect.any(Function))
     sub.unsubscribe()
   })
 
