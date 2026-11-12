@@ -165,7 +165,7 @@ export const ToolStatusBadge = memo(function ToolStatusBadge({
 
 /** The shared "background this task" pill — rendered on a RUNNING generic
  *  tool card (inside the header, before the status badge) and on a
- *  synchronous subagent card (in its sibling actions row). One component +
+ *  synchronous subagent card (inside its metadata row). One component +
  *  one CSS class so the two surfaces can't drift apart. No
  *  stopPropagation needed: neither the ToolCard header nor any ancestor up
  *  to the document root carries a click handler. */

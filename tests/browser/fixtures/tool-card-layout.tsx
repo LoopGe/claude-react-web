@@ -4,8 +4,11 @@
 import { createRoot } from 'react-dom/client'
 import { ToolUseBlock } from '../../../src/components/ToolUseBlock'
 import { MessageView } from '../../../src/components/message-list/MessageView'
+import { SubagentCard } from '../../../src/components/SubagentCard'
 import { BackgroundToolProvider } from '../../../src/hooks/useBackgroundTool'
+import { SubagentProvider } from '../../../src/hooks/useSubagentContext'
 import { ToolStatusProvider } from '../../../src/hooks/usePlanStatus'
+import type { ActiveSubagent } from '../../../src/session-store/types'
 import type { Block } from '../../../src/types'
 import '../../../src/styles/index.css'
 
@@ -61,10 +64,29 @@ const block = (() => {
   }
 })() as Block
 
+const subagentRecord: ActiveSubagent = {
+  toolUseId: 'layout-subagent',
+  label: 'Review overlay architecture plan',
+  status: params.has('subagent-background') ? 'background' : 'running',
+  isAsync: params.has('subagent-background') ? true : false,
+  toolCount: 82,
+  startedAt: 1_000,
+}
+
 createRoot(document.getElementById('root')!).render(
   <BackgroundToolProvider value={() => { document.body.dataset.backgroundCalled = 'true' }}>
     <ToolStatusProvider value={new Map([[toolUseId, 'running']])}>
-      {params.has('bubble') ? (
+      {params.has('subagent') || params.has('subagent-narrow') || params.has('subagent-background') ? (
+        <SubagentProvider value={{
+          index: new Map([[subagentRecord.toolUseId, subagentRecord]]),
+          messages: [],
+          open: () => { document.body.dataset.openCalled = 'true' },
+        }}>
+          <div style={{ width: params.has('subagent-narrow') ? 360 : 720 }}>
+            <SubagentCard toolUseId={subagentRecord.toolUseId} />
+          </div>
+        </SubagentProvider>
+      ) : params.has('bubble') ? (
         <div className="chat" style={{ width: 400 }}>
           <div className="virtuoso-item-wrapper">
             <MessageView

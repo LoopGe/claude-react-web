@@ -3477,29 +3477,45 @@ button.chat-empty-env-chip:hover {
   border-radius: var(--radius-sm);
   color: var(--fg);
   overflow: hidden;
+  container-type: inline-size;
   transition: border-color var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .subagent-card:hover {
   border-color: var(--accent);
 }
 .subagent-card-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
   padding: var(--space-2) var(--space-3);
+  padding-right: calc(var(--space-3) + var(--size-24px));
   background: transparent;
   border: none;
   font: inherit;
   text-align: left;
-  cursor: pointer;
   color: inherit;
   transition: background var(--motion-duration-fast) var(--motion-ease-standard);
 }
 .subagent-card-header:hover {
   background: var(--bg-elev-2);
 }
-.subagent-card-header:disabled {
+.subagent-card-details {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.subagent-card-details:disabled {
   cursor: default;
   opacity: 0.6;
 }
@@ -3527,6 +3543,9 @@ button.chat-empty-env-chip:hover {
   font-family: var(--mono);
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
+}
+.subagent-card-tools-compact {
+  display: none;
 }
 .subagent-card-status {
   display: inline-flex;
@@ -3589,22 +3608,49 @@ button.chat-empty-env-chip:hover {
   color: var(--fg-muted);
 }
 .subagent-card-open {
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
+  position: absolute;
+  top: 50%;
+  right: var(--space-3);
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: var(--size-24px);
+  height: var(--size-24px);
+  border-radius: var(--radius-xs);
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}
+.subagent-card-open:hover {
+  background: var(--bg);
+  color: var(--accent-text);
 }
 
-/* Per-card background action for a synchronous in-flight subagent — a
-   sibling row under the (button) header, since a nested button would be
-   invalid. Only rendered while status is 'running' and the subagent is
-   synchronous; detaching flips it to async and the row unmounts. The pill
-   itself is the shared .tool-card-bg-btn (utilities.css) — same action,
-   same visual language as the Bash-card background button. */
-.subagent-card-actions {
+/* The details button owns all non-action header content. Background is its
+   sibling, so both actions stay keyboard-accessible without nested buttons. */
+.subagent-card-background-action {
   display: flex;
-  justify-content: flex-end;
-  padding: 0 var(--space-3) var(--space-2);
+  align-items: center;
+  font-family: var(--sans);
+}
+@container (max-width: 590px) {
+  .subagent-card-background-action .tool-card-bg-btn > span {
+    display: none;
+  }
+}
+@container (max-width: 470px) {
+  .subagent-card-title,
+  .subagent-card-tools-full {
+    display: none;
+  }
+  .subagent-card-tools-compact {
+    display: inline;
+  }
+}
+@container (max-width: 380px) {
+  .subagent-card-elapsed {
+    display: none;
+  }
 }
 
 /* One compact activity line. Only the latest child is rendered while the

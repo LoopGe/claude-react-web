@@ -11,10 +11,10 @@ const HEADER_PARTS = [
   '.tool-copy-btn',
 ] as const
 
-async function openFixture(page: import('@playwright/test').Page, variant?: 'file' | 'edit' | 'write' | 'notebook' | 'bubble') {
+async function openFixture(page: import('@playwright/test').Page, variant?: 'file' | 'edit' | 'write' | 'notebook' | 'bubble' | 'subagent' | 'subagent-narrow' | 'subagent-background') {
   const query = variant ? `?${variant}=1` : ''
   await page.goto(`/tests/browser/fixtures/tool-card-layout.html${query}`, { waitUntil: 'domcontentloaded' })
-  await expect(page.locator('.tool-card-header')).toBeVisible()
+  await expect(page.locator(variant?.startsWith('subagent') ? '.subagent-card-header' : '.tool-card-header')).toBeVisible()
 }
 
 async function centers(page: import('@playwright/test').Page, selectors: readonly string[]) {
@@ -49,6 +49,54 @@ test('tool-use assistant bubbles give contained cards a definite inline size', a
   expect(geometry.messageWidth).toBeCloseTo(geometry.availableWidth, 0)
   expect(geometry.cardWidth).toBeCloseTo(geometry.bodyWidth, 0)
   expect(geometry.cardClientWidth).toBeGreaterThan(300)
+})
+
+test('synchronous subagent keeps background alongside metadata in one header row', async ({ page }) => {
+  await page.setViewportSize({ width: 875, height: 400 })
+  await openFixture(page, 'subagent')
+
+  const header = page.locator('.subagent-card-header')
+  await expect(header.locator('.tool-card-bg-btn')).toBeVisible()
+  await expect(page.locator('.subagent-card-actions')).toHaveCount(0)
+
+  const centers = await header.evaluate((element) => {
+    const center = (selector: string) => {
+      const rect = element.querySelector(selector)!.getBoundingClientRect()
+      return rect.top + rect.height / 2
+    }
+    return { metadata: center('.subagent-card-meta'), background: center('.tool-card-bg-btn') }
+  })
+  expect(Math.abs(centers.metadata - centers.background)).toBeLessThanOrEqual(1)
+
+  await page.getByRole('button', { name: 'Background this subagent' }).click()
+  await expect(page.locator('body')).toHaveAttribute('data-background-called', 'true')
+})
+
+test('background lifecycle styling does not turn the card root into an action row', async ({ page }) => {
+  await page.setViewportSize({ width: 875, height: 400 })
+  await openFixture(page, 'subagent-background')
+
+  await expect(page.locator('.subagent-card.subagent-card-background')).toHaveCSS('display', 'block')
+})
+
+test('narrow subagent cards compact metadata without moving the background action', async ({ page }) => {
+  await page.setViewportSize({ width: 875, height: 400 })
+  await openFixture(page, 'subagent-narrow')
+
+  await expect(page.locator('.subagent-card-background-action .tool-card-bg-btn > span')).toBeHidden()
+  await expect(page.locator('.subagent-card-tools-full')).toBeHidden()
+  await expect(page.locator('.subagent-card-tools-compact')).toBeVisible()
+  await expect(page.locator('.subagent-card-title')).toBeHidden()
+  await expect(page.locator('.subagent-card-elapsed')).toBeHidden()
+
+  const centers = await page.locator('.subagent-card-header').evaluate((element) => {
+    const center = (selector: string) => {
+      const rect = element.querySelector(selector)!.getBoundingClientRect()
+      return rect.top + rect.height / 2
+    }
+    return { metadata: center('.subagent-card-meta'), background: center('.tool-card-bg-btn') }
+  })
+  expect(Math.abs(centers.metadata - centers.background)).toBeLessThanOrEqual(1)
 })
 
 test('long shell command shrinks instead of wrapping the header into separate rows', async ({ page }) => {

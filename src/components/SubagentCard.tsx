@@ -1,6 +1,6 @@
 // Compact subagent summary — rendered in place of the default ToolUseBlock
-// for Agent / Task / Explore calls. The header opens SubagentOverlay, which
-// owns the full conversation, tool history, and result; the inline card only
+// for Agent / Task / Explore calls. Its details controls open SubagentOverlay,
+// which owns the full conversation, tool history, and result; the inline card only
 // summarizes current work and never grows with the number of child tools.
 
 import { memo, useMemo } from 'react'
@@ -24,7 +24,7 @@ interface Props {
 export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabel }: Props) {
   const ctx = useSubagentContext()
   // Session-level per-tool background action (same context the Bash card
-  // reads). Only used for synchronous subagents — see the actions row below.
+  // reads). Only used for synchronous subagents.
   const backgroundTool = useBackgroundTool()
   // When rendered outside a SubagentProvider (e.g. tests, exports), fall
   // back to a minimal inline display rather than crashing.
@@ -75,60 +75,66 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
 
   return (
     <div className={`subagent-card subagent-card-${status}`}>
-      <button
-        type="button"
-        className="subagent-card-header"
-        onClick={handleOpen}
-        disabled={!ctx}
-        title={ctx ? `Open subagent details — ${label}` : 'Subagent details unavailable'}
-      >
-        <span className="subagent-card-status" role="img" aria-label={`Subagent status: ${status}`}>
-          {terminalStatusIcon
-            ? <span className="subagent-card-status-icon" aria-hidden>{terminalStatusIcon}</span>
-            : <span className="subagent-card-status-dot" aria-hidden />}
-        </span>
-        <span className="subagent-card-label">{label}</span>
-        <span className="subagent-card-title">Subagent</span>
-        <span className="subagent-card-meta">
-          {isAsync != null && (
-            <HoverHint
-              label={isAsync
-                ? 'Background/async — the subagent runs independently and the result returns immediately'
-                : 'Synchronous — the parent agent waits for this subagent to finish'}
-              side="top"
-            >
-              <span className={`subagent-card-mode subagent-card-mode-${isAsync ? 'async' : 'sync'}`}>
-                {isAsync ? 'async' : 'sync'}
-              </span>
-            </HoverHint>
-          )}
-          <ElapsedTimer
-            startedAt={startedAt}
-            endedAt={endedAt}
-            live={isRunning}
-            className="subagent-card-elapsed"
-          />
-          {toolCount > 0 && (
-            <span className="subagent-card-tools">
-              {toolCount} {toolCount === 1 ? 'tool' : 'tools'}
-            </span>
-          )}
-          <span className="subagent-card-open" aria-hidden><IconExternalLink size={12} /></span>
-        </span>
-      </button>
-      {/* Per-card background action for a SYNCHRONOUS in-flight subagent.
-          The header is a single button, so the action is a sibling row. */}
-      {showActions && (
-        <GridClipEnter entering={actionsEntering}>
-          <div className="subagent-card-actions">
-            <BackgroundToolButton
-              onClick={() => backgroundTool(toolUseId)}
-              title="Background this subagent — the turn continues while it runs in the background task list (Alt+B backgrounds every running task)"
-              ariaLabel="Background this subagent"
+      <div className="subagent-card-header">
+        <button
+          type="button"
+          className="subagent-card-details"
+          onClick={handleOpen}
+          disabled={!ctx}
+          title={ctx ? `Open subagent details — ${label}` : 'Subagent details unavailable'}
+        >
+          <span className="subagent-card-status" role="img" aria-label={`Subagent status: ${status}`}>
+            {terminalStatusIcon
+              ? <span className="subagent-card-status-icon" aria-hidden>{terminalStatusIcon}</span>
+              : <span className="subagent-card-status-dot" aria-hidden />}
+          </span>
+          <span className="subagent-card-label">{label}</span>
+          <span className="subagent-card-title">Subagent</span>
+          <span className="subagent-card-meta">
+            {isAsync != null && (
+              <HoverHint
+                label={isAsync
+                  ? 'Background/async — the subagent runs independently and the result returns immediately'
+                  : 'Synchronous — the parent agent waits for this subagent to finish'}
+                side="top"
+              >
+                <span className={`subagent-card-mode subagent-card-mode-${isAsync ? 'async' : 'sync'}`}>
+                  {isAsync ? 'async' : 'sync'}
+                </span>
+              </HoverHint>
+            )}
+            <ElapsedTimer
+              startedAt={startedAt}
+              endedAt={endedAt}
+              live={isRunning}
+              className="subagent-card-elapsed"
             />
-          </div>
-        </GridClipEnter>
-      )}
+            {toolCount > 0 && (
+              <span
+                className="subagent-card-tools"
+                title={`${toolCount} ${toolCount === 1 ? 'tool' : 'tools'}`}
+              >
+                <span className="subagent-card-tools-full">{toolCount} {toolCount === 1 ? 'tool' : 'tools'}</span>
+                <span className="subagent-card-tools-compact">
+                  {toolCount}<span className="sr-only"> {toolCount === 1 ? 'tool' : 'tools'}</span>
+                </span>
+              </span>
+            )}
+            <span className="subagent-card-open" aria-hidden><IconExternalLink size={12} /></span>
+          </span>
+        </button>
+        {showActions && (
+          <GridClipEnter entering={actionsEntering}>
+            <div className="subagent-card-background-action">
+              <BackgroundToolButton
+                onClick={() => backgroundTool(toolUseId)}
+                title="Background this subagent — the turn continues while it runs in the background task list (Alt+B backgrounds every running task)"
+                ariaLabel="Background this subagent"
+              />
+            </div>
+          </GridClipEnter>
+        )}
+      </div>
       {/* Present-tense progress summary (agentProgressSummaries). Terminal
           records clear it; pending keeps only the latest child activity. */}
       {showProgress && (

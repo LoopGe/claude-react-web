@@ -286,7 +286,7 @@ describe('SessionSearchPreview', () => {
       },
     )
 
-    fireEvent.click(container.querySelector('.subagent-card-header')!)
+    fireEvent.click(container.querySelector('.subagent-card-details')!)
 
     expect(screen.getByText('Review')).toBeTruthy()
     expect(container.textContent).toContain('child work')
@@ -335,7 +335,7 @@ describe('SessionSearchPreview', () => {
       },
     )
 
-    fireEvent.click(container.querySelector('.subagent-card-header')!)
+    fireEvent.click(container.querySelector('.subagent-card-details')!)
 
     expect(container.textContent).toContain('child output')
     expect(container.querySelector('mark.search-hl-active')).toBeTruthy()
@@ -442,7 +442,7 @@ describe('SessionSearchPreview', () => {
       },
     )
 
-    fireEvent.click(container.querySelector('.subagent-card-header')!)
+    fireEvent.click(container.querySelector('.subagent-card-details')!)
 
     expect(container.textContent).toContain('canonical output')
     expect(container.textContent).not.toContain('old output')
@@ -491,7 +491,7 @@ describe('SessionSearchPreview', () => {
       },
     )
 
-    fireEvent.click(container.querySelector('.subagent-card-header')!)
+    fireEvent.click(container.querySelector('.subagent-card-details')!)
 
     expect(container.textContent).toContain('agent failed: boom')
   })

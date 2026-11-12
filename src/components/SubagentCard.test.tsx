@@ -39,9 +39,10 @@ function renderCard(
 }
 
 describe('SubagentCard summary header', () => {
-  it('puts the task first and opens the side detail from the header', () => {
+  it('puts the task first and opens the side detail from any non-action header content', () => {
     const ctx = renderCard(base({ isAsync: false, toolCount: 2, startedAt: 1_000, endedAt: 5_000 }))
-    const header = document.querySelector<HTMLButtonElement>('.subagent-card-header')!
+    const header = document.querySelector('.subagent-card-header')!
+    const details = document.querySelector<HTMLButtonElement>('.subagent-card-details')!
     const status = document.querySelector('.subagent-card-status-dot')!
     const label = document.querySelector('.subagent-card-label')!
     const title = document.querySelector('.subagent-card-title')!
@@ -55,11 +56,19 @@ describe('SubagentCard summary header', () => {
     expect(title.compareDocumentPosition(meta) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(document.querySelector('.subagent-card-mode-sync')).toBeTruthy()
     expect(document.querySelector('.subagent-card-elapsed')).toBeTruthy()
-    expect(screen.getByText('2 tools')).toBeTruthy()
+    const fullToolCount = document.querySelector('.subagent-card-tools-full')!
+    const compactToolCount = document.querySelector('.subagent-card-tools-compact')!
+    expect(fullToolCount.textContent).toBe('2 tools')
+    expect(compactToolCount.textContent).toBe('2 tools')
+    expect(fullToolCount.getAttribute('aria-hidden')).toBeNull()
+    expect(compactToolCount.getAttribute('aria-hidden')).toBeNull()
     expect(document.querySelector('.subagent-card-open')).toBeTruthy()
+    expect(header.querySelectorAll('button')).toHaveLength(1)
 
-    fireEvent.click(header)
-    expect(ctx.open).toHaveBeenCalledExactlyOnceWith('tu_sa')
+    fireEvent.click(meta)
+    expect(ctx.open).toHaveBeenNthCalledWith(1, 'tu_sa')
+    fireEvent.click(details)
+    expect(ctx.open).toHaveBeenNthCalledWith(2, 'tu_sa')
   })
 
   it('uses singular tool count and the async mode label', () => {
@@ -197,7 +206,7 @@ describe('SubagentCard progress and terminal states', () => {
       expect(document.querySelector('.subagent-card-header')).toBeTruthy()
       expect(document.querySelector('.subagent-card-latest')).toBeNull()
       expect(document.querySelector('.subagent-card-progress')).toBeNull()
-      expect(document.querySelector('.subagent-card-actions')).toBeNull()
+      expect(document.querySelector('.subagent-card-background-action')).toBeNull()
       expect(document.querySelector('details')).toBeNull()
       expect(screen.queryByText('PARENT_RESULT')).toBeNull()
       expect(screen.queryByText('CHILD_RESULT')).toBeNull()
