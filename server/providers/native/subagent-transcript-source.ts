@@ -37,6 +37,32 @@ function isPromptFrame(frame: unknown): boolean {
   return value.type === 'user' && value.parent_tool_use_id === null
 }
 
+function findGenuinePrompt(lines: RawLine[], agentId: string, sessionId: string): unknown | undefined {
+  for (const line of lines) {
+    if (line.type !== 'user' || line.parent_tool_use_id !== agentId) continue
+    const projected = projectNativeSubagentLine(line, sessionId)
+    if (projected !== undefined && isPromptFrame(projected)) return projected
+  }
+  return undefined
+}
+
+function hasVisibleOrigin(lines: RawLine[], agentId: string): boolean {
+  for (const line of lines) {
+    if (line.type !== 'assistant') continue
+    const content = (line.message as { content?: unknown }).content
+    if (!Array.isArray(content)) continue
+    for (const value of content) {
+      if (typeof value !== 'object' || value === null) continue
+      const block = value as { type?: unknown; id?: unknown; name?: unknown }
+      if (block.type === 'tool_use' && block.id === agentId &&
+        (block.name === 'Agent' || block.name === 'Task' || block.name === 'Explore')) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 /** Live native sidechain projection over the manager's existing fan-out.
  * Every subscriber owns its input buffer, output queue and catalog-read state;
  * no watcher consumes NativeSession.messages directly or can await the pump.
@@ -92,18 +118,37 @@ export class NativeSubagentTranscriptSource implements SubagentTranscriptSource 
     }
 
     const processLive = async (frame: AgentMessage): Promise<void> => {
+      const projected = (frame as { parent_tool_use_id?: unknown }).parent_tool_use_id === agentId
+        ? projectNativeSubagentLine(frame as RawLine, sessionId)
+        : undefined
       if (!promptResolved) {
-        const loaded = await nativeHistoryCache.load(this.opts.stateDir, sessionId)
-        if (!active) return
-        const entry = loaded?.subagents.byId.get(agentId)
-        if (entry) {
-          const prompt = nativeSubagentPromptFrame(entry, sessionId)
-          if (prompt !== null) push(false, [prompt])
+        if (projected !== undefined && isPromptFrame(projected)) {
           promptResolved = true
+        } else {
+          const loaded = await nativeHistoryCache.load(this.opts.stateDir, sessionId)
+          if (!active) return
+          const genuine = loaded
+            ? findGenuinePrompt(loaded.lines, agentId, sessionId)
+            : undefined
+          if (genuine !== undefined) {
+            promptResolved = true
+            push(false, [genuine])
+          } else {
+            const entry = loaded?.subagents.byId.get(agentId)
+            if (entry) {
+              const prompt = nativeSubagentPromptFrame(entry, sessionId)
+              if (prompt !== null) {
+                push(false, [prompt])
+                promptResolved = true
+              } else if (entry.prompt !== undefined || (loaded && hasVisibleOrigin(loaded.lines, agentId))) {
+                // A visible origin with no usable prompt proves unavailability.
+                // Descriptor-only evidence can instead be a late-origin race.
+                promptResolved = true
+              }
+            }
+          }
         }
       }
-      if ((frame as { parent_tool_use_id?: unknown }).parent_tool_use_id !== agentId) return
-      const projected = projectNativeSubagentLine(frame as RawLine, sessionId)
       if (projected === undefined) return
       if (isPromptFrame(projected)) promptResolved = true
       push(false, [projected])

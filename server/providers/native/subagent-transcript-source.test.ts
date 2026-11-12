@@ -8,6 +8,7 @@ import { nativeHistoryCache } from './session-log/cache.js'
 import type { NativeEventInput } from './session-log/format.js'
 import { NativeSessionLog } from './session-log/log.js'
 import { NativeSubagentTranscriptSource } from './subagent-transcript-source.js'
+import { readNativeSubagentTranscript } from './subagent-transcripts.js'
 
 const SESSION = 'native-live-session'
 const AGENT = 'agent-live'
@@ -146,6 +147,17 @@ function assistant(uuid: string): NativeEventInput {
   }
 }
 
+function genuinePrompt(uuid = 'genuine-live'): NativeEventInput {
+  return {
+    type: 'user',
+    uuid,
+    session_id: SESSION,
+    parent_tool_use_id: AGENT,
+    timestamp: '2026-11-12T01:01:30.000Z',
+    message: { role: 'user', content: [{ type: 'text', text: 'genuine sidechain prompt' }] },
+  }
+}
+
 function streamEvent(): Record<string, unknown> {
   return {
     type: 'stream_event',
@@ -224,6 +236,56 @@ describe('NativeSubagentTranscriptSource', () => {
     await vi.waitFor(() => expect(uuids(received.frames)).toContain('nested-1'))
     expect(uuids(received.frames)).toEqual([PROMPT_UUID, 'nested-1'])
     expect(received.frames[1].reset).toBe(false)
+  })
+
+  it('keeps prompt state pending when a descriptor is visible before its origin', async () => {
+    await append([descriptor()])
+    const loadSpy = vi.spyOn(nativeHistoryCache, 'load')
+    const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
+    const received = collect(sub)
+    await vi.waitFor(() => expect(received.frames).toHaveLength(1))
+    expect(received.frames[0].frames).toEqual([])
+
+    publish(streamEvent())
+    await vi.waitFor(() => expect(loadSpy).toHaveBeenCalledTimes(2))
+    await loadSpy.mock.results[1].value
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(uuids(received.frames)).toEqual([])
+
+    await append([origin()])
+    publish(streamEvent())
+    await vi.waitFor(() => expect(uuids(received.frames)).toEqual([PROMPT_UUID]))
+    expect(loadSpy).toHaveBeenCalledTimes(3)
+  })
+
+  it('emits only a loaded genuine prompt when an outer result arrives, matching disk', async () => {
+    const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
+    const received = collect(sub)
+    await vi.waitFor(() => expect(received.frames).toHaveLength(1))
+    await append([origin(), descriptor(), genuinePrompt()])
+
+    publish(outerErrorResult())
+    await vi.waitFor(() => expect(received.frames).toHaveLength(2))
+
+    const disk = await readNativeSubagentTranscript(stateDir, SESSION, AGENT)
+    const diskUuids = disk.map((frame) => (frame as { uuid?: unknown }).uuid)
+    expect(uuids(received.frames)).toEqual(diskUuids)
+    expect(diskUuids).toEqual(['genuine-live'])
+  })
+
+  it('emits only the current genuine live prompt without a synthetic duplicate, matching disk', async () => {
+    const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
+    const received = collect(sub)
+    await vi.waitFor(() => expect(received.frames).toHaveLength(1))
+    await append([origin(), descriptor(), genuinePrompt()])
+
+    publish(genuinePrompt())
+    await vi.waitFor(() => expect(received.frames).toHaveLength(2))
+
+    const disk = await readNativeSubagentTranscript(stateDir, SESSION, AGENT)
+    const diskUuids = disk.map((frame) => (frame as { uuid?: unknown }).uuid)
+    expect(uuids(received.frames)).toEqual(diskUuids)
+    expect(diskUuids).toEqual(['genuine-live'])
   })
 
   it('emits a prompt-only increment when the only live evidence is an outer error result', async () => {
