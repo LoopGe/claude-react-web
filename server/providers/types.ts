@@ -343,6 +343,11 @@ export interface ListResumableOptions {
   dir?: string
 }
 
+export interface ProviderSessionRef {
+  id: string
+  cwd: string
+}
+
 export interface AgentProvider {
   readonly name: string
   readonly capabilities: ProviderCapabilities
@@ -358,6 +363,13 @@ export interface AgentProvider {
   listResumable?(opts?: ListResumableOptions): Promise<ResumableSession[]>
   readHistoryPage?(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage>
   readHistoryEntries?(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]>
+  /** Provider-owned standalone subagent catalog/transcript reads. Unlike the
+   *  compatibility handle method, these need no live Query and resolve the
+   *  on-disk location from the session reference. */
+  subagentTranscripts?: {
+    listSubagents(ref: ProviderSessionRef): Promise<string[]>
+    readTranscript(ref: ProviderSessionRef, agentId: string): Promise<unknown[]>
+  }
   hasTranscript?(meta: SessionMeta): Promise<boolean>
   /** Delete this provider's on-disk transcript for `id`. Returns whether a
    *  transcript was removed. Providers that manage their own storage

@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { rmRf } from './__test-utils__/index.js'
 import { encodeCwd, subagentTranscriptPath } from './subagent-watcher.js'
 import type { ProcessExitInfo } from './process-monitor.js'
-import type { ProviderSessionHandle } from './providers/types.js'
+import type { AgentProvider, ProviderSessionHandle } from './providers/types.js'
 
 // Wrap node:fs/promises so `stat` is a controllable mock that defaults to the
 // real implementation (preexisting stat users keep working) but individual
@@ -508,6 +508,15 @@ function captureNativeRequests(sm: SessionManager): Array<{ model: string; syste
     for (const event of nativeTextTurn('done')) yield event
   }
   return requests
+}
+
+type TestSubagentReader = {
+  listSubagents(ref: { id: string; cwd: string }): Promise<string[]>
+  readTranscript(ref: { id: string; cwd: string }, agentId: string): Promise<unknown[]>
+}
+
+function subagentProviderForTest(sm: SessionManager, name: string): AgentProvider & { subagentTranscripts?: TestSubagentReader } {
+  return (sm as unknown as { providers: { get(name: string): AgentProvider } }).providers.get(name)
 }
 
 describe('SessionManager', () => {
@@ -9218,6 +9227,75 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const result = await sm.listSubagents(info.id)
     expect(mockListSubagents).toHaveBeenCalledWith(info.id, { dir: TEST_CWD })
     expect(result).toEqual(['agent-1', 'agent-2'])
+  })
+
+  it.each(['claude', 'native'] as const)('uses the %s provider reader for live and metadata-only sessions', async (providerName) => {
+    const info = await sm.create({ provider: providerName, cwd: TEST_CWD })
+    const provider = subagentProviderForTest(sm, providerName)
+    provider.capabilities.supportsSubagentTranscripts = true
+    const listSubagents = vi.fn(async () => ['agent-1'])
+    const readTranscript = vi.fn(async () => [{ type: 'assistant', uuid: 'a1' }])
+    provider.subagentTranscripts = { listSubagents, readTranscript }
+    const ref = { id: info.id, cwd: TEST_CWD }
+
+    expect(sm.resolveSubagentTranscriptProvider(info.id)).toBe(provider)
+    await expect(sm.listSubagents(info.id)).resolves.toEqual(['agent-1'])
+    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).resolves.toEqual([{ type: 'assistant', uuid: 'a1' }])
+
+    await sm.unload(info.id)
+    await expect(sm.listSubagents(info.id)).resolves.toEqual(['agent-1'])
+    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).resolves.toEqual([{ type: 'assistant', uuid: 'a1' }])
+
+    expect(listSubagents).toHaveBeenNthCalledWith(1, ref)
+    expect(listSubagents).toHaveBeenNthCalledWith(2, ref)
+    expect(readTranscript).toHaveBeenNthCalledWith(1, ref, 'agent-1')
+    expect(readTranscript).toHaveBeenNthCalledWith(2, ref, 'agent-1')
+  })
+
+  it('returns 404 for subagent operations on an unknown session', async () => {
+    expect(() => sm.resolveSubagentTranscriptProvider('ghost')).toThrowError(expect.objectContaining({ status: 404 }))
+    await expect(sm.listSubagents('ghost')).rejects.toMatchObject({ status: 404 })
+    await expect(sm.readSubagentTranscript('ghost', 'agent-1')).rejects.toMatchObject({ status: 404 })
+  })
+
+  it('returns 501 when the persisted provider is unknown', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    await sm.unload(info.id)
+    store.upsert({ ...store.get(info.id)!, provider: 'missing-provider' })
+
+    expect(() => sm.resolveSubagentTranscriptProvider(info.id)).toThrowError(expect.objectContaining({ status: 501 }))
+    await expect(sm.listSubagents(info.id)).rejects.toMatchObject({ status: 501 })
+    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).rejects.toMatchObject({ status: 501 })
+  })
+
+  it('returns 501 when a capable provider has no subagent reader', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    subagentProviderForTest(sm, 'claude').subagentTranscripts = undefined
+
+    await expect(sm.listSubagents(info.id)).rejects.toMatchObject({ status: 501 })
+    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).rejects.toMatchObject({ status: 501 })
+  })
+
+  it('keeps native production transcript reads unsupported while exposing its standalone reader', async () => {
+    const info = await sm.create({ provider: 'native', cwd: TEST_CWD })
+    const provider = subagentProviderForTest(sm, 'native')
+    expect(provider.capabilities.supportsSubagentTranscripts).toBe(false)
+    expect(provider.subagentTranscripts).toBeDefined()
+    await expect(provider.subagentTranscripts!.listSubagents({ id: 'unknown-native', cwd: TEST_CWD })).resolves.toEqual([])
+    await expect(provider.subagentTranscripts!.readTranscript({ id: 'unknown-native', cwd: TEST_CWD }, 'agent-1')).resolves.toEqual([])
+
+    expect(() => sm.resolveSubagentTranscriptProvider(info.id)).toThrowError(expect.objectContaining({ status: 501 }))
+    await expect(sm.listSubagents(info.id)).rejects.toMatchObject({ status: 501 })
+    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).rejects.toMatchObject({ status: 501 })
+    await sm.unload(info.id)
+    await expect(sm.listSubagents(info.id)).rejects.toMatchObject({ status: 501 })
+    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).rejects.toMatchObject({ status: 501 })
+  })
+
+  it('reads a missing Claude transcript through the provider without a live Query', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    await sm.unload(info.id)
+    await expect(sm.readSubagentTranscript(info.id, 'agent-missing')).resolves.toEqual([])
   })
 
   it('rejects listSubagents for a ghost session', async () => {

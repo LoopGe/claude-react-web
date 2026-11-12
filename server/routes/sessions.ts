@@ -29,7 +29,6 @@ import type { TranscriptPageResponse } from '../../shared/transcript-page.js'
 import { createSessionSearchIndex } from '../session-search-index.js'
 import { worktreeIsDirty } from '../git.js'
 import { worktreePathOf } from '../session-worktree.js'
-import { readSubagentTranscript } from '../subagent-transcripts.js'
 import { imagePayloadOfMessage } from '../../shared/user-frames.js'
 import { metrics } from '../metrics.js'
 
@@ -1325,7 +1324,7 @@ export function buildSessionRouter(
   // background/async subagents whose frames never reached the main stream.
   // Pure disk read — no live Query required, dormant sessions work.
   app.get('/sessions/:id/subagents/:agentId', async (c) => {
-    const messages = await readSubagentTranscript(c.req.param('id'), c.req.param('agentId'))
+    const messages = await sm.readSubagentTranscript(c.req.param('id'), c.req.param('agentId'))
     return c.json({ messages })
   })
 

@@ -9,7 +9,7 @@ import { config, requireAuthToken } from '../../config.js'
 import { HttpError } from '../../errors.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
-import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle } from '../types.js'
+import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
 import type { LoopDeps } from './loop.js'
 import { NativeMcpConnections } from './mcp/connections.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
@@ -21,6 +21,7 @@ import { nativeHistoryCache } from './session-log/cache.js'
 import { deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
 import { readNativeHistoryEntries, readNativeHistoryPage } from './session-log/reader.js'
+import { readNativeSubagentTranscript } from './subagent-transcripts.js'
 import { bashTool } from './tools/bash.js'
 import { readTool } from './tools/read.js'
 import { writeTool } from './tools/write.js'
@@ -106,6 +107,15 @@ export class NativeProvider implements AgentProvider {
     supportsReadFile: false,
     supportsSubagentTranscripts: false,
     supportsSteering: true,
+  }
+
+  readonly subagentTranscripts = {
+    listSubagents: async (ref: ProviderSessionRef): Promise<string[]> => {
+      const loaded = await nativeHistoryCache.load(this.stateDir, ref.id)
+      return loaded?.subagents.entries.map((entry) => entry.agentId) ?? []
+    },
+    readTranscript: (ref: ProviderSessionRef, agentId: string): Promise<unknown[]> =>
+      readNativeSubagentTranscript(this.stateDir, ref.id, agentId),
   }
 
   /** Test seam: when set, replaces the real network streamer for every turn.

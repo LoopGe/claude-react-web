@@ -153,7 +153,7 @@ import { deleteTranscriptFile, deleteTranscriptFiles, findTranscriptFile, isSafe
 import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
-import type { ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
+import type { AgentProvider, ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
 import { countMatches, findRanges } from '../shared/search/match.js'
 import { extractMessagePlainText } from '../shared/search/extract.js'
 import type { MessageSearchHit } from '../shared/search-results.js'
@@ -6764,17 +6764,53 @@ export class SessionManager {
     return result
   }
 
-  /** List subagent ids persisted under this session's transcript dir (SDK
-   *  standalone listSubagents — scans `subagents/agent-<id>.jsonl`; no live
-   *  subprocess round-trip). Read-only, works even mid-turn. */
+  /** Resolve the provider that owns a session's standalone subagent data.
+   *  Live state wins; after unload/restart the persisted provider and cwd are
+   *  authoritative. This is also the source-selection seam for transcript
+   *  subscriptions, so capability failures cannot be bypassed by that path. */
+  resolveSubagentTranscriptProvider(id: string): AgentProvider {
+    return this.subagentTranscriptContext(id).provider
+  }
+
+  private subagentTranscriptContext(id: string): { provider: AgentProvider; meta: Session | SessionMeta } {
+    const meta = this.sessions.get(id) ?? this.store?.get(id)
+    if (!meta) throw new HttpError(404, `session ${id} not found`)
+    const providerName = meta.provider ?? this.defaultProvider
+    let provider: AgentProvider
+    try {
+      provider = this.providers.get(providerName)
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 400) {
+        throw new HttpError(501, `provider ${providerName} does not support subagent transcripts`)
+      }
+      throw err
+    }
+    if (!provider.capabilities.supportsSubagentTranscripts) {
+      throw new HttpError(501, `provider ${providerName} does not support subagent transcripts`)
+    }
+    return { provider, meta }
+  }
+
+  private subagentTranscriptReader(id: string) {
+    const { provider, meta } = this.subagentTranscriptContext(id)
+    const reader = provider.subagentTranscripts
+    if (!reader) {
+      throw new HttpError(501, `provider ${provider.name} does not support subagent transcripts`)
+    }
+    return { reader, ref: { id, cwd: meta.cwd ?? '' } }
+  }
+
+  /** List subagent ids from the provider-owned transcript store. Read-only,
+   *  works even mid-turn and without a live Query. */
   async listSubagents(id: string): Promise<string[]> {
-    const s = this.requireLive(id)
-    return this.requireHandleMethod<() => Promise<string[]>>(
-      s,
-      'listSubagents',
-      'list subagents',
-      'supportsSubagentTranscripts',
-    )()
+    const { reader, ref } = this.subagentTranscriptReader(id)
+    return reader.listSubagents(ref)
+  }
+
+  /** Read one standalone subagent transcript through the owning provider. */
+  async readSubagentTranscript(id: string, agentId: string): Promise<unknown[]> {
+    const { reader, ref } = this.subagentTranscriptReader(id)
+    return reader.readTranscript(ref, agentId)
   }
 
   /** List pending tool-permission requests for a session. */

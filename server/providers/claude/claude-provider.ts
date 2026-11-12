@@ -1,6 +1,7 @@
 import {
   getSessionInfo,
   listSessions,
+  listSubagents as sdkListSubagents,
   query,
   renameSession as sdkRenameSession,
   type Options,
@@ -37,7 +38,8 @@ import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import type { McpConfigStore } from '../../mcp-config.js'
 import { createPushable } from '../../pushable.js'
 import { ProcessMonitor, type ProcessExitInfo } from '../../process-monitor.js'
-import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities } from '../types.js'
+import type { AgentProvider, CreateSessionOptions, ListResumableOptions, ProviderCapabilities, ProviderSessionRef } from '../types.js'
+import { readSubagentTranscript } from '../../subagent-transcripts.js'
 import { ClaudeSessionHandle } from './claude-session.js'
 import { buildInProcessHooks } from './inprocess-hooks.js'
 import { SupplementSession } from './steering.js'
@@ -389,6 +391,13 @@ export class ClaudeProvider implements AgentProvider {
     // Mid-run steering 机制已实现；旧 CLI 的运行时退化由 supplement session
     // 不创建 + enqueueSupplement 恒 false 实现（spec §5.5）。
     supportsSteering: true,
+  }
+
+  readonly subagentTranscripts = {
+    listSubagents: (ref: ProviderSessionRef): Promise<string[]> =>
+      sdkListSubagents(ref.id, { dir: ref.cwd }),
+    readTranscript: (ref: ProviderSessionRef, agentId: string): Promise<unknown[]> =>
+      readSubagentTranscript(ref.id, agentId),
   }
 
   private readonly processMonitor: ProcessMonitor
