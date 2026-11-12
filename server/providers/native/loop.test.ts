@@ -108,6 +108,31 @@ describe('runTurn', () => {
     expect(assistant.message.content[0]).toEqual({ type: 'text', text: 'hello' })
   })
 
+  it('accepts ordered initial user messages without merging them or later tool results', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const initial: readonly { role: 'user'; content: unknown[] }[] = [
+      { role: 'user', content: [{ type: 'text', text: '/demo do X' }] },
+      { role: 'user', content: [{ type: 'text', text: 'CANONICAL SKILL BODY' }] },
+    ]
+    const history: unknown[] = []
+
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s) }),
+      defaultFrameContext('sess-1'),
+      history, initial, 'm1', new AbortController().signal,
+    )
+
+    expect(s.calls[0]).toEqual(initial)
+    expect((s.calls[1] as unknown[]).slice(0, 2)).toEqual(initial)
+    expect(toolResultsOf(s.calls[1])).toEqual([
+      expect.objectContaining({ type: 'tool_result', tool_use_id: 't1' }),
+    ])
+    expect(history.slice(0, 2)).toEqual(initial)
+  })
+
   it('tool round-trip: permission → execute → tool_result → second response', async () => {
     const s = scriptedStreamer([
       [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],

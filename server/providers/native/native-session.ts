@@ -91,33 +91,29 @@ function persistedUserMessage(message: { content: unknown }): { role: 'user'; co
  *  The name grammar mirrors the CLI's skill-name rule. */
 const SKILL_COMMAND_RE = /^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/
 
-/** Resolve one text block against the current scoped view: a `/name args`
- *  invocation of a skill the user may invoke becomes that skill's canonical
- *  body; args stay only in the original input. Anything else (not a command,
- *  an unknown skill, an `off` skill) is returned unchanged. */
-function expandSkillText(text: string, skills: NativeSkillInvocationView): string {
+/** Resolve one text block against the captured scoped view. A `/name args`
+ *  invocation of a skill the user may invoke returns that skill's canonical
+ *  body exactly once; args stay only in the original input. Anything else (not
+ *  a command, an unknown skill, an `off` skill) has no instruction. */
+function skillInvocationForTurn(
+  content: unknown,
+  skills: NativeSkillInvocationView,
+): { name: string; body: string } | null {
+  let text: string | undefined
+  if (typeof content === 'string') {
+    text = content
+  } else if (Array.isArray(content)) {
+    // Only the FIRST text block can carry the slash command. Every non-text
+    // block (image / file) remains untouched in the original user message.
+    const block = content.find(
+      (candidate) => typeof candidate === 'object' && candidate !== null &&
+        (candidate as { type?: unknown }).type === 'text',
+    ) as { type: 'text'; text?: unknown } | undefined
+    if (typeof block?.text === 'string') text = block.text
+  }
+  if (text === undefined) return null
   const match = SKILL_COMMAND_RE.exec(text)
-  if (!match) return text
-  return skills.expand(match[1])?.body ?? text
-}
-
-/** The model-facing content of one user turn. For block content every non-text
- *  block (image / file) is preserved untouched: only the FIRST text block is
- *  considered, because that is where the slash command rides. */
-function expandSkillTurn(content: unknown, skills: NativeSkillInvocationView): unknown {
-  if (typeof content === 'string') return expandSkillText(content, skills)
-  if (!Array.isArray(content)) return content
-  const index = content.findIndex(
-    (block) => typeof block === 'object' && block !== null && (block as { type?: unknown }).type === 'text',
-  )
-  if (index === -1) return content
-  const block = content[index] as { type: 'text'; text?: unknown } & Record<string, unknown>
-  if (typeof block.text !== 'string') return content
-  const expandedText = expandSkillText(block.text, skills)
-  if (expandedText === block.text) return content
-  const expanded = content.slice()
-  expanded[index] = { ...block, text: expandedText }
-  return expanded
+  return match ? skills.expand(match[1]) : null
 }
 
 /** Fire-and-forget flush: a persistence failure must never become an
@@ -1058,34 +1054,57 @@ export class NativeSession implements ProviderSessionHandle {
       // errored turn has no usage of its own — stamping the PREVIOUS turn's
       // `lastUsage` here would make `restoreUsage` sum it again after restart.
       let endUsage: Usage | undefined
+      let initialMessages: Array<{ role: 'user'; content: unknown[] }> = []
+      let initialMessagesOwned = false
       try {
-        // The turn is consumed now, so it must be persisted on EVERY path —
-        // the client has already marked it "sent". A `/name args` turn is
-        // persisted and sent as the skill's expanded body, so discovery has to
-        // land first; a failed pass still writes the ORIGINAL text (below) and
-        // then fails the turn loudly.
-        let turnContent: unknown = next.message.content
+        // Capture the invocation scope BEFORE discovery is resolved. The body
+        // returned below is the single snapshot shared by disk and runTurn, so
+        // a later profile change or catalog reload cannot rewrite this turn.
+        const turnProfile = this.currentProfile
+        const turnSkillView = this.skills.view(turnProfile?.skills ?? this.baseSkillPolicy)
+        let invocation: { name: string; body: string } | null = null
         let skillError: unknown
         try {
           // Skill discovery is awaited per turn, not at spawn: a slow disk
           // never delays session creation, and `skillsReady` tracks the LATEST
           // reload pass, so a manual reload supersedes the construction snapshot.
           await this.skillsReady
-          turnContent = expandSkillTurn(next.message.content, this.currentSkillView())
+          invocation = skillInvocationForTurn(next.message.content, turnSkillView)
         } catch (err) {
           skillError = err
         }
-        // Write it (and wait for the write) before the model sees it. Inside
-        // the try so a rejected write is classified as this turn's failure
-        // instead of rejecting the pump.
+
+        // The consumed turn must be persisted on EVERY path — the client has
+        // already marked it "sent". Keep the original content as the user
+        // event, then append the optional canonical instruction as history-only
+        // metadata. One flush covers both before the model can see either.
+        const timestamp = new Date(this.receivedAt.get(next)!).toISOString()
+        const rawMessage = {
+          role: 'user',
+          content: next.message.content,
+        } as { role: 'user'; content: unknown[] }
+        initialMessages = [rawMessage]
         this.log.append({
           type: 'user',
           uuid: next.uuid!,
           session_id: this.opts.id,
           parent_tool_use_id: null,
-          timestamp: new Date(this.receivedAt.get(next)!).toISOString(),
-          message: persistedUserMessage({ content: turnContent }),
+          timestamp,
+          message: persistedUserMessage(next.message),
         })
+        if (invocation) {
+          const instruction = {
+            role: 'user',
+            content: [{ type: 'text', text: invocation.body }],
+          } as { role: 'user'; content: unknown[] }
+          initialMessages.push(instruction)
+          this.log.append({
+            type: 'session/skill',
+            name: invocation.name,
+            body: invocation.body,
+            timestamp,
+          })
+        }
         await this.log.flush()
         if (skillError !== undefined) throw skillError
         // MCP discovery is awaited per turn, not at spawn: a slow server never
@@ -1095,8 +1114,6 @@ export class NativeSession implements ProviderSessionHandle {
         // Everything a preset can override is captured together. Live controls
         // update the next-turn fields immediately, but this turn keeps the
         // model/profile/permission/effort and Skill view it started with.
-        const turnProfile = this.currentProfile
-        const turnSkillView = this.skills.view(turnProfile?.skills ?? this.baseSkillPolicy)
         this.rebuildTools(this.skillToolFor(turnSkillView))
         const turnModel = this.model
         const turnPermissionMode = this.permissionMode
@@ -1123,10 +1140,11 @@ export class NativeSession implements ProviderSessionHandle {
             system: turnSystem,
             fastModeState: () => (this.fastMode ? 'on' : 'off'),
             drainSupplement: () => this.injectSupplements(),
+            onInitialMessagesOwned: () => { initialMessagesOwned = true },
           },
           this.ctx,
           this.history,
-          { role: 'user', content: turnContent } as { role: 'user'; content: unknown[] },
+          initialMessages,
           turnModel,
           turnSignal,
         )
@@ -1138,6 +1156,11 @@ export class NativeSession implements ProviderSessionHandle {
         endReason = res.isError ? 'error' : 'completed'
         if (!res.isError) endUsage = res.usage
       } catch (err) {
+        // Before runTurn's ownership callback, no model request could have
+        // consumed the initial messages. Restore that exact ordered pair so
+        // the next live request matches disk replay. Once the loop owns them,
+        // its history append is the only copy.
+        if (!initialMessagesOwned) this.history.push(...initialMessages)
         // The assistant message may already be in `history` with unanswered
         // tool calls (the failure can land at the pre-tool barrier); close
         // them before the next request is built.

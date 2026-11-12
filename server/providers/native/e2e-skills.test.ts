@@ -2,10 +2,11 @@
 //
 // End-to-end proof of P1.4 through SessionManager: a native session discovers
 // the project's `.claude/skills`, lists it in the `/` command catalog and the
-// system prompt, loads it through the `Skill` tool, expands a user's
-// `/name args` turn for the model (while the manager's ring keeps the typed
-// text), honours `setSkillOverride`, and clears the catalog — and broadcasts
-// an EMPTY `commands-changed` — when every skill file is deleted.
+// system prompt, loads it through the `Skill` tool, sends a user's raw
+// `/name args` turn with a separate canonical instruction (while the manager's
+// ring keeps only the typed text), honours `setSkillOverride`, and clears the
+// catalog — and broadcasts an EMPTY `commands-changed` — when every skill file
+// is deleted.
 // Fixture shape copied from e2e-mcp.test.ts (temp-dir SessionStore + custom
 // ProviderRegistry + scripted `_testStream`). CLAUDE_CONFIG_DIR is redirected
 // at a temp dir so the developer's real user-scope skills never leak into an
@@ -23,8 +24,8 @@ import type { CanonicalEvent } from './canonical.js'
 
 type Frame = Record<string, any>
 
-/** The project-scope skill every case plants. The catalog caches the WHOLE
- *  file (frontmatter included), so `body` below is exactly this string. */
+/** The project-scope skill every case plants. Tool and slash invocation
+ *  expectations use its canonical body without this frontmatter. */
 const SKILL_DESCRIPTION = 'Demo skill used by the native skills e2e.'
 const SKILL_MD = [
   '---',
@@ -43,6 +44,10 @@ const DEMO_COMMAND = {
   name: 'demo',
   description: SKILL_DESCRIPTION,
   argumentHint: '[what to do]',
+}
+
+function canonicalDemoBody(project: string): string {
+  return `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\n# Demo skill\n\nFollow the demo instructions.\n`
 }
 
 function textTurn(text: string): CanonicalEvent[] {
@@ -243,7 +248,7 @@ function ringUserFrame(fx: Fixture, id: string, content: string): Frame | undefi
 }
 
 describe('native skills end to end through SessionManager', () => {
-  it('lists demo, loads it through the Skill tool, and expands /demo for the model only', async () => {
+  it('lists demo, loads it through the Skill tool, and appends /demo instructions for the model only', async () => {
     const { project, stateDir } = await makeEnv()
     const fx = await makeFixture(stateDir)
     const id = await createSession(fx, project)
@@ -263,14 +268,17 @@ describe('native skills end to end through SessionManager', () => {
     expect(fx.requests[0].system).toContain('<available_skills>\n- demo\n</available_skills>')
     expect(fx.requests[0].system).not.toContain(SKILL_DESCRIPTION)
     expect(toolResultsOf(fx.requests[1]).filter((r) => r.tool_use_id === 'sk1')).toEqual([
-      { tool_use_id: 'sk1', text: SKILL_MD, is_error: false },
+      { tool_use_id: 'sk1', text: canonicalDemoBody(project), is_error: false },
     ])
 
-    // A `/demo args` turn: the MODEL sees the expanded body + args...
+    // A `/demo args` turn: the MODEL sees the raw invocation followed by the
+    // canonical instruction body...
     fx.scripts.push(textTurn('expanded'))
     await sendAndWait(fx, id, frames, '/demo do X', 2)
-    const sent = fx.requests[2].messages.at(-1)!
-    expect(sent).toEqual({ role: 'user', content: `${SKILL_MD}\n\ndo X` })
+    expect(fx.requests[2].messages.slice(-2)).toEqual([
+      { role: 'user', content: '/demo do X' },
+      { role: 'user', content: [{ type: 'text', text: canonicalDemoBody(project) }] },
+    ])
     // ...while the manager's ring keeps the text the user typed.
     expect(ringUserFrame(fx, id, '/demo do X')).toBeDefined()
 
@@ -302,7 +310,7 @@ describe('native skills end to end through SessionManager', () => {
     await sendAndWait(fx, id, frames, 'load it again', 2)
     expect(fx.requests[2].system).toContain('<available_skills>\n- demo\n</available_skills>')
     expect(toolResultsOf(fx.requests[3]).filter((r) => r.tool_use_id === 'sk3')).toEqual([
-      { tool_use_id: 'sk3', text: SKILL_MD, is_error: false },
+      { tool_use_id: 'sk3', text: canonicalDemoBody(project), is_error: false },
     ])
 
     unsubscribe()
@@ -362,7 +370,7 @@ describe('native skills end to end through SessionManager', () => {
     disabled.unsubscribe()
   })
 
-  it('persists the expanded /demo body so a resumed session rebuilds it in model history', async () => {
+  it('persists raw /demo plus its instruction so resume rebuilds both in model history', async () => {
     const { project, stateDir } = await makeEnv()
     const first = await makeFixture(stateDir)
     const id = await createSession(first, project)
@@ -372,11 +380,12 @@ describe('native skills end to end through SessionManager', () => {
     await sendAndWait(first, id, frames, '/demo do X', 1)
     unsubscribe()
 
-    // Gate on the durable half: the log must carry the expanded body before
-    // the restart below reads it.
+    // Gate on the durable half: the raw prompt must be committed before the
+    // restart below reads it. The instruction itself is history-only and does
+    // not render as another transcript row.
     await vi.waitFor(async () => {
       const page = await first.sm.getHistoryPage(id, { limit: 50 })
-      expect(JSON.stringify(page.messages)).toContain('Follow the demo instructions.')
+      expect(JSON.stringify(page.messages)).toContain('/demo do X')
     }, { timeout: 5000 })
 
     // --- restart + resume over the same state dir -------------------------
@@ -387,16 +396,15 @@ describe('native skills end to end through SessionManager', () => {
     sessionIds.push({ sm: second.sm, id })
 
     // The resumed live handle's model history is rebuilt from the log and is
-    // what the next turn sends: it must carry the EXPANDED body, not the
-    // typed `/demo do X`.
+    // what the next turn sends: it carries the ORIGINAL slash prompt and the
+    // captured canonical instruction as separate user messages.
     const live = (second.sm as unknown as {
       sessions: Map<string, { handle: { history: unknown[] } }>
     }).sessions.get(id)
     expect(live).toBeDefined()
     const modelHistory = JSON.stringify(live!.handle.history)
+    expect(modelHistory).toContain('/demo do X')
     expect(modelHistory).toContain('# Demo skill')
     expect(modelHistory).toContain('Follow the demo instructions.')
-    expect(modelHistory).toContain('do X')
-    expect(modelHistory).not.toContain('/demo do X')
   }, 20000)
 })

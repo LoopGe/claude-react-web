@@ -36,6 +36,10 @@ export interface LoopDeps {
    *  — the loop neither wraps nor reports. Absent for the nested Agent runner
    *  (a subagent never consumes main-thread steering). */
   drainSupplement?: () => Promise<Array<{ uuid: string; text: string }>>
+  /** Called synchronously after the initial user message(s) join history.
+   *  The session uses this to distinguish pre-run failures (where its catch
+   *  must restore them) from failures after the loop took ownership. */
+  onInitialMessagesOwned?: () => void
 }
 
 export interface TurnResult {
@@ -58,7 +62,7 @@ export async function runTurn(
   deps: LoopDeps,
   frameCtx: FrameContext,
   history: unknown[],
-  turnInput: { role: 'user'; content: unknown[] },
+  turnInput: { role: 'user'; content: unknown[] } | readonly { role: 'user'; content: unknown[] }[],
   model: string,
   signal: AbortSignal,
 ): Promise<TurnResult> {
@@ -74,7 +78,9 @@ export async function runTurn(
   // error tool_results and the model gets to recover in the next round.
   // Exhausting maxTurns is the exception: the model gets no recovery round.
   let isError = false
-  history.push(turnInput)
+  const initialMessages = Array.isArray(turnInput) ? turnInput : [turnInput]
+  history.push(...initialMessages)
+  deps.onInitialMessagesOwned?.()
   for (;;) {
     // Mid-run steering: anything queued since the previous round joins the
     // conversation as a user message BEFORE this round's request is built.

@@ -2566,15 +2566,16 @@ describe('NativeSession', () => {
         .toEqual(['demo', 'other'])
       session.enqueueUserMessage(userMsg('/other keep this') as never)
       await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'allowed')).toBe(true))
-      expect(sentUserContent(requests[1])).toEqual([
-        { type: 'text', text: canonicalSkillBody(dir, 'other') },
+      expect(requests[1].messages.slice(-2)).toEqual([
+        { role: 'user', content: [{ type: 'text', text: '/other keep this' }] },
+        { role: 'user', content: [{ type: 'text', text: canonicalSkillBody(dir, 'other') }] },
       ])
     } finally {
       await session.destroy()
     }
   })
 
-  it('expands a `/name args` turn into the canonical body without repeating args', async () => {
+  it('preserves a raw `/name args` turn and appends one canonical skill instruction', async () => {
     const dir = await tempDir('native-skill-expand-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
     const provider = new NativeProvider({ stateDir: dir })
@@ -2590,28 +2591,38 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
     const expected = canonicalSkillBody(dir, 'demo', '# demo body')
-    // The model and durable log see the canonical body exactly once, with no
-    // frontmatter and no second copy of the slash arguments.
-    expect(sentUserContent(requests[0])).toEqual([{ type: 'text', text: expected }])
-    expect(userTexts(session)).toEqual([expected])
+    const raw = { role: 'user', content: [{ type: 'text', text: '/demo do this' }] }
+    const instruction = { role: 'user', content: [{ type: 'text', text: expected }] }
+    // The model receives the original invocation followed by its canonical
+    // body. Disk stores the same pair as raw user + history-only session/skill.
+    expect(requests[0].messages.slice(-2)).toEqual([raw, instruction])
+    expect(userTexts(session)).toEqual(['/demo do this'])
+    expect(logOf(session).events.filter((event) => event.type === 'session/skill')).toEqual([
+      expect.objectContaining({ type: 'session/skill', name: 'demo', body: expected }),
+    ])
     expect(expected).not.toContain('do this')
     expect(expected).not.toContain('description: demo description')
+
+    // A later file edit and catalog reload cannot rewrite the captured turn.
+    await writeProjectSkill(dir, 'demo', { body: '# demo replacement' })
+    await session.reloadSkills?.()
+    expect(logOf(session).events.find((event) => event.type === 'session/skill')).toMatchObject({ body: expected })
     // The queued message is never mutated: the manager's ring and broadcast
     // keep the `/name args` text the user typed.
     expect(queued.message.content).toEqual([{ type: 'text', text: '/demo do this' }])
     await session.destroy()
   })
 
-  it('persists the consumed prompt when skill discovery fails, then fails loudly', async () => {
+  it('persists the consumed prompt when skill discovery fails, then replays it exactly once', async () => {
     const dir = await tempDir('native-skill-expand-fail-')
     // Fail the constructor's discovery pass; the session is otherwise healthy.
     const reload = vi.spyOn(NativeSkillCatalog.prototype, 'reload')
     reload.mockRejectedValueOnce(new Error('skill discovery exploded'))
     const provider = new NativeProvider({ stateDir: dir })
-    const streamed: string[] = []
-    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
-      streamed.push('called')
-      for (const ev of textTurn('unreachable')) yield ev
+    const requests: unknown[][] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
+      requests.push(structuredClone(req.messages))
+      for (const ev of textTurn('recovered')) yield ev
     }
     let session: ReturnType<NativeProvider['createSession']>
     try {
@@ -2632,8 +2643,23 @@ describe('NativeSession', () => {
     // the in-memory events: this proves the flush resolved before the throw.
     const onDisk = loadNativeSessionLogSync(dir, 'skill-expand-fail') as unknown as LogLike
     expect(userTextsOf(onDisk)).toEqual(['/demo do this'])
-    expect(streamed).toEqual([])
+    expect(requests).toEqual([])
+
+    // Recovery must make the failed raw prompt visible to the NEXT live
+    // request exactly once; the pre-run failure had no runTurn to append it.
+    await session.reloadSkills?.()
+    session.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+    expect(requests).toHaveLength(1)
+    expect(JSON.stringify(requests[0]).match(/\/demo do this/g)).toHaveLength(1)
+    expect(JSON.stringify(requests[0])).toContain('second')
+
     await session.destroy()
+    const resumed = provider.createSession({ id: 'skill-expand-fail', cwd: dir, resume: 'skill-expand-fail' })
+    const resumedHistory = JSON.stringify((resumed as unknown as { history: unknown[] }).history)
+    expect(resumedHistory.match(/\/demo do this/g)).toHaveLength(1)
+    expect(resumedHistory).toContain('second')
+    await resumed.destroy()
   })
 
   it('passes `/unknown` and non-skill `/clear` turns through unchanged', async () => {
@@ -2695,14 +2721,14 @@ describe('NativeSession', () => {
     await runTurnOnce(3, '/demo three')
     expect(sentUserContent(requests[2])).toEqual([{ type: 'text', text: '/demo three' }])
     expect(userTexts(session)).toEqual([
-      demoBody,
-      hiddenBody,
+      '/demo one',
+      '/hidden two',
       '/demo three',
     ])
     await session.destroy()
   })
 
-  it('rewrites only the first text block of an image-bearing `/name` turn', async () => {
+  it('preserves every block of an image-bearing `/name` turn and appends the instruction', async () => {
     const dir = await tempDir('native-skill-image-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
     const body = canonicalSkillBody(dir, 'demo', '# demo body')
@@ -2723,10 +2749,14 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(queued as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
-    const expected = [{ type: 'text', text: body }, image]
-    // The log and the request keep the image block untouched.
-    expect(logOf(session).events.find((e) => e.type === 'user')?.message?.content).toEqual(expected)
-    expect(sentUserContent(requests[0])).toEqual(expected)
+    const raw = [{ type: 'text', text: '/demo look' }, image]
+    // The raw user event and request keep the image block untouched; the
+    // canonical body is a separate text-only instruction immediately after it.
+    expect(logOf(session).events.find((e) => e.type === 'user')?.message?.content).toEqual(raw)
+    expect(requests[0].messages.slice(-2)).toEqual([
+      { role: 'user', content: raw },
+      { role: 'user', content: [{ type: 'text', text: body }] },
+    ])
     // The queued message the manager broadcasts is unmodified.
     expect(queued.message.content).toEqual([{ type: 'text', text: '/demo look' }, image])
     await session.destroy()
@@ -2749,12 +2779,12 @@ describe('NativeSession', () => {
 
     const expected = body
     expect(expected).not.toContain('line1\nline2')
-    expect(userTexts(session)).toEqual([expected])
+    expect(userTexts(session)).toEqual(['/demo line1\nline2'])
     expect(sentUserContent(requests[0])).toEqual([{ type: 'text', text: expected }])
     await session.destroy()
   })
 
-  it('expands a string-content `/name` turn and normalizes the log to blocks', async () => {
+  it('keeps a string-content `/name` turn raw and normalizes only its log event to blocks', async () => {
     const dir = await tempDir('native-skill-string-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
     const body = canonicalSkillBody(dir, 'demo', '# demo body')
@@ -2770,12 +2800,16 @@ describe('NativeSession', () => {
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'ok')).toBe(true))
 
     const expected = body
-    // The in-memory history keeps the caller's string shape...
-    expect(sentUserContent(requests[0])).toBe(expected)
-    // ...while the log normalizes it to a block array (the parser rejects a
-    // bare string).
+    // The in-memory history keeps the caller's raw string shape, followed by
+    // the instruction's block array...
+    expect(requests[0].messages.slice(-2)).toEqual([
+      { role: 'user', content: '/demo from string' },
+      { role: 'user', content: [{ type: 'text', text: expected }] },
+    ])
+    // ...while the log normalizes only the raw user event to blocks (the
+    // parser rejects a bare string).
     expect(logOf(session).events.find((e) => e.type === 'user')?.message?.content)
-      .toEqual([{ type: 'text', text: expected }])
+      .toEqual([{ type: 'text', text: '/demo from string' }])
     await session.destroy()
   })
 
@@ -3167,15 +3201,20 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
-  it('survives a persistence flush failure without double-emitting', async () => {
+  it('restores raw and skill messages exactly once after a pre-request flush failure', async () => {
     const dir = await tempDir('native-flush-')
-    const provider = providerWithStreamer([textTurn('hello')], dir)
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('after failure')], requests)
     const session = provider.createSession({ id: 'flush', cwd: dir })
     const frames: Frame[] = []
     void (async () => { for await (const f of session.messages) frames.push(f as Frame) })()
 
     const internals = session as unknown as {
       pumpLoop: () => Promise<void>
+      pumping: boolean
       log: { flush: () => Promise<void>; events: LogEventLike[] }
     }
     // `enqueueUserMessage` discards the pump promise; capture it so the test
@@ -3186,7 +3225,7 @@ describe('NativeSession', () => {
       pumpPromise = originalPump()
       return pumpPromise
     }
-    // Fail the turn's pre-run user write exactly once.
+    // Fail the turn's pre-run raw+instruction write exactly once.
     const sessionLog = internals.log
     const originalFlush = sessionLog.flush.bind(sessionLog)
     let rejectNext = true
@@ -3198,12 +3237,29 @@ describe('NativeSession', () => {
       return originalFlush()
     }
 
-    session.enqueueUserMessage(userMsg('hi') as never)
+    session.enqueueUserMessage(userMsg('/demo do this') as never)
     await expect(pumpPromise!).resolves.toBeUndefined()
     await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(1))
     expect((frames.find((f) => f.type === 'result') as Frame).result).toBe('disk full')
     expect(internals.log.events.filter((e) => e.type === 'turn/end')).toHaveLength(1)
+    expect(requests).toEqual([])
+    await vi.waitFor(() => expect(internals.pumping).toBe(false))
+
+    session.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
+    expect(requests).toHaveLength(1)
+    const liveHistory = JSON.stringify(requests[0].messages)
+    expect(liveHistory.match(/\/demo do this/g)).toHaveLength(1)
+    expect(liveHistory.match(/# demo body/g)).toHaveLength(1)
+    expect(liveHistory).toContain('second')
+
     await session.destroy()
+    const resumed = provider.createSession({ id: 'flush', cwd: dir, resume: 'flush' })
+    const resumedHistory = JSON.stringify((resumed as unknown as { history: unknown[] }).history)
+    expect(resumedHistory.match(/\/demo do this/g)).toHaveLength(1)
+    expect(resumedHistory.match(/# demo body/g)).toHaveLength(1)
+    expect(resumedHistory).toContain('second')
+    await resumed.destroy()
   })
 
   it('waits for the assistant event to be durable before a tool can run', async () => {
