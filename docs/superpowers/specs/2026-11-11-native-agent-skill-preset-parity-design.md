@@ -1,7 +1,7 @@
 # Native 子代理、技能与 Preset 对齐设计
 
 日期：2026-11-11
-状态：阶段 A/B 已实现；阶段 C 未实现
+状态：阶段 A/B/C 已实现；controller 的 whole-workstream 最终 review 与后续 push 未在本实现任务中声明完成
 阶段 B 详细设计与实现记录：[Native 阶段 B：子代理目录、Transcript 与工具角色设计](2026-11-12-native-subagent-transcript-design.md)
 
 ## 1. 背景与问题
@@ -275,7 +275,6 @@ interface SubagentTranscriptSource {
 {
   type: 'session/skill',
   name: string,
-  args: string,
   body: string,
   timestamp: string
 }
@@ -284,7 +283,7 @@ interface SubagentTranscriptSource {
 处理顺序：
 
 1. 原始用户 `/name args` 原样写入 user 事件。
-2. 命中技能后，把正文和 args 作为独立 `session/skill` 事件 append + flush。
+2. 命中技能后，把 canonical 正文作为独立 `session/skill` 事件 append，并与 raw user 共享 pre-request flush；args 不复制进事件。
 3. `historyFromEvents` 在该位置向模型历史插入统一的 skill instructions 消息。
 4. history reader 默认展示原始用户消息，不重复渲染整份技能正文；搜索 `/name args` 因此恢复命中。
 5. Skill 工具和 `/name` 注入共用一个 canonical renderer，避免模型在两条路径看到不同语义。
@@ -311,10 +310,15 @@ forked Skill 不属于本批。若以后实现，复用 `subagent/descriptor` �
 - Task 别名、Explore 只读 profile。
 - depth=1 的持久化。
 
-### 阶段 C：技能注入恢复（未实现）
+### 阶段 C：技能注入恢复（已实现）
 
-- `session/skill` 和 canonical renderer。
-- live/disk/search/fork 的原始 `/name` 一致性。
+实现以 [Native 阶段 C：技能调用原始输入与注入恢复设计](2026-11-12-native-skill-invocation-recovery-design.md) 为准：
+
+- strict `session/skill`、canonical renderer 和下一回合生效的 scoped reload。
+- live/disk/search/fork/resume 的原始 `/name` 一致性，live/replay 共享持久化指令快照。
+- 冻结完整 turn 执行快照，pre-request 失败由明确的初始消息所有权保证下一 live/resume history 一致。
+- 手动与自动 compact 共用隐藏指令投影，同时保留 main/subagent context；UI/search 不暴露注入。
+- controller 的 whole-workstream 最终 review 和用户授权后的 push 不在本实现任务内预先声明完成。
 
 ### 后续独立项目
 

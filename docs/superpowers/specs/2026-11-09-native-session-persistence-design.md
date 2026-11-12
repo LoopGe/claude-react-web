@@ -396,12 +396,12 @@ P1.3 让 native 会话拥有 `Agent` 工具：子代理在同一条 turn 循环�
 
 ## P1.4 — Skills / commands / presets
 
-P1.4 让 native 会话拥有与 claude 会话同等的本地技能能力：发现项目的 `.claude/skills` 与用户级 `skills/` 下的 `SKILL.md`，把可选技能写进每轮 system prompt 与 `/` 命令目录，让模型通过 `Skill` 工具加载正文，并把用户的 `/name args` turn 展开成技能正文。解析仍走现有的 `server/skills.ts` / `shared/skills.ts`，没有新增解析器与依赖。
+P1.4 让 native 会话拥有与 claude 会话同等的本地技能能力：发现项目的 `.claude/skills` 与用户级 `skills/` 下的 `SKILL.md`，把可选技能写进每轮 system prompt 与 `/` 命令目录，让模型通过 `Skill` 工具加载正文。用户的 `/name args` 以原始 user event 持久化，命中时的 canonical 指令由紧随的 history-only `session/skill` 事件保存。解析仍走现有的 `server/skills.ts` / `shared/skills.ts`，没有新增解析器与依赖。
 
 ### NativeSkillCatalog 与选择策略
 
 - 每个 native 会话一个 `NativeSkillCatalog`。spawn 策略（`configure`）与 override 层（`applyOverrides`，整表替换）分开存放，与发现解耦，因此调用顺序不影响结果。
-- `reload()` 是**异步**的：重新跑 `listSkills(cwd)`，为每个有效技能缓存整份 SKILL.md（含 frontmatter，单文件 ≤1 MiB；发现之后变大的文件被跳过，不让整轮发现失败）。此后 `section()` / `commands()` / `bodyOf()` / `expand()` 全是同步读取缓存。
+- `reload()` 是**异步**的：重新跑 `listSkills(cwd)`，为每个有效技能缓存整份 SKILL.md（含 frontmatter，单文件 ≤1 MiB；发现之后变大的文件被跳过，不让整轮发现失败）。此后 `section()` / `commands()` / `bodyOf()` / `expand()` 全是同步读取缓存；后两者通过共享 canonical renderer 返回 Base directory + 去 frontmatter 正文。
 - 同名去重：项目级覆盖用户级；无效记录在去重**之前**丢弃，因此坏掉的项目技能会回落到同名的有效用户技能。
 - 基础状态（spawn `Options.skills`）：
   - `undefined`（默认）→ 每个技能 `name-only`：只列名字、不列描述，模型仍可调用。这是 CLI/app 的实际默认，不是 "all with descriptions"。
@@ -416,23 +416,23 @@ P1.4 让 native 会话拥有与 claude 会话同等的本地技能能力：发�
 
 - 每轮 turn 把 `<available_skills>` 段拼到 system 字符串之后（空段不留多余空行）。turn 拿到的是本轮开始时的快照，运行中的 turn 不受后到的 reload / override 影响。
 - 子代理 prompt 的 skills 段是**实时 getter**，嵌套 Agent 调用读到的总是当前目录状态。
-- `Skill` 是每个会话构造的 `ToolDef`（不是全局静态），随所有工具列表下发——子代理也有，因为子代理也可能需要加载技能。`run` 返回缓存正文；带 `args` 时追加 `\n\nArguments: <args>`。不支持 forked 执行。
+- `Skill` 是每个会话构造的 `ToolDef`（不是全局静态），随所有工具列表下发——子代理也有，因为子代理也可能需要加载技能。`run` 返回与 `/name` 相同的 canonical body；带非空 `args` 时仅工具结果追加 `\n\n## User Request\n<args>`。不支持 forked 执行。
 - 未知名字、`off` 技能与 `disable-model-invocation` 技能都返回错误正文，且不发起任何流调用。
 
-### 用户 `/skill` 展开
+### 用户 `/skill` 原始输入与隐藏注入
 
-- `pumpLoop` 在每轮开头 `await skillsReady` 再展开内容：字符串 content 整体匹配 `/^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/`；数组 content 只重写**第一个** text block，image / file 等其它 block 原样保留。未命中（非命令、未知技能、`off`）原样透传。
-- 命中时模型侧内容 = `正文 + (args ? '\n\n' + args : '')`。
-- **日志持久化展开后的内容，manager 的 ring 保留用户输入的 `/name args`。** 日志是模型历史，必须与模型实际看到的一致，否则 live 与 resume 的历史会分叉；ring 只服务 UI 的即时气泡。
-- 接受的外观差异：**resume 后**客户端从日志重放，transcript 会渲染展开后的 SKILL.md（含 frontmatter）而不是用户敲的 `/demo args`。live 期间 UI 仍显示用户输入；这个差异只存在于 resume/fork 的历史重放。
-- 同一原因下，消息搜索（`searchMessages`）读的也是日志，所以 native 会话里搜索用户敲的 `/demo args` 不再命中（命中的是展开后的正文，且含 frontmatter）；与上面的 resume/fork 渲染差异同属一类。
+- `pumpLoop` 在每轮开头 `await skillsReady`，再从该轮冻结的 scoped skill snapshot 解析调用：字符串 content 整体匹配 `/^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/`；数组 content 只用第一个 text block 判断整消息命令，image / file 等其它 block 原样保留。未命中（非命令、未知技能、`off`、persona 排除）原样透传。
+- 命中时先写原始 `/name args` user event，再紧随写入不含 args 的 `session/skill {name,body,timestamp}`，两者共享 pre-request flush。live 模型输入与 replay 都按 raw user → canonical body 排列；body 不含 frontmatter，也不在 `/name` 路径重复 args。
+- **manager ring、history page 与搜索只投影原始用户输入。** `session/skill` 不广播、不产生额外 bubble、不进入 history page/search/seq backfill；模型 history 由 `historyFromEvents` 读取持久化 body，不根据当前 catalog 重渲染。
+- resume/fork 因而与 live 一样显示 `/demo args`，搜索该原文正常命中。raw user 的 fork 切点同时保留紧随的 skill 事件；raw-only 崩溃前缀和旧日志中已经展开的 user event 均保持原样，不回填、不猜测原始命令。
+- 旧决策中“resume/fork 显示展开正文、搜索原命令丢失是可接受后果”已被上述实现取代，不再是接受的限制。
 
 ### 控制面
 
 - `supportedCommands()` 返回 `commands()`，并 await 当前发现，避免 spawn 后立即拉取时拿到空表；`capabilities.supportsCommands = true`。
 - `reloadSkills()` 重新发现并返回 `{ skills }`。新的发现**替换** `skillsReady`，所以手动 reload 既覆盖构造时的快照，也能从一次失败的发现中恢复（后续每轮 turn 的 await 都跟踪这一遍）。
 - `applyFlagSettings` 只接受 `skillOverrides`：它**替换**整张 override 表，`{}` 回到 spawn 默认；任何其它 key 直接抛错。`supportsPlugins` 保持 false——插件开关必须响亮失败，而不是报告一个没有发生的变更。
-- 发现失败不阻塞建会话：失败的 promise 被观察（日志 warn），turn 侧仍 await 原始 promise。**被消费的 user turn 在发现失败时先以原始文本落盘，再让 turn 响亮失败**——客户端已把该 turn 标成 "sent"，日志不能让它蒸发。代价是日志记录了一个 live 模型没看到的 turn；resume 后模型可以回答它，这是为持久性有意接受的取舍。
+- 发现失败不阻塞建会话：失败的 promise 被观察（日志 warn），turn 侧仍 await 原始 promise。**被消费的 user turn 在发现失败时先以原始文本落盘，再让 turn 响亮失败**——客户端已把该 turn 标成 "sent"，日志不能让它蒸发。若失败发生在 `runTurn` 接管初始消息前，NativeSession 将同一有序输入追加到内存 history 一次；后续 live 与 resume 都看到这个失败尝试，但不会自动重发请求。
 
 ### 共享改动
 

@@ -1,7 +1,7 @@
 # Native 阶段 C：技能调用原始输入与注入恢复设计
 
 日期：2026-11-12
-状态：已确认；阶段 A/B 已实现，本文不声明阶段 C 已实现
+状态：阶段 A/B/C 已实现；controller 的 whole-workstream 最终 review 与后续 push 尚未在本任务中声明完成
 前置设计：`docs/superpowers/specs/2026-11-11-native-agent-skill-preset-parity-design.md`
 
 ## 1. 问题与目标
@@ -286,7 +286,7 @@ resume 继续分为两个投影：
 - 更新旧 P1.4 中要求“磁盘保存展开正文/搜索原命令丢失”的断言，不保留互相矛盾的旧行为。
 - native skills/session-log/native-session、SessionManager、history/search、fork/compact、Skill tool 和真实 E2E 全部通过。
 - `npm run typecheck`、`npx vitest run`、`npm run lint`、`npm run verify:agent-notes` 和 `git diff --check` 通过。
-- whole-workstream review 通过后才声明阶段 C 完成；不提前声明附件保真、插件技能、forked Skill 或 reload generation 修复。
+- whole-workstream review 仍是 controller 负责的发布门禁；本实现任务不提前声明该 review 或 push 已完成，也不声明附件保真、插件技能、forked Skill 或 reload generation 修复。
 
 ## 10. 明确取舍
 
@@ -295,3 +295,12 @@ resume 继续分为两个投影：
 - 采用 Claude 的去 frontmatter/Base directory 与 Skill 的 `## User Request` 包装，但不复制其 meta-user 协议，控制改动范围并保持 native 工具生命周期。
 - args 在 `/name` 中只出现一次，在 Skill 工具中按工具调用协议出现，优先避免模型历史重复，而不追求两条路径字节完全相同。
 - 接受 pre-request flush 失败后 consumed-turn 事件仍可能随后落盘，将其视为失败尝试的 durable 历史；不以“模型当时未看到”为理由删除或重写日志，也不自动重放请求。
+
+## 11. 实现记录
+
+- canonical renderer 持久化 `Base directory for this skill` 与去 frontmatter 正文；`/name` 的 args 只在 raw user 中，Skill tool_result 才追加 `## User Request`。`session/skill` 是 strict replay-v1 事件，UI/history page/search/seq backfill 均不投影它。
+- 每个 turn 在首个 await 前冻结 effective profile、base tool profile、model、permission mode 与 effort。skill snapshot 固定缓存 entries、name index 和 override 视图；`available_skills`、Skill 工具、命令展开及实际 tools 数组均来自这一快照。reload/persona 变更只影响下一轮，运行中请求不会出现配置 A/B 混合。
+- 初始 raw user 与可用 skill instruction 由 `runTurn` 通过 `onInitialMessagesOwned` 明确接管。接管前的 catalog/flush/MCP/validation 失败由 NativeSession catch 将同一有序数组追加到内存 history 一次；接管后由 `runTurn` 独占追加。失败 turn 可在后续 flush 落盘，下一 live 与 resume 因而不分裂、不重复。
+- 手动 compact 与 native auto-compact 都通过 `mergedHistoryForCompaction` 创建汇总副本：保留 main/subagent frames，再按 durable raw user UUID 插入 skill body。缺失锚点不产生孤立指令，投影不写回 ring、subscriber、transcript sidecar、history page 或 search。
+- `server/providers/native/e2e-skill-invocation.test.ts` 通过真实 SessionManager、PermissionBroker、NativeProvider、native log 与 scripted streams 覆盖 live/disk/search/raw-cut fork/resume、policy/reload、共享 body、pre-request 失败、raw-only crash、旧展开日志及两种 compact。
+- 附件 file-block 结构保真、跨 reload generation 竞态、插件技能和 forked Skill 不在本实现内。controller 保留最终 whole-workstream review 与用户授权后的 push；本任务仅完成任务范围自审、门禁和提交。
