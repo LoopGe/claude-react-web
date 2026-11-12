@@ -143,7 +143,11 @@ export class NativeSubagentTranscriptSource implements SubagentTranscriptSource 
       unsubscribeLive?.()
       buffered.length = 0
       this.subscriptions.delete(unsubscribe)
-      output.clearQueue()
+      const pending = output.drainQueue()
+      const initialReset = pending.find((item) => 'frame' in item && item.frame.reset)
+      // An already-produced reset precedes the failure even for a consumer
+      // that has not pulled yet; later queued increments are stale and drop.
+      if (initialReset) output.push(initialReset)
       output.push({ error: cause instanceof Error ? cause : new Error(String(cause)) })
       output.end()
     }

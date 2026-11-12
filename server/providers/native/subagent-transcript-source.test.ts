@@ -258,6 +258,27 @@ describe('NativeSubagentTranscriptSource', () => {
     loadSpy.mockRestore()
   })
 
+  it('preserves a queued initial reset and drops later increments before a failure', async () => {
+    await append([origin(), descriptor(), assistant('disk-reset')])
+    const loadSpy = vi.spyOn(nativeHistoryCache, 'load')
+    const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
+    const iterator = sub.iterable[Symbol.asyncIterator]()
+    await vi.waitFor(() => expect(loadSpy).toHaveBeenCalledTimes(1))
+    await loadSpy.mock.results[0].value
+    // Let the snapshot continuation push its reset before failure is injected.
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    publish(assistant('stale-increment'))
+    terminateLive(new Error('inner reset ordering'))
+
+    const first = await iterator.next()
+    expect(first.done).toBe(false)
+    if (first.done) throw new Error('expected the queued reset')
+    expect(first.value.reset).toBe(true)
+    expect(first.value.frames.map((frame) => (frame as { uuid?: unknown }).uuid))
+      .toEqual([PROMPT_UUID, 'disk-reset'])
+    await expect(iterator.next()).rejects.toThrow('inner reset ordering')
+  })
+
   it('fails the output and detaches live delivery when snapshot initialization rejects', async () => {
     vi.spyOn(nativeHistoryCache, 'load').mockRejectedValue(new Error('snapshot read exploded'))
     const sub = makeSource().subscribeSubagentTranscript(SESSION, AGENT)
