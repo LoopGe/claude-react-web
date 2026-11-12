@@ -188,14 +188,14 @@ native 当前只把 nested prompt 放进模型 history，没有 durable sidechai
 
 ```ts
 interface ProviderSubagentReader {
-  listCatalog(session: ProviderSessionRef): Promise<ProviderSubagentCatalogEntry[]>
+  listSubagents(session: ProviderSessionRef): Promise<string[]>
   readTranscript(session: ProviderSessionRef, agentId: string): Promise<unknown[]>
 }
 ```
 
-- Claude reader 复用现有 SDK standalone scan 和 `readSubagentTranscript` 文件 helper。
+- Claude reader 复用现有 SDK standalone scan 和 `readSubagentTranscript` 文件 helper；native 的丰富 catalog 仅留在 provider 内部，不要求 Claude 编造 toolName、depth 或 profile。
 - Native reader 从 `stateDir` 与同一缓存读取，不需要 live Query，也不恢复 dormant session。
-- `SessionManager` 从 live session 或 persisted metadata 解析 provider，统一检查 `supportsSubagentTranscripts`，再把 list 映射为 string[]、read 映射为 messages。
+- `SessionManager` 从 live session 或 persisted metadata 解析 provider，统一检查 `supportsSubagentTranscripts`，再返回 list 的 string[] 或 read 的 messages。
 - `GET /sessions/:id/subagents` 和 `GET /sessions/:id/subagents/:agentId` 都经 manager，不再由 route 直接 import Claude 文件 helper。
 - list 去掉不必要的 `requireLive`，使 Claude/native dormant 都遵守原有 disk-read 语义；未知 session/provider/capability 仍走明确 404/501，而非空列表。
 - 现有 handle `listSubagents` 可在兼容期保留，但新 manager 路径不能再次要求 live。
