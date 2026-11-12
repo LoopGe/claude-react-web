@@ -2702,12 +2702,12 @@ describe('SessionManager', () => {
 
       // The projection must stop at the summarizer input: neither real ring,
       // the live subscriber, nor transcript recording may see the hidden body.
-      expect(live.history).toHaveLength(2)
-      expect(live.subagentHistory).toHaveLength(1)
-      expect(JSON.stringify(live.history)).not.toContain('DURABLE SKILL BODY')
-      expect(JSON.stringify(live.subagentHistory)).not.toContain('DURABLE SKILL BODY')
-      expect(broadcasts).toEqual([])
-      expect(transcriptSpy).not.toHaveBeenCalled()
+      expect.soft(live.history).toHaveLength(2)
+      expect.soft(live.subagentHistory).toHaveLength(1)
+      expect.soft(JSON.stringify(live.history)).not.toContain('DURABLE SKILL BODY')
+      expect.soft(JSON.stringify(live.subagentHistory)).not.toContain('DURABLE SKILL BODY')
+      expect.soft(broadcasts).toEqual([])
+      expect.soft(transcriptSpy).not.toHaveBeenCalled()
 
       releaseSummary('MOCK SUMMARY')
       await pendingCompact
@@ -2767,13 +2767,13 @@ describe('SessionManager', () => {
 
       // Inspect before compactInPlace clears the rings: a hidden-body append or
       // broadcast during projection would otherwise be erased by the reset.
-      expect(live.history).toHaveLength(2)
-      expect(live.subagentHistory).toHaveLength(1)
-      expect(JSON.stringify(live.history)).not.toContain('AUTO SKILL BODY')
-      expect(JSON.stringify(live.subagentHistory)).not.toContain('AUTO SKILL BODY')
-      expect(broadcasts).toEqual([])
-      expect(transcriptSpy).not.toHaveBeenCalled()
-      expect(compactInPlace).not.toHaveBeenCalled()
+      expect.soft(live.history).toHaveLength(2)
+      expect.soft(live.subagentHistory).toHaveLength(1)
+      expect.soft(JSON.stringify(live.history)).not.toContain('AUTO SKILL BODY')
+      expect.soft(JSON.stringify(live.subagentHistory)).not.toContain('AUTO SKILL BODY')
+      expect.soft(broadcasts).toEqual([])
+      expect.soft(transcriptSpy).not.toHaveBeenCalled()
+      expect.soft(compactInPlace).not.toHaveBeenCalled()
 
       releaseSummary('MOCK SUMMARY')
       await pendingCompact

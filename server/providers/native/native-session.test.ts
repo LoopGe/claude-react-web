@@ -13,7 +13,7 @@ import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js
 import { nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
 import { readNativeHistoryEntries } from './session-log/reader.js'
-import type { NativeLogEvent } from './session-log/format.js'
+import type { NativeEventInput, NativeLogEvent } from './session-log/format.js'
 import { formatSupplementInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { NativeSkillCatalog } from './skills.js'
@@ -2764,6 +2764,55 @@ describe('NativeSession', () => {
     expect((resumed as unknown as { getSkillCompactionEntries(): unknown }).getSkillCompactionEntries())
       .toEqual([{ afterUserUuid: 'skill-anchor', body: expected }])
     await resumed.destroy()
+  })
+
+  it.each([
+    {
+      name: 'a raw-only prefix',
+      events: [{
+        type: 'user', uuid: 'raw-anchor', session_id: 'negative-compaction-entries',
+        parent_tool_use_id: null, timestamp: '2026-01-01T00:00:00.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: '/demo raw only' }] },
+      }] as NativeEventInput[],
+    },
+    {
+      name: 'a non-adjacent skill event',
+      events: [
+        {
+          type: 'user', uuid: 'raw-anchor', session_id: 'negative-compaction-entries',
+          parent_tool_use_id: null, timestamp: '2026-01-01T00:00:00.000Z',
+          message: { role: 'user', content: [{ type: 'text', text: '/demo interrupted' }] },
+        },
+        { type: 'turn/end', reason: 'interrupted' },
+        {
+          type: 'session/skill', name: 'demo', body: 'UNPAIRED SKILL BODY',
+          timestamp: '2026-01-01T00:00:01.000Z',
+        },
+      ] as NativeEventInput[],
+    },
+    {
+      name: 'a sidechain user followed by a skill event',
+      events: [
+        {
+          type: 'user', uuid: 'sidechain-anchor', session_id: 'negative-compaction-entries',
+          parent_tool_use_id: 'agent-1', timestamp: '2026-01-01T00:00:00.000Z',
+          message: { role: 'user', content: [{ type: 'text', text: '/demo nested' }] },
+        },
+        {
+          type: 'session/skill', name: 'demo', body: 'SIDECHAIN SKILL BODY',
+          timestamp: '2026-01-01T00:00:01.000Z',
+        },
+      ] as NativeEventInput[],
+    },
+  ])('returns no compaction entries for $name', async ({ events }) => {
+    const dir = await tempDir('native-skill-compaction-negative-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'negative-compaction-entries', cwd: dir })
+    const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+    for (const event of events) sessionLog.append(event)
+
+    expect(session.getSkillCompactionEntries?.()).toEqual([])
+    await session.destroy()
   })
 
   it('persists the consumed prompt when skill discovery fails, then replays it exactly once', async () => {
