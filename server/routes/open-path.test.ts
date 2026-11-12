@@ -11,14 +11,19 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Hono } from 'hono'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
+import { resolve } from 'node:path'
 
-const { execFileMock, platformMock } = vi.hoisted(() => ({
+type SpawnChild = EventEmitter & { unref: () => void }
+
+const { execFileMock, spawnMock, platformMock } = vi.hoisted(() => ({
   execFileMock: vi.fn<(file: string, args: string[], opts: unknown, cb: (err: Error | null) => void) => void>(),
+  spawnMock: vi.fn<(file: string, args: string[], opts: unknown) => SpawnChild>(),
   platformMock: vi.fn<() => string>(),
 }))
 
-vi.mock('node:child_process', () => ({ execFile: execFileMock }))
+vi.mock('node:child_process', () => ({ execFile: execFileMock, spawn: spawnMock }))
 vi.mock('node:os', () => ({ platform: platformMock }))
 
 // Import the router AFTER the mocks are registered.
@@ -47,11 +52,24 @@ function req(app: Hono, method: string, path: string, body?: unknown, remoteAddr
 
 let tmpDir: string
 
+function stubSpawnEvent(event: 'spawn' | 'error', error?: Error) {
+  spawnMock.mockImplementation(() => {
+    const child = new EventEmitter() as SpawnChild
+    child.unref = vi.fn()
+    process.nextTick(() => {
+      if (event !== 'error' || child.listenerCount('error') > 0) child.emit(event, error)
+    })
+    return child
+  })
+}
+
 beforeEach(async () => {
   execFileMock.mockReset()
+  spawnMock.mockReset()
   platformMock.mockReset()
   platformMock.mockReturnValue('darwin')
   execFileMock.mockImplementation((_file, _args, _opts, cb) => cb(null))
+  stubSpawnEvent('spawn')
   tmpDir = await mkdtemp('/tmp/open-path-test-')
 })
 
@@ -117,7 +135,7 @@ describe('POST /open-path', () => {
       makeApp(),
       'POST',
       '/open-path',
-      { path: tmpDir, target: 'browser' },
+      { path: tmpDir, target: 'editor' },
       '127.0.0.1',
     )
     expect(res.status).toBe(400)
@@ -267,5 +285,114 @@ describe('POST /open-path', () => {
     expect(res.status).toBe(500)
     const body = (await res.json()) as { error: string }
     expect(body.error).toContain('No application')
+  })
+
+  it('opens an HTML file as an encoded file URL in the default browser', async () => {
+    const file = `${tmpDir}/page #1.html`
+    await writeFile(file, '<h1>Hello</h1>')
+
+    const res = await req(makeApp(), 'POST', '/open-path', { path: file, target: 'browser' }, '127.0.0.1')
+
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [command, args, options] = spawnMock.mock.calls[0]
+    expect(command).toBe('open')
+    expect(args).toHaveLength(1)
+    expect(args[0]).toMatch(/^file:\/\/\//)
+    expect(args[0].endsWith('/page%20%231.html')).toBe(true)
+    expect(args[0]).not.toContain('page #1.html')
+    expect(options).toMatchObject({ stdio: 'ignore', detached: true })
+    expect(execFileMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['page.htm', 'page.HTML', 'page.HTM'])('accepts the HTML extension %s case-insensitively', async (name) => {
+    const file = `${tmpDir}/${name}`
+    await writeFile(file, '<h1>Hello</h1>')
+
+    const res = await req(makeApp(), 'POST', '/open-path', { path: file, target: 'browser' }, '127.0.0.1')
+
+    expect(res.status).toBe(200)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [command, args] = spawnMock.mock.calls[0]
+    expect(command).toBe('open')
+    expect(args[0].endsWith(`/${name}`)).toBe(true)
+  })
+
+  it('rejects non-HTML, missing, relative, and directory browser targets without launching', async () => {
+    const textFile = `${tmpDir}/page.txt`
+    await writeFile(textFile, 'plain text')
+    const htmlDirectory = `${tmpDir}/directory.html`
+    await mkdir(htmlDirectory)
+    const app = makeApp()
+
+    for (const path of [textFile, `${tmpDir}/missing.html`, 'relative/page.html', htmlDirectory]) {
+      const res = await req(app, 'POST', '/open-path', { path, target: 'browser' }, '127.0.0.1')
+      expect(res.status).toBe(400)
+    }
+    expect(execFileMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a remote browser launch before touching the OS', async () => {
+    const file = `${tmpDir}/page.html`
+    await writeFile(file, '<h1>Hello</h1>')
+
+    const res = await req(makeApp(), 'POST', '/open-path', { path: file, target: 'browser' }, '192.168.1.5')
+
+    expect(res.status).toBe(403)
+    expect(execFileMock).not.toHaveBeenCalled()
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a malformed NUL path as an invalid request', async () => {
+    const pathWithNul = `${tmpDir}/bad\0.html`
+
+    const res = await req(makeApp(), 'POST', '/open-path', { path: pathWithNul, target: 'browser' }, '127.0.0.1')
+
+    expect(res.status).toBe(400)
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('translates a browser spawn failure into a 500 with the OS message', async () => {
+    const file = `${tmpDir}/page.html`
+    await writeFile(file, '<h1>Hello</h1>')
+    stubSpawnEvent('error', new Error('No default browser'))
+
+    const res = await req(makeApp(), 'POST', '/open-path', { path: file, target: 'browser' }, '127.0.0.1')
+
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toContain('No default browser')
+  })
+
+  it('uses a fixed-argument Windows launcher for a dollar-expression HTML filename', async () => {
+    platformMock.mockReturnValue('win32')
+    const file = resolve(tmpDir, '$(whoami).html')
+    await writeFile(file, '<h1>Safe</h1>')
+
+    const res = await req(makeApp(), 'POST', '/open-path', { path: file, target: 'browser' }, '127.0.0.1')
+
+    expect(res.status).toBe(200)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [command, args] = spawnMock.mock.calls[0]
+    expect(command).toBe('rundll32')
+    expect(args[0]).toBe('url.dll,FileProtocolHandler')
+    expect(args[1]).toMatch(/^file:\/\/\//)
+    expect(args[1].endsWith('/$(whoami).html')).toBe(true)
+  })
+
+  it('uses xdg-open for browser launches on linux', async () => {
+    platformMock.mockReturnValue('linux')
+    const file = `${tmpDir}/page.html`
+    await writeFile(file, '<h1>Hello</h1>')
+
+    const res = await req(makeApp(), 'POST', '/open-path', { path: file, target: 'browser' }, '127.0.0.1')
+
+    expect(res.status).toBe(200)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    const [command, args] = spawnMock.mock.calls[0]
+    expect(command).toBe('xdg-open')
+    expect(args[0].endsWith('/page.html')).toBe(true)
   })
 })

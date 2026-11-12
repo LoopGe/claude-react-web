@@ -11,6 +11,21 @@ import { useOpenResource } from './context'
 import type { ResourceProvider } from './registry'
 import { fileResource, diffResource, snapshotDiffResource, taskResource } from '../../shared/resource-address'
 
+const { apiPostMock, capabilityMock, toastErrorMock } = vi.hoisted(() => ({
+  apiPostMock: vi.fn(),
+  capabilityMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+}))
+
+vi.mock('../hooks/useApi', () => ({ api: { post: apiPostMock } }))
+vi.mock('../hooks/useOpenPathCapability', () => ({ useOpenPathCapability: capabilityMock }))
+vi.mock('../hooks/useToast', () => ({
+  useToast: () => ({ error: toastErrorMock }),
+  apiErrorToastOpts: () => undefined,
+}))
+
+const HTML = fileResource('s1', '/repo/page.html')
+
 const A = fileResource('s1', '/repo/a.ts')
 const B = fileResource('s1', '/repo/b.ts')
 const KEY = 'crw.resource-pane.v1.s1'
@@ -89,6 +104,11 @@ function seedStoredTabs(tabs: unknown[]) {
 }
 
 beforeEach(() => {
+  apiPostMock.mockReset()
+  apiPostMock.mockResolvedValue({ ok: true })
+  capabilityMock.mockReset()
+  capabilityMock.mockReturnValue(true)
+  toastErrorMock.mockReset()
   vi.stubGlobal('matchMedia', () => ({
     matches: false,
     addEventListener() {},
@@ -359,6 +379,7 @@ describe('ResourceModal', () => {
     fireEvent.click(screen.getByText('open-file'))
     expect(await screen.findByRole('tab', { name: 'Task task-123' })).toBeTruthy()
     expect(await screen.findByText(/loading task/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Open in system browser' })).toBeNull()
   })
 
   it('does not create a chip for a kind with no provider', () => {
@@ -407,5 +428,125 @@ describe('ResourceModal', () => {
     // Two tabs share the basename, so both switch to parent/base.
     expect(await screen.findByRole('tab', { name: 'src/a.ts' })).toBeTruthy()
     expect(screen.getByRole('tab', { name: 'repo/a.ts' })).toBeTruthy()
+  })
+
+  it('opens the active HTML file in the system browser', async () => {
+    renderHarness([fileProvider()], HTML)
+    fireEvent.click(screen.getByText('open-file'))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open in system browser' }))
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/open-path', { path: '/repo/page.html', target: 'browser' })
+    })
+  })
+
+  it.each(['/repo/page.htm', '/repo/page.HTML', '/repo/page.HTM'])(
+    'shows the browser action for %s',
+    async (path) => {
+      renderHarness([fileProvider()], fileResource('s1', path))
+      fireEvent.click(screen.getByText('open-file'))
+
+      expect(await screen.findByRole('button', { name: 'Open in system browser' })).toBeTruthy()
+    },
+  )
+
+  it('shows the browser action only while the HTML tab is active', async () => {
+    render(
+      <ResourcePaneProvider providers={[fileProvider()]}>
+        <MultiHarness addresses={[HTML, A]} />
+      </ResourcePaneProvider>,
+    )
+    fireEvent.click(screen.getByText('open-0'))
+    expect(await screen.findByRole('button', { name: 'Open in system browser' })).toBeTruthy()
+
+    fireEvent.click(screen.getByText('open-1'))
+
+    expect(await screen.findByRole('tab', { name: 'a.ts' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Open in system browser' })).toBeNull()
+  })
+
+  it('hides the browser action for a remote client', async () => {
+    capabilityMock.mockReturnValue(false)
+    renderHarness([fileProvider()], HTML)
+    fireEvent.click(screen.getByText('open-file'))
+
+    expect(await screen.findByRole('tab', { name: 'page.html' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Open in system browser' })).toBeNull()
+  })
+
+  it('disables the browser action until the request settles', async () => {
+    let resolvePost!: (value: { ok: boolean }) => void
+    apiPostMock.mockReturnValue(new Promise<{ ok: boolean }>((resolve) => { resolvePost = resolve }))
+    renderHarness([fileProvider()], HTML)
+    fireEvent.click(screen.getByText('open-file'))
+    const button = await screen.findByRole('button', { name: 'Open in system browser' })
+
+    fireEvent.click(button)
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(button)
+    expect(apiPostMock).toHaveBeenCalledTimes(1)
+
+    resolvePost({ ok: true })
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('does not block a different HTML tab while another launch is pending', async () => {
+    const otherHtml = fileResource('s1', '/repo/other.html')
+    let resolvePost!: (value: { ok: boolean }) => void
+    apiPostMock.mockReturnValue(new Promise<{ ok: boolean }>((resolve) => { resolvePost = resolve }))
+    render(
+      <ResourcePaneProvider providers={[fileProvider()]}>
+        <MultiHarness addresses={[HTML, otherHtml]} />
+      </ResourcePaneProvider>,
+    )
+    fireEvent.click(screen.getByText('open-0'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open in system browser' }))
+
+    fireEvent.click(screen.getByText('open-1'))
+    const otherButton = await screen.findByRole('button', { name: 'Open in system browser' })
+    expect((otherButton as HTMLButtonElement).disabled).toBe(false)
+
+    resolvePost({ ok: true })
+    fireEvent.click(screen.getByText('open-0'))
+    const originalButton = await screen.findByRole('button', { name: 'Open in system browser' })
+    await waitFor(() => expect((originalButton as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('keeps an HTML launch pending after switching away and back', async () => {
+    let resolvePost!: (value: { ok: boolean }) => void
+    apiPostMock.mockReturnValue(new Promise<{ ok: boolean }>((resolve) => { resolvePost = resolve }))
+    render(
+      <ResourcePaneProvider providers={[fileProvider()]}>
+        <MultiHarness addresses={[HTML, A]} />
+      </ResourcePaneProvider>,
+    )
+    fireEvent.click(screen.getByText('open-0'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open in system browser' }))
+
+    fireEvent.click(screen.getByText('open-1'))
+    await screen.findByRole('tab', { name: 'a.ts' })
+    fireEvent.click(screen.getByText('open-0'))
+    const button = await screen.findByRole('button', { name: 'Open in system browser' })
+
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(button)
+    expect(apiPostMock).toHaveBeenCalledTimes(1)
+    resolvePost({ ok: true })
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('reports a browser-open failure and allows retry', async () => {
+    apiPostMock.mockRejectedValue(new Error('file is missing'))
+    renderHarness([fileProvider()], HTML)
+    fireEvent.click(screen.getByText('open-file'))
+    const button = await screen.findByRole('button', { name: 'Open in system browser' })
+
+    fireEvent.click(button)
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith("Couldn't open in system browser: file is missing", undefined)
+    })
+    expect((button as HTMLButtonElement).disabled).toBe(false)
   })
 })

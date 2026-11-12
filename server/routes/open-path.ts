@@ -1,29 +1,33 @@
-// Open-path routes: reveal a directory in the SERVER machine's file manager
-// or open it in a terminal. The path semantics follow the session cwd — the
-// files live wherever this process runs, so "open in Finder" means on this
-// machine (exactly what a localhost user wants; for a LAN client the action
-// is meaningless, which is why the routes are loopback-gated).
+// Open-path routes: reveal a directory in the SERVER machine's file manager,
+// open it in a terminal, or open an HTML file in its default browser. The path
+// semantics follow the session cwd — the files live wherever this process runs,
+// so these actions mean on this machine (exactly what a localhost user wants;
+// for a LAN client the action is meaningless, which is why the routes are
+// loopback-gated).
 //
 // Gate design: per-request, from the TCP peer address (`c.env.incoming` —
 // the same source auth.ts rate-limiting reads). Nothing from headers is
 // trusted. A missing address means in-process or unix-socket transport,
 // both definitionally local (the desktop host fetches app.fetch directly).
 //
-// Spawns go through execFile with fixed argv — never a shell (same rule as
-// server/git.ts) — and carry a timeout so a wedged `open` can't hold the
-// request open.
+// Directory launches go through execFile with fixed argv — never a shell (same
+// rule as server/git.ts) — and carry a timeout so a wedged `open` can't hold the
+// request open. Browser launches also use fixed argv without a shell, but run
+// detached: the request settles when the launcher reports `spawn`, not when the
+// browser eventually exits.
 
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { platform } from 'node:os'
 import { createLogger } from '../log.js'
 import { HttpError } from '../errors.js'
 import { safeJson } from './index.js'
-import { isOpenPathTarget, type OpenPathTarget } from '../../shared/open-path.js'
+import { isHtmlFilePath, isOpenPathTarget, type OpenPathTarget } from '../../shared/open-path.js'
 
 const log = createLogger('open-path')
 
@@ -84,29 +88,53 @@ function assertLocal(c: Context): void {
 export function openCommandsFor(
   platformName: string,
   target: OpenPathTarget,
-  dir: string,
+  path: string,
 ): Array<{ file: string; args: string[] }> {
+  if (target === 'browser') {
+    const url = pathToFileURL(path).href
+    if (platformName === 'darwin') return [{ file: 'open', args: [url] }]
+    if (platformName === 'win32') {
+      return [{ file: 'rundll32', args: ['url.dll,FileProtocolHandler', url] }]
+    }
+    return [{ file: 'xdg-open', args: [url] }]
+  }
   if (platformName === 'darwin') {
     return [
       target === 'finder'
-        ? { file: 'open', args: ['-R', dir] }
-        : { file: 'open', args: ['-a', 'Terminal', dir] },
+        ? { file: 'open', args: ['-R', path] }
+        : { file: 'open', args: ['-a', 'Terminal', path] },
     ]
   }
   if (platformName === 'win32') {
     return [
       target === 'finder'
-        ? { file: 'explorer', args: [dir] }
-        : { file: 'wt', args: ['-d', dir] },
+        ? { file: 'explorer', args: [path] }
+        : { file: 'wt', args: ['-d', path] },
     ]
   }
   return target === 'finder'
-    ? [{ file: 'xdg-open', args: [dir] }]
+    ? [{ file: 'xdg-open', args: [path] }]
     : [
-        { file: 'x-terminal-emulator', args: [`--working-directory=${dir}`] },
-        { file: 'gnome-terminal', args: [`--working-directory=${dir}`] },
-        { file: 'konsole', args: ['--workdir', dir] },
+        { file: 'x-terminal-emulator', args: [`--working-directory=${path}`] },
+        { file: 'gnome-terminal', args: [`--working-directory=${path}`] },
+        { file: 'konsole', args: ['--workdir', path] },
       ]
+}
+
+function launchBrowser(file: string, args: string[]): Promise<void> {
+  const child = spawn(file, args, { stdio: 'ignore', detached: true })
+  return new Promise((resolve, reject) => {
+    let spawned = false
+    child.on('error', (error) => {
+      if (!spawned) reject(error)
+      else log.warn(`browser launcher error after spawn: ${error.message}`)
+    })
+    child.once('spawn', () => {
+      spawned = true
+      child.unref()
+      resolve()
+    })
+  })
 }
 
 export function buildOpenPathRouter(): Hono {
@@ -127,16 +155,35 @@ export function buildOpenPathRouter(): Hono {
     if (typeof path !== 'string' || path.length === 0) {
       throw new HttpError(400, "body.path must be a non-empty string")
     }
+    if (path.includes('\0')) {
+      throw new HttpError(400, 'body.path must not contain NUL bytes')
+    }
     if (!isOpenPathTarget(target)) {
-      throw new HttpError(400, "body.target must be one of: finder, terminal")
+      throw new HttpError(400, "body.target must be one of: finder, terminal, browser")
     }
     if (!isAbsolute(path)) {
       throw new HttpError(400, 'body.path must be an absolute path')
     }
 
     const st = await stat(path).catch(() => null)
-    if (!st || !st.isDirectory()) {
+    if (target === 'browser') {
+      if (!st?.isFile() || !isHtmlFilePath(path)) {
+        throw new HttpError(400, `not an HTML file: ${path}`)
+      }
+    } else if (!st || !st.isDirectory()) {
       throw new HttpError(400, `not a directory: ${path}`)
+    }
+
+    if (target === 'browser') {
+      const [{ file, args }] = openCommandsFor(platform(), target, path)
+      log.info(`open target=browser file=${file} path=${path}`)
+      try {
+        await launchBrowser(file, args)
+        return c.json({ ok: true })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        throw new HttpError(500, `failed to open ${path}: ${message}`)
+      }
     }
 
     const candidates = openCommandsFor(platform(), target, path)

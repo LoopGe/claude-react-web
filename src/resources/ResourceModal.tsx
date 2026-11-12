@@ -20,6 +20,7 @@ import {
   useEffect,
   useId,
   useRef,
+  useState,
   useSyncExternalStore,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
@@ -30,9 +31,14 @@ import {
   resourceTitle,
 } from '../../shared/resource-address'
 import type { FileReadResult } from '../../shared/read-file'
+import { isHtmlFilePath } from '../../shared/open-path'
 import { FilePreviewBody } from '../components/file-preview/FilePreviewBody'
-import { IconX } from '../components/icons/ToolIcons'
+import { IconExternalLink, IconX } from '../components/icons/ToolIcons'
 import { Overlay } from '../components/Overlay'
+import { api } from '../hooks/useApi'
+import { useOpenPathCapability } from '../hooks/useOpenPathCapability'
+import { apiErrorToastOpts, useToast } from '../hooks/useToast'
+import { formatError } from '../utils/format-error'
 import { useResourcePaneStore } from './context'
 import { type ResourceParams, type ResourceTab } from './tab-store'
 import { useResource } from './useResource'
@@ -55,6 +61,8 @@ export function ResourceModal({
   visible: boolean
 }) {
   const store = useResourcePaneStore()
+  const toast = useToast()
+  const [browserPendingPaths, setBrowserPendingPaths] = useState<string[]>([])
   const getSnapshot = useCallback(() => store.getState(sessionId), [store, sessionId])
   const state = useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot)
 
@@ -81,8 +89,21 @@ export function ResourceModal({
 
   const close = useCallback(() => store.setExpanded(sessionId, false), [store, sessionId])
 
+  const openInBrowser = (path: string) => {
+    if (browserPendingPaths.includes(path)) return
+    setBrowserPendingPaths((paths) => [...paths, path])
+    api
+      .post('/open-path', { path, target: 'browser' })
+      .catch((error: unknown) => {
+        toast.error(`Couldn't open in system browser: ${formatError(error)}`, apiErrorToastOpts(error))
+      })
+      .finally(() => setBrowserPendingPaths((paths) => paths.filter((pendingPath) => pendingPath !== path)))
+  }
+
   if (state.tabs.length === 0) return null
   const active = state.tabs.find((tab) => tab.id === state.activeTabId) ?? state.tabs[0]
+  const activeFilePath = active.kind === 'file' ? parseFileResource(active.address)?.path : undefined
+  const browserPath = activeFilePath && isHtmlFilePath(activeFilePath) ? activeFilePath : null
   const navigation = store.getNavigation(active.id)
 
   // Duplicate basenames would produce indistinguishable chips; those widen to
@@ -189,6 +210,13 @@ export function ResourceModal({
               )
             })}
           </div>
+          {browserPath && (
+            <OpenInSystemBrowserButton
+              path={browserPath}
+              pending={browserPendingPaths.includes(browserPath)}
+              onOpen={openInBrowser}
+            />
+          )}
           <button type="button" className="btn btn-icon-sm" aria-label="Close" onClick={close}>
             <IconX />
           </button>
@@ -207,6 +235,32 @@ export function ResourceModal({
           />
         </div>
       </Overlay>
+  )
+}
+
+function OpenInSystemBrowserButton({
+  path,
+  pending,
+  onOpen,
+}: {
+  path: string
+  pending: boolean
+  onOpen: (path: string) => void
+}) {
+  const local = useOpenPathCapability()
+  if (local !== true) return null
+
+  return (
+    <button
+      type="button"
+      className="btn btn-icon-sm"
+      aria-label="Open in system browser"
+      title="Open in system browser"
+      disabled={pending}
+      onClick={() => onOpen(path)}
+    >
+      <IconExternalLink />
+    </button>
   )
 }
 
