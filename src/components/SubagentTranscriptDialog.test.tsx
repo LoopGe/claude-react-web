@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
@@ -6,6 +9,9 @@ import { SubagentTranscriptBody } from './SubagentTranscriptBody'
 import { sessionStoreRegistry } from '../session-store/registry'
 import { subagentStoreId } from '../hooks/useSubagentTranscriptStore'
 import { api } from '../hooks/useApi'
+import { nativeHistoryCache } from '../../server/providers/native/session-log/cache'
+import { NativeSessionLog } from '../../server/providers/native/session-log/log'
+import { readNativeSubagentTranscript } from '../../server/providers/native/subagent-transcripts'
 
 // 不 mock hook 本体——灌真实 store,验证 MessageList 从草稿 store 渲染。
 vi.mock('../hooks/useWsHub', () => ({
@@ -64,46 +70,75 @@ describe('SubagentTranscriptDialog', () => {
     expect(screen.getByText(/Bash/)).toBeTruthy()
   })
 
-  it('renders native prompt, assistant and tool-result frames through MessageList', () => {
-    const store = sessionStoreRegistry.getOrCreate(subagentStoreId('native-session', 'native-agent'))
-    store.dispatch({
-      type: 'REPLAY_REPLACE',
-      permissions: [],
-      messages: [
-        {
-          type: 'user', uuid: 'native-subagent-prompt:native-agent', restoredFromDisk: true,
-          parent_tool_use_id: null, session_id: 'native-session', receivedAt: 1_000,
-          message: { role: 'user', content: [{ type: 'text', text: 'native prompt visible' }] },
-        },
-        {
-          type: 'assistant', uuid: 'native-assistant', restoredFromDisk: true,
-          parent_tool_use_id: null, session_id: 'native-session', receivedAt: 2_000,
-          message: { role: 'assistant', content: [{ type: 'text', text: 'native assistant visible' }] },
-        },
-        {
-          type: 'assistant', uuid: 'native-tool-call', restoredFromDisk: true,
-          parent_tool_use_id: null, session_id: 'native-session', receivedAt: 2_500,
-          message: { role: 'assistant', content: [
-            { type: 'tool_use', id: 'native-tool', name: 'Bash', input: { command: 'git diff' } },
-          ] },
-        },
-        {
-          type: 'user', uuid: 'native-result', restoredFromDisk: true,
-          parent_tool_use_id: 'native-tool', session_id: 'native-session', receivedAt: 3_000,
-          message: { role: 'user', content: [{
-            type: 'tool_result', tool_use_id: 'native-tool', content: 'native tool result visible',
-          }] },
-        },
-      ],
-    })
+  it('renders actual native reader output through MessageList without mutating cached content', async () => {
+    const sessionId = 'native-client-integration'
+    const agentId = 'native-agent'
+    const stateDir = await mkdtemp(join(tmpdir(), 'native-subagent-dialog-'))
+    const log = NativeSessionLog.open({ stateDir, id: sessionId, cwd: '/repo', resume: false })
+    const oversized = `native tool result visible\n${'x'.repeat(50_000)}`
+    try {
+      log.append({
+        type: 'assistant', uuid: 'native-origin', session_id: sessionId,
+        parent_tool_use_id: null, timestamp: '2026-11-12T01:00:00.000Z',
+        message: { role: 'assistant', content: [{
+          type: 'tool_use', id: agentId, name: 'Agent',
+          input: { description: 'native agent', prompt: 'native prompt visible' },
+        }] },
+      })
+      log.append({
+        type: 'subagent/descriptor', toolUseId: agentId, parentToolUseId: null,
+        kind: 'agent', toolName: 'Agent', label: 'native agent', depth: 1,
+        profile: null, timestamp: '2026-11-12T01:00:01.000Z',
+      })
+      log.append({
+        type: 'assistant', uuid: 'native-assistant', session_id: sessionId,
+        parent_tool_use_id: agentId, timestamp: '2026-11-12T01:01:00.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'native assistant visible' }] },
+      })
+      log.append({
+        type: 'assistant', uuid: 'native-tool-call', session_id: sessionId,
+        parent_tool_use_id: agentId, timestamp: '2026-11-12T01:02:00.000Z',
+        message: { role: 'assistant', content: [{
+          type: 'tool_use', id: 'native-tool', name: 'Bash', input: { command: 'git diff' },
+        }] },
+      })
+      log.append({
+        type: 'user', uuid: 'native-result', session_id: sessionId,
+        parent_tool_use_id: agentId, timestamp: '2026-11-12T01:03:00.000Z',
+        message: { role: 'user', content: [{
+          type: 'tool_result', tool_use_id: 'native-tool', content: oversized,
+        }] },
+      })
+      await log.flush()
 
-    render(<SubagentTranscriptDialog sessionId="native-session" agentId="native-agent" label="native agent" onClose={() => {}} />)
+      const messages = await readNativeSubagentTranscript(stateDir, sessionId, agentId)
+      expect(messages.map((frame) => (frame as { uuid?: unknown }).uuid)).toEqual([
+        `native-subagent-prompt:${agentId}`,
+        'native-assistant',
+        'native-tool-call',
+        'native-result',
+      ])
+      const cachedLine = (await nativeHistoryCache.load(stateDir, sessionId))
+        ?.lines.find((line) => line.uuid === 'native-result')
+      const cachedContent = (cachedLine as unknown as {
+        message: { content: Array<{ content: unknown }> }
+      }).message.content[0].content
+      expect(cachedContent === oversized).toBe(true)
 
-    expect(screen.getByText('native prompt visible')).toBeTruthy()
-    expect(screen.getByText('native assistant visible')).toBeTruthy()
-    expect(screen.getByText(/Bash/)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '1 tool call: Bash git diff' }))
-    expect(screen.getByText('native tool result visible', { selector: '.tool-result-summary' })).toBeTruthy()
+      const store = sessionStoreRegistry.getOrCreate(subagentStoreId(sessionId, agentId))
+      store.dispatch({ type: 'REPLAY_REPLACE', permissions: [], messages: messages as never })
+      render(<SubagentTranscriptDialog sessionId={sessionId} agentId={agentId} label="native agent" onClose={() => {}} />)
+
+      expect(screen.getByText('native prompt visible')).toBeTruthy()
+      expect(screen.getByText('native assistant visible')).toBeTruthy()
+      expect(screen.getByText(/Bash/)).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: '1 tool call: Bash git diff' }))
+      expect(screen.getByText(/native tool result visible/, { selector: '.tool-result-summary' })).toBeTruthy()
+    } finally {
+      await log.close()
+      nativeHistoryCache.invalidate(sessionId)
+      await rm(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    }
   })
 
   it('renders a notification-only result in the disk transcript body', () => {

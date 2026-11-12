@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { RawLine } from '../../history-reader.js'
+import { normalize, type RawLine } from '../../history-reader.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import type { NativeEventInput } from './session-log/format.js'
 import { NativeSessionLog } from './session-log/log.js'
@@ -122,6 +122,10 @@ function catalogEntry(overrides: Partial<NativeSubagentCatalogEntry> = {}): Nati
   }
 }
 
+function firstToolResultContent(frame: unknown): unknown {
+  return (frame as { message: { content: Array<{ content: unknown }> } }).message.content[0].content
+}
+
 describe('native subagent prompt projection', () => {
   it('uses the stable synthetic uuid, catalog text and descriptor timestamp', () => {
     const frame = nativeSubagentPromptFrame(catalogEntry(), SESSION) as Record<string, unknown>
@@ -230,6 +234,34 @@ describe('readNativeSubagentTranscript', () => {
     const loaded = await nativeHistoryCache.load(stateDir!, SESSION)
     expect(loaded?.lines.find((line) => line.uuid === 'standalone-assistant')?.parent_tool_use_id).toBe(AGENT)
     expect(loaded?.lines.find((line) => line.uuid === 'direct-result')?.parent_tool_use_id).toBe(AGENT)
+  })
+
+  it('trims oversized projected results without mutating cached or full-recall content', async () => {
+    const log = await openLog()
+    const oversized = 'x'.repeat(50_001)
+    await appendAndFlush(log, [
+      origin(AGENT),
+      descriptor(AGENT),
+      sidechainUser('oversized-result', AGENT, [{
+        type: 'tool_result', tool_use_id: 'inner-tool', content: oversized,
+      }]),
+    ])
+    const cachedLine = (await nativeHistoryCache.load(stateDir!, SESSION))
+      ?.lines.find((line) => line.uuid === 'oversized-result')
+
+    const frames = await readNativeSubagentTranscript(stateDir!, SESSION, AGENT)
+    const projected = frames.find((frame) =>
+      (frame as { uuid?: unknown }).uuid === 'oversized-result')
+    const cachedAfter = (await nativeHistoryCache.load(stateDir!, SESSION))
+      ?.lines.find((line) => line.uuid === 'oversized-result')
+    const fullRecall = normalize(cachedAfter!, SESSION, false)
+    const projectedContent = firstToolResultContent(projected)
+
+    expect(typeof projectedContent).toBe('string')
+    expect((projectedContent as string).length).toBeLessThan(oversized.length)
+    expect(cachedAfter).toBe(cachedLine)
+    expect(firstToolResultContent(cachedAfter) === oversized).toBe(true)
+    expect(firstToolResultContent(fullRecall) === oversized).toBe(true)
   })
 
   it('keeps direct sidechain output from before a compact boundary', async () => {

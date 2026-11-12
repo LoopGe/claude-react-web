@@ -15,10 +15,12 @@ function hasPrompt(entry: NativeSubagentCatalogEntry): boolean {
 /** Project one already-selected sidechain line into a standalone transcript.
  *  Removing the persisted parent lets the shared normalizer make assistant and
  *  genuine prompt frames root rows while deriving a tool result's parent from
- *  its own tool_use_id. The cached/main-history line is never mutated. */
+ *  its own tool_use_id. Cloning the JSON-native frame also isolates nested
+ *  content from the normalizer's oversized-result trimming, so cached and
+ *  full-recall lines keep their original bytes. */
 export function projectNativeSubagentLine(line: RawLine, sessionId: string): unknown | undefined {
   if (line.type !== 'user' && line.type !== 'assistant') return undefined
-  const standalone = { ...line }
+  const standalone = structuredClone(line)
   delete standalone.parent_tool_use_id
   return normalizeSubagentLine(standalone, sessionId)
 }
