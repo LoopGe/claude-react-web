@@ -68,6 +68,7 @@ export const grepTool: ToolDef<{ pattern: string; path?: string; include?: strin
   description: 'Search file contents with a regular expression.',
   guidance: 'Grep is a plain regex search over text files; it does not read .gitignore.',
   promptOrder: 130,
+  readOnlyHint: true,
   schema: {
     type: 'object',
     properties: {

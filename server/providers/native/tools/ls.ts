@@ -21,6 +21,7 @@ export const lsTool: ToolDef<{ path?: string; ignore?: string[] }> = {
   guidance:
     'LS lists one directory level with file sizes and child type; `.git` is always excluded and any `ignore` substring removes matching names.',
   promptOrder: 150,
+  readOnlyHint: true,
   schema: {
     type: 'object',
     properties: {

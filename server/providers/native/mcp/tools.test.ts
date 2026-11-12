@@ -66,6 +66,21 @@ describe('mcpToolDefs', () => {
     expect(defs[1].schema).toBe(readInfo.inputSchema)
   })
 
+  it('forwards only an annotation readOnlyHint of exactly true', () => {
+    const infos = [
+      { ...echoInfo, annotations: { readOnlyHint: true } },
+      { ...readInfo, annotations: { readOnlyHint: false } },
+      { ...echoInfo, fqn: 'mcp__a__undeclared', annotations: undefined },
+      { ...echoInfo, fqn: 'mcp__a__string', annotations: { readOnlyHint: 'true' } },
+      { ...echoInfo, fqn: 'mcp__a__number', annotations: { readOnlyHint: 1 } },
+    ]
+    const { conns } = fakeConnections(infos)
+
+    expect(mcpToolDefs(conns).map((def) => def.readOnlyHint)).toEqual([
+      true, false, false, false, false,
+    ])
+  })
+
   it('delegates run(input, ctx) to the connection with its signal', async () => {
     const { conns, calls } = fakeConnections([echoInfo, readInfo])
     const defs = mcpToolDefs(conns)

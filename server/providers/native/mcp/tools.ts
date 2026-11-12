@@ -27,6 +27,7 @@ export function mcpToolDefs(conns: NativeMcpConnections): ToolDef[] {
     guidance: '',
     promptOrder: MCP_PROMPT_ORDER_BASE + index,
     schema: info.inputSchema,
+    readOnlyHint: info.annotations?.readOnlyHint === true,
     run: (input, ctx) => conns.call(info.fqn, input, ctx.signal),
   }))
 }

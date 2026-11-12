@@ -49,6 +49,7 @@ export function createWebFetchTool(deps: WebFetchDeps): ToolDef<WebFetchInput> {
     description: 'Fetch a URL and answer a prompt about its text content.',
     guidance: WEB_FETCH_GUIDANCE,
     promptOrder: 160,
+    readOnlyHint: true,
     schema: {
       type: 'object',
       properties: {

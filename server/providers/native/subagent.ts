@@ -12,6 +12,11 @@ import { filterToolsForProfile } from './agent-tools.js'
 import type { NativeSkillView } from './skills.js'
 import { isValidNativeMaxTurns } from './session-log/format.js'
 import type { NativeSubagentDescriptorEvent } from './session-log/format.js'
+import {
+  EXPLORE_AGENT_INSTRUCTION,
+  EXPLORE_AGENT_NAME,
+  filterExploreTools,
+} from './explore.js'
 
 /** Everything the Agent tool needs from the session that owns it. All fields
  *  are read at call time (except frameCtx, which is the session's frame
@@ -69,8 +74,8 @@ interface AgentToolInput {
   model?: string
 }
 
-/** The Agent tool's prompt-section guidance. Exported so the provider's static
- *  `tool:Agent` prompt section and the tool definition cannot drift. */
+/** Shared Agent/Task guidance. The provider registers only `tool:Agent`; nested
+ *  runs omit that section because both delegation tools are removed. */
 export const AGENT_GUIDANCE =
   "Delegate self-contained subtasks to a subagent via Agent when it saves context; the result is the subagent's final report."
 
@@ -121,7 +126,9 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
 
       const requested = typeof input.subagent_type === 'string' ? input.subagent_type.trim() : ''
       let profile: NativeAgentProfile | undefined
-      if (requested && requested !== 'general-purpose') {
+      if (requested === EXPLORE_AGENT_NAME) {
+        profile = { name: EXPLORE_AGENT_NAME, instruction: EXPLORE_AGENT_INSTRUCTION }
+      } else if (requested && requested !== 'general-purpose') {
         const def = deps.agentStore?.get(requested)
         if (!def || !def.enabled) {
           return { text: `unknown subagent_type: ${requested}`, isError: true }
@@ -143,13 +150,16 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
       // Depth is capped at one by construction. Replace the stateful Skill
       // instance BEFORE filtering so the scoped view and allow/deny/MCP policy
       // both apply to the complete current nested snapshot.
-      const nestedTools = filterToolsForProfile(
+      const profileTools = filterToolsForProfile(
         deps.tools()
-          .filter((tool) => tool.name !== 'Agent')
+          .filter((tool) => tool.name !== 'Agent' && tool.name !== 'Task')
           .map((tool) => tool.name === 'Skill' ? deps.skillToolFor(skillView) : tool),
         profile ?? {},
         deps.mcpToolServers(),
       )
+      const nestedTools = requested === EXPLORE_AGENT_NAME
+        ? filterExploreTools(profileTools)
+        : profileTools
       // The schema declares a string, but a model can still emit a number or
       // blank string. Treat both as absent so the nested run inherits the
       // definition/parent model instead of sending an invalid id to the API.

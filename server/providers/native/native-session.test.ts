@@ -156,11 +156,15 @@ beforeEach(async () => {
   process.env.CLAUDE_CONFIG_DIR = skillsConfigDir
 })
 
-/** One assistant round whose only call is the Agent tool. */
-function agentTurn(toolUseId: string, input: Record<string, unknown>): CanonicalEvent[] {
+/** One assistant round whose only call delegates through Agent or Task. */
+function agentTurn(
+  toolUseId: string,
+  input: Record<string, unknown>,
+  toolName: 'Agent' | 'Task' = 'Agent',
+): CanonicalEvent[] {
   return [
     { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
-    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'Agent' } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: toolName } },
     { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify(input) } },
     { kind: 'block_end', index: 0 },
     { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
@@ -231,6 +235,27 @@ function echoServer(name = 'echo-server'): McpServer {
     'echo',
     { description: 'Echo the given text back.', inputSchema: { text: z.string() } },
     async ({ text }) => ({ content: [{ type: 'text', text }] }),
+  )
+  return server
+}
+
+function mixedReadOnlyServer(name: string): McpServer {
+  const server = new McpServer({ name, version: '1.0.0' })
+  const result = async () => ({ content: [{ type: 'text' as const, text: 'ok' }] })
+  server.registerTool(
+    'read',
+    { description: 'Read data.', inputSchema: {}, annotations: { readOnlyHint: true } },
+    result,
+  )
+  server.registerTool(
+    'write',
+    { description: 'Write data.', inputSchema: {}, annotations: { readOnlyHint: false } },
+    result,
+  )
+  server.registerTool(
+    'undeclared',
+    { description: 'Undeclared behavior.', inputSchema: {} },
+    result,
   )
   return server
 }
@@ -816,7 +841,7 @@ describe('NativeSession', () => {
 
     // The first API request advertises the builtins plus the discovered tool.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'TaskOutput', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'mcp__a__echo',
     ])
     // The permission request carries the server OWNED BY the tool's FQN,
     // resolved from discovery metadata (never parsed back out of the name).
@@ -847,7 +872,7 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
-  it('runs the Agent tool as a sidechain: one top-level result, real parents, nested list minus Agent', async () => {
+  it.each(['Agent', 'Task'] as const)('runs %s as a sidechain with one outer result and no nested delegation', async (toolName) => {
     const dir = await tempDir('native-agent-')
     const provider = new NativeProvider({ stateDir: dir })
     const requests: Array<{
@@ -857,7 +882,7 @@ describe('NativeSession', () => {
       model: string
     }> = []
     const scripts: CanonicalEvent[][] = [
-      agentTurn('agent-1', { description: 'd', prompt: 'do it' }),
+      agentTurn('agent-1', { description: 'd', prompt: 'do it' }, toolName),
       toolTurn('nested-read'),
       textTurn('NESTED-REPORT'),
       textTurn('PARENT-DONE'),
@@ -911,16 +936,19 @@ describe('NativeSession', () => {
       tool_use_id: 'nested-read',
     })
 
-    // The parent advertises Agent + the discovered MCP tool; every nested
-    // request drops Agent (depth cap 1) but keeps the MCP and Skill tools.
+    // The parent advertises both delegation names plus the discovered MCP
+    // tool; every nested request drops both (depth cap 1) but keeps MCP and Skill.
     expect(requests[0].tools.map((t) => t.name)).toEqual([
-      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'TaskOutput', 'Skill', 'mcp__a__echo',
+      'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill', 'mcp__a__echo',
     ])
     const nestedRequests = requests.filter((r) => !r.tools.some((t) => t.name === 'Agent'))
     expect(nestedRequests).toHaveLength(2)
     for (const r of nestedRequests) {
       expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskOutput', 'Skill', 'mcp__a__echo'])
+      expect(r.tools.some((tool) => tool.name === 'Task')).toBe(false)
+      expect(r.system).not.toContain(AGENT_GUIDANCE)
     }
+    expect(requests[0].system).toContain(AGENT_GUIDANCE)
 
     // Persistence: the durable identity is written before any sidechain frame.
     const events = logOf(session).events
@@ -930,7 +958,7 @@ describe('NativeSession', () => {
       toolUseId: 'agent-1',
       parentToolUseId: null,
       kind: 'agent',
-      toolName: 'Agent',
+      toolName,
       label: 'd',
       depth: 1,
       profile: null,
@@ -953,6 +981,66 @@ describe('NativeSession', () => {
     expect(JSON.stringify(mainHistory)).toContain('NESTED-REPORT')
 
     await session.destroy()
+  })
+
+  it('gives Explore only explicitly read-only tools under bypass and a broad base allowlist', async () => {
+    const dir = await tempDir('native-explore-read-only-')
+    const maliciousExplore = agentDefinition({
+      name: 'Explore', prompt: 'STORE-OVERRIDE', model: 'store-model', tools: ['Write'],
+    })
+    const provider = new NativeProvider({
+      stateDir: dir,
+      agentStore: agentStoreOf({ Explore: maliciousExplore }),
+    })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
+      agentTurn('explore-1', { description: 'd', prompt: 'p', subagent_type: 'Explore' }),
+      textTurn('EXPLORE-DONE'),
+      textTurn('PARENT-DONE'),
+    ], requests)
+    const session = provider.createSession({
+      id: 'explore-read-only',
+      cwd: dir,
+      model: 'parent-model',
+      permissionMode: 'bypassPermissions',
+      providerExtras: { sdkOptions: { tools: [
+        'Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit',
+        'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task',
+        'TaskOutput', 'Skill', 'mcp__a__read', 'mcp__a__write', 'mcp__a__undeclared',
+        'mcp__b__read', 'mcp__b__write', 'mcp__b__undeclared',
+      ] } },
+      mcpServers: {
+        a: { type: 'sdk', instance: mixedReadOnlyServer('a') },
+        b: { type: 'sdk', instance: mixedReadOnlyServer('b') },
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('explore') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+
+      expect(requests).toHaveLength(3)
+      expect(requests[1].model).toBe('parent-model')
+      expect(requests[1].system).toContain(
+        'Explore the codebase read-only. Use available read-only tools to answer with concrete file references; do not modify files or run state-changing tools.',
+      )
+      expect(requests[1].system).not.toContain('STORE-OVERRIDE')
+      expect(requests[1].tools.map((tool) => tool.name)).toEqual([
+        'Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'TaskOutput', 'Skill',
+        'mcp__a__read', 'mcp__b__read',
+      ])
+      expect(logOf(session).events.find((event) => event.type === 'subagent/descriptor'))
+        .toMatchObject({
+          toolName: 'Agent',
+          profile: {
+            name: 'Explore',
+            instruction: 'Explore the codebase read-only. Use available read-only tools to answer with concrete file references; do not modify files or run state-changing tools.',
+          },
+        })
+    } finally {
+      await session.destroy()
+    }
   })
 
   it('does not append a descriptor when Agent permission is denied', async () => {
@@ -2073,7 +2161,7 @@ describe('NativeSession', () => {
       requests.push(structuredClone(req))
       for (const ev of scripts.shift() ?? []) yield ev
     }
-    // No MCP server: the `!this.mcp` branch of rebuildTools must still offer Agent.
+    // No MCP server: the `!this.mcp` branch of rebuildTools must still offer delegation.
     const session = provider.createSession({
       id: 'agent-def',
       cwd: dir,
@@ -2085,14 +2173,14 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('review') as never)
     await vi.waitFor(() => expect(frames.some((f) => f.type === 'result' && f.result === 'DONE')).toBe(true))
 
-    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'TaskOutput', 'Skill'])
+    expect(requests[0].tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill'])
     const nested = requests.find((r) => !r.tools.some((t) => t.name === 'Agent'))!
     // The definition's prompt is the nested instruction suffix and its model the
     // default nested model...
     expect(nested.system.endsWith('REVIEW-PROMPT')).toBe(true)
     expect(nested.model).toBe('reviewer-model')
-    // ...while the Agent guidance is in the PARENT prompt only: the subagent
-    // cannot call Agent, so advertising it would be misleading.
+    // ...while the delegation guidance is in the PARENT prompt only: the
+    // subagent cannot call Agent or Task, so advertising it would be misleading.
     expect(requests[0].system).toContain(AGENT_GUIDANCE)
     expect(nested.system).not.toContain(AGENT_GUIDANCE)
     // TaskOutput remains available at both depths and shares one guidance constant.
@@ -2305,7 +2393,7 @@ describe('NativeSession', () => {
     }
   })
 
-  it('declares Agent support and lists the built-in general-purpose agent', async () => {
+  it('declares Agent support and lists the built-in general-purpose and Explore agents', async () => {
     const dir = await tempDir('native-agents-cap-')
     const provider = new NativeProvider({ stateDir: dir })
     expect(provider.capabilities.supportsAgents).toBe(true)
@@ -2316,13 +2404,14 @@ describe('NativeSession', () => {
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.
     expect((session as unknown as { tools: Array<{ name: string }> }).tools.map((t) => t.name))
-      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'TaskOutput', 'Skill'])
+      .toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'Agent', 'Task', 'TaskOutput', 'Skill'])
     const other = provider.createSession({ id: 'agents-cap-other', cwd: dir })
     expect((session as unknown as { todoWriteTool: unknown }).todoWriteTool)
       .not.toBe((other as unknown as { todoWriteTool: unknown }).todoWriteTool)
     await other.destroy()
     expect(await session.supportedAgents?.()).toEqual([
       { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
+      { name: 'Explore', description: 'Read-only codebase exploration with concrete file references.' },
     ])
     await session.destroy()
   })

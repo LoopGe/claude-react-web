@@ -37,7 +37,8 @@ import type { NativeLogEvent, NativeSubagentDescriptorEvent, NativeTurnEndReason
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
-import { createAgentTool } from './subagent.js'
+import { createAgentTool, type AgentToolDeps } from './subagent.js'
+import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
 import { NativeTaskManager } from './task-manager.js'
 import { NativeSkillCatalog } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
@@ -221,9 +222,9 @@ export interface NativeSessionOptions {
    *  remain SDK-only fields and do not affect this in-process tool list. */
   toolProfile?: SessionToolProfile
   system: string
-  /** The prompt a nested (Agent) run gets: the parent system WITHOUT the
-   *  `tool:Agent` section, since nested tools exclude Agent and a subagent
-   *  told to delegate would look for a tool it cannot see. Defaults to
+  /** The prompt a nested (Agent/Task) run gets: the parent system WITHOUT the
+   *  shared delegation section, since nested tools exclude both names and a
+   *  subagent told to delegate would look for a tool it cannot see. Defaults to
    *  `system`. */
   subagentSystem?: string
   /** Loose canUseTool from CreateSessionOptions — (toolName, input, {signal}) => PermissionResult. */
@@ -277,11 +278,10 @@ export class NativeSession implements ProviderSessionHandle {
   private nestedTools: ToolDef[]
   /** Every detachable execution in this session, shared with nested loops. */
   private readonly tasks: NativeTaskManager
-  /** The Agent tool this session hands the model. Built once (not per turn) so
-   *  its live getters keep tracking `model` and the rebuilt nested-tool
-   *  snapshots; it is appended in `rebuildTools` alongside the builtins. */
+  /** Agent and Task share one runner and live getters; only their wire names differ. */
   private readonly agentTool: ToolDef
-  /** Reads this session's detached Bash/Agent outcomes through the shared manager. */
+  private readonly taskTool: ToolDef
+  /** Reads this session's detached Bash/Agent/Task outcomes through the shared manager. */
   private readonly taskOutputTool: ToolDef
   /** Local SKILL.md catalog. Discovery is kicked off at construction and
    *  awaited per turn, the same shape as MCP's `whenReady`. */
@@ -395,7 +395,7 @@ export class NativeSession implements ProviderSessionHandle {
     // Every session can delegate, MCP or not: `tools` is a live getter and the
     // `emit` path is the session's own persist+push, so a nested run's frames
     // land in the transcript with their real parent. Built after `ctx` exists.
-    this.agentTool = createAgentTool({
+    const agentDeps: AgentToolDeps = {
       cwd: opts.cwd,
       model: () => this.model,
       effortLevel: () => this.effortLevel,
@@ -421,7 +421,9 @@ export class NativeSession implements ProviderSessionHandle {
         timestamp: new Date().toISOString(),
       }) as NativeSubagentDescriptorEvent,
       agentStore: opts.agentStore,
-    })
+    }
+    this.agentTool = createAgentTool(agentDeps)
+    this.taskTool = createAgentTool(agentDeps, 'Task')
     // The mode switch owns the log, the model history, and the usage
     // counters. It runs before `system/init` so a storage failure (fresh id
     // that already has a log, corrupt resume) throws out of createSession
@@ -449,8 +451,8 @@ export class NativeSession implements ProviderSessionHandle {
       this.output.push(informationalFrame(this.ctx, this.legacyAgentDropNotice))
     }
     // `tools` is now the effective list from birth, not builtins-only until
-    // the first turn: the invariant tools = builtins + Agent + MCP defs must
-    // hold for every reader, not just the pump after discovery.
+    // the first turn: the invariant tools = builtins + Agent + Task + MCP defs
+    // must hold for every reader, not just the pump after discovery.
     this.rebuildTools()
   }
 
@@ -971,7 +973,7 @@ export class NativeSession implements ProviderSessionHandle {
     return reload
   }
 
-  /** The nested (Agent) prompt: the subagent system plus the nested run's
+  /** The nested (Agent/Task) prompt: the subagent system plus the nested run's
    *  scoped Skill section. The view reads the shared catalog at call time, so
    *  a reload reaches the next run without reviving an excluded skill. */
   private subagentSystem(skillView: ReturnType<NativeSkillCatalog['view']>): string {
@@ -988,7 +990,7 @@ export class NativeSession implements ProviderSessionHandle {
     tools: ToolDef[]
     mcpToolServers: Map<string, { name: string; source: 'sdk' | 'dynamic' }>
   } {
-    // The Agent and Skill tools ride EVERY list, MCP-less sessions included —
+    // Agent, Task and Skill ride EVERY list, MCP-less sessions included —
     // otherwise the model loses delegation exactly when it has no servers to
     // call, and a subagent could never load a skill.
     const tools: ToolDef[] = [
@@ -997,6 +999,7 @@ export class NativeSession implements ProviderSessionHandle {
       this.webSearchTool,
       this.todoWriteTool,
       this.agentTool,
+      this.taskTool,
       this.taskOutputTool,
       skillTool,
     ]
@@ -1564,7 +1567,10 @@ export class NativeSession implements ProviderSessionHandle {
   /** Built-in agents only: the /agents route unions the enabled
    *  `AgentDefinitionStore` definitions on top (same split as claude). */
   async supportedAgents(): Promise<unknown> {
-    return [{ name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' }]
+    return [
+      { name: 'general-purpose', description: 'General-purpose subagent for self-contained tasks.' },
+      { name: EXPLORE_AGENT_NAME, description: EXPLORE_AGENT_DESCRIPTION },
+    ]
   }
 
   // ── MCP control (optional ProviderSessionHandle members) ───────────────

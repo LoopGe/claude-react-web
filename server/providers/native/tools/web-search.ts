@@ -126,6 +126,7 @@ export function createWebSearchTool(): ToolDef<WebSearchInput> {
     description: 'Search the web with DuckDuckGo and return result titles, URLs and snippets.',
     guidance: WEB_SEARCH_GUIDANCE,
     promptOrder: 170,
+    readOnlyHint: true,
     schema: {
       type: 'object',
       properties: {

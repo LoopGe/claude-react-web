@@ -14,6 +14,7 @@ export function createSkillTool(catalog: NativeSkillCatalog): ToolDef<{ skill: s
       'Load the full instructions of a local skill by name and follow them for the current task.',
     guidance: SKILL_GUIDANCE,
     promptOrder: 85,
+    readOnlyHint: true,
     schema: {
       type: 'object',
       properties: {

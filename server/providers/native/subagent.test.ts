@@ -117,9 +117,9 @@ function fakeStore(defs: Record<string, Partial<StoredAgentDefinition>>): AgentD
 }
 
 describe('createAgentTool', () => {
-  it('exposes the Agent tool interface', () => {
-    const agent = createAgentTool(baseDeps())
-    expect(agent.name).toBe('Agent')
+  it.each(['Agent', 'Task'] as const)('exposes the shared %s tool interface', (toolName) => {
+    const agent = createAgentTool(baseDeps(), toolName)
+    expect(agent.name).toBe(toolName)
     expect(agent.promptOrder).toBe(80)
     expect(agent.schema).toEqual({
       type: 'object',
@@ -133,8 +133,8 @@ describe('createAgentTool', () => {
     })
   })
 
-  it('declares subagent background metadata from the description and validated type', () => {
-    const agent = createAgentTool(baseDeps())
+  it.each(['Agent', 'Task'] as const)('declares the same %s background metadata', (toolName) => {
+    const agent = createAgentTool(baseDeps(), toolName)
 
     expect(agent.backgroundable?.taskType).toBe('subagent')
     expect(agent.backgroundable?.describe({ description: 'inspect the parser', prompt: 'p' }))
@@ -147,6 +147,48 @@ describe('createAgentTool', () => {
       .toBe('general-purpose')
     expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p', subagent_type: 42 }))
       .toBe('general-purpose')
+  })
+
+  it.each(['Agent', 'Task'] as const)('detaches %s through the shared task manager and preserves its final report', async (toolName) => {
+    let releaseReport!: () => void
+    const reportGate = new Promise<void>((resolve) => { releaseReport = resolve })
+    const tasks = new NativeTaskManager(() => {})
+    const streamFor = vi.fn(async function* () {
+      await reportGate
+      yield startStop
+      yield* textBlock(0, `${toolName} report`)
+      yield deltaStop('end_turn')
+    })
+    const agent = createAgentTool(baseDeps({ tasks, streamFor }), toolName)
+    const backgroundable = agent.backgroundable!
+    const input = { description: 'detach me', prompt: 'p' }
+
+    const foreground = tasks.runForeground(
+      {
+        toolUseId: 'tu-parent',
+        taskType: backgroundable.taskType,
+        description: backgroundable.describe(input),
+        subagentType: backgroundable.subagentType?.(input),
+      },
+      (signal) => agent.run(input, { cwd: process.cwd(), signal, toolUseId: 'tu-parent' }),
+      new AbortController().signal,
+    )
+    await vi.waitFor(() => expect(streamFor).toHaveBeenCalledOnce())
+
+    expect(tasks.background('tu-parent')).toBe(true)
+    expect(await foreground).toEqual({
+      text: 'Task tu-parent is running in the background.\nUse TaskOutput with task_id="tu-parent" to retrieve its final output.',
+      isError: false,
+    })
+    releaseReport()
+    expect(await tasks.output(
+      'tu-parent',
+      { block: true, timeout: 1000 },
+      new AbortController().signal,
+    )).toEqual({
+      text: `Task tu-parent completed.\n${toolName} report`,
+      isError: false,
+    })
   })
 
   it('persists the descriptor before the first nested stream call', async () => {
@@ -276,7 +318,10 @@ describe('createAgentTool', () => {
   it('builds the nested request from the parent system, tools and model', async () => {
     const s = scriptedStreamer([[startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')]])
     let agent: ToolDef = noopTool
-    agent = createAgentTool(baseDeps({ tools: () => [noopTool, agent], streamFor: s.streamFor.bind(s) }))
+    agent = createAgentTool(baseDeps({
+      tools: () => [noopTool, agent, namedTool('Task')],
+      streamFor: s.streamFor.bind(s),
+    }))
 
     await runAgent(agent, { description: 'd', prompt: 'p' })
 
@@ -295,6 +340,101 @@ describe('createAgentTool', () => {
     await runAgent(agent, { description: 'd', prompt: 'p', model: 'override-model' })
 
     expect(s.calls[0].model).toBe('override-model')
+  })
+
+  it('reserves Explore before the custom store and applies its read-only role after depth filtering', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'explored'), deltaStop('end_turn')]])
+    const appendDescriptor = vi.fn(baseDeps().appendDescriptor)
+    const storeGet = vi.fn(() => ({
+      name: 'Explore', description: 'malicious override', prompt: 'STORE-OVERRIDE',
+      model: 'store-model', tools: ['Write'], enabled: true,
+    }))
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      appendDescriptor,
+      permissionMode: () => 'bypassPermissions',
+      tools: () => [
+        { ...namedTool('Agent'), readOnlyHint: true },
+        { ...namedTool('Task'), readOnlyHint: true },
+        readTool,
+        namedTool('Bash'),
+        namedTool('Write'),
+        namedTool('Edit'),
+        namedTool('NotebookEdit'),
+        { ...namedTool('Skill'), readOnlyHint: true },
+        { ...namedTool('mcp__a__read'), readOnlyHint: true },
+        namedTool('mcp__a__undeclared'),
+        { ...namedTool('mcp__b__write'), readOnlyHint: false },
+      ],
+      mcpToolServers: () => new Map([
+        ['mcp__a__read', { name: 'a', source: 'sdk' }],
+        ['mcp__a__undeclared', { name: 'a', source: 'sdk' }],
+        ['mcp__b__write', { name: 'b', source: 'dynamic' }],
+      ]),
+      agentStore: { get: storeGet } as unknown as AgentDefinitionStore,
+    }))
+
+    expect(await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'Explore' }))
+      .toEqual({ text: 'explored' })
+
+    expect(storeGet).not.toHaveBeenCalled()
+    expect(s.calls[0].model).toBe('parent-model')
+    expect(s.calls[0].system.endsWith(
+      'Explore the codebase read-only. Use available read-only tools to answer with concrete file references; do not modify files or run state-changing tools.',
+    )).toBe(true)
+    expect(s.calls[0].system).not.toContain('STORE-OVERRIDE')
+    expect((s.calls[0].tools as Array<{ name: string }>).map((tool) => tool.name))
+      .toEqual(['Read', 'Skill', 'mcp__a__read'])
+    expect(appendDescriptor.mock.calls[0][0].profile).toEqual({
+      name: 'Explore',
+      instruction: 'Explore the codebase read-only. Use available read-only tools to answer with concrete file references; do not modify files or run state-changing tools.',
+    })
+  })
+
+  it('lets input.model override the inherited Explore model without consulting the store', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'ok'), deltaStop('end_turn')]])
+    const storeGet = vi.fn(() => ({
+      name: 'Explore', description: 'override', prompt: 'OVERRIDE', model: 'store-model', enabled: true,
+    }))
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      agentStore: { get: storeGet } as unknown as AgentDefinitionStore,
+    }))
+
+    await runAgent(agent, {
+      description: 'd', prompt: 'p', subagent_type: 'Explore', model: 'input-model',
+    })
+
+    expect(s.calls[0].model).toBe('input-model')
+    expect(storeGet).not.toHaveBeenCalled()
+  })
+
+  it('does not treat a case variant as the built-in Explore profile', async () => {
+    const s = scriptedStreamer([])
+    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s) }))
+
+    expect(await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'explore' }))
+      .toEqual({ text: 'unknown subagent_type: explore', isError: true })
+    expect(s.calls).toHaveLength(0)
+  })
+
+  it('does not apply the built-in Explore role to a case-variant store definition', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'custom'), deltaStop('end_turn')]])
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      tools: () => [readTool, namedTool('Write')],
+      agentStore: fakeStore({
+        explore: {
+          name: 'Explore', description: 'Case-variant custom agent', prompt: 'CASE-CUSTOM',
+          tools: ['Write'], enabled: true,
+        },
+      }),
+    }))
+
+    expect(await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'explore' }))
+      .toEqual({ text: 'custom' })
+    expect(s.calls[0].system.endsWith('CASE-CUSTOM')).toBe(true)
+    expect((s.calls[0].tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual(['Write'])
   })
 
   it('treats a non-string or blank input.model as absent', async () => {
@@ -514,14 +654,14 @@ describe('createAgentTool', () => {
     expect(modes).toEqual(['default', 'default'])
   })
 
-  it('reports a non-natural final round as an error without claiming a tool was blocked', async () => {
+  it.each(['Agent', 'Task'] as const)('reports a non-natural %s final round with its partial report', async (toolName) => {
     const s = scriptedStreamer([[startStop, ...textBlock(0, 'PARTIAL'), deltaStop('max_tokens')]])
     const agent = createAgentTool(baseDeps({
       streamFor: s.streamFor.bind(s),
       agentStore: fakeStore({
         capped: { name: 'capped', description: 'Capped', prompt: 'CAPPED', enabled: true, maxTurns: 1 },
       }),
-    }))
+    }), toolName)
 
     const outcome = await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'capped' })
 

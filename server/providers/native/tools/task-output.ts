@@ -17,6 +17,7 @@ export function createTaskOutputTool(tasks: NativeTaskManager): ToolDef {
     description: 'Read a background task status and final output, optionally waiting for completion.',
     guidance: TASK_OUTPUT_GUIDANCE,
     promptOrder: 82,
+    readOnlyHint: true,
     schema: {
       type: 'object',
       properties: {

@@ -23,6 +23,7 @@ export const readTool: ToolDef<{ file_path: string; offset?: number; limit?: num
   description: 'Read a UTF-8 text file and return line-numbered content.',
   guidance: 'Read a file before editing or writing it; paths resolve inside the session working directory.',
   promptOrder: 100,
+  readOnlyHint: true,
   schema: {
     type: 'object',
     properties: {

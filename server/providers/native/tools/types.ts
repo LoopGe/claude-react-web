@@ -28,6 +28,8 @@ export interface ToolDef<In = Record<string, unknown>> {
   guidance: string
   promptOrder: number
   schema: Record<string, unknown>
+  /** Explicit tool-level read-only metadata; absent is always false. */
+  readOnlyHint?: boolean
   backgroundable?: {
     taskType: 'shell' | 'subagent'
     describe(input: In): string

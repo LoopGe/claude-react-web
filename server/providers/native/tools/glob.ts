@@ -34,6 +34,7 @@ export const globTool: ToolDef<{ pattern: string; path?: string }> = {
     'Glob matches file paths against a pattern where `*` matches within one segment, `?` one character, and `**` any depth ' +
     '(e.g. `**/*.ts`); it skips node_modules, .git and dist and returns at most 100 filenames.',
   promptOrder: 140,
+  readOnlyHint: true,
   schema: {
     type: 'object',
     properties: {
