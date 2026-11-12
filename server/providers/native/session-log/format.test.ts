@@ -180,6 +180,9 @@ describe('session log format', () => {
       }
     }
   })
+  it('rejects an empty session/skill body as corrupt', () => {
+    expectCorrupt({ ...skillInvocationEvent, body: '' })
+  })
   it('round-trips an appended agent selection with its definition and base snapshots', () => {
     const appended = { ...selectionInput, seq: 7 }
     const serialized = serializeEvent(appended)

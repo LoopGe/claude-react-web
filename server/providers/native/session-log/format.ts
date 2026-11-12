@@ -668,7 +668,7 @@ export function parseEventLine(
         seq,
         type: 'session/skill',
         name: requireString(raw, 'name', sessionId, path),
-        body: requireString(raw, 'body', sessionId, path),
+        body: requireNonEmptyString(raw, 'body', sessionId, path),
         timestamp: requireString(raw, 'timestamp', sessionId, path),
       }
 

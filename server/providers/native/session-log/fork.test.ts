@@ -81,7 +81,7 @@ describe('buildForkSeed', () => {
     const withSkill = {
       header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
       events: [
-        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: '/alpha args' }] } },
+        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'image' }, { type: 'text', text: '/alpha args' }, { type: 'text', text: '/beta' }] } },
         { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: 't' },
         { seq: 2, type: 'assistant', uuid: 'a1', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
       ],
@@ -92,9 +92,45 @@ describe('buildForkSeed', () => {
 
     expect(seed.inheritedEventCount).toBe(2)
     expect(seed.events.slice(0, 2)).toEqual([
-      { seq: 0, type: 'user', uuid: 'u1', session_id: 'dst', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: '/alpha args' }] } },
+      { seq: 0, type: 'user', uuid: 'u1', session_id: 'dst', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'image' }, { type: 'text', text: '/alpha args' }, { type: 'text', text: '/beta' }] } },
       { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: 't' },
     ])
+  })
+  it.each([
+    {
+      label: 'ordinary text',
+      parentToolUseId: null,
+      content: [{ type: 'text', text: 'ordinary prompt' }],
+    },
+    {
+      label: 'tool result',
+      parentToolUseId: null,
+      content: [{ type: 'tool_result', tool_use_id: 't1', content: [], is_error: false }],
+    },
+    {
+      label: 'sidechain invocation',
+      parentToolUseId: 'agent-1',
+      content: [{ type: 'text', text: '/alpha' }],
+    },
+    {
+      label: 'name mismatch',
+      parentToolUseId: null,
+      content: [{ type: 'text', text: '/beta' }],
+    },
+  ])('does not extend a cut for a $label before session/skill', ({ parentToolUseId, content }) => {
+    const source = {
+      header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
+      events: [
+        { seq: 0, type: 'user', uuid: 'u1', session_id: 'src', parent_tool_use_id: parentToolUseId, timestamp: 't', message: { role: 'user', content } },
+        { seq: 1, type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: 't' },
+      ],
+      path: '/p', completeBytes: 0, totalBytes: 0,
+    } as never
+
+    const seed = buildForkSeed({ source, sourceId: 'src', newId: 'dst', cwd: '/new', resumeSessionAt: 'u1' })
+
+    expect(seed.inheritedEventCount).toBe(1)
+    expect(seed.events.filter((event) => event.type === 'session/skill')).toEqual([])
   })
   it('leaves a raw-only crash prefix raw-only instead of inventing a skill', () => {
     const rawOnly = {

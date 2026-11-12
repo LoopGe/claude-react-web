@@ -13,7 +13,7 @@
 // Pure: no I/O and no logging.
 
 import { NativeSessionStorageError } from './errors.js'
-import type { NativeEventInput, NativeLogEvent } from './format.js'
+import type { NativeEventInput, NativeLogEvent, NativeSkillInvocationEvent } from './format.js'
 import type { NativeSessionLogSnapshot } from './log.js'
 import { contextSnapshot, repairInterruptedTurn } from './replay.js'
 
@@ -32,6 +32,24 @@ export interface NativeForkSeed {
   events: NativeLogEvent[]
   inheritedEventCount: number
   isSeeded: true
+}
+
+/** `/name args` — the same whole-text grammar used by live slash expansion. */
+const SKILL_COMMAND_RE = /^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/
+
+/** True only for the main-thread raw invocation whose FIRST text block names
+ *  this instruction's skill. Other user events never claim an adjacent body. */
+export function isSkillInstructionForRawUser(
+  user: NativeLogEvent,
+  instruction: NativeSkillInvocationEvent,
+): boolean {
+  if (user.type !== 'user' || user.parent_tool_use_id !== null) return false
+  const block = user.message.content.find(
+    (candidate) => typeof candidate === 'object' && candidate !== null &&
+      (candidate as { type?: unknown }).type === 'text',
+  ) as { type: 'text'; text?: unknown } | undefined
+  if (typeof block?.text !== 'string') return false
+  return SKILL_COMMAND_RE.exec(block.text)?.[1] === instruction.name
 }
 
 export function buildForkSeed(opts: BuildForkSeedOptions): NativeForkSeed {
@@ -56,7 +74,8 @@ export function buildForkSeed(opts: BuildForkSeedOptions): NativeForkSeed {
     // A raw skill prompt and its captured instruction are one replay group.
     // Only an immediately adjacent event is paired: a crash prefix that never
     // persisted the instruction stays raw-only, and assistant cuts are exact.
-    if (source.events[cut].type === 'user' && source.events[end]?.type === 'session/skill') end++
+    const next = source.events[end]
+    if (next?.type === 'session/skill' && isSkillInstructionForRawUser(source.events[cut], next)) end++
     prefix = source.events.slice(0, end)
   }
 
