@@ -1,8 +1,9 @@
 # Native 阶段 B：子代理目录、Transcript 与工具角色设计
 
 日期：2026-11-12
-状态：待确认；阶段 A 已实现，本文不声明阶段 B 已实现
-前置设计：`docs/superpowers/specs/2026-11-11-native-agent-skill-preset-parity-design.md`
+状态：阶段 B 已实现；阶段 C 及后续独立项目不在本文实现范围
+前置设计：[Native 子代理、技能与 Preset 对齐设计](2026-11-11-native-agent-skill-preset-parity-design.md)
+实现决策记录：[Native subagent transcripts Agent Note](../../../.agents/notes/implemented/architecture/2026-11-12-native-subagent-transcripts.md)
 
 ## 1. 目的与范围
 
@@ -230,6 +231,8 @@ interface SubagentTranscriptSource {
 
 `frame-bridge` 按 session provider/capability 选择 source，不再接收一个无条件 Claude hub。native 在 capability 开启前的读写订阅都明确拒绝，而不是落到 Claude reader 后显示空内容。
 
+实现中的失败语义统一收口到每个 native 订阅自己的 `failChannel`：snapshot 读取、catalog 重读和 manager 内层订阅的异常终止都会断开 live listener、清空输入缓冲、reject 输出 iterable，而不会留下静默停止推送的打开通道。若 initial reset 已经产出但尚未被 consumer 拉取，输出顺序保持 **reset-before-error**；snapshot 尚未产出时不凭空补 reset，后续增量在错误前丢弃。正常 unsubscribe/close 仍是唯一静默 EOF，清理后的迟到 inner termination 不再产生错误。E2E 通过真实 `SessionConnection` 验证 subscribe-before-snapshot、UUID 去重、descriptor-only/outer-error prompt 和重连稳定性；这些行为不代表 Stage C 的技能注入或后续 child-session 生命周期已经实现。
+
 ## 9. Task 与 Explore 工具角色
 
 ### 9.1 共享 runner
@@ -293,7 +296,7 @@ nested 工具列表同时移除 `Agent` 和 `Task`，对应 prompt guidance 也�
 - 新增 native descriptor/cache/reader/watch/role 单元测试和真实 manager E2E。
 - Claude transcript 相关现有测试、完整 native suite、SessionManager、route/WS、client transcript store 测试通过。
 - `npm run typecheck`、`npx vitest run`、`npm run lint`、`npm run verify:agent-notes` 和 `git diff --check` 通过。
-- 最终 whole-workstream review 通过后才开启 capability 的文档完成声明；不提前声明 Stage C 或后续能力。
+- native capability 在 Task 1–6 与真实 E2E 验收后开启；controller 的独立 whole-workstream final review 与 push 不在本实现声明内。本文不声明 Stage C 或后续能力。
 
 ## 12. 明确取舍
 

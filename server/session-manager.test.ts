@@ -9353,20 +9353,20 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     await expect(sm.readSubagentTranscript(info.id, 'agent-1')).rejects.toMatchObject({ status: 501 })
   })
 
-  it('keeps native production transcript reads unsupported while exposing its standalone reader', async () => {
+  it('enables native production transcript reads through its standalone reader for live and dormant sessions', async () => {
     const info = await sm.create({ provider: 'native', cwd: TEST_CWD })
     const provider = subagentProviderForTest(sm, 'native')
-    expect(provider.capabilities.supportsSubagentTranscripts).toBe(false)
+    expect(provider.capabilities.supportsSubagentTranscripts).toBe(true)
     expect(provider.subagentTranscripts).toBeDefined()
     await expect(provider.subagentTranscripts!.listSubagents({ id: 'unknown-native', cwd: TEST_CWD })).resolves.toEqual([])
     await expect(provider.subagentTranscripts!.readTranscript({ id: 'unknown-native', cwd: TEST_CWD }, 'agent-1')).resolves.toEqual([])
 
-    expect(() => sm.resolveSubagentTranscriptProvider(info.id)).toThrowError(expect.objectContaining({ status: 501 }))
-    await expect(sm.listSubagents(info.id)).rejects.toMatchObject({ status: 501 })
-    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).rejects.toMatchObject({ status: 501 })
+    expect(sm.resolveSubagentTranscriptProvider(info.id)).toBe(provider)
+    await expect(sm.listSubagents(info.id)).resolves.toEqual([])
+    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).resolves.toEqual([])
     await sm.unload(info.id)
-    await expect(sm.listSubagents(info.id)).rejects.toMatchObject({ status: 501 })
-    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).rejects.toMatchObject({ status: 501 })
+    await expect(sm.listSubagents(info.id)).resolves.toEqual([])
+    await expect(sm.readSubagentTranscript(info.id, 'agent-1')).resolves.toEqual([])
   })
 
   it('reads a missing Claude transcript through the provider without a live Query', async () => {

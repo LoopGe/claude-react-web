@@ -105,7 +105,7 @@ export class NativeProvider implements AgentProvider {
     supportsTaskControl: true,
     supportsStructuredOutput: false,
     supportsReadFile: false,
-    supportsSubagentTranscripts: false,
+    supportsSubagentTranscripts: true,
     supportsSteering: true,
   }
 

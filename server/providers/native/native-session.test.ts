@@ -2398,8 +2398,8 @@ describe('NativeSession', () => {
     const provider = new NativeProvider({ stateDir: dir })
     expect(provider.capabilities.supportsAgents).toBe(true)
     expect(provider.capabilities.supportsTaskControl).toBe(true)
-    // Subagent transcripts remain unsupported; native sidechains stay in the session log.
-    expect(provider.capabilities.supportsSubagentTranscripts).toBe(false)
+    // Standalone subagent transcripts are projected from the same session log.
+    expect(provider.capabilities.supportsSubagentTranscripts).toBe(true)
     const session = provider.createSession({ id: 'agents-cap', cwd: dir })
     // The effective tool list holds from construction (rebuildTools runs in the
     // constructor), not builtins-only until the first turn.

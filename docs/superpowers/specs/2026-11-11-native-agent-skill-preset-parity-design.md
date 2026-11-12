@@ -1,7 +1,8 @@
 # Native 子代理、技能与 Preset 对齐设计
 
 日期：2026-11-11
-状态：阶段 A 已实现；阶段 B/C 未实现
+状态：阶段 A/B 已实现；阶段 C 未实现
+阶段 B 详细设计与实现记录：[Native 阶段 B：子代理目录、Transcript 与工具角色设计](2026-11-12-native-subagent-transcript-design.md)
 
 ## 1. 背景与问题
 
@@ -237,7 +238,7 @@ Explore 使用独立的只读 profile 和探索 instruction。只有具备明确
 
 - `listSubagents()` 从 descriptor 事件按日志顺序返回 toolUseId，live 和 dormant 都可用。
 - **旧 sidechain 不隐藏**：没有 descriptor 的日志通过 Agent/Task/Explore tool_use 与 sidechain parentage 推导 legacy 目录项，使已有会话也获得 transcript UI。legacy 项标记 `metadataComplete: false`，label 取 `input.description`（缺省为 `Subagent`），depth 能由 parent 链推导则使用，否则为 1，`profile: null`，不得编造定义快照。新 descriptor 与推导项同 id 时以 descriptor 为准。
-- `readSubagentTranscript(agentId)` 从同一日志筛选该 descriptor/legacy 项的 subtree，复用现有 normalize/paginate。
+- `readSubagentTranscript(agentId)` 从同一日志筛选目标 agent 的直接对话，并在 standalone 读取层重投影 parentage、合成稳定 prompt，复用现有 normalize。
 - 不为每个 agent 再写 JSONL，不引入第二个事实来源。
 - descriptor/catalog 读取复用 session-log `(path,size,mtimeMs)` 缓存和增量解析，避免每次打开卡片都全量扫日志。
 - `Task`/`Explore` 的 tool_use 名称保留在原始 assistant frame 中，目录不把它们归一化成 Agent。
@@ -254,7 +255,7 @@ interface SubagentTranscriptSource {
 ```
 
 - Claude source 保持现有文件 watcher。
-- Native source 先返回日志 snapshot，再订阅主 session 输出并过滤目标 subtree。
+- Native source 先建立 manager live fan-out 订阅，再读取日志 snapshot；缓冲在 snapshot 后按序 drain，并用 uuid 去重。
 - snapshot + watch 必须先建立订阅再读取，使用 uuid 去重，避免 replay/live 间隙。
 - REST `/sessions/:id/subagents` 和 `/:agentId` 通过 provider-aware reader，不再直接调用 Claude 文件 helper。
 - 验收后才开启 `supportsSubagentTranscripts`。
@@ -301,7 +302,9 @@ forked Skill 不属于本批。若以后实现，复用 `subagent/descriptor` �
 - tools/MCP/skills/permission/maxTurns/effort 的实际过滤与执行。
 - restart 保留 agent。
 
-### 阶段 B：子代理目录、transcript 和工具角色（未实现）
+### 阶段 B：子代理目录、transcript 和工具角色（已实现）
+
+实现以 [Native 阶段 B 详细设计](2026-11-12-native-subagent-transcript-design.md) 为准：descriptor 使用同一 native 日志，standalone transcript 只投影目标 agent 的直接对话，live source 先订阅再读 snapshot，Explore 最后执行严格 `readOnlyHint` 过滤。
 
 - descriptor + reader cache。
 - list/read/live subscription 和 provider-aware route。

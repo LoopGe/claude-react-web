@@ -280,6 +280,7 @@ Commit: `feat(native): add Task and Explore agent roles`
 
 - Create: `server/providers/native/e2e-subagent-transcript.test.ts`
 - Modify: `server/providers/native/native-provider.ts`
+- Modify: `server/session-manager.test.ts`, `server/providers/native/native-session.test.ts`（生产 capability 验收断言）
 - Modify: `docs/superpowers/specs/2026-11-12-native-subagent-transcript-design.md`
 - Modify: `docs/superpowers/specs/2026-11-11-native-agent-skill-preset-parity-design.md`
 - Modify: `docs/superpowers/plans/2026-11-12-native-subagent-transcript.md`
@@ -289,7 +290,7 @@ Commit: `feat(native): add Task and Explore agent roles`
 
 - 全部前序 reader/source/runner 接口就绪后，才把 NativeProvider `supportsSubagentTranscripts` 改为 true。
 
-- [ ] **Step 1: 写真实 E2E**
+- [x] **Step 1: 写真实 E2E**
 
 使用真实 SessionManager、ProviderRegistry、NativeProvider、PermissionBroker、日志与 SessionConnection/scripted streams，覆盖：
 
@@ -299,22 +300,31 @@ Commit: `feat(native): add Task and Explore agent roles`
 4. Task 后台 detach 后继续 transcript；Explore 在 bypass+MCP 下无写工具，Agent/Task 不恢复 depth>1。
 5. descriptor 写失败、unknown agent、permission denial 无请求/无新目录；unknown transcript 为普通空态。
 
-- [ ] **Step 2: 开启 capability 并运行 E2E 与回归**
+- [x] **Step 2: 开启 capability 并运行 E2E 与回归**
 
 先运行 Task 1–6 的 focused suites，确认 list/read/watch/role 验收均已绿色；新增真实 native route E2E 在生产 capability 为 false 时应 RED。随后将 NativeProvider `supportsSubagentTranscripts` 改为 true，再运行：
 
 Run: `npx vitest run server/providers/native/e2e-subagent-transcript.test.ts server/providers/native server/session-manager.test.ts server/subagent-transcript-hub.test.ts server/subagent-transcripts.test.ts server/frame-bridge.test.ts src/hooks/useSubagentTranscriptStore.test.tsx src/components/SubagentTranscriptDialog.test.tsx`
 Expected: 全部通过；不得用 fixture 伪造生产 capability 来替代这次开启。
 
-- [ ] **Step 3: 更新文档与 Agent Note**
+- [x] **Step 3: 更新文档与 Agent Note**
 
 将两份 spec 的阶段 B 标为已实现并链接本详细设计；plan 记录实际决策。Agent Note 按 `.agents/notes/README.md` 记录单日志 descriptor、standalone 投影、provider-neutral source、Explore 比 Claude 更严格的安全取舍，以及未实现的后续能力；先搜索并更新已有 owning note，避免重复。
 
-- [ ] **Step 4: 全量门禁**
+- [x] **Step 4: 全量门禁**
+
+实际结果：完整 Task 7 focused command 为 51 files / 1211 tests 全绿；`npm run typecheck && npx vitest run && npm run lint && npm run verify:agent-notes && git diff --check` 全链通过。全量 Vitest 为 724 files、10153 passed / 8 skipped；lint 为 0 errors、26 个既有 warnings；Agent Notes 19 份校验通过。
 
 Run: `npm run typecheck && npx vitest run && npm run lint && npm run verify:agent-notes && git diff --check`。
 Expected: 全部通过；任何并行工作流失败先归因并给隔离证据。
 
-- [ ] **Step 5: 最终 review 与提交**
+- [ ] **Step 5: controller 最终 review 与提交后的处理（未认领）**
 
-先派最强可用模型做 whole-workstream review，修复确认发现并 scoped re-review。提交 `test(native): cover subagent transcripts end to end`，只包含本任务实际文件。不得把最终 review/push 预先写成已完成；push 需要用户另行明确授权。
+实现方只做 full-diff self-review 和本任务提交；独立 whole-workstream final review 由 controller 在本提交后另行执行，push 也未获授权、未执行。不得把这两项预先写成已完成。
+
+### Task 7 实际执行决策
+
+- E2E 使用真实 SessionManager、ProviderRegistry、NativeProvider、PermissionBroker、native log、REST router、ProviderSubagentTranscriptHub、NativeSubagentTranscriptSource 和 SessionConnection；仅模型 round 使用 scripted streams。Claude route 也通过真实 ClaudeProvider/SDK disk scanner 验证，fixture 使用 UUID session id 与 SDK 的 canonical-cwd project 编码。
+- Task 1–6 的 17 个 focused files（846 tests）先通过；新 E2E 在生产 capability 为 false 时按预期以 501/无 WS 订阅 RED，随后才将 `NativeProvider.supportsSubagentTranscripts` 置为 true，没有用 fixture 覆盖 capability。
+- capability 开启后同步更新 `server/session-manager.test.ts` 与 `server/providers/native/native-session.test.ts` 中两条旧的“生产不支持”断言；它们是该 focused command 直接覆盖的验收，不是用测试绕开生产开启。
+- 实际 source 生命周期以统一 `failChannel`、reset-before-error、inner termination 传播和正常清理后的迟到错误抑制为准。Stage C、forked Skill、continuable child 和后续独立项目仍未实现。
