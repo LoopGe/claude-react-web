@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent } from '@testing-library/react'
-import { useRef } from 'react'
+import { useLayoutEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useOutsideMouseDown } from './useOutsideMouseDown'
+import { useFocusTrap } from './useFocusTrap'
+import { registerFloatingSurface } from './floating-surface-registry'
 
 // A minimal surface + trigger, so the hook's semantics are pinned in ONE place
 // instead of once per host component. `ref` goes on the surface (the thing that
@@ -32,6 +35,45 @@ function Probe({
         <span data-testid="child">inside</span>
       </div>
     </div>
+  )
+}
+
+function PortaledBranchProbe({ onClose }: { onClose: () => void }) {
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const childRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const unregisterParent = registerFloatingSurface({
+      id: 'parent',
+      kind: 'dialog',
+      phase: 'open',
+      getContainer: () => surfaceRef.current,
+      onDismiss: onClose,
+    })
+    const unregisterChild = registerFloatingSurface({
+      id: 'child',
+      kind: 'menu',
+      parentId: 'parent',
+      phase: 'open',
+      getContainer: () => childRef.current,
+      onDismiss: () => {},
+    })
+    return () => {
+      unregisterChild()
+      unregisterParent()
+    }
+  }, [onClose])
+  useOutsideMouseDown({ ref: surfaceRef, onClose, surfaceId: 'parent' })
+  useFocusTrap(surfaceRef)
+  return (
+    <>
+      <div ref={surfaceRef} data-testid="parent-surface" tabIndex={-1} />
+      {createPortal(
+        <div ref={childRef} data-testid="portaled-child">
+          <button data-testid="portaled-child-button">child</button>
+        </div>,
+        document.body,
+      )}
+    </>
   )
 }
 
@@ -139,5 +181,21 @@ describe('useOutsideMouseDown', () => {
     unmount()
     fireEvent.mouseDown(document.body)
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('treats a registered portaled child as inside for primary and secondary presses', () => {
+    const onClose = vi.fn()
+    const { getByTestId } = render(<PortaledBranchProbe onClose={onClose} />)
+    fireEvent.mouseDown(getByTestId('portaled-child-button'), { button: 0 })
+    fireEvent.mouseDown(getByTestId('portaled-child-button'), { button: 2 })
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('lets focus remain in a registered portaled child instead of reclaiming it', () => {
+    const onClose = vi.fn()
+    const { getByTestId } = render(<PortaledBranchProbe onClose={onClose} />)
+    const button = getByTestId('portaled-child-button')
+    button.focus()
+    expect(document.activeElement).toBe(button)
   })
 })

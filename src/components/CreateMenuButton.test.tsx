@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, fireEvent, screen, act } from '@testing-library/react'
 import { CreateMenuButton } from './CreateMenuButton'
-import { closeAllContextMenus } from './context-menu-registry'
+import { closeAllContextMenus } from '../hooks/floating-surface-registry'
 
 function setup(overrides: Partial<React.ComponentProps<typeof CreateMenuButton>> = {}) {
   const onNewSession = overrides.onNewSession ?? vi.fn()
@@ -108,5 +108,15 @@ describe('CreateMenuButton', () => {
     act(() => closeAllContextMenus())
     expect(screen.queryByRole('menu')).toBeNull()
     expect(document.activeElement).toBe(other)
+  })
+
+  it('does not focus the trigger when policy dismisses a focused menu', () => {
+    setup()
+    const plus = screen.getByRole('button', { name: 'Create' })
+    fireEvent.click(plus)
+    expect(document.activeElement).toBe(document.querySelector('.ctx-menu-item'))
+    act(() => closeAllContextMenus())
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(document.activeElement).not.toBe(plus)
   })
 })

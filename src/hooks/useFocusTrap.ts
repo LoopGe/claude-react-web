@@ -1,5 +1,5 @@
 import { useEffect, type RefObject } from 'react'
-import { isFocusInsideOtherOverlay } from './useEscapeStack'
+import { isFocusInsideOtherOverlay } from './floating-surface-registry'
 
 const DEFAULT_SELECTOR =
   'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -105,7 +105,7 @@ export function useFocusTrap(
       // container) and sit at a higher z-index, representing a deliberate user
       // interaction with a nested dialog — stealing focus back would make the
       // child's inputs unusable. Every such dialog is registered in the
-      // useEscapeStack, so the stack's containment check covers all of them.
+      // useFloatingSurface, so the registry's containment check covers all of them.
       if (target != null && isFocusInsideOtherOverlay(target)) {
         return
       }

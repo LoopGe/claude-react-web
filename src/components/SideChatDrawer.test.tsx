@@ -21,6 +21,7 @@
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { act, render } from '@testing-library/react'
+import { getEscapeStackCount } from '../hooks/floating-surface-registry'
 import type { Key, ReactNode } from 'react'
 
 // Virtuoso needs layout; render every row directly (same shape as
@@ -204,6 +205,18 @@ describe('SideChatDrawer (session-synchronizer migration)', () => {
     await act(() => sleep(50))
     // The Side-Chat-specific empty state copy.
     expect(container.querySelector('.chat-messages-empty-side')).toBeTruthy()
+  })
+
+  it('releases Escape ownership while the collapse animation runs', async () => {
+    const props = makeProps()
+    const { container } = render(<SideChatDrawer {...props} />)
+    await act(() => sleep(50))
+    expect(getEscapeStackCount()).toBe(1)
+    act(() => {
+      container.querySelector('.side-chat-drawer-back')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(container.querySelector('.side-chat-drawer')!.getAttribute('data-state')).toBe('collapsing')
+    expect(getEscapeStackCount()).toBe(0)
   })
 
   it('renders items the SessionStore owns (no items prop wired by the caller)', async () => {

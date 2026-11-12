@@ -1,7 +1,9 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { useRef } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TranscriptDrawerShell } from './TranscriptDrawerShell'
-import { __resetForTests } from '../hooks/useEscapeStack'
+import { HoverPopover } from './HoverPopover'
+import { __resetFloatingSurfacesForTests as __resetForTests } from '../hooks/floating-surface-registry'
 
 interface ShellOptions {
   variant?: 'subagent' | 'workflow'
@@ -34,6 +36,16 @@ function Shell({
     >
       {children}
     </TranscriptDrawerShell>
+  )
+}
+
+function BackgroundHover() {
+  const ref = useRef<HTMLButtonElement>(null)
+  return (
+    <>
+      <button ref={ref}>background</button>
+      <HoverPopover triggerRef={ref}>details</HoverPopover>
+    </>
   )
 }
 
@@ -141,5 +153,23 @@ describe('TranscriptDrawerShell focus and exit', () => {
       new AnimationEvent('animationend', { animationName: 'overlay-backdrop-out', bubbles: true }),
     )
     expect(onExited).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops blocking background hover as soon as exit begins', () => {
+    vi.useFakeTimers()
+    try {
+      const { rerender } = render(<><BackgroundHover /><Shell isExiting={false} /></>)
+      fireEvent.pointerEnter(screen.getByRole('button', { name: 'background' }))
+      act(() => vi.advanceTimersByTime(200))
+      expect(document.querySelector('.hover-pop')).toBeNull()
+
+      rerender(<><BackgroundHover /><Shell isExiting /></>)
+      fireEvent.pointerLeave(screen.getByRole('button', { name: 'background' }))
+      fireEvent.pointerEnter(screen.getByRole('button', { name: 'background' }))
+      act(() => vi.advanceTimersByTime(200))
+      expect(document.querySelector('.hover-pop')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -15,9 +15,9 @@
 
 import { memo, useLayoutEffect, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { motion } from 'motion/react'
+import { motion, useIsPresent } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
-import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { useAnchorPosition, type AnchorRect } from '../hooks/useAnchorPosition'
 import { markPortaledSurface } from '../theme'
@@ -38,6 +38,7 @@ interface Props {
   triggerRef: RefObject<HTMLElement | null>
   /** Preferred direction; insufficient space still flips to the other side. */
   placement?: AnchoredPopoverPlacement
+  surfaceParentId?: string
   onClose: () => void
   children: ReactNode
 }
@@ -48,6 +49,7 @@ export const AnchoredPopover = memo(function AnchoredPopover({
   anchor,
   triggerRef,
   placement = 'above',
+  surfaceParentId,
   onClose,
   children,
 }: Props) {
@@ -64,15 +66,22 @@ export const AnchoredPopover = memo(function AnchoredPopover({
     if (ref.current !== null) markPortaledSurface(ref.current)
   }, [ref])
 
-  useOutsideMouseDown({ ref, onClose, triggerRef })
-
-  useEscapeStack({
+  const isPresent = useIsPresent()
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
     active: true,
-    onEscape: onClose,
+    phase: isPresent ? 'open' : 'exiting',
+    parentId: surfaceParentId,
     getContainer: () => ref.current,
+    getTrigger: () => triggerRef.current,
+    onDismiss: onClose,
+    onEscape: onClose,
   })
+  useOutsideMouseDown({ ref, onClose, triggerRef, surfaceId })
 
-  return createPortal(
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
     <motion.div
       ref={ref}
       className={className}
@@ -95,6 +104,8 @@ export const AnchoredPopover = memo(function AnchoredPopover({
     >
       {children}
     </motion.div>,
-    document.body,
+      document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 })

@@ -12,8 +12,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { IconMenu } from './icons/ToolIcons'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
-import { useEscapeStack } from '../hooks/useEscapeStack'
 import { markPortaledSurface } from '../theme'
 import { formatCombo } from '../utils/format-combo'
 import {
@@ -119,8 +119,16 @@ export function DesktopAppMenu({ onCommand }: Props) {
     })
   }, [open, anchor.x, anchor.y])
 
-  useOutsideMouseDown({ ref: menuRef, onClose: close, triggerRef, active: open })
-  useEscapeStack({ active: open, onEscape: close, getContainer: () => menuRef.current })
+  const { surfaceId } = useFloatingSurface({
+    kind: 'menu',
+    active: open,
+    phase: 'open',
+    getContainer: () => menuRef.current,
+    getTrigger: () => triggerRef.current,
+    onDismiss: close,
+    onEscape: close,
+  })
+  useOutsideMouseDown({ ref: menuRef, onClose: close, triggerRef, surfaceId, active: open })
 
   // Flatten the shared data for the Windows ☰. The mac-only `app` group is
   // skipped (its Settings/Quit live under File here). Window-group labels
@@ -210,8 +218,9 @@ export function DesktopAppMenu({ onCommand }: Props) {
       >
         <IconMenu size={16} />
       </button>
-      {open &&
-        createPortal(
+      {open && (
+        <FloatingSurfaceProvider surfaceId={surfaceId}>
+          {createPortal(
           <div
             ref={menuRef}
             className="ctx-menu titlebar-app-menu"
@@ -244,7 +253,9 @@ export function DesktopAppMenu({ onCommand }: Props) {
             )}
           </div>,
           document.body,
-        )}
+          )}
+        </FloatingSurfaceProvider>
+      )}
     </>
   )
 }

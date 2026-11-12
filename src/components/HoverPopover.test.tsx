@@ -1,6 +1,8 @@
 import { act, fireEvent, render } from '@testing-library/react'
+import { useRef, useState, StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HoverPopover, type HoverPopoverProps } from './HoverPopover'
+import { ContextMenu } from './ContextMenu'
 import { expectPortaledToBody } from './portal-test-utils'
 
 vi.stubGlobal('matchMedia', () => ({
@@ -152,6 +154,68 @@ describe('HoverPopover lifecycle', () => {
     expect(pop()).toBeNull()
   })
 
+  it('rebinds hover listeners when the trigger DOM node is replaced', () => {
+    function Harness({ version }: { version: number }) {
+      const ref = useRef<HTMLButtonElement>(null)
+      return (
+        <>
+          <button
+            key={version}
+            ref={(node) => {
+              ref.current = node
+              if (node) node.getBoundingClientRect = () => makeRect(version === 1 ? 20 : 200, 100)
+            }}
+          >
+            version {version}
+          </button>
+          <HoverPopover triggerRef={ref}>details</HoverPopover>
+        </>
+      )
+    }
+    const { rerender } = render(<Harness version={1} />)
+    const first = document.querySelector('button')!
+    fireEvent.pointerEnter(first)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    const bubbleId = pop()!.id
+    rerender(<Harness version={2} />)
+    const second = document.querySelector('button')!
+    expect(second.getAttribute('aria-describedby')).toContain(bubbleId)
+    expect(pop()!.style.left).toBe('240px')
+    fireEvent.pointerEnter(second)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('keeps hover listeners after StrictMode effect replay', () => {
+    const trigger = document.createElement('button')
+    document.body.appendChild(trigger)
+    triggers.push(trigger)
+    render(
+      <StrictMode>
+        <HoverPopover triggerRef={{ current: trigger }}>details</HoverPopover>
+      </StrictMode>,
+    )
+    fireEvent.pointerEnter(trigger)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('keeps a keyboard-focus dwell alive when the pointer leaves the trigger', () => {
+    const { trigger } = setup()
+    trigger.focus()
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
   it('opens on focus and closes on focusout', () => {
     const { trigger } = setup()
     open(trigger, 'focus')
@@ -213,6 +277,32 @@ describe('HoverPopover modes', () => {
     expect(pop()).not.toBeNull()
   })
 
+  it('keeps an interactive popover open when focus enters a registered descendant', () => {
+    const trigger = document.createElement('button')
+    document.body.appendChild(trigger)
+    triggers.push(trigger)
+    function Nested() {
+      const [menuOpen, setMenuOpen] = useState(false)
+      return (
+        <HoverPopover triggerRef={{ current: trigger }} interactive ariaLabel="Parent">
+          <button onClick={() => setMenuOpen(true)}>Open menu</button>
+          {menuOpen && <ContextMenu x={0} y={0} items={[{ label: 'Run' }]} onClose={() => {}} />}
+        </HoverPopover>
+      )
+    }
+    render(<Nested />)
+    open(trigger)
+    fireEvent.click(document.querySelector<HTMLButtonElement>('.hover-pop button')!)
+    const item = document.querySelector<HTMLButtonElement>('.ctx-menu-item')!
+    item.focus()
+    fireEvent.blur(pop()!, { relatedTarget: item })
+    act(() => {
+      vi.advanceTimersByTime(500)
+    })
+    expect(pop()).not.toBeNull()
+    expect(document.querySelector('.ctx-menu')).not.toBeNull()
+  })
+
   it('moves focus into a dialog opened by keyboard focus', () => {
     const { trigger } = setup({ interactive: true })
     trigger.focus()
@@ -257,6 +347,88 @@ describe('HoverPopover modes', () => {
     const el = pop()!
     expect(el.id).not.toBe('')
     expect(trigger.getAttribute('aria-describedby')).toBe(el.id)
+  })
+
+  it('exposes a simple hint description before the visual dwell', () => {
+    const trigger = document.createElement('button')
+    document.body.appendChild(trigger)
+    triggers.push(trigger)
+    render(<HoverPopover triggerRef={{ current: trigger }}>Accessible hint</HoverPopover>)
+    expect(trigger.getAttribute('aria-description')).toBe('Accessible hint')
+    expect(document.querySelector('.sr-only')).toBeNull()
+    open(trigger)
+    expect(trigger.getAttribute('aria-description')).toBeNull()
+    expect(trigger.getAttribute('aria-describedby')).toBe(pop()!.id)
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(trigger.getAttribute('aria-description')).toBe('Accessible hint')
+  })
+
+  it('preserves an external aria-description update over the hint lifecycle', () => {
+    const trigger = document.createElement('button')
+    document.body.appendChild(trigger)
+    triggers.push(trigger)
+    const { unmount } = render(<HoverPopover triggerRef={{ current: trigger }}>Accessible hint</HoverPopover>)
+    trigger.setAttribute('aria-description', 'External error')
+    open(trigger)
+    expect(trigger.getAttribute('aria-description')).toBe('External error')
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    unmount()
+    expect(trigger.getAttribute('aria-description')).toBe('External error')
+  })
+
+  it('does not rewrite an unchanged closed hint description on rerender', () => {
+    const trigger = document.createElement('button')
+    document.body.appendChild(trigger)
+    triggers.push(trigger)
+    const { rerender } = render(<HoverPopover triggerRef={{ current: trigger }}>Accessible hint</HoverPopover>)
+    const setAttribute = vi.spyOn(trigger, 'setAttribute')
+    rerender(<HoverPopover triggerRef={{ current: trigger }}>Accessible hint</HoverPopover>)
+    expect(setAttribute).not.toHaveBeenCalled()
+  })
+
+  it('does not mount rich hover content before the visual dwell', () => {
+    const trigger = document.createElement('button')
+    document.body.appendChild(trigger)
+    triggers.push(trigger)
+    render(<HoverPopover triggerRef={{ current: trigger }}><div className="rich-hover">Details</div></HoverPopover>)
+    expect(document.querySelector('.rich-hover')).toBeNull()
+    open(trigger)
+    expect(document.querySelector('.rich-hover')).not.toBeNull()
+  })
+
+  it('appends the tooltip id to existing descriptions and restores them on close', () => {
+    const trigger = document.createElement('button')
+    trigger.setAttribute('aria-describedby', 'error help')
+    document.body.appendChild(trigger)
+    triggers.push(trigger)
+    render(
+      <HoverPopover triggerRef={{ current: trigger }}>
+        <div className="card-body">Details</div>
+      </HoverPopover>,
+    )
+    expect(trigger.getAttribute('aria-describedby')).toBe('error help')
+    open(trigger)
+    expect(trigger.getAttribute('aria-describedby')).toBe(`error help ${pop()!.id}`)
+    trigger.setAttribute('aria-describedby', 'error help external')
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(trigger.getAttribute('aria-describedby')).toBe('error help external')
+    trigger.setAttribute('aria-describedby', 'new help')
+    open(trigger)
+    expect(trigger.getAttribute('aria-describedby')).toBe(`new help ${pop()!.id}`)
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(trigger.getAttribute('aria-describedby')).toBe('new help')
   })
 
   it('does not describe the trigger while interactive', () => {

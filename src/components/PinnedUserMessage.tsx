@@ -22,6 +22,7 @@ import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { useMergedRef } from '../utils/mergedRef'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 
 export interface PinnedUserMessageInfo {
   id: string
@@ -160,28 +161,15 @@ export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearin
   //
   // No trigger: `rootRef` wraps the toggle button AND the list, so a press on
   // the toggle is already "inside" and needs no exemption.
-  useOutsideMouseDown({ ref: rootRef, onClose: () => setExpanded(false), active: expanded })
-
-  useEffect(() => {
-    if (!expanded) return
-    const onKey = (e: KeyboardEvent) => {
-      // Capture + stopPropagation (same pattern as AppearancePanel's
-      // popover): this press collapses the expansion, it must not keep
-      // bubbling to App's escape chain — idle-Esc now opens the resume
-      // picker (escapeAction), and a plain bubble listener here fires
-      // AFTER App's (registered at App mount), so stopPropagation alone
-      // wouldn't help.
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        e.stopPropagation()
-        setExpanded(false)
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => {
-      window.removeEventListener('keydown', onKey, true)
-    }
-  }, [expanded])
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
+    active: expanded,
+    phase: isExiting ? 'exiting' : 'open',
+    getContainer: () => rootRef.current,
+    onDismiss: () => setExpanded(false),
+    onEscape: () => setExpanded(false),
+  })
+  useOutsideMouseDown({ ref: rootRef, onClose: () => setExpanded(false), surfaceId, active: expanded })
 
   const handleToggle = useCallback((e: React.MouseEvent) => {
     e.stopPropagation() // don't trigger the body's onClick (jump prev)
@@ -196,7 +184,8 @@ export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearin
   const hasList = !!userMessages && userMessages.length > 0
 
   return (
-    <motion.div
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      <motion.div
       ref={rootRef}
       className={`pinned-user-message${clearing ? ' pinned-user-message-clearing' : ''}`}
       initial={banner.initial}
@@ -249,6 +238,7 @@ export const PinnedUserMessage = memo(function PinnedUserMessage({ text, clearin
           ))}
         </div>
       )}
-    </motion.div>
+      </motion.div>
+    </FloatingSurfaceProvider>
   )
 })

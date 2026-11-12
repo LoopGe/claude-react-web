@@ -4,7 +4,7 @@
 // transcript itself deliberately remain with the callers.
 
 import { useRef, type ReactNode } from 'react'
-import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 
 interface Props {
@@ -35,18 +35,23 @@ export function TranscriptDrawerShell({
 
   // Register before the trap so nested overlays dispatch only to the topmost
   // layer. Exit-window Escape is swallowed but never acted on.
-  useEscapeStack({
+  const { surfaceId } = useFloatingSurface({
+    kind: 'dialog',
     active: true,
-    onEscape,
-    canClose: () => !isExiting,
+    phase: isExiting ? 'exiting' : 'open',
+    swallowEscapeOnExit: true,
     getContainer: () => overlayRef.current,
+    onDismiss: onClose,
+    onEscape,
+    canCloseOnEscape: () => !isExiting,
   })
 
   // Keep the root stable while children change; focus restores on final unmount.
   useFocusTrap(overlayRef, { restoreFocus: true, escapeSelector: '.chat-panel' })
 
   return (
-    <div
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      <div
       ref={overlayRef}
       className={`${variant}-overlay`}
       role="dialog"
@@ -74,6 +79,7 @@ export function TranscriptDrawerShell({
         {header}
         {children}
       </div>
-    </div>
+      </div>
+    </FloatingSurfaceProvider>
   )
 }

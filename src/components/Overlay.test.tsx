@@ -5,7 +5,8 @@ import { createPortal } from 'react-dom'
 import { Overlay } from './Overlay'
 import { PORTAL_MARKER } from '../theme'
 import { expectPortaledToBody } from './portal-test-utils'
-import { __resetForTests, getEscapeStackCount, useEscapeStack } from '../hooks/useEscapeStack'
+import { __resetFloatingSurfacesForTests as __resetForTests, getEscapeStackCount } from '../hooks/floating-surface-registry'
+import { useFloatingSurface } from '../hooks/useFloatingSurface'
 
 // Conventions follow PanelOverlay.test.tsx: backdrop clicks are exercised via a
 // native MouseEvent dispatch (fireEvent.mouseDown on the backdrop trips the
@@ -176,8 +177,15 @@ describe('Overlay', () => {
 
     function Popover() {
       const ref = useRef<HTMLDivElement>(null)
-      // Registered first (useEscapeStack uses useLayoutEffect)…
-      useEscapeStack({ active: true, onEscape: closeChild, getContainer: () => ref.current })
+      // Registered first (useFloatingSurface uses useLayoutEffect)…
+      useFloatingSurface({
+        kind: 'popover',
+        active: true,
+        phase: 'open',
+        onDismiss: closeChild,
+        onEscape: closeChild,
+        getContainer: () => ref.current,
+      })
       // …then focus moves into the popover in a passive effect.
       useEffect(() => {
         ref.current?.querySelector<HTMLButtonElement>('button')?.focus()

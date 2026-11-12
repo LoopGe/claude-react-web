@@ -12,10 +12,10 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { motion } from 'motion/react'
+import { motion, useIsPresent } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
 import { clamp } from '../utils/clamp'
-import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { markPortaledSurface } from '../theme'
 import type { EffortLevel } from '../types'
@@ -83,15 +83,16 @@ export function EffortSlider({ anchor, placement = 'below', levels, current, dis
 
   // Outside-click dismissal (Escape is owned by the shared stack below).
   // No trigger: the effort chip only opens this slider.
-  useOutsideMouseDown({ ref, onClose })
-
-  // Esc closes via the shared escape stack, so one keypress collapses just the
-  // slider — never the panel beneath it.
-  useEscapeStack({
+  const isPresent = useIsPresent()
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
     active: true,
-    onEscape: onClose,
+    phase: isPresent ? 'open' : 'exiting',
     getContainer: () => ref.current,
+    onDismiss: onClose,
+    onEscape: onClose,
   })
+  useOutsideMouseDown({ ref, onClose, surfaceId })
 
   const selectIndex = (idx: number) => {
     const clamped = clamp(idx, 0, maxIndex)
@@ -137,7 +138,9 @@ export function EffortSlider({ anchor, placement = 'below', levels, current, dis
     if (snapRaf.current != null) cancelAnimationFrame(snapRaf.current)
   }, [])
 
-  return createPortal(
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
     <motion.div
       ref={ref}
       className="effort-slider"
@@ -233,5 +236,7 @@ export function EffortSlider({ anchor, placement = 'below', levels, current, dis
       </div>
     </motion.div>,
     document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 }

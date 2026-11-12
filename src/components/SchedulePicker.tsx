@@ -2,7 +2,8 @@
 // anchored near the Composer's clock button (anchorRect = its bounding box).
 // Backdrop click / Escape close. Confirm passes an epoch-ms fireAt upward.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import { FloatingSurfaceProvider, useFloatingSurface } from '../hooks/useFloatingSurface'
 import { IconClock, IconX } from './icons/ToolIcons'
 
 const PRESET_REL = [
@@ -45,12 +46,15 @@ interface Props {
 export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
   const [nowMs] = useState(() => Date.now())
   const [custom, setCustom] = useState('')
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  const rootRef = useRef<HTMLDivElement>(null)
+  const { surfaceId } = useFloatingSurface({
+    kind: 'dialog',
+    active: true,
+    phase: 'open',
+    getContainer: () => rootRef.current,
+    onDismiss: onClose,
+    onEscape: onClose,
+  })
 
   const presets = useMemo(() => {
     const tonight = nextAt(18, 0, nowMs)
@@ -82,9 +86,9 @@ export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
   }
 
   return (
-    <>
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
       <div className="schedule-backdrop" data-testid="schedule-backdrop" onClick={onClose} />
-      <div className="schedule-picker" style={style} role="dialog" aria-label="Schedule send">
+      <div ref={rootRef} className="schedule-picker" style={style} role="dialog" aria-label="Schedule send">
         <div className="schedule-picker-head">
           <IconClock size={14} aria-hidden />
           <span>Schedule send</span>
@@ -125,6 +129,6 @@ export function SchedulePicker({ anchorRect, onPick, onClose }: Props) {
           </button>
         </div>
       </div>
-    </>
+    </FloatingSurfaceProvider>
   )
 }

@@ -24,7 +24,7 @@ import {
 import { resolveAbsolutePath } from '../utils/paths'
 import { useOpenResource } from '../resources/context'
 import { FullDiffViewer } from './FullDiffViewer'
-import { Tooltip } from './Tooltip'
+import { HoverHint } from './HoverHint'
 import { DiffView } from './DiffView'
 import {
   useGitStatus,
@@ -184,7 +184,7 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
             ))}
           </div>
           <span className="git-panel-spacer" />
-          <Tooltip label={diffTitle(tab === 'uncommitted' ? (uncommittedFiles as RangeRow[]) : rangeFiles)} placement="bottom">
+          <HoverHint label={diffTitle(tab === 'uncommitted' ? (uncommittedFiles as RangeRow[]) : rangeFiles)} side="bottom">
             <span className="git-panel-total-changes">
               {tab === 'uncommitted' && uncommittedFiles.length > 0 && (
                 <>
@@ -199,15 +199,15 @@ export function WorktreeChanges({ sessionId, cwd, branchName, baseRef, displayNa
                 </>
               )}
             </span>
-          </Tooltip>
-          <Tooltip label={loading ? 'Refreshing…' : 'Refresh'} placement="bottom">
+          </HoverHint>
+          <HoverHint label={loading ? 'Refreshing…' : 'Refresh'} side="bottom">
             <button className="git-panel-icon-btn" onClick={refresh} disabled={loading} aria-label="Refresh">
               {loading ? <IconLoader size={14} className="git-panel-spin" /> : <IconRefresh size={14} />}
             </button>
-          </Tooltip>
-          <Tooltip label="Close" placement="bottom">
+          </HoverHint>
+          <HoverHint label="Close" side="bottom">
             <button className="git-panel-icon-btn" onClick={onClose} aria-label="Close"><IconX size={14} /></button>
-          </Tooltip>
+          </HoverHint>
         </header>
 
         {/* Single tabpanel container: the active tab's content renders

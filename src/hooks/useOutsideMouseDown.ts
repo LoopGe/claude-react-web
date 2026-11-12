@@ -4,8 +4,8 @@
 // CommandPicker, AppearancePanel, AccentPicker, PinnedUserMessage, ModelPicker,
 // EffortSlider, SubagentSwarm) in two different button policies, reconciled
 // only in prose comments that cross-referenced each other. This is that policy
-// in one place, beside `useEscapeStack` — the same consolidation this repo
-// already made for Escape.
+// in one place, beside the floating-surface registry — the same consolidation
+// this repo already made for Escape.
 //
 // Not a fit for every document-level mousedown: EasterEggGame pauses on
 // "pointer left the panel", with portal-owner bookkeeping and a `blur`
@@ -13,6 +13,7 @@
 
 import { useLayoutEffect } from 'react'
 import type { RefObject } from 'react'
+import { isNodeInSurfaceBranch } from './floating-surface-registry'
 
 export interface OutsideMouseDownOptions {
   /** The surface. A press inside it is never "outside". A null ref (nothing
@@ -31,6 +32,8 @@ export interface OutsideMouseDownOptions {
    *  render is still null on the first pass and the exemption would silently
    *  never apply. */
   triggerRef?: RefObject<Element | null>
+  /** Registered surface whose portaled descendants also count as inside. */
+  surfaceId?: string
   /** What a press that cannot produce a `click` does — i.e. a non-primary
    *  button (right/middle). 'close' (default) treats it as an ordinary outside
    *  press; 'ignore' leaves the surface open for the caller's own replacement
@@ -63,6 +66,7 @@ export function useOutsideMouseDown({
   ref,
   onClose,
   triggerRef,
+  surfaceId,
   nonPrimary = 'close',
   capture = false,
   active = true,
@@ -76,6 +80,7 @@ export function useOutsideMouseDown({
     const onDocMouseDown = (e: MouseEvent) => {
       const target = e.target as Node
       if (ref.current?.contains(target)) return
+      if (surfaceId && isNodeInSurfaceBranch(surfaceId, target)) return
       if (e.button !== 0) {
         if (nonPrimary === 'close') onClose()
         return
@@ -85,5 +90,5 @@ export function useOutsideMouseDown({
     }
     window.addEventListener('mousedown', onDocMouseDown, capture)
     return () => window.removeEventListener('mousedown', onDocMouseDown, capture)
-  }, [ref, onClose, triggerRef, nonPrimary, capture, active])
+  }, [ref, onClose, triggerRef, surfaceId, nonPrimary, capture, active])
 }

@@ -53,13 +53,15 @@ describe('ProfileActivateDialog', () => {
     expect(props.onConfirm).toHaveBeenCalledWith(['s1'])
   })
 
-  it('disables confirm when every session is unchecked', () => {
+  it('allows a default-only switch when every session is unchecked', () => {
     const props = baseProps()
     const { getByLabelText, getByText } = render(<ProfileActivateDialog {...props} />)
     fireEvent.click(getByLabelText(/Session s1/))
     fireEvent.click(getByLabelText(/Session s2/))
     const confirmBtn = getByText('Restart 0 sessions') as HTMLButtonElement
-    expect(confirmBtn.disabled).toBe(true)
+    expect(confirmBtn.disabled).toBe(false)
+    fireEvent.click(confirmBtn)
+    expect(props.onConfirm).toHaveBeenCalledWith([])
   })
 
   it('calls onCancel on Escape', () => {

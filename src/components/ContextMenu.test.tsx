@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { AnimatePresence } from 'motion/react'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
-import { closeAllContextMenus } from './context-menu-registry'
+import { closeAllContextMenus } from '../hooks/floating-surface-registry'
 import { expectPortaledToBody } from './portal-test-utils'
 
 afterEach(() => {

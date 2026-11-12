@@ -24,14 +24,15 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, motion, useIsPresent } from 'motion/react'
 import type { ContextUsage } from '../types/context-usage'
 import { ContextBar } from './ContextBar'
 import { ContextComposition } from './ContextComposition'
 import { AnimatedCollapse } from './AnimatedCollapse'
 import { contextUsageStats } from '../utils/context-usage'
 import { useDetailedContextUsage } from '../hooks/useDetailedContextUsage'
-import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
+import { useHoverAdmission } from '../hooks/useHoverAdmission'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { usePopoverMotion } from '../utils/transitions'
 import { useAnchorPosition } from '../hooks/useAnchorPosition'
@@ -130,20 +131,25 @@ function OrbPopover({
     el.style.right = `${right}px`
   }, [anchorRect, anchorRef, popRef])
 
+  const isPresent = useIsPresent()
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
+    active: true,
+    phase: isPresent ? 'open' : 'exiting',
+    getContainer: () => popRef.current,
+    getTrigger: () => anchorRef.current,
+    onDismiss: onClose,
+    onEscape: onClose,
+  })
+
   // Outside mousedown dismisses the panel — same contract as
   // CommandPicker / SchedulePicker. The surface ref is this portaled panel;
   // the orb button is the trigger exemption.
-  useOutsideMouseDown({ ref: popRef, triggerRef: anchorRef, onClose, capture: true })
+  useOutsideMouseDown({ ref: popRef, triggerRef: anchorRef, onClose, surfaceId, capture: true })
 
-  // Escape via the shared stack so it never fights App's interrupt chain or
-  // another overlay that owns the key.
-  useEscapeStack({
-    active: true,
-    onEscape: onClose,
-    getContainer: () => popRef.current,
-  })
-
-  return createPortal(
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
     <motion.div
       ref={mergedPopRef}
       className="ctx-orb-pop"
@@ -171,6 +177,8 @@ function OrbPopover({
       )}
     </motion.div>,
     document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 }
 
@@ -187,21 +195,27 @@ export const ContextOrb = memo(function ContextOrb({
   const [pinned, setPinned] = useState(false)
   const hoverTimer = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
+  const { canOpen, armAttempt, cancelAttempt } = useHoverAdmission(wrapRef)
 
   const show = pinned || hoverOpen
 
-  const close = useCallback(() => {
-    setPinned(false)
-    setHoverOpen(false)
+  const cancelOpen = useCallback(() => {
     if (hoverTimer.current != null) {
       window.clearTimeout(hoverTimer.current)
       hoverTimer.current = null
     }
+    cancelAttempt()
+  }, [cancelAttempt])
+
+  const close = useCallback(() => {
+    setPinned(false)
+    setHoverOpen(false)
+    cancelOpen()
     if (closeTimer.current != null) {
       window.clearTimeout(closeTimer.current)
       closeTimer.current = null
     }
-  }, [])
+  }, [cancelOpen])
 
   // Hover flyout over TWO surfaces: the portaled panel is not a DOM
   // descendant of the wrap, so leaving the wrap fires before entering the
@@ -218,29 +232,35 @@ export const ContextOrb = memo(function ContextOrb({
     // sub-160ms pass across the orb would still pop the panel after the
     // pointer is gone (the exact flash HOVER_OPEN_MS exists to filter, and
     // each flash costs a detailed fetch).
-    if (hoverTimer.current != null) {
-      window.clearTimeout(hoverTimer.current)
-      hoverTimer.current = null
-    }
+    cancelOpen()
     cancelClose()
     if (pinned) return
     closeTimer.current = window.setTimeout(() => {
       closeTimer.current = null
       setHoverOpen(false)
     }, HOVER_CLOSE_MS)
-  }, [cancelClose, pinned])
+  }, [cancelOpen, cancelClose, pinned])
   const armOpen = useCallback(() => {
     cancelClose()
-    if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current)
-    hoverTimer.current = window.setTimeout(() => setHoverOpen(true), HOVER_OPEN_MS)
-  }, [cancelClose])
+    cancelOpen()
+    if (!canOpen()) return
+    if (!armAttempt(() => {
+      if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current)
+      hoverTimer.current = null
+    })) return
+    hoverTimer.current = window.setTimeout(() => {
+      hoverTimer.current = null
+      cancelAttempt()
+      if (canOpen()) setHoverOpen(true)
+    }, HOVER_OPEN_MS)
+  }, [armAttempt, canOpen, cancelAttempt, cancelOpen, cancelClose])
 
   useEffect(
     () => () => {
-      if (hoverTimer.current != null) window.clearTimeout(hoverTimer.current)
+      cancelOpen()
       if (closeTimer.current != null) window.clearTimeout(closeTimer.current)
     },
-    [],
+    [cancelOpen],
   )
 
   const { hasData, bounded, level } = contextUsageStats(usage)
@@ -274,11 +294,16 @@ export const ContextOrb = memo(function ContextOrb({
         aria-haspopup="dialog"
         disabled={disabled && !hasData}
         onClick={() => {
+          cancelOpen()
           const next = !pinned
           setPinned(next)
           setHoverOpen(next)
         }}
-        onFocus={() => setHoverOpen(true)}
+        onFocus={() => {
+          cancelClose()
+          cancelOpen()
+          if (canOpen()) setHoverOpen(true)
+        }}
         onBlur={(e) => {
           // Keyboard close: focus moved somewhere OTHER than the wrap or the
           // portaled panel. Focus into the panel (the marker) keeps it open;
@@ -287,6 +312,7 @@ export const ContextOrb = memo(function ContextOrb({
           const next = e.relatedTarget as Node | null
           if (pinned) return
           if (next && (wrapRef.current?.contains(next) || popRef.current?.contains(next))) return
+          cancelOpen()
           setHoverOpen(false)
         }}
       >

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { useState } from 'react'
 import { SchedulePicker } from './SchedulePicker'
+import { Overlay } from './Overlay'
+import { getFloatingSurfaceCount } from '../hooks/floating-surface-registry'
 
 const rect = { left: 100, top: 100, width: 30, height: 30 } as DOMRect
 
@@ -40,5 +43,26 @@ describe('SchedulePicker', () => {
     render(<SchedulePicker anchorRect={rect} onPick={() => {}} onClose={onClose} />)
     fireEvent.click(screen.getByTestId('schedule-backdrop'))
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('closes before its parent dialog on nested Escape', () => {
+    const onParentClose = vi.fn()
+    const onChildClose = vi.fn()
+    function Harness() {
+      const [open, setOpen] = useState(true)
+      return (
+        <Overlay open onClose={onParentClose}>
+          {open && <SchedulePicker anchorRect={rect} onPick={() => {}} onClose={() => { onChildClose(); setOpen(false) }} />}
+        </Overlay>
+      )
+    }
+    render(<Harness />)
+    expect(getFloatingSurfaceCount()).toBe(2)
+    fireEvent.keyDown(screen.getByLabelText(/custom time/i), { key: 'Escape' })
+    expect(onChildClose).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('dialog', { name: 'Schedule send' })).toBeNull()
+    expect(onParentClose).not.toHaveBeenCalled()
+    fireEvent.keyDown(document.querySelector('.modal')!, { key: 'Escape' })
+    expect(onParentClose).toHaveBeenCalledTimes(1)
   })
 })

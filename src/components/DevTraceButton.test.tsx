@@ -10,7 +10,7 @@ import {
 } from '../client-debug/trace-diagnostics'
 import { downloadJson } from '../utils/downloadJson'
 import type { TraceFile } from '../client-debug/jank-monitor'
-import { __resetForTests as resetEscapeStack } from '../hooks/useEscapeStack'
+import { __resetFloatingSurfacesForTests as resetEscapeStack } from '../hooks/floating-surface-registry'
 
 vi.mock('../utils/downloadJson', () => ({ downloadJson: vi.fn() }))
 

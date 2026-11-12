@@ -9,12 +9,13 @@
 // useSearchablePicker. Directory validation, preflight, recents, the footer
 // action and the overlay-scrollbar adapter remain ProjectPicker concerns.
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { IconCheck, IconChevronDown, IconChevronUp, IconFolder, IconX } from '../icons/ToolIcons'
 import { SearchField } from '../SearchField'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
 import { useSearchablePicker } from '../../hooks/useSearchablePicker'
+import { FloatingSurfaceProvider } from '../../hooks/useFloatingSurface'
 import { useMergedRef } from '../../utils/mergedRef'
 import { directoryMissing } from '../../utils/fs-validation'
 import { isAbsolutePath, shortenPath, basenameOf, parentOf, initialOf } from '../../utils/paths'
@@ -101,6 +102,7 @@ export function ProjectPicker({
     listRef,
     listId,
     optionId,
+    surfaceId,
     close,
     activate,
     searchRef,
@@ -119,6 +121,15 @@ export function ProjectPicker({
   })
   const listRefMerged = useMergedRef(listRef, setListOs)
   const showUsePath = isAbsolutePath(typed) && typed !== value
+  const openRef = useRef(open)
+  const selectionGenerationRef = useRef(0)
+  useLayoutEffect(() => {
+    openRef.current = open
+    if (!open) selectionGenerationRef.current++
+    return () => {
+      openRef.current = false
+    }
+  }, [open])
 
   /** Check one directory against /fs/resolve-cwd. Only a definite "gone"
    *  (404, or a FILE at that path) disables the row — any other failure
@@ -186,10 +197,12 @@ export function ProjectPicker({
   async function choose(row: Row): Promise<void> {
     const path = row.path
     if (missingPaths.has(path)) return
+    const generation = ++selectionGenerationRef.current
     // A path whose verdict isn't known yet gets preflighted before it can be
     // selected — clicking fast must not slip a deleted project through.
     if (!knownGoodRef.current.has(path)) {
       const gone = await directoryMissing(path, new AbortController().signal)
+      if (generation !== selectionGenerationRef.current || !openRef.current) return
       if (gone) {
         setMissingPaths((prev) => new Set(prev).add(path))
         return
@@ -223,8 +236,9 @@ export function ProjectPicker({
         </span>
       </button>
 
-      {open &&
-        createPortal(
+      {open && (
+        <FloatingSurfaceProvider surfaceId={surfaceId}>
+          {createPortal(
           <div className="project-picker-menu" {...menuProps}>
             <SearchField
               value={search}
@@ -320,7 +334,9 @@ export function ProjectPicker({
             </div>
           </div>,
           document.body,
-        )}
+          )}
+        </FloatingSurfaceProvider>
+      )}
     </>
   )
 }

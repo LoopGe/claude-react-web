@@ -17,6 +17,7 @@ import type { ReactNode } from 'react'
 import { IconCheck, IconChevronDown, IconChevronUp, IconX } from './icons/ToolIcons'
 import { SearchField } from './SearchField'
 import { useSearchablePicker } from '../hooks/useSearchablePicker'
+import { FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 
 export interface FieldPickerOption {
   key: string
@@ -109,6 +110,7 @@ export function FieldPicker({
     listRef,
     listId,
     optionId,
+    surfaceId,
     close,
     activate,
     searchRef,
@@ -155,8 +157,9 @@ export function FieldPicker({
         </span>
       </button>
 
-      {open &&
-        createPortal(
+      {open && (
+        <FloatingSurfaceProvider surfaceId={surfaceId}>
+          {createPortal(
           <div className="field-picker-menu" {...menuProps}>
             {searchable && (
               <SearchField
@@ -233,7 +236,9 @@ export function FieldPicker({
             </div>
           </div>,
           document.body,
-        )}
+          )}
+        </FloatingSurfaceProvider>
+      )}
     </>
   )
 }

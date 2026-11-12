@@ -1,10 +1,10 @@
 import { useCallback, useRef, type CSSProperties, type HTMLAttributes, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { PORTAL_MARKER } from '../theme'
-import { motion } from 'motion/react'
+import { motion, useIsPresent } from 'motion/react'
 import { useExitPresence } from '../hooks/useExitPresence'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useOverlayMotion } from '../utils/transitions'
 
 /**
@@ -16,7 +16,7 @@ import { useOverlayMotion } from '../utils/transitions'
  * inert flags — the breeding ground for the P0 nesting bugs. This component is
  * the single owner of those behaviors:
  *
- *   - Escape via the useEscapeStack nesting stack (one Esc closes only the top
+ *   - Escape via the unified floating-surface registry (one Esc closes only the top
  *     overlay — "most recently opened wins")
  *   - backdrop mousedown-to-close with a `e.target === e.currentTarget` guard
  *     (only direct clicks on the backdrop, not bubbled clicks from the card)
@@ -121,6 +121,8 @@ export interface OverlayProps {
    *  document.body (see FIXED_BACKDROP_VARIANTS), the panel-scoped absolute
    *  variants never do unless you ask. */
   portal?: boolean
+  /** Explicit logical parent for sibling/state-owned surface workflows. */
+  surfaceParentId?: string
   /** When false, children ARE the card (settings/git/tasks/lightbox panels
    *  carry their own card class). Default: true unless the variant has no card
    *  class. */
@@ -181,6 +183,7 @@ export function Overlay(props: OverlayProps) {
     cardStyle,
     backdropClassName,
     portal,
+    surfaceParentId,
     renderCard,
     keepMounted = false,
     motion: motionMode = 'css',
@@ -206,6 +209,7 @@ export function Overlay(props: OverlayProps) {
   const roleOnBackdrop = classes.roleOn === 'backdrop'
   const trapTarget = trapRefTarget ?? (roleOnBackdrop ? 'backdrop' : 'card')
   const cssMode = motionMode === 'css'
+  const isPresent = useIsPresent()
 
   // In motion mode the caller gates mount via AnimatePresence, so presence is a
   // no-op (open stays true for the whole mounted life) and rendering is
@@ -240,14 +244,19 @@ export function Overlay(props: OverlayProps) {
   // is false for a portaled/sibling card would see `isFocusInsideOtherOverlay`
   // return false and steal focus back — the exact gap the old `.modal-backdrop`
   // closest() hardcode in useFocusTrap was masking.
-  useEscapeStack({
+  const { surfaceId } = useFloatingSurface({
+    kind: 'dialog',
     active: open,
+    phase: cssMode ? (open ? 'open' : 'exiting') : (isPresent ? 'open' : 'exiting'),
+    parentId: surfaceParentId,
+    getContainer: () => backdropElRef.current,
+    onDismiss: onClose,
+    canDismiss: () => backdropDismiss && (canCloseOnBackdrop?.() ?? true),
     onEscape: (e) => {
       if (escapeBehavior === 'custom') onEscape?.(e)
       else onClose()
     },
-    canClose: canCloseOnEscape,
-    getContainer: () => backdropElRef.current,
+    canCloseOnEscape,
   })
 
   // `mounted` (not just `open`) gates the trap so it only engages once the
@@ -314,7 +323,12 @@ export function Overlay(props: OverlayProps) {
     </MotionShell>
   )
 
-  return usePortal ? createPortal(element, document.body) : element
+  const wrapped = (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {element}
+    </FloatingSurfaceProvider>
+  )
+  return usePortal ? createPortal(wrapped, document.body) : wrapped
 }
 
 /** motion-mode shell. Split so useOverlayMotion (which reads the reduced-motion

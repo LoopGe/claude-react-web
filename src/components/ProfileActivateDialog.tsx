@@ -30,11 +30,11 @@ interface Props {
   /** Called with the selected session ids on confirm. */
   onConfirm: (ids: string[]) => void | Promise<void>
   onCancel: () => void
+  surfaceParentId?: string
 }
 
-export function ProfileActivateDialog({ profileName, sessions, busy = false, onConfirm, onCancel }: Props) {
+export function ProfileActivateDialog({ profileName, sessions, busy = false, onConfirm, onCancel, surfaceParentId }: Props) {
   const [selected, setSelected] = useState<Set<string>>(() => new Set(sessions.map((s) => s.id)))
-  const anySelected = selected.size > 0
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -51,6 +51,7 @@ export function ProfileActivateDialog({ profileName, sessions, busy = false, onC
       cardClassName="profile-activate-card"
       ariaLabel="Restart sessions"
       motion="motion"
+      surfaceParentId={surfaceParentId}
       onClose={onCancel}
       canCloseOnEscape={() => !busy}
       canCloseOnBackdrop={() => !busy}
@@ -93,7 +94,7 @@ export function ProfileActivateDialog({ profileName, sessions, busy = false, onC
           type="button"
           className="btn btn-primary"
           onClick={() => { void onConfirm(Array.from(selected)) }}
-          disabled={busy || (sessions.length > 0 && !anySelected)}
+          disabled={busy}
         >
           {busy ? 'Working...' : sessions.length === 0 ? 'Switch' : `Restart ${selected.size} session${selected.size === 1 ? '' : 's'}`}
         </button>

@@ -14,6 +14,7 @@ import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react'
 import { ContextMenu } from './ContextMenu'
 import { buildCreateMenuItems } from './createMenuItems'
 import { useMergedRef } from '../utils/mergedRef'
+import type { FloatingDismissReason } from '../hooks/floating-surface-registry'
 import type { PromptRequest } from '../hooks/useDialogHosts'
 
 interface Props extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'children'> {
@@ -55,8 +56,11 @@ export function CreateMenuButton({
     () => buildCreateMenuItems({ onNewSession, onCreateGroup, askPrompt, newSessionDisabled }),
     [onNewSession, onCreateGroup, askPrompt, newSessionDisabled],
   )
-  const close = useCallback(() => {
+  const close = useCallback((reason?: FloatingDismissReason) => {
     setAnchor(null)
+    // Policy/layout dismissal must not steal focus. Only a user dismissal
+    // inside the menu flow returns focus to the trigger.
+    if (reason) return
     // WAI-ARIA menu button: a USER dismissal returns focus to the trigger so
     // the next Tab continues from the +, not from the top of the document.
     // Only when the menu (or trigger) holds focus — a programmatic dismiss

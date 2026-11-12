@@ -18,6 +18,13 @@ describe('hover popover sizing', () => {
     expect(rule!.decls['z-index']).toBe('var(--z-tooltip)')
   })
 
+  it('keeps the glass treatment on the shared hover portal', () => {
+    const css = readCss('glass.css')
+    expect(css).toContain('.hover-pop')
+    const fallback = css.slice(css.indexOf('@supports not'))
+    expect(fallback).toContain('.hover-pop')
+  })
+
   it('has one value-pill class shared by every hover card', () => {
     const rule = parseBlocks(readCss('hover-popover.css')).find(
       (b) => b.sel === '.hover-pop-value',

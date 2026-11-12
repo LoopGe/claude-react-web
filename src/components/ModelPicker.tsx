@@ -14,10 +14,10 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { motion } from 'motion/react'
+import { motion, useIsPresent } from 'motion/react'
 import type { ModelOptions } from '../hooks/useModelOptions'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
-import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useListSelection } from '../hooks/useListSelection'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
@@ -203,10 +203,14 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   // trap's focusin re-guard sees isFocusInsideOtherOverlay=false and steals
   // focus back — and the Escape dispatch then resolves by containment to the
   // parent layer instead of this popover.
-  useEscapeStack({
+  const isPresent = useIsPresent()
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
     active: true,
-    onEscape: onClose,
+    phase: isPresent ? 'open' : 'exiting',
     getContainer: () => ref.current,
+    onDismiss: onClose,
+    onEscape: onClose,
   })
 
   // Autofocus the search box on open.
@@ -217,9 +221,11 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
   // Outside-click dismissal (Escape is owned by the shared stack above).
   // No trigger: this picker's chip only opens it (see ChatPanel), so a press
   // on the chip is an ordinary outside press.
-  useOutsideMouseDown({ ref, onClose })
+  useOutsideMouseDown({ ref, onClose, surfaceId })
 
-  return createPortal(
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
     <motion.div
       ref={ref}
       className="model-picker"
@@ -284,5 +290,7 @@ export function ModelPicker({ anchor, current, currentGroupId, options, disabled
     // and displace the whole list. Canonical statement: the body.has-bg note in
     // layout.css. Pinned by ModelPicker.test.tsx.
     document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 }

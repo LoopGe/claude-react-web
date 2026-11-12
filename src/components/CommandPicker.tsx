@@ -7,7 +7,7 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { SlashCommand } from '../types'
-import { useEscapeStack } from '../hooks/useEscapeStack'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { PANEL_SELECTOR, markPortaledSurface } from '../theme'
 import { pluginTagOf } from '../utils/text'
@@ -118,16 +118,16 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   // --- Outside-click dismissal (Escape is owned by the shared stack below) ---
   // Capture phase, as before: this surface must collapse before any other
   // mousedown handler sees the press.
-  useOutsideMouseDown({ ref: rootRef, onClose, capture: true })
-
-  // Esc closes via the shared escape stack (its dispatch already prevents
-  // default + stops propagation), so a typed "/" never bubbles Escape to the
-  // composer's App-level handlers.
-  useEscapeStack({
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
     active: true,
-    onEscape: onClose,
+    phase: 'open',
     getContainer: () => rootRef.current,
+    getTrigger: () => anchorRef.current,
+    onDismiss: onClose,
+    onEscape: onClose,
   })
+  useOutsideMouseDown({ ref: rootRef, onClose, surfaceId, capture: true })
 
   // Clamp selectedIndex to valid range.
   const idx = clamp(selectedIndex, 0, filtered.length - 1)
@@ -147,7 +147,9 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
   // backdrop-filter (wallpaper on) or an entering transform — the canonical
   // statement is the body.has-bg note in layout.css. Pinned by
   // CommandPicker.test.tsx.
-  return createPortal(
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
     <div className="cmd-picker os-hidden" ref={rootRef} role="listbox">
       {filtered.length === 0 ? (
         <div className="cmd-picker-empty">No matching commands</div>
@@ -181,5 +183,7 @@ export function CommandPicker({ commands, query, selectedIndex, anchorRef, onSel
       )}
     </div>,
     document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 }

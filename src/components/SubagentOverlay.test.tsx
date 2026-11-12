@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { __resetForTests, getEscapeStackCount } from '../hooks/useEscapeStack'
+import { __resetFloatingSurfacesForTests as __resetForTests, getEscapeStackCount } from '../hooks/floating-surface-registry'
 import { SubagentOverlay } from './SubagentOverlay'
 import { subagentResource } from '../../shared/resource-address'
 import type { ActiveSubagent } from '../session-store/types'

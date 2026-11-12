@@ -31,7 +31,8 @@ import { RichPromptInput } from './RichPromptInput'
 import { pasteAtCaret } from './richPromptApi'
 import { IconX, IconArrowLeft, IconArrowUp, IconSquare, IconLoader, IconPaperclip } from './icons/ToolIcons'
 import { ComposerImagePreviews } from './ComposerImagePreviews'
-import { Tooltip } from './Tooltip'
+import { HoverHint } from './HoverHint'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { api } from '../hooks/useApi'
 import { useToast } from '../hooks/useToast'
 import { usePastedImages } from '../hooks/usePastedImages'
@@ -222,19 +223,15 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     try { await api.post(`/sessions/${session.id}/interrupt`, {}) } catch { /* */ }
   }, [session.id])
 
-  // ESC → collapse (non-destructive). Capture phase to beat parent handlers.
-  // Triggers the collapse animation; onCollapse fires after it completes.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !isExiting && !isCollapsing) {
-        e.preventDefault()
-        e.stopPropagation()
-        setIsCollapsing(true)
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [isExiting, isCollapsing])
+  const drawerRef = useRef<HTMLDivElement>(null)
+  const { surfaceId } = useFloatingSurface({
+    kind: 'dialog',
+    active: true,
+    phase: isExiting || isCollapsing ? 'exiting' : 'open',
+    getContainer: () => drawerRef.current,
+    onDismiss: () => setIsCollapsing(true),
+    onEscape: isExiting || isCollapsing ? undefined : () => setIsCollapsing(true),
+  })
 
   // Auto-scroll on new messages and streaming content lives in the
   // SideChatAutoScroll child below — the 12.5 Hz subscription must not sit on
@@ -262,7 +259,9 @@ export const SideChatDrawer = memo(function SideChatDrawer({
   const pendingHead = permissions.pending[0] ?? null
 
   return (
-    <div
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      <div
+        ref={drawerRef}
       className={`side-chat-drawer${isExiting ? ' exiting' : ''}${isCollapsing ? ' collapsing' : ''}`}
       data-state={isExiting ? 'closing' : isCollapsing ? 'collapsing' : 'open'}
       onAnimationEnd={() => {
@@ -272,7 +271,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
     >
       <SideChatAutoScroll sessionId={session.id} bodyRef={bodyRef} />
       <div className="side-chat-drawer-header">
-        <Tooltip label={`Back to ${sessionTitleOrFallback(parentSession)}`} placement="bottom">
+        <HoverHint label={`Back to ${sessionTitleOrFallback(parentSession)}`} side="bottom">
           <button
             type="button"
             className="btn btn-sm side-chat-drawer-back"
@@ -283,9 +282,9 @@ export const SideChatDrawer = memo(function SideChatDrawer({
               {sessionTitleOrFallback(parentSession)}
             </span>
           </button>
-        </Tooltip>
+        </HoverHint>
         <span className="side-chat-drawer-title">Side Chat</span>
-        <Tooltip label="Close (delete session)" placement="bottom">
+        <HoverHint label="Close (delete session)" side="bottom">
           <button
             type="button"
             className="btn btn-icon"
@@ -295,7 +294,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           >
             <IconX size={14} />
           </button>
-        </Tooltip>
+        </HoverHint>
       </div>
 
       {/* Positioned wrapper for the older-history float: the body below is
@@ -443,6 +442,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
           }}
         />
       </div>
-    </div>
+      </div>
+    </FloatingSurfaceProvider>
   )
 })

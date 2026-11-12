@@ -10,7 +10,7 @@ import { SessionContextMenu } from './components/session-list/SessionContextMenu
 import { buildGroupContextMenuItems, type GroupMenuDialogs } from './components/session-list/groupMenuItems'
 import { ContextMenu } from './components/ContextMenu'
 import type { SessionDeleteHandler, SessionDeleteOptions } from './components/session-delete-menu'
-import { closeAllContextMenus } from './components/context-menu-registry'
+import { closeAllContextMenus } from './hooks/floating-surface-registry'
 import { DialogHosts } from './components/DialogHosts'
 import { HoverHint } from './components/HoverHint'
 import { useDialogHosts } from './hooks/useDialogHosts'

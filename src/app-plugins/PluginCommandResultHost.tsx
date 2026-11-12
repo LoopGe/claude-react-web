@@ -11,7 +11,10 @@
 // usePluginCommands).
 
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, motion, useIsPresent } from 'motion/react'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
+import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { commandResults, type ActiveResult } from './result-store'
 import { invocationAnchors } from './invocation-anchor-store'
 import { usePluginCommands } from './usePluginCommands'
@@ -81,9 +84,22 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
   const dismiss = () => commandResults.dismiss(entry.id)
   const dismissible = result.dismissible !== false
   const isLoading = entry.id.startsWith('loading-')
+  const isPresent = useIsPresent()
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
+    active: true,
+    phase: isPresent ? 'open' : 'exiting',
+    dismissOnPolicy: dismissible,
+    getContainer: () => ref.current,
+    onDismiss: dismiss,
+    onEscape: dismiss,
+    canCloseOnEscape: () => dismissible,
+  })
+  useOutsideMouseDown({ ref, onClose: dismiss, surfaceId, active: dismissible })
 
   return (
-    <motion.div
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      <motion.div
       ref={ref}
       className="plugin-popover"
       style={pos ? { left: pos.x, top: pos.y } : { left: '50%', top: '40%', transform: 'translateX(-50%)' }}
@@ -120,24 +136,52 @@ function PluginPopover({ entry, execute }: { entry: ActiveResult; execute: (opts
           <button className="btn plugin-popover-close" onClick={dismiss} aria-label="Close">Close</button>
         )}
       </div>
-    </motion.div>
+      </motion.div>
+    </FloatingSurfaceProvider>
   )
 }
 
-function PluginDialog({ entry, execute: _execute }: { entry: ActiveResult; execute: (opts: never) => void }) {
+function PluginDialog({ entry, execute }: { entry: ActiveResult; execute: (opts: never) => void }) {
   const result = entry.result as Extract<PluginCommandResult, { type: 'dialog' }>
   const enterT = useMotionTransition(ENTER_TRANSITION)
   const exitT = useMotionTransition(EXIT_TRANSITION)
-  const dismiss = useCallback(() => commandResults.dismiss(entry.id), [entry.id])
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); dismiss() }
+  const rootRef = useRef<HTMLDivElement>(null)
+  const returnFocusRef = useRef<HTMLElement | null>(document.activeElement as HTMLElement | null)
+  const restoreFocusRef = useRef(false)
+  const isPresent = useIsPresent()
+  const dismissFromPolicy = useCallback(() => commandResults.dismiss(entry.id), [entry.id])
+  const dismiss = useCallback(() => {
+    restoreFocusRef.current = rootRef.current?.contains(document.activeElement) ?? false
+    dismissFromPolicy()
+  }, [dismissFromPolicy])
+  const runAction = (actionId: string) => {
+    if (!isPresent) return
+    dismiss()
+    if (entry.retry) {
+      void execute({
+        ...entry.retry,
+        context: { ...(entry.retry.context as Record<string, unknown>), actionId } as never,
+      } as never)
     }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [dismiss])
+  }
+  const { surfaceId } = useFloatingSurface({
+    kind: 'dialog',
+    active: true,
+    phase: isPresent ? 'open' : 'exiting',
+    getContainer: () => rootRef.current,
+    onDismiss: dismissFromPolicy,
+    onEscape: dismiss,
+  })
+  useFocusTrap(rootRef, { restoreFocus: false, active: isPresent })
+  useEffect(() => {
+    if (isPresent || !restoreFocusRef.current) return
+    restoreFocusRef.current = false
+    const returnTo = returnFocusRef.current
+    if (returnTo?.isConnected) returnTo.focus({ preventScroll: true })
+  }, [isPresent])
   return (
-    <div className="plugin-dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) dismiss() }}>
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      <div ref={rootRef} className="plugin-dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) dismiss() }}>
       <motion.div
         className="plugin-dialog"
         role="dialog"
@@ -154,15 +198,17 @@ function PluginDialog({ entry, execute: _execute }: { entry: ActiveResult; execu
             <button
               key={a.id}
               className={`btn ${a.style === 'primary' ? 'btn-primary' : a.style === 'danger' ? 'btn-danger' : ''}`}
-              onClick={dismiss}
+              disabled={!isPresent}
+              onClick={() => runAction(a.id)}
             >
               {a.label}
             </button>
           ))}
-          {(result.actions ?? []).length === 0 && <button className="btn" onClick={dismiss}>Close</button>}
+          {(result.actions ?? []).length === 0 && <button className="btn" disabled={!isPresent} onClick={dismiss}>Close</button>}
         </div>
       </motion.div>
-    </div>
+      </div>
+    </FloatingSurfaceProvider>
   )
 }
 

@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { FocusEvent as ReactFocusEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { useEscapeStack } from './useEscapeStack'
+import { useFloatingSurface } from './useFloatingSurface'
+import { isNodeInSurfaceBranch } from './floating-surface-registry'
 import { useListSelection } from './useListSelection'
 import { useOutsideMouseDown } from './useOutsideMouseDown'
 import { markPortaledSurface } from '../theme'
@@ -90,15 +91,17 @@ export function useSearchablePicker<T>({
     }
   }
 
-  // Register before autofocus so a parent dialog's focus trap cannot reclaim
-  // focus from the portaled menu during its first open render.
-  useEscapeStack({
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
     active: open,
-    onEscape: () => close(true),
+    phase: 'open',
     getContainer: () => menuRef.current,
+    getTrigger: () => triggerRef.current,
+    onDismiss: () => close(),
+    onEscape: () => close(true),
   })
 
-  useOutsideMouseDown({ ref: menuRef, onClose: close, triggerRef, capture: true, active: open })
+  useOutsideMouseDown({ ref: menuRef, onClose: close, triggerRef, surfaceId, capture: true, active: open })
 
   useLayoutEffect(() => {
     if (!open) return
@@ -152,6 +155,7 @@ export function useSearchablePicker<T>({
     // an exit. Real pointer exits belong to useOutsideMouseDown.
     if (!next) return
     if (event.currentTarget.contains(next) || triggerRef.current?.contains(next)) return
+    if (isNodeInSurfaceBranch(surfaceId, next)) return
     close()
   }
 
@@ -206,6 +210,7 @@ export function useSearchablePicker<T>({
     menuId,
     listId,
     optionId,
+    surfaceId,
     close,
     toggle,
     activate,

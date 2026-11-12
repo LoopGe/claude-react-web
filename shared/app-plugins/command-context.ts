@@ -24,6 +24,9 @@ interface BaseCommandContext {
   invocationId: string
   /** The plugin command id (`<pluginId>.<name>`). */
   commandId: string
+  /** Dialog action selected by the user, when this invocation came from a
+   *  PluginDialogResult action button. */
+  actionId?: string
   /** ms epoch when the host created the gesture. */
   invokedAt: number
 }

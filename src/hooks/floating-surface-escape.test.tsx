@@ -1,18 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { useRef } from 'react'
-import { __resetForTests, getEscapeStackCount, useEscapeStack } from './useEscapeStack'
+import { __resetFloatingSurfacesForTests, getEscapeStackCount, registerFloatingSurface, updateFloatingSurfacePhase } from './floating-surface-registry'
+import { useFloatingSurface } from './useFloatingSurface'
 
-// Behavioral contract for the Escape ownership stack:
+// Behavioral contract for the unified registry's Escape ownership:
 //   - one Esc closes only the topmost layer the user is interacting with
-//     (most recently opened wins, resolved by which container holds focus)
-//   - an open overlay swallows Esc even when focus sits outside every container,
-//     so it can't fall through to App's bubble-phase interrupt chain
-//   - a busy winner (canClose false) still swallows, so the layer beneath stays
-//     shut
-//   - the stack is a module singleton: the window capture listener is installed
-//     lazily on 0→1 and removed on 1→0, and __resetForTests() restores a clean
-//     slate between tests.
+//   - an open overlay swallows Esc even when focus sits outside every container
+//   - a busy winner still swallows, so the layer beneath stays shut
+//   - the capture listener is installed lazily and removed on 1→0.
 
 function Harness(props: {
   name: string
@@ -21,10 +17,13 @@ function Harness(props: {
   canClose?: () => boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  useEscapeStack({
-    active: props.active,
+  useFloatingSurface({
+    kind: 'dialog',
+    active: props.active ?? true,
+    phase: 'open',
+    onDismiss: () => {},
     onEscape: props.onEscape,
-    canClose: props.canClose,
+    canCloseOnEscape: props.canClose,
     getContainer: () => ref.current,
   })
   return (
@@ -35,11 +34,10 @@ function Harness(props: {
 }
 
 afterEach(() => {
-  cleanup()
-  __resetForTests()
+  __resetFloatingSurfacesForTests()
 })
 
-describe('useEscapeStack', () => {
+describe('floating surface Escape ownership', () => {
   it('routes Escape to the topmost entry whose container holds focus (LIFO)', () => {
     const onA = vi.fn()
     const onB = vi.fn()
@@ -105,6 +103,15 @@ describe('useEscapeStack', () => {
     window.removeEventListener('keydown', onBubble)
   })
 
+  it('ignores Escape while IME composition is active', () => {
+    const onA = vi.fn()
+    render(<Harness name="a" onEscape={onA} />)
+    const inputA = screen.getByTestId('a-input')
+    inputA.focus()
+    fireEvent.keyDown(inputA, { key: 'Escape', isComposing: true })
+    expect(onA).not.toHaveBeenCalled()
+  })
+
   it('ignores non-Escape keys', () => {
     const onA = vi.fn()
     render(<Harness name="a" onEscape={onA} />)
@@ -145,6 +152,28 @@ describe('useEscapeStack', () => {
     expect(onA).not.toHaveBeenCalled()
     a.unmount()
     expect(getEscapeStackCount()).toBe(1)
+  })
+
+  it('reinstalls the capture listener when an exiting surface re-enters', () => {
+    const onA = vi.fn()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const unregisterA = registerFloatingSurface({
+      id: 'a', kind: 'dialog', getContainer: () => container,
+      onDismiss: () => {}, onEscape: onA,
+    })
+    updateFloatingSurfacePhase('a', 'exiting')
+    const unregisterB = registerFloatingSurface({
+      id: 'b', kind: 'dialog', getContainer: () => container,
+      onDismiss: () => {}, onEscape: () => {},
+    })
+    unregisterB()
+    updateFloatingSurfacePhase('a', 'open')
+
+    fireEvent.keyDown(container, { key: 'Escape' })
+    expect(onA).toHaveBeenCalledOnce()
+    unregisterA()
+    container.remove()
   })
 
   it('unregisters every entry on unmount (listener torn down on 1→0)', () => {

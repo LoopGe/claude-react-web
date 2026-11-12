@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { ProjectPicker } from './ProjectPicker'
+import { ContextMenu } from '../ContextMenu'
 import { api } from '../../hooks/useApi'
 
 vi.mock('../../hooks/useApi', () => ({ api: { get: vi.fn() } }))
@@ -91,6 +92,29 @@ describe('ProjectPicker', () => {
     fireEvent.click(items()[1])
     await waitFor(() => expect(props.onSelect).toHaveBeenCalledWith('/Users/loop/Codes/other'))
     expect(menu()).toBeNull()
+  })
+
+  it('does not select a path after the picker is dismissed during preflight', async () => {
+    const pending: Array<(value: { cwd: string }) => void> = []
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url.includes(encodeURIComponent('/other/repo'))) {
+        return new Promise<{ cwd: string }>((resolve) => { pending.push(resolve) })
+      }
+      return Promise.resolve({ cwd: '/work/proj' })
+    })
+    const props = baseProps()
+    render(<ProjectPicker {...props} />)
+    fireEvent.click(screen.getByRole('button', { name: /proj/ }))
+    fireEvent.click(items()[1])
+    expect(pending.length).toBeGreaterThan(0)
+
+    render(<ContextMenu x={0} y={0} items={[{ label: 'Run' }]} onClose={() => {}} />)
+    await waitFor(() => expect(menu()).toBeNull())
+    await act(async () => {
+      for (const resolve of pending) resolve({ cwd: '/other/repo' })
+      await Promise.resolve()
+    })
+    expect(props.onSelect).not.toHaveBeenCalled()
   })
 
   it('forgets an entry without selecting it', () => {

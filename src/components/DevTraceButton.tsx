@@ -15,8 +15,8 @@ import {
   stopTraceDiagnostics,
   type TraceRecordOptions,
 } from '../client-debug/trace-diagnostics'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useLocalStorage } from '../hooks/useLocalStorage'
-import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { downloadJson } from '../utils/downloadJson'
 import { HoverHint } from './HoverHint'
@@ -66,8 +66,16 @@ export function DevTraceButton() {
   const recordButtonRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const closeMenu = useCallback(() => setMenuOpen(false), [])
-  useOutsideMouseDown({ ref: menuRef, onClose: closeMenu, triggerRef: recordButtonRef, nonPrimary: 'ignore', active: menuOpen })
-  useEscapeStack({ active: menuOpen, onEscape: closeMenu, getContainer: () => menuRef.current })
+  const { surfaceId } = useFloatingSurface({
+    kind: 'menu',
+    active: menuOpen,
+    phase: 'open',
+    getContainer: () => menuRef.current,
+    getTrigger: () => recordButtonRef.current,
+    onDismiss: closeMenu,
+    onEscape: closeMenu,
+  })
+  useOutsideMouseDown({ ref: menuRef, onClose: closeMenu, triggerRef: recordButtonRef, surfaceId, nonPrimary: 'ignore', active: menuOpen })
 
   useEffect(
     () => () => {
@@ -173,7 +181,8 @@ export function DevTraceButton() {
             : 'Start recording a performance trace; right-click for recording options'}
       </HoverPopover>
       {menuOpen && !recording && (
-        <div ref={menuRef} className="dev-trace-menu" role="dialog" aria-label="Trace recording options">
+        <FloatingSurfaceProvider surfaceId={surfaceId}>
+          <div ref={menuRef} className="dev-trace-menu" role="dialog" aria-label="Trace recording options">
           <div className="dev-trace-menu-title">Record options</div>
           {OPTION_LABELS.map(({ key, label }) => (
             <label key={key} className="dev-trace-menu-option">
@@ -187,8 +196,9 @@ export function DevTraceButton() {
               <span>{label}</span>
             </label>
           ))}
-          <div className="dev-trace-menu-note">Geometry and visual probes are recorded only between Record start and stop.</div>
-        </div>
+            <div className="dev-trace-menu-note">Geometry and visual probes are recorded only between Record start and stop.</div>
+          </div>
+        </FloatingSurfaceProvider>
       )}
     </div>
   )

@@ -13,10 +13,12 @@
 // The accent section embeds the already-exported <AccentSwatchGrid> so the
 // swatch/custom/recents behaviour stays identical to the old picker.
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { ReactNode } from 'react'
 import type { RefObject } from 'react'
+import { FloatingSurfaceProvider, useFloatingSurface } from '../hooks/useFloatingSurface'
+import type { FloatingDismissReason } from '../hooks/floating-surface-registry'
 import type { Skin, Theme } from '../utils/theme'
 import { isBackgroundLocked, isTransparencyLocked } from '../utils/theme'
 import { ACCENT_COLORS, markPortaledSurface } from '../theme'
@@ -154,7 +156,7 @@ function AppearancePopover({
   /** The Theme button — a TOGGLE, so it must be exempt from the outside-press
    *  dismissal or it can never close this popover (see the hook). */
   triggerRef: RefObject<HTMLButtonElement | null>
-  onClose: () => void
+  onClose: (reason?: FloatingDismissReason) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<{ x: number; y: number }>(anchor)
@@ -214,23 +216,20 @@ function AppearancePopover({
   // on its own mousedown would unmount this popover before the click lands, and
   // that click would read a stale open=false and re-anchor — the Theme button
   // could never close its own popover.
-  useOutsideMouseDown({ ref, onClose, triggerRef })
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
+    active: true,
+    phase: 'open',
+    getContainer: () => ref.current,
+    getTrigger: () => triggerRef.current,
+    onDismiss: onClose,
+    onEscape: () => onClose(),
+  })
+  useOutsideMouseDown({ ref, onClose, triggerRef, surfaceId })
 
-  // Capture-phase Escape.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => {
-      window.removeEventListener('keydown', onKey, true)
-    }
-  }, [onClose])
-
-  return createPortal(
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
     <div
       ref={ref}
       className="appearance-panel"
@@ -406,6 +405,8 @@ function AppearancePopover({
       )}
     </div>,
     document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 }
 
@@ -469,9 +470,9 @@ export function AppearancePanel({
           onDisplayPrefChange={onDisplayPrefChange}
           anchor={anchor}
           triggerRef={triggerRef}
-          onClose={() => {
+          onClose={(reason) => {
             setAnchor(null)
-            triggerRef.current?.focus()
+            if (!reason) triggerRef.current?.focus()
           }}
         />
       )}

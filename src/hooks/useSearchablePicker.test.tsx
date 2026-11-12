@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { SearchField } from '../components/SearchField'
+import { ContextMenu } from '../components/ContextMenu'
 import { useSearchablePicker } from './useSearchablePicker'
 
 interface Row {
@@ -275,6 +276,23 @@ describe('useSearchablePicker', () => {
     expect(menu()).toBeNull()
     expect(document.activeElement).toBe(trigger())
     expect(onReset).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses the non-restoring close path when a higher-layer menu replaces it', () => {
+    function PolicyHarness({ menuOpen }: { menuOpen: boolean }) {
+      return (
+        <>
+          <Harness />
+          {menuOpen && <ContextMenu x={0} y={0} items={[{ label: 'Run' }]} onClose={() => {}} />}
+        </>
+      )
+    }
+    const { rerender } = render(<PolicyHarness menuOpen={false} />)
+    openPicker()
+    expect(document.activeElement).toBe(search())
+    rerender(<PolicyHarness menuOpen />)
+    expect(menu()).toBeNull()
+    expect(document.activeElement).not.toBe(trigger())
   })
 
   // Shared useListSelection wiring: hover only moves the highlight; the arrow

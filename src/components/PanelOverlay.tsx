@@ -7,7 +7,7 @@
 // phase 0 introduced the unified <Overlay> primitive (src/components/Overlay.tsx),
 // this is now a thin, behavior-identical adapter: `variant="panel"` renders
 // the .panel-overlay / .panel-overlay-card class pair and wires Escape via the
-// useEscapeStack, backdrop-dismiss, focus trap + restore, and css-mode
+// useFloatingSurface, backdrop-dismiss, focus trap + restore, and css-mode
 // data-state exit animation — all owned by Overlay. Consumers keep passing the
 // same props and are unchanged.
 //

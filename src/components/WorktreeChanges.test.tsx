@@ -3,7 +3,7 @@
 // diff basis (worktree / staged / range+mergeBase / range+tip).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, act } from '@testing-library/react'
 import { WorktreeChanges } from './WorktreeChanges'
 import { parseDiffResource } from '../../shared/resource-address'
 
@@ -85,6 +85,18 @@ afterEach(() => {
 })
 
 describe('WorktreeChanges diff preview entry', () => {
+  it('uses the shared HoverPopover lifecycle for the Refresh hint', () => {
+    vi.useFakeTimers()
+    try {
+      renderPane()
+      fireEvent.pointerEnter(screen.getByRole('button', { name: 'Refresh' }))
+      act(() => vi.advanceTimersByTime(200))
+      expect(document.querySelector('.hover-pop')?.textContent).toBe('Refresh')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('maps an uncommitted staged row to the staged basis', () => {
     renderPane()
     openRowAndDiff()

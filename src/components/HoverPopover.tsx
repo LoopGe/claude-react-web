@@ -19,8 +19,10 @@ import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode, 
 import { createPortal } from 'react-dom'
 import { motion } from 'motion/react'
 import { useAnchorPosition, type AnchorAlign, type AnchorSide } from '../hooks/useAnchorPosition'
-import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
+import { useHoverAdmission } from '../hooks/useHoverAdmission'
+import { isNodeInSurfaceBranch } from '../hooks/floating-surface-registry'
 import { usePopoverMotion } from '../utils/transitions'
 import { markPortaledSurface, PANEL_SELECTOR } from '../theme'
 
@@ -91,6 +93,7 @@ export function HoverPopover({
 
   const openTimer = useRef<number | null>(null)
   const closeTimer = useRef<number | null>(null)
+  const { canOpen, armAttempt, cancelAttempt } = useHoverAdmission(triggerRef)
   const clearTimer = (timer: { current: number | null }) => {
     if (timer.current !== null) {
       window.clearTimeout(timer.current)
@@ -101,19 +104,35 @@ export function HoverPopover({
   const close = useCallback(() => {
     clearTimer(openTimer)
     clearTimer(closeTimer)
+    cancelAttempt()
     setOpen(false)
-  }, [])
+  }, [cancelAttempt])
+  const { surfaceId } = useFloatingSurface({
+    kind: interactive ? 'popover' : 'tooltip',
+    active: open,
+    phase: 'open',
+    getContainer: () => ref.current,
+    getTrigger: () => triggerRef.current,
+    onDismiss: close,
+    onEscape: interactive ? close : undefined,
+  })
   const cancelClose = useCallback(() => clearTimer(closeTimer), [])
-  const cancelOpen = useCallback(() => clearTimer(openTimer), [])
+  const cancelOpen = useCallback(() => {
+    clearTimer(openTimer)
+    cancelAttempt()
+  }, [cancelAttempt])
   const armOpen = useCallback(() => {
     cancelClose()
-    clearTimer(openTimer)
+    cancelOpen()
+    if (!canOpen()) return
+    if (!armAttempt(() => clearTimer(openTimer))) return
     openTimer.current = window.setTimeout(() => {
       openTimer.current = null
-      if (disabledRef.current) return
+      cancelAttempt()
+      if (disabledRef.current || !canOpen()) return
       setOpen(true)
     }, delayMs)
-  }, [cancelClose, delayMs])
+  }, [armAttempt, canOpen, cancelAttempt, cancelClose, cancelOpen, delayMs])
   const armClose = useCallback(() => {
     cancelClose()
     closeTimer.current = window.setTimeout(() => {
@@ -122,10 +141,10 @@ export function HoverPopover({
       // leave: moving the mouse away must not dismiss a panel being tabbed
       // through.
       const active = document.activeElement
-      if (active !== null && (ref.current?.contains(active) || triggerRef.current?.contains(active))) return
+      if (active !== null && (ref.current?.contains(active) || triggerRef.current?.contains(active) || isNodeInSurfaceBranch(surfaceId, active))) return
       setOpen(false)
     }, closeDelayMs)
-  }, [closeDelayMs, cancelClose, ref, triggerRef])
+  }, [closeDelayMs, cancelClose, ref, surfaceId, triggerRef])
 
   // A selection change closes an open card even when no pointer event fires
   // (keyboard session switch, a reordered strip under a stationary pointer).
@@ -135,19 +154,43 @@ export function HoverPopover({
     close()
   }, [closeKey, close])
 
-  // Trigger listeners. Pointer and focus share the same dwell/grace: a
-  // pointer sweep cancels the pending open, and focus gives keyboard users the
-  // same reveal.
+  // Trigger listeners. Check the DOM node identity on every commit: a keyed
+  // trigger replacement keeps the ref object but not its listeners.
+  const listenerBindingRef = useRef<{
+    trigger: HTMLElement | null
+    armClose: typeof armClose
+    armOpen: typeof armOpen
+    cancelClose: typeof cancelClose
+    cancelOpen: typeof cancelOpen
+    disabled: boolean
+    cleanup: () => void
+  } | null>(null)
   useLayoutEffect(() => {
-    if (disabled) return
     const trigger = triggerRef.current
-    if (!trigger) return
+    const previous = listenerBindingRef.current
+    if (previous
+      && previous.trigger === trigger
+      && previous.armClose === armClose
+      && previous.armOpen === armOpen
+      && previous.cancelClose === cancelClose
+      && previous.cancelOpen === cancelOpen
+      && previous.disabled === disabled) return
+    previous?.cleanup()
+    if (previous && previous.trigger !== trigger && openRef.current) remeasure()
+    if (disabled || !trigger) {
+      listenerBindingRef.current = { trigger, armClose, armOpen, cancelClose, cancelOpen, disabled, cleanup: () => {} }
+      return
+    }
     const onEnter = () => {
       openByFocus.current = false
       cancelClose()
       armOpen()
     }
     const onLeave = () => {
+      if (openByFocus.current && trigger.contains(document.activeElement)) {
+        if (openRef.current) armClose()
+        return
+      }
       cancelOpen()
       if (openRef.current) armClose()
     }
@@ -159,22 +202,34 @@ export function HoverPopover({
     const onFocusOut = (event: FocusEvent) => {
       cancelOpen()
       const next = event.relatedTarget as Node | null
-      if (next && (trigger.contains(next) || ref.current?.contains(next))) return
+      if (next && (trigger.contains(next) || ref.current?.contains(next) || isNodeInSurfaceBranch(surfaceId, next))) return
       if (openRef.current) armClose()
     }
     trigger.addEventListener('pointerenter', onEnter)
     trigger.addEventListener('pointerleave', onLeave)
     trigger.addEventListener('focusin', onFocusIn)
     trigger.addEventListener('focusout', onFocusOut)
-    return () => {
-      trigger.removeEventListener('pointerenter', onEnter)
-      trigger.removeEventListener('pointerleave', onLeave)
-      trigger.removeEventListener('focusin', onFocusIn)
-      trigger.removeEventListener('focusout', onFocusOut)
-      clearTimer(openTimer)
-      clearTimer(closeTimer)
+    listenerBindingRef.current = {
+      trigger,
+      armClose,
+      armOpen,
+      cancelClose,
+      cancelOpen,
+      disabled,
+      cleanup: () => {
+        trigger.removeEventListener('pointerenter', onEnter)
+        trigger.removeEventListener('pointerleave', onLeave)
+        trigger.removeEventListener('focusin', onFocusIn)
+        trigger.removeEventListener('focusout', onFocusOut)
+        cancelOpen()
+        clearTimer(closeTimer)
+      },
     }
-  }, [armClose, armOpen, cancelClose, cancelOpen, disabled, ref, triggerRef])
+  })
+  useLayoutEffect(() => () => {
+    listenerBindingRef.current?.cleanup()
+    listenerBindingRef.current = null
+  }, [])
 
   // The hook observes the surface while `active` (== open) and re-measures on
   // content growth; nothing to attach here.
@@ -186,41 +241,80 @@ export function HoverPopover({
   }, [open, interactive, ref])
 
   // Interactive surfaces can hold focus and pointer; dismiss them like a menu.
-  useOutsideMouseDown({ ref, onClose: close, triggerRef, active: open && interactive })
-  useEscapeStack({
-    active: open && interactive,
-    onEscape: close,
-    getContainer: () => ref.current,
+  useOutsideMouseDown({ ref, onClose: close, triggerRef, surfaceId, active: open && interactive })
+
+  // Primitive hint text is available to assistive technology before the visual
+  // dwell without mounting a second copy of a rich hover tree. While the visual
+  // tooltip is open, aria-describedby takes over so the text is not announced twice.
+  const descriptionBindingRef = useRef<{ trigger: HTMLElement; ownedValue: string } | null>(null)
+  const restoreAriaDescription = () => {
+    const binding = descriptionBindingRef.current
+    if (!binding) return
+    if (binding.trigger.getAttribute('aria-description') === binding.ownedValue) {
+      binding.trigger.removeAttribute('aria-description')
+    }
+    descriptionBindingRef.current = null
+  }
+  const hintDescription = typeof children === 'string' || typeof children === 'number' ? String(children) : null
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current
+    const binding = descriptionBindingRef.current
+    if (binding && (binding.trigger !== trigger || open || interactive || disabled || hintDescription === null)) {
+      restoreAriaDescription()
+    } else if (binding && trigger && hintDescription !== null) {
+      if (trigger.getAttribute('aria-description') !== binding.ownedValue) {
+        // The caller replaced the attribute; do not reclaim it on a later
+        // open, close, rerender, or unmount.
+        descriptionBindingRef.current = null
+        return
+      }
+      if (binding.ownedValue !== hintDescription) {
+        trigger.setAttribute('aria-description', hintDescription)
+        binding.ownedValue = hintDescription
+      }
+      return
+    }
+    if (trigger && !open && !interactive && !disabled && hintDescription !== null
+      && !descriptionBindingRef.current && trigger.getAttribute('aria-description') === null) {
+      trigger.setAttribute('aria-description', hintDescription)
+      descriptionBindingRef.current = { trigger, ownedValue: hintDescription }
+    }
   })
 
-  // Passive surfaces describe their trigger. Preserve any pre-existing
-  // description and restore it when the popover closes or unmounts.
-  const previousDescribedBy = useRef<string | null>(null)
+  // Preserve other descriptions and add/remove only this popover's bubble id,
+  // including after DOM replacement.
+  const removeBubbleDescription = (trigger: HTMLElement, bubbleId: string) => {
+    const current = trigger.getAttribute('aria-describedby')
+    if (current === null) return
+    const remaining = current.split(/\s+/).filter((id) => id !== bubbleId).join(' ')
+    if (remaining) trigger.setAttribute('aria-describedby', remaining)
+    else trigger.removeAttribute('aria-describedby')
+  }
   useLayoutEffect(() => {
     if (interactive) return
     const trigger = triggerRef.current
     if (!trigger) return
-    if (open) {
-      if (previousDescribedBy.current === null) {
-        previousDescribedBy.current = trigger.getAttribute('aria-describedby')
-      }
-      trigger.setAttribute('aria-describedby', bubbleId)
+    if (open && !disabled) {
+      const base = (trigger.getAttribute('aria-describedby') ?? '')
+        .split(/\s+/)
+        .filter((id) => id !== bubbleId)
+        .join(' ')
+      trigger.setAttribute('aria-describedby', base ? `${base} ${bubbleId}` : bubbleId)
       return
     }
-    const previous = previousDescribedBy.current
-    if (previous === null) trigger.removeAttribute('aria-describedby')
-    else trigger.setAttribute('aria-describedby', previous)
-  }, [bubbleId, interactive, open, triggerRef])
+    removeBubbleDescription(trigger, bubbleId)
+  })
 
   useLayoutEffect(() => {
     const trigger = triggerRef.current
-    if (trigger === null || interactive) return
     return () => {
-      const previous = previousDescribedBy.current
-      if (previous === null) trigger.removeAttribute('aria-describedby')
-      else trigger.setAttribute('aria-describedby', previous)
+      restoreAriaDescription()
+      if (trigger !== null && !interactive) removeBubbleDescription(trigger, bubbleId)
     }
-  }, [interactive, triggerRef])
+    // A new ref wrapper each render must not reset attribute ownership; the
+    // registration effect above handles actual trigger-node replacement.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bubbleId, interactive])
 
   // Stamp the portalled surface with its owning panel for the [data-portaled]
   // compensations (the portal breaks DOM ancestry).
@@ -232,7 +326,9 @@ export function HoverPopover({
 
   if (!open) return null
 
-  return createPortal(
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
     <motion.div
       ref={ref}
       id={bubbleId}
@@ -254,14 +350,16 @@ export function HoverPopover({
       onBlur={interactive
         ? (event) => {
           const next = event.relatedTarget as Node | null
-          if (next && (ref.current?.contains(next) || triggerRef.current?.contains(next))) return
+          if (next && (ref.current?.contains(next) || triggerRef.current?.contains(next) || isNodeInSurfaceBranch(surfaceId, next))) return
           armClose()
         }
         : undefined}
     >
       {children}
     </motion.div>,
-    document.body,
+      document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 }
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { ContextOrb } from './ContextOrb'
+import { ContextMenu } from './ContextMenu'
 import { __clearDetailedContextUsageCache } from '../hooks/useDetailedContextUsage'
 import type { ContextUsage } from '../types/context-usage'
 
@@ -169,5 +170,99 @@ describe('ContextOrb', () => {
     await new Promise((r) => setTimeout(r, 30))
     expect(api.get).not.toHaveBeenCalled()
     expect(document.body.querySelectorAll('.settings-kv-row').length).toBe(2)
+  })
+
+  it('cancels a pending hover when a menu opens and closes before the orb dwell', async () => {
+    vi.useFakeTimers()
+    try {
+      function Harness({ open }: { open: boolean }) {
+        return (
+          <>
+            <ContextOrb usage={usage} sessionId="s-pending" />
+            {open && <ContextMenu x={0} y={0} items={[{ label: 'Run' }]} onClose={() => {}} />}
+          </>
+        )
+      }
+      const { container, rerender } = render(<Harness open={false} />)
+      fireEvent.mouseEnter(container.querySelector('.ctx-orb-wrap')!)
+      act(() => vi.advanceTimersByTime(80))
+      rerender(<Harness open />)
+      rerender(<Harness open={false} />)
+      act(() => vi.advanceTimersByTime(500))
+    } finally {
+      vi.useRealTimers()
+    }
+    await waitFor(() => expect(document.body.querySelector('.ctx-orb-pop')).toBeNull())
+  })
+
+  it('denies orb hover and focus opening while a menu is active', () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(
+        <>
+          <ContextOrb usage={usage} sessionId="s-blocked" />
+          <ContextMenu x={0} y={0} items={[{ label: 'Run' }]} onClose={() => {}} />
+        </>,
+      )
+      fireEvent.mouseEnter(container.querySelector('.ctx-orb-wrap')!)
+      fireEvent.focus(container.querySelector('.ctx-orb')!)
+      act(() => vi.advanceTimersByTime(500))
+      expect(document.body.querySelector('.ctx-orb-pop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels the armed dwell when focus opens and then leaves the orb', async () => {
+    vi.useFakeTimers()
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({ usage: detailedUsage })
+    try {
+      const { container } = render(<ContextOrb usage={usage} sessionId="s-focus-race" />)
+      fireEvent.mouseEnter(container.querySelector('.ctx-orb-wrap')!)
+      const orb = container.querySelector('.ctx-orb')!
+      fireEvent.focus(orb)
+      fireEvent.blur(orb, { relatedTarget: document.body })
+      act(() => vi.advanceTimersByTime(500))
+    } finally {
+      vi.useRealTimers()
+    }
+    await waitFor(() => expect(document.body.querySelector('.ctx-orb-pop')).toBeNull())
+  })
+
+  it('cancels a pending hover close when keyboard focus arrives', () => {
+    vi.useFakeTimers()
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({ usage: detailedUsage })
+    try {
+      const { container } = render(<ContextOrb usage={usage} sessionId="s-focus-close" />)
+      const wrap = container.querySelector('.ctx-orb-wrap')!
+      const orb = container.querySelector('.ctx-orb')!
+      fireEvent.mouseEnter(wrap)
+      act(() => vi.advanceTimersByTime(160))
+      expect(document.body.querySelector('.ctx-orb-pop')).not.toBeNull()
+      fireEvent.mouseLeave(wrap)
+      act(() => vi.advanceTimersByTime(50))
+      fireEvent.focus(orb)
+      act(() => vi.advanceTimersByTime(500))
+      expect(orb.getAttribute('aria-expanded')).toBe('true')
+      expect(document.body.querySelector('.ctx-orb-pop')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels the armed dwell when a quick pin is unpinned before it fires', async () => {
+    vi.useFakeTimers()
+    ;(api.get as ReturnType<typeof vi.fn>).mockResolvedValue({ usage: detailedUsage })
+    try {
+      const { container } = render(<ContextOrb usage={usage} sessionId="s-pin-race" />)
+      fireEvent.mouseEnter(container.querySelector('.ctx-orb-wrap')!)
+      const orb = container.querySelector('.ctx-orb')!
+      fireEvent.click(orb)
+      fireEvent.click(orb)
+      act(() => vi.advanceTimersByTime(500))
+    } finally {
+      vi.useRealTimers()
+    }
+    await waitFor(() => expect(document.body.querySelector('.ctx-orb-pop')).toBeNull())
   })
 })

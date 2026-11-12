@@ -4,16 +4,16 @@
 // parent owns visibility state (so it knows which session the menu targets);
 // this component only handles the rendering, outside-click / Esc dismissal,
 // and a small nudge to stay within the viewport. One-open-at-a-time
-// enforcement lives in ./context-menu-registry.
+// enforcement lives in ../hooks/floating-surface-registry.
 
 import { memo, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { motion } from 'motion/react'
+import { motion, useIsPresent } from 'motion/react'
 import { usePopoverMotion } from '../utils/transitions'
-import { useEscapeStack } from '../hooks/useEscapeStack'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
-import { claimExclusiveOpen } from './context-menu-registry'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
+import type { FloatingDismissReason } from '../hooks/floating-surface-registry'
 import { markPortaledSurface } from '../theme'
 
 export interface ContextMenuItem {
@@ -39,7 +39,7 @@ interface Props {
    *  menu height. Composer-anchored menus use 'above'. */
   placement?: 'above' | 'below'
   items: ContextMenuItem[]
-  onClose: () => void
+  onClose: (reason?: FloatingDismissReason) => void
   /** The control that opened the menu, when it ALSO toggles it closed.
    *  Passed through to useOutsideMouseDown so a press on the trigger is the
    *  toggle, not an outside press (see that hook's `triggerRef` docs). */
@@ -65,21 +65,7 @@ export const ContextMenu = memo(function ContextMenu({
   autoFocus = false,
   nonPrimary = 'ignore',
 }: Props) {
-  // Latest onClose for the registry entry (the entry itself is mount-scoped).
-  const onCloseRef = useRef(onClose)
-  useLayoutEffect(() => {
-    onCloseRef.current = onClose
-  })
-
-  // Single-open registry: on mount, close every other open menu, then
-  // register ours. Layout timing so the buried menu is dismissed before the
-  // stacked frame paints. The replace flow (same menu, new anchor) only
-  // re-renders — no remount, so this effect does not re-run and the menu
-  // never closes itself.
-  useLayoutEffect(() => {
-    return claimExclusiveOpen(() => onCloseRef.current())
-  }, [])
-
+  const isPresent = useIsPresent()
   const ref = useRef<HTMLDivElement>(null)
   // Measured position after layout — nudged inward if the menu would
   // otherwise overflow the viewport.
@@ -91,6 +77,16 @@ export const ContextMenu = memo(function ContextMenu({
   // their content rather than only items.length so above-placement stays
   // anchored when a same-length update adds/removes rows or changes wrapping.
   const itemsLayoutKey = items.map((item) => item.label ?? '').join('\0')
+  const { surfaceId } = useFloatingSurface({
+    kind: 'menu',
+    active: true,
+    phase: isPresent ? 'open' : 'exiting',
+    contextMenu: true,
+    getContainer: () => ref.current,
+    getTrigger: () => triggerRef?.current ?? null,
+    onDismiss: onClose,
+    onEscape: () => onClose(),
+  })
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -124,18 +120,12 @@ export const ContextMenu = memo(function ContextMenu({
   //
   // `mousedown` beats `click` — feels snappier and avoids swallowing a
   // subsequent click on another interactive element (the hook's default).
-  useOutsideMouseDown({ ref, onClose, triggerRef, nonPrimary })
+  useOutsideMouseDown({ ref, onClose, triggerRef, surfaceId, nonPrimary })
 
-  // Esc closes via the shared escape stack, so a context menu above a modal
-  // or panel collapses only itself on the first keypress.
-  useEscapeStack({
-    active: true,
-    onEscape: onClose,
-    getContainer: () => ref.current,
-  })
-
-  return createPortal(
-    <motion.div
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
+        <motion.div
       ref={ref}
       className="ctx-menu"
       style={{ left: pos.x, top: pos.y }}
@@ -193,11 +183,13 @@ export const ContextMenu = memo(function ContextMenu({
           )
         })
       })()}
-    </motion.div>,
-    // Portal to <body>: `pos` above is in VIEWPORT coordinates, and any
-    // ancestor carrying filter / transform / backdrop-filter would take over as
-    // this element's containing block instead. Canonical statement: the
-    // body.has-bg note in layout.css. Pinned by ContextMenu.test.tsx.
-    document.body,
+        </motion.div>,
+        // Portal to <body>: `pos` above is in VIEWPORT coordinates, and any
+        // ancestor carrying filter / transform / backdrop-filter would take over as
+        // this element's containing block instead. Canonical statement: the
+        // body.has-bg note in layout.css. Pinned by ContextMenu.test.tsx.
+        document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 })

@@ -27,9 +27,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { motion } from 'motion/react'
+import { motion, useIsPresent } from 'motion/react'
 import { usePopoverMotion } from '../../utils/transitions'
-import { useEscapeStack } from '../../hooks/useEscapeStack'
+import { useFloatingSurface, FloatingSurfaceProvider } from '../../hooks/useFloatingSurface'
 import { useListSelection } from '../../hooks/useListSelection'
 import { useOutsideMouseDown } from '../../hooks/useOutsideMouseDown'
 import { useOverlayScrollbar } from '../../hooks/useOverlayScrollbar'
@@ -254,10 +254,15 @@ function SubagentSwarmPopover({
   // Esc closes just this popover. Registered through the shared stack (window
   // CAPTURE + stopPropagation) so the keypress cannot fall through to App's
   // interrupt branch or to a chat-panel overlay underneath.
-  useEscapeStack({
+  const isPresent = useIsPresent()
+  const { surfaceId } = useFloatingSurface({
+    kind: 'popover',
     active: true,
-    onEscape: onClose,
+    phase: isPresent ? 'open' : 'exiting',
     getContainer: () => ref.current,
+    getTrigger: () => triggerRef.current,
+    onDismiss: onClose,
+    onEscape: onClose,
   })
 
   // Focus the popover root so the arrow-key handler below receives keys
@@ -275,7 +280,7 @@ function SubagentSwarmPopover({
   // over the pill (pre-existing geometry — the popover hit-tests first, so the
   // second click lands on its head or a row; in a host passing no
   // `onOpenSubagent` those rows are inert, leaving Esc / an outside click).
-  useOutsideMouseDown({ ref, onClose, triggerRef })
+  useOutsideMouseDown({ ref, onClose, triggerRef, surfaceId })
 
   // The last agent settling closes the popover: an empty list would otherwise
   // sit open over a bar that no longer has a pill to anchor it to.
@@ -288,7 +293,9 @@ function SubagentSwarmPopover({
     onClose()
   }
 
-  return createPortal(
+  return (
+    <FloatingSurfaceProvider surfaceId={surfaceId}>
+      {createPortal(
     <motion.div
       ref={ref}
       className="subagent-swarm-pop"
@@ -364,5 +371,7 @@ function SubagentSwarmPopover({
     // panel mid-enter) would take over as the containing block and displace
     // the popover. Canonical statement: the body.has-bg note in layout.css.
     document.body,
+      )}
+    </FloatingSurfaceProvider>
   )
 }
