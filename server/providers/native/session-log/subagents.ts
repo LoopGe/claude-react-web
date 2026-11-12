@@ -38,13 +38,19 @@ interface OriginRecord {
   label: string
   prompt?: string
   timestamp: string
-  sessionId: string
   seq: number
   blockIndex: number
 }
 
+interface ToolUseRecord {
+  agentId: string
+  toolName: string
+  sessionId: string
+}
+
 interface FoldState {
   origins: Map<string, OriginRecord>
+  toolUses: Map<string, ToolUseRecord>
   descriptors: Map<string, NativeSubagentDescriptorEvent>
   evidence: Set<string>
 }
@@ -61,15 +67,26 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function emptyState(): FoldState {
-  return { origins: new Map(), descriptors: new Map(), evidence: new Set() }
+  return { origins: new Map(), toolUses: new Map(), descriptors: new Map(), evidence: new Set() }
 }
 
 function copyState(state: FoldState): FoldState {
   return {
     origins: new Map(state.origins),
+    toolUses: new Map(state.toolUses),
     descriptors: new Map(state.descriptors),
     evidence: new Set(state.evidence),
   }
+}
+
+function readToolUse(
+  event: NativeAssistantEvent,
+  block: Record<string, unknown>,
+): ToolUseRecord | null {
+  if (block.type !== 'tool_use' || typeof block.id !== 'string' || typeof block.name !== 'string') {
+    return null
+  }
+  return { agentId: block.id, toolName: block.name, sessionId: event.session_id }
 }
 
 function readOrigin(event: NativeAssistantEvent, block: Record<string, unknown>, blockIndex: number): OriginRecord | null {
@@ -86,7 +103,6 @@ function readOrigin(event: NativeAssistantEvent, block: Record<string, unknown>,
     label: description || 'Subagent',
     ...(typeof input?.prompt === 'string' ? { prompt: input.prompt } : {}),
     timestamp: event.timestamp,
-    sessionId: event.session_id,
     seq: event.seq,
     blockIndex,
   }
@@ -103,23 +119,25 @@ function foldEvents(state: FoldState, events: readonly NativeLogEvent[]): void {
     if (event.type !== 'assistant') continue
     for (const [blockIndex, value] of event.message.content.entries()) {
       if (!isObject(value)) continue
+      const toolUse = readToolUse(event, value)
+      if (toolUse) state.toolUses.set(toolUse.agentId, toolUse)
       const origin = readOrigin(event, value, blockIndex)
       if (origin) state.origins.set(origin.agentId, origin)
     }
   }
 }
 
-function assertMatchingOrigin(
+function assertMatchingToolUse(
   descriptor: NativeSubagentDescriptorEvent,
-  origin: OriginRecord | undefined,
+  toolUse: ToolUseRecord | undefined,
 ): void {
-  if (!origin || origin.toolName === descriptor.toolName) return
+  if (!toolUse || toolUse.toolName === descriptor.toolName) return
   // The pure projection has the originating session id but not the log path.
   throw new NativeSessionStorageError(
     'corrupt',
     `subagent descriptor toolName mismatch for ${descriptor.toolUseId}: ` +
-      `descriptor is ${descriptor.toolName}, originating tool_use is ${origin.toolName}`,
-    origin.sessionId,
+      `descriptor is ${descriptor.toolName}, originating tool_use is ${toolUse.toolName}`,
+    toolUse.sessionId,
     '',
   )
 }
@@ -152,7 +170,7 @@ function materialize(state: FoldState): NativeSubagentCatalog {
   const ordered: OrderedEntry[] = []
   for (const descriptor of state.descriptors.values()) {
     const origin = state.origins.get(descriptor.toolUseId)
-    assertMatchingOrigin(descriptor, origin)
+    assertMatchingToolUse(descriptor, state.toolUses.get(descriptor.toolUseId))
     ordered.push({
       seq: descriptor.seq,
       blockIndex: 0,

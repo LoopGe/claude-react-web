@@ -13,7 +13,7 @@ import {
 
 interface OriginOptions {
   parent?: string | null
-  toolName?: 'Agent' | 'Task' | 'Explore' | 'Skill'
+  toolName?: 'Agent' | 'Task' | 'Explore' | 'Skill' | 'Bash'
   input?: unknown
   timestamp?: string
 }
@@ -100,6 +100,18 @@ function compact(seq: number): NativeLogEvent {
     uuid: `compact-${seq}`,
     timestamp: '2026-11-12T00:03:00.000Z',
   }
+}
+
+function expectCatalogCorrupt(run: () => unknown): void {
+  let thrown: unknown
+  try {
+    run()
+  } catch (error) {
+    thrown = error
+  }
+  expect(thrown).toBeInstanceOf(NativeSessionStorageError)
+  expect((thrown as NativeSessionStorageError).kind).toBe('corrupt')
+  expect((thrown as Error).message).toMatch(/mismatch/i)
 }
 
 describe('native subagent catalog', () => {
@@ -245,6 +257,35 @@ describe('native subagent catalog', () => {
     expect(thrown).toBeInstanceOf(NativeSessionStorageError)
     expect((thrown as NativeSessionStorageError).kind).toBe('corrupt')
     expect((thrown as Error).message).toMatch(/mismatch/i)
+  })
+
+  it('rejects a descriptor paired with a same-id non-subagent tool_use', () => {
+    expectCatalogCorrupt(() => buildNativeSubagentCatalog([
+      origin(0, 'mismatch', { toolName: 'Bash' }),
+      descriptor(1, 'mismatch', { toolName: 'Agent' }),
+    ]))
+  })
+
+  it('rejects a non-subagent origin appended after its descriptor', () => {
+    const initial = buildNativeSubagentCatalog([
+      descriptor(0, 'mismatch', { toolName: 'Agent' }),
+    ])
+    expect(initial.entries).toHaveLength(1)
+
+    expectCatalogCorrupt(() => extendNativeSubagentCatalog(initial, [
+      origin(1, 'mismatch', { toolName: 'Bash' }),
+    ]))
+  })
+
+  it('rejects a descriptor appended after a same-id non-subagent origin', () => {
+    const initial = buildNativeSubagentCatalog([
+      origin(0, 'mismatch', { toolName: 'Skill' }),
+    ])
+    expect(initial.entries).toEqual([])
+
+    expectCatalogCorrupt(() => extendNativeSubagentCatalog(initial, [
+      descriptor(1, 'mismatch', { toolName: 'Agent' }),
+    ]))
   })
 
   it('resolves legacy depth only along intact acyclic origin chains', () => {

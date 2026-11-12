@@ -9,6 +9,9 @@
 //                          lines (the log is append-only).
 //     size shrank / same size with a new mtime → full re-parse (a rewritten
 //     log).
+//   - Invalidation advances a per-key generation. Full and incremental loads
+//     hold a lease on that generation across every await, so a superseded read
+//     retries against current state instead of committing over a replacement.
 //   - Entries store RENDERABLE raw lines — the shared isRenderableSdkMessage
 //     set PLUS sidechain user/assistant frames (parent_tool_use_id != null),
 //     which the transcript UI renders under their Agent card but the main
@@ -65,6 +68,45 @@ interface CacheEntry extends NativeHistoryLoad {
 
 const cache = new Map<string, CacheEntry>()
 
+interface CacheOwner {
+  id: string
+  generation: number
+  inFlight: number
+}
+
+interface LoadLease {
+  key: string
+  owner: CacheOwner
+  generation: number
+}
+
+const owners = new Map<string, CacheOwner>()
+
+function cleanupOwner(key: string): void {
+  if (cache.has(key)) return
+  const owner = owners.get(key)
+  if (owner?.inFlight === 0) owners.delete(key)
+}
+
+function acquire(key: string, id: string): LoadLease {
+  let owner = owners.get(key)
+  if (!owner) {
+    owner = { id, generation: 0, inFlight: 0 }
+    owners.set(key, owner)
+  }
+  owner.inFlight++
+  return { key, owner, generation: owner.generation }
+}
+
+function release(lease: LoadLease): void {
+  lease.owner.inFlight--
+  cleanupOwner(lease.key)
+}
+
+function isCurrent(lease: LoadLease): boolean {
+  return owners.get(lease.key) === lease.owner && lease.owner.generation === lease.generation
+}
+
 function keyOf(stateDir: string, id: string): string {
   return `${stateDir}\0${id}`
 }
@@ -76,6 +118,7 @@ function touch(key: string, entry: CacheEntry): CacheEntry {
     const oldest = cache.keys().next().value
     if (oldest === undefined) break
     cache.delete(oldest)
+    cleanupOwner(oldest)
   }
   return entry
 }
@@ -112,10 +155,12 @@ async function fullParse(
   stateDir: string,
   id: string,
   key: string,
+  lease: LoadLease,
   size: number,
   mtimeMs: number,
-): Promise<CacheEntry | null> {
+): Promise<NativeHistoryLoad | null> {
   const snapshot = await loadNativeSessionLog(stateDir, id)
+  if (!isCurrent(lease)) return load(stateDir, id)
   if (!snapshot) {
     cache.delete(key)
     return null
@@ -136,16 +181,18 @@ async function appendParse(
   stateDir: string,
   id: string,
   key: string,
+  lease: LoadLease,
   cached: CacheEntry,
   size: number,
   mtimeMs: number,
-): Promise<CacheEntry | null> {
+): Promise<NativeHistoryLoad | null> {
   const path = nativeSessionLogPath(stateDir, id)
   const buffer = await readFile(path)
+  if (!isCurrent(lease)) return load(stateDir, id)
   if (buffer.length < cached.parsedBytes) {
     // The file shrank between stat and read — the cached lines describe
     // content that no longer exists. Rebuild from scratch.
-    return fullParse(stateDir, id, key, size, mtimeMs)
+    return fullParse(stateDir, id, key, lease, size, mtimeMs)
   }
 
   const suffix = buffer.subarray(cached.parsedBytes)
@@ -179,32 +226,42 @@ async function appendParse(
 }
 
 async function load(stateDir: string, id: string): Promise<NativeHistoryLoad | null> {
-  const path = nativeSessionLogPath(stateDir, id)
-  let fileStat: { size: number; mtimeMs: number }
-  try {
-    fileStat = await stat(path)
-  } catch (err) {
-    if (!isErrno(err, 'ENOENT')) throw err
-    cache.delete(keyOf(stateDir, id))
-    return null
-  }
-
   const key = keyOf(stateDir, id)
-  const cached = cache.get(key)
-  if (cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs) {
-    return touch(key, cached)
+  const lease = acquire(key, id)
+  try {
+    const path = nativeSessionLogPath(stateDir, id)
+    let fileStat: { size: number; mtimeMs: number }
+    try {
+      fileStat = await stat(path)
+    } catch (err) {
+      if (!isErrno(err, 'ENOENT')) throw err
+      if (!isCurrent(lease)) return await load(stateDir, id)
+      cache.delete(key)
+      return null
+    }
+
+    if (!isCurrent(lease)) return await load(stateDir, id)
+    const cached = cache.get(key)
+    if (cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs) {
+      return touch(key, cached)
+    }
+    if (cached && fileStat.size > cached.size) {
+      return await appendParse(stateDir, id, key, lease, cached, fileStat.size, fileStat.mtimeMs)
+    }
+    return await fullParse(stateDir, id, key, lease, fileStat.size, fileStat.mtimeMs)
+  } finally {
+    release(lease)
   }
-  if (cached && fileStat.size > cached.size) {
-    return appendParse(stateDir, id, key, cached, fileStat.size, fileStat.mtimeMs)
-  }
-  return fullParse(stateDir, id, key, fileStat.size, fileStat.mtimeMs)
 }
 
 export const nativeHistoryCache: NativeHistoryCache = {
   load,
   invalidate(id) {
-    for (const [key, entry] of cache) {
-      if (entry.id === id) cache.delete(key)
+    for (const [key, owner] of owners) {
+      if (owner.id !== id) continue
+      owner.generation++
+      cache.delete(key)
+      cleanupOwner(key)
     }
   },
 }
