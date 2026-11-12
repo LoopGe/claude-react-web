@@ -75,6 +75,10 @@ export function contextSnapshot(cwd: string): string {
  * - a `session/compact` event is a floor: everything before the LAST one is
  *   superseded by the captured context snapshot and the summary, so replay
  *   starts there instead of rebuilding the pre-compact conversation.
+ * - a `session/skill` event is the canonical instruction body captured for the
+ *   raw user invocation immediately before it. Replay inserts that stored body
+ *   verbatim as a genuine user text message and closes any tool-result group;
+ *   it never consults the current skill catalog.
  * - a `session/supplement` event is a user message carrying the ALREADY
  *   WRAPPED guidance, inserted at its log position. It is a real user turn
  *   for the model, so it closes any open tool-result group — the results
@@ -145,6 +149,10 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
           messages.push({ role: 'user', content: [...blocksOf(event.message.content)] })
           openResults = null
         }
+        break
+      case 'session/skill':
+        messages.push({ role: 'user', content: [{ type: 'text', text: event.body }] })
+        openResults = null
         break
       case 'session/supplement':
         // Delivered supplements replay verbatim (the wrapped guidance the model

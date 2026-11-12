@@ -14,6 +14,13 @@ const sideResult = (seq: number, id: string): NativeLogEvent => ({ seq, type: 'u
 const sideUser = (seq: number, text: string): NativeLogEvent => ({ seq, type: 'user', uuid: `su${seq}`, session_id: 's', parent_tool_use_id: 'agent1', timestamp: 't', message: { role: 'user', content: [{ type: 'text', text }] } })
 
 const supplement = (seq: number, text: string, uuid = `sp${seq}`): NativeLogEvent => ({ seq, type: 'session/supplement', uuid, text, timestamp: 't' })
+const skillInvocation = (seq: number, body: string, name = 'alpha'): NativeLogEvent => parseEventLine({
+  seq,
+  type: 'session/skill',
+  name,
+  body,
+  timestamp: 't',
+}, seq, 's', 'p')
 const userWithUuid = (seq: number, text: string, uuid: string): NativeLogEvent => ({
   seq, type: 'user', uuid, session_id: 's', parent_tool_use_id: null, timestamp: 't',
   message: { role: 'user', content: [{ type: 'text', text }] },
@@ -128,6 +135,57 @@ describe('replay', () => {
           { type: 'tool_result', tool_use_id: 'agent-2', content: [{ type: 'text', text: 'ok' }], is_error: false },
         ],
       },
+    ])
+  })
+  it('replays the raw prompt and persisted skill body verbatim without catalog rendering', () => {
+    const persistedBody = 'Base directory for this skill: /snapshot\n\nPERSISTED INSTRUCTIONS'
+    const events = [
+      user(0, '/alpha arguments-stay-only-here'),
+      skillInvocation(1, persistedBody),
+      user(2, 'LEGACY EXPANDED USER BODY'),
+    ]
+
+    expect(historyFromEvents(events)).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/alpha arguments-stay-only-here' }] },
+      { role: 'user', content: [{ type: 'text', text: persistedBody }] },
+      { role: 'user', content: [{ type: 'text', text: 'LEGACY EXPANDED USER BODY' }] },
+    ])
+  })
+  it('closes an open tool-result group at a session/skill instruction', () => {
+    const events = [
+      user(0, '/alpha'),
+      assistant(1, [
+        { type: 'tool_use', id: 't1', name: 'Read', input: {} },
+        { type: 'tool_use', id: 't2', name: 'Read', input: {} },
+      ]),
+      result(2, 't1'),
+      skillInvocation(3, 'PERSISTED SKILL BODY'),
+      result(4, 't2'),
+    ]
+
+    const messages = historyFromEvents(events) as Array<{
+      role: string
+      content: Array<{ type?: string; text?: string; tool_use_id?: string }>
+    }>
+    expect(messages).toHaveLength(5)
+    expect(messages[2].content.map((block) => block.tool_use_id)).toEqual(['t1'])
+    expect(messages[3]).toEqual({ role: 'user', content: [{ type: 'text', text: 'PERSISTED SKILL BODY' }] })
+    expect(messages[4].content.map((block) => block.tool_use_id)).toEqual(['t2'])
+  })
+  it('applies the compact floor to both the raw prompt and its skill body', () => {
+    const events = [
+      user(0, '/before'),
+      skillInvocation(1, 'PRE-COMPACT SKILL BODY'),
+      compact(2, 'SUMMARY'),
+      user(3, '/after'),
+      skillInvocation(4, 'POST-COMPACT SKILL BODY'),
+    ]
+
+    expect(historyFromEvents(events)).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'CTX' }] },
+      { role: 'user', content: [{ type: 'text', text: 'SUMMARY' }] },
+      { role: 'user', content: [{ type: 'text', text: '/after' }] },
+      { role: 'user', content: [{ type: 'text', text: 'POST-COMPACT SKILL BODY' }] },
     ])
   })
   it('keeps a signed thinking block in the rebuilt history', () => {

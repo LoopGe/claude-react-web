@@ -52,7 +52,12 @@ export function buildForkSeed(opts: BuildForkSeedOptions): NativeForkSeed {
         source.path,
       )
     }
-    prefix = source.events.slice(0, cut + 1)
+    let end = cut + 1
+    // A raw skill prompt and its captured instruction are one replay group.
+    // Only an immediately adjacent event is paired: a crash prefix that never
+    // persisted the instruction stays raw-only, and assistant cuts are exact.
+    if (source.events[cut].type === 'user' && source.events[end]?.type === 'session/skill') end++
+    prefix = source.events.slice(0, end)
   }
 
   // Copied events belong to the CHILD session: renumber `seq` and rewrite

@@ -114,6 +114,14 @@ export interface NativeSupplementEvent {
   timestamp: string
 }
 
+export interface NativeSkillInvocationEvent {
+  seq: number
+  type: 'session/skill'
+  name: string
+  body: string
+  timestamp: string
+}
+
 /** Durable catalog identity for one delegated run. This is metadata only: it
  *  never enters model history or the ordinary transcript stream. */
 export interface NativeSubagentDescriptorEvent {
@@ -137,6 +145,7 @@ export type NativeLogEvent =
   | NativeSeedEndEvent
   | NativeCompactEvent
   | NativeSupplementEvent
+  | NativeSkillInvocationEvent
   | NativeSubagentDescriptorEvent
   | NativeAgentSelectionEvent
 
@@ -148,6 +157,7 @@ export type NativeEventInput =
   | Omit<NativeSeedEndEvent, 'seq'>
   | Omit<NativeCompactEvent, 'seq'>
   | Omit<NativeSupplementEvent, 'seq'>
+  | Omit<NativeSkillInvocationEvent, 'seq'>
   | Omit<NativeSubagentDescriptorEvent, 'seq'>
   | Omit<NativeAgentSelectionEvent, 'seq'>
 
@@ -222,6 +232,7 @@ const AGENT_EVENT_KEYS = new Set(['seq', 'type', 'name', 'definition', 'base', '
 const AGENT_BASE_KEYS = new Set(['model', 'permissionMode', 'effortLevel', 'skillPolicy', 'toolProfile'])
 const TOOL_PROFILE_KEYS = new Set(['tools', 'allowedTools', 'disallowedTools', 'toolAliases', 'toolConfig'])
 const AGENT_MEMORY_VALUES = ['user', 'project', 'local']
+const SKILL_INVOCATION_KEYS = new Set(['seq', 'type', 'name', 'body', 'timestamp'])
 const SUBAGENT_DESCRIPTOR_KEYS = new Set([
   'seq', 'type', 'toolUseId', 'parentToolUseId', 'kind', 'toolName', 'label', 'depth', 'profile', 'timestamp',
 ])
@@ -649,6 +660,16 @@ export function parseEventLine(
         uuid: requireNonEmptyString(raw, 'uuid', sessionId, path),
         text: requireNonEmptyString(raw, 'text', sessionId, path),
         timestamp: requireNonEmptyString(raw, 'timestamp', sessionId, path),
+      }
+
+    case 'session/skill':
+      requireKnownKeys(raw, SKILL_INVOCATION_KEYS, 'session/skill event', sessionId, path)
+      return {
+        seq,
+        type: 'session/skill',
+        name: requireString(raw, 'name', sessionId, path),
+        body: requireString(raw, 'body', sessionId, path),
+        timestamp: requireString(raw, 'timestamp', sessionId, path),
       }
 
     case 'session/agent':

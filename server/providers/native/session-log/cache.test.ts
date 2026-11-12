@@ -80,6 +80,15 @@ function descriptor(id: string): NativeEventInput {
   }
 }
 
+function skillInvocation(body: string): NativeEventInput {
+  return {
+    type: 'session/skill',
+    name: 'alpha',
+    body,
+    timestamp: '2026-11-12T00:00:01.000Z',
+  }
+}
+
 function startDeferredRead(path: string, bytes: Buffer): Promise<void> {
   let started!: () => void
   const pending = new Promise<void>((resolve) => { started = resolve })
@@ -96,6 +105,35 @@ async function createReplacement(stateDir: string): Promise<void> {
   await replacement.flush()
   await replacement.close()
 }
+
+describe('native history cache skill instructions', () => {
+  it('parses a skill-only append without adding or replacing renderable lines', async () => {
+    const log = await openLog()
+    const stateDir = dir!
+    log.append({
+      type: 'user',
+      uuid: 'u1',
+      session_id: 's1',
+      parent_tool_use_id: null,
+      timestamp: '2026-11-12T00:00:00.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: '/alpha' }] },
+    })
+    await log.flush()
+
+    const first = await nativeHistoryCache.load(stateDir, 's1')
+    expect(first?.lines).toHaveLength(1)
+
+    log.append(skillInvocation('PERSISTED SKILL BODY'))
+    await log.flush()
+    const second = await nativeHistoryCache.load(stateDir, 's1')
+
+    expect(second?.lines).toBe(first?.lines)
+    expect(JSON.stringify(second?.lines)).toContain('/alpha')
+    expect(JSON.stringify(second?.lines)).not.toContain('PERSISTED SKILL BODY')
+    expect(JSON.stringify(second?.lines)).not.toContain('session/skill')
+    await log.close()
+  })
+})
 
 describe('native history cache subagent catalogs', () => {
   it('updates the catalog on a descriptor-only append without replacing renderable lines', async () => {

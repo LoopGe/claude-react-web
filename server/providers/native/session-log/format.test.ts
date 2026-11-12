@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { StoredAgentDefinition } from '../../../agent-definition-store.js'
 import { NATIVE_SESSION_LOG_VERSION, parseEventLine, parseHeaderLine, serializeEvent, serializeHeader } from './format.js'
-import type { NativeEventInput, NativeLogEvent } from './format.js'
+import type { NativeEventInput, NativeLogEvent, NativeSkillInvocationEvent } from './format.js'
 import { NativeSessionStorageError } from './errors.js'
 
 const header = { type: 'session/header', v: 1, id: 's1', cwd: '/repo', createdAt: 1, isSeeded: false, inheritedEventCount: 0 } as const
@@ -64,6 +64,14 @@ const descriptorEvent: NativeLogEvent = {
     maxTurns: 5,
     effort: 'high',
   },
+  timestamp: '2026-11-12T00:00:00.000Z',
+}
+
+const skillInvocationEvent: NativeSkillInvocationEvent = {
+  seq: 0,
+  type: 'session/skill',
+  name: 'alpha',
+  body: 'Base directory for this skill: /snapshot\n\nPERSISTED INSTRUCTIONS',
   timestamp: '2026-11-12T00:00:00.000Z',
 }
 
@@ -140,6 +148,36 @@ describe('session log format', () => {
       const missing = { ...valid }
       delete missing[field]
       expectCorrupt(missing)
+    }
+  })
+  it('round-trips the exact session/skill instruction shape', () => {
+    const serialized = serializeEvent(skillInvocationEvent)
+    expect(JSON.parse(serialized)).toEqual({
+      seq: 0,
+      type: 'session/skill',
+      name: 'alpha',
+      body: 'Base directory for this skill: /snapshot\n\nPERSISTED INSTRUCTIONS',
+      timestamp: '2026-11-12T00:00:00.000Z',
+    })
+    expect(parseEventLine(JSON.parse(serialized), 0, 's1', 'p')).toEqual(skillInvocationEvent)
+  })
+  it('rejects unknown session/skill fields, including args and a UI uuid', () => {
+    for (const raw of [
+      { ...skillInvocationEvent, args: '--verbose' },
+      { ...skillInvocationEvent, uuid: 'ui-uuid' },
+      { ...skillInvocationEvent, injected: true },
+    ]) {
+      expectCorrupt(raw)
+    }
+  })
+  it('rejects missing or non-string session/skill fields as corrupt', () => {
+    for (const field of ['name', 'body', 'timestamp'] as const) {
+      const missing = { ...skillInvocationEvent } as Record<string, unknown>
+      delete missing[field]
+      expectCorrupt(missing)
+      for (const value of [null, 7, {}, []]) {
+        expectCorrupt({ ...skillInvocationEvent, [field]: value })
+      }
     }
   })
   it('round-trips an appended agent selection with its definition and base snapshots', () => {

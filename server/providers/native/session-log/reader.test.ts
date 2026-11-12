@@ -162,6 +162,64 @@ describe('native history reader', () => {
     expect(entries.map((e) => e.index)).toEqual([0, 2])
     expect(entries[1].index).toBe(pageIndexAfter)
   })
+  it('keeps skill instructions out of pages, search entries and seq backfill while replaying their bodies', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'session/context', text: 'ctx' } as never)
+    push({ type: 'user', uuid: 'u1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: '/alpha args' }] } } as never)
+    push({ type: 'session/skill', name: 'alpha', body: 'PERSISTED SKILL BODY', timestamp: '2026-11-09T00:00:01.000Z' } as never)
+    push({ type: 'assistant', uuid: 'a1', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } } as never)
+    push({ type: 'user', uuid: 'legacy', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:03.000Z', message: { role: 'user', content: [{ type: 'text', text: 'LEGACY EXPANDED USER BODY' }] } } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    expect((page.messages as Array<{ uuid: string }>).map((message) => message.uuid)).toEqual(['u1', 'a1', 'legacy'])
+    expect(pageText(page)).not.toContain('PERSISTED SKILL BODY')
+    expect(pageText(page)).not.toContain('session/skill')
+    expect(pageText(page)).toContain('LEGACY EXPANDED USER BODY')
+
+    // These entries feed both message search and transcript seq backfill.
+    const entries = await readNativeHistoryEntries(dir, 's1')
+    expect(entries.map((entry) => (entry.message as { uuid: string }).uuid)).toEqual(['u1', 'a1', 'legacy'])
+    expect(entries.map((entry) => entry.index)).toEqual([0, 1, 2])
+    expect(JSON.stringify(entries)).not.toContain('PERSISTED SKILL BODY')
+
+    const history = historyFromEvents(loadNativeSessionLogSync(dir, 's1')!.events) as Array<{
+      content: Array<{ text?: string }>
+    }>
+    expect(history.map((message) => message.content[0]?.text)).toEqual([
+      'ctx',
+      '/alpha args',
+      'PERSISTED SKILL BODY',
+      'answer',
+      'LEGACY EXPANDED USER BODY',
+    ])
+  })
+  it('floors raw prompts and skill bodies for model replay without changing UI or search flooring', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    const push = (e: never) => log.append(e)
+    push({ type: 'user', uuid: 'pre', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: '/before' }] } } as never)
+    push({ type: 'session/skill', name: 'before', body: 'PRE-COMPACT SKILL BODY', timestamp: '2026-11-09T00:00:01.000Z' } as never)
+    push({ type: 'session/compact', text: 'SUMMARY', context: 'CTX', uuid: 'c1', timestamp: '2026-11-09T00:00:02.000Z' } as never)
+    push({ type: 'user', uuid: 'post', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-09T00:00:03.000Z', message: { role: 'user', content: [{ type: 'text', text: '/after' }] } } as never)
+    push({ type: 'session/skill', name: 'after', body: 'POST-COMPACT SKILL BODY', timestamp: '2026-11-09T00:00:04.000Z' } as never)
+    await log.flush(); await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    expect((page.messages as Array<{ uuid: string }>).map((message) => message.uuid)).toEqual(['c1', 'post'])
+    expect(pageText(page)).not.toContain('/before')
+    expect(pageText(page)).not.toContain('PRE-COMPACT SKILL BODY')
+    expect(pageText(page)).not.toContain('POST-COMPACT SKILL BODY')
+    expect(JSON.stringify(await readNativeHistoryEntries(dir, 's1'))).not.toContain('SKILL BODY')
+
+    const history = JSON.stringify(historyFromEvents(loadNativeSessionLogSync(dir, 's1')!.events))
+    expect(history).not.toContain('/before')
+    expect(history).not.toContain('PRE-COMPACT SKILL BODY')
+    expect(history).toContain('/after')
+    expect(history).toContain('POST-COMPACT SKILL BODY')
+  })
   it('returns an empty page for a missing log', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
     expect(await readNativeHistoryPage(dir, 'nope', { limit: 10 })).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })
