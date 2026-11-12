@@ -41,6 +41,42 @@ describe('buildForkSeed', () => {
   it('rejects an unknown boundary uuid', () => {
     expect(() => buildForkSeed({ source, sourceId: 'src', newId: 'dst', cwd: '/new', resumeSessionAt: 'nope' })).toThrow(/fork boundary/)
   })
+  it('copies a subagent descriptor with its identity, parent, and profile intact', () => {
+    const withDescriptor = {
+      header: { type: 'session/header', v: 1, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
+      events: [
+        { seq: 0, type: 'session/context', text: 'ctx' },
+        {
+          seq: 1,
+          type: 'subagent/descriptor',
+          toolUseId: 'agent-1',
+          parentToolUseId: 'parent-1',
+          kind: 'agent',
+          toolName: 'Agent',
+          label: 'review',
+          depth: 2,
+          profile: { name: 'reviewer', instruction: 'REVIEW', skills: [] },
+          timestamp: 't',
+        },
+      ],
+      path: '/p', completeBytes: 0, totalBytes: 0,
+    } as never
+
+    const seed = buildForkSeed({ source: withDescriptor, sourceId: 'src', newId: 'dst', cwd: '/new' })
+
+    expect(seed.events.find((event) => event.type === 'subagent/descriptor')).toEqual({
+      seq: 1,
+      type: 'subagent/descriptor',
+      toolUseId: 'agent-1',
+      parentToolUseId: 'parent-1',
+      kind: 'agent',
+      toolName: 'Agent',
+      label: 'review',
+      depth: 2,
+      profile: { name: 'reviewer', instruction: 'REVIEW', skills: [] },
+      timestamp: 't',
+    })
+  })
   it('copies a supplement into the seed and replays it at its position', () => {
     const wrapped = formatSupplementInstruction('pivot')
     const withSupplement = {

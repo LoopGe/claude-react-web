@@ -922,8 +922,19 @@ describe('NativeSession', () => {
       expect(r.tools.map((t) => t.name)).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Grep', 'Glob', 'LS', 'NotebookEdit', 'AskUserQuestion', 'WebFetch', 'WebSearch', 'TodoWrite', 'TaskOutput', 'Skill', 'mcp__a__echo'])
     }
 
-    // Persistence: sidechain events carry the real parent on disk...
+    // Persistence: the durable identity is written before any sidechain frame.
     const events = logOf(session).events
+    const descriptor = events.find((event) => event.type === 'subagent/descriptor')
+    expect(descriptor).toMatchObject({
+      type: 'subagent/descriptor',
+      toolUseId: 'agent-1',
+      parentToolUseId: null,
+      kind: 'agent',
+      toolName: 'Agent',
+      label: 'd',
+      depth: 1,
+      profile: null,
+    })
     const sidechainAssistants = events.filter(
       (e) => e.type === 'assistant' && e.parent_tool_use_id === 'agent-1',
     )
@@ -942,6 +953,37 @@ describe('NativeSession', () => {
     expect(JSON.stringify(mainHistory)).toContain('NESTED-REPORT')
 
     await session.destroy()
+  })
+
+  it('does not append a descriptor when Agent permission is denied', async () => {
+    const dir = await tempDir('native-agent-denied-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const scripts: CanonicalEvent[][] = [
+      agentTurn('agent-denied', { description: 'd', prompt: 'p' }),
+      textTurn('PARENT-DONE'),
+    ]
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: CapturedRequest) {
+      requests.push(structuredClone(req))
+      for (const event of scripts.shift() ?? []) yield event
+    }
+    const session = provider.createSession({
+      id: 'agent-denied',
+      cwd: dir,
+      canUseTool: async () => ({ behavior: 'deny', message: 'not allowed', interrupt: false }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('delegate') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+
+      expect(requests).toHaveLength(2)
+      expect(logOf(session).events.some((event) => event.type === 'subagent/descriptor')).toBe(false)
+      expect(frames.some((frame) => frame.parent_tool_use_id === 'agent-denied')).toBe(false)
+    } finally {
+      await session.destroy()
+    }
   })
 
   it('scopes nested profile tools and Skill view independently of parent overrides', async () => {

@@ -37,6 +37,19 @@ const agentSelection = (seq: number, name: string | null): NativeLogEvent => par
   timestamp: 't',
 }, seq, 's', 'p')
 
+const subagentDescriptor = (seq: number, toolUseId: string): NativeLogEvent => parseEventLine({
+  seq,
+  type: 'subagent/descriptor',
+  toolUseId,
+  parentToolUseId: null,
+  kind: 'agent',
+  toolName: 'Agent',
+  label: 'delegate',
+  depth: 1,
+  profile: null,
+  timestamp: 't',
+}, seq, 's', 'p')
+
 describe('replay', () => {
   it('rebuilds history, strips unsigned thinking and merges consecutive tool results', () => {
     const events = [
@@ -84,6 +97,37 @@ describe('replay', () => {
       },
       { role: 'user', content: [{ type: 'text', text: 'WRAPPED GUIDANCE' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+    ])
+  })
+  it('ignores subagent descriptors without producing history or splitting tool results', () => {
+    const events = [
+      user(0, 'go'),
+      assistant(1, [
+        { type: 'tool_use', id: 'agent-1', name: 'Agent', input: {} },
+        { type: 'tool_use', id: 'agent-2', name: 'Agent', input: {} },
+      ]),
+      subagentDescriptor(2, 'agent-1'),
+      result(3, 'agent-1'),
+      subagentDescriptor(4, 'agent-2'),
+      result(5, 'agent-2'),
+    ]
+
+    expect(historyFromEvents(events)).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 'agent-1', name: 'Agent', input: {} },
+          { type: 'tool_use', id: 'agent-2', name: 'Agent', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'agent-1', content: [{ type: 'text', text: 'ok' }], is_error: false },
+          { type: 'tool_result', tool_use_id: 'agent-2', content: [{ type: 'text', text: 'ok' }], is_error: false },
+        ],
+      },
     ])
   })
   it('keeps a signed thinking block in the rebuilt history', () => {

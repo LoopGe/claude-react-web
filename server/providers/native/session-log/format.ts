@@ -11,7 +11,7 @@ import type { StoredAgentDefinition } from '../../../agent-definition-store.js'
 import { isSdkAgentPermissionMode } from '../../../../shared/agent-definitions.js'
 import type { SessionToolProfile } from '../../../../shared/tool-profile.js'
 import { NATIVE_AGENT_EFFORT_LEVELS } from '../agent-profile.js'
-import type { NativeAgentBase, NativeAgentSelectionEvent } from '../agent-profile.js'
+import type { NativeAgentBase, NativeAgentProfile, NativeAgentSelectionEvent } from '../agent-profile.js'
 
 export const NATIVE_SESSION_LOG_VERSION = 1
 
@@ -108,6 +108,21 @@ export interface NativeSupplementEvent {
   timestamp: string
 }
 
+/** Durable catalog identity for one delegated run. This is metadata only: it
+ *  never enters model history or the ordinary transcript stream. */
+export interface NativeSubagentDescriptorEvent {
+  seq: number
+  type: 'subagent/descriptor'
+  toolUseId: string
+  parentToolUseId: string | null
+  kind: 'agent' | 'skill'
+  toolName: 'Agent' | 'Task' | 'Explore'
+  label: string
+  depth: number
+  profile: NativeAgentProfile | null
+  timestamp: string
+}
+
 export type NativeLogEvent =
   | NativeUserEvent
   | NativeAssistantEvent
@@ -116,6 +131,7 @@ export type NativeLogEvent =
   | NativeSeedEndEvent
   | NativeCompactEvent
   | NativeSupplementEvent
+  | NativeSubagentDescriptorEvent
   | NativeAgentSelectionEvent
 
 export type NativeEventInput =
@@ -126,6 +142,7 @@ export type NativeEventInput =
   | Omit<NativeSeedEndEvent, 'seq'>
   | Omit<NativeCompactEvent, 'seq'>
   | Omit<NativeSupplementEvent, 'seq'>
+  | Omit<NativeSubagentDescriptorEvent, 'seq'>
   | Omit<NativeAgentSelectionEvent, 'seq'>
 
 /** True for a sidechain (nested-runner) user/assistant frame — one carrying a
@@ -199,6 +216,14 @@ const AGENT_EVENT_KEYS = new Set(['seq', 'type', 'name', 'definition', 'base', '
 const AGENT_BASE_KEYS = new Set(['model', 'permissionMode', 'effortLevel', 'skillPolicy', 'toolProfile'])
 const TOOL_PROFILE_KEYS = new Set(['tools', 'allowedTools', 'disallowedTools', 'toolAliases', 'toolConfig'])
 const AGENT_MEMORY_VALUES = ['user', 'project', 'local']
+const SUBAGENT_DESCRIPTOR_KEYS = new Set([
+  'seq', 'type', 'toolUseId', 'parentToolUseId', 'kind', 'toolName', 'label', 'depth', 'profile', 'timestamp',
+])
+const SUBAGENT_TOOL_NAMES = ['Agent', 'Task', 'Explore']
+const AGENT_PROFILE_KEYS = new Set([
+  'name', 'instruction', 'model', 'tools', 'disallowedTools', 'mcpServers', 'skills',
+  'permissionMode', 'maxTurns', 'effort',
+])
 
 function requireKnownKeys(
   raw: JsonObject,
@@ -351,6 +376,88 @@ function parseAgentDefinitionSnapshot(
     }
   }
   return { ...raw } as unknown as StoredAgentDefinition
+}
+
+function parseDescriptorProfile(
+  raw: unknown,
+  sessionId: string,
+  path: string,
+): NativeAgentProfile {
+  if (!isObject(raw)) corrupt(sessionId, path, 'subagent/descriptor event profile must be an object or null')
+  requireKnownKeys(raw, AGENT_PROFILE_KEYS, 'subagent/descriptor event profile', sessionId, path)
+  const profile: NativeAgentProfile = {
+    name: raw.name === null
+      ? null
+      : requireSnapshotString(raw, 'name', 'subagent/descriptor event profile', sessionId, path),
+  }
+  for (const field of ['instruction', 'model'] as const) {
+    if (raw[field] !== undefined) {
+      profile[field] = requireSnapshotString(raw, field, 'subagent/descriptor event profile', sessionId, path)
+    }
+  }
+  for (const field of ['tools', 'disallowedTools', 'mcpServers', 'skills'] as const) {
+    if (raw[field] !== undefined) {
+      profile[field] = requireSnapshotStringArray(
+        raw[field],
+        `subagent/descriptor event profile.${field}`,
+        sessionId,
+        path,
+      )
+    }
+  }
+  if (raw.permissionMode !== undefined) {
+    if (!isSdkAgentPermissionMode(raw.permissionMode)) {
+      corrupt(sessionId, path, 'subagent/descriptor event profile.permissionMode is invalid')
+    }
+    profile.permissionMode = raw.permissionMode
+  }
+  if (raw.maxTurns !== undefined) {
+    if (typeof raw.maxTurns !== 'number' || !Number.isFinite(raw.maxTurns)) {
+      corrupt(sessionId, path, 'subagent/descriptor event profile.maxTurns must be a finite number')
+    }
+    profile.maxTurns = raw.maxTurns
+  }
+  if (raw.effort !== undefined) {
+    if (typeof raw.effort !== 'string' || !(NATIVE_AGENT_EFFORT_LEVELS as readonly string[]).includes(raw.effort)) {
+      corrupt(sessionId, path, 'subagent/descriptor event profile.effort is invalid')
+    }
+    profile.effort = raw.effort as NativeAgentProfile['effort']
+  }
+  return profile
+}
+
+function parseSubagentDescriptor(
+  raw: JsonObject,
+  seq: number,
+  sessionId: string,
+  path: string,
+): NativeSubagentDescriptorEvent {
+  requireKnownKeys(raw, SUBAGENT_DESCRIPTOR_KEYS, 'subagent/descriptor event', sessionId, path)
+  if (raw.kind !== 'agent' && raw.kind !== 'skill') {
+    corrupt(sessionId, path, 'subagent/descriptor event kind must be agent or skill')
+  }
+  if (typeof raw.toolName !== 'string' || !SUBAGENT_TOOL_NAMES.includes(raw.toolName)) {
+    corrupt(sessionId, path, 'subagent/descriptor event toolName is invalid')
+  }
+  if (typeof raw.depth !== 'number' || !Number.isInteger(raw.depth) || raw.depth < 1) {
+    corrupt(sessionId, path, 'subagent/descriptor event depth must be a positive integer')
+  }
+  const parentToolUseId = raw.parentToolUseId
+  if (parentToolUseId !== null && (typeof parentToolUseId !== 'string' || parentToolUseId.length === 0)) {
+    corrupt(sessionId, path, 'subagent/descriptor event parentToolUseId must be a non-empty string or null')
+  }
+  return {
+    seq,
+    type: 'subagent/descriptor',
+    toolUseId: requireNonEmptyString(raw, 'toolUseId', sessionId, path),
+    parentToolUseId,
+    kind: raw.kind,
+    toolName: raw.toolName as NativeSubagentDescriptorEvent['toolName'],
+    label: requireNonEmptyString(raw, 'label', sessionId, path),
+    depth: raw.depth,
+    profile: raw.profile === null ? null : parseDescriptorProfile(raw.profile, sessionId, path),
+    timestamp: requireNonEmptyString(raw, 'timestamp', sessionId, path),
+  }
 }
 
 function parseDroppedAgent(
@@ -540,6 +647,9 @@ export function parseEventLine(
 
     case 'session/agent':
       return parseAgentSelection(raw, seq, sessionId, path)
+
+    case 'subagent/descriptor':
+      return parseSubagentDescriptor(raw, seq, sessionId, path)
 
     default:
       return corrupt(sessionId, path, `unknown event type '${String(raw.type)}'`)

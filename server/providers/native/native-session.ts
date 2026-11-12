@@ -33,7 +33,7 @@ import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
-import type { NativeLogEvent, NativeTurnEndReason } from './session-log/format.js'
+import type { NativeLogEvent, NativeSubagentDescriptorEvent, NativeTurnEndReason } from './session-log/format.js'
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
@@ -416,6 +416,10 @@ export class NativeSession implements ProviderSessionHandle {
         this.persistFrame(frame)
         this.output.push(frame)
       },
+      appendDescriptor: async (input) => await this.log.appendDurable({
+        ...input,
+        timestamp: new Date().toISOString(),
+      }) as NativeSubagentDescriptorEvent,
       agentStore: opts.agentStore,
     })
     // The mode switch owns the log, the model history, and the usage

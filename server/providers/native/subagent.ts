@@ -10,6 +10,7 @@ import type { EffortLevel } from './anthropic-stream.js'
 import { profileFromDefinition, type NativeAgentProfile } from './agent-profile.js'
 import { filterToolsForProfile } from './agent-tools.js'
 import type { NativeSkillView } from './skills.js'
+import type { NativeSubagentDescriptorEvent } from './session-log/format.js'
 
 /** Everything the Agent tool needs from the session that owns it. All fields
  *  are read at call time (except frameCtx, which is the session's frame
@@ -52,6 +53,11 @@ export interface AgentToolDeps {
   /** The session's persist+push path. Parentage comes from the nested frame
    *  context, so this is forwarded unchanged. */
   emit(frame: AgentMessage): void
+  /** Durable catalog identity. Descriptors deliberately bypass emit and model
+   *  history; a nested request may start only after this append resolves. */
+  appendDescriptor(
+    input: Omit<NativeSubagentDescriptorEvent, 'seq' | 'timestamp'>,
+  ): Promise<NativeSubagentDescriptorEvent>
   agentStore?: AgentDefinitionStore
 }
 
@@ -73,9 +79,9 @@ const DEFAULT_AGENT_INSTRUCTION =
   'Complete the task with the available tools and reply with a concise final report: ' +
   'what you did, what you found, and anything the parent agent must know.'
 
-export function createAgentTool(deps: AgentToolDeps): ToolDef {
+export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' = 'Agent'): ToolDef {
   return {
-    name: 'Agent',
+    name: toolName,
     description:
       'Delegate a self-contained subtask to a subagent that works in its own context with the same tools and permissions, then returns a concise final report.',
     guidance: AGENT_GUIDANCE,
@@ -103,7 +109,7 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
     },
     async run(raw, ctx) {
       const input = raw as unknown as AgentToolInput
-      if (!ctx.toolUseId) throw new Error('Agent requires a tool_use id')
+      if (!ctx.toolUseId) throw new Error(`${toolName} requires a tool_use id`)
       if (typeof input.prompt !== 'string' || !input.prompt.trim()) {
         return { text: 'prompt is required', isError: true }
       }
@@ -156,6 +162,17 @@ export function createAgentTool(deps: AgentToolDeps): ToolDef {
       const assistantTexts: string[] = []
       let turn: Awaited<ReturnType<typeof runTurn>>
       try {
+        const description = typeof input.description === 'string' ? input.description.trim() : ''
+        await deps.appendDescriptor({
+          type: 'subagent/descriptor',
+          toolUseId: ctx.toolUseId,
+          parentToolUseId: deps.frameCtx.parentToolUseId ?? null,
+          kind: 'agent',
+          toolName,
+          label: description || requested || 'Subagent',
+          depth: 1,
+          profile: profile ? structuredClone(profile) : null,
+        })
         turn = await runTurn(
           {
             stream: (req) => deps.streamFor(req, {

@@ -1,5 +1,5 @@
 // server/providers/native/subagent.test.ts
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { defaultFrameContext, type Frame } from './frames.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -97,6 +97,7 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
     streamFor: async function* () { /* replaced by tests */ },
     requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
     emit: () => {},
+    appendDescriptor: async (input) => ({ ...input, seq: 0, timestamp: 't' }),
     ...over,
   }
 }
@@ -146,6 +147,91 @@ describe('createAgentTool', () => {
       .toBe('general-purpose')
     expect(agent.backgroundable?.subagentType?.({ description: 'd', prompt: 'p', subagent_type: 42 }))
       .toBe('general-purpose')
+  })
+
+  it('persists the descriptor before the first nested stream call', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'done'), deltaStop('end_turn')]])
+    let releaseDescriptor!: () => void
+    const gate = new Promise<void>((resolve) => { releaseDescriptor = resolve })
+    const appendDescriptor = vi.fn(async (input: Parameters<AgentToolDeps['appendDescriptor']>[0]) => {
+      await gate
+      return { ...input, seq: 4, timestamp: 't' }
+    })
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      appendDescriptor,
+    }))
+
+    const pending = runAgent(agent, { description: '  inspect logs  ', prompt: 'p' })
+    await vi.waitFor(() => expect(appendDescriptor).toHaveBeenCalledOnce())
+    expect(s.calls).toHaveLength(0)
+    expect(appendDescriptor).toHaveBeenCalledWith({
+      type: 'subagent/descriptor',
+      toolUseId: 'tu-parent',
+      parentToolUseId: null,
+      kind: 'agent',
+      toolName: 'Agent',
+      label: 'inspect logs',
+      depth: 1,
+      profile: null,
+    })
+
+    releaseDescriptor()
+    expect(await pending).toEqual({ text: 'done' })
+    expect(s.calls).toHaveLength(1)
+  })
+
+  it('returns an outer error without streaming when descriptor persistence fails', async () => {
+    const s = scriptedStreamer([])
+    const emitted: Frame[] = []
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      emit: (frame) => emitted.push(frame as Frame),
+      appendDescriptor: async () => { throw new Error('disk full') },
+    }))
+
+    const outcome = await runAgent(agent, { description: 'd', prompt: 'p' })
+
+    expect(outcome).toEqual({ text: 'disk full', isError: true })
+    expect(s.calls).toHaveLength(0)
+    expect(emitted).toHaveLength(0)
+  })
+
+  it('records the Task tool name and a detached custom profile snapshot', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'done'), deltaStop('end_turn')]])
+    const appendDescriptor = vi.fn(baseDeps().appendDescriptor)
+    const definition = {
+      name: 'reviewer', description: 'Reviews', prompt: 'REVIEW', enabled: true,
+      tools: ['Read'], skills: [],
+    }
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      appendDescriptor,
+      agentStore: fakeStore({ reviewer: definition }),
+    }), 'Task')
+
+    expect(agent.name).toBe('Task')
+    expect(await runAgent(agent, {
+      description: '', prompt: 'p', subagent_type: 'reviewer',
+    })).toEqual({ text: 'done' })
+    const descriptor = appendDescriptor.mock.calls[0][0]
+    expect(descriptor).toMatchObject({
+      toolName: 'Task',
+      label: 'reviewer',
+      profile: { name: 'reviewer', instruction: 'REVIEW', tools: ['Read'], skills: [] },
+    })
+    expect(descriptor.profile?.tools).not.toBe(definition.tools)
+    expect(descriptor.profile?.skills).not.toBe(definition.skills)
+  })
+
+  it('falls back to the generic descriptor label', async () => {
+    const s = scriptedStreamer([[startStop, ...textBlock(0, 'done'), deltaStop('end_turn')]])
+    const appendDescriptor = vi.fn(baseDeps().appendDescriptor)
+    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s), appendDescriptor }))
+
+    await runAgent(agent, { description: 7, prompt: 'p' })
+
+    expect(appendDescriptor.mock.calls[0][0].label).toBe('Subagent')
   })
 
   it('forwards nested frames with the parent tool_use id and no result frame', async () => {
@@ -418,10 +504,12 @@ describe('createAgentTool', () => {
     expect(s.calls).toHaveLength(1)
   })
 
-  it('rejects unsupported definition fields before starting a nested stream', async () => {
+  it('rejects unsupported definition fields before appending or starting a nested stream', async () => {
     const s = scriptedStreamer([])
+    const appendDescriptor = vi.fn(baseDeps().appendDescriptor)
     const agent = createAgentTool(baseDeps({
       streamFor: s.streamFor.bind(s),
+      appendDescriptor,
       agentStore: fakeStore({
         invalid: {
           name: 'invalid', description: 'Invalid', prompt: 'INVALID', enabled: true,
@@ -437,12 +525,15 @@ describe('createAgentTool', () => {
     expect(outcome.text).toContain('effort')
     expect(outcome.text).toContain('Supported fields:')
     expect(s.calls).toHaveLength(0)
+    expect(appendDescriptor).not.toHaveBeenCalled()
   })
 
   it('rejects an unknown or disabled subagent_type without running', async () => {
     const s = scriptedStreamer([])
+    const appendDescriptor = vi.fn(baseDeps().appendDescriptor)
     const agent = createAgentTool(baseDeps({
       streamFor: s.streamFor.bind(s),
+      appendDescriptor,
       agentStore: fakeStore({
         off: { name: 'off', description: 'Disabled', prompt: 'OFF-PROMPT', enabled: false },
       }),
@@ -453,6 +544,7 @@ describe('createAgentTool', () => {
     expect(await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'off' }))
       .toEqual({ text: 'unknown subagent_type: off', isError: true })
     expect(s.calls).toHaveLength(0)
+    expect(appendDescriptor).not.toHaveBeenCalled()
   })
 
   it('requires a non-empty prompt', async () => {
@@ -490,9 +582,10 @@ describe('createAgentTool', () => {
     expect(outcome).toEqual({ text: '(no output)' })
   })
 
-  it('returns aborted for an already-aborted signal without starting', async () => {
+  it('returns aborted for an already-aborted signal without appending or starting', async () => {
     const s = scriptedStreamer([])
-    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s) }))
+    const appendDescriptor = vi.fn(baseDeps().appendDescriptor)
+    const agent = createAgentTool(baseDeps({ streamFor: s.streamFor.bind(s), appendDescriptor }))
     const ac = new AbortController()
     ac.abort()
 
@@ -500,6 +593,7 @@ describe('createAgentTool', () => {
 
     expect(outcome).toEqual({ text: 'aborted', isError: true })
     expect(s.calls).toHaveLength(0)
+    expect(appendDescriptor).not.toHaveBeenCalled()
   })
 
   it('returns aborted when the signal aborts while the nested run ignores it', async () => {

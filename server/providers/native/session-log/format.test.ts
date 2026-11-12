@@ -43,6 +43,30 @@ const selectionInput: NativeEventInput = {
   timestamp: '2026-11-11T00:00:00.000Z',
 }
 
+const descriptorEvent: NativeLogEvent = {
+  seq: 8,
+  type: 'subagent/descriptor',
+  toolUseId: 'task-1',
+  parentToolUseId: 'agent-parent',
+  kind: 'agent',
+  toolName: 'Task',
+  label: 'Review the change',
+  depth: 2,
+  profile: {
+    name: 'reviewer',
+    instruction: 'Review the change carefully.',
+    model: 'claude-opus-4-1',
+    tools: ['Read'],
+    disallowedTools: ['Bash'],
+    mcpServers: ['workspace'],
+    skills: [],
+    permissionMode: 'plan',
+    maxTurns: 5,
+    effort: 'high',
+  },
+  timestamp: '2026-11-12T00:00:00.000Z',
+}
+
 function expectCorrupt(raw: unknown): void {
   expect(() => parseEventLine(raw, 0, 's1', 'p')).toThrow(NativeSessionStorageError)
   try {
@@ -81,6 +105,39 @@ describe('session log format', () => {
     expect(parseEventLine(events[1], 1, 's1', 'p')).toMatchObject({
       message: { id: 'msg_1', model: 'm' },
     })
+  })
+  it('round-trips a subagent descriptor with its detached profile and empty skills', () => {
+    const serialized = serializeEvent(descriptorEvent)
+    const parsed = parseEventLine(JSON.parse(serialized), 8, 's1', 'p')
+    expect(parsed).toEqual(descriptorEvent)
+    expect(parsed).toMatchObject({ toolName: 'Task', profile: { skills: [] } })
+  })
+  it('rejects malformed subagent descriptors as corrupt', () => {
+    const valid = { ...descriptorEvent, seq: 0 } as Record<string, unknown>
+    const profile = valid.profile as Record<string, unknown>
+    const cases: unknown[] = [
+      { ...valid, depth: 0 },
+      { ...valid, depth: 1.5 },
+      { ...valid, toolName: 'Bash' },
+      { ...valid, kind: 'other' },
+      { ...valid, toolUseId: '' },
+      { ...valid, parentToolUseId: 7 },
+      { ...valid, label: '' },
+      { ...valid, timestamp: '' },
+      { ...valid, profile: { ...profile, name: 7 } },
+      { ...valid, profile: { ...profile, skills: 'none' } },
+      { ...valid, profile: { ...profile, effort: 'ultra' } },
+      { ...valid, profile: { ...profile, injected: true } },
+      { ...valid, injected: true },
+    ]
+    for (const raw of cases) expectCorrupt(raw)
+    for (const field of [
+      'toolUseId', 'parentToolUseId', 'kind', 'toolName', 'label', 'depth', 'profile', 'timestamp',
+    ]) {
+      const missing = { ...valid }
+      delete missing[field]
+      expectCorrupt(missing)
+    }
   })
   it('round-trips an appended agent selection with its definition and base snapshots', () => {
     const appended = { ...selectionInput, seq: 7 }
