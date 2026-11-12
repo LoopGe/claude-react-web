@@ -64,6 +64,7 @@ import {
 } from './subagent-transcripts.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
+import type { SubagentTranscriptSource } from './subagent-transcript-source.js'
 
 const log = createLogger('subagent-transcripts')
 const DEBOUNCE_MS = 200
@@ -129,7 +130,11 @@ interface WatcherRetry {
   attempts: number
 }
 
-export class SubagentTranscriptHub {
+export interface SubagentTranscriptHub extends SubagentTranscriptSource {
+  close(): void
+}
+
+export class ClaudeSubagentTranscriptHub implements SubagentTranscriptHub {
   private files = new Map<string, FileState>()
   private watchers = new Map<string, WatcherEntry>()
   private retries = new Map<string, WatcherRetry>()
@@ -494,3 +499,7 @@ export class SubagentTranscriptHub {
     }
   }
 }
+
+/** Preserve the original constructor export while the type name denotes the
+ * provider-neutral public contract used by the legacy WS transport signature. */
+export const SubagentTranscriptHub = ClaudeSubagentTranscriptHub

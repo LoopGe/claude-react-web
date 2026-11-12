@@ -22,7 +22,7 @@
 
 import type { SessionBroadcaster } from './session-types.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
-import type { SubagentTranscriptHub } from './subagent-transcript-hub.js'
+import type { SubagentTranscriptSource } from './subagent-transcript-source.js'
 import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 import { imagePayloadOfMessage } from '../shared/user-frames.js'
@@ -64,9 +64,9 @@ export interface FrameSink {
 export interface FrameBridgeDeps {
   sm: SessionBroadcaster
   appPlugins?: AppPluginBroadcaster
-  /** Optional subagent on-disk transcript hub. When absent, a
+  /** Optional provider-neutral subagent transcript source. When absent, a
    *  `subagent-transcript-subscribe` frame is answered with an `error`. */
-  subagentTranscripts?: SubagentTranscriptHub
+  subagentTranscripts?: SubagentTranscriptSource
 }
 
 function hookSnapshotEvent(run: HookRunRecord): HookRuntimeEvent {
@@ -141,7 +141,7 @@ export class SessionConnection {
   private readonly sink: FrameSink
   private readonly sm: SessionBroadcaster
   private readonly appPlugins?: AppPluginBroadcaster
-  private readonly subagentTranscripts?: SubagentTranscriptHub
+  private readonly subagentTranscripts?: SubagentTranscriptSource
 
   private readonly subs = new Map<string, SessionSub>()
   /** Live subagent-transcript subscriptions keyed by `sessionId::agentId`. */
@@ -303,7 +303,17 @@ export class SessionConnection {
         }
         const key = `${f.sessionId}::${f.agentId}`
         if (this.subagentSubs.has(key)) return // duplicate subscribe — snapshot already streaming
-        const sub = this.subagentTranscripts.subscribeSubagentTranscript(f.sessionId, f.agentId)
+        let sub: ReturnType<SubagentTranscriptSource['subscribeSubagentTranscript']>
+        try {
+          sub = this.subagentTranscripts.subscribeSubagentTranscript(f.sessionId, f.agentId)
+        } catch (err) {
+          this.sink.send({
+            kind: 'error',
+            sessionId: f.sessionId,
+            message: `subagent-transcript subscribe: ${(err as Error).message}`,
+          })
+          return
+        }
         this.subagentSubs.set(key, sub)
         void (async () => {
           try {

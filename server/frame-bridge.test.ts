@@ -10,6 +10,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { SessionConnection, type FrameSink } from './frame-bridge.js'
 import { createPushable, type Pushable } from './pushable.js'
 import type { SubagentTranscriptFrame } from './subagent-transcript-hub.js'
+import type { SubagentTranscriptSource } from './subagent-transcript-source.js'
 import type {
   DialogEvent,
   ElicitationEvent,
@@ -1038,6 +1039,25 @@ describe('SessionConnection: subagent-transcript channel', () => {
     pushed[0].push({ sessionId: 's1', agentId: 'a1', reset: false, frames: [{ uuid: 'x' }] })
     await waitForFrame(sink, (_f) => false, 50).catch(() => {})
     expect(sink.frames.length).toBe(before)
+  })
+
+  it('surfaces provider capability errors without registering a subscription', async () => {
+    const source: SubagentTranscriptSource = {
+      subscribeSubagentTranscript: () => {
+        throw new Error('provider native does not support subagent transcripts')
+      },
+    }
+    const sink = new FakeSink()
+    const conn = new SessionConnection(
+      { sm: new FakeBroadcaster(), subagentTranscripts: source },
+      sink,
+    )
+
+    send(conn, { kind: 'subagent-transcript-subscribe', sessionId: 'native-1', agentId: 'a1' })
+
+    await waitForFrame(sink, (f) =>
+      f.kind === 'error' && String(f.message).includes('provider native does not support subagent transcripts'))
+    send(conn, { kind: 'subagent-transcript-unsubscribe', sessionId: 'native-1', agentId: 'a1' })
   })
 
   it('answers subscribe with an error frame when no hub is wired', async () => {

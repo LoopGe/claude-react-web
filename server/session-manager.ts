@@ -7287,6 +7287,26 @@ export class SessionManager {
     }
   }
 
+  /** Attach a callback to the existing per-session live fan-out for a
+   *  provider-owned subagent transcript source. Dormant sessions deliberately
+   *  return null: their source serves a disk reset and must not resume them.
+   *  Unknown ids remain a real 404 rather than being mislabeled as dormant. */
+  subscribeLiveSubagentFrames(id: string, emit: (frame: SDKMessage) => void): (() => void) | null {
+    if (!this.sessions.has(id)) {
+      this.requireKnownSession(id)
+      return null
+    }
+    const sub = this.subscribe(id)
+    void (async () => {
+      try {
+        for await (const frame of sub.iterable) emit(frame)
+      } catch (err) {
+        log.warn(`[session ${id}] live subagent frame subscription failed: ${(err as Error).message}`)
+      }
+    })()
+    return () => sub.unsubscribe()
+  }
+
   /** One orphan-worktree sweep, invoked by the health monitor's 60s GC
    *  tick (fire-and-forget — the sweep is best-effort and never throws).
    *  A dir under <stateDir>/worktrees is orphaned when no session claims

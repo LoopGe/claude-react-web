@@ -25,6 +25,8 @@ import { defaultStateDir } from './persistence.js'
 import { createServerContext } from './bootstrap.js'
 import { attachWebSocket } from './ws.js'
 import { SubagentTranscriptHub } from './subagent-transcript-hub.js'
+import { ProviderSubagentTranscriptHub } from './subagent-transcript-source.js'
+import { NativeSubagentTranscriptSource } from './providers/native/subagent-transcript-source.js'
 import { checkForUpdates } from './update-checker.js'
 import { startEventLoopProbe } from './event-loop-probe.js'
 import { normalizeClaudeConfigDirEnv } from './claude-config-dir.js'
@@ -242,7 +244,17 @@ async function runServer(args: CliArgs): Promise<void> {
   // returned shutdown fn closes every live socket during SIGINT.
   // @hono/node-server returns a Node http.Server (same shape), so cast
   // is safe.
-  const subagentTranscriptHub = new SubagentTranscriptHub()
+  const claudeSubagentTranscriptHub = new SubagentTranscriptHub()
+  const subagentTranscriptHub = new ProviderSubagentTranscriptHub({
+    // Resolve lazily per subscribe: the manager owns provider/capability state,
+    // and constructing the router must not reach back into manager construction.
+    resolveProvider: (id) => sessionManager.resolveSubagentTranscriptProvider(id),
+    claude: claudeSubagentTranscriptHub,
+    native: new NativeSubagentTranscriptSource({
+      stateDir: ctx.stateDir,
+      subscribeLive: (id, emit) => sessionManager.subscribeLiveSubagentFrames(id, emit),
+    }),
+  })
   const wsShutdown = attachWebSocket(
     server as unknown as Server,
     sessionManager,

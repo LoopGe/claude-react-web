@@ -9252,6 +9252,48 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(readTranscript).toHaveBeenNthCalledWith(2, ref, 'agent-1')
   })
 
+  it('fans live subagent frames through the existing subscriber path and cleans up', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    const subscribe = vi.spyOn(sm, 'subscribe')
+    const emitted: SDKMessage[] = []
+
+    const cleanup = sm.subscribeLiveSubagentFrames(info.id, (frame) => emitted.push(frame))
+    expect(cleanup).toEqual(expect.any(Function))
+    expect(subscribe).toHaveBeenCalledWith(info.id)
+
+    mockHandles[0].emit({
+      type: 'assistant',
+      uuid: 'sidechain-live',
+      session_id: info.id,
+      parent_tool_use_id: 'agent-1',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'live' }] },
+    })
+    await vi.waitFor(() => expect(emitted.map((frame) => frame.uuid)).toContain('sidechain-live'))
+
+    cleanup!()
+    mockHandles[0].emit({
+      type: 'assistant',
+      uuid: 'after-cleanup',
+      session_id: info.id,
+      parent_tool_use_id: 'agent-1',
+      message: { role: 'assistant', content: [] },
+    })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(emitted.map((frame) => frame.uuid)).not.toContain('after-cleanup')
+  })
+
+  it('returns null for a dormant subagent live subscription without resuming or throwing 404', async () => {
+    const info = await sm.create({ provider: 'native', cwd: TEST_CWD })
+    await sm.unload(info.id)
+    const resume = vi.spyOn(sm, 'resume')
+
+    expect(sm.subscribeLiveSubagentFrames(info.id, () => {})).toBeNull()
+    expect(resume).not.toHaveBeenCalled()
+    expect(() => sm.subscribeLiveSubagentFrames('ghost', () => {})).toThrowError(
+      expect.objectContaining({ status: 404 }),
+    )
+  })
+
   it('returns 404 for subagent operations on an unknown session', async () => {
     expect(() => sm.resolveSubagentTranscriptProvider('ghost')).toThrowError(expect.objectContaining({ status: 404 }))
     await expect(sm.listSubagents('ghost')).rejects.toMatchObject({ status: 404 })
