@@ -79,7 +79,15 @@ native provider 目前在 `NativeSession.history` 里保存对话，进程退出
 ### 6.2 头部（第一行，无 `seq`）
 
 ```json
-{"type":"session/header","v":1,"id":"<uuid>","cwd":"...","createdAt":1690000000000,"isSeeded":false,"inheritedEventCount":0}
+{
+  "type": "session/header",
+  "v": 1,
+  "id": "<uuid>",
+  "cwd": "...",
+  "createdAt": 1690000000000,
+  "isSeeded": false,
+  "inheritedEventCount": 0
+}
 ```
 
 ### 6.3 事件（后续每行，`seq` 从 0 连续）
@@ -167,12 +175,12 @@ native 标记事件（不渲染）：
 
 `NativeSession` 构造时按选项分流：
 
-| 条件 | 行为 |
-|---|---|
-| `forkSession && resume` | 从 `resume`（源 id）fork 到 `opts.id`，见 §10 |
-| `resume && !forkSession` | 加载 `opts.id` 自己的日志 |
+| 条件                          | 行为                                                                                                                                         |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `forkSession && resume`       | 从 `resume`（源 id）fork 到 `opts.id`，见 §10                                                                                                |
+| `resume && !forkSession`      | 加载 `opts.id` 自己的日志                                                                                                                    |
 | 其他（fresh）且同 id 已有日志 | 以 `NativeSessionStorageError(kind:'exists')` **拒绝**，不覆盖、不轮转；正常路径不应发生（`respawnFresh` 只在 `hasTranscript` false 时调用） |
-| 其他（fresh）且无日志 | 新建日志 |
+| 其他（fresh）且无日志         | 新建日志                                                                                                                                     |
 
 恢复步骤：
 
@@ -286,7 +294,14 @@ P1.1 在持久化之上补两件事：跨 turn 复用稳定的 prompt 前缀（p
 ### `session/compact` 日志事件
 
 ```json
-{"seq":5,"type":"session/compact","text":"<summary>","context":"<system-reminder>...</system-reminder>","uuid":"...","timestamp":"..."}
+{
+  "seq": 5,
+  "type": "session/compact",
+  "text": "<summary>",
+  "context": "<system-reminder>...</system-reminder>",
+  "uuid": "...",
+  "timestamp": "..."
+}
 ```
 
 - `text`：摘要正文；`context`：压缩时刻重新抓取的 `<system-reminder>` 快照；`uuid`：与客户端 compact boundary 帧共享的身份；`timestamp` / `seq`：与其他事件一致。

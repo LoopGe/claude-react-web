@@ -18,22 +18,22 @@ native 已具备单层同步 Agent、本地技能目录和自定义 `subagent_ty
 
 以下结论来自 DSH 当前实现，而不是由功能名称推断。
 
-| 行为 | DSH | native 当前 | 设计结论 |
-|---|---|---|---|
-| 子代理工具名 | `tool-subagent` 的 `toolName` 可配置，默认 `subagent`；没有固定的 Agent/Task/Explore 三件套 | 只有 `Agent` | Task/Explore 是 Claude 兼容项，不是 DSH 对齐的前置项 |
-| 默认嵌套深度 | Host 默认 `maxDepth=1`；depth 持久化且只能加深不能减小 | 子代理工具列表移除 Agent，固定一层 | 当前一层限制与 DSH 默认一致；本批不扩层，只把 depth 显式记录 |
-| 同步结果与后台激活 | `startActivation` 立即返回 child name，完成通知随后自动投递；工具可并发 | 同步嵌套 `runTurn`，最终报告作为 tool_result | 不用 DSH activation 替换现有 Claude 同步语义；continuable/launch-background 另项 |
-| fresh / fork 子代理 | spawn fresh history；fork 以最后一个已完成 `turn/end` 为界继承父日志前缀 | 只有 fresh nested history | forked 上下文继承属于后续执行模式，不与普通 Agent 混写 |
-| 子代理目录 | 父日志有 `subagent/catalog`，每个 local child 有独立 Session；支持 direct children 和 descendants | sidechain 与主消息共用一个日志，无正式目录 | 保留单日志，增加 history-only descriptor/catalog，派生子代理视图，不复制独立 Session 架构 |
-| 子代理 timing/progress | 有 descriptor、catalog 和 turn timing projection；未发现 Claude 式周期 `progressSummary` | 有 sidechain 和后台 task 生命周期，无周期摘要 | 周期 prose summary 不作为 DSH 对齐项；先做目录、状态和 transcript |
-| 主 preset | Cordis 插件组合；`agent-preset/selected` 写入日志，保留 revision | `opts.agent` 未应用 | 借鉴“选择可恢复、revision 可保留”，不引入 Cordis |
-| preset 切换时机 | 仅 blank session 可改；首个 turn 后 `agent-preset/locked` | manager/Claude 暴露 live `setAgent` | 保留本应用已有的 next-turn live switch，作为与 DSH 的明确差异；选择事件在下一轮前落盘 |
-| 子代理 preset | spawn provider 支持独立 preset；fork provider 不支持独立 preset，继承父 composition | `subagent_type` 只应用 prompt/model | 用统一 profile 表达字段，明确 fresh 与继承模式的差异 |
-| 模型调用 Skill | `skill` 工具返回正文，没有 forked Skill runner | 同样返回正文 | 已对齐基本路径 |
-| 用户 `/skill` | 原始用户消息保持不变，另追加 `skill-invocation` instructions 消息 | 日志改写为展开正文 | 直接采用“原始消息 + 独立技能注入事件” |
-| forked Skill | 技能包内没有通用 forked Skill 执行器；另有通用 fork subagent provider | 不支持 | 不是 DSH 基线缺口；作为 Claude 兼容的后续独立项 |
-| 插件/打包技能 | provider registry + rank/scope，支持自定义和 bundled roots | 用户/项目目录 | bundled/provider 可复用目录视图；Claude Marketplace 插件技能依赖插件项目 |
-| context usage | 粗粒度 system/tools/message tokens；无 per-skill/frontmatter token 桶 | input + cache usage | per-skill token 明细从对齐清单移除 |
+| 行为                   | DSH                                                                                               | native 当前                                   | 设计结论                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 子代理工具名           | `tool-subagent` 的 `toolName` 可配置，默认 `subagent`；没有固定的 Agent/Task/Explore 三件套       | 只有 `Agent`                                  | Task/Explore 是 Claude 兼容项，不是 DSH 对齐的前置项                                      |
+| 默认嵌套深度           | Host 默认 `maxDepth=1`；depth 持久化且只能加深不能减小                                            | 子代理工具列表移除 Agent，固定一层            | 当前一层限制与 DSH 默认一致；本批不扩层，只把 depth 显式记录                              |
+| 同步结果与后台激活     | `startActivation` 立即返回 child name，完成通知随后自动投递；工具可并发                           | 同步嵌套 `runTurn`，最终报告作为 tool_result  | 不用 DSH activation 替换现有 Claude 同步语义；continuable/launch-background 另项          |
+| fresh / fork 子代理    | spawn fresh history；fork 以最后一个已完成 `turn/end` 为界继承父日志前缀                          | 只有 fresh nested history                     | forked 上下文继承属于后续执行模式，不与普通 Agent 混写                                    |
+| 子代理目录             | 父日志有 `subagent/catalog`，每个 local child 有独立 Session；支持 direct children 和 descendants | sidechain 与主消息共用一个日志，无正式目录    | 保留单日志，增加 history-only descriptor/catalog，派生子代理视图，不复制独立 Session 架构 |
+| 子代理 timing/progress | 有 descriptor、catalog 和 turn timing projection；未发现 Claude 式周期 `progressSummary`          | 有 sidechain 和后台 task 生命周期，无周期摘要 | 周期 prose summary 不作为 DSH 对齐项；先做目录、状态和 transcript                         |
+| 主 preset              | Cordis 插件组合；`agent-preset/selected` 写入日志，保留 revision                                  | `opts.agent` 未应用                           | 借鉴“选择可恢复、revision 可保留”，不引入 Cordis                                          |
+| preset 切换时机        | 仅 blank session 可改；首个 turn 后 `agent-preset/locked`                                         | manager/Claude 暴露 live `setAgent`           | 保留本应用已有的 next-turn live switch，作为与 DSH 的明确差异；选择事件在下一轮前落盘     |
+| 子代理 preset          | spawn provider 支持独立 preset；fork provider 不支持独立 preset，继承父 composition               | `subagent_type` 只应用 prompt/model           | 用统一 profile 表达字段，明确 fresh 与继承模式的差异                                      |
+| 模型调用 Skill         | `skill` 工具返回正文，没有 forked Skill runner                                                    | 同样返回正文                                  | 已对齐基本路径                                                                            |
+| 用户 `/skill`          | 原始用户消息保持不变，另追加 `skill-invocation` instructions 消息                                 | 日志改写为展开正文                            | 直接采用“原始消息 + 独立技能注入事件”                                                     |
+| forked Skill           | 技能包内没有通用 forked Skill 执行器；另有通用 fork subagent provider                             | 不支持                                        | 不是 DSH 基线缺口；作为 Claude 兼容的后续独立项                                           |
+| 插件/打包技能          | provider registry + rank/scope，支持自定义和 bundled roots                                        | 用户/项目目录                                 | bundled/provider 可复用目录视图；Claude Marketplace 插件技能依赖插件项目                  |
+| context usage          | 粗粒度 system/tools/message tokens；无 per-skill/frontmatter token 桶                             | input + cache usage                           | per-skill token 明细从对齐清单移除                                                        |
 
 关键 DSH 证据：
 
@@ -91,17 +91,17 @@ interface NativeAgentProfile {
 
 ### 4.1 首批字段矩阵
 
-| 字段 | 主线程 | 嵌套 Agent | 规则 |
-|---|---|---|---|
-| `prompt` | 是 | 是 | 主线程附加到 base system；嵌套附加到 subagent system |
-| `model` | 是 | 是 | persona model 是 override，不改写 base model |
-| `tools` | 是 | 是 | 在 builtins + 当前 MCP 全量重建后做 allowlist；`[]` 表示无工具 |
-| `disallowedTools` | 是 | 是 | 在 allowlist 后最后扣除；FQN 与工具名按同一规则匹配 |
-| `mcpServers` | 是 | 是 | 按已解析 server metadata 过滤，不解析 FQN 字符串猜 server |
-| `skills` | 是 | 是 | 生成同一 catalog 的 scoped view，exclude 后 override 不能复活 |
-| `permissionMode` | 是 | 是 | 下一轮生效；嵌套通过 requestPermission 的模式上下文，不改父会话字段 |
-| `maxTurns` | 是 | 是 | `runTurn` 接受显式轮数上限；到顶返回明确的非成功结果，不能静默继续 |
-| `effort` | 仅字符串枚举 | 仅字符串枚举 | 数值 effort 尚无 native 映射，显式拒绝 |
+| 字段              | 主线程       | 嵌套 Agent   | 规则                                                                |
+| ----------------- | ------------ | ------------ | ------------------------------------------------------------------- |
+| `prompt`          | 是           | 是           | 主线程附加到 base system；嵌套附加到 subagent system                |
+| `model`           | 是           | 是           | persona model 是 override，不改写 base model                        |
+| `tools`           | 是           | 是           | 在 builtins + 当前 MCP 全量重建后做 allowlist；`[]` 表示无工具      |
+| `disallowedTools` | 是           | 是           | 在 allowlist 后最后扣除；FQN 与工具名按同一规则匹配                 |
+| `mcpServers`      | 是           | 是           | 按已解析 server metadata 过滤，不解析 FQN 字符串猜 server           |
+| `skills`          | 是           | 是           | 生成同一 catalog 的 scoped view，exclude 后 override 不能复活       |
+| `permissionMode`  | 是           | 是           | 下一轮生效；嵌套通过 requestPermission 的模式上下文，不改父会话字段 |
+| `maxTurns`        | 是           | 是           | `runTurn` 接受显式轮数上限；到顶返回明确的非成功结果，不能静默继续  |
+| `effort`          | 仅字符串枚举 | 仅字符串枚举 | 数值 effort 尚无 native 映射，显式拒绝                              |
 
 以下字段本批不支持，**显式拒绝选择并列出字段名**，不得继续静默忽略：
 
