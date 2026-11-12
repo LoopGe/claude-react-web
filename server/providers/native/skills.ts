@@ -112,6 +112,17 @@ export class NativeSkillCatalog {
     this.byName = new Map(entries.map((entry) => [entry.record.name, entry]))
   }
 
+  /** An immutable view over the CURRENT cached entries and overrides. A turn
+   *  takes this after its discovery await so a later reload cannot mix a new
+   *  prompt section or Skill-tool body with the invocation it already stored. */
+  snapshot(policy?: readonly string[] | 'all'): NativeSkillInvocationView {
+    const snapshot = new NativeSkillCatalog(this.cwd)
+    snapshot.overrides = { ...this.overrides }
+    snapshot.entries = [...this.entries]
+    snapshot.byName = new Map(this.byName)
+    return snapshot.view(policy)
+  }
+
   /** A scoped policy over the same discovery cache. The view reads the
    *  catalog's current entries on every call, so reloads are visible without
    *  another disk scan. */

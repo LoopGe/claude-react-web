@@ -2575,6 +2575,129 @@ describe('NativeSession', () => {
     }
   })
 
+  it('freezes every execution field and effective tool when a persona switches pre-request', async () => {
+    const dir = await tempDir('native-turn-profile-snapshot-')
+    await writeProjectSkill(dir, 'demo')
+    await writeProjectSkill(dir, 'other')
+    const first = agentDefinition({
+      prompt: 'FIRST-PERSONA', model: 'first-model', tools: ['Read', 'Skill'], skills: ['demo'],
+      permissionMode: 'plan', effort: 'low',
+    })
+    const second = agentDefinition({
+      name: 'second', prompt: 'SECOND-PERSONA', model: 'second-model', tools: ['Bash'], skills: ['other'],
+      permissionMode: 'bypassPermissions', effort: 'xhigh',
+    })
+    const provider = new NativeProvider({
+      stateDir: dir,
+      agentStore: agentStoreOf({ reviewer: first, second }),
+    })
+    const requests: CapturedRequest[] = []
+    const permissionModes: Array<string | undefined> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [toolTurn('read-under-first'), textTurn('done')], requests,
+    )
+    const session = provider.createSession({
+      id: 'turn-profile-snapshot', cwd: dir, agent: 'reviewer',
+      providerExtras: { sdkOptions: { tools: ['Read', 'Skill', 'Bash'], skills: 'all' } },
+      canUseTool: async (_name: unknown, input: unknown, ctx: unknown) => {
+        permissionModes.push((ctx as { permissionMode?: string }).permissionMode)
+        return { behavior: 'allow', updatedInput: input }
+      },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    const mcpGate = deferred<void>()
+    const efforts: Array<string | undefined> = []
+    const internals = session as unknown as {
+      mcp: unknown
+      streamFor: (
+        req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal },
+        opts?: { effortLevel?: () => 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined },
+      ) => AsyncIterable<CanonicalEvent>
+    }
+    internals.mcp = {
+      whenReady: () => mcpGate.promise,
+      tools: () => [],
+      statuses: () => [],
+      closeAll: async () => {},
+    }
+    const streamFor = internals.streamFor.bind(session)
+    internals.streamFor = (req, opts) => {
+      efforts.push(opts?.effortLevel?.())
+      return streamFor(req, opts)
+    }
+    try {
+      expect(await session.supportedCommands?.()).toEqual([
+        { name: 'demo', description: 'demo description', argumentHint: '' },
+      ])
+      session.enqueueUserMessage(userMsg('/demo do this') as never)
+      await vi.waitFor(() => expect(logOf(session).events.some((event) => event.type === 'session/skill')).toBe(true))
+      await session.applyFlagSettings?.({ agent: 'second' })
+      expect(effectiveSettingsOf(session)).toMatchObject({ model: 'second-model', agent: 'second' })
+      mcpGate.resolve()
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+
+      expect(requests[0].model).toBe('first-model')
+      expect(requests[0].tools.map((tool) => tool.name)).toEqual(['Read', 'Skill'])
+      expect(requests[0].system).toContain('FIRST-PERSONA')
+      expect(requests[0].system).toContain('- demo: demo description')
+      expect(requests[0].system).not.toContain('SECOND-PERSONA')
+      expect(requests[0].system).not.toContain('- other')
+      expect(permissionModes).toEqual(['plan'])
+      expect(efforts).toEqual(['low', 'low'])
+    } finally {
+      mcpGate.resolve()
+      await session.destroy()
+    }
+  })
+
+  it('keeps invocation, prompt section, and Skill tool on one reload-isolated snapshot', async () => {
+    const dir = await tempDir('native-turn-skill-snapshot-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo v1', description: 'demo v1' })
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: CapturedRequest[] = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer(
+      [skillTurn('skill-snapshot', 'demo'), textTurn('done')], requests,
+    )
+    const session = provider.createSession({
+      id: 'turn-skill-snapshot', cwd: dir, permissionMode: 'bypassPermissions',
+      providerExtras: { sdkOptions: { skills: 'all' } },
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    const mcpGate = deferred<void>()
+    ;(session as unknown as { mcp: unknown }).mcp = {
+      whenReady: () => mcpGate.promise,
+      tools: () => [],
+      statuses: () => [],
+      closeAll: async () => {},
+    }
+    try {
+      await session.supportedCommands?.()
+      session.enqueueUserMessage(userMsg('/demo do this') as never)
+      await vi.waitFor(() => expect(logOf(session).events.some((event) => event.type === 'session/skill')).toBe(true))
+      await writeProjectSkill(dir, 'demo', { body: '# demo v2', description: 'demo v2' })
+      await session.reloadSkills?.()
+      mcpGate.resolve()
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+
+      const v1 = canonicalSkillBody(dir, 'demo', '# demo v1')
+      expect(logOf(session).events.find((event) => event.type === 'session/skill')).toMatchObject({ body: v1 })
+      expect(requests[0].system).toContain('- demo: demo v1')
+      expect(requests[0].system).not.toContain('demo v2')
+      expect(requests[0].messages.slice(-2)).toEqual([
+        { role: 'user', content: [{ type: 'text', text: '/demo do this' }] },
+        { role: 'user', content: [{ type: 'text', text: v1 }] },
+      ])
+      const toolResult = (requests[1].messages.at(-1) as { content: Array<{ content: Array<{ text: string }> }> })
+        .content[0]
+      expect(toolResult.content[0].text).toBe(v1)
+    } finally {
+      mcpGate.resolve()
+      await session.destroy()
+    }
+  })
+
   it('preserves a raw `/name args` turn and appends one canonical skill instruction', async () => {
     const dir = await tempDir('native-skill-expand-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
@@ -2651,14 +2774,12 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
     expect(requests).toHaveLength(1)
-    expect(JSON.stringify(requests[0]).match(/\/demo do this/g)).toHaveLength(1)
-    expect(JSON.stringify(requests[0])).toContain('second')
+    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    expect(requests[0]).toEqual(replayed.slice(0, -1))
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'skill-expand-fail', cwd: dir, resume: 'skill-expand-fail' })
-    const resumedHistory = JSON.stringify((resumed as unknown as { history: unknown[] }).history)
-    expect(resumedHistory.match(/\/demo do this/g)).toHaveLength(1)
-    expect(resumedHistory).toContain('second')
+    expect((resumed as unknown as { history: unknown[] }).history).toEqual(replayed)
     await resumed.destroy()
   })
 
@@ -3248,18 +3369,97 @@ describe('NativeSession', () => {
     session.enqueueUserMessage(userMsg('second') as never)
     await vi.waitFor(() => expect(frames.filter((f) => f.type === 'result')).toHaveLength(2))
     expect(requests).toHaveLength(1)
-    const liveHistory = JSON.stringify(requests[0].messages)
-    expect(liveHistory.match(/\/demo do this/g)).toHaveLength(1)
-    expect(liveHistory.match(/# demo body/g)).toHaveLength(1)
-    expect(liveHistory).toContain('second')
+    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    expect(requests[0].messages).toEqual(replayed.slice(0, -1))
 
     await session.destroy()
     const resumed = provider.createSession({ id: 'flush', cwd: dir, resume: 'flush' })
-    const resumedHistory = JSON.stringify((resumed as unknown as { history: unknown[] }).history)
-    expect(resumedHistory.match(/\/demo do this/g)).toHaveLength(1)
-    expect(resumedHistory.match(/# demo body/g)).toHaveLength(1)
-    expect(resumedHistory).toContain('second')
+    expect((resumed as unknown as { history: unknown[] }).history).toEqual(replayed)
     await resumed.destroy()
+  })
+
+  it('restores raw and skill messages exactly once after an MCP readiness failure', async () => {
+    const dir = await tempDir('native-mcp-history-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('recovered')], requests)
+    const session = provider.createSession({ id: 'mcp-history', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    const internals = session as unknown as { mcp: unknown; pumping: boolean }
+    internals.mcp = { whenReady: async () => { throw new Error('MCP not ready') } }
+
+    session.enqueueUserMessage(userMsg('/demo do this') as never)
+    await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+    expect((frames.find((frame) => frame.type === 'result') as Frame).result).toBe('MCP not ready')
+    expect(requests).toEqual([])
+    await vi.waitFor(() => expect(internals.pumping).toBe(false))
+
+    internals.mcp = undefined
+    session.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
+    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    expect(requests).toHaveLength(1)
+    expect(requests[0].messages).toEqual(replayed.slice(0, -1))
+    await session.destroy()
+  })
+
+  it('restores the initial prompt when runTurn rejects validation before taking ownership', async () => {
+    const dir = await tempDir('native-validation-history-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('recovered')], requests)
+    const session = provider.createSession({ id: 'validation-history', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    const internals = session as unknown as {
+      currentProfile: { name: string; maxTurns: number } | null
+      pumping: boolean
+    }
+    internals.currentProfile = { name: 'invalid', maxTurns: 0 }
+
+    session.enqueueUserMessage(userMsg('first') as never)
+    await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+    expect((frames.find((frame) => frame.type === 'result') as Frame).result).toContain('maxTurns')
+    expect(requests).toEqual([])
+    await vi.waitFor(() => expect(internals.pumping).toBe(false))
+
+    internals.currentProfile = null
+    session.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
+    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    expect(requests).toHaveLength(1)
+    expect(requests[0].messages).toEqual(replayed.slice(0, -1))
+    await session.destroy()
+  })
+
+  it('does not duplicate the initial prompt after a post-ownership stream failure', async () => {
+    const dir = await tempDir('native-stream-history-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] }> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: { messages: unknown[] }) {
+      requests.push({ messages: structuredClone(req.messages) })
+      if (requests.length === 1) throw new Error('stream exploded')
+      for (const ev of textTurn('recovered')) yield ev
+    }
+    const session = provider.createSession({ id: 'stream-history', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+
+    session.enqueueUserMessage(userMsg('first') as never)
+    await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+    expect((frames.find((frame) => frame.type === 'result') as Frame).result).toBe('stream exploded')
+    await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+
+    session.enqueueUserMessage(userMsg('second') as never)
+    await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
+    const replayed = historyFromEvents(logOf(session).events as unknown as NativeLogEvent[])
+    expect(requests).toHaveLength(2)
+    expect(requests[1].messages).toEqual(replayed.slice(0, -1))
+    await session.destroy()
   })
 
   it('waits for the assistant event to be durable before a tool can run', async () => {

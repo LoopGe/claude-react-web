@@ -1017,23 +1017,28 @@ export class NativeSession implements ProviderSessionHandle {
    *  connection state. Runs before every turn and after every live MCP
    *  mutation; all snapshots are replaced (never mutated) so a running turn
    *  keeps the arrays and ownership map it started with. */
-  private rebuildTools(skillTool = this.skillToolFor(this.currentSkillView())): void {
+  private rebuildTools(
+    skillTool = this.skillToolFor(this.currentSkillView()),
+    profile: NativeAgentProfile | null = this.currentProfile,
+    baseToolProfile: SessionToolProfile | undefined = this.baseToolProfile,
+  ): ToolDef[] {
     const { tools: fullTools, mcpToolServers } = this.buildFullTools(skillTool)
     this.mcpToolServers = mcpToolServers
     // Nested profiles start from the COMPLETE discovery snapshot, but session-
     // base restrictions remain hard boundaries for every child. The MAIN
     // persona is deliberately absent from this filter.
     this.nestedTools = filterToolsForProfile(fullTools, {
-      tools: this.baseToolProfile?.tools,
-      disallowedTools: this.baseToolProfile?.disallowedTools,
+      tools: baseToolProfile?.tools,
+      disallowedTools: baseToolProfile?.disallowedTools,
     }, this.mcpToolServers)
     // The main turn keeps its existing field-wise base/persona merge. Each
     // field wins independently; a persona [] is an explicit empty allowlist.
     this.tools = filterToolsForProfile(fullTools, {
-      tools: this.currentProfile?.tools ?? this.baseToolProfile?.tools,
-      disallowedTools: this.currentProfile?.disallowedTools ?? this.baseToolProfile?.disallowedTools,
-      mcpServers: this.currentProfile?.mcpServers,
+      tools: profile?.tools ?? baseToolProfile?.tools,
+      disallowedTools: profile?.disallowedTools ?? baseToolProfile?.disallowedTools,
+      mcpServers: profile?.mcpServers,
     }, this.mcpToolServers)
+    return this.tools
   }
 
   private async pumpLoop(): Promise<void> {
@@ -1057,11 +1062,16 @@ export class NativeSession implements ProviderSessionHandle {
       let initialMessages: Array<{ role: 'user'; content: unknown[] }> = []
       let initialMessagesOwned = false
       try {
-        // Capture the invocation scope BEFORE discovery is resolved. The body
-        // returned below is the single snapshot shared by disk and runTurn, so
-        // a later profile change or catalog reload cannot rewrite this turn.
+        // Capture every persona-controlled execution field at one boundary.
+        // Discovery/flush/MCP awaits below must not let a live control switch
+        // replace only part of this turn's configuration.
         const turnProfile = this.currentProfile
-        const turnSkillView = this.skills.view(turnProfile?.skills ?? this.baseSkillPolicy)
+        const turnSkillPolicy = turnProfile?.skills ?? this.baseSkillPolicy
+        const turnBaseToolProfile = this.baseToolProfile
+        const turnModel = this.model
+        const turnPermissionMode = this.permissionMode
+        const turnEffortLevel = this.effortLevel
+        let turnSkillView: NativeSkillInvocationView | undefined
         let invocation: { name: string; body: string } | null = null
         let skillError: unknown
         try {
@@ -1069,6 +1079,9 @@ export class NativeSession implements ProviderSessionHandle {
           // never delays session creation, and `skillsReady` tracks the LATEST
           // reload pass, so a manual reload supersedes the construction snapshot.
           await this.skillsReady
+          // Freeze the freshly discovered cache BEFORE resolving the command.
+          // Invocation, available_skills and the Skill tool now share one view.
+          turnSkillView = this.skills.snapshot(turnSkillPolicy)
           invocation = skillInvocationForTurn(next.message.content, turnSkillView)
         } catch (err) {
           skillError = err
@@ -1111,23 +1124,25 @@ export class NativeSession implements ProviderSessionHandle {
         // delays session creation, and a mid-turn replace/toggle only lands
         // on the next turn (the turn below runs on this snapshot).
         await this.mcp?.whenReady()
-        // Everything a preset can override is captured together. Live controls
-        // update the next-turn fields immediately, but this turn keeps the
-        // model/profile/permission/effort and Skill view it started with.
-        this.rebuildTools(this.skillToolFor(turnSkillView))
-        const turnModel = this.model
-        const turnPermissionMode = this.permissionMode
-        const turnEffortLevel = this.effortLevel
+        // Everything a preset can override was captured before the awaits.
+        // Build the effective list with THAT profile and return the exact
+        // snapshot runTurn will use, rather than reading live fields again.
+        const skillView = turnSkillView!
+        const turnTools = this.rebuildTools(
+          this.skillToolFor(skillView),
+          turnProfile,
+          turnBaseToolProfile,
+        )
         const turnSystem = withSkillsSection(
           turnProfile?.instruction
             ? `${this.baseSystem}\n\n${turnProfile.instruction}`
             : this.baseSystem,
-          turnSkillView.section(),
+          skillView.section(),
         )
         const res = await runTurn(
           {
             stream: (req) => this.streamFor(req, { effortLevel: () => turnEffortLevel }),
-            tools: [...this.tools],
+            tools: [...turnTools],
             maxTurns: turnProfile?.maxTurns,
             tasks: this.tasks,
             cwd: this.opts.cwd,

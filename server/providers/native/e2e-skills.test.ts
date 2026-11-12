@@ -402,9 +402,12 @@ describe('native skills end to end through SessionManager', () => {
       sessions: Map<string, { handle: { history: unknown[] } }>
     }).sessions.get(id)
     expect(live).toBeDefined()
-    const modelHistory = JSON.stringify(live!.handle.history)
-    expect(modelHistory).toContain('/demo do X')
-    expect(modelHistory).toContain('# Demo skill')
-    expect(modelHistory).toContain('Follow the demo instructions.')
+    const modelHistory = live!.handle.history as Array<{ role: string; content: unknown }>
+    expect(modelHistory).toHaveLength(4)
+    expect(modelHistory.slice(1)).toEqual([
+      { role: 'user', content: [{ type: 'text', text: '/demo do X' }] },
+      { role: 'user', content: [{ type: 'text', text: canonicalDemoBody(project) }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'expanded' }] },
+    ])
   }, 20000)
 })
