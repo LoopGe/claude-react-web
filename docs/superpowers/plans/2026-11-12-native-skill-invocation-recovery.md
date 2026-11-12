@@ -13,7 +13,7 @@
 ## 实现状态与实际决策
 
 - Task 1–4 已完成并通过各自独立 review；Task 5 的真实 E2E、文档与门禁由本任务交付。
-- turn 在首个 await 前冻结完整执行配置和不可变 skill snapshot；reload/persona 只影响下一轮。
+- turn 在首个 await 前冻结 profile、base tool、model、permission、effort 等执行字段；`skillsReady` 成功完成后立即冻结 catalog entries 与 overrides 的不可变快照，此后 invocation、available_skills、Skill tool 和 tool array 不再读取 live view；reload/persona 只影响下一轮。
 - `runTurn` 通过初始消息所有权标记决定由谁追加 history，pre-request 失败后下一 live/resume 使用同一有序输入且只出现一次。
 - 手动与自动 compact 都经 `mergedHistoryForCompaction` 投影 durable raw→skill 对，保留 main/subagent context 且不改 UI/search。
 - 附件结构保真、跨 reload generation、插件技能和 forked Skill 仍未实现。controller 保留最终 whole-workstream review 与用户授权后的 push，本计划不预先认领。

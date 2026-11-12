@@ -482,6 +482,53 @@ describe('native skill invocation recovery end to end', () => {
     seen.unsubscribe()
   })
 
+  it('scopes reloaded commands and execution to the active persona through the manager broadcast', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    await writeSkill(cwd, 'demo', 'DEMO\n')
+    await writeSkill(cwd, 'other', 'OTHER\n')
+    const fx = await makeFixture(stateDir)
+    fx.agentStore.upsert({
+      name: 'other-only',
+      description: 'Allow only other',
+      prompt: 'OTHER-ONLY',
+      skills: ['other'],
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    } as StoredAgentDefinition)
+    const id = await createSession(fx, cwd)
+    const seen = collect(fx.sm, id)
+    await fx.sm.setAgent(id, 'other-only')
+    const otherCommand = { name: 'other', description: 'other description', argumentHint: '' }
+    expect(await fx.sm.supportedCommands(id)).toEqual([otherCommand])
+
+    fx.scripts.push(textTurn('EXCLUDED BEFORE RELOAD'))
+    await sendAndWait(fx, id, seen.frames, '/demo before reload')
+    expect(fx.requests[0].messages.at(-1)).toEqual(userMessage('/demo before reload'))
+
+    const changes: Frame[] = []
+    const sub = fx.sm.subscribeCommandChanges(id)!
+    void (async () => {
+      for await (const change of sub.iterable) changes.push(change as Frame)
+    })()
+    expect(await fx.sm.reloadSkills(id)).toEqual({ skills: [otherCommand] })
+    await vi.waitFor(() => expect(changes).toContainEqual({ commands: [otherCommand] }))
+    expect(await fx.sm.supportedCommands(id)).toEqual([otherCommand])
+
+    fx.scripts.push(textTurn('EXCLUDED AFTER RELOAD'))
+    await sendAndWait(fx, id, seen.frames, '/demo after reload')
+    expect(fx.requests[1].messages.at(-1)).toEqual(userMessage('/demo after reload'))
+    fx.scripts.push(textTurn('OTHER AFTER RELOAD'))
+    await sendAndWait(fx, id, seen.frames, '/other still works')
+    expect(fx.requests[2].messages.slice(-2)).toEqual([
+      userMessage('/other still works'),
+      { role: 'user', content: [{ type: 'text', text: canonicalBody(cwd, 'other', 'OTHER\n') }] },
+    ])
+    expect(skillEvents(loadNativeSessionLogSync(stateDir, id)!.events).map((event) => event.name)).toEqual(['other'])
+    sub.unsubscribe()
+    seen.unsubscribe()
+  })
+
   it('recovers a pre-request flush failure into identical next-live and resumed history without starting a stream', async () => {
     const { cwd, stateDir } = await makeEnv()
     await writeSkill(cwd, 'demo', 'DURABLE FAILURE BODY\n')

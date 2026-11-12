@@ -1540,7 +1540,7 @@ export class NativeSession implements ProviderSessionHandle {
   async reloadSkills(): Promise<unknown> {
     this.skillsReady = this.startSkillReload()
     await this.skillsReady
-    return { skills: this.skills.commands() }
+    return { skills: this.currentSkillView().commands() }
   }
 
   /** The flag-settings layer for the keys this provider supports.
