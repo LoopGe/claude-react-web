@@ -14,7 +14,9 @@
 //     which the transcript UI renders under their Agent card but the main
 //     history/search exclude. That is the exact input `normalize` /
 //     `paginateRenderable` expect. The `session/header` line is validated but
-//     not stored.
+//     not stored. The same entry also holds the all-event subagent catalog:
+//     a descriptor-only append can replace the catalog while retaining the
+//     identical `lines` array.
 //   - Only COMPLETE lines (up to the last '\n') are parsed. A torn final line
 //     (the writer is mid-append) stays unparsed until the file grows past it.
 //   - Every parsed line is validated with the same header/event validators the
@@ -35,10 +37,13 @@ import { isSidechainEvent, parseEventLine } from './format.js'
 import type { NativeLogEvent } from './format.js'
 import { loadNativeSessionLog } from './log.js'
 import { nativeSessionLogPath } from './paths.js'
+import { buildNativeSubagentCatalog, extendNativeSubagentCatalog } from './subagents.js'
+import type { NativeSubagentCatalog } from './subagents.js'
 
 /** A loaded, freshness-checked view of a native log. */
 export interface NativeHistoryLoad {
   lines: RawLine[]
+  subagents: NativeSubagentCatalog
   size: number
   mtimeMs: number
 }
@@ -118,6 +123,7 @@ async function fullParse(
   return touch(key, {
     id,
     lines: collectRenderable(snapshot.events),
+    subagents: buildNativeSubagentCatalog(snapshot.events),
     parsedBytes: snapshot.completeBytes,
     nextSeq: snapshot.events.length,
     size,
@@ -164,6 +170,7 @@ async function appendParse(
   return touch(key, {
     id,
     lines: lines.length > 0 ? cached.lines.concat(lines) : cached.lines,
+    subagents: extendNativeSubagentCatalog(cached.subagents, events),
     parsedBytes: cached.parsedBytes + lastNewline + 1,
     nextSeq,
     size,
