@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
 import { SubagentTranscriptBody } from './SubagentTranscriptBody'
 import { sessionStoreRegistry } from '../session-store/registry'
@@ -20,6 +20,7 @@ vi.mock('../hooks/useWsHub', () => ({
 vi.mock('../hooks/useApi', () => ({ api: { get: vi.fn().mockResolvedValue({ messages: [] }) } }))
 vi.mock('../hooks/useMcpApps', () => ({
   McpAppsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useMcpAppTool: () => undefined,
 }))
 
 // Real Virtuoso needs measured DOM dimensions to pick its visible window —
@@ -61,6 +62,48 @@ describe('SubagentTranscriptDialog', () => {
     expect(screen.getByText('review this diff')).toBeTruthy()
     // 工具卡:工具名出现(旧渲染器只有 "(non-text turn …)" 占位)
     expect(screen.getByText(/Bash/)).toBeTruthy()
+  })
+
+  it('renders native prompt, assistant and tool-result frames through MessageList', () => {
+    const store = sessionStoreRegistry.getOrCreate(subagentStoreId('native-session', 'native-agent'))
+    store.dispatch({
+      type: 'REPLAY_REPLACE',
+      permissions: [],
+      messages: [
+        {
+          type: 'user', uuid: 'native-subagent-prompt:native-agent', restoredFromDisk: true,
+          parent_tool_use_id: null, session_id: 'native-session', receivedAt: 1_000,
+          message: { role: 'user', content: [{ type: 'text', text: 'native prompt visible' }] },
+        },
+        {
+          type: 'assistant', uuid: 'native-assistant', restoredFromDisk: true,
+          parent_tool_use_id: null, session_id: 'native-session', receivedAt: 2_000,
+          message: { role: 'assistant', content: [{ type: 'text', text: 'native assistant visible' }] },
+        },
+        {
+          type: 'assistant', uuid: 'native-tool-call', restoredFromDisk: true,
+          parent_tool_use_id: null, session_id: 'native-session', receivedAt: 2_500,
+          message: { role: 'assistant', content: [
+            { type: 'tool_use', id: 'native-tool', name: 'Bash', input: { command: 'git diff' } },
+          ] },
+        },
+        {
+          type: 'user', uuid: 'native-result', restoredFromDisk: true,
+          parent_tool_use_id: 'native-tool', session_id: 'native-session', receivedAt: 3_000,
+          message: { role: 'user', content: [{
+            type: 'tool_result', tool_use_id: 'native-tool', content: 'native tool result visible',
+          }] },
+        },
+      ],
+    })
+
+    render(<SubagentTranscriptDialog sessionId="native-session" agentId="native-agent" label="native agent" onClose={() => {}} />)
+
+    expect(screen.getByText('native prompt visible')).toBeTruthy()
+    expect(screen.getByText('native assistant visible')).toBeTruthy()
+    expect(screen.getByText(/Bash/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '1 tool call: Bash git diff' }))
+    expect(screen.getByText('native tool result visible', { selector: '.tool-result-summary' })).toBeTruthy()
   })
 
   it('renders a notification-only result in the disk transcript body', () => {
