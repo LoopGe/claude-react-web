@@ -6767,9 +6767,12 @@ export class SessionManager {
   /** Resolve the provider that owns a session's standalone subagent data.
    *  Live state wins; after unload/restart the persisted provider and cwd are
    *  authoritative. This is also the source-selection seam for transcript
-   *  subscriptions, so capability failures cannot be bypassed by that path. */
+   *  subscriptions, so capability and missing-reader failures cannot be
+   *  bypassed by that path. */
   resolveSubagentTranscriptProvider(id: string): AgentProvider {
-    return this.subagentTranscriptContext(id).provider
+    const { provider } = this.subagentTranscriptContext(id)
+    this.requireSubagentTranscriptReader(provider)
+    return provider
   }
 
   private subagentTranscriptContext(id: string): { provider: AgentProvider; meta: Session | SessionMeta } {
@@ -6791,12 +6794,17 @@ export class SessionManager {
     return { provider, meta }
   }
 
-  private subagentTranscriptReader(id: string) {
-    const { provider, meta } = this.subagentTranscriptContext(id)
+  private requireSubagentTranscriptReader(provider: AgentProvider): NonNullable<AgentProvider['subagentTranscripts']> {
     const reader = provider.subagentTranscripts
     if (!reader) {
       throw new HttpError(501, `provider ${provider.name} does not support subagent transcripts`)
     }
+    return reader
+  }
+
+  private subagentTranscriptReader(id: string) {
+    const { provider, meta } = this.subagentTranscriptContext(id)
+    const reader = this.requireSubagentTranscriptReader(provider)
     return { reader, ref: { id, cwd: meta.cwd ?? '' } }
   }
 

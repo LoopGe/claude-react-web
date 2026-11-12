@@ -9272,6 +9272,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const info = await sm.create({ cwd: TEST_CWD })
     subagentProviderForTest(sm, 'claude').subagentTranscripts = undefined
 
+    expect(() => sm.resolveSubagentTranscriptProvider(info.id)).toThrowError(expect.objectContaining({ status: 501 }))
     await expect(sm.listSubagents(info.id)).rejects.toMatchObject({ status: 501 })
     await expect(sm.readSubagentTranscript(info.id, 'agent-1')).rejects.toMatchObject({ status: 501 })
   })
