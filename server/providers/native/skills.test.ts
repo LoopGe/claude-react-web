@@ -55,6 +55,10 @@ async function writeSkill(name: string, fixture: SkillFixture = {}): Promise<voi
   await writeFile(join(dir, 'SKILL.md'), content, 'utf8')
 }
 
+function canonicalBody(name: string, body = `# ${name}`): string {
+  return `Base directory for this skill: ${join(project, '.claude', 'skills', name)}\n\n${body}\n`
+}
+
 async function load(policy: string[] | 'all' | undefined): Promise<NativeSkillCatalog> {
   const catalog = new NativeSkillCatalog(project)
   catalog.configure(policy)
@@ -113,8 +117,8 @@ describe('NativeSkillCatalog — spawn policy', () => {
       { name: 'alpha', description: 'alpha description', argumentHint: '' },
       { name: 'beta', description: 'beta description', argumentHint: '' },
     ])
-    expect(catalog.bodyOf('alpha')).toEqual({ text: expect.stringContaining('# alpha') })
-    expect(catalog.expand('alpha')).toEqual({ body: expect.stringContaining('# alpha') })
+    expect(catalog.bodyOf('alpha')).toEqual({ text: canonicalBody('alpha') })
+    expect(catalog.expand('alpha')).toEqual({ name: 'alpha', body: canonicalBody('alpha') })
   })
 
   it("marks every skill 'on' when Options.skills is 'all'", async () => {
@@ -206,8 +210,8 @@ describe('NativeSkillCatalog — overrides', () => {
     catalog.applyOverrides({ alpha: 'name-only' })
     expect(catalog.section()).toBe('<available_skills>\n- alpha\n- beta: beta description\n</available_skills>')
     expect(catalog.commands()).toContainEqual({ name: 'alpha', description: 'alpha description', argumentHint: '' })
-    expect(catalog.bodyOf('alpha')).toEqual({ text: expect.stringContaining('# alpha') })
-    expect(catalog.expand('alpha')).toEqual({ body: expect.stringContaining('# alpha') })
+    expect(catalog.bodyOf('alpha')).toEqual({ text: canonicalBody('alpha') })
+    expect(catalog.expand('alpha')).toEqual({ name: 'alpha', body: canonicalBody('alpha') })
   })
 
   it("'user-invocable-only' disappears from the model listing but still expands", async () => {
@@ -220,7 +224,7 @@ describe('NativeSkillCatalog — overrides', () => {
     // The user can still type it, so the command catalog keeps it.
     expect(catalog.commands().map((c) => c.name)).toEqual(['alpha', 'beta'])
     expect(catalog.bodyOf('alpha')).toEqual({ text: 'unknown skill: alpha', isError: true })
-    expect(catalog.expand('alpha')).toEqual({ body: expect.stringContaining('# alpha') })
+    expect(catalog.expand('alpha')).toEqual({ name: 'alpha', body: canonicalBody('alpha') })
   })
 })
 
@@ -235,7 +239,10 @@ describe('NativeSkillCatalog — scoped views', () => {
 
     expect(view.section()).toBe('<available_skills>\n- alpha: alpha description\n</available_skills>')
     expect(view.commands().map((command) => command.name)).toEqual(['alpha'])
+    expect(view.bodyOf('alpha')).toEqual({ text: canonicalBody('alpha') })
+    expect(view.expand('alpha')).toEqual({ name: 'alpha', body: canonicalBody('alpha') })
     expect(view.bodyOf('beta')).toEqual({ text: 'unknown skill: beta', isError: true })
+    expect(view.expand('beta')).toBeNull()
     expect(catalog.section()).toBe('<available_skills>\n- alpha: alpha description\n- beta: beta description\n</available_skills>')
   })
 
@@ -244,7 +251,7 @@ describe('NativeSkillCatalog — scoped views', () => {
     const catalog = await load('all')
     const view = catalog.view(['alpha', 'beta'])
 
-    expect(view.bodyOf('alpha').text).toContain('Alpha v1.')
+    expect(view.bodyOf('alpha')).toEqual({ text: canonicalBody('alpha', 'Alpha v1.') })
     expect(view.bodyOf('beta')).toEqual({ text: 'unknown skill: beta', isError: true })
 
     await writeSkill('alpha', { body: 'Alpha v2.', description: 'alpha v2' })
@@ -252,7 +259,8 @@ describe('NativeSkillCatalog — scoped views', () => {
     await catalog.reload()
 
     expect(view.section()).toBe('<available_skills>\n- alpha: alpha v2\n- beta: beta description\n</available_skills>')
-    expect(view.bodyOf('alpha').text).toContain('Alpha v2.')
+    expect(view.bodyOf('alpha')).toEqual({ text: canonicalBody('alpha', 'Alpha v2.') })
+    expect(view.expand('alpha')).toEqual({ name: 'alpha', body: canonicalBody('alpha', 'Alpha v2.') })
     expect(view.commands().map((command) => command.name)).toEqual(['alpha', 'beta'])
   })
 })
@@ -266,7 +274,7 @@ describe('NativeSkillCatalog — frontmatter flags', () => {
     expect(catalog.section()).toBe('')
     expect(catalog.commands().map((c) => c.name)).toEqual(['alpha'])
     expect(catalog.bodyOf('alpha')).toEqual({ text: 'unknown skill: alpha', isError: true })
-    expect(catalog.expand('alpha')).toEqual({ body: expect.stringContaining('# alpha') })
+    expect(catalog.expand('alpha')).toEqual({ name: 'alpha', body: canonicalBody('alpha') })
   })
 
   it('no override can lift the disable-model-invocation clamp', async () => {
@@ -276,7 +284,7 @@ describe('NativeSkillCatalog — frontmatter flags', () => {
     catalog.applyOverrides({ alpha: 'on' })
     expect(catalog.section()).toBe('')
     expect(catalog.bodyOf('alpha')).toEqual({ text: 'unknown skill: alpha', isError: true })
-    expect(catalog.expand('alpha')).toEqual({ body: expect.stringContaining('# alpha') })
+    expect(catalog.expand('alpha')).toEqual({ name: 'alpha', body: canonicalBody('alpha') })
 
     // An explicit 'off' still hides it from the user surfaces.
     catalog.applyOverrides({ alpha: 'off' })
@@ -290,7 +298,7 @@ describe('NativeSkillCatalog — frontmatter flags', () => {
 
     expect(catalog.section()).toContain('- alpha: alpha description')
     expect(catalog.commands()).toEqual([])
-    expect(catalog.bodyOf('alpha')).toEqual({ text: expect.stringContaining('# alpha') })
+    expect(catalog.bodyOf('alpha')).toEqual({ text: canonicalBody('alpha') })
     expect(catalog.expand('alpha')).toBeNull()
   })
 
@@ -303,14 +311,14 @@ describe('NativeSkillCatalog — frontmatter flags', () => {
 })
 
 describe('NativeSkillCatalog — discovery', () => {
-  it('bodyOf returns the cached SKILL.md text', async () => {
+  it('bodyOf and expand return the same cached canonical body', async () => {
     await writeSkill('alpha', { body: 'Alpha instructions.' })
     const catalog = await load(undefined)
 
     const result = catalog.bodyOf('alpha')
-    expect(result.isError).toBeUndefined()
-    expect(result.text).toContain('description: alpha description')
-    expect(result.text).toContain('Alpha instructions.')
+    expect(result).toEqual({ text: canonicalBody('alpha', 'Alpha instructions.') })
+    expect(result.text).not.toContain('description: alpha description')
+    expect(catalog.expand('alpha')).toEqual({ name: 'alpha', body: result.text })
   })
 
   it('reports unknown names as errors and refuses to expand them', async () => {

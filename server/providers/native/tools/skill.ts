@@ -1,5 +1,6 @@
 // server/providers/native/tools/skill.ts
 import type { NativeSkillCatalog } from '../skills.js'
+import { renderNativeSkillToolResult } from '../skill-render.js'
 import type { ToolDef } from './types.js'
 
 /** The Skill tool's prompt-section guidance. Exported so the provider's static
@@ -30,7 +31,7 @@ export function createSkillTool(catalog: NativeSkillCatalog): ToolDef<{ skill: s
       const result = catalog.bodyOf(input.skill)
       if (result.isError) return result
       const args = typeof input.args === 'string' ? input.args : ''
-      return { text: args ? `${result.text}\n\nArguments: ${args}` : result.text }
+      return { text: renderNativeSkillToolResult(result.text, args) }
     },
   }
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { getSkillRoots, listSkills } from './skills.js'
+import { getSkillRoots, listSkills, parseSkillFrontmatter } from './skills.js'
 
 // The user-scope skills dir lives inside the CLI's config dir, so it has to
 // follow $CLAUDE_CONFIG_DIR rather than a hardcoded ~/.claude — otherwise a
@@ -33,6 +33,26 @@ describe('getSkillRoots — CLI config dir', () => {
       getSkillRoots('/some/project').find((r) => r.scope === 'project'),
     )
     expect(project?.path).toBe(resolve('/some/project', '.claude', 'skills'))
+  })
+})
+
+describe('parseSkillFrontmatter — canonical body', () => {
+  it('returns the raw body after the closing delimiter without changing invocation fields', () => {
+    const parsed = parseSkillFrontmatter(
+      '---\r\nname: demo\r\ndescription: Demo\r\ndisable-model-invocation: true\r\nuser-invocable: false\r\n---\r\n\r\nBody\r\nNext\r\n',
+    )
+
+    expect(parsed.errors).toEqual([])
+    expect(parsed.body).toBe('\r\nBody\r\nNext\r\n')
+    expect(parsed.disableModelInvocation).toBe(true)
+    expect(parsed.userInvocable).toBe(false)
+  })
+
+  it('omits the body when the closing delimiter is missing', () => {
+    const parsed = parseSkillFrontmatter('---\nname: demo\ndescription: Demo\nBody\n')
+
+    expect(parsed.body).toBeUndefined()
+    expect(parsed.errors).toEqual(['SKILL.md frontmatter is missing closing ---'])
   })
 })
 

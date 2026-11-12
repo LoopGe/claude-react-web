@@ -23,6 +23,8 @@ interface ParsedSkillFrontmatter {
   userInvocable?: boolean
   /** `argument-hint: '[topic]'` — shown beside the command. */
   argumentHint?: string
+  /** Raw text after the closing delimiter; absent only for structural failures. */
+  body?: string
   errors: string[]
 }
 
@@ -112,6 +114,17 @@ export function parseSkillFrontmatter(content: string): ParsedSkillFrontmatter {
   const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---')
   if (end < 0) return { errors: ['SKILL.md frontmatter is missing closing ---'] }
 
+  // Keep the body byte-for-byte (apart from the BOM already removed above):
+  // line-ending preservation matters because this text becomes the durable
+  // native skill invocation, while `lines` remains the metadata parser's view.
+  let bodyStart = 0
+  for (let index = 0; index <= end; index++) {
+    bodyStart += lines[index].length
+    if (normalized.startsWith('\r\n', bodyStart)) bodyStart += 2
+    else if (normalized[bodyStart] === '\n') bodyStart += 1
+  }
+  const body = normalized.slice(bodyStart)
+
   let name: string | undefined
   let description: string | undefined
   let disableModelInvocation: boolean | undefined
@@ -141,6 +154,7 @@ export function parseSkillFrontmatter(content: string): ParsedSkillFrontmatter {
     ...(disableModelInvocation !== undefined ? { disableModelInvocation } : {}),
     ...(userInvocable !== undefined ? { userInvocable } : {}),
     ...(argumentHint !== undefined ? { argumentHint } : {}),
+    body,
     errors,
   }
 }

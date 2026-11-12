@@ -12,9 +12,11 @@
 // for a given skill.
 
 import { promises as fs } from 'node:fs'
+import { dirname } from 'node:path'
 import { MAX_SKILL_BYTES, listSkills } from '../../skills.js'
 import type { SkillRecord } from '../../../shared/skills.js'
 import { createLogger } from '../../log.js'
+import { renderNativeSkillBody } from './skill-render.js'
 
 const log = createLogger('native-skills')
 
@@ -32,15 +34,23 @@ export interface NativeSkillCommand {
 
 interface CatalogEntry {
   record: SkillRecord
-  /** Full SKILL.md text, including frontmatter — what the Skill tool and
-   *  `/name` expansion hand to the model. */
-  body: string
+  /** Full cached SKILL.md document. Canonical rendering happens against this
+   *  same snapshot when a view is queried. */
+  document: string
 }
 
 export interface NativeSkillView {
   section(): string
   bodyOf(name: string): { text: string; isError?: boolean }
+  expand?(name: string): { name: string; body: string } | null
   commands(): NativeSkillCommand[]
+}
+
+/** Invocation-capable view returned by the catalog. The base interface keeps
+ *  listing-only consumers source-compatible while this surface makes `expand`
+ *  mandatory for slash turns and every other invocation caller. */
+export type NativeSkillInvocationView = NativeSkillView & {
+  expand(name: string): { name: string; body: string } | null
 }
 
 export class NativeSkillCatalog {
@@ -81,13 +91,13 @@ export class NativeSkillCatalog {
     }
     const entries: CatalogEntry[] = []
     for (const record of byName.values()) {
-      let body: string
+      let document: string
       try {
         // listSkills already rejects oversized files; a file that grew since
         // then is skipped rather than failing the whole catalog.
         const stat = await fs.stat(record.path)
         if (stat.size > MAX_SKILL_BYTES) continue
-        body = await fs.readFile(record.path, 'utf8')
+        document = await fs.readFile(record.path, 'utf8')
       } catch (err) {
         // Deleted or made unreadable between the listing and this read. Skip
         // just this record like the oversized case: rejecting the pass would
@@ -95,7 +105,7 @@ export class NativeSkillCatalog {
         log.warn(`reload: skipping unreadable skill ${record.name} (${record.path}):`, err)
         continue
       }
-      entries.push({ record, body })
+      entries.push({ record, document })
     }
     entries.sort((a, b) => a.record.name.localeCompare(b.record.name))
     this.entries = entries
@@ -105,11 +115,12 @@ export class NativeSkillCatalog {
   /** A scoped policy over the same discovery cache. The view reads the
    *  catalog's current entries on every call, so reloads are visible without
    *  another disk scan. */
-  view(policy?: readonly string[] | 'all'): NativeSkillView {
+  view(policy?: readonly string[] | 'all'): NativeSkillInvocationView {
     const scopedPolicy = Array.isArray(policy) ? [...policy] : policy
     return {
       section: () => this.sectionFor(scopedPolicy),
       bodyOf: (name) => this.bodyOfFor(name, scopedPolicy),
+      expand: (name) => this.expandFor(name, scopedPolicy),
       commands: () => this.commandsFor(scopedPolicy),
     }
   }
@@ -133,12 +144,8 @@ export class NativeSkillCatalog {
 
   /** Body for a user `/name` turn. Works for every state except `off`, and
    *  ignores `disable-model-invocation` (that flag governs the model only). */
-  expand(name: string): { body: string } | null {
-    const entry = this.byName.get(name)
-    if (!entry) return null
-    if (this.stateOf(entry, this.policy) === 'off') return null
-    if (entry.record.userInvocable === false) return null
-    return { body: entry.body }
+  expand(name: string): { name: string; body: string } | null {
+    return this.view(this.policy).expand(name)
   }
 
   private sectionFor(policy: readonly string[] | 'all' | undefined): string {
@@ -171,7 +178,19 @@ export class NativeSkillCatalog {
     if (!entry) return unknownSkill(name)
     const state = this.stateOf(entry, policy)
     if (state !== 'on' && state !== 'name-only') return unknownSkill(name)
-    return { text: entry.body }
+    return { text: this.canonicalBodyOf(entry) }
+  }
+
+  private expandFor(name: string, policy: readonly string[] | 'all' | undefined): { name: string; body: string } | null {
+    const entry = this.byName.get(name)
+    if (!entry) return null
+    if (this.stateOf(entry, policy) === 'off') return null
+    if (entry.record.userInvocable === false) return null
+    return { name: entry.record.name, body: this.canonicalBodyOf(entry) }
+  }
+
+  private canonicalBodyOf(entry: CatalogEntry): string {
+    return renderNativeSkillBody({ directory: dirname(entry.record.path), document: entry.document })
   }
 
   private stateOf(entry: CatalogEntry, policy: readonly string[] | 'all' | undefined): NativeSkillState {

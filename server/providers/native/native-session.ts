@@ -40,7 +40,7 @@ import type { ToolDef } from './tools/types.js'
 import { createAgentTool, type AgentToolDeps } from './subagent.js'
 import { EXPLORE_AGENT_DESCRIPTION, EXPLORE_AGENT_NAME } from './explore.js'
 import { NativeTaskManager } from './task-manager.js'
-import { NativeSkillCatalog } from './skills.js'
+import { NativeSkillCatalog, type NativeSkillInvocationView, type NativeSkillView } from './skills.js'
 import { createSkillTool } from './tools/skill.js'
 import { createTaskOutputTool } from './tools/task-output.js'
 import { createWebFetchTool } from './tools/web-fetch.js'
@@ -91,23 +91,20 @@ function persistedUserMessage(message: { content: unknown }): { role: 'user'; co
  *  The name grammar mirrors the CLI's skill-name rule. */
 const SKILL_COMMAND_RE = /^\/([A-Za-z0-9][A-Za-z0-9._-]{0,79})(?:\s+([\s\S]*))?$/
 
-/** Resolve one text block against the catalog: a `/name args` invocation of a
- *  skill the user may invoke becomes that skill's body plus the arguments;
- *  anything else (not a command, an unknown skill, an `off` skill) is returned
- *  unchanged. */
-function expandSkillText(text: string, skills: NativeSkillCatalog): string {
+/** Resolve one text block against the current scoped view: a `/name args`
+ *  invocation of a skill the user may invoke becomes that skill's canonical
+ *  body; args stay only in the original input. Anything else (not a command,
+ *  an unknown skill, an `off` skill) is returned unchanged. */
+function expandSkillText(text: string, skills: NativeSkillInvocationView): string {
   const match = SKILL_COMMAND_RE.exec(text)
   if (!match) return text
-  const skill = skills.expand(match[1])
-  if (!skill) return text
-  const args = match[2]
-  return args ? `${skill.body}\n\n${args}` : skill.body
+  return skills.expand(match[1])?.body ?? text
 }
 
 /** The model-facing content of one user turn. For block content every non-text
  *  block (image / file) is preserved untouched: only the FIRST text block is
  *  considered, because that is where the slash command rides. */
-function expandSkillTurn(content: unknown, skills: NativeSkillCatalog): unknown {
+function expandSkillTurn(content: unknown, skills: NativeSkillInvocationView): unknown {
   if (typeof content === 'string') return expandSkillText(content, skills)
   if (!Array.isArray(content)) return content
   const index = content.findIndex(
@@ -460,7 +457,7 @@ export class NativeSession implements ProviderSessionHandle {
     return this.skills.view(this.currentProfile?.skills ?? this.baseSkillPolicy)
   }
 
-  private skillToolFor(view: ReturnType<NativeSkillCatalog['view']>): ToolDef {
+  private skillToolFor(view: NativeSkillView): ToolDef {
     return createSkillTool({
       bodyOf: (name: string) => view.bodyOf(name),
     } as NativeSkillCatalog)
@@ -976,7 +973,7 @@ export class NativeSession implements ProviderSessionHandle {
   /** The nested (Agent/Task) prompt: the subagent system plus the nested run's
    *  scoped Skill section. The view reads the shared catalog at call time, so
    *  a reload reaches the next run without reviving an excluded skill. */
-  private subagentSystem(skillView: ReturnType<NativeSkillCatalog['view']>): string {
+  private subagentSystem(skillView: NativeSkillView): string {
     return withSkillsSection(
       this.opts.subagentSystem ?? this.baseSystem,
       skillView.section(),
@@ -1074,7 +1071,7 @@ export class NativeSession implements ProviderSessionHandle {
           // never delays session creation, and `skillsReady` tracks the LATEST
           // reload pass, so a manual reload supersedes the construction snapshot.
           await this.skillsReady
-          turnContent = expandSkillTurn(next.message.content, this.skills)
+          turnContent = expandSkillTurn(next.message.content, this.currentSkillView())
         } catch (err) {
           skillError = err
         }
@@ -1436,7 +1433,7 @@ export class NativeSession implements ProviderSessionHandle {
    *  it into an empty answer. */
   async supportedCommands(): Promise<unknown> {
     await this.skillsReady
-    return this.skills.commands()
+    return this.currentSkillView().commands()
   }
 
   /** Auto-title through the shared auxiliary caller — the same wire contract

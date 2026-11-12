@@ -72,31 +72,35 @@ describe('createSkillTool', () => {
     })
   })
 
-  it('returns the cached SKILL.md body', async () => {
+  it('returns the canonical body without frontmatter', async () => {
     await writeSkill('demo', { body: 'Demo instructions.' })
     const tool = await toolFor()
 
     const result = await tool.run({ skill: 'demo' }, toolCtx())
-    expect(result.isError).toBeUndefined()
-    expect(result.text).toContain('description: demo description')
-    expect(result.text).toContain('Demo instructions.')
+    expect(result).toEqual({
+      text: `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\nDemo instructions.\n`,
+    })
   })
 
-  it('appends the arguments after a blank line', async () => {
+  it('appends nonempty arguments under the User Request heading', async () => {
     await writeSkill('demo', { body: 'Demo instructions.' })
     const tool = await toolFor()
 
     const result = await tool.run({ skill: 'demo', args: 'do the thing' }, toolCtx())
-    expect(result.text.endsWith('\n\nArguments: do the thing')).toBe(true)
-    expect(result.text).toContain('Demo instructions.')
+    expect(result.text).toBe(
+      `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\nDemo instructions.\n\n\n## User Request\ndo the thing`,
+    )
   })
 
-  it('does not append an empty arguments suffix', async () => {
+  it.each(['', '  \n\t'])('does not append a request section for blank args %j', async (args) => {
     await writeSkill('demo')
     const tool = await toolFor()
 
-    const result = await tool.run({ skill: 'demo', args: '' }, toolCtx())
-    expect(result.text).not.toContain('Arguments:')
+    const result = await tool.run({ skill: 'demo', args }, toolCtx())
+    expect(result.text).toBe(
+      `Base directory for this skill: ${join(project, '.claude', 'skills', 'demo')}\n\n# demo\n`,
+    )
+    expect(result.text).not.toContain('## User Request')
   })
 
   it('errors on an unknown skill without running anything', async () => {
