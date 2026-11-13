@@ -80,6 +80,23 @@ export function parseFileHandle(text: string): ParsedFileHandle | null {
 
 const HANDLE_END = 'read it.]'
 
+/** Parse a handle at a known prefix, trying later structural terminators when
+ * the marker appears inside the JSON filename or path. `end` is exclusive. */
+export function parseFileHandleAt(
+  text: string,
+  start: number,
+): { handle: ParsedFileHandle; end: number } | null {
+  if (!text.startsWith(PREFIX, start)) return null
+  let end = text.indexOf(HANDLE_END, start)
+  while (end !== -1) {
+    const candidateEnd = end + HANDLE_END.length
+    const handle = parseFileHandle(text.slice(start, candidateEnd))
+    if (handle !== null) return { handle, end: candidateEnd }
+    end = text.indexOf(HANDLE_END, candidateEnd)
+  }
+  return null
+}
+
 /**
  * Remove every generated handle occurrence from free text, leaving the user's
  * own text. Used by previews/recaps/plain-text extractors that read raw SDK
@@ -89,11 +106,9 @@ export function stripFileHandles(text: string): string {
   let result = text
   let index = result.indexOf(PREFIX)
   while (index !== -1) {
-    const end = result.indexOf(HANDLE_END, index)
-    if (end === -1) break
-    const candidate = result.slice(index, end + HANDLE_END.length)
-    if (parseFileHandle(candidate) !== null) {
-      result = result.slice(0, index) + result.slice(end + HANDLE_END.length)
+    const parsed = parseFileHandleAt(result, index)
+    if (parsed !== null) {
+      result = result.slice(0, index) + result.slice(parsed.end)
       // Restart at the same offset: the next handle (if any) shifted here.
       index = result.indexOf(PREFIX, index)
     } else {

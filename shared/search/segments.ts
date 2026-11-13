@@ -1,5 +1,5 @@
 import type { FileAttachmentRef } from '../attachments.js'
-import { parseFileHandle } from '../upload-handle.js'
+import { parseFileHandleAt } from '../upload-handle.js'
 import { countMatches } from './match.js'
 
 export interface TextSearchSegment {
@@ -22,7 +22,6 @@ export type FileHandleTextSegment =
   | { readonly type: 'file'; readonly file: FileAttachmentRef }
 
 const HANDLE_PREFIX = '[File '
-const HANDLE_END = 'read it.]'
 
 /** Split generated file handles out of free text at their exact positions.
  * Ordinary text is left byte-for-byte intact; only the handle plumbing moves
@@ -34,10 +33,7 @@ export function splitFileHandleText(text: string): FileHandleTextSegment[] {
   while (searchFrom < text.length) {
     const start = text.indexOf(HANDLE_PREFIX, searchFrom)
     if (start < 0) break
-    const end = text.indexOf(HANDLE_END, start)
-    if (end < 0) break
-    const candidateEnd = end + HANDLE_END.length
-    const parsed = parseFileHandle(text.slice(start, candidateEnd))
+    const parsed = parseFileHandleAt(text, start)
     if (parsed === null) {
       searchFrom = start + HANDLE_PREFIX.length
       continue
@@ -45,10 +41,10 @@ export function splitFileHandleText(text: string): FileHandleTextSegment[] {
     if (start > consumed) out.push({ type: 'text', text: text.slice(consumed, start) })
     out.push({
       type: 'file',
-      file: { id: parsed.attachment.id, name: parsed.attachment.name, size: parsed.attachment.size },
+      file: { id: parsed.handle.attachment.id, name: parsed.handle.attachment.name, size: parsed.handle.attachment.size },
     })
-    consumed = candidateEnd
-    searchFrom = candidateEnd
+    consumed = parsed.end
+    searchFrom = parsed.end
   }
   if (consumed < text.length) out.push({ type: 'text', text: text.slice(consumed) })
   return out

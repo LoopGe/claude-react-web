@@ -61,4 +61,10 @@ describe('stripFileHandles', () => {
   it('leaves ordinary text untouched', () => {
     expect(stripFileHandles('  just text  ')).toBe('just text')
   })
+
+  it('removes a valid handle whose filename contains the terminator text', () => {
+    const tricky = { id: 'u1', name: 'quarterly read it.] report.pdf', size: 42 }
+    const text = `before${fileHandleText(tricky, '/tmp/quarterly.pdf')}after`
+    expect(stripFileHandles(text)).toBe('beforeafter')
+  })
 })

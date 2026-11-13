@@ -23,7 +23,7 @@ import { buildTaskStateMapFromItems, mergeTaskList, type TasklistSnapshotPayload
 import { cx } from '../utils/cx'
 import type { ActiveSubagent, PlanStatus, ToolResultEntry, ToolStatus, TranscriptItem } from '../session-store/types'
 import type { QuestionAnswerEntry } from '../utils/question-answers'
-import { getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
+import { countCachedMessageSearchMatches, getEnterPlanToolUseIds, isHumanUserMessage } from '../session-store/normalize'
 import { consumesSubagentRootResult } from '../session-store/sidechain-index'
 import { useOptionalSessionField } from '../session-store/selectors'
 import { useSubagentContext } from '../hooks/useSubagentContext'
@@ -36,8 +36,6 @@ import { ResultConsumedCtx } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed, toolResultConsumedKey } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
 import { userBodyFoldKey } from './message-list/fold-key'
-import { extractMessageSearchSegments } from '../search'
-import { countMessageSearchMatches } from '../../shared/search/segments'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
 import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
@@ -1404,7 +1402,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const foldSearchHit =
       isHumanRow &&
       !!sq?.trim() &&
-      countMessageSearchMatches(extractMessageSearchSegments(item.msg), sq.trim()) > 0
+      countCachedMessageSearchMatches(item.msg, sq.trim()) > 0
     // Which transcript item holds the active search match, when it landed
     // inside THIS row's tool group. The per-member gating (which member gets
     // activeMatchInItem) is owned inside ToolGroupCard.
@@ -1427,7 +1425,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const searchQueryForRow =
       !sq?.trim()
         ? undefined
-        : activeRowIdx != null || activeGroupMemberIdx != null || countMessageSearchMatches(extractMessageSearchSegments(item.msg), sq.trim()) > 0
+        : activeRowIdx != null || activeGroupMemberIdx != null || countCachedMessageSearchMatches(item.msg, sq.trim()) > 0
           ? sq
           : undefined
     const rowBody = item.toolGroup ? (
@@ -1597,7 +1595,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const out: VirtuosoItem[] = new Array(base.length)
     for (let i = 0; i < base.length; i++) {
       const it = base[i]
-      const matches = countMessageSearchMatches(extractMessageSearchSegments(it.msg), searchTick.trim()) > 0
+      const matches = countCachedMessageSearchMatches(it.msg, searchTick.trim()) > 0
       if (matches) {
         if (!copied) { for (let j = 0; j < i; j++) out[j] = base[j]; copied = true }
         out[i] = { ...it, searchTick } as TranscriptRow

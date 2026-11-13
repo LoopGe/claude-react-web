@@ -33,6 +33,15 @@ describe('splitUserContentSegments', () => {
       { type: 'text', text: 'after' },
     ])
   })
+  it('recovers a valid handle whose filename contains the terminator text', () => {
+    const tricky = { id: 'upload-tricky', name: 'quarterly read it.] report.pdf', size: 42 }
+    const trickyHandle = fileHandleText(tricky, '/tmp/quarterly.pdf')
+    expect(splitUserContentSegments([{ type: 'text', text: `before${trickyHandle}after` }])).toEqual([
+      { type: 'text', text: 'before' },
+      { type: 'file', file: tricky },
+      { type: 'text', text: 'after' },
+    ])
+  })
 })
 
 describe('splitUserBlocks', () => {

@@ -27,11 +27,12 @@ vi.mock('../search', async (importOriginal) => {
   return {
     ...actual,
     extractMessagePlainText: vi.fn(actual.extractMessagePlainText),
+    extractMessageSearchSegments: vi.fn(actual.extractMessageSearchSegments),
   }
 })
 
-import { extractMessagePlainText } from '../search'
-import { toTranscriptItem, topLevelUserPromptSignature } from './normalize'
+import { extractMessagePlainText, extractMessageSearchSegments } from '../search'
+import { countCachedMessageSearchMatches, toTranscriptItem, topLevelUserPromptSignature } from './normalize'
 // Compile-time type-ownership check: `ActiveWorktree` is now DEFINED and
 // exported from `types.ts` (moved out of `normalize.ts` to break the
 // type-only `types ↔ normalize` import cycle). If the interface is still
@@ -40,6 +41,7 @@ import type { ActiveWorktree } from './types'
 import type { SdkMessage } from '../types'
 
 const mockedExtract = vi.mocked(extractMessagePlainText)
+const mockedSearchSegments = vi.mocked(extractMessageSearchSegments)
 
 function assistant(text: string): SdkMessage {
   return {
@@ -146,6 +148,31 @@ describe('toTranscriptItem keeps plainText lazy', () => {
     // @ts-expect-error toTranscriptItem accepts exactly two arguments now
     const item = toTranscriptItem(assistant('x'), undefined, 'legacy-cache')
     expect(item).not.toBeNull()
+  })
+})
+
+describe('cached independent search projection', () => {
+  beforeEach(() => {
+    mockedExtract.mockClear()
+    mockedSearchSegments.mockClear()
+  })
+
+  it('extracts once per immutable message across repeated gates without forcing plainText', () => {
+    const msg = assistant('report **value**')
+    const item = toTranscriptItem(msg, undefined)!
+    expect(mockedSearchSegments).not.toHaveBeenCalled()
+    expect(mockedExtract).not.toHaveBeenCalled()
+
+    expect(countCachedMessageSearchMatches(msg, 'report')).toBe(1)
+    expect(countCachedMessageSearchMatches(msg, 'value')).toBe(1)
+    expect(countCachedMessageSearchMatches(msg, 'missing')).toBe(0)
+    expect(countCachedMessageSearchMatches(msg, 'report')).toBe(1)
+    expect(mockedSearchSegments).toHaveBeenCalledTimes(1)
+    expect(mockedExtract).not.toHaveBeenCalled()
+
+    expect(item.plainText).toBe('report value')
+    expect(mockedExtract).toHaveBeenCalledTimes(1)
+    expect(mockedSearchSegments).toHaveBeenCalledTimes(1)
   })
 })
 

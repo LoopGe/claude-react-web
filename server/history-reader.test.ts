@@ -864,6 +864,11 @@ describe('parseLastUserPrompt — tail text → last prompt preview', () => {
     expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: `before ${handle}` }]))).toBe('before')
   })
 
+  it('uses the full filename when a legacy handle contains the terminator text', () => {
+    const handle = fileHandleText({ id: 'u1', name: 'quarterly read it.] report.pdf', size: 42 }, '/private/report.pdf')
+    expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: handle }]))).toBe('quarterly read it.] report.pdf')
+  })
+
   it('falls back to a structured FileBlock name for an attachment-only prompt', () => {
     expect(parseLastUserPrompt(jsonl([{
       type: 'user',

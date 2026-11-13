@@ -12,7 +12,8 @@ import type {
 } from './types'
 import { PLAN_TOOL_NAMES, SUBAGENT_TOOL_NAMES, SKILL_TOOL_NAME, ENTER_PLAN_MODE_TOOL_NAME, WORKFLOW_TOOL_NAME, ENTER_WORKTREE_TOOL_NAME, EXIT_WORKTREE_TOOL_NAME } from '../constants/toolNames'
 import { randomId } from '../utils/uuid'
-import { extractMessagePlainText } from '../search'
+import { extractMessagePlainText, extractMessageSearchSegments } from '../search'
+import { countMessageSearchMatches, type MessageSearchSegment } from '../../shared/search/segments.js'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
 import { isFileBlock } from '../../shared/attachments.js'
@@ -78,6 +79,23 @@ export function isTrimBoundary(msg: SdkMessage): boolean {
   if (msg.type === 'assistant' && msg.parent_tool_use_id == null) return true
   if (msg.type === 'system' && PERSISTED_SYSTEM_SUBTYPES.has(msg.subtype as string)) return true
   return false
+}
+
+const searchSegmentsByMessage = new WeakMap<SdkMessage, readonly MessageSearchSegment[]>()
+
+function cachedMessageSearchSegments(msg: SdkMessage): readonly MessageSearchSegment[] {
+  const cached = searchSegmentsByMessage.get(msg)
+  if (cached !== undefined) return cached
+  const extracted = extractMessageSearchSegments(msg)
+  searchSegmentsByMessage.set(msg, extracted)
+  return extracted
+}
+
+/** Search gates share one lazy projection per immutable message. This is
+ * independent of TranscriptItem.plainText: neither projection forces the
+ * other, and repeated queries do not rebuild Markdown or tool diff text. */
+export function countCachedMessageSearchMatches(msg: SdkMessage, query: string): number {
+  return countMessageSearchMatches(cachedMessageSearchSegments(msg), query)
 }
 
 export function toTranscriptItem(

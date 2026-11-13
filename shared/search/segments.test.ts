@@ -44,6 +44,24 @@ describe('message search segments', () => {
     expect(JSON.stringify(segments)).not.toContain('/private/report.pdf')
   })
 
+  it('continues past a terminator embedded in a valid JSON filename', () => {
+    const tricky = { id: 'upload-tricky', name: 'quarterly read it.] report.pdf', size: 42, digest: 'd'.repeat(64) }
+    const handle = fileHandleText(tricky, '/private/quarterly.pdf')
+    const segments = extractMessageSearchSegments({
+      type: 'user',
+      parent_tool_use_id: null,
+      message: { content: `before${handle}after` },
+    })
+
+    expect(segments).toEqual([
+      { type: 'text', text: 'before' },
+      { type: 'attachment', text: tricky.name, attachment: { id: tricky.id, name: tricky.name, size: tricky.size } },
+      { type: 'text', text: 'after' },
+    ])
+    expect(countMessageSearchMatches(segments, '/private/quarterly.pdf')).toBe(0)
+    expect(countMessageSearchMatches(segments, 'd'.repeat(8))).toBe(0)
+  })
+
   it('counts within segments without allowing a cross-segment phrase match', () => {
     const segments = extractMessageSearchSegments({
       type: 'user',
