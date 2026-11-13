@@ -3709,13 +3709,12 @@ export class SessionManager {
   }
 
   private async discardUnpublishedSession(id: string): Promise<void> {
-    try {
-      // Keep suppression active through teardown so neither update nor removed
-      // can expose a session that was never successfully published.
-      await this.unload(id, { removeFromStore: true, awaitDestroy: true })
-    } finally {
-      this.deferredPublications.delete(id)
-    }
+    // Keep suppression active through teardown so neither update nor removed
+    // can expose a session that was never successfully published. If destroy
+    // rejects, Y may still be live in `sessions`; the gate must then stay in
+    // place rather than exposing that ghost through lists or later persistence.
+    await this.unload(id, { removeFromStore: true, awaitDestroy: true })
+    this.deferredPublications.delete(id)
   }
 
   /** Send a user turn into an existing session. */

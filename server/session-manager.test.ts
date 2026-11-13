@@ -2986,6 +2986,58 @@ describe('SessionManager', () => {
     }
   })
 
+  it('keeps Y hidden when both durable seeding and Y.destroy fail', async () => {
+    const info = await sm.create({})
+    const historyBefore = sm.getHistory(info.id)
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    live.handle.getAttachmentCatalog = vi.fn(() => [{ id: 'catalog-entry' }] as never[])
+    const seedMock = vi.fn(async () => { throw new Error('seed flush failed') })
+    const proto = ClaudeSessionHandle.prototype as unknown as Record<string, unknown>
+    const previousSeed = Object.getOwnPropertyDescriptor(ClaudeSessionHandle.prototype, 'seedCompactSummary')
+    proto.seedCompactSummary = seedMock
+    const destroySpy = vi.spyOn(ClaudeSessionHandle.prototype, 'destroy')
+      .mockRejectedValue(new Error('Y destroy failed'))
+    const globalSub = sm.subscribeGlobal()
+    const globalEvents: Array<{ kind: string; session?: { id: string }; id?: string; sessionId?: string }> = []
+    void (async () => {
+      for await (const event of globalSub.iterable) globalEvents.push(event as typeof globalEvents[number])
+    })()
+    const clearedSpy = vi.spyOn(sm, 'broadcastSessionCleared')
+    let ghostId: string | undefined
+    try {
+      await expect(sm.compact(info.id, { handoff: true })).rejects.toThrow('seed flush failed')
+      ghostId = mockHandles[1].options.sessionId as string
+      const sessions = (sm as unknown as { sessions: Map<string, Session> }).sessions
+      // Destruction rejected before unload could remove Y: this is the exact
+      // state in which dropping suppression would expose a live ghost.
+      expect(sessions.has(ghostId)).toBe(true)
+
+      // A later persist must remain suppressed too, not only the initial list.
+      ;(sm as unknown as { persist(session: Session): void }).persist(sessions.get(ghostId)!)
+      await tick()
+
+      expect(sm.list().map((session) => session.id)).toEqual([info.id])
+      expect(store.get(ghostId)).toBeUndefined()
+      expect(sm.get(info.id)).toBeDefined()
+      expect(sm.getHistory(info.id)).toEqual(historyBefore)
+      expect(globalEvents.filter((event) => {
+        const eventId = event.session?.id ?? event.sessionId ?? event.id
+        return eventId === ghostId && ['created', 'update', 'removed'].includes(event.kind)
+      })).toEqual([])
+      expect(clearedSpy).not.toHaveBeenCalled()
+    } finally {
+      clearedSpy.mockRestore()
+      globalSub.unsubscribe()
+      destroySpy.mockRestore()
+      if (previousSeed) Object.defineProperty(ClaudeSessionHandle.prototype, 'seedCompactSummary', previousSeed)
+      else delete proto.seedCompactSummary
+      if (ghostId) {
+        await sm.unload(ghostId, { removeFromStore: true, awaitDestroy: true }).catch(() => {})
+        ;(sm as unknown as { deferredPublications: Map<string, unknown> }).deferredPublications.delete(ghostId)
+      }
+    }
+  })
+
   it('auto-compact hydrates attachments without copying a duplicate catalog', async () => {
     const info = await sm.create({})
     const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
