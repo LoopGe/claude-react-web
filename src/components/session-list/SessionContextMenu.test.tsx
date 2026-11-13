@@ -177,15 +177,28 @@ describe('SessionContextMenu open-in group', () => {
   const renderMenu = (overrides: Partial<SessionContextMenuProps> = {}) =>
     render(<SessionContextMenu {...baseProps} {...overrides} />)
 
+  // The open-in group is a submenu: every assertion below must open the
+  // flyout (click the parent row) before querying the leaf rows.
+  const openFlyout = (): void => {
+    const parent = [...document.querySelectorAll('.ctx-menu > .ctx-menu-item')].find(
+      (b) => b.querySelector('.ctx-menu-label')?.textContent === 'Open in',
+    )
+    if (parent) fireEvent.click(parent)
+  }
+
   const enableAll = (): void => {
     vi.mocked(useOpenPathCapability).mockReturnValue(true)
     vi.mocked(useOpenPathApps).mockReturnValue(['vscode', 'cursor', 'zed', 'iterm2', 'windowsterminal'])
   }
 
-  it('renders Finder/Terminal plus every available brand app', () => {
+  it('renders an Open-in parent plus every available app in its flyout', () => {
     enableAll()
     renderMenu()
-    for (const label of [
+    expect(screen.getByRole('menuitem', { name: 'Open in' })).toBeTruthy()
+    openFlyout()
+    const flyout = document.querySelector('.ctx-submenu')!
+    const labels = [...flyout.querySelectorAll('.ctx-menu-label')].map((e) => e.textContent)
+    expect(labels).toEqual([
       'Reveal in Finder',
       'Open in Terminal',
       'Open in VS Code',
@@ -193,9 +206,17 @@ describe('SessionContextMenu open-in group', () => {
       'Open in Zed',
       'Open in iTerm2',
       'Open in Windows Terminal',
-    ]) {
-      expect(screen.getByRole('menuitem', { name: label })).toBeTruthy()
-    }
+    ])
+  })
+
+  it('keeps the parent with just the OS-generic rows when no app is available', () => {
+    enableAll()
+    vi.mocked(useOpenPathApps).mockReturnValue([])
+    renderMenu()
+    openFlyout()
+    const flyout = document.querySelector('.ctx-submenu')!
+    const labels = [...flyout.querySelectorAll('.ctx-menu-label')].map((e) => e.textContent)
+    expect(labels).toEqual(['Reveal in Finder', 'Open in Terminal'])
   })
 
   it('hides the whole group when the capability probe is not local', () => {
@@ -223,6 +244,7 @@ describe('SessionContextMenu open-in group', () => {
     enableAll()
     vi.mocked(useOpenPathApps).mockReturnValue(['vscode'])
     renderMenu()
+    openFlyout()
     expect(screen.getByRole('menuitem', { name: 'Open in VS Code' })).toBeTruthy()
     expect(screen.queryByRole('menuitem', { name: 'Open in Cursor' })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: 'Open in iTerm2' })).toBeNull()
@@ -232,6 +254,7 @@ describe('SessionContextMenu open-in group', () => {
     enableAll()
     openMock.mockResolvedValue({ ok: true })
     renderMenu()
+    openFlyout()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open in VS Code' }))
     await waitFor(() => expect(openMock).toHaveBeenCalledWith('vscode', '/tmp/project'))
   })
@@ -245,28 +268,36 @@ describe('SessionContextMenu open-in group', () => {
         <SessionContextMenu {...baseProps} />
       </ToastShowContext.Provider>,
     )
+    openFlyout()
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open in Zed' }))
     await waitFor(() => expect(showToast).toHaveBeenCalledWith('error', expect.stringContaining('failed to open')))
   })
 
-  it('disables the entries while a launch is pending', () => {
+  it('disables the flyout rows while a launch is pending (parent stays openable)', () => {
     enableAll()
     vi.mocked(useOpenPath).mockReturnValue({ open: openMock, pending: 'vscode' })
     renderMenu()
+    openFlyout()
     // ContextMenu renders disabled items with the real `disabled` attribute.
     expect(screen.getByRole('menuitem', { name: 'Open in VS Code' }).hasAttribute('disabled')).toBe(true)
     expect(screen.getByRole('menuitem', { name: 'Reveal in Finder' }).hasAttribute('disabled')).toBe(true)
+    // Opening the flyout is still possible — only launching is blocked.
+    expect(screen.getByRole('menuitem', { name: 'Open in' }).hasAttribute('disabled')).toBe(false)
   })
 
   it('uses mac wording on a mac client', () => {
     enableAll()
-    renderMenu()
+    const first = renderMenu()
+    openFlyout()
     expect(screen.getByRole('menuitem', { name: 'Reveal in Finder' })).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: 'Open in Terminal' })).toBeTruthy()
+    first.unmount()
     // Non-mac clients get the generic file-manager wording instead.
     Object.defineProperty(window.navigator, 'platform', { value: 'Win32', configurable: true })
-    renderMenu()
+    const second = renderMenu()
+    openFlyout()
     expect(screen.getByRole('menuitem', { name: 'Open in file manager' })).toBeTruthy()
+    second.unmount()
     Object.defineProperty(window.navigator, 'platform', { value: '', configurable: true })
   })
 })

@@ -263,6 +263,8 @@ export function SessionContextMenu({
     // editor ON THE SERVER MACHINE (the open-path routes). Same launch helper
     // as the project popover's buttons; availability comes from GET
     // /open-path/apps so a target that isn't installed is never offered.
+    // Rendered as ONE submenu parent — the group was 7 flat rows and was
+    // diluting an already-long primary menu.
     ...(() => {
       const cwd = session.cwd
       if (local !== true || apps === null || !cwd) return []
@@ -309,9 +311,9 @@ export function SessionContextMenu({
         })
       }
       // Nothing available (or only the gated-out brand targets): no group at
-      // all, not an empty separator.
+      // all, not an empty parent.
       if (items.length === 0) return []
-      return [{ label: '' } as ContextMenuItem, ...items]
+      return [{ label: '' } as ContextMenuItem, { label: 'Open in', icon: <IconFolder size={14} />, children: items }]
     })(),
     { label: '' }, // separator
     // "Close panel" is only offered for ungrouped sessions. A grouped
