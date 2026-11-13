@@ -21,7 +21,7 @@ import type { GlobalPrefs } from '../types/config'
 import { resolveSessionPrefs } from '../types/config'
 import type { SkillRecord } from '../../shared/skills'
 import type { SandboxSetting } from '../../shared/sandbox'
-import type { FirstPartyToolDef } from '../../shared/first-party'
+import type { FirstPartyToolStatus } from '../../shared/first-party'
 import { GIT_TOOLS_SERVER_NAME } from '../../shared/first-party'
 import { classifyControlError } from '../../shared/control-errors'
 import { mcpDiagnostic } from '../../shared/mcp-types'
@@ -144,18 +144,6 @@ interface Props {
   tabRequest?: { tab: SettingsTab; nonce: number } | null
   onPluginsReloaded?: () => void
   onSkillsReloaded?: () => void
-}
-
-interface FirstPartyToolStatus {
-  name: string
-  description: string
-  enabled: boolean
-  injected: boolean
-  requiresCwd: boolean
-  hasCwd: boolean
-  /** Static tool listing from the registry (embedded in the /tools payload). */
-  tools: FirstPartyToolDef[]
-  error?: string
 }
 
 /** Wire shape of `POST /sessions/:id/tools/:name/toggle`. */
@@ -302,20 +290,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
     }
   }
 
-  /** Re-fetch the static first-party server status after a toggle so the
-   *  card's no-override/no-global fallback (`tool.enabled`) tracks the
-   *  server's post-injection state — mirrors how McpServerCard refetches
-   *  mcp-status after a toggle. Non-fatal: on failure the snapshot stays
-   *  until the next mount. */
-  const refreshFirstPartyTools = useCallback(async () => {
-    try {
-      const r = await api.get<{ tools: FirstPartyToolStatus[] }>(`/sessions/${session.id}/tools`)
-      setFirstPartyTools(r.tools)
-    } catch {
-      // ignore — non-fatal status refresh
-    }
-  }, [session.id])
-
   /** Per-session first-party tool server override (e.g. the `git-tools` git
    *  server). `null` clears the override to re-inherit the global default.
    *  Immediate on live sessions (the server re-injects via setMcpServers). */
@@ -327,8 +301,6 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
         { enabled },
       )
       onSessionUpdate(r.session)
-      // Reconcile the /tools snapshot with the server's new injection state.
-      void refreshFirstPartyTools()
     } catch (e) {
       toast.error(`Couldn't update ${name}: ${(e as Error).message}`)
     } finally {
@@ -471,8 +443,8 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
   }, [session.id, session.running])
 
   // First-party tool server status — cheap (registry-derived, no SDK control
-  // request). Fetched once per panel mount; toggles update it via the
-  // response of the toggle POST (the server returns fresh SessionInfo).
+  // request). Fetched per panel mount and server-stamped injection revision;
+  // toggles also update it via the toggle POST's fresh SessionInfo.
   useEffect(() => {
     let cancelled = false
     api
@@ -480,7 +452,7 @@ export const SettingsPanel = memo(function SettingsPanel({ session, globalPrefs,
       .then((r) => { if (!cancelled) setFirstPartyTools(r.tools) })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [session.id])
+  }, [session.id, session.firstPartyRevision])
 
   // Lazy-load the full context-usage breakdown (skills / agents /
   // memoryFiles / mcpTools / categories). This is the BLOCKING SDK control
@@ -2590,8 +2562,8 @@ function FirstPartyStatusCard({
         )}
       </div>
       {tool.description && <div className="settings-card-note">{tool.description}</div>}
-      {tool.error && <div className="settings-first-party-error">{tool.error}</div>}
-      {!tool.hasCwd && <div className="settings-card-note">No session working directory — not injected.</div>}
+      {tool.error !== undefined && <div className="settings-first-party-error">{tool.error || 'Registration failed'}</div>}
+      {!tool.hasCwd && tool.requiresCwd && <div className="settings-card-note">No session working directory — not injected.</div>}
       {hasOverride && (
         <div className="settings-card-note">
           <button type="button" className="settings-reset-link" disabled={inert} onClick={onReset}>

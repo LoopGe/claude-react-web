@@ -1079,7 +1079,9 @@ export function buildSessionRouter(
   // is unreliable for in-process servers). Reports enabled/injected/error per
   // registered server so the client can render the first-party section.
   app.get('/sessions/:id/tools', async (c) => {
-    const tools = sm.toolServerStatus(c.req.param('id'))
+    const tools = c.req.query('summary') === '1'
+      ? sm.toolServerStatus(c.req.param('id'), { includeTools: false })
+      : sm.toolServerStatus(c.req.param('id'))
     return c.json({ tools })
   })
 

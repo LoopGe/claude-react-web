@@ -9958,6 +9958,129 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     expect(gitTools.error).toBeUndefined()
   })
 
+  it('clears a previous first-party build error after successful re-injection', async () => {
+    mockInjectAll.mockImplementationOnce((
+      _cwd: string | null,
+      _enabled: (name: string) => boolean,
+      onError: (name: string, message: string) => void,
+    ) => {
+      onError('git-tools', 'build failed')
+      return undefined
+    })
+    const info = await sm.create({ cwd: TEST_CWD })
+    expect(sm.toolServerStatus(info.id)[0].error).toBe('build failed')
+
+    await sm.setFirstPartyTool(info.id, 'git-tools', true)
+    expect(sm.toolServerStatus(info.id)[0].error).toBeUndefined()
+  })
+
+  it('publishes a fresh first-party revision for live injection and dormant overrides', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    const initial = info.firstPartyRevision
+    expect(initial).toEqual(expect.any(String))
+
+    await sm.setMcpServers(info.id, {})
+    const live = sm.get(info.id)
+    expect(live.firstPartyRevision).toEqual(expect.any(String))
+    expect(live.firstPartyRevision).not.toBe(initial)
+
+    const session = (sm as unknown as { sessions: Map<string, { running: boolean }> }).sessions.get(info.id)!
+    session.running = false
+    const dormant = await sm.setFirstPartyTool(info.id, 'git-tools', false)
+    expect(dormant.firstPartyRevision).not.toBe(live.firstPartyRevision)
+  })
+
+  it('restores first-party status when SDK re-injection fails', async () => {
+    mockInjectAll.mockImplementationOnce((
+      _cwd: string | null,
+      _enabled: (name: string) => boolean,
+      onError: (name: string, message: string) => void,
+    ) => {
+      onError('git-tools', 'build failed')
+      return undefined
+    })
+    const info = await sm.create({ cwd: TEST_CWD })
+    const originalRevision = info.firstPartyRevision
+    const broadcast = vi.spyOn(sm as unknown as { broadcastGlobal: (event: unknown) => void }, 'broadcastGlobal')
+    mockHandles[0].setMcpServers.mockRejectedValueOnce(new Error('SDK update failed'))
+
+    await expect(sm.setFirstPartyTool(info.id, 'git-tools', true)).rejects.toThrow('SDK update failed')
+    expect(sm.toolServerStatus(info.id)[0].error).toBe('build failed')
+    expect(sm.get(info.id).firstPartyRevision).toBe(originalRevision)
+    expect(broadcast.mock.lastCall?.[0]).toMatchObject({
+      kind: 'update',
+      session: { firstPartyRevision: originalRevision, firstPartyTools: info.firstPartyTools },
+    })
+  })
+
+  it('records first-party registration errors returned by the SDK', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    mockHandles[0].setMcpServers.mockResolvedValueOnce({
+      added: [],
+      removed: [],
+      errors: { 'git-tools': 'handshake failed' },
+    })
+
+    await sm.setFirstPartyTool(info.id, 'git-tools', true)
+    expect(sm.toolServerStatus(info.id)[0].error).toBe('handshake failed')
+  })
+
+  it('ignores a same-named user server error when the built-in is disabled', async () => {
+    const info = await sm.create({
+      cwd: TEST_CWD,
+      firstPartyTools: { 'git-tools': false },
+      mcpServers: { 'git-tools': { type: 'stdio', command: 'node' } },
+    } as Parameters<SessionManager['create']>[0])
+    mockHandles[0].setMcpServers.mockResolvedValueOnce({
+      added: [],
+      removed: [],
+      errors: { 'git-tools': 'external server failed' },
+    })
+
+    await sm.setMcpServers(info.id, { 'git-tools': { type: 'stdio', command: 'node' } })
+    expect(sm.toolServerStatus(info.id)[0].error).toBeUndefined()
+  })
+
+  it('restores a legacy appToolsGit-only override after a failed toggle', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    const session = (sm as unknown as {
+      sessions: Map<string, { appToolsGit?: boolean; firstPartyTools?: Record<string, boolean | null> }>
+    }).sessions.get(info.id)!
+    session.firstPartyTools = undefined
+    session.appToolsGit = false
+    mockHandles[0].setMcpServers.mockRejectedValueOnce(new Error('SDK update failed'))
+
+    await expect(sm.setFirstPartyTool(info.id, 'git-tools', true)).rejects.toThrow('SDK update failed')
+    expect(session.appToolsGit).toBe(false)
+  })
+
+  it('does not overwrite newer first-party status when an old handle fails', async () => {
+    const info = await sm.create({ cwd: TEST_CWD })
+    let rejectUpdate!: (error: Error) => void
+    mockHandles[0].setMcpServers.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      rejectUpdate = reject
+    }))
+    const pending = sm.setFirstPartyTool(info.id, 'git-tools', true)
+    const assertion = expect(pending).rejects.toThrow('old handle failed')
+    const session = (sm as unknown as {
+      sessions: Map<string, { handle: unknown; firstPartyRevision?: string; firstPartyErrors?: Record<string, string> }>
+    }).sessions.get(info.id)!
+    const oldHandle = session.handle
+    session.handle = {}
+    session.firstPartyRevision = 'new-handle-revision'
+    session.firstPartyErrors = { 'git-tools': 'new handle failure' }
+
+    rejectUpdate(new Error('old handle failed'))
+    try {
+      await assertion
+      expect(sm.toolServerStatus(info.id)[0].error).toBe('new handle failure')
+      expect(sm.get(info.id).firstPartyRevision).toBe('new-handle-revision')
+      expect(sm.get(info.id).firstPartyTools?.['git-tools']).toBe(true)
+    } finally {
+      session.handle = oldHandle
+    }
+  })
+
   it('toolServerStatus embeds the registry static tool listing per server', async () => {
     const info = await sm.create({ cwd: TEST_CWD })
     const status = sm.toolServerStatus(info.id)

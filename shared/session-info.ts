@@ -404,6 +404,11 @@ export interface SessionInfoBase<PM = string> {
    *  inherit the global default. `appToolsGit` is the legacy single-entry
    *  form of `firstPartyTools['git-tools']`. */
   firstPartyTools?: Record<string, boolean | null>
+  /** Runtime-only token stamped by every first-party injection (and dormant
+   *  override change). Clients use it to refresh derived tool-status views
+   *  after spawn, resume and live re-injection without inferring those events
+   *  from configuration or running-state diffs. */
+  firstPartyRevision?: string
   /** True when the user explicitly put this session to sleep (dormant) via
    *  the "Sleep" action — distinct from a passive dormant state caused by a
    *  server restart or crash. The client uses this to skip auto/background

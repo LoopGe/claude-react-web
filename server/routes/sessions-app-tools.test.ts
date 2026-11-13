@@ -95,4 +95,11 @@ describe('GET /sessions/:id/tools', () => {
     expect(body.tools).toEqual([{ name: 'git-tools', enabled: true, injected: true, requiresCwd: true, hasCwd: true }])
     expect(sm.toolServerStatus).toHaveBeenCalledWith('s1')
   })
+
+  it('supports a status-only projection for lightweight consumers', async () => {
+    const { app, sm } = makeApp()
+    const res = await app.request('/sessions/s1/tools?summary=1')
+    expect(res.status).toBe(200)
+    expect(sm.toolServerStatus).toHaveBeenCalledWith('s1', { includeTools: false })
+  })
 })

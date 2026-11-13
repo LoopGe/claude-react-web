@@ -500,7 +500,8 @@ export const Chat = memo(function Chat({
   // global-settings save re-renders this panel with the new effective value
   // immediately. `streamingRenderMode` is global-only and read directly off
   // `globalPrefs` (no per-session override). `firstPartyTools` is forwarded
-  // to <SettingsPanel> unchanged — Chat itself never consults it.
+  // to <SettingsPanel>; the server-stamped injection revision below refreshes
+  // the empty state's built-in chips after every injection.
   const sessionPrefs = resolveSessionPrefs(session, globalPrefs)
   const effectiveShowPinned = sessionPrefs.showPinnedUserMessage
   const effectiveAutoRecap = sessionPrefs.autoRecap
@@ -1925,15 +1926,15 @@ export const Chat = memo(function Chat({
     [session.working, skin, effectiveClearing, session.id, taskList],
   )
 
-  // Empty-state environment section: the MCP servers / plugins this session
-  // was spawned with (ChatEmptyStateEnv renders null when there is nothing
-  // to show — legacy sessions keep the plain stack). Memoized on joined
-  // array CONTENT, not the arrays: every session snapshot re-parses fresh
-  // array instances, so depending on them directly would fail MessageList's
-  // memo() shallow compare on every session-list tick (same reasoning as
-  // the bottomOverlay memo above).
+  // Empty-state environment section: the MCP servers / built-in tools /
+  // plugins associated with this session (ChatEmptyStateEnv renders null when
+  // no row has content). Memoized on joined/serialized CONTENT, not object
+  // identities: every session snapshot re-parses fresh instances, so depending
+  // on them directly would fail MessageList's memo() shallow compare on every
+  // session-list tick (same reasoning as the bottomOverlay memo above).
   const mcpNamesSig = session.mcpServerNames?.join('\u0000') ?? ''
   const pluginsSig = session.enabledPlugins?.join('\u0000') ?? ''
+  const firstPartyRevision = session.firstPartyRevision ?? ''
   const emptyStateExtra = useMemo(
     () => (
       <ChatEmptyStateEnv
@@ -1941,10 +1942,11 @@ export const Chat = memo(function Chat({
         enabledPlugins={session.enabledPlugins}
         sessionId={session.id}
         running={session.running}
+        firstPartyRevision={firstPartyRevision}
       />
     ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the content sigs ARE the real deps; the arrays are content-stable whenever the sigs match
-    [mcpNamesSig, pluginsSig, session.id, session.running],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the content sigs ARE the real deps; the objects are content-stable whenever the sigs match
+    [mcpNamesSig, pluginsSig, firstPartyRevision, session.id, session.running],
   )
 
   return (

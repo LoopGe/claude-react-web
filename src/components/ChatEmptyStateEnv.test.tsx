@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, waitFor, fireEvent, act } from '@testing-library/react'
 import { ChatEmptyStateEnv } from './ChatEmptyStateEnv'
+import type { FirstPartyToolStatus } from '../../shared/first-party'
 
 // Cleanup is registered globally in src/test-setup.ts — do not re-add a
 // per-file afterEach(cleanup) (CLAUDE.md).
@@ -9,19 +10,48 @@ vi.mock('../hooks/useApi', () => ({
   api: { get: vi.fn(), post: vi.fn() },
 }))
 
-vi.mock('../hooks/useToast', () => ({
-  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), show: vi.fn() }),
-}))
+const { toastError, toastHandle } = vi.hoisted(() => {
+  const error = vi.fn()
+  return {
+    toastError: error,
+    toastHandle: { success: vi.fn(), error, info: vi.fn(), show: vi.fn() },
+  }
+})
+
+vi.mock('../hooks/useToast', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useToast')>()
+  return { ...actual, useToast: () => toastHandle }
+})
 
 import { api } from '../hooks/useApi'
 
 const getMock = api.get as ReturnType<typeof vi.fn>
 const postMock = api.post as ReturnType<typeof vi.fn>
 
-function mockLookups(plugins: Array<{ key: string; name: string; marketplace: string }>, statuses: Array<{ name: string; status: string }>) {
+type BuiltInToolFixture = FirstPartyToolStatus
+
+function builtInTool(name: string, overrides: Partial<BuiltInToolFixture> = {}): BuiltInToolFixture {
+  return {
+    name,
+    description: `${name} description`,
+    enabled: true,
+    injected: true,
+    requiresCwd: false,
+    hasCwd: true,
+    tools: [],
+    ...overrides,
+  }
+}
+
+function mockLookups(
+  plugins: Array<{ key: string; name: string; marketplace: string }>,
+  statuses: Array<{ name: string; status: string }>,
+  tools: BuiltInToolFixture[] = [],
+) {
   getMock.mockImplementation((url: string) => {
     if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins })
     if (url.startsWith('/sessions/') && url.endsWith('/mcp-status')) return Promise.resolve({ mcp: statuses })
+    if (url.startsWith('/sessions/') && url.includes('/tools')) return Promise.resolve({ tools })
     return Promise.resolve({})
   })
 }
@@ -107,6 +137,109 @@ describe('ChatEmptyStateEnv display (static tier)', () => {
     expect(baseElement.textContent).toContain('plugA@mp1')
   })
 
+  it('renders only injected built-in tools between MCP and Plugins', async () => {
+    mockLookups(
+      [{ key: 'plugA@mp1', name: 'PlugA', marketplace: 'mp1' }],
+      [],
+      [
+        builtInTool('git-tools', { description: 'Git tools', requiresCwd: true }),
+        builtInTool('appdebug', { description: 'Debug tools' }),
+        builtInTool('skills-tools', { enabled: false, injected: false }),
+        builtInTool('mcp-tools', { injected: false, requiresCwd: true, hasCwd: false }),
+        builtInTool('history-tools', { error: 'build failed' }),
+        builtInTool('empty-error', { error: '' }),
+      ],
+    )
+    const { baseElement } = render(
+      <ChatEmptyStateEnv
+        mcpServerNames={['github']}
+        enabledPlugins={['plugA@mp1']}
+        sessionId="s1"
+        running={false}
+      />,
+    )
+    await waitFor(() => expect(baseElement.textContent).toContain('appdebug'))
+    const rows = baseElement.querySelectorAll('.chat-empty-env-row')
+    expect(rows).toHaveLength(3)
+    expect(rows[0].textContent).toContain('MCP')
+    expect(rows[1].textContent).toContain('Built-in')
+    expect(rows[1].textContent).toContain('git-tools')
+    expect(rows[1].textContent).toContain('appdebug')
+    expect(rows[2].textContent).toContain('Plugins')
+    expect(baseElement.textContent).not.toContain('skills-tools')
+    expect(baseElement.textContent).not.toContain('mcp-tools')
+    expect(baseElement.textContent).not.toContain('history-tools')
+    expect(baseElement.textContent).not.toContain('empty-error')
+    expect(baseElement.querySelector('[title="Git tools"]')?.textContent).toBe('git-tools')
+  })
+
+  it('renders built-in-only content instead of returning null', async () => {
+    mockLookups([], [], [builtInTool('git-tools')])
+    const { baseElement } = render(<ChatEmptyStateEnv enabledPlugins={[]} sessionId="s1" />)
+    await waitFor(() => expect(baseElement.textContent).toContain('git-tools'))
+    const rows = baseElement.querySelectorAll('.chat-empty-env-row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].textContent).toContain('Built-in')
+  })
+
+  it('hides only Built-in and reports its lookup failure', async () => {
+    getMock.mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url.includes('/tools')) return Promise.reject(new Error('tools unavailable'))
+      return Promise.resolve({ mcp: [] })
+    })
+    const { baseElement } = render(
+      <ChatEmptyStateEnv mcpServerNames={['github']} enabledPlugins={[]} sessionId="s1" running={false} />,
+    )
+    expect(baseElement.textContent).toContain('github')
+    await waitFor(() => expect(getMock.mock.calls.some((c) => String(c[0]).includes('/tools'))).toBe(true))
+    expect(baseElement.textContent).not.toContain('Built-in')
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Couldn't load built-in tools: tools unavailable", undefined))
+  })
+
+  it('clears previous built-ins during session changes and skips lookups without a session id', async () => {
+    let releaseSecond!: (value: { tools: BuiltInToolFixture[] }) => void
+    getMock.mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/sessions/s1/tools?summary=1') return Promise.resolve({ tools: [builtInTool('git-tools')] })
+      if (url === '/sessions/s2/tools?summary=1') return new Promise((resolve) => { releaseSecond = resolve })
+      return Promise.resolve({ mcp: [] })
+    })
+    const { baseElement, rerender } = render(<ChatEmptyStateEnv enabledPlugins={[]} sessionId="s1" />)
+    await waitFor(() => expect(baseElement.textContent).toContain('git-tools'))
+
+    rerender(<ChatEmptyStateEnv enabledPlugins={[]} sessionId="s2" />)
+    await waitFor(() => expect(baseElement.textContent).not.toContain('git-tools'))
+    expect(baseElement.textContent).not.toContain('Built-in')
+    act(() => { releaseSecond({ tools: [builtInTool('appdebug')] }) })
+    await waitFor(() => expect(baseElement.textContent).toContain('appdebug'))
+
+    rerender(<ChatEmptyStateEnv enabledPlugins={[]} />)
+    await waitFor(() => expect(baseElement.textContent).not.toContain('appdebug'))
+    expect(getMock.mock.calls.filter((c) => String(c[0]).includes('/tools'))).toHaveLength(2)
+  })
+
+  it('refreshes built-ins when the server-stamped injection revision changes', async () => {
+    let toolsCalls = 0
+    getMock.mockImplementation((url: string) => {
+      if (url === '/mp/enabled-plugins') return Promise.resolve({ plugins: [] })
+      if (url === '/sessions/s1/tools?summary=1') {
+        toolsCalls += 1
+        return Promise.resolve({ tools: [builtInTool(toolsCalls === 1 ? 'git-tools' : 'appdebug')] })
+      }
+      return Promise.resolve({ mcp: [] })
+    })
+    const { baseElement, rerender } = render(
+      <ChatEmptyStateEnv enabledPlugins={[]} sessionId="s1" firstPartyRevision="initial" />,
+    )
+    await waitFor(() => expect(baseElement.textContent).toContain('git-tools'))
+
+    rerender(<ChatEmptyStateEnv enabledPlugins={[]} sessionId="s1" firstPartyRevision="changed" />)
+    await waitFor(() => expect(baseElement.textContent).toContain('appdebug'))
+    expect(baseElement.textContent).not.toContain('git-tools')
+    expect(toolsCalls).toBe(2)
+  })
+
   it('co-renders both rows with MCP first when both fields carry data', async () => {
     mockLookups([{ key: 'plugA@mp1', name: 'PlugA', marketplace: 'mp1' }], [])
     const { baseElement } = render(
@@ -145,6 +278,7 @@ describe('ChatEmptyStateEnv quick actions (live tier)', () => {
       if (String(url).endsWith('/mcp-status')) {
         return new Promise((res) => { release = res })
       }
+      if (String(url).includes('/tools')) return Promise.resolve({ tools: [] })
       return Promise.resolve({ plugins: [] })
     })
     const { baseElement } = render(
@@ -239,6 +373,22 @@ describe('ChatEmptyStateEnv quick actions (live tier)', () => {
       .find((b) => b.textContent === 'Enable')! as HTMLElement
     fireEvent.click(enable)
     await waitFor(() => expect(postMock).toHaveBeenCalledWith('/sessions/s1/mcp/github/toggle', { enabled: true }))
+  })
+
+  it('keeps built-ins display-only while MCP chips retain quick actions', async () => {
+    mockLookups([], [{ name: 'github', status: 'connected' }], [builtInTool('appdebug', { description: 'Debug tools' })])
+    const { baseElement } = render(
+      <ChatEmptyStateEnv mcpServerNames={['github']} sessionId="s1" running />,
+    )
+    await waitFor(() => expect(baseElement.textContent).toContain('appdebug'))
+    const builtIn = baseElement.querySelector('[title="Debug tools"]')!
+    expect(builtIn.tagName).toBe('SPAN')
+    expect(builtIn.querySelector('.chat-empty-env-dot')).toBeNull()
+    const mcpChip = Array.from(baseElement.querySelectorAll('.chat-empty-env-chip'))
+      .find((chip) => chip.textContent === 'github')!
+    expect(mcpChip.tagName).toBe('BUTTON')
+    fireEvent.click(builtIn)
+    expect(document.querySelector('.ctx-menu')).toBeNull()
   })
 
   it('renders display-only chips (spans) when running is false', () => {

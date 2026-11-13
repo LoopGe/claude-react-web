@@ -4,12 +4,15 @@ import type { ApiError } from '../transport/types'
 import { useToast, apiErrorToastOpts } from '../hooks/useToast'
 import { useMcpStatusLite } from '../hooks/useMcpStatusLite'
 import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import type { FirstPartyToolStatus } from '../../shared/first-party'
 
-// Environment section of the default chat empty state: the MCP servers and
-// plugins THIS session was spawned with, as small muted chips under the
-// "Start a conversation" subtitle. Data comes straight off the session
-// snapshot (SessionInfo.mcpServerNames / SessionInfo.enabledPlugins) — both
-// persist and survive restarts, so dormant sessions show the same picture.
+// Environment section of the default chat empty state: the MCP servers,
+// built-in tools and plugins associated with THIS session, as small muted
+// chips under the "Start a conversation" subtitle. MCP/plugin data comes
+// straight off the session snapshot (SessionInfo.mcpServerNames /
+// SessionInfo.enabledPlugins) — both persist and survive restarts, so dormant
+// sessions show the same picture. Active built-ins come from the session's
+// /tools endpoint, keeping only injected servers without a registration error.
 //
 // Plugin semantics mirror the spawn contract:
 //   - `undefined` = "all enabled" — only resolvable against the global
@@ -19,34 +22,38 @@ import { ContextMenu, type ContextMenuItem } from './ContextMenu'
 //   - explicit keys render immediately (raw `key@marketplace` form), then
 //     swap to friendly names once the lookup lands; keys missing from the
 //     global list (marketplace removed since spawn) keep the raw form.
-// The component renders null when neither row has anything to show, so
-// legacy sessions (fields undefined, nothing resolvable) look exactly like
-// the plain empty state.
+// The component renders null when no row has anything to show, so callers
+// without MCP/plugins or resolvable built-ins keep the plain empty state.
 //
 // MCP names are the host-injected spawn set only — CLI-discovered servers
 // (user/project scope) never travel in this field, so the row honestly
 // represents what this app injected rather than everything the CLI sees.
 //
-// Freshness is row-asymmetric by design (static tier): the MCP row tracks
-// the live session snapshot (dynamic setMcpServers updates mcpServerNames),
-// while the plugin lookup is a one-shot per mount — the global plugin list
-// is not observable from here, and the spawn-time plugin set is a historical
-// fact anyway. The SettingsPanel MCP/plugins tabs stay the live authority.
+// Freshness is row-asymmetric by design: the MCP row tracks the live session
+// snapshot (dynamic setMcpServers updates mcpServerNames), built-ins re-read
+// when the server stamps a new injection revision, and the plugin lookup is a
+// one-shot per mount — the global plugin list is not observable from here, and
+// the spawn-time plugin set is a historical fact anyway. SettingsPanel remains
+// the live authority for changing these sets.
 //
 // Quick actions (live tier): when the session is RUNNING, MCP chips render
 // as buttons with a live status dot (useMcpStatusLite — silent degrade) and
 // a click opens a small ContextMenu with Enable/Disable + Reconnect, the
 // same endpoints the SettingsPanel MCP tab posts to. Plugin chips stay
-// display-only in every state: the marketplace toggle is GLOBAL (it ripples
-// to every session), which a per-session surface must not imply. Dormant /
+// display-only because their marketplace toggle is GLOBAL (it ripples to
+// every session), which a per-session surface must not imply. Built-in chips
+// are display-only too: their enablement and lifecycle differ from external
+// MCP servers, so SettingsPanel stays their control surface. Dormant /
 // terminated sessions and callers without a sessionId render display-only
-// spans — the server-side toggle/reconnect routes require a live Query.
+// spans — the server-side MCP toggle/reconnect routes require a live Query.
 
 interface EnabledPluginEntry {
   key: string
   name: string
   marketplace: string
 }
+
+type BuiltInToolStatus = Pick<FirstPartyToolStatus, 'name' | 'description' | 'injected' | 'error'>
 
 interface ChatEmptyStateEnvProps {
   /** Names of MCP servers the session was spawned with. Undefined (legacy)
@@ -62,14 +69,55 @@ interface ChatEmptyStateEnvProps {
   /** Whether the session's Query is running. Quick actions require a live
    *  subprocess (the server routes 410 otherwise); false → display-only. */
   running?: boolean
+  /** Server-stamped first-party injection revision. Changes invalidate the
+   *  current chips and trigger a fresh status read. */
+  firstPartyRevision?: string
 }
 
-export function ChatEmptyStateEnv({ mcpServerNames, enabledPlugins, sessionId, running }: ChatEmptyStateEnvProps) {
+export function ChatEmptyStateEnv({ mcpServerNames, enabledPlugins, sessionId, running, firstPartyRevision }: ChatEmptyStateEnvProps) {
   const [globalPlugins, setGlobalPlugins] = useState<EnabledPluginEntry[] | null>(null)
+  const [builtInResult, setBuiltInResult] = useState<{ sessionId: string; revision?: string; tools: BuiltInToolStatus[] } | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; name: string } | null>(null)
   const toast = useToast()
   const actionable = !!sessionId && running === true
   const { statuses, loading, refresh } = useMcpStatusLite(sessionId, actionable)
+  // A session or server-stamped injection revision invalidates the previous
+  // result during render, without a synchronous state reset in the effect.
+  const builtInTools = sessionId
+    && builtInResult?.sessionId === sessionId
+    && builtInResult.revision === firstPartyRevision
+    ? builtInResult.tools
+    : []
+
+  useEffect(() => {
+    if (!sessionId) return
+    const ac = new AbortController()
+    let cancelled = false
+    api
+      .get<{ tools: BuiltInToolStatus[] }>(`/sessions/${sessionId}/tools?summary=1`, { signal: ac.signal })
+      .then((r) => {
+        if (!cancelled) {
+          setBuiltInResult({
+            sessionId,
+            revision: firstPartyRevision,
+            tools: r.tools
+              .filter((tool) => tool.injected && tool.error === undefined)
+              .map((tool) => ({ name: tool.name, description: tool.description, injected: tool.injected })),
+          })
+        }
+      })
+      // Keep MCP and plugins usable when built-in metadata is unavailable,
+      // but surface the failure; only cancellation is silent.
+      .catch((err) => {
+        if (cancelled) return
+        const e = err as ApiError
+        toast.error(`Couldn't load built-in tools: ${e.message}`, apiErrorToastOpts(e))
+      })
+    return () => {
+      cancelled = true
+      ac.abort()
+    }
+  }, [sessionId, firstPartyRevision, toast])
 
   // An explicit [] hides the plugins row regardless, so the global lookup
   // has nothing to add and is skipped. Boolean (not array identity) so the
@@ -147,7 +195,7 @@ export function ChatEmptyStateEnv({ mcpServerNames, enabledPlugins, sessionId, r
     return enabledPlugins.map((key) => ({ key, label: names?.get(key) ?? key }))
   })()
 
-  if (!showMcp && !pluginChips) return null
+  if (!showMcp && !pluginChips && builtInTools.length === 0) return null
 
   return (
     <div className="chat-empty-env">
@@ -201,6 +249,20 @@ export function ChatEmptyStateEnv({ mcpServerNames, enabledPlugins, sessionId, r
                   </span>
                 )
               })}
+            </span>
+          </div>
+        </div>
+      )}
+      {builtInTools.length > 0 && (
+        <div className="chat-empty-env-row">
+          <div className="chat-empty-env-row-inner">
+            <span className="chat-empty-env-label">Built-in</span>
+            <span className="chat-empty-env-chips">
+              {builtInTools.map((tool) => (
+                <span key={tool.name} className="chat-empty-env-chip" title={tool.description}>
+                  {tool.name}
+                </span>
+              ))}
             </span>
           </div>
         </div>

@@ -32,7 +32,7 @@ import type { PromptUuidEntry } from './prompt-uuid-store.js'
 import type { ElicitationDecision, ElicitationRequestUi } from '../shared/elicitation.js'
 import type { CliNotification, WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted, WsTurnChanges } from '../shared/ws-protocol.js'
 import type { UserDialogDecision, UserDialogRequestUi } from '../shared/user-dialog.js'
-import type { FirstPartyToolDef } from '../shared/first-party.js'
+import type { FirstPartyToolStatus } from '../shared/first-party.js'
 
 /** CLI subprocess diagnostics for one session (SDK stderr tail + the
  *  optional per-session CLI debug log file). */
@@ -43,16 +43,7 @@ export interface SessionCliDiagnostics {
 }
 
 /** Status of one registered first-party tool server for one session. */
-export interface FirstPartyToolServerStatus {
-  name: string
-  description: string
-  enabled: boolean
-  injected: boolean
-  requiresCwd: boolean
-  hasCwd: boolean
-  tools: FirstPartyToolDef[]
-  error?: string
-}
+export type FirstPartyToolServerStatus = FirstPartyToolStatus
 
 /** Plain-JSON projection of one session for the dev-only `appdebug` tools.
  *  Carries no SDK message bodies — see DebugSessionDetail.historyTail. */
@@ -562,6 +553,9 @@ export interface Session {
   /** Runtime-only: per-first-party-server build/registration errors from the
    *  last injection, surfaced via toolServerStatus. NOT persisted. */
   firstPartyErrors?: Record<string, string>
+  /** Runtime-only injection token, mirrored into SessionInfo so clients can
+   *  invalidate first-party status caches after every injection attempt. */
+  firstPartyRevision?: string
   /** Compound keys of the plugin subset this session was spawned with.
    *  `undefined` = all enabled; `[]` = none. Persisted via SessionMeta. */
   enabledPlugins?: string[]

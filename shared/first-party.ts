@@ -53,3 +53,20 @@ export interface FirstPartyToolServerInfo {
    *  `tools` is empty in that case. */
   error?: string
 }
+
+/** Effective status of one registered first-party server in a session.
+ *  Served by `GET /api/sessions/:id/tools`. */
+export interface FirstPartyToolStatus {
+  name: string
+  description: string
+  enabled: boolean
+  injected: boolean
+  requiresCwd: boolean
+  hasCwd: boolean
+  /** Static tool listing used by Settings; status-only consumers may project
+   *  this payload down to the fields they render. */
+  tools: FirstPartyToolDef[]
+  /** Last injection/registration error. Presence (including an empty message)
+   *  means the latest attempt failed. */
+  error?: string
+}

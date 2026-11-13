@@ -140,6 +140,64 @@ describe('SettingsPanel first-party card display chain', () => {
     expect(card.querySelector('.settings-tag.readonly')).toBeDefined()
   })
 
+  it('refreshes first-party status when the injection revision changes', async () => {
+    const panel = (session: SessionInfo) => (
+      <ToastProvider>
+        <div className="settings-overlay">
+          <SettingsPanel
+            session={session}
+            globalPrefs={{ ...DEFAULT_GLOBAL_PREFS, firstPartyTools: {} }}
+            onClose={() => {}}
+            onSessionUpdate={() => {}}
+            tabRequest={{ tab: 'mcp', nonce: 1 }}
+          />
+        </div>
+      </ToastProvider>
+    )
+    const { rerender } = render(panel({ ...mkSession(), firstPartyRevision: 'r1' }))
+    await waitFor(() => expect((api.get as ReturnType<typeof vi.fn>).mock.calls.filter((c) => String(c[0]).endsWith('/tools'))).toHaveLength(1))
+
+    rerender(panel({ ...mkSession(), firstPartyRevision: 'r2' }))
+    await waitFor(() => expect((api.get as ReturnType<typeof vi.fn>).mock.calls.filter((c) => String(c[0]).endsWith('/tools'))).toHaveLength(2))
+  })
+
+  it('shows a registration failure even when the error message is empty', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) return Promise.resolve({ tools: [{ ...gitToolsStatus, error: '' }] })
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+    const { container } = renderPanel({ session: mkSession(), globalPrefs: { firstPartyTools: {} } })
+    await waitFor(() => expect(container.textContent).toContain('Registration failed'))
+  })
+
+  it('does not warn about a missing cwd for servers that do not require one', async () => {
+    ;(api.get as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.endsWith('/mcp-status')) return Promise.resolve({ mcp: [] })
+      if (url.endsWith('/tools')) {
+        return Promise.resolve({
+          tools: [{
+            name: 'appdebug',
+            description: 'Dev tools',
+            enabled: true,
+            injected: true,
+            requiresCwd: false,
+            hasCwd: false,
+            tools: [],
+          }],
+        })
+      }
+      if (url === '/profiles') return Promise.resolve({ profiles: [] })
+      if (url === '/config') return Promise.resolve({ models: [] })
+      return Promise.resolve({})
+    })
+    const { container } = renderPanel({ session: mkSession(), globalPrefs: { firstPartyTools: {} } })
+    await waitFor(() => expect(container.textContent).toContain('appdebug'))
+    expect(container.textContent).not.toContain('not injected')
+  })
+
   it('shows a pending spinner while the toggle round-trip is in flight', async () => {
     let release!: (value: unknown) => void
     ;(api.post as ReturnType<typeof vi.fn>).mockImplementationOnce(

@@ -6222,8 +6222,8 @@ export class SessionManager {
 
   /** Status of each registered first-party server for a session. See
    *  SessionMcpManager.toolServerStatus. */
-  toolServerStatus(id: string): FirstPartyToolServerStatus[] {
-    return this.mcp.toolServerStatus(id)
+  toolServerStatus(id: string, opts?: { includeTools?: boolean }): FirstPartyToolServerStatus[] {
+    return this.mcp.toolServerStatus(id, opts)
   }
 
   /** Set a per-session first-party tool server override. See
@@ -8960,6 +8960,7 @@ export class SessionManager {
     showMessageHeaders?: boolean
     appToolsGit?: boolean
     firstPartyTools?: Record<string, boolean | null>
+    firstPartyRevision?: string
     slept?: boolean
   }) {
     return {
@@ -9002,6 +9003,7 @@ export class SessionManager {
       showMessageHeaders: x.showMessageHeaders,
       appToolsGit: x.appToolsGit,
       firstPartyTools: x.firstPartyTools,
+      firstPartyRevision: x.firstPartyRevision,
       slept: x.slept,
     }
   }

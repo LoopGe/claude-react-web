@@ -21,7 +21,7 @@
 //   - Persisting mcpServerNames as part of the Session/SessionMeta shape
 
 import type { McpSetServersResult } from '@anthropic-ai/claude-agent-sdk'
-import type { FirstPartyToolDef } from '../shared/first-party.js'
+import { randomUUID } from 'node:crypto'
 import { HttpError, type ControlWrapOpts } from './errors.js'
 import { planAttachGlobalMcpServer, planDetachGlobalMcpServer, type AttachPlan, type AttachPlanInput } from './mcp-attach.js'
 import { APP_TOOLS_SERVER_NAME } from './sdk-tools/app-tools.js'
@@ -29,7 +29,7 @@ import { LEGACY_GIT_TOOLS_SERVER_NAME, migrateLegacyGitToolsKey } from '../share
 import { firstPartyRegistry } from './sdk-tools/registry.js'
 import { config as defaultConfig } from './config.js'
 import type { McpConfigStore } from './mcp-config.js'
-import type { GlobalSessionEvent, Session, SessionInfo } from './session-types.js'
+import type { GlobalSessionEvent, Session, SessionInfo, FirstPartyToolServerStatus } from './session-types.js'
 import type { ProviderCapabilities, ProviderSessionHandle } from './providers/types.js'
 import { createLogger } from './log.js'
 
@@ -150,22 +150,28 @@ export class SessionMcpManager {
   ) {
     const s = this.deps.requireLive(id)
     const handle = s.handle
-    // Inject first-party servers so a live setMcpServers (replace semantics)
-    // doesn't drop what spawn installed — same single code path as the spawn
-    // injection, so on/off is consistent between spawn and live.
-    const injected = this.injectAll(servers, s)
-    const result = await this.deps.requireHandleMethod<(servers: Record<string, unknown>) => Promise<unknown>>(
+    // Build locally first. Session-visible revision/errors are committed only
+    // after the SDK accepts the replacement and the handle is still current.
+    const built = this.buildFirstPartyServers(servers, s)
+    const result = await this.deps.requireHandleMethod<(servers: Record<string, unknown>) => Promise<McpSetServersResult>>(
       s,
       'setMcpServers',
       'dynamic MCP servers',
       'supportsMcp',
       { classify: true },
-    )(injected ?? servers)
+    )(built.servers ?? servers)
 
     const current = this.deps.requireLive(id)
     if (current !== s || s.handle !== handle) {
       throw new HttpError(409, `session ${id} changed while updating MCP servers`)
     }
+
+    for (const name of built.injectedNames) {
+      const message = result.errors[name]
+      if (message !== undefined) built.errors[name] = message
+    }
+    s.firstPartyRevision = randomUUID()
+    s.firstPartyErrors = Object.keys(built.errors).length > 0 ? built.errors : undefined
 
     // Update the tracked MCP server names + the runtime dynamic map so the
     // client's "available" computation stays in sync and an immediate
@@ -226,14 +232,12 @@ export class SessionMcpManager {
     }
 
     const merged = await this.mergeMcpServersAsync(next.names, inline)
-    const result = (await this.setMcpServers(id, merged ?? {}, { stampNames: next.stampNames })) as
-      | McpSetServersResult
-      | undefined
+    const result = await this.setMcpServers(id, merged ?? {}, { stampNames: next.stampNames })
     return {
       alreadyAttached: next.alreadyAttached,
-      added: result?.added ?? [],
-      removed: result?.removed ?? [],
-      errors: result?.errors ?? {},
+      added: result.added,
+      removed: result.removed,
+      errors: result.errors,
     }
   }
 
@@ -276,26 +280,40 @@ export class SessionMcpManager {
     return firstPartyRegistry.get(name)?.defaultEnabled ?? false
   }
 
-  /** Append the enabled first-party in-process MCP servers to an mcpServers
-   *  map (per-session cwd-bound). Returns the input unchanged when nothing is
-   *  injected; first-party servers override same-named user servers. Per-server
-   *  build failures are recorded on the session for toolServerStatus. Called
-   *  both from setMcpServers above and from SessionManager.spawn(). */
-  injectAll(
+  /** Build first-party servers and collect their errors without mutating the
+   *  session. Live setMcpServers uses this staging step so a rejected or stale
+   *  SDK update cannot publish an injection that never became active. */
+  private buildFirstPartyServers(
     servers: Record<string, unknown> | undefined,
     s: Session,
-  ): Record<string, unknown> | undefined {
+  ): { servers: Record<string, unknown> | undefined; errors: Record<string, string>; injectedNames: string[] } {
+    const errors: Record<string, string> = {}
     const injected = firstPartyRegistry.injectAll(
       s.cwd ?? null,
       (name) => this.firstPartyEnabled(s, name),
       (name, message) => {
-        s.firstPartyErrors = { ...(s.firstPartyErrors ?? {}), [name]: message }
+        errors[name] = message
         log.error(`[session ${s.id}] first-party server ${name} build failed: ${message}`)
       },
       { sessionId: s.id },
     )
-    if (!injected) return servers
-    return { ...(servers ?? {}), ...injected }
+    return {
+      servers: injected ? { ...(servers ?? {}), ...injected } : servers,
+      errors,
+      injectedNames: Object.keys(injected ?? {}),
+    }
+  }
+
+  /** Spawn-time injection: the session has no live SDK set yet, so the fresh
+   *  build result can be committed immediately. */
+  injectAll(
+    servers: Record<string, unknown> | undefined,
+    s: Session,
+  ): Record<string, unknown> | undefined {
+    const built = this.buildFirstPartyServers(servers, s)
+    s.firstPartyRevision = randomUUID()
+    s.firstPartyErrors = Object.keys(built.errors).length > 0 ? built.errors : undefined
+    return built.servers
   }
 
   /** Status of each registered first-party server for a session (independent
@@ -304,10 +322,12 @@ export class SessionMcpManager {
    *  state; `error` = last build/registration failure. Each entry also
    *  embeds the server's static tool definitions (the registry's listToolDefs
    *  output for that server) so one fetch paints status AND the tool list. */
-  toolServerStatus(id: string): Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }> {
+  toolServerStatus(id: string, opts?: { includeTools?: boolean }): FirstPartyToolServerStatus[] {
     const s = this.deps.require(id)
-    const toolDefs = new Map(firstPartyRegistry.listToolDefs().map((info) => [info.name, info]))
-    const out: Array<{ name: string; description: string; enabled: boolean; injected: boolean; requiresCwd: boolean; hasCwd: boolean; tools: FirstPartyToolDef[]; error?: string }> = []
+    const toolDefs = opts?.includeTools === false
+      ? null
+      : new Map(firstPartyRegistry.listToolDefs().map((info) => [info.name, info]))
+    const out: FirstPartyToolServerStatus[] = []
     for (const server of firstPartyRegistry.list()) {
       const enabled = this.firstPartyEnabled(s, server.name)
       const hasCwd = !!s.cwd
@@ -319,7 +339,7 @@ export class SessionMcpManager {
         injected,
         requiresCwd: server.requiresCwd,
         hasCwd,
-        tools: toolDefs.get(server.name)?.tools ?? [],
+        tools: toolDefs?.get(server.name)?.tools ?? [],
         error: s.firstPartyErrors?.[server.name],
       })
     }
@@ -336,6 +356,7 @@ export class SessionMcpManager {
    *  persist the override — it applies at the next spawn. */
   async setFirstPartyTool(id: string, name: string, enabled: boolean | null): Promise<SessionInfo> {
     const s = this.deps.require(id)
+    const handle = s.handle
     // Normalize the pre-rename server name so a stale caller cannot store a
     // pin under a key firstPartyEnabled only reads as a fallback.
     const server = name === LEGACY_GIT_TOOLS_SERVER_NAME ? APP_TOOLS_SERVER_NAME : name
@@ -343,8 +364,8 @@ export class SessionMcpManager {
     // live re-injection restores the exact prior state; operate on a migrated
     // copy so the pin lands under the canonical key.
     const original = s.firstPartyTools
+    const originalAppToolsGit = s.appToolsGit
     const migrated = migrateLegacyGitToolsKey(original) ?? {}
-    const prev = migrated[server] ?? null
     const next: Record<string, boolean | null> = { ...migrated }
     if (enabled === null) delete next[server]
     else next[server] = enabled
@@ -357,13 +378,17 @@ export class SessionMcpManager {
       try {
         await this.setMcpServers(id, s.dynamicMcpServers ?? {})
       } catch (err) {
-        // Revert the override so UI (server-backed session info) and reality
-        // stay consistent — restore the raw original map verbatim.
-        s.firstPartyTools = original
-        if (server === APP_TOOLS_SERVER_NAME) s.appToolsGit = prev ?? undefined
+        // Revert only while the failed request still owns the live handle;
+        // a respawn may already have applied the new override successfully.
+        if (s.handle === handle) {
+          s.firstPartyTools = original
+          if (server === APP_TOOLS_SERVER_NAME) s.appToolsGit = originalAppToolsGit
+          this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(s) })
+        }
         throw err
       }
     } else {
+      s.firstPartyRevision = randomUUID()
       this.deps.persist(s)
     }
     return this.deps.info(s)
