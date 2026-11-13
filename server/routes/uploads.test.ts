@@ -533,6 +533,41 @@ describe('uploads routes', () => {
       expect(existsSync(objectPath(a.digest!))).toBe(false)
     })
 
+    it('409s while an in-flight send leases the upload, then permits the last delete', async () => {
+      const entry = await upload('queued', 'queued.txt', 's1')
+      store.attachmentReferences.acquireLease(entry.id)
+      store.attachmentReferences.acquireLease(entry.id)
+
+      expect((await deleteById(entry.id)).status).toBe(409)
+      expect(store.getById(entry.id)).toBeDefined()
+      expect(existsSync(entry.path)).toBe(true)
+      store.attachmentReferences.releaseLease(entry.id)
+      expect((await deleteById(entry.id)).status).toBe(409)
+
+      store.attachmentReferences.releaseLease(entry.id)
+      expect((await deleteById(entry.id)).status).toBe(200)
+      expect(store.getById(entry.id)).toBeUndefined()
+    })
+
+    it('409s a persisted native reference and permits deletion after permanent log removal', async () => {
+      const entry = await upload('persisted', 'persisted.txt', 's1')
+      store.attachmentReferences.replaceSession('native-1', [{
+        seq: 0,
+        type: 'session/attachments',
+        attachments: [{ ...entry, digest: entry.digest!, modelForm: 'handle' }],
+        timestamp: '2026-11-13T00:00:00.000Z',
+      }])
+
+      expect((await deleteById(entry.id)).status).toBe(409)
+      expect((await deleteByPath(entry.path)).status).toBe(409)
+      expect(store.getById(entry.id)).toBeDefined()
+      expect(existsSync(entry.path)).toBe(true)
+
+      store.attachmentReferences.removeSession('native-1')
+      expect((await deleteById(entry.id)).status).toBe(200)
+      expect(store.getById(entry.id)).toBeUndefined()
+    })
+
     it('by-path 400s an entry whose path escapes both upload dirs', async () => {
       const outside = join(sessionCwd, 'secret.txt')
       store.record([{ id: 'bad', path: outside, cwd: sessionCwd, name: 'secret.txt', size: 1, uploadedAt: 1, sessionTitle: 'S' }])

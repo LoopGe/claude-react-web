@@ -37,6 +37,8 @@ import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import type { ToolDef } from './tools/types.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import type { UploadStore } from '../../upload-store.js'
+import { NativeAttachmentReferenceIndex } from '../../attachment-reference-index.js'
+import { createAttachmentReadTool } from './tools/index.js'
 import { copyConsumedAt, projectFileBlocksForProvider, type AgentUserMessage } from '../../agent-message.js'
 import { extractToolProfile } from '../../../shared/tool-profile.js'
 
@@ -83,10 +85,10 @@ const TODO_WRITE_SECTION: PromptSection = { name: 'tool:TodoWrite', order: 180, 
 
 /** Build this session's system prompt (plus any per-session append). The
  *  subagent variant omits the Agent section — see createSession. */
-function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }): string {
+function renderSystem(opts: { withAgentSection: boolean; systemPromptAppend?: string }, tools: readonly ToolDef[]): string {
   const registry = new PromptSectionRegistry()
   registry.register(IDENTITY_SECTION)
-  for (const tool of TOOLS) {
+  for (const tool of tools) {
     registry.register({ name: `tool:${tool.name}`, order: tool.promptOrder, text: tool.guidance })
   }
   registry.register(WEB_FETCH_SECTION)
@@ -153,6 +155,7 @@ export class NativeProvider implements AgentProvider {
   /** Shared registry reference for the structured-attachment pipeline. The
    *  provider deliberately never constructs an independent store. */
   readonly uploadStore?: UploadStore
+  readonly attachmentReferences: NativeAttachmentReferenceIndex
 
   constructor(opts: {
     stateDir?: string
@@ -164,6 +167,8 @@ export class NativeProvider implements AgentProvider {
     this.authFor = opts.authFor
     this.agentStore = opts.agentStore
     this.uploadStore = opts.uploadStore
+    this.attachmentReferences = opts.uploadStore?.attachmentReferences
+      ?? new NativeAttachmentReferenceIndex({ stateDir: this.stateDir })
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
@@ -178,8 +183,16 @@ export class NativeProvider implements AgentProvider {
     // prompt advertises Agent; the subagent prompt does not — nested tools drop
     // Agent, and guidance for a tool the model cannot call is misleading.
     const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
-    const system = renderSystem({ withAgentSection: true, systemPromptAppend })
-    const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend })
+    const tools = config.nativeAttachmentFidelity && this.uploadStore
+      ? [...TOOLS, createAttachmentReadTool({
+          uploadStore: this.uploadStore,
+          stateDir: this.stateDir,
+          referenceIndex: this.attachmentReferences,
+          sessionId: opts.id,
+        })]
+      : TOOLS
+    const system = renderSystem({ withAgentSection: true, systemPromptAppend }, tools)
+    const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend }, tools)
     // The manager has already resolved globals + inline configs + first-party
     // `injectAll` results into `mcpServers`. Connections start here and are
     // awaited per turn, so spawn never blocks on a slow server.
@@ -202,6 +215,7 @@ export class NativeProvider implements AgentProvider {
         cwd: opts.cwd ?? process.cwd(),
         stateDir: this.stateDir,
         uploadStore: this.uploadStore,
+        attachmentReferences: this.attachmentReferences,
         resume: opts.resume,
         forkSession: opts.forkSession,
         resumeSessionAt: opts.resumeSessionAt,
@@ -213,7 +227,7 @@ export class NativeProvider implements AgentProvider {
         fastMode: opts.fastMode,
         profile: opts.profile,
         credentials,
-        tools: TOOLS,
+        tools,
         mcp,
         agentStore: this.agentStore,
         skills: sdkOptions?.skills,
@@ -222,6 +236,7 @@ export class NativeProvider implements AgentProvider {
         subagentSystem,
         canUseTool: opts.canUseTool,
         onUserMessageConsumed: opts.onUserMessageConsumed,
+        onUserMessagePersistence: opts.onUserMessagePersistence,
         onSupplementDelivered: opts.onSupplementDelivered,
         streamSupplier: () => this._testStream,
       })
@@ -246,8 +261,10 @@ export class NativeProvider implements AgentProvider {
     return hasNativeSessionLog(this.stateDir, meta.id)
   }
 
-  deleteTranscript(id: string): Promise<boolean> {
+  async deleteTranscript(id: string): Promise<boolean> {
     nativeHistoryCache.invalidate(id)
-    return deleteNativeSessionLog(this.stateDir, id)
+    const deleted = await deleteNativeSessionLog(this.stateDir, id)
+    this.attachmentReferences.removeSession(id)
+    return deleted
   }
 }

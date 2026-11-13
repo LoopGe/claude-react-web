@@ -870,6 +870,9 @@ export class SessionManager {
   private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
   private uploadStore: UploadStore
+  /** Native sends keep one lease per distinct upload id until their raw prompt
+   * persists or is withdrawn. Non-native sends release at dispatch completion. */
+  private readonly attachmentSendLeases = new Map<string, Map<string, Set<string>>>()
   private readonly sendStates = new WeakMap<Session, SendLifecycleState>()
   private promptUuidStore: PromptUuidStore
   private steeredStore: SteeredStore
@@ -3572,6 +3575,9 @@ export class SessionManager {
       forkSession: fullOpts.forkSession,
       resumeSessionAt: (fullOpts as { resumeSessionAt?: string }).resumeSessionAt,
       onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg),
+      onUserMessagePersistence: (msg) => {
+        if (typeof msg.uuid === 'string') this.releaseAttachmentLeasesForUuid(id, msg.uuid)
+      },
       onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(id, uuid, outcome),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
@@ -3690,6 +3696,52 @@ export class SessionManager {
     })
   }
 
+  private acquireAttachmentLeases(content: readonly ProviderInputContentBlock[]): Set<string> {
+    const ids = new Set<string>()
+    for (const block of content) {
+      if (block.type !== 'file') continue
+      ids.add(block.attachment.id)
+    }
+    for (const id of ids) this.uploadStore.attachmentReferences.acquireLease(id)
+    return ids
+  }
+
+  private releaseAttachmentLeaseIds(ids: ReadonlySet<string>): void {
+    for (const id of ids) this.uploadStore.attachmentReferences.releaseLease(id)
+  }
+
+  private registerAttachmentLeases(sessionId: string, uuid: string, ids: ReadonlySet<string>): void {
+    if (ids.size === 0) return
+    let messages = this.attachmentSendLeases.get(sessionId)
+    if (!messages) {
+      messages = new Map()
+      this.attachmentSendLeases.set(sessionId, messages)
+    }
+    messages.set(uuid, new Set(ids))
+  }
+
+  private releaseAttachmentLeasesForUuid(sessionId: string, uuid: string): void {
+    const messages = this.attachmentSendLeases.get(sessionId)
+    const ids = messages?.get(uuid)
+    if (!messages || !ids) return
+    this.releaseAttachmentLeaseIds(ids)
+    messages.delete(uuid)
+    if (messages.size === 0) this.attachmentSendLeases.delete(sessionId)
+  }
+
+  private releaseAttachmentLeasesForMessages(sessionId: string, messages: readonly AgentUserMessage[]): void {
+    for (const message of messages) {
+      if (typeof message.uuid === 'string') this.releaseAttachmentLeasesForUuid(sessionId, message.uuid)
+    }
+  }
+
+  private releaseAllAttachmentLeases(sessionId: string): void {
+    const messages = this.attachmentSendLeases.get(sessionId)
+    if (!messages) return
+    for (const ids of messages.values()) this.releaseAttachmentLeaseIds(ids)
+    this.attachmentSendLeases.delete(sessionId)
+  }
+
   /** Send a user turn with a content array (text + image + file blocks). */
   async sendContent(
     id: string,
@@ -3699,6 +3751,9 @@ export class SessionManager {
     const lifecycle = this.beginSend(s)
     return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
+      const leaseIds = this.acquireAttachmentLeases(content)
+      let nativeLeaseRegistered = false
+      let userUuid: string | undefined
       try {
         const providerContent = content.some((block) => block.type === 'file')
           ? await resolveAttachmentContent(content, {
@@ -3716,6 +3771,11 @@ export class SessionManager {
           uuid: randomUUID(),
           session_id: s.id,
         }
+        if (s.provider === 'native') {
+          userUuid = userMsg.uuid!
+          this.registerAttachmentLeases(id, userUuid, leaseIds)
+          nativeLeaseRegistered = true
+        }
         const blockSummary = content.map((b) => b.type).join('+')
         const imagePayload = imagePayloadOfContent(content)
         if (imagePayload.images > 0) {
@@ -3727,7 +3787,15 @@ export class SessionManager {
           `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
         )
         return this.dispatchNewUserMessage(s, userMsg, providerContent)
+      } catch (err) {
+        if (s.provider === 'native') {
+          if (nativeLeaseRegistered && userUuid !== undefined) {
+            this.releaseAttachmentLeasesForUuid(id, userUuid)
+          } else this.releaseAttachmentLeaseIds(leaseIds)
+        }
+        throw err
       } finally {
+        if (s.provider !== 'native') this.releaseAttachmentLeaseIds(leaseIds)
         this.endSend(s, lifecycle)
       }
     })
@@ -4303,6 +4371,7 @@ export class SessionManager {
         kept++
       }
     }
+    this.releaseAttachmentLeasesForMessages(s.id, msgs)
     if (kept > 0) {
       log.debug(`[session ${s.id}] cancelQueued kept ${kept} non-user-turn message(s) in the input queue`)
     }
@@ -8300,6 +8369,7 @@ export class SessionManager {
   async unload(id: string, opts: { terminated?: boolean; reason?: string; removeFromStore?: boolean; awaitDestroy?: boolean } = {}): Promise<void> {
     const s = this.sessions.get(id)
     if (!s) return
+    this.releaseAllAttachmentLeases(id)
     if (opts.terminated) {
       s.terminated = true
       if (opts.reason) s.terminatedReason = opts.reason
@@ -9429,6 +9499,7 @@ export class SessionManager {
       // cleaned up exactly as the pre-window destroy used to, instead of
       // lingering on a terminated session.
       const stranded = session.handle.drainQueuedInput?.() ?? []
+      this.releaseAttachmentLeasesForMessages(session.id, stranded)
       for (const msg of stranded) {
         this.broadcastSystemNotice(session, `自动恢复失败，消息未送达：${describeUserMessage(msg)}`)
       }
@@ -9713,6 +9784,9 @@ export class SessionManager {
       forwardSubagentText: this.forwardSubagentText,
       resume: session.id,
       onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg),
+      onUserMessagePersistence: (msg) => {
+        if (typeof msg.uuid === 'string') this.releaseAttachmentLeasesForUuid(session.id, msg.uuid)
+      },
       onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(session.id, uuid, outcome),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,

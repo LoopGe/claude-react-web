@@ -410,4 +410,13 @@ describe('UploadStore', () => {
       }
     })
   })
+
+  describe('native attachment retention', () => {
+    it('shares one lease-capable reference index with routes and native providers', () => {
+      store.attachmentReferences.acquireLease('upload-1')
+      expect(store.attachmentReferences.hasReference('upload-1')).toBe(true)
+      store.attachmentReferences.releaseLease('upload-1')
+      expect(store.attachmentReferences.hasReference('upload-1')).toBe(false)
+    })
+  })
 })

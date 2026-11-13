@@ -19,6 +19,7 @@ import { basename, resolve as resolvePath } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { JsonFileStore, DEFAULT_DIR_NAME } from './json-file-store.js'
 import { createLogger } from './log.js'
+import { NativeAttachmentReferenceIndex } from './attachment-reference-index.js'
 export type { UploadEntry } from '../shared/uploads.js'
 import type { UploadEntry } from '../shared/uploads.js'
 
@@ -86,6 +87,10 @@ interface BackfillSession {
 }
 
 export class UploadStore extends JsonFileStore<UploadEntry> {
+  /** Process-wide native reference view shared by the manager, provider, and
+   * upload routes. Constructed against the same resolved state dir. */
+  readonly attachmentReferences: NativeAttachmentReferenceIndex
+
   /** The base index is keyed by `id`, so it IS the id index. This index
    *  maps `digest` → the entries carrying it: `load`, `record` and the
    *  backfill passes rebuild it from the base map, and removal unindexes
@@ -94,6 +99,7 @@ export class UploadStore extends JsonFileStore<UploadEntry> {
 
   constructor(opts: UploadStoreOptions = {}) {
     super(opts, 'upload-registry.json', DEFAULT_DIR_NAME, 'upload-registry')
+    this.attachmentReferences = new NativeAttachmentReferenceIndex({ stateDir: this.getDir() })
   }
 
   protected getKey(entry: UploadEntry): string {

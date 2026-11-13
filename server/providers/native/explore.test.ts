@@ -6,6 +6,9 @@ import {
   filterExploreTools,
 } from './explore.js'
 import type { ToolDef } from './tools/types.js'
+import { createAttachmentReadTool } from './tools/attachment-read.js'
+import { NativeAttachmentReferenceIndex } from '../../attachment-reference-index.js'
+import { UploadStore } from '../../upload-store.js'
 
 function tool(name: string, readOnlyHint?: unknown): ToolDef {
   return {
@@ -35,6 +38,21 @@ describe('Explore agent role', () => {
     const truthyNumber = tool('TruthNumber', 1)
 
     expect(filterExploreTools([read, write, undeclared, truthyString, truthyNumber])).toEqual([read])
+  })
+
+  it('keeps AttachmentRead in the read-only role without changing other tool metadata', () => {
+    const stateDir = process.cwd()
+    const attachmentRead = createAttachmentReadTool({
+      uploadStore: new UploadStore({ stateDir }),
+      stateDir,
+      referenceIndex: new NativeAttachmentReferenceIndex({ stateDir }),
+      sessionId: 'explore-session',
+    })
+    const read = tool('Read', true)
+    const write = tool('Write', false)
+
+    expect(filterExploreTools([read, attachmentRead, write])).toEqual([read, attachmentRead])
+    expect(attachmentRead.readOnlyHint).toBe(true)
   })
 
   it('returns a detached array without rewriting tool metadata', () => {

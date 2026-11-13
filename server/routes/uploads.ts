@@ -390,6 +390,9 @@ export function buildUploadRouter(
       if (entries.length === 0) {
         return c.json({ error: 'upload entry not found' }, 404)
       }
+      if (entries.some((entry) => uploadStore.attachmentReferences.hasReference(entry.id))) {
+        return c.json({ error: 'upload is referenced by a native session or an in-flight send' }, 409)
+      }
       // Validate every entry before deleting anything, so a hand-edited
       // registry row can't half-apply the request.
       if (!entries.every((entry) => uploadEntryPathContained(entry, stateDir))) {
@@ -415,6 +418,9 @@ export function buildUploadRouter(
       const entry = uploadStore.getById(id)
       if (!entry) {
         return c.json({ error: 'upload entry not found' }, 404)
+      }
+      if (uploadStore.attachmentReferences.hasReference(entry.id)) {
+        return c.json({ error: 'upload is referenced by a native session or an in-flight send' }, 409)
       }
       // Validated against all three roots: the entry's own cwd upload dir,
       // the shared stateDir upload dir, and the attachment store.

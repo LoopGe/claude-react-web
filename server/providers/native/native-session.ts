@@ -63,6 +63,7 @@ import { formatSupplementInstruction, type SupplementOutcome } from '../steering
 import { isQuestionResult } from '../../permission-broker.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
+import type { NativeAttachmentReferenceIndex } from '../../attachment-reference-index.js'
 
 interface PendingDurableInitial {
   message: AgentUserMessage
@@ -197,6 +198,8 @@ export interface NativeSessionOptions {
   /** Shared upload registry, injected by the provider for authorized byte
    * projections. Plain handle-only sessions do not read it. */
   uploadStore?: UploadStore
+  /** Derived reference view shared with upload deletion. */
+  attachmentReferences?: NativeAttachmentReferenceIndex
   /** Resume this session's own log (non-fork), or the source log id for a fork. */
   resume?: string
   /** Fork from `resume`'s log into `id` instead of resuming it. */
@@ -253,6 +256,9 @@ export interface NativeSessionOptions {
    *  called when a queued message is dequeued for a turn — without it the
    *  client's send bubble stays 'queued' forever. */
   onUserMessageConsumed?: (message: AgentUserMessage) => void
+  /** Raw persistence owns the send lease: appended converts it to a persisted
+   * reference; failed releases it while the pending prompt remains retryable. */
+  onUserMessagePersistence?: (message: AgentUserMessage, outcome: 'appended' | 'failed') => void
   /** Mid-run steering delivery: fired per supplement once its
    *  `session/supplement` event is durable, right before the next request
    *  carries it. The manager stamps the bubble and the sidecar from it. */
@@ -463,6 +469,7 @@ export class NativeSession implements ProviderSessionHandle {
     } else {
       this.log = this.openFreshLog(opts)
     }
+    this.syncAttachmentReferences()
     // session-health's stuck-GC force-unloads sessions whose init never
     // lands — push it first, before any turn output. `fast_mode_state` is
     // intent-based, so the client's chip is correct before the first turn
@@ -943,6 +950,10 @@ export class NativeSession implements ProviderSessionHandle {
     }
   }
 
+  private syncAttachmentReferences(): void {
+    this.opts.attachmentReferences?.replaceSession(this.opts.id, this.log.events)
+  }
+
   private persistToolResult(record: PersistedToolResult, parentToolUseId: string | null): void {
     this.log.append({
       type: 'user',
@@ -952,6 +963,7 @@ export class NativeSession implements ProviderSessionHandle {
       timestamp: new Date().toISOString(),
       message: { role: 'user', content: [record.result] },
     })
+    this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'tool result')
   }
 
@@ -1149,6 +1161,8 @@ export class NativeSession implements ProviderSessionHandle {
           message: persisted,
         })
         rawAppended = true
+        this.syncAttachmentReferences()
+        this.opts.onUserMessagePersistence?.(next, 'appended')
         appendedInitialMessages = [rawMessage]
         if (invocation) {
           const instruction = {
@@ -1224,6 +1238,7 @@ export class NativeSession implements ProviderSessionHandle {
         endReason = res.isError ? 'error' : 'completed'
         if (!res.isError) endUsage = res.usage
       } catch (err) {
+        if (!rawAppended) this.opts.onUserMessagePersistence?.(next, 'failed')
         // A pre-append failure owns no canonical history and keeps the pending
         // prompt at the FIFO head. Once raw append succeeds, later failures
         // restore exactly the appended prefix (raw plus any appended skill),
@@ -1313,6 +1328,7 @@ export class NativeSession implements ProviderSessionHandle {
       message: persistedUserMessage(message.message),
       isCompactSummary: true,
     })
+    this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'compact summary')
     this.history.push({ role: 'user', content: message.message.content })
   }

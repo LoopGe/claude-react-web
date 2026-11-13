@@ -325,6 +325,90 @@ describe('SessionManager attachment dispatch serialization', () => {
       await fx.sm.shutdown()
     }
   })
+
+  it('leases an upload before hashing and releases cancellation before dispatch', async () => {
+    const fx = await makeFixture()
+    try {
+      const blocked = blockNextRead(Buffer.from('hello'))
+      const first = smSendContent(fx)
+      await blocked.started
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(true)
+
+      await fx.sm.interrupt(fx.sessionId, { cancelQueued: true })
+      await expect(first).rejects.toThrow(/interrupt|abort/i)
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(false)
+    } finally {
+      await fx.sm.shutdown()
+    }
+  })
+
+  it('releases a non-native lease when dispatch completes', async () => {
+    const fx = await makeFixture()
+    try {
+      await smSendContent(fx)
+      expect(fx.handle.sent).toHaveLength(1)
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(false)
+    } finally {
+      await fx.sm.shutdown()
+    }
+  })
+
+  it('does not release another in-flight send lease when a non-native dispatch fails', async () => {
+    const fx = await makeFixture()
+    try {
+      const second = await fx.sm.create({ provider: 'test', cwd: fx.stateDir })
+      const secondHandle = fx.provider.handles[1]!
+      fx.store.record([{ ...fx.entry, sessionId: undefined }])
+      const blocked = blockNextRead(Buffer.from('hello'))
+      const first = smSendContent(fx)
+      await blocked.started
+      vi.spyOn(secondHandle, 'enqueueUserMessage').mockImplementationOnce(() => {
+        throw new Error('second dispatch failed')
+      })
+
+      await expect(fx.sm.sendContent(second.id, [fileBlock(fx.entry)])).rejects.toThrow('second dispatch failed')
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(true)
+      blocked.release()
+      await first
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(false)
+    } finally {
+      await fx.sm.shutdown()
+    }
+  })
+
+  it('holds a native queue lease until Stop withdraws the unpersisted turn', async () => {
+    const fx = await makeFixture()
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const registry = new ProviderRegistry()
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    registry.register(native)
+    let notifyStarted!: () => void
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve })
+    native._testStream = async function* (request) {
+      notifyStarted()
+      await new Promise<never>((_, reject) => {
+        request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true })
+      })
+      yield { kind: 'message_start' } as const // unreachable
+    }
+    const sessionStore = new SessionStore({ stateDir: fx.stateDir })
+    await sessionStore.load()
+    const sm = new SessionManager({ store: sessionStore, providers: registry, uploadStore: fx.store })
+    try {
+      const info = await sm.create({ provider: 'native', cwd: fx.stateDir })
+      fx.store.record([{ ...fx.entry, sessionId: info.id }])
+      await sm.send(info.id, 'keep the first turn busy')
+      await started
+      await sm.sendContent(info.id, [fileBlock(fx.entry)])
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(true)
+
+      await sm.interrupt(info.id, { cancelQueued: true })
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(false)
+    } finally {
+      await sm.shutdown()
+      await fx.sm.shutdown()
+    }
+  })
 })
 
 function smSendContent(fx: Fixture) {

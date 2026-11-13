@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
@@ -36,6 +37,8 @@ import { HttpError } from '../../errors.js'
 import { QUESTION_RESULT } from '../../permission-broker.js'
 import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef, ToolOutcome } from './tools/types.js'
+import { UploadStore } from '../../upload-store.js'
+import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
 
 // The retry suppression test drives the real `defaultStream` against a mocked
 // wire layer: the mock invokes `onRetry` and yields a minimal canonical round.
@@ -4861,6 +4864,106 @@ describe('NativeSession', () => {
           .rejects.toThrow('native provider does not support flag settings: sandbox')
       } finally {
         await session.destroy()
+      }
+    })
+
+    it('runs AttachmentRead through the real loop without leaking raw filesystem errors', async () => {
+      const previous = { ...config }
+      __setConfigForTest({ nativeAttachmentFidelity: true })
+      const dir = await tempDir('native-attachment-read-')
+      const bytes = Buffer.from('good')
+      const digest = createHash('sha256').update(bytes).digest('hex')
+      const path = aliasPathOf(attachmentRoot(dir), digest, 'notes.txt')
+      await mkdir(join(path, '..'), { recursive: true })
+      await writeFile(path, bytes)
+      const uploadStore = new UploadStore({ stateDir: dir })
+      uploadStore.record([{
+        id: 'upload-1', path, cwd: dir, name: 'notes.txt', size: bytes.length,
+        digest, uploadedAt: 1, sessionTitle: '', sessionId: 'attachment-read',
+      }])
+      const provider = new NativeProvider({ stateDir: dir, uploadStore })
+      const requests: Array<{ tools: Array<{ name: string }>; messages: unknown[] } & Record<string, unknown>> = []
+      ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([
+        [
+          { kind: 'message_start', usage: { input_tokens: 1, output_tokens: 1 } },
+          { kind: 'block_start', index: 0, block: { type: 'tool_use', id: 'attachment-call', name: 'AttachmentRead' } },
+          { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: '{"id":"upload-1"}' } },
+          { kind: 'block_end', index: 0 },
+          { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 1 } },
+        ],
+        textTurn('done'),
+      ], requests)
+      const persistence: string[] = []
+      const session = provider.createSession({
+        id: 'attachment-read', cwd: dir,
+        canUseTool: async () => ({ behavior: 'allow' }),
+        onUserMessagePersistence: (_message, outcome) => { persistence.push(outcome) },
+      })
+      const frames: Frame[] = []
+      void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+      try {
+        await writeFile(path, 'evil')
+        session.enqueueUserMessage({
+          ...userMsg('read the attachment'),
+          uuid: 'attachment-user',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'file',
+              attachment: { id: 'upload-1', name: 'notes.txt', size: bytes.length, digest, path },
+            }],
+          },
+        } as never)
+        await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'done')).toBe(true))
+
+        expect(requests[0].tools.some((tool) => tool.name === 'AttachmentRead')).toBe(true)
+        expect(persistence).toEqual(['appended'])
+        expect(uploadStore.attachmentReferences.hasReference('upload-1')).toBe(true)
+        const toolResult = frames.find((frame) => frame.type === 'user'
+          && JSON.stringify(frame).includes('attachment-call')
+          && JSON.stringify(frame).includes('tool_result'))
+        expect(JSON.stringify(toolResult)).toContain('integrity')
+        expect(JSON.stringify(frames)).not.toContain(path)
+        await vi.waitFor(async () => {
+          const entries = await readNativeHistoryEntries(dir, 'attachment-read')
+          expect(JSON.stringify(entries)).toContain('attachment-call')
+        })
+        expect(JSON.stringify(await readNativeHistoryEntries(dir, 'attachment-read'))).not.toContain(path)
+
+        await provider.deleteTranscript('attachment-read')
+        expect(uploadStore.attachmentReferences.hasReference('upload-1')).toBe(false)
+      } finally {
+        await session.destroy()
+        __setConfigForTest(previous)
+      }
+    })
+
+    it('reports a raw attachment append failure so its deletion lease can be released', async () => {
+      const previous = { ...config }
+      __setConfigForTest({ nativeAttachmentFidelity: true })
+      const dir = await tempDir('native-attachment-persistence-')
+      const provider = providerWithStreamer([], dir)
+      const persistence: string[] = []
+      const session = provider.createSession({
+        id: 'attachment-persistence', cwd: dir,
+        onUserMessagePersistence: (_message, outcome) => { persistence.push(outcome) },
+      })
+      const frames: Frame[] = []
+      void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      const originalAppend = sessionLog.append.bind(sessionLog)
+      vi.spyOn(sessionLog, 'append').mockImplementation((event) => {
+        if (event.type === 'user' && event.uuid === 'attachment-user') throw new Error('append failed')
+        return originalAppend(event)
+      })
+      try {
+        session.enqueueUserMessage({ ...structuredUserMsg('attachment-user'), session_id: 'attachment-persistence' } as never)
+        await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+        expect(persistence).toEqual(['failed'])
+        expect(session.clearQueuedInput()).toBe(1)
+      } finally {
+        await session.destroy()
+        __setConfigForTest(previous)
       }
     })
 

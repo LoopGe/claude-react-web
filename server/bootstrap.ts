@@ -120,6 +120,7 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
 
   const uploadStore = new UploadStore({ stateDir })
   const uploadEntries = await uploadStore.load()
+  await uploadStore.attachmentReferences.rebuild()
   if (uploadEntries.length) {
     log.info(`loaded ${uploadEntries.length} uploaded-file registry ${uploadEntries.length === 1 ? 'entry' : 'entries'} from ${stateDir}`)
   }
