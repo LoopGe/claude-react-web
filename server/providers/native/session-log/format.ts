@@ -334,20 +334,36 @@ function parseUserContent(
   sessionId: string,
   path: string,
 ): unknown[] {
-  const parseBlock = (block: unknown): unknown => {
-    if (!isObject(block)) return block
-    if (block.type === 'file') {
-      if (version === NATIVE_SESSION_LOG_VERSION) {
-        corrupt(sessionId, path, 'v1 user event cannot contain a structured file block')
-      }
-      return parseNativeFileBlock(block, sessionId, path)
+  const parseFile = (block: JsonObject): NativeFileBlock => {
+    if (version === NATIVE_SESSION_LOG_VERSION) {
+      corrupt(sessionId, path, 'v1 user event cannot contain a structured file block')
     }
+    return parseNativeFileBlock(block, sessionId, path)
+  }
+  const rejectDeeperFiles = (blocks: unknown[]): void => {
+    for (const block of blocks) {
+      if (!isObject(block)) continue
+      if (block.type === 'file') {
+        corrupt(sessionId, path, 'native file block exceeds the supported tool_result depth')
+      }
+      if (block.type === 'tool_result' && Array.isArray(block.content)) rejectDeeperFiles(block.content)
+    }
+  }
+  const parseToolResultBlock = (block: unknown): unknown => {
+    if (!isObject(block)) return block
+    if (block.type === 'file') return parseFile(block)
+    if (block.type === 'tool_result' && Array.isArray(block.content)) rejectDeeperFiles(block.content)
+    return block
+  }
+  const parseDirectBlock = (block: unknown): unknown => {
+    if (!isObject(block)) return block
+    if (block.type === 'file') return parseFile(block)
     if (block.type === 'tool_result' && Array.isArray(block.content)) {
-      return { ...block, content: block.content.map(parseBlock) }
+      return { ...block, content: block.content.map(parseToolResultBlock) }
     }
     return block
   }
-  return content.map(parseBlock)
+  return content.map(parseDirectBlock)
 }
 
 function parseAttachmentCatalog(

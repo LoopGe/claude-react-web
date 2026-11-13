@@ -136,6 +136,34 @@ describe('buildCompactAttachmentContent', () => {
     }
   })
 
+  it('stops retaining text at the first non-fitting multibyte codepoint across chunks', async () => {
+    const f = await fixture()
+    const targetBytes = Buffer.concat([
+      Buffer.from('é'),
+      Buffer.alloc(65_534, 'x'),
+      Buffer.from('L'),
+    ])
+    const target = await addUpload(f, 'utf8-prefix', targetBytes)
+    const fillers = [
+      await addUpload(f, 'fill-a', Buffer.alloc(65_536, 'a')),
+      await addUpload(f, 'fill-b', Buffer.alloc(65_536, 'b')),
+      await addUpload(f, 'fill-c', Buffer.alloc(65_536, 'c')),
+      await addUpload(f, 'fill-d', Buffer.alloc(65_535, 'd')),
+    ]
+
+    const result = await buildCompactAttachmentContent([
+      user('target', [publicFile(target)]),
+      user('fillers', fillers.map(publicFile)),
+    ], [
+      occurrence('target', [0], target),
+      ...fillers.map((attachment, index) => occurrence('fillers', [index], attachment)),
+    ], f)
+
+    const text = (result.content[0] as { text: string }).text
+    expect(text).toContain(`included 0 of ${targetBytes.length} raw bytes`)
+    expect(text).not.toContain('\nL\n')
+  })
+
   it('injects a provider tool-result occurrence at its original block path', async () => {
     const f = await fixture()
     const attachment = await addUpload(f, 'tool-text', Buffer.from('text returned by AttachmentRead'))
@@ -203,6 +231,31 @@ describe('buildCompactAttachmentContent', () => {
     expect(JSON.stringify(result.content.slice(1))).toContain('28,000,000')
     expect(JSON.stringify(result.content)).not.toContain(b.path)
     expect(JSON.stringify(messages)).toBe(before)
+  }, 30_000)
+
+  it('allows a later same-digest PDF occurrence when only the second message fits', async () => {
+    const f = await fixture('compact-pdf-second-fit-')
+    const attachment = await addUpload(f, 'shared-pdf', Buffer.from('%PDF-small'), {
+      name: 'shared.pdf', modelForm: 'pdf-document', mediaType: 'application/pdf',
+    })
+    const image = {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'i'.repeat(28_000_000) },
+    }
+
+    const result = await buildCompactAttachmentContent([
+      user('image-heavy', [publicFile(attachment), image]),
+      user('fits', [publicFile(attachment)]),
+    ], [
+      occurrence('image-heavy', [0], attachment),
+      occurrence('fits', [0], attachment),
+    ], f)
+
+    expect(result.content.map((block) => (block as { type: string }).type)).toEqual([
+      'text', 'image', 'document',
+    ])
+    expect((result.content[0] as { text: string }).text).toContain('28,000,000')
+    expect((result.content[2] as { title?: string }).title).toBe('shared.pdf')
   }, 30_000)
 
   it('does not read a handle-form PDF or an unselected non-UTF-8 binary', async () => {

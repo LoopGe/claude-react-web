@@ -93,8 +93,9 @@ export interface CreateSessionOptions {
    *  doesn't know where to cut and the fork subprocess hangs. SDK option. */
   resumeSessionAt?: string
   onUserMessageConsumed?: (message: AgentUserMessage) => void
-  /** Native raw-user persistence outcome. The host uses it to convert an
-   * attachment deletion lease into a log reference, or release it on failure. */
+  /** Native raw-user persistence outcome. The host converts an attachment
+   * deletion lease to a log reference on append, or releases it for an
+   * abandoned prompt. Retryable pre-append failures emit no outcome. */
   onUserMessagePersistence?: (message: AgentUserMessage, outcome: 'appended' | 'failed') => void
   /** Mid-run steering：一条注入消息在钩子边界投递完成（或 aborted）时回调
    *  （spec §4 接口契约）。ok=false 仅出现在 handle 销毁路径（aborted）；

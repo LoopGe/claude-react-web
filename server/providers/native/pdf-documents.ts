@@ -125,6 +125,7 @@ export class PdfBudgetLedger {
       usedBase64Chars: 0,
       documentDigests: new Set<string>(),
     }
+    if (partition.documentDigests.has(block.attachment.digest)) return
     partition.usedBase64Chars += pdfBase64Length(block.attachment.size)
     partition.documentDigests.add(block.attachment.digest)
     this.partitions.set(historyKey, partition)

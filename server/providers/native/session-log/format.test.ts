@@ -387,6 +387,23 @@ describe('session log format', () => {
     })
     expectCorrupt(event)
   })
+  it('rejects a structured file below the supported tool_result depth', () => {
+    expectCorruptV2({
+      ...v2User,
+      message: {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'outer',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'inner',
+            content: [nativeFile],
+          }],
+        }],
+      },
+    })
+  })
   it('rejects malformed attachment catalogs', () => {
     const valid = { seq: 0, type: 'session/attachments', attachments: [nativeAttachment], timestamp: 't' }
     for (const raw of [

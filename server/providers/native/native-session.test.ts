@@ -4422,6 +4422,52 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('deduplicates the manual handoff catalog by id and digest in occurrence order', async () => {
+    const dir = await tempDir('native-attachment-catalog-dedup-')
+    const seeded = NativeSessionLog.open({ stateDir: dir, id: 'catalog-dedup', cwd: dir, resume: false })
+    await seeded.migrateToV2()
+    const makeAttachment = (id: string, digest: string): NativeFileAttachment => ({
+      id, name: `${id}.txt`, size: 4, digest: digest.repeat(64),
+      path: join(dir, `${id}.txt`), modelForm: 'handle',
+    })
+    const inherited = makeAttachment('inherited', 'a')
+    const shared = makeAttachment('shared', 'b')
+    const direct = makeAttachment('direct', 'c')
+    const nested = makeAttachment('nested', 'd')
+    seeded.append({
+      type: 'session/attachments', attachments: [inherited, shared],
+      timestamp: '2026-11-13T00:00:00.000Z',
+    })
+    seeded.append({
+      type: 'user', uuid: 'direct-user', session_id: 'catalog-dedup', parent_tool_use_id: null,
+      timestamp: '2026-11-13T00:00:01.000Z',
+      message: { role: 'user', content: [
+        { type: 'file', attachment: shared }, { type: 'file', attachment: direct },
+      ] },
+    })
+    seeded.append({
+      type: 'user', uuid: 'tool-user', session_id: 'catalog-dedup', parent_tool_use_id: 'agent-1',
+      timestamp: '2026-11-13T00:00:02.000Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read-1', content: [
+        { type: 'file', attachment: inherited }, { type: 'file', attachment: nested },
+      ] }] },
+    })
+    seeded.append({
+      type: 'session/attachments', attachments: [nested, direct],
+      timestamp: '2026-11-13T00:00:03.000Z',
+    })
+    await seeded.flush()
+    await seeded.close()
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'catalog-dedup', cwd: dir, resume: 'catalog-dedup' })
+
+    const catalog = (session as unknown as { getAttachmentCatalog(): readonly NativeFileAttachment[] })
+      .getAttachmentCatalog()
+
+    expect(catalog).toEqual([inherited, shared, direct, nested])
+    await session.destroy()
+  })
+
   it('durably seeds catalog before summary so AttachmentRead works in the handoff log', async () => {
     const previous = { ...config }
     __setConfigForTest({ nativeAttachmentFidelity: true })
@@ -5294,7 +5340,7 @@ describe('NativeSession', () => {
       }
     })
 
-    it('reports a raw attachment append failure so its deletion lease can be released', async () => {
+    it('keeps a raw attachment append failure retryable until its queue is withdrawn', async () => {
       const previous = { ...config }
       __setConfigForTest({ nativeAttachmentFidelity: true })
       const dir = await tempDir('native-attachment-persistence-')
@@ -5315,7 +5361,7 @@ describe('NativeSession', () => {
       try {
         session.enqueueUserMessage({ ...structuredUserMsg('attachment-user'), session_id: 'attachment-persistence' } as never)
         await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
-        expect(persistence).toEqual(['failed'])
+        expect(persistence).toEqual([])
         expect(session.clearQueuedInput()).toBe(1)
       } finally {
         await session.destroy()

@@ -206,6 +206,7 @@ async function hydrateText(
   const signal = opts.signal ?? new AbortController().signal
   let text = ''
   let retainedBytes = 0
+  let stopAccepting = false
   try {
     for await (const chunk of objects.readVerified({
       path: resolved.path,
@@ -214,19 +215,25 @@ async function hydrateText(
       signal,
     })) {
       const decoded = decoder.decode(chunk, { stream: true })
-      if (retainedBytes >= maxBytes) continue
+      if (stopAccepting || retainedBytes >= maxBytes) continue
       for (const char of decoded) {
         const size = Buffer.byteLength(char, 'utf8')
-        if (retainedBytes + size > maxBytes) break
+        if (retainedBytes + size > maxBytes) {
+          stopAccepting = true
+          break
+        }
         text += char
         retainedBytes += size
       }
     }
     const final = decoder.decode()
-    if (retainedBytes < maxBytes) {
+    if (!stopAccepting && retainedBytes < maxBytes) {
       for (const char of final) {
         const size = Buffer.byteLength(char, 'utf8')
-        if (retainedBytes + size > maxBytes) break
+        if (retainedBytes + size > maxBytes) {
+          stopAccepting = true
+          break
+        }
         text += char
         retainedBytes += size
       }
@@ -307,7 +314,6 @@ async function pdfBlock(
       native: false,
     }
   }
-  budget.digests.add(attachment.digest)
   if (attachment.size > PDF_MAX_BYTES
     || budget.used + encodedChars > PDF_MAX_BASE64_CHARS
     || budget.messageUsed + encodedChars > PDF_MAX_BASE64_CHARS) {
@@ -321,6 +327,7 @@ async function pdfBlock(
   }
   const signal = opts.signal ?? new AbortController().signal
   const document = await loadPdfDocument(attachment, opts, signal)
+  budget.digests.add(attachment.digest)
   budget.used += encodedChars
   budget.messageUsed += encodedChars
   return { block: document, native: true }

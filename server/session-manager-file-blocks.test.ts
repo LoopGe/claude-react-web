@@ -345,6 +345,110 @@ describe('SessionManager attachment dispatch serialization', () => {
     }
   })
 
+  it('leases the canonical upload id when a send uses a sha256 reference', async () => {
+    const fx = await makeFixture()
+    const app = new Hono()
+    app.route('/', buildUploadRouter(fx.sm, fx.store))
+    const blocked = blockNextRead(Buffer.from('hello'))
+    try {
+      const first = fx.sm.sendContent(fx.sessionId, [{
+        type: 'file',
+        attachment: {
+          id: `sha256:${fx.entry.digest}`,
+          name: fx.entry.name,
+          size: fx.entry.size,
+        },
+      }])
+      await blocked.started
+      const deletion = await app.request(`/uploads/${fx.entry.id}`, { method: 'DELETE' })
+      await new Promise((resolve) => setImmediate(resolve))
+      blocked.release()
+      await first
+
+      expect(deletion.status).toBe(409)
+    } finally {
+      blocked.release()
+      await fx.sm.shutdown()
+    }
+  })
+
+  it('keeps handle and PDF deletion leases through a failed append and its retry', async () => {
+    const fx = await makeFixture()
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const registry = new ProviderRegistry()
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    registry.register(native)
+    const requests: unknown[] = []
+    native._testStream = async function* (request) {
+      requests.push(request)
+      yield { kind: 'message_start', usage: { input_tokens: 1, output_tokens: 1 } }
+      yield { kind: 'block_start', index: 0, block: { type: 'text' } }
+      yield { kind: 'block_delta', index: 0, delta: { type: 'text', text: 'ok' } }
+      yield { kind: 'block_end', index: 0 }
+      yield { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 1 } }
+    }
+    const sessionStore = new SessionStore({ stateDir: fx.stateDir })
+    await sessionStore.load()
+    const sm = new SessionManager({ store: sessionStore, providers: registry, uploadStore: fx.store })
+    try {
+      const info = await sm.create({ provider: 'native', cwd: fx.stateDir })
+      const pdfBytes = Buffer.from('%PDF-1.4\nretry body')
+      const pdfPath = join(fx.stateDir, UPLOAD_SUBDIR, 'retry.pdf')
+      writeFileSync(pdfPath, pdfBytes)
+      const pdfEntry: UploadEntry = {
+        id: 'pdf-retry', path: pdfPath, cwd: fx.stateDir, name: 'retry.pdf', size: pdfBytes.length,
+        digest: createHash('sha256').update(pdfBytes).digest('hex'),
+        uploadedAt: 2, sessionTitle: '', sessionId: info.id,
+      }
+      fx.store.record([{ ...fx.entry, sessionId: info.id }, pdfEntry])
+      const nativeSession = (sm as unknown as {
+        sessions: Map<string, { handle: ProviderSessionHandle }>
+      }).sessions.get(info.id)!.handle as unknown as {
+        log: NativeSessionLog
+        pumping: boolean
+      }
+      const migrate = nativeSession.log.migrateToV2.bind(nativeSession.log)
+      let fail = true
+      vi.spyOn(nativeSession.log, 'migrateToV2').mockImplementation(async () => {
+        if (fail) {
+          fail = false
+          throw new Error('migration failed before append')
+        }
+        return migrate()
+      })
+      const app = new Hono()
+      app.route('/', buildUploadRouter(sm, fx.store))
+
+      const sent = await sm.sendContent(info.id, [fileBlock(fx.entry), fileBlock(pdfEntry)])
+      await vi.waitFor(() => {
+        expect(nativeSession.log.events.filter((event) => event.type === 'turn/end')).toHaveLength(1)
+        expect(nativeSession.pumping).toBe(false)
+      })
+      const blockedDeletes = await Promise.all([fx.entry.id, pdfEntry.id].map(async (uploadId) =>
+        (await app.request(`/uploads/${uploadId}`, { method: 'DELETE' })).status,
+      ))
+      expect(blockedDeletes).toEqual([409, 409])
+
+      await sm.send(info.id, 'explicit retry')
+      await vi.waitFor(() => expect(requests).toHaveLength(2))
+      const persisted = nativeSession.log.events.find((event) => event.type === 'user' && event.uuid === sent.uuid)
+      expect(persisted).toMatchObject({
+        message: {
+          content: [
+            { type: 'file', attachment: { id: fx.entry.id, modelForm: 'handle' } },
+            { type: 'file', attachment: { id: pdfEntry.id, modelForm: 'pdf-document' } },
+          ],
+        },
+      })
+      for (const uploadId of [fx.entry.id, pdfEntry.id]) {
+        expect((await app.request(`/uploads/${uploadId}`, { method: 'DELETE' })).status).toBe(409)
+      }
+    } finally {
+      await sm.shutdown()
+      await fx.sm.shutdown()
+    }
+  })
+
   it('releases a non-native lease when dispatch completes', async () => {
     const fx = await makeFixture()
     try {

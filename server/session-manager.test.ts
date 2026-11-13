@@ -8957,6 +8957,31 @@ describe('SessionManager', () => {
       expect(await sm.searchMessages('/private/report.pdf')).toEqual([])
       expect(await sm.searchMessages('a'.repeat(64))).toEqual([])
     })
+
+    it('keeps an older ordinary-text hit ahead of a newer attachment-only hit at the limit', async () => {
+      const older = { id: 's-text', title: 'Text', cwd: TEST_CWD, provider: 'text', lastTurnAt: 10, lastActivityAt: 10 }
+      const newer = { id: 's-file', title: 'File', cwd: TEST_CWD, provider: 'file', lastTurnAt: 20, lastActivityAt: 20 }
+      const provider = (message: Record<string, unknown>) => ({
+        readHistoryEntries: async () => [{ index: 0, message }],
+      })
+      const sm = {
+        list: () => [older, newer],
+        sessions: new Map(),
+        store: undefined,
+        providers: new Map([
+          ['text', provider({ type: 'user', uuid: 'older-text', parent_tool_use_id: null, message: { role: 'user', content: 'report' } })],
+          ['file', provider({ type: 'user', uuid: 'newer-file', parent_tool_use_id: null, message: { role: 'user', content: [
+            { type: 'file', attachment: { id: 'upload-1', name: 'report.pdf', size: 42, digest: 'a'.repeat(64) } },
+          ] } })],
+        ]),
+        defaultProvider: 'claude',
+        searchMessages: SessionManager.prototype.searchMessages,
+      } as unknown as SessionManager
+
+      const hits = await sm.searchMessages('report', { limit: 1 })
+
+      expect(hits.map((hit) => hit.messageUuid)).toEqual(['older-text'])
+    })
   })
 
   describe('TaskResultStore wiring', () => {

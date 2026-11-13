@@ -3753,7 +3753,8 @@ export class SessionManager {
     const ids = new Set<string>()
     for (const block of content) {
       if (block.type !== 'file') continue
-      ids.add(block.attachment.id)
+      const entry = this.uploadStore.getById(block.attachment.id)
+      ids.add(entry?.id ?? block.attachment.id)
     }
     for (const id of ids) this.uploadStore.attachmentReferences.acquireLease(id)
     return ids
@@ -8851,6 +8852,7 @@ export class SessionManager {
     // overwhelming the filesystem or event loop.
     const CONCURRENCY = 10
     const allHits: MessageSearchHit[] = []
+    const attachmentOnlyHits = new Set<MessageSearchHit>()
     let idx = 0
     const searchSession = async (info: SessionInfo) => {
       const live = this.sessions.get(info.id)
@@ -8880,7 +8882,7 @@ export class SessionManager {
         const matchOrdinal = sessionMatchOrdinal
         sessionMatchOrdinal += matchCount
         const uuid = messageUuid(entry.message)
-        allHits.push({
+        const hit: MessageSearchHit = {
           id: `${info.id}:${uuid ?? entry.index}`,
           sessionId: info.id,
           sessionTitle: info.title,
@@ -8893,7 +8895,13 @@ export class SessionManager {
           matchOrdinal,
           messageMatchOrdinal: 0,
           lastModified: info.lastTurnAt ?? info.lastActivityAt,
-        })
+        }
+        const attachmentMatchCount = countMessageSearchMatches(
+          segments.filter((segment) => segment.type === 'attachment'),
+          q,
+        )
+        if (attachmentMatchCount === matchCount) attachmentOnlyHits.add(hit)
+        allHits.push(hit)
       }
     }
 
@@ -8910,8 +8918,10 @@ export class SessionManager {
     }
     await Promise.all(workers)
 
-    // Sort by recency (most recent first), then truncate to limit.
-    allHits.sort((a, b) => (b.lastModified ?? 0) - (a.lastModified ?? 0))
+    // Ordinary-text hits rank before attachment-name-only hits; recency is
+    // preserved within each class, then the bounded result is truncated.
+    allHits.sort((a, b) => Number(attachmentOnlyHits.has(a)) - Number(attachmentOnlyHits.has(b))
+      || (b.lastModified ?? 0) - (a.lastModified ?? 0))
     return allHits.slice(0, limit)
   }
 

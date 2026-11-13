@@ -261,7 +261,8 @@ export interface NativeSessionOptions {
    *  client's send bubble stays 'queued' forever. */
   onUserMessageConsumed?: (message: AgentUserMessage) => void
   /** Raw persistence owns the send lease: appended converts it to a persisted
-   * reference; failed releases it while the pending prompt remains retryable. */
+   * reference; failed releases an abandoned prompt. A retryable pre-append
+   * failure emits no outcome and retains the lease until append or withdrawal. */
   onUserMessagePersistence?: (message: AgentUserMessage, outcome: 'appended' | 'failed') => void
   /** Mid-run steering delivery: fired per supplement once its
    *  `session/supplement` event is durable, right before the next request
@@ -1270,7 +1271,11 @@ export class NativeSession implements ProviderSessionHandle {
         endReason = res.isError ? 'error' : 'completed'
         if (!res.isError) endUsage = res.usage
       } catch (err) {
-        if (!rawAppended && !this._closed) this.opts.onUserMessagePersistence?.(next, 'failed')
+        // A pre-append failure stays leased while the same pending prompt can
+        // be retried. Only withdrawal or another abandonment releases it.
+        if (!rawAppended && !this._closed && this.pendingDurableInitial !== pending) {
+          this.opts.onUserMessagePersistence?.(next, 'failed')
+        }
         // A pre-append failure owns no canonical history and keeps the pending
         // prompt at the FIFO head. Once raw append succeeds, later failures
         // restore exactly the appended prefix (raw plus any appended skill),
@@ -1403,7 +1408,15 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   getAttachmentCatalog(): readonly NativeFileAttachment[] {
-    return nativeAttachmentOccurrences(this.log.events).map((attachment) => ({ ...attachment }))
+    const seen = new Set<string>()
+    const catalog: NativeFileAttachment[] = []
+    for (const attachment of nativeAttachmentOccurrences(this.log.events)) {
+      const key = `${attachment.id}\0${attachment.digest}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      catalog.push({ ...attachment })
+    }
+    return catalog
   }
 
   /** Manual replacement handoff: catalog first, summary second, one awaited

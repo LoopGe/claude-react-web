@@ -242,7 +242,7 @@ foreign id、无当前日志引用、registry/path 不匹配、alias 删除、di
 
 Uploads Manager 的删除必须查询 native 附件引用索引：任何 live/dormant native 日志或 fork/compact 隐藏目录仍引用该 upload id 时返回 409，不能删除 registry/alias 后让历史 `pdf-document` 在每个后续 turn 永久失败。bootstrap 从全部 native 日志重建索引，任何无法读取的引用日志使相关删除 fail closed；索引只是日志派生物，不是第二事实来源。native append/fork/manual-clear handoff/permanent session delete 同步维护它，最后一个 native 引用消失后才允许现有上传删除流程。
 
-send 入口在首次 hash 前取得 upload deletion lease，直到 native raw occurrence 成功 append 后才释放并转为持久化引用；取消、append 失败或普通 Claude dispatch 完成也释放。删除同时检查 persisted reference 与 in-flight lease，因此 hash/排队期间不能先把 alias 删除再在 consumption 写出失效 occurrence。
+send 入口在首次 hash 前取得 upload deletion lease，直到 native raw occurrence 成功 append 后才释放并转为持久化引用；普通 Claude dispatch 完成、取消或明确放弃 retry 也释放。可重试的 pre-append 失败继续持有 lease，直到 raw append、withdraw 或 destroy，删除不能在 cached retry 前移除 alias。删除同时检查 persisted reference 与 in-flight lease，因此 hash/排队期间不能先把 alias 删除再在 consumption 写出失效 occurrence。
 
 ### 5.3 一次性验证读取
 

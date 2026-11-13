@@ -109,6 +109,25 @@ describe('PdfBudgetLedger', () => {
     expect(ledger.reservePdfBudget('main', PDF_MAX_BYTES, digestOf('third')).ok).toBe(false)
   })
 
+  it('counts a repeated persisted digest once per partition when rebuilding', () => {
+    const repeated = pdf({ digest: digestOf('repeated'), size: PDF_MAX_BYTES, modelForm: 'pdf-document' })
+    const event = (uuid: string, parent: string | null) => ({
+      seq: parent === null ? 0 : 1,
+      type: 'user',
+      uuid,
+      session_id: 's',
+      parent_tool_use_id: parent,
+      timestamp: 't',
+      message: { role: 'user', content: [fileBlock(repeated), fileBlock(repeated)] },
+    }) as NativeLogEvent
+    const ledger = new PdfBudgetLedger()
+
+    ledger.rebuildFromEvents([event('main', null), event('agent', 'agent-1')])
+
+    expect(ledger.reservePdfBudget('main', 3, digestOf('next-main')).ok).toBe(true)
+    expect(ledger.reservePdfBudget('agent-1', 3, digestOf('next-agent')).ok).toBe(true)
+  })
+
   it('rebuilds main and sidechain partitions from the post-compact floor only', () => {
     const oldDigest = digestOf('old')
     const currentDigest = digestOf('current')
