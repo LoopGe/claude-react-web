@@ -25,6 +25,8 @@ import {
   IconRefresh,
   IconClipboard,
   IconMoon,
+  IconLayers,
+  IconExternalLink,
 } from '../icons/ToolIcons'
 
 export interface SessionContextMenuProps {
@@ -227,14 +229,16 @@ export function SessionContextMenu({
         })
       }
       if (availableGroups.length > 0) {
-        items.push({ label: 'Move to group ▸', icon: '→', disabled: true })
-        for (const g of availableGroups) {
-          items.push({
-            label: `  ${g.name} (${g.sessionIds.length}/${maxGroupSize})`,
-            icon: ' ',
+        // A real submenu (the flyout machinery in ContextMenu) — replaces the
+        // old disabled header row + space-padded pseudo-children.
+        items.push({
+          label: 'Move to group',
+          icon: <IconLayers size={14} />,
+          children: availableGroups.map((g) => ({
+            label: `${g.name} (${g.sessionIds.length}/${maxGroupSize})`,
             onClick: () => onAddToGroup(anchor.id, g.id),
-          })
-        }
+          })),
+        })
       }
       return items
     })(),
@@ -313,7 +317,7 @@ export function SessionContextMenu({
       // Nothing available (or only the gated-out brand targets): no group at
       // all, not an empty parent.
       if (items.length === 0) return []
-      return [{ label: '' } as ContextMenuItem, { label: 'Open in', icon: <IconFolder size={14} />, children: items }]
+      return [{ label: '' } as ContextMenuItem, { label: 'Open in', icon: <IconExternalLink size={14} />, children: items }]
     })(),
     { label: '' }, // separator
     // "Close panel" is only offered for ungrouped sessions. A grouped

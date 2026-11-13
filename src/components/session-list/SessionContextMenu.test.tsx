@@ -301,3 +301,72 @@ describe('SessionContextMenu open-in group', () => {
     Object.defineProperty(window.navigator, 'platform', { value: '', configurable: true })
   })
 })
+
+// The group actions: "Remove from group" stays a flat row; "Move to group"
+// is a real submenu (children) — the old flat rows with padded labels
+// ('  name (n/m)') and a disabled header row are gone.
+describe('SessionContextMenu move-to-group submenu', () => {
+  const groupProps = {
+    groups: [
+      { id: 'g-alpha', name: 'Alpha', sessionIds: ['other-1'] },
+      { id: 'g-beta', name: 'Beta', sessionIds: ['x', 'y', 'z'] }, // full at maxGroupSize 3
+      { id: 'g-gamma', name: 'Gamma', sessionIds: [] },
+    ],
+  }
+
+  const openMoveToGroup = (): HTMLElement => {
+    const parent = [...document.querySelectorAll('.ctx-menu > .ctx-menu-item')].find(
+      (b) => b.querySelector('.ctx-menu-label')?.textContent === 'Move to group',
+    )!
+    fireEvent.click(parent)
+    return document.querySelector('.ctx-submenu')!
+  }
+
+  it('renders Move to group as a submenu parent with one child per available group', () => {
+    render(<SessionContextMenu {...baseProps} {...groupProps} />)
+    openMoveToGroup()
+    const labels = [...document.querySelector('.ctx-submenu')!.querySelectorAll('.ctx-menu-label')]
+      .map((e) => e.textContent)
+    // The full group (Beta) is not offered; no padded labels, no header row.
+    expect(labels).toEqual(['Alpha (1/3)', 'Gamma (0/3)'])
+  })
+
+  it('calls onAddToGroup with the picked group id and closes the menu', () => {
+    const onAddToGroup = vi.fn()
+    const onClose = vi.fn()
+    render(<SessionContextMenu {...baseProps} {...groupProps} onAddToGroup={onAddToGroup} onClose={onClose} />)
+    openMoveToGroup()
+    const gamma = [...document.querySelector('.ctx-submenu')!.querySelectorAll<HTMLButtonElement>('.ctx-menu-item')]
+      .find((b) => b.querySelector('.ctx-menu-label')?.textContent === 'Gamma (0/3)')!
+    fireEvent.click(gamma)
+    expect(onAddToGroup).toHaveBeenCalledWith('sess-1', 'g-gamma')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('keeps Remove from group a flat row above the submenu parent', () => {
+    render(
+      <SessionContextMenu
+        {...baseProps}
+        {...groupProps}
+        groups={[{ id: 'g-mine', name: 'Mine', sessionIds: ['sess-1'] }, ...groupProps.groups]}
+      />,
+    )
+    const labels = [...document.querySelectorAll('.ctx-menu > .ctx-menu-item .ctx-menu-label')]
+      .map((e) => e.textContent)
+    expect(labels).toContain('Remove from group')
+    expect(labels).toContain('Move to group')
+    // The flyout itself stays closed until opened.
+    expect(document.querySelector('.ctx-submenu')).toBeNull()
+  })
+
+  it('omits Move to group entirely when every group is full', () => {
+    render(
+      <SessionContextMenu
+        {...baseProps}
+        groups={[{ id: 'g-full', name: 'Full', sessionIds: ['a', 'b', 'c'] }]}
+      />,
+    )
+    expect(screen.queryByRole('menuitem', { name: 'Move to group' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Remove from group' })).toBeNull()
+  })
+})
