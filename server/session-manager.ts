@@ -27,6 +27,9 @@ import { sameCwd, canonicalCwd } from './cwd-equality.js'
 import { isEmptyResultFrame } from '../shared/results.js'
 import type { FileAttachmentRef } from '../shared/attachments.js'
 import { fileHandleText } from '../shared/upload-handle.js'
+import { publicAttachmentContent, resolveAttachmentContent } from './attachment-resolver.js'
+import type { AgentUserMessage, AnyAgentUserMessage, ProviderContentBlock, ProviderInputContentBlock, PublicAgentUserMessage } from './agent-message.js'
+import { UploadStore } from './upload-store.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
@@ -613,7 +616,7 @@ function buildSnippet(text: string, query: string, maxLength = 180): string {
  *  ephemeral "undelivered" notices the auto-resume throw-path surfaces when a
  *  window send can't be carried over. Text content is truncated; image blocks
  *  collapse to a "[image]" marker so the notice stays one line. */
-function describeUserMessage(msg: SDKUserMessage): string {
+function describeUserMessage(msg: AgentUserMessage): string {
   const content = (msg.message as { content?: unknown } | undefined)?.content
   if (typeof content === 'string') {
     const t = content.trim()
@@ -740,7 +743,13 @@ const CONTEXT_USAGE_MISMATCH_RATIO = 1.5
  *  The SDK's `SDKUserMessage` type doesn't include `receivedAt` (it's a
  *  server-added field), so this intersection lets callers (the HTTP route)
  *  read both `uuid` and `receivedAt` without an `as unknown as` cast. */
-type SentUserMessage = SDKUserMessage & { receivedAt: number }
+type SentUserMessage = AnyAgentUserMessage & { receivedAt: number }
+
+interface SendLifecycleState {
+  interruptEpoch: number
+  clearGeneration: number
+  controller?: AbortController
+}
 
 /** One resolved file occurrence: where the FileBlock sits in the user
  *  content and the stored copy's read-only host path. */
@@ -796,7 +805,7 @@ type ForkOpts = {
  *  hook `additionalContext` is a string — images and other block types would
  *  be silently dropped by injection, so they must queue as next-turn prompts
  *  (spec §6.1). Pure + exported for tests. */
-export function isSteerableUserText(msg: SDKUserMessage): boolean {
+export function isSteerableUserText(msg: AnyAgentUserMessage): boolean {
   const content = (msg as { message?: { content?: unknown } }).message?.content
   if (typeof content === 'string') return true
   if (!Array.isArray(content)) return false
@@ -806,7 +815,7 @@ export function isSteerableUserText(msg: SDKUserMessage): boolean {
 /** Extract the plain text of a steerable user message (string content, or
  *  text blocks joined with newlines). Callers gate on isSteerableUserText
  *  first; a non-steerable message yields the empty string. */
-export function userTextOf(msg: SDKUserMessage): string {
+export function userTextOf(msg: AnyAgentUserMessage): string {
   const content = (msg as { message?: { content?: unknown } }).message?.content
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
@@ -860,6 +869,8 @@ export class SessionManager {
   private readonly modelSwitchRetryDelayMs: number
   private healthMonitor: SessionHealthMonitor
   private store?: SessionStore
+  private uploadStore: UploadStore
+  private readonly sendStates = new WeakMap<Session, SendLifecycleState>()
   private promptUuidStore: PromptUuidStore
   private steeredStore: SteeredStore
   private turnAnchorStore: TurnAnchorStore
@@ -952,7 +963,7 @@ export class SessionManager {
    *  a frame's seq without index drift after ring trimming, and without
    *  mutating the SDKMessage shape. */
   private readonly seqByMessage = new WeakMap<object, number>()
-  constructor(opts: SessionManagerOptions = {}) {
+  constructor(opts: SessionManagerOptions & { uploadStore?: UploadStore } = {}) {
     this.historyCap = opts.historyCap ?? defaultConfig.historyCap
     this.subagentHistoryCap = opts.subagentHistoryCap ?? defaultConfig.subagentHistoryCap
     this.forwardSubagentText = opts.forwardSubagentText ?? defaultConfig.forwardSubagentText
@@ -986,6 +997,7 @@ export class SessionManager {
     this.permanentDeleteWaitMs = opts.permanentDeleteWaitMs ?? PERMANENT_DELETE_WAIT_MS
     this.modelSwitchRetryDelayMs = opts.modelSwitchRetryDelayMs ?? MODEL_SWITCH_RETRY_DELAY_MS
     this.store = opts.store ?? new SessionStore()
+    this.uploadStore = opts.uploadStore ?? new UploadStore({ stateDir: this.store.getDir() })
     this.promptUuidStore = new PromptUuidStore(this.store.getDir(), this.historyCap)
     // Mid-run steering 的回放 sidecar（spec §8.1）——steered 消息不在 CLI
     // JSONL 里（additionalContext 落盘为不可渲染的 attachment），这是它
@@ -1018,6 +1030,7 @@ export class SessionManager {
       onProcessExit: (info) => this.handleProcessExit(info),
       logsDir: join(this.store.getDir(), 'logs'),
       stateDir: this.store.getDir(),
+      uploadStore: this.uploadStore,
     })
     this.defaultProvider = opts.defaultProvider ?? 'claude'
     // Stuck-session monitor — periodic GC tick with auto-interrupt.
@@ -3558,7 +3571,7 @@ export class SessionManager {
       resume: fullOpts.resume,
       forkSession: fullOpts.forkSession,
       resumeSessionAt: (fullOpts as { resumeSessionAt?: string }).resumeSessionAt,
-      onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg as SDKUserMessage),
+      onUserMessageConsumed: (msg) => this.onInputConsumed(id, msg),
       onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(id, uuid, outcome),
       canUseTool: fullOpts.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: fullOpts.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,
@@ -3647,72 +3660,149 @@ export class SessionManager {
   }
 
   /** Send a user turn into an existing session. */
-  send(id: string, text: string): SentUserMessage {
+  async send(id: string, text: string): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
-    // Note: the `/clear` slash command is intercepted client-side by
-    // src/local-commands.ts, which POSTs /sessions/:id/clear instead of
-    // routing through this method (the headless `claude` binary refuses
-    // /clear, so we drive the context reset ourselves; see clear()).
-    const userMsg: SDKUserMessage = {
-      type: 'user',
-      message: { role: 'user', content: text },
-      parent_tool_use_id: null,
-      uuid: randomUUID(),
-      session_id: s.id,
-    }
-    log.debug(
-      `[session ${id}] send PRE-PUSH — ${text.length} chars, uuid=${userMsg.uuid}, ` +
-      `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}, ` +
-      `input.queueDepth=${s.handle.queueDepth}, ` +
-      `running=${s.running}, terminated=${s.terminated}`,
-    )
-    // Capture the pre-turn worktree state as a snapshot anchor so this
-    // user message can be rewound to later. Fire-and-forget with an
-    // internal 15s timeout — the capture starts before dispatch (so it
-    // has a head start over the SDK's tool_use), but a slow git subprocess
-    // must not block the HTTP send path. On any failure (timeout, non-git
-    // cwd, git error) log.warn and continue; the anchor is best-effort,
-    // missing only the rewind-to-this-message option. Spec: capture before
-    // tools run — in practice the SDK takes 1–3s to start the first
-    // tool_use, while capture typically finishes in <500ms.
-    // (Steered messages never get an anchor: they are always mid-turn here,
-    // so they always take the defer path — and trySteerMessage removes the
-    // deferred uuid the moment the steer decision lands.)
-    this.captureAnchor(id, s, userMsg.uuid!)
-    this.dispatchUserMessage(s, userMsg)
-    // dispatchUserMessage → pushToSession → stampReceivedAt stamps receivedAt
-    // in place before this returns; cast once here so the route reads it
-    // without its own `as unknown as`.
-    return userMsg as SentUserMessage
+    const lifecycle = this.beginSend(s)
+    return this.opLock.run(id, () => {
+      this.assertSendCurrent(s, lifecycle)
+      try {
+        // Note: the `/clear` slash command is intercepted client-side by
+        // src/local-commands.ts, which POSTs /sessions/:id/clear instead of
+        // routing through this method (the headless `claude` binary refuses
+        // /clear, so we drive the context reset ourselves; see clear()).
+        const userMsg: AgentUserMessage = {
+          type: 'user',
+          message: { role: 'user', content: text },
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: s.id,
+        }
+        log.debug(
+          `[session ${id}] send PRE-PUSH — ${text.length} chars, uuid=${userMsg.uuid}, ` +
+          `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}, ` +
+          `input.queueDepth=${s.handle.queueDepth}, ` +
+          `running=${s.running}, terminated=${s.terminated}`,
+        )
+        return this.dispatchNewUserMessage(s, userMsg)
+      } finally {
+        this.endSend(s, lifecycle)
+      }
+    })
   }
 
   /** Send a user turn with a content array (text + image + file blocks). */
-  sendContent(
+  async sendContent(
     id: string,
-    content: Array<{ type: string; [k: string]: unknown }>,
-    files?: readonly ResolvedFile[],
-  ): SentUserMessage {
+    content: ProviderInputContentBlock[],
+  ): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
-    const userMsg: SDKUserMessage = {
-      type: 'user',
-      message: { role: 'user', content } as unknown as SDKUserMessage['message'],
-      parent_tool_use_id: null,
-      uuid: randomUUID(),
-      session_id: s.id,
+    const lifecycle = this.beginSend(s)
+    return this.opLock.run(id, async () => {
+      this.assertSendCurrent(s, lifecycle)
+      try {
+        const providerContent = content.some((block) => block.type === 'file')
+          ? await resolveAttachmentContent(content, {
+              sessionId: id,
+              signal: lifecycle.controller.signal,
+              uploadStore: this.uploadStore,
+              stateDir: this.store!.getDir(),
+            })
+          : content as ProviderContentBlock[]
+        this.assertSendCurrent(s, lifecycle)
+        const userMsg: PublicAgentUserMessage = {
+          type: 'user',
+          message: { role: 'user', content: publicAttachmentContent(providerContent) },
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          session_id: s.id,
+        }
+        const blockSummary = content.map((b) => b.type).join('+')
+        const imagePayload = imagePayloadOfContent(content)
+        if (imagePayload.images > 0) {
+          metrics.count('user_message_images', undefined, imagePayload.images)
+          metrics.count('user_message_image_base64_bytes', undefined, imagePayload.bytes)
+        }
+        log.debug(
+          `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
+          `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
+        )
+        return this.dispatchNewUserMessage(s, userMsg, providerContent)
+      } finally {
+        this.endSend(s, lifecycle)
+      }
+    })
+  }
+
+  private sendState(s: Session): SendLifecycleState {
+    let state = this.sendStates.get(s)
+    if (state === undefined) {
+      state = { interruptEpoch: 0, clearGeneration: 0 }
+      this.sendStates.set(s, state)
     }
-    const blockSummary = content.map((b) => b.type).join('+')
-    const imagePayload = imagePayloadOfContent(content)
-    if (imagePayload.images > 0) {
-      metrics.count('user_message_images', undefined, imagePayload.images)
-      metrics.count('user_message_image_base64_bytes', undefined, imagePayload.bytes)
+    return state
+  }
+
+  private beginSend(s: Session): SendLifecycleState & { controller: AbortController } {
+    const state = this.sendState(s)
+    const controller = new AbortController()
+    return { ...state, controller }
+  }
+
+  private endSend(s: Session, lifecycle: SendLifecycleState & { controller: AbortController }): void {
+    const state = this.sendState(s)
+    if (state.controller === lifecycle.controller) state.controller = undefined
+  }
+
+  private cancelPendingSend(id: string, reason: 'interrupt' | 'clear' | 'delete'): void {
+    const s = this.sessions.get(id)
+    if (!s) return
+    const state = this.sendState(s)
+    if (reason === 'clear') state.clearGeneration++
+    else state.interruptEpoch++
+    state.controller?.abort(new Error(`send cancelled by ${reason}`))
+  }
+
+  private assertSendCurrent(
+    s: Session,
+    lifecycle: SendLifecycleState & { controller: AbortController },
+  ): void {
+    if (lifecycle.controller.signal.aborted) {
+      throw new HttpError(409, `session ${s.id} send was interrupted`)
     }
-    log.debug(
-      `[session ${id}] sendContent PRE-PUSH — blocks=[${blockSummary}], uuid=${userMsg.uuid}, ` +
-      `pendingTurns=${s.pendingTurns}, input.closed=${s.handle.closed}`,
-    )
-    this.captureAnchor(id, s, userMsg.uuid!)
-    this.dispatchUserMessage(s, userMsg, files)
-    return userMsg as SentUserMessage
+    const current = this.requireSendable(s.id)
+    const state = this.sendState(s)
+    if (
+      current !== s ||
+      this.sessions.get(s.id) !== s ||
+      s.clearing ||
+      state.interruptEpoch !== lifecycle.interruptEpoch ||
+      state.clearGeneration !== lifecycle.clearGeneration
+    ) {
+      throw new HttpError(409, `session ${s.id} changed while attachments were resolving`)
+    }
+    state.controller = lifecycle.controller
+  }
+
+  private dispatchNewUserMessage(s: Session, userMsg: AgentUserMessage): SentUserMessage
+  private dispatchNewUserMessage(
+    s: Session,
+    userMsg: PublicAgentUserMessage,
+    providerContent: ProviderContentBlock[],
+  ): SentUserMessage
+  private dispatchNewUserMessage(
+    s: Session,
+    userMsg: AnyAgentUserMessage,
+    providerContent?: readonly ProviderContentBlock[],
+  ): SentUserMessage {
+    const rollbackAnchor = this.captureAnchor(s.id, s, userMsg.uuid!)
+    try {
+      this.dispatchUserMessage(s, userMsg, providerContent)
+      return userMsg as SentUserMessage
+    } catch (err) {
+      rollbackAnchor()
+      s.promptUuids = (s.promptUuids ?? []).filter((entry) => entry.u !== userMsg.uuid)
+      throw err
+    }
   }
 
   /** Fire-and-forget snapshot capture + anchor recording for send/sendContent.
@@ -3724,18 +3814,26 @@ export class SessionManager {
    *  `pendingSnapshotAnchors` and captured when the message is consumed
    *  (onInputConsumed), so the anchor reflects the actual pre-turn tree
    *  rather than a mid-previous-turn snapshot. */
-  private captureAnchor(id: string, s: Session, userUuid: string): void {
+  private captureAnchor(id: string, s: Session, userUuid: string): () => void {
     const cwd = s.cwd
-    if (!cwd) return
+    if (!cwd) return () => {}
     // Must match phaseOf exactly — includes clearing + backgroundSubagentCount.
     if (this.phaseOf(s) !== 'idle') {
       // Defer — capture on consume when the session is between turns.
       if (!s.pendingSnapshotAnchors) s.pendingSnapshotAnchors = []
       s.pendingSnapshotAnchors.push(userUuid)
       log.debug(`[session ${id}] snapshot anchor deferred for ${userUuid.slice(0, 8)} (session working)`)
-      return
+      return () => {
+        s.pendingSnapshotAnchors = (s.pendingSnapshotAnchors ?? []).filter((uuid) => uuid !== userUuid)
+      }
     }
-    this.captureAnchorNow(id, s, userUuid)
+    const previous = s.turnSnapshot
+    let active = true
+    this.captureAnchorNow(id, s, userUuid, () => active)
+    return () => {
+      active = false
+      if (s.turnSnapshot?.messageId === userUuid) s.turnSnapshot = previous
+    }
   }
 
   /** Capture + recordAnchor unconditionally. Used by captureAnchor (idle
@@ -3744,7 +3842,7 @@ export class SessionManager {
    *  queued), so re-entering captureAnchor would defer forever. Consume
    *  time IS the correct pre-turn tree: the SDK read the message but has
    *  not started its tools yet. */
-  private captureAnchorNow(id: string, s: Session, userUuid: string): void {
+  private captureAnchorNow(id: string, s: Session, userUuid: string, shouldRecord: () => boolean = () => true): void {
     const cwd = s.cwd
     if (!cwd) return
     const state: SessionTurnSnapshot = {
@@ -3770,7 +3868,7 @@ export class SessionManager {
           null,
         )
         state.startTree = tree
-        if (tree) await this.snapshots.recordAnchor(id, cwd, userUuid, tree)
+        if (tree && shouldRecord()) await this.snapshots.recordAnchor(id, cwd, userUuid, tree)
       } catch (err) {
         log.warn(`[session ${id}] snapshot capture failed: ${(err as Error).message ?? err}`)
       }
@@ -3828,7 +3926,11 @@ export class SessionManager {
    *  message the SDK has already read never sat in the queue, so 'queued'
    *  would be a lie. Genuinely queued turns still broadcast without
    *  `consumedAt` and flip later via the `message-consumed` frame. */
-  private dispatchUserMessage(s: Session, userMsg: SDKUserMessage, files?: readonly ResolvedFile[]): void {
+  private dispatchUserMessage(
+    s: Session,
+    userMsg: AnyAgentUserMessage,
+    providerContent?: readonly ProviderContentBlock[],
+  ): void {
     // A new top-level user turn invalidates the previous turn's predicted
     // next-prompt. If we leave `lastPromptSuggestion` set, it resurfaces as
     // the reconnect snapshot (subscribePromptSuggestion) and — when the SDK
@@ -3845,11 +3947,14 @@ export class SessionManager {
     // snapshot anchor — is skipped; the turn-end fallback re-routes anything
     // undelivered back through the normal path.
     if (this.trySteerMessage(s, userMsg)) return
-    // The SDK gets text handles where our structured FileBlocks sit; the
-    // ring/broadcast keeps the original content so clients render chips.
-    const forSdk = files !== undefined && files.length > 0
-      ? projectFileBlocksForSdk(userMsg, files)
-      : { ...userMsg }
+    // Providers receive resolved neutral blocks; the ring/broadcast keeps the
+    // public structured content. Each provider owns its legacy projection.
+    const forSdk = (providerContent === undefined
+      ? { ...userMsg }
+      : {
+          ...userMsg,
+          message: { ...userMsg.message, content: [...providerContent] },
+        }) as AgentUserMessage
     // Record the sent prompt BEFORE enqueue: a provider that consumes the
     // message synchronously (the native direct hand-off) pairs the uuid inside
     // enqueueUserMessage's consume callback, which runs before this method
@@ -3873,7 +3978,7 @@ export class SessionManager {
    *  content (additionalContext is a string — images cannot ride it), and a
    *  live turn. enqueue()'s own admission/version gate is the final arbiter
    *  — a false return here is a transparent fallback, never an error. */
-  private trySteerMessage(s: Session, userMsg: SDKUserMessage): boolean {
+  private trySteerMessage(s: Session, userMsg: AnyAgentUserMessage): boolean {
     if (defaultConfig.steering === false) return false
     const enqueue = (s.handle as ProviderSessionHandle & {
       enqueueSupplement?: (entry: { uuid: string; text: string }) => boolean
@@ -3885,7 +3990,7 @@ export class SessionManager {
     const text = userTextOf(userMsg)
     if (!enqueue.call(s.handle, { uuid: userMsg.uuid, text })) return false
     const steeredAt = stampSteeredAt(userMsg)
-    s.steeredInFlight.set(userMsg.uuid, userMsg)
+    s.steeredInFlight.set(userMsg.uuid, userMsg as SDKUserMessage)
     // A steered message never starts a turn, so it must not keep the snapshot
     // anchor captureAnchor just deferred for it (steering is mid-turn-only,
     // so the defer path is the only one it can have taken). Drop it now, at
@@ -3907,7 +4012,7 @@ export class SessionManager {
    *  `v`) and persisting only at echo time means the sidecar never holds a `u`
    *  whose `v` isn't also on disk — eliminating the sidecar-ahead desync that
    *  broke the earlier positional scheme on same-text prompts. */
-  private recordPromptUuid(s: Session, userMsg: SDKUserMessage): void {
+  private recordPromptUuid(s: Session, userMsg: AnyAgentUserMessage): void {
     if (userMsg.parent_tool_use_id != null) return // not a top-level prompt (defensive)
     const u = typeof userMsg.uuid === 'string' ? userMsg.uuid : null
     if (!u) return
@@ -3947,18 +4052,21 @@ export class SessionManager {
   /** Common bookkeeping after pushing a user message into a session:
    *  record in history, cap the ring buffer, broadcast to subscribers,
    *  update timestamps, reset auto-resume counter, and persist. */
-  private pushToSession(s: Session, userMsg: SDKUserMessage): void {
+  private pushToSession(s: Session, userMsg: AnyAgentUserMessage): void {
+    // The public ring still uses the SDK-shaped wire type. Resolved provider
+    // paths never reach this copy (sendContent installed the public blocks).
+    const ringMessage = userMsg as SDKUserMessage
     // Broadcast + record locally — the SDK's output stream doesn't echo
     // user messages back, so without this step the client would never
     // see its own sent text.
-    stampReceivedAt(userMsg)
-    pushBounded(s.history, userMsg, this.historyCap)
+    stampReceivedAt(ringMessage)
+    pushBounded(s.history, ringMessage, this.historyCap)
     // Seq-assign the prompt at ingestion, BEFORE the subscriber broadcast
     // (Task 3). The pump drops the SDK's echo of top-level user input, so
     // this ring append is the only copy — without recording here, user
     // prompts would never enter the seq space.
-    this.recordTranscriptFor(s.id, userMsg)
-    for (const sub of s.subscribers.values()) sub.push(userMsg)
+    this.recordTranscriptFor(s.id, ringMessage)
+    for (const sub of s.subscribers.values()) sub.push(ringMessage)
     s.lastActivityAt = Date.now()
     // Mark the session as mid-turn. We cap at 1 (not a true counter)
     // because the SDK may merge multiple queued user messages into fewer
@@ -4012,6 +4120,7 @@ export class SessionManager {
    *  plain interrupt). */
   async interrupt(id: string, opts?: { cancelQueued?: boolean }): Promise<number> {
     const s = this.requireLive(id)
+    this.cancelPendingSend(id, 'interrupt')
     const startedAt = Date.now()
     log.info(
       `[session ${id}] interrupt requested — pendingTurns=${s.pendingTurns}, ` +
@@ -4043,7 +4152,7 @@ export class SessionManager {
     // the ordering rationale.
     const { msgs: withdrawnMsgs, uuids: drainedUuids } = opts?.cancelQueued
       ? this.withdrawHostQueue(s, queuedUserUuids)
-      : { msgs: [] as SDKUserMessage[], uuids: [] as string[] }
+      : { msgs: [] as AgentUserMessage[], uuids: [] as string[] }
     try {
       const fn = this.requireHandleMethod<
         (opts?: { cancelQueued?: boolean }) => Promise<ProviderInterruptReceipt | void>
@@ -4179,9 +4288,9 @@ export class SessionManager {
    *  is deliberately NOT cleared as a fallback: clearing without uuids would
    *  strand the already-painted 'queued' bubbles with no withdrawal frame and
    *  nothing to restore on a failed interrupt. */
-  private withdrawHostQueue(s: Session, userTurnUuids: ReadonlySet<string>): { msgs: SDKUserMessage[]; uuids: string[] } {
+  private withdrawHostQueue(s: Session, userTurnUuids: ReadonlySet<string>): { msgs: AgentUserMessage[]; uuids: string[] } {
     const drained = s.handle.drainQueuedInput?.() ?? []
-    const msgs: SDKUserMessage[] = []
+    const msgs: AgentUserMessage[] = []
     const uuids: string[] = []
     let kept = 0
     for (const m of drained) {
@@ -4385,6 +4494,7 @@ export class SessionManager {
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
   async clear(id: string, opts?: { seedText?: string; handoff?: boolean; deleteTranscript?: boolean }): Promise<SessionInfo> {
+    this.cancelPendingSend(id, 'clear')
     // Idempotency fast path BEFORE queueing on the op lock: a second clear()
     // while one is in flight returns the current info at once, as it always
     // has, instead of waiting for the first to remove X and then 404ing.
@@ -7222,7 +7332,7 @@ export class SessionManager {
     }
   }
 
-  private onInputConsumed(id: string, msg: SDKUserMessage): void {
+  private onInputConsumed(id: string, msg: AgentUserMessage): void {
     if (msg.type !== 'user') return
     if (msg.parent_tool_use_id != null) return
     const consumedAt = stampConsumedAt(msg)
@@ -7916,6 +8026,7 @@ export class SessionManager {
    *  entry. The SDK transcript stays on disk unless deleteTranscript is true. */
   async delete(id: string, opts?: { deleteTranscript?: boolean }): Promise<void> {
     if (!isSafeSessionId(id)) throw new HttpError(400, `Invalid session id: ${id}`)
+    this.cancelPendingSend(id, 'delete')
     // Locked. unload({ terminated }) awaits the pump from inside the lock;
     // that's safe because the pump's teardown only reaches unlocked methods
     // (see the deadlock rule at opLock) and the await is capped at 1 s.
@@ -9215,6 +9326,8 @@ export class SessionManager {
    *                        anyway (escape hatch vs a setter wedged on an SDK
    *                        control request that never answers)
    *    setProfile        — nests setModel / setModelGroup / restart (re-entrant)
+   *    send, sendContent — attachment resolution + dispatch hold the same lock
+   *                        from admission through the lifecycle recheck.
    *    setModel, setModelGroup, setPermissionMode, setThinking, setPrefs,
    *    setCliDebug, setFirstPartyTool (setAppTools nests it), setMcpServers,
    *    attachGlobalMcpServer, detachGlobalMcpServer, setSkillOverride
@@ -9231,9 +9344,9 @@ export class SessionManager {
    *                        only mutation is the final clear(), which locks.
    *    autoGenerateTitle — same shape: outbound title call, then a synchronous
    *                        mutation of the live object.
-   *    send, sendContent, interrupt, backgroundTasks, stopTask — turn traffic;
-   *                        they only persist the activity stamp, and interrupt
-   *                        must never queue behind a parked restart / clear.
+   *    interrupt         — unlocked so Stop can abort the digest stream and
+   *                        release a queued send instead of waiting for the lock.
+   *    backgroundTasks, stopTask — turn traffic;
    *    decide, answerQuestion, clarifyQuestion, decideElicitation,
    *    decideDialog      — resolve SDK awaiters; must not queue. (decide's
    *                        plan-approval mode switch goes through the locked
@@ -9597,7 +9710,7 @@ export class SessionManager {
       inProcessSubagentStop: (_sid, info) => this.settleBackgroundSubagentFromHook(session.id, info),
       forwardSubagentText: this.forwardSubagentText,
       resume: session.id,
-      onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg as SDKUserMessage),
+      onUserMessageConsumed: (msg) => this.onInputConsumed(session.id, msg),
       onSupplementDelivered: (uuid, outcome) => this.onSupplementDelivered(session.id, uuid, outcome),
       canUseTool: session.canUseTool as ((...args: unknown[]) => Promise<unknown>) | undefined,
       onElicitation: session.onElicitation as ((...args: unknown[]) => Promise<unknown>) | undefined,

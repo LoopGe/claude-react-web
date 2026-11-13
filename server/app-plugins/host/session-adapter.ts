@@ -33,13 +33,13 @@ export class SessionAdapter {
     this.perm.assert('sessions.send')
     if (typeof text !== 'string' || text.length === 0) throw new Error('text is required')
     if (text.length > 20_000) throw new Error('text too long (max 20000 chars)')
-    this.sm.send(sessionId, text)
+    await this.sm.send(sessionId, text)
   }
 
   /** Interrupt the session's current turn. */
   async interrupt(sessionId: string): Promise<void> {
     this.perm.assert('sessions.interrupt')
-    this.sm.interrupt(sessionId)
+    await this.sm.interrupt(sessionId)
   }
 
   /** Enumerate live sessions as coarse activity snapshots (never the

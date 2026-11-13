@@ -2,6 +2,7 @@ import type { MpStore } from '../mp-store.js'
 import type { AgentDefinitionStore } from '../agent-definition-store.js'
 import { createMcpOAuthProvider, type McpConfigStore } from '../mcp-config.js'
 import type { ProcessExitInfo } from '../process-monitor.js'
+import type { UploadStore } from '../upload-store.js'
 import { ClaudeProvider } from './claude/claude-provider.js'
 import { NativeProvider } from './native/native-provider.js'
 import { ProviderRegistry } from './registry.js'
@@ -19,6 +20,8 @@ export interface DefaultProvidersOptions {
    *  `<stateDir>/native-sessions/`; omitted falls back to the default
    *  state-dir resolution. */
   stateDir?: string
+  /** The process-wide registry shared with upload routes and SessionManager. */
+  uploadStore?: UploadStore
 }
 
 export function createDefaultProviders(opts: DefaultProvidersOptions = {}): ProviderRegistry {
@@ -44,6 +47,6 @@ export function createDefaultProviders(opts: DefaultProvidersOptions = {}): Prov
           : undefined
       }
     : undefined
-  registry.register(new NativeProvider({ stateDir: opts.stateDir, authFor, agentStore: opts.agentStore }))
+  registry.register(new NativeProvider({ stateDir: opts.stateDir, authFor, agentStore: opts.agentStore, uploadStore: opts.uploadStore }))
   return registry
 }

@@ -10,7 +10,7 @@ import { isSteerableUserText, userTextOf } from './session-manager.js'
 import type { SteeredEntry } from './steered-store.js'
 import { ProviderRegistry } from './providers/registry.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle } from './providers/types.js'
-import type { AgentUserMessage } from './agent-message.js'
+import type { AgentMessage, AgentUserMessage } from './agent-message.js'
 import { createPushable } from './pushable.js'
 import { randomUUID } from 'node:crypto'
 
@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto'
 
 class FakeHandle implements ProviderSessionHandle {
   readonly provider = 'fake'
-  readonly messages: AsyncIterable<AgentUserMessage>
+  readonly messages: AsyncIterable<AgentMessage>
   readonly input = createPushable<AgentUserMessage>('fake-input')
   readonly abortController = new AbortController()
   isClosed = false
@@ -33,7 +33,7 @@ class FakeHandle implements ProviderSessionHandle {
   drainSupplements = vi.fn((): Array<{ uuid: string }> => [])
   noteTurnSettled = vi.fn()
   constructor() {
-    this.messages = this.input.iterable
+    this.messages = this.input.iterable as AsyncIterable<AgentMessage>
   }
   sendControlMessage(m: AgentUserMessage): void {
     this.input.push(m)
@@ -192,11 +192,11 @@ describe('steering routing (dispatchUserMessage)', () => {
     const { sm, s, handle, info } = ctx
     // 第一条消息走正常路径并置 mid-turn（pushToSession 置 pendingTurns=1，
     // fake pump 永不出 result —— 稳定 mid-turn）
-    const first = sm.send(info.id, 'first message')
+    const first = await sm.send(info.id, 'first message')
     expect(handle.enqueueSupplement).not.toHaveBeenCalled()
     expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(1)
     // 第二条：mid-turn 纯文本 → steer
-    const second = sm.send(info.id, 'pivot to python')
+    const second = await sm.send(info.id, 'pivot to python')
     expect(handle.enqueueSupplement).toHaveBeenCalledWith({ uuid: second.uuid, text: 'pivot to python' })
     expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(1) // 仍只有 first
     expect((second as { steeredAt?: number }).steeredAt).toEqual(expect.any(Number))
@@ -216,7 +216,7 @@ describe('steering routing (dispatchUserMessage)', () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, handle, info } = ctx
-    sm.send(info.id, 'hello')
+    await sm.send(info.id, 'hello')
     expect(handle.enqueueSupplement).not.toHaveBeenCalled()
     expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(1)
     await sm.shutdown()
@@ -226,9 +226,9 @@ describe('steering routing (dispatchUserMessage)', () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, handle, info } = ctx
-    sm.send(info.id, 'first') // 置 mid-turn
+    await sm.send(info.id, 'first') // 置 mid-turn
     metrics.reset()
-    const img = sm.sendContent(info.id, [
+    const img = await sm.sendContent(info.id, [
       { type: 'text', text: 'look at this' },
       { type: 'image', source: { type: 'base64', data: 'x', media_type: 'image/png' } },
     ])
@@ -244,9 +244,9 @@ describe('steering routing (dispatchUserMessage)', () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, handle, info } = ctx
-    sm.send(info.id, 'first')
+    await sm.send(info.id, 'first')
     handle.enqueueSupplement.mockReturnValue(false)
-    const second = sm.send(info.id, 'second')
+    const second = await sm.send(info.id, 'second')
     expect(handle.enqueueUserMessage).toHaveBeenCalledTimes(2)
     expect((second as { steeredAt?: number }).steeredAt).toBeUndefined()
     expect(s_of(sm, info.id).promptUuids?.map((e) => e.u)).toEqual([first_uuid(sm, info.id), second.uuid])
@@ -258,8 +258,8 @@ describe('steering routing (dispatchUserMessage)', () => {
     dirs.push(ctx.dir)
     const { sm, s, info } = ctx
     delete (s.handle as Partial<FakeHandle>).enqueueSupplement
-    sm.send(info.id, 'first')
-    const second = sm.send(info.id, 'second')
+    await sm.send(info.id, 'first')
+    const second = await sm.send(info.id, 'second')
     expect((second as { steeredAt?: number }).steeredAt).toBeUndefined()
     expect(s.history).toHaveLength(2)
     await sm.shutdown()
@@ -291,8 +291,8 @@ describe('supplement delivery handler', () => {
         frames.push(f as { kind: string; uuid?: string; state?: string })
       }
     })()
-    sm.send(info.id, 'first') // 置 mid-turn
-    const second = sm.send(info.id, 'steer me')
+    await sm.send(info.id, 'first') // 置 mid-turn
+    const second = await sm.send(info.id, 'steer me')
     const steeredAt = (second as { steeredAt?: number }).steeredAt
     // 模拟 provider 在钩子边界投递完成
     delivered(second.uuid!, { ok: true, boundary: 'PreToolUse' })
@@ -315,8 +315,8 @@ describe('supplement delivery handler', () => {
     dirs.push(ctx.dir)
     const { sm, s, info, provider } = ctx
     const delivered = provider.lastOpts!.onSupplementDelivered!
-    sm.send(info.id, 'first')
-    const second = sm.send(info.id, 'steer me')
+    await sm.send(info.id, 'first')
+    const second = await sm.send(info.id, 'steer me')
     delivered(second.uuid!, { ok: false, reason: 'aborted' })
     const ringEntry = s.history.find((m) => (m as { uuid?: string }).uuid === second.uuid) as { injectedAt?: number }
     expect(ringEntry.injectedAt).toBeUndefined()
@@ -350,8 +350,8 @@ describe('turn-end steer fallback', () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, s, handle, info } = ctx
-    const first = sm.send(info.id, 'first message')
-    const second = sm.send(info.id, 'pivot now')
+    const first = await sm.send(info.id, 'first message')
+    const second = await sm.send(info.id, 'pivot now')
     expect(s.steeredInFlight.size).toBe(1)
     handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
     handle.enqueueUserMessage.mockClear()
@@ -375,11 +375,11 @@ describe('turn-end steer fallback', () => {
     const ctx = await makeSyncConsumeSession()
     dirs.push(ctx.dir)
     const { sm, s, handle, info } = ctx
-    const first = sm.send(info.id, 'first message')
+    const first = await sm.send(info.id, 'first message')
     // The ordinary dispatch path already records before enqueue.
     expect(s.promptUuids?.find((e) => e.u === first.uuid)?.v).toBe(first.uuid)
     // Mid-turn steer: not enqueued, so no promptUuids entry yet.
-    const second = sm.send(info.id, 'pivot now')
+    const second = await sm.send(info.id, 'pivot now')
     expect(s.promptUuids?.map((e) => e.u)).toEqual([first.uuid])
     handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
     ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(s, false)
@@ -393,8 +393,8 @@ describe('turn-end steer fallback', () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, s, handle, info } = ctx
-    sm.send(info.id, 'first')
-    const second = sm.send(info.id, 'pivot now')
+    await sm.send(info.id, 'first')
+    const second = await sm.send(info.id, 'pivot now')
     handle.drainSupplements.mockReturnValue([{ uuid: second.uuid! }])
     handle.enqueueUserMessage.mockClear()
     ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(
@@ -411,8 +411,8 @@ describe('turn-end steer fallback', () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, s, handle, info } = ctx
-    sm.send(info.id, 'first')
-    sm.send(info.id, 'second')
+    await sm.send(info.id, 'first')
+    await sm.send(info.id, 'second')
     handle.drainSupplements.mockReturnValue([])
     handle.enqueueUserMessage.mockClear()
     ;(sm as unknown as { drainAndRequeueSteered: (s: unknown, empty: boolean) => void }).drainAndRequeueSteered(s, false)
@@ -423,10 +423,10 @@ describe('turn-end steer fallback', () => {
 
 // ── Task 9: interrupt 集成（先 drain，两态语义）──────────────────────────
 
-function seedSteeredPending(sm: SessionManager, s: { id: string; steeredInFlight: Map<string, AgentUserMessage> }, handle: FakeHandle, text = 'pivot') {
+async function seedSteeredPending(sm: SessionManager, s: { id: string; steeredInFlight: Map<string, AgentUserMessage> }, handle: FakeHandle, text = 'pivot') {
   // 直接复用 send 路径置 mid-turn + steer，然后让 drain 返回该 uuid
-  sm.send(s.id, 'first')
-  const steered = sm.send(s.id, text)
+  await sm.send(s.id, 'first')
+  const steered = await sm.send(s.id, text)
   handle.drainSupplements.mockReturnValue([{ uuid: steered.uuid! }])
   return steered
 }
@@ -436,7 +436,7 @@ describe('interrupt steer integration', () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, s, handle, info } = ctx
-    const steered = seedSteeredPending(sm, s, handle)
+    const steered = await seedSteeredPending(sm, s, handle)
     handle.interrupt = vi.fn(async () => undefined)
     handle.enqueueUserMessage.mockClear()
     await sm.interrupt(info.id) // 无 cancelQueued
@@ -449,7 +449,7 @@ describe('interrupt steer integration', () => {
     const ctx = await makeSteeringSession()
     dirs.push(ctx.dir)
     const { sm, s, handle, info } = ctx
-    const steered = seedSteeredPending(sm, s, handle)
+    const steered = await seedSteeredPending(sm, s, handle)
     const calls: string[] = []
     handle.drainSupplements.mockImplementation(() => {
       calls.push('drain')
@@ -521,14 +521,14 @@ describe('steering config toggle', () => {
     try {
       expect(liveConfig.steering).toBe(true)
       // 默认开：mid-turn steer 生效 + 快照暴露能力位
-      sm.send(info.id, 'first')
-      const steered = sm.send(info.id, 'steer me')
+      await sm.send(info.id, 'first')
+      const steered = await sm.send(info.id, 'steer me')
       expect(handle.enqueueSupplement).toHaveBeenCalledWith({ uuid: steered.uuid, text: 'steer me' })
       expect(sm.list().find((i) => i.id === info.id)).toMatchObject({ steeringSupported: true })
       // 关掉 → mid-turn 回退排队
       handle.enqueueSupplement.mockClear()
       __setConfigForTest({ ...before, steering: false })
-      const queued = sm.send(info.id, 'queued now')
+      const queued = await sm.send(info.id, 'queued now')
       expect(handle.enqueueSupplement).not.toHaveBeenCalled()
       expect((queued as { steeredAt?: number }).steeredAt).toBeUndefined()
     } finally {
@@ -557,8 +557,8 @@ describe('steered messages ride the transcript seq window', () => {
     dirs.push(ctx.dir)
     const { sm, handle, info, dir } = ctx
     // 第一条正常排队 → mid-turn；第二条 mid-turn 纯文本 → steer
-    sm.send(info.id, 'first message')
-    const steered = sm.send(info.id, 'pivot to python')
+    await sm.send(info.id, 'first message')
+    const steered = await sm.send(info.id, 'pivot to python')
     expect(handle.enqueueSupplement).toHaveBeenCalledWith({ uuid: steered.uuid, text: 'pivot to python' })
 
     // Dispatch 即打 seq（recordTranscriptFor 在 pushToSession 内同步执行）。

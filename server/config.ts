@@ -104,6 +104,9 @@ interface ConfigFile {
    *  has no in-place compaction path, so this only affects native sessions.
    *  Default: true. */
   nativeAutoCompact?: boolean
+  /** Preserve resolved file blocks for the native attachment-fidelity pipeline.
+   *  Default false until the full native live/replay/compact path is enabled. */
+  nativeAttachmentFidelity?: boolean
   /** Fraction of the context window at which the native auto-compact trigger
    *  fires when the session has no explicit `autoCompactWindow`
    *  (`totalTokens >= maxTokens * ratio`). Range (0, 1]. Default: 0.8. */
@@ -254,6 +257,8 @@ export interface ServerConfig {
   /** Enable the native provider's in-place auto-compact — see
    *  ConfigFile.nativeAutoCompact. Default: true. */
   readonly nativeAutoCompact: boolean
+  /** Native structured-attachment pipeline gate. Default: false. */
+  readonly nativeAttachmentFidelity: boolean
   /** Native auto-compact threshold ratio — see
    *  ConfigFile.nativeAutoCompactRatio. Range (0, 1]. Default: 0.8. */
   readonly nativeAutoCompactRatio: number
@@ -369,6 +374,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   subagentHistoryCap: 300,
   forwardSubagentText: true,
   nativeAutoCompact: true,
+  nativeAttachmentFidelity: false,
   nativeAutoCompactRatio: 0.8,
   workingStuckMs: 60 * 60 * 1000,
   maxGroupPanels: 3,
@@ -638,6 +644,11 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
   if (typeof file_.nativeAutoCompact === 'boolean') {
     ;(merged as { nativeAutoCompact: boolean }).nativeAutoCompact = file_.nativeAutoCompact
     log.info(`nativeAutoCompact: ${merged.nativeAutoCompact}`)
+  }
+
+  if (typeof file_.nativeAttachmentFidelity === 'boolean') {
+    ;(merged as { nativeAttachmentFidelity: boolean }).nativeAttachmentFidelity = file_.nativeAttachmentFidelity
+    log.info(`nativeAttachmentFidelity: ${merged.nativeAttachmentFidelity}`)
   }
 
   // Ratio is a fraction of the context window; values above 1 are clamped to

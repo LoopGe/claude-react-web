@@ -31,6 +31,16 @@ describe('config', () => {
     expect(config.recapModel).toBe('')
     expect(config.commitMessageModel).toBe('')
     expect(config.autoClassifierModel).toBe('')
+    expect(config.nativeAttachmentFidelity).toBe(false)
+  })
+
+  it('loads an explicit nativeAttachmentFidelity opt-in without changing the default', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeAttachmentFidelity: true }))
+    await loadConfig(dir)
+    expect(config.nativeAttachmentFidelity).toBe(true)
+    writeFileSync(join(dir, 'config.json'), '{}')
+    await loadConfig(dir)
+    expect(config.nativeAttachmentFidelity).toBe(false)
   })
 
   it('config object is frozen', () => {

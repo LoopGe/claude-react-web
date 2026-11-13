@@ -7,6 +7,7 @@ import {
   type Options,
   type PermissionMode,
   type SDKMessage,
+  type SDKUserMessage,
   type SDKResultError,
   type SDKResultSuccess,
   type SDKSessionInfo,
@@ -558,7 +559,7 @@ export class ClaudeProvider implements AgentProvider {
       log.info('createSession', summarizeSpawn(opts, sdkOptions))
     }
 
-    const q = query({ prompt: input.iterable, options: sdkOptions })
+    const q = query({ prompt: input.iterable as AsyncIterable<SDKUserMessage>, options: sdkOptions })
     const handle = new ClaudeSessionHandle(
       q,
       input,
@@ -746,7 +747,7 @@ export class ClaudeProvider implements AgentProvider {
     // The whole body is under try/finally so ANY synchronous throw (including
     // from query() itself) still tears down the subprocess via abort.
     try {
-      const q = query({ prompt: input.iterable, options: sdkOptions })
+      const q = query({ prompt: input.iterable as AsyncIterable<SDKUserMessage>, options: sdkOptions })
       for await (const msg of q) {
         if (msg.type === 'result') return this.toStructuredResult(msg)
       }

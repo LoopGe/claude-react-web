@@ -31,7 +31,7 @@ describe('scheduled-send routes', () => {
     expect(manager.list('s1')).toHaveLength(1)
   })
 
-  it('POST rejects file blocks with 400 (schedule path cannot resolve uploads)', async () => {
+  it('POST rejects file blocks with 400 (scheduled sends stay text/image-only)', async () => {
     const { app, manager } = make()
     const res = await app.request('/sessions/s1/schedules', {
       method: 'POST',
@@ -107,5 +107,20 @@ describe('scheduled-send routes', () => {
     await manager.tick()
     expect(send).toHaveBeenCalledWith('s1', { text: 'later' })
     expect(manager.list('s1')[0]?.status).toBe('sent')
+  })
+
+  it('tick waits for the asynchronous send acknowledgement before marking sent', async () => {
+    const { manager, send, setNow } = make()
+    let acknowledge!: (value: { uuid: string }) => void
+    send.mockImplementationOnce(() => new Promise((resolve) => { acknowledge = resolve }))
+    manager.create('s1', { text: 'later' }, 2_000_000)
+    setNow(2_000_001)
+
+    const ticking = manager.tick()
+    await Promise.resolve()
+    expect(manager.list('s1')).toHaveLength(0)
+    acknowledge({ uuid: 'delayed-uuid' })
+    await ticking
+    expect(manager.list('s1')[0]).toMatchObject({ status: 'sent', sentUuid: 'delayed-uuid' })
   })
 })

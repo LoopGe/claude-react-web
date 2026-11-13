@@ -3,6 +3,7 @@ import type { Query } from '@anthropic-ai/claude-agent-sdk'
 import { ClaudeSessionHandle } from './claude-session.js'
 import { createPushable } from '../../pushable.js'
 import type { AgentUserMessage } from '../../agent-message.js'
+import { fileHandleText } from '../../../shared/upload-handle.js'
 
 function makeHandle(query: Partial<Query>) {
   const input = createPushable<AgentUserMessage>('test', 1)
@@ -14,6 +15,84 @@ function makeHandle(query: Partial<Query>) {
     () => {},
   )
 }
+
+describe('ClaudeSessionHandle attachment projection', () => {
+  it('projects resolved file blocks to the unchanged SDK handle at the provider boundary', async () => {
+    const input = createPushable<AgentUserMessage>('test', 1)
+    const handle = new ClaudeSessionHandle(
+      {} as Query,
+      input,
+      new AbortController(),
+      Promise.resolve({} as never),
+      () => {},
+    )
+    const resolved = {
+      type: 'file' as const,
+      attachment: {
+        id: 'upload-1', name: 'note.txt', size: 5,
+        digest: 'a'.repeat(64), path: '/tmp/note.txt', mediaType: 'text/plain',
+      },
+    }
+
+    handle.enqueueUserMessage({
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'text', text: 'before' }, resolved] },
+      parent_tool_use_id: null,
+      uuid: '00000000-0000-4000-8000-000000000001',
+      session_id: 'session-1',
+    })
+
+    const iterator = input.iterable[Symbol.asyncIterator]()
+    const next = await iterator.next()
+    expect(next.done).toBe(false)
+    expect(next.value.message.content).toEqual([
+      { type: 'text', text: 'before' },
+      {
+        type: 'text',
+        text: fileHandleText(
+          { id: 'upload-1', name: 'note.txt', size: 5, digest: 'a'.repeat(64) },
+          '/tmp/note.txt',
+        ),
+      },
+    ])
+    expect(resolved.attachment.mediaType).toBe('text/plain')
+  })
+
+  it('carries a synchronous consumedAt stamp across a file projection', async () => {
+    const input = createPushable<AgentUserMessage>('test', 1, (message) => {
+      ;(message as { consumedAt?: number }).consumedAt = 123
+    })
+    const handle = new ClaudeSessionHandle(
+      {} as Query,
+      input,
+      new AbortController(),
+      Promise.resolve({} as never),
+      () => {},
+    )
+    const original: AgentUserMessage = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [{
+          type: 'file',
+          attachment: {
+            id: 'upload-1', name: 'note.txt', size: 5,
+            digest: 'a'.repeat(64), path: '/tmp/note.txt',
+          },
+        }],
+      },
+      parent_tool_use_id: null,
+      uuid: '00000000-0000-4000-8000-000000000003',
+      session_id: 'session-1',
+    }
+
+    const iterator = input.iterable[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    handle.enqueueUserMessage(original)
+    await pending
+    expect((original as { consumedAt?: number }).consumedAt).toBe(123)
+  })
+})
 
 describe('ClaudeSessionHandle.setMaxThinkingTokens', () => {
   it('forwards tokens + display to the SDK query', async () => {

@@ -892,7 +892,7 @@ describe('SessionManager', () => {
     expect(first.value).toMatchObject({ kind: 'created', session: { id: info.id } })
     // Triggering a send → result cycle should emit `update`, never a
     // second `created` (that would cause the frontend to draw two cards).
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     // The pending persist after send() and the persist after result both
@@ -915,7 +915,7 @@ describe('SessionManager', () => {
 
   it('send() marks the session as working; result clears it and stamps lastTurnAt', async () => {
     const info = await sm.create({})
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     expect(sm.get(info.id).working).toBe(true)
 
     const before = Date.now()
@@ -936,7 +936,7 @@ describe('SessionManager', () => {
     // A new user turn invalidates it: if this turn ends without a result
     // (interrupt heal, local `!` exec, clean cancellation), the falling-edge
     // toast must not re-announce the previous turn's reply.
-    sm.send(info.id, 'next')
+    await sm.send(info.id, 'next')
     expect(sm.get(info.id).lastTurnSummary).toBeUndefined()
   })
 
@@ -1464,7 +1464,7 @@ describe('SessionManager', () => {
     // Complete a first turn so autoResume's `lastTurnAt` guard passes. The
     // result re-arms the mock SDK's input waiter, so the SDK's streamInput is
     // now parked in next() — exactly the idle state that precedes a clean exit.
-    sm.send(info.id, 'first')
+    await sm.send(info.id, 'first')
     await tick()
     firstHandle.emit({ type: 'result', session_id: info.id })
     await tick()
@@ -1492,7 +1492,7 @@ describe('SessionManager', () => {
     const resuming = internals.autoResume(session)
 
     expect((session as { handle: { closed: boolean } }).handle.closed).toBe(false)
-    expect(() => sm.send(info.id, 'sent-during-auto-resume')).not.toThrow()
+    const sent = sm.send(info.id, 'sent-during-auto-resume')
     expect(sm.getHistory(info.id)?.some((message) =>
       (message as { message?: { content?: unknown } }).message?.content === 'sent-during-auto-resume',
     )).toBe(true)
@@ -1507,6 +1507,7 @@ describe('SessionManager', () => {
     // re-enqueues onto the fresh handle, which the mock consumes as its first
     // input.
     releaseResumeOpts({ resume: info.id })
+    await expect(sent).resolves.toMatchObject({ type: 'user' })
     await resuming
     expect(mockHandles).toHaveLength(2)
     expect(mockHandles[1].options.resume).toBe(info.id)
@@ -1547,12 +1548,13 @@ describe('SessionManager', () => {
     const resuming = internals.autoResume(session)
     // First frame: the window send itself (broadcast to history/subscribers).
     const firstFrame = it.next()
-    sm.send(info.id, 'stranded-during-window')
+    const sent = sm.send(info.id, 'stranded-during-window')
     expect((session as { handle: { queueDepth: number } }).handle.queueDepth).toBe(1)
     // Second frame: the ephemeral undelivered notice.
     const noticeFrame = it.next()
 
     rejectBuildResumeOpts(new Error('mcp refresh failed'))
+    await expect(sent).resolves.toMatchObject({ type: 'user' })
     await expect(resuming).rejects.toThrow('mcp refresh failed')
 
     expect((await firstFrame).value).toMatchObject({ type: 'user' })
@@ -1600,7 +1602,7 @@ describe('SessionManager', () => {
     }
     internals.sessions.get(info.id)!.handle.destroy('test-closed-input')
 
-    expect(() => sm.send(info.id, 'must-not-be-acknowledged')).toThrow(/not ready for input/i)
+    await expect(sm.send(info.id, 'must-not-be-acknowledged')).rejects.toThrow(/not ready for input/i)
     expect(sm.getHistory(info.id)).toHaveLength(0)
   })
 
@@ -1609,9 +1611,9 @@ describe('SessionManager', () => {
     // (which would otherwise stick the UI in "working" forever once
     // the SDK merged queued messages into fewer turns than were sent).
     const info = await sm.create({})
-    sm.send(info.id, 'first')
-    sm.send(info.id, 'second')
-    sm.send(info.id, 'third')
+    await sm.send(info.id, 'first')
+    await sm.send(info.id, 'second')
+    await sm.send(info.id, 'third')
     expect(sm.get(info.id).working).toBe(true)
     // Drain everything: each result lands, the SDK pulls the next
     // queued message, and the next result will see an empty queue.
@@ -1634,17 +1636,17 @@ describe('SessionManager', () => {
     // items when result lands, keep pendingTurns=1 so the working state
     // stays continuous.
     const info = await sm.create({})
-    sm.send(info.id, 'first')
-    sm.send(info.id, 'second')
+    const first = sm.send(info.id, 'first')
+    const second = sm.send(info.id, 'second')
     // Mock SDK drains 'first' immediately on spawn (initial drainOne).
     // 'second' sits in the input queue until the next 'result' triggers
     // the next drain. So when we emit the FIRST result, queueDepth>0.
     mockHandles[0].emit({ type: 'result' })
+    await Promise.all([first, second])
     await tick()
     // BUG WAS: working would flip to false here. FIXED: working stays
     // true because the input queue still has at least one item.
     expect(sm.get(info.id).working).toBe(true)
-    // Once the second turn finishes (and no more queued input), working
     // clears as normal.
     mockHandles[0].emit({ type: 'result' })
     await tick()
@@ -1727,7 +1729,7 @@ describe('SessionManager', () => {
     it('discard() seeds the fork from the renderable transcript (subagent inner frames dropped)', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'go investigate')
+      await sm.send(info.id, 'go investigate')
       // Subagent frames arrive between the main user prompt and the anchor
       // assistant message — merged view order [user, s1, asst-1].
       h0.emit({ type: 'assistant', uuid: 's1', parent_tool_use_id: 'tu_task', message: { role: 'assistant', content: [{ type: 'text', text: 'subagent thinking' }] } })
@@ -2201,7 +2203,7 @@ describe('SessionManager', () => {
     const SHORT = 'claude-sonnet-4-20250514'
 
     const info = await sm.create({ cwd: TEST_CWD, model: FULL })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
     await sm.clear(info.id)
@@ -2277,7 +2279,7 @@ describe('SessionManager', () => {
     const SHORT = 'claude-sonnet-4-20250514'
 
     const info = await sm.create({ cwd: TEST_CWD, model: SHORT })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
     await sm.unload(info.id)
@@ -2360,7 +2362,7 @@ describe('SessionManager', () => {
 
   it('clear() resets stale working state from the interrupted turn', async () => {
     const info = await sm.create({})
-    sm.send(info.id, 'busy')
+    await sm.send(info.id, 'busy')
     expect(sm.get(info.id).working).toBe(true)
 
     const next = await sm.clear(info.id)
@@ -2436,7 +2438,7 @@ describe('SessionManager', () => {
     // No fresh session was registered.
     expect(mockHandles).toHaveLength(1)
     // A new turn still works on X.
-    sm.send(info.id, 'still here')
+    await sm.send(info.id, 'still here')
     expect(sm.get(info.id).working).toBe(true)
   })
 
@@ -2447,7 +2449,7 @@ describe('SessionManager', () => {
     // "No messages yet." Y must start with lastTurnAt undefined.
     const info = await sm.create({})
     // Complete a real turn so X.lastTurnAt is stamped + history non-empty.
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
     expect(sm.get(info.id).lastTurnAt).toBeDefined()
@@ -2553,7 +2555,7 @@ describe('SessionManager', () => {
 
     const pending = sm.compact(info.id, { handoff: true })
     // Input lands in X's queue WHILE the summarize is still in flight.
-    sm.send(info.id, 'raced the window')
+    await sm.send(info.id, 'raced the window')
     await tick()
     release('SUMMARY')
 
@@ -2598,7 +2600,7 @@ describe('SessionManager', () => {
 
     // Working → 409.
     const info = await sm.create({})
-    sm.send(info.id, 'busy')
+    await sm.send(info.id, 'busy')
     expect(sm.get(info.id).phase).toBe('working')
     await expect(sm.compact(info.id)).rejects.toMatchObject({ status: 409 })
 
@@ -2658,7 +2660,7 @@ describe('SessionManager', () => {
 
   it('compact() projects durable skill bodies after their raw user anchors without changing UI history', async () => {
     const info = await sm.create({})
-    sm.send(info.id, '/demo do this')
+    await sm.send(info.id, '/demo do this')
     const rawUuid = (sm.getHistory(info.id)![0] as { uuid: string }).uuid
     mockHandles[0].emit({
       type: 'user', uuid: 'subagent-frame', parent_tool_use_id: 'agent-1',
@@ -2721,7 +2723,7 @@ describe('SessionManager', () => {
 
   it('native auto-compact uses the same skill projection and keeps it out of the replacement UI history', async () => {
     const info = await sm.create({})
-    sm.send(info.id, '/demo do this')
+    await sm.send(info.id, '/demo do this')
     const rawUuid = (sm.getHistory(info.id)![0] as { uuid: string }).uuid
     mockHandles[0].emit({
       type: 'user', uuid: 'auto-subagent-frame', parent_tool_use_id: 'agent-1',
@@ -2793,7 +2795,7 @@ describe('SessionManager', () => {
 
   it('compact() keeps Claude summarizer input byte-for-byte unchanged without the optional provider method', async () => {
     const info = await sm.create({})
-    sm.send(info.id, 'ordinary turn')
+    await sm.send(info.id, 'ordinary turn')
     mockHandles[0].emit({ type: 'result', uuid: 'claude-result', session_id: info.id })
     await tick()
     const before = sm.getHistory(info.id)!
@@ -2874,7 +2876,7 @@ describe('SessionManager', () => {
     expect(activity[0].lastActivityAt).toBeGreaterThan(0)
 
     // After a send, the snapshot reports the in-flight turn + workingSince.
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     const working = sm.listActivity()[0]
     expect(working.pendingTurns).toBe(1)
     expect(working.workingSince).toBeGreaterThan(0)
@@ -2917,7 +2919,7 @@ describe('SessionManager', () => {
     // the next `result`. The pump caches every result's usage on the
     // session; subscribeContextUsage returns it as `snapshot`.
     const info = await sm.create({})
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({
       type: 'result',
       usage: { input_tokens: 1000, cache_creation_input_tokens: 200, cache_read_input_tokens: 5000 },
@@ -2954,7 +2956,7 @@ describe('SessionManager', () => {
     // Starting a NEW user turn invalidates the old prediction. If the SDK
     // suppresses a fresh suggestion for this turn (plan mode / error / first
     // turn), a later resubscribe must NOT resurrect the stale value.
-    sm.send(info.id, 'a brand new turn')
+    await sm.send(info.id, 'a brand new turn')
 
     const after = sm.subscribePromptSuggestion(info.id)
     expect(after).not.toBeNull()
@@ -2967,7 +2969,7 @@ describe('SessionManager', () => {
     await store.flush()
     expect(store.get(info.id)).toMatchObject({ id: info.id, title: 'hello' })
 
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await store.flush()
@@ -2997,7 +2999,7 @@ describe('SessionManager', () => {
 
   it('delete() closes the Query and removes from the persistence index', async () => {
     const info = await sm.create({})
-    sm.send(info.id, 'q')
+    await sm.send(info.id, 'q')
     expect(sm.get(info.id).working).toBe(true)
 
     await sm.delete(info.id)
@@ -3478,7 +3480,7 @@ describe('SessionManager', () => {
 
   it('sleep closes the old transcript sidecar without deleting its durable rows', async () => {
     const info = await sm.create({})
-    sm.send(info.id, 'persist me')
+    await sm.send(info.id, 'persist me')
     mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
     await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
     const closeSpy = vi.spyOn(TranscriptSidecar.prototype, 'close')
@@ -4162,7 +4164,7 @@ describe('SessionManager', () => {
 
   it('sleep() rejects a working session with 409 (idle guard)', async () => {
     const info = await sm.create({})
-    sm.send(info.id, 'in-flight')
+    await sm.send(info.id, 'in-flight')
     expect(sm.get(info.id).working).toBe(true)
 
     await expect(sm.sleep(info.id)).rejects.toThrow(/working/)
@@ -4231,7 +4233,7 @@ describe('SessionManager', () => {
     // resume() must defer to the hasSdkTranscript probe rather than
     // hard-410-ing — the user's manual retry should succeed.
     const info = await sm.create({ cwd: TEST_CWD, model: 'm1' })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     mockHandles[0].finish()
     await tick()
@@ -4262,7 +4264,7 @@ describe('SessionManager', () => {
     // mark it transcript_missing, and 410 (mirroring the existing
     // !hasTranscript + lastTurnAt branch for non-terminated sessions).
     const info = await sm.create({ cwd: TEST_CWD, model: 'm1' })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
     await sm.unload(info.id)
@@ -4305,7 +4307,7 @@ describe('SessionManager', () => {
     // live-crash case (server still running), distinct from the post-restart
     // dormant case covered above.
     const info = await sm.create({ cwd: TEST_CWD, model: 'm1' })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     mockHandles[0].finish()
     await tick()
@@ -4401,7 +4403,7 @@ describe('SessionManager', () => {
     // is ground truth; lastTurnAt is only a fallible proxy, so the guard
     // keys off the probe.
     const info = await sm.create({ cwd: TEST_CWD, model: 'm1' })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
     await sm.unload(info.id)
@@ -5144,7 +5146,7 @@ describe('SessionManager', () => {
   it('the seed probe is skipped while a turn is already pending (resume with queued input)', async () => {
     const info = await sm.create({})
     await settleSpawnProbe(info.id)
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].getContextUsage.mockClear()
     emitInit(info.id)
     for (let i = 0; i < 10; i++) await tick()
@@ -5335,7 +5337,7 @@ describe('SessionManager', () => {
     // Subscribe while a turn is pending: the seed must stand down AND leave
     // the cooldown unstamped — otherwise the post-turn self-heal would wait
     // 15s for an attempt that never ran.
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     sm.ensureContextUsageSeed(info.id)
     for (let i = 0; i < 5; i++) await tick()
     expect(mockHandles[0].getContextUsage).not.toHaveBeenCalled()
@@ -5546,7 +5548,7 @@ describe('SessionManager', () => {
     // encoded projects/ subtree, missed the jsonl under the OLD encoding,
     // and markTranscriptMissing permanently killed the session.
     const info = await sm.create({ cwd: dir, model: 'm1' })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
     await sm.unload(info.id)
@@ -5682,7 +5684,7 @@ describe('SessionManager', () => {
   it('fork() carries the thinking config onto the new session', async () => {
     const source = await sm.create({})
     await sm.setThinking(source.id, { type: 'enabled', budgetTokens: 4096 })
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     const forked = await sm.fork(source.id)
@@ -5747,7 +5749,7 @@ describe('SessionManager', () => {
   it('fork() carries the task budget onto the new session', async () => {
     const source = await sm.create({})
     await sm.setTaskBudget(source.id, { total: 64000 })
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     const forked = await sm.fork(source.id)
@@ -5893,7 +5895,7 @@ describe('SessionManager', () => {
   it('rewindFiles() delegates to snapshots.dryRun and narrows the result', async () => {
     const spies = spySnapshots()
     const info = await sm.create({})
-    const sent = sm.send(info.id, 'edit a file')
+    const sent = await sm.send(info.id, 'edit a file')
     // Complete the turn so the session is idle (phase guard passes).
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
@@ -5916,7 +5918,7 @@ describe('SessionManager', () => {
   it('rewindFiles() delegates to snapshots.rewind for a real rewind', async () => {
     const spies = spySnapshots()
     const info = await sm.create({})
-    const sent = sm.send(info.id, 'edit a file')
+    const sent = await sm.send(info.id, 'edit a file')
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
     spies.rewind.mockResolvedValueOnce({ canRewind: true, filesChanged: ['a.ts'] })
@@ -5929,7 +5931,7 @@ describe('SessionManager', () => {
   it('rewindFiles() 409s while the session is working on a REAL rewind', async () => {
     const spies = spySnapshots()
     const info = await sm.create({})
-    const sent = sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
+    const sent = await sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
     await expect(sm.rewindFiles(info.id, sent.uuid!)).rejects.toThrow('working')
     expect(spies.rewind).not.toHaveBeenCalled()
     spies.dryRun.mockRestore?.()
@@ -5939,7 +5941,7 @@ describe('SessionManager', () => {
   it('rewindFiles() allows a dry-run while the session is working', async () => {
     const spies = spySnapshots()
     const info = await sm.create({})
-    const sent = sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
+    const sent = await sm.send(info.id, 'hi') // pendingTurns=1 → phase 'working'
     spies.dryRun.mockResolvedValueOnce({ canRewind: true, filesChanged: ['x.ts'] })
     const res = await sm.rewindFiles(info.id, sent.uuid!, { dryRun: true })
     expect(spies.dryRun).toHaveBeenCalledWith(info.id, sent.uuid)
@@ -5957,7 +5959,7 @@ describe('SessionManager', () => {
     const spies = spySnapshots()
     const bcast = vi.spyOn(sm, 'broadcastGitStatusChanged').mockImplementation(() => {})
     const info = await sm.create({})
-    const sent = sm.send(info.id, 'edit a file')
+    const sent = await sm.send(info.id, 'edit a file')
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
     spies.dryRun.mockResolvedValueOnce({ canRewind: true })
@@ -5973,7 +5975,7 @@ describe('SessionManager', () => {
     const spies = spySnapshots()
     const bcast = vi.spyOn(sm, 'broadcastGitStatusChanged').mockImplementation(() => {})
     const info = await sm.create({})
-    const sent = sm.send(info.id, 'edit a file')
+    const sent = await sm.send(info.id, 'edit a file')
     mockHandles[0].emit({ type: 'result', subtype: 'success' })
     await tick()
     spies.rewind.mockResolvedValueOnce({ canRewind: false, error: 'no snapshot' })
@@ -5986,7 +5988,7 @@ describe('SessionManager', () => {
     const spies = spySnapshots()
     const info = await sm.create({ cwd: dir })
     spies.capture.mockResolvedValueOnce('tree-1')
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     // Capture was invoked synchronously (fire-and-forget but started
     // before dispatch). recordAnchor runs after capture resolves.
     await tick()
@@ -6000,7 +6002,7 @@ describe('SessionManager', () => {
     spies.capture.mockRejectedValueOnce(new Error('git missing'))
     const info = await sm.create({ cwd: dir })
     // send must not throw even though capture rejects.
-    const sent = sm.send(info.id, 'hi')
+    const sent = await sm.send(info.id, 'hi')
     expect(sent.uuid).toBeTruthy()
     // The user message reached the ring (dispatch ran).
     expect(sm.getHistory(info.id)?.some((m) => (m as { uuid?: string }).uuid === sent.uuid)).toBe(true)
@@ -6011,9 +6013,9 @@ describe('SessionManager', () => {
     spies.capture.mockResolvedValue('tree-q')
     const info = await sm.create({ cwd: dir })
     // First send starts a turn — session is now working.
-    sm.send(info.id, 'first')
+    await sm.send(info.id, 'first')
     // Second send is queued while working: must NOT capture at enqueue.
-    const queued = sm.send(info.id, 'second')
+    const queued = await sm.send(info.id, 'second')
     expect(spies.capture).toHaveBeenCalledTimes(1) // only the idle first send
     // Consume time is the correct pre-turn tree. Call onInputConsumed
     // directly (the critical regression: captureAnchor re-checks idle, and
@@ -6040,7 +6042,7 @@ describe('SessionManager', () => {
     const deferred = new Promise<string | null>((resolve) => { resolveDeferred = resolve })
     spies.capture.mockReturnValueOnce(deferred)
     const info = await sm.create({ cwd: dir, permissionMode: 'bypassPermissions' })
-    sm.send(info.id, 'edit a file')
+    await sm.send(info.id, 'edit a file')
 
     const canUseTool = mockHandles[0].options.canUseTool as (
       name: string, input: Record<string, unknown>, opts: { signal: AbortSignal },
@@ -6063,7 +6065,7 @@ describe('SessionManager', () => {
     const spies = spySnapshots()
     spies.capture.mockResolvedValueOnce('tree-1').mockResolvedValueOnce('tree-2')
     const info = await sm.create({ cwd: dir })
-    sm.send(info.id, 'first')
+    await sm.send(info.id, 'first')
     await tick()
     await tick()
     mockHandles[0].emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })
@@ -6074,7 +6076,7 @@ describe('SessionManager', () => {
       resultUuid: 'r1', assistantUuid: 'a1', startTree: 'tree-1',
     }))
 
-    sm.send(info.id, 'second')
+    await sm.send(info.id, 'second')
     await tick()
     await tick()
     mockHandles[0].emit({ type: 'assistant', uuid: 'a2', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }] } })
@@ -6280,7 +6282,7 @@ describe('SessionManager', () => {
   it('fork() carries the auto-memory intent onto the new session', async () => {
     const source = await sm.create({})
     await sm.setMemorySettings(source.id, { autoMemoryEnabled: true, autoMemoryDirectory: '~/mem' })
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     const forked = await sm.fork(source.id)
@@ -6503,7 +6505,7 @@ describe('SessionManager', () => {
     const source = await sm.create({ cwd: TEST_CWD, model: 'm1', permissionMode: 'default', title: 'parent' })
     // The SDK only writes its conversation log after the first completed
     // turn. Simulate one so the fork guard allows the call.
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     const forked = await sm.fork(source.id)
@@ -6525,7 +6527,7 @@ describe('SessionManager', () => {
 
   it('fork() works on dormant (unloaded) sessions too', async () => {
     const source = await sm.create({ title: 'dormant-source' })
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(source.id)
@@ -6538,7 +6540,7 @@ describe('SessionManager', () => {
 
   it('fork() broadcasts a created event for the new session', async () => {
     const source = await sm.create({})
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     // Subscribe *after* the result has been processed — this way the
@@ -6560,7 +6562,7 @@ describe('SessionManager', () => {
 
   it('fork({ replacesSource: true }) broadcasts created tagged replacesSource (crash-recovery fork)', async () => {
     const source = await sm.create({})
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     const sub = sm.subscribeGlobal()
@@ -6579,7 +6581,7 @@ describe('SessionManager', () => {
 
   it('fork({ forkFromLastSafe: true }) resolves resumeSessionAt to the newest completed turn', async () => {
     const source = await sm.create({})
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     // Complete one real turn so the fork() lastTurnAt guard passes.
     mockHandles[0].emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'one' }] } })
     mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: source.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
@@ -6611,7 +6613,7 @@ describe('SessionManager', () => {
 
   it('fork({ forkFromLastSafe: true, replacesSource: true }) broadcasts created tagged replacesSource', async () => {
     const source = await sm.create({})
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
     mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: source.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
     // Poll for the anchor to land (pump appends fire-and-forget) so
@@ -6676,7 +6678,7 @@ describe('SessionManager', () => {
     const source = await sm.create({ cwd: TEST_CWD, title: 'orphan-fork' })
     // Complete a turn so the lastTurnAt guard passes — we want this test
     // to land squarely on the on-disk-probe guard, not the in-memory one.
-    sm.send(source.id, 'hi')
+    await sm.send(source.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     // Simulate the SDK's jsonl having been deleted out from under us.
@@ -6698,7 +6700,7 @@ describe('SessionManager', () => {
 
   it('resume() refuses when the SDK transcript file is missing on disk', async () => {
     const info = await sm.create({ cwd: TEST_CWD, title: 'orphan-resume' })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.unload(info.id)
@@ -6724,7 +6726,7 @@ describe('SessionManager', () => {
       const parent = await sm.create({ cwd: TEST_CWD, title: 'parent' })
       // Complete a turn so the parent has a transcript (hasSdkTranscript probe
       // — mocked getSessionInfo returns truthy by default).
-      sm.send(parent.id, 'hi')
+      await sm.send(parent.id, 'hi')
       mockHandles[0].emit({ type: 'result' })
       await tick()
 
@@ -6773,7 +6775,7 @@ describe('SessionManager', () => {
 
     it('persists forkBoundaryUuid so a dormant Side Chat still filters after resume', async () => {
       const parent = await sm.create({ cwd: TEST_CWD, title: 'parent' })
-      sm.send(parent.id, 'hi')
+      await sm.send(parent.id, 'hi')
       mockHandles[0].emit({ type: 'result' })
       await tick()
 
@@ -6818,7 +6820,7 @@ describe('SessionManager', () => {
     const requests = captureNativeRequests(sm)
 
     const info = await sm.resume(id)
-    sm.send(id, 'next')
+    await sm.send(id, 'next')
     await waitFor(() => requests.length === 1)
 
     expect(requests[0].model).toBe('legacy-persona-model')
@@ -6855,7 +6857,7 @@ describe('SessionManager', () => {
     const requests = captureNativeRequests(sm)
 
     const info = await sm.fork(id)
-    sm.send(info.id, 'next')
+    await sm.send(info.id, 'next')
     await waitFor(() => requests.length === 1)
 
     expect(requests[0].model).toBe('legacy-persona-model')
@@ -7055,12 +7057,12 @@ describe('SessionManager', () => {
         }
       }
 
-      sm.send(info.id, 'current')
+      await sm.send(info.id, 'current')
       await waitFor(() => sm.listPending(info.id).length === 1)
       await sm.decide(info.id, sm.listPending(info.id)[0].id, { behavior: 'allow' })
       await waitFor(() => requests === 2 && sm.get(info.id).phase === 'idle')
 
-      sm.send(info.id, 'next')
+      await sm.send(info.id, 'next')
       await waitFor(() => requests === 4 && sm.get(info.id).phase === 'idle')
       expect(sm.listPending(info.id)).toHaveLength(0)
       expect(sm.get(info.id).permissionMode).toBe(nextMode)
@@ -7739,7 +7741,7 @@ describe('SessionManager', () => {
       // routes opened, and the health monitor stopped watching the session.
       const info = await sm.create({ cwd: dir, model: 'm1' })
       const h = mockHandles.at(-1)!
-      sm.send(info.id, 'in-flight turn')
+      await sm.send(info.id, 'in-flight turn')
       const s = turnStateOf(info.id)
       expect(s.pendingTurns).toBe(1)
 
@@ -7782,7 +7784,7 @@ describe('SessionManager', () => {
 
     it('counts queued inputs via receivedAt-without-consumedAt predicate', async () => {
       const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
-      sm.send(info.id, 'hello')
+      await sm.send(info.id, 'hello')
       const row = sm.debugSessions().find((r) => r.id === info.id)
       // In the test mock, the SDK drains the input queue synchronously
       // (direct hand-off via the Pushable's parked waiter), so consumedAt
@@ -7808,7 +7810,7 @@ describe('SessionManager', () => {
 
     it('projects historyTail to routing metadata only and nulls the live-only sections off-live', async () => {
       const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
-      sm.send(info.id, 'hello')
+      await sm.send(info.id, 'hello')
       const detail = await sm.debugSession(info.id, 10)
       expect(detail.id).toBe(info.id)
       expect(detail.historyTail.length).toBeGreaterThan(0)
@@ -7839,7 +7841,7 @@ describe('SessionManager', () => {
 
     it('exposes the cached Lite snapshot beside the live breakdown and flags a large mismatch', async () => {
       const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
-      sm.send(info.id, 'hello')
+      await sm.send(info.id, 'hello')
 
       // Seed the pump-cached snapshot with the aggregate-bug signature
       // (995,023 cached while the CLI's own accounting says 155,641 — a 6.4×
@@ -7933,7 +7935,7 @@ describe('SessionManager', () => {
 
     it('seq-assigns sent prompts and pump-ingested messages; window reads back by seq', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
-      sm.send(info.id, 'hello')
+      await sm.send(info.id, 'hello')
       emitAssistant('a1', 'hi there')
       mockHandles[0].emit({ type: 'system', subtype: 'init', uuid: 'init1' })
       mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
@@ -7970,7 +7972,7 @@ describe('SessionManager', () => {
 
     it('persists an ndjson sidecar; evictTranscript tombstones flow through the window and survive a reload', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
-      sm.send(info.id, 'evict me')
+      await sm.send(info.id, 'evict me')
       emitAssistant('a1', 'reply')
       mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
       expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
@@ -8144,7 +8146,7 @@ describe('SessionManager', () => {
       // Give the SOURCE a completed turn so fork() allows the branch.
       const sourceCwd = '/tmp/fork-seq-src'
       const source = await sm.create({ cwd: sourceCwd })
-      sm.send(source.id, 'before fork')
+      await sm.send(source.id, 'before fork')
       emitAssistant('live-pre-1', 'prefork reply')
       mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'live-pre-r', session_id: source.id })
       expect(await waitFor(() => sm.get(source.id).lastTurnAt !== undefined)).toBe(true)
@@ -8200,7 +8202,7 @@ describe('SessionManager', () => {
     it('fork restart reconcile never re-appends an inherited prompt (v→u bridge)', async () => {
       const sourceCwd = '/tmp/fork-bridge-src'
       const source = await sm.create({ cwd: sourceCwd })
-      sm.send(source.id, 'hello world')
+      await sm.send(source.id, 'hello world')
       // SDK echo: pairs the server-minted `u` with the SDK's on-disk `v` and
       // persists the mapping into the source's prompt-uuid sidecar (the pump
       // drops this frame as an input echo — it never enters the seq store).
@@ -8243,7 +8245,7 @@ describe('SessionManager', () => {
         // the WHOLE in-memory promptUuids list with writeAtomic REPLACE —
         // the live session must carry the bridged inherited mappings or the
         // save wipes them off disk right here.
-        sm.send(forked.id, 'after fork')
+        await sm.send(forked.id, 'after fork')
         const forkHandle = mockHandles[mockHandles.length - 1]
         forkHandle.emit({
           type: 'user',
@@ -8319,13 +8321,13 @@ describe('SessionManager', () => {
       const source = await sm.create({ cwd: sourceCwd })
       // Two mapped prompts; the seed (discard's kept prefix) contains only
       // the FIRST — the bridge must not copy the second's mapping.
-      sm.send(source.id, 'first')
+      await sm.send(source.id, 'first')
       mockHandles[0].emit({
         type: 'user', uuid: 'sdk-v-1', parent_tool_use_id: null,
         message: { role: 'user', content: 'first' },
       })
       await tick()
-      sm.send(source.id, 'second')
+      await sm.send(source.id, 'second')
       mockHandles[0].emit({
         type: 'user', uuid: 'sdk-v-2', parent_tool_use_id: null,
         message: { role: 'user', content: 'second' },
@@ -8404,7 +8406,7 @@ describe('SessionManager', () => {
      *  reply (seq 1), result frame (seq 2). Returns the prompt's uuid. */
     const seedTurn = async () => {
       const info = await sm.create({ cwd: TEST_CWD })
-      sm.send(info.id, 'refuse me')
+      await sm.send(info.id, 'refuse me')
       emitAssistant('a1', 'refused leg')
       mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
       expect(await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)).toBe(true)
@@ -8542,7 +8544,7 @@ describe('SessionManager', () => {
     async function liveWithTurn(opts: Record<string, unknown> = {}): Promise<string> {
       const info = await sm.create({ cwd: dir, model: 'm1', ...opts } as Parameters<SessionManager['create']>[0])
       const h = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } })
       h.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       for (let i = 0; i < 60 && sm.get(info.id).lastTurnAt === undefined; i++) await tick()
@@ -8678,7 +8680,7 @@ describe('SessionManager', () => {
 
     it('delete(X) during a live turn resolves', async () => {
       const info = await sm.create({ cwd: dir, model: 'm1' })
-      sm.send(info.id, 'long task')
+      await sm.send(info.id, 'long task')
       mockHandles[0].emit({ type: 'assistant', uuid: 'a-mid', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'working…' }] } })
       await tick()
       expect(sm.get(info.id).phase).toBe('working')
@@ -8921,7 +8923,7 @@ describe('SessionManager', () => {
       // the fork's live tasks map to carry it after hydrate.
       const source = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
       const h0 = mockHandles.at(-1)!
-      sm.send(source.id, 'hi')
+      await sm.send(source.id, 'hi')
       h0.emit({ type: 'result' })
       await tick()
 
@@ -9167,7 +9169,7 @@ describe('MCP re-spawn semantics', () => {
   it('fork carries the source session\'s own selection', async () => {
     const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
     // fork() refuses turn-less sessions — complete one turn first
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     await sm.fork(info.id)
@@ -9183,7 +9185,7 @@ describe('MCP re-spawn semantics', () => {
     // Driven via buildResumeOpts → respawnInPlace directly (the exact leak
     // path) rather than through autoResume's lifecycle guards.
     const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
-    sm.send(info.id, 'first')
+    await sm.send(info.id, 'first')
     await tick()
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
@@ -9221,7 +9223,7 @@ describe('MCP re-spawn semantics', () => {
     // disallowed tools.
     const info = await sm.create({ cwd: dir, enabledMcpServers: ['global-a'] } as any)
     await sm.setToolProfile(info.id, { disallowedTools: ['WebSearch'] } as never)
-    sm.send(info.id, 'first')
+    await sm.send(info.id, 'first')
     await tick()
     mockHandles[0].emit({ type: 'result', session_id: info.id })
     await tick()
@@ -10139,7 +10141,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       const h0 = mockHandles.at(-1)!
       // Complete one turn so lastTurnAt + lastSafeResumeUuid are set
       // (recovery needs a disk transcript / completed turn to resume from).
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
@@ -10158,7 +10160,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: false })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
@@ -10174,7 +10176,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
@@ -10203,7 +10205,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
@@ -10260,7 +10262,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: false })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
@@ -10282,7 +10284,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: false })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
@@ -10311,7 +10313,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       const missingCwd = join(dir, 'moved-away')
       const info = await sm.create({ cwd: missingCwd })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
@@ -10329,7 +10331,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
@@ -10374,7 +10376,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true, maxCrashRecovery: 3 })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
@@ -10401,7 +10403,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
@@ -10426,7 +10428,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
@@ -10439,7 +10441,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // NOT reset here: a poisonous turn that crashes the CLI on the model's
       // response (but loads fine on resume) would otherwise loop at Step 1
       // forever, never exhausting the ladder.
-      sm.send(info.id, 'again')
+      await sm.send(info.id, 'again')
       await tick()
 
       // Crash 2 → STILL Step 1 (counter 1 → 2), not a give-up.
@@ -10463,7 +10465,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true, autoResume: true })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
@@ -10501,7 +10503,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       const info = await sm.create({ cwd: dir, agent: 'reviewer' })
       const h0 = mockHandles.at(-1)!
       expect(h0.options.agent).toBe('reviewer')
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hey' }] } })
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
@@ -10518,7 +10520,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
@@ -10526,7 +10528,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // async ladder runs. A send in that window must be rejected (409)
       // so it isn't enqueued to the about-to-be-destroyed handle.
       fireCrash(sm, info.id, { code: 1, signal: null, killed: false })
-      expect(() => sm.send(info.id, 'too soon')).toThrow(/recovering/i)
+      await expect(sm.send(info.id, 'too soon')).rejects.toThrow(/recovering/i)
       await waitFor(() => mockHandles.length >= 2) // let Step 1 finish
     })
 
@@ -10534,7 +10536,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       sm = new SessionManager({ store, crashRecovery: true })
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
@@ -10750,7 +10752,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       try {
         const h0 = mockHandles.at(-1)!
         // Complete a turn so recovery has a resume anchor, then arm a watcher.
-        sm.send(info.id, 'hi')
+        await sm.send(info.id, 'hi')
         h0.emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
         await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
 
@@ -10821,7 +10823,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     // "Connection closed" banner.
     it('leaves the session running (the superseded pump must not terminate it)', async () => {
       const info = await sm.create({ cwd: TEST_CWD, model: 'm1' })
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       mockHandles[0].emit({
         type: 'result',
         subtype: 'success',
@@ -10856,7 +10858,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('does not cascade re-spawns when autoResume is enabled', async () => {
       sm = new SessionManager({ store, autoResume: true })
       const info = await sm.create({ cwd: TEST_CWD, model: 'm1' })
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       mockHandles[0].emit({
         type: 'result',
         subtype: 'success',
@@ -10895,10 +10897,10 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     const setupQueued = async (n: number) => {
       const info = await sm.create({ cwd: dir })
       const h = mockHandles.at(-1)!
-      sm.send(info.id, 'in-flight turn seed')
+      await sm.send(info.id, 'in-flight turn seed')
       const queuedUuids: string[] = []
       for (let i = 0; i < n; i++) {
-        const sent = sm.send(info.id, `queued-${i}`)
+        const sent = await sm.send(info.id, `queued-${i}`)
         queuedUuids.push((sent as { uuid: string }).uuid)
       }
       return { info, h, queuedUuids }
@@ -11117,7 +11119,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // check only after workingStuckMs).
       const info = await sm.create({ cwd: dir })
       const h = mockHandles.at(-1)!
-      const sent = sm.send(info.id, 'stop me before the CLI starts') as { uuid: string }
+      const sent = await sm.send(info.id, 'stop me before the CLI starts') as { uuid: string }
       h.interrupt.mockResolvedValueOnce({ cancelled: [sent.uuid] })
       const s = turnStateOf(info.id)
       expect(s.pendingTurns).toBe(1)
@@ -11214,7 +11216,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
     it('stamps consumedAt on the replayed copy for the idle direct-handoff path', async () => {
       const info = await sm.create({ cwd: dir })
-      const sent = sm.send(info.id, 'hello') as { uuid: string }
+      const sent = await sm.send(info.id, 'hello') as { uuid: string }
       await tick()
       const entry = replayOf(info.id).find((m) => m.uuid === sent.uuid)!
       expect(entry).toBeDefined()
@@ -11225,8 +11227,8 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('stamps consumedAt on the replayed copy when a queued turn is consumed later', async () => {
       const info = await sm.create({ cwd: dir })
       const h = mockHandles.at(-1)!
-      sm.send(info.id, 'first') // taken by the parked waiter immediately
-      const queued = sm.send(info.id, 'second') as { uuid: string } // sits in the queue
+      await sm.send(info.id, 'first') // taken by the parked waiter immediately
+      const queued = await sm.send(info.id, 'second') as { uuid: string } // sits in the queue
       await tick()
       // Genuinely queued behind the in-flight turn — no stamp yet, so the
       // 'queued' badge is honest here.
@@ -11258,7 +11260,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('records a turn anchor on each successful result', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       // The pump records the anchor asynchronously (fire-and-forget); poll
@@ -11272,7 +11274,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('discard() forks from the anchor and swaps X out (keeps transcript)', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       await waitFor(async () => (await anchorsOf(info.id)).length > 0)
@@ -11329,7 +11331,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // at the tail (out of order).
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       await waitFor(async () => (await anchorsOf(info.id)).length > 0)
@@ -11344,7 +11346,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('discard() fails loudly when the cut point is not in the transcript', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       // Hand-seed an anchor whose message never entered the transcript: the
@@ -11379,7 +11381,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
             }],
           },
         })
-        sm.send(info.id, 'hi')
+        await sm.send(info.id, 'hi')
         completeTurn(h0, info.id, 'asst-1')
         await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
         await waitFor(async () => (await anchorsOf(info.id)).length > 0)
@@ -11406,7 +11408,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       try {
         const info = await sm.create({ cwd: dir })
         const h0 = mockHandles.at(-1)!
-        sm.send(info.id, 'hi')
+        await sm.send(info.id, 'hi')
         completeTurn(h0, info.id, 'asst-1')
         await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
         await waitFor(async () => (await anchorsOf(info.id)).length > 0)
@@ -11443,11 +11445,11 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // message from the discarded future — into Y.
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'first prompt')
+      await sm.send(info.id, 'first prompt')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply 1' }] } })
       await tick()
       // Queued while turn 1 is still closing: recorded now, result arrives later.
-      sm.send(info.id, 'second prompt (queued)')
+      await sm.send(info.id, 'second prompt (queued)')
       h0.emit({ type: 'result', subtype: 'success', uuid: 'res-asst-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       await waitFor(async () => (await anchorsOf(info.id)).length > 0)
@@ -11483,7 +11485,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
           }],
         },
       })
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       h0.emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply 1' }] } })
       await tick()
       // The agent completes while turn 1 is still closing.
@@ -11553,7 +11555,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('discard() refuses a non-anchor uuid (400)', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       // 'asst-bogus' was never recorded as a turn anchor.
@@ -11576,7 +11578,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
       // Complete one real turn so fork() has a transcript + lastTurnAt
       // (fork refuses without a completed turn).
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       // The cut point (and the turn after it) must be real messages too —
@@ -11598,7 +11600,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('deleteOriginal unlinks the source transcript + sidecar', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       await waitFor(async () => (await anchorsOf(info.id)).length > 0)
@@ -11615,7 +11617,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('deleteOriginal also removes the snapshot sidecar for X', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       await waitFor(async () => (await anchorsOf(info.id)).length > 0)
@@ -11683,7 +11685,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
 
       // Complete one real turn so fork() has a transcript + lastTurnAt.
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       // The cut point (and the turn after it) must be real messages too —
@@ -11710,7 +11712,7 @@ describe('setMcpServers (dynamic, on a live session)', () => {
     it('listDiscardAnchors returns anchors with previews', async () => {
       const info = await sm.create({ cwd: dir })
       const h0 = mockHandles.at(-1)!
-      sm.send(info.id, 'hi')
+      await sm.send(info.id, 'hi')
       completeTurn(h0, info.id, 'asst-1')
       await waitFor(() => sm.get(info.id).lastTurnAt !== undefined)
       await waitFor(async () => (await anchorsOf(info.id)).length > 0)
@@ -12405,7 +12407,7 @@ describe('fork() worktree fallback', () => {
     const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
     expect(info.worktree).toBeDefined()
     // Complete one turn so the fork() lastTurnAt guard passes.
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
 
@@ -12451,7 +12453,7 @@ describe('clear() worktree isolation', () => {
     const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
     const wtPath = join(dir, 'worktrees', info.id)
     // Complete one turn so clear() passes its phase guards.
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
 
@@ -12473,7 +12475,7 @@ describe('clear() worktree isolation', () => {
 
   it('clear of a non-isolated session stays clean of worktree metadata', async () => {
     const info = await sm.create({ cwd: repo, model: 'test-model' })
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
 
@@ -12487,7 +12489,7 @@ describe('clear() worktree isolation', () => {
   it('successful permanent clear preserves the inherited worktree', async () => {
     const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
     const wtPath = join(dir, 'worktrees', info.id)
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
@@ -12554,7 +12556,7 @@ describe('clear() worktree isolation', () => {
   it('permanent clear and its deletion retry preserve the replacement worktree', async () => {
     const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
     const wtPath = join(dir, 'worktrees', info.id)
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     const realConfigDir = process.env.CLAUDE_CONFIG_DIR
@@ -12627,7 +12629,7 @@ describe('orphan worktree sweep (health-tick wiring)', () => {
   it('keeps an old dir claimed by a live successor via worktree.path (/clear inheritance)', async () => {
     const info = await sm.create({ cwd: repo, model: 'test-model', isolateWorktree: true } as Parameters<SessionManager['create']>[0])
     const wtPath = join(dir, 'worktrees', info.id)
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'result' })
     await tick()
     // Backdate BEFORE clear: /clear never touches the dir, so without the
@@ -12692,7 +12694,7 @@ describe('delete() / setCwd() worktree cleanup', () => {
     expect(existsSync(wtPath)).toBe(true)
     // Complete a turn with a known assistant uuid so the pump records the
     // anchor discard() forks from (success result → turnAnchorStore.append).
-    sm.send(info.id, 'hi')
+    await sm.send(info.id, 'hi')
     mockHandles[0].emit({ type: 'assistant', uuid: 'asst-1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } })
     mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'res-1', session_id: info.id, is_error: false, usage: { input_tokens: 1, iterations: [] }, modelUsage: {} })
     // The anchor write is async — poll for the sidecar to land.

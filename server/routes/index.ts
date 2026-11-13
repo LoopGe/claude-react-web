@@ -118,11 +118,11 @@ export function buildApiRouter(
   // the same sm.send/sendContent as POST /messages. Session deletion is
   // observed via the global removed feed and drops that session's schedules.
   const scheduledSends = new ScheduledSendManager({
-    send: (sessionId, body) => {
+    send: async (sessionId, body) => {
       const sent =
         'content' in body
-          ? sm.sendContent(sessionId, body.content as Array<{ type: string; [k: string]: unknown }>)
-          : sm.send(sessionId, body.text)
+          ? await sm.sendContent(sessionId, body.content)
+          : await sm.send(sessionId, body.text)
       return { uuid: sent.uuid }
     },
     subscribeGlobal: () => sm.subscribeGlobal(),
@@ -148,7 +148,7 @@ export function buildApiRouter(
     app.route('/', buildDaemonRouter(configDir))
   }
   app.route('/', buildProfilesRouter(configDir, sm))
-  app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore, configDir, uploadStore))
+  app.route('/', buildSessionRouter(sm, mpStore, agentDefinitionStore, configDir))
   app.route('/', buildHooksRouter(sm))
   app.route('/', buildSkillsRouter(sm))
   app.route('/', buildDiagnosticsRouter(sm))

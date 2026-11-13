@@ -1,5 +1,6 @@
 import { listSubagents, type Query } from '@anthropic-ai/claude-agent-sdk'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
+import { copyConsumedAt, projectFileBlocksForProvider } from '../../agent-message.js'
 import type { Pushable } from '../../pushable.js'
 import type { ProviderInterruptReceipt, ProviderSessionHandle } from '../types.js'
 import type { ProcessExitInfo } from '../../process-monitor.js'
@@ -68,7 +69,9 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
   }
 
   enqueueUserMessage(message: AgentUserMessage): void {
-    this.input.push(message)
+    const projected = projectFileBlocksForProvider(message)
+    this.input.push(projected)
+    copyConsumedAt(projected, message)
   }
 
   /** 入队一条 mid-turn 注入消息（spec §4 接口契约）。admission 关闭（turn
@@ -97,7 +100,9 @@ export class ClaudeSessionHandle implements ProviderSessionHandle {
   }
 
   sendControlMessage(message: AgentUserMessage): void {
-    this.input.push(message)
+    const projected = projectFileBlocksForProvider(message)
+    this.input.push(projected)
+    copyConsumedAt(projected, message)
   }
 
   clearQueuedInput(): number {

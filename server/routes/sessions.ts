@@ -2,18 +2,12 @@
 
 import { Hono } from 'hono'
 import { existsSync } from 'node:fs'
-import { stat } from 'node:fs/promises'
 import { serverDefaultCwd, withDefaultCwd } from '../default-cwd.js'
 import { isAbsolute } from 'node:path'
 import type { Options, PermissionMode, Settings } from '@anthropic-ai/claude-agent-sdk'
-import { SessionManager, cwdMissing, workingDirMissingMsg, type ResolvedFile } from '../session-manager.js'
+import { SessionManager, cwdMissing, workingDirMissingMsg } from '../session-manager.js'
 import { safeJson, safeJsonOptional, safeJsonValue } from './index.js'
 import type { MpStore } from '../mp-store.js'
-import type { UploadEntry, UploadStore } from '../upload-store.js'
-import { uploadEntryPathContained } from '../upload-path.js'
-import { canReferenceUpload } from '../upload-policy.js'
-import { uploadRefOf } from '../../shared/uploads.js'
-import { isFileBlock } from '../../shared/attachments.js'
 import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from '../agent-definition-store.js'
 import { isUserSelectablePermissionMode, permissionModeList } from '../permission-modes.js'
 import { formatHooksValidationErrors, toSdkHooksSettings, validateSessionHooksConfig } from '../../shared/hooks.js'
@@ -318,55 +312,6 @@ function narrowCreateBody(body: Record<string, unknown>): { ok: true; value: Rec
   return { ok: true, value: rest, dropped }
 }
 
-/** Replace each app-level FileBlock with the canonical upload reference and
- *  collect the stored path the SDK projection needs. Throws HttpError(400)
- *  for an unknown/foreign/missing upload so the turn is never half-sent. */
-async function resolveFileBlocks(
-  content: readonly { type: string; [k: string]: unknown }[],
-  sessionId: string,
-  uploadStore: UploadStore | undefined,
-  stateDir: string,
-): Promise<{ content: Array<{ type: string; [k: string]: unknown }>; files: ResolvedFile[] }> {
-  const files: ResolvedFile[] = []
-  const resolved: Array<{ type: string; [k: string]: unknown }> = []
-  const checks: UploadEntry[] = []
-  for (const [blockIndex, block] of content.entries()) {
-    if (!isFileBlock(block)) {
-      resolved.push(block)
-      continue
-    }
-    if (uploadStore === undefined) {
-      throw new HttpError(400, 'file attachments are not available on this server')
-    }
-    const entry = uploadStore.getById(block.attachment.id)
-    if (entry === undefined) {
-      throw new HttpError(400, `unknown upload: ${block.attachment.id}`)
-    }
-    if (!canReferenceUpload(entry, sessionId)) {
-      throw new HttpError(400, `upload does not belong to session ${sessionId}`)
-    }
-    if (!uploadEntryPathContained(entry, stateDir)) {
-      throw new HttpError(400, 'upload path is not allowed')
-    }
-    checks.push(entry)
-    const attachment = uploadRefOf(entry)
-    resolved.push({ type: 'file', attachment })
-    files.push({ blockIndex, attachment, path: entry.path })
-  }
-  // Independent existence checks: one round-trip per file, in parallel.
-  await Promise.all(checks.map(async (entry) => {
-    try {
-      await stat(entry.path)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        throw new HttpError(400, `uploaded file is missing: ${entry.name}`)
-      }
-      throw error
-    }
-  }))
-  return { content: resolved, files }
-}
-
 export function buildSessionRouter(
   sm: SessionManager,
   mpStore?: MpStore,
@@ -375,7 +320,6 @@ export function buildSessionRouter(
   // Isolated worktrees live under <stateDir>/worktrees/<sessionId>, the same
   // layout session-worktree.ts provisions against the manager's store dir.
   stateDir?: string,
-  uploadStore?: UploadStore,
 ): Hono {
   const app = new Hono()
   const sessionSearch = createSessionSearchIndex({
@@ -631,19 +575,11 @@ export function buildSessionRouter(
     if (!v.ok) return c.json({ error: v.error }, v.status)
     if ('content' in v.body) {
       log.info(`POST /sessions/${id}/messages — content array with ${v.body.content.length} blocks`)
-      const resolved = await resolveFileBlocks(
-        v.body.content as unknown as Array<{ type: string; [k: string]: unknown }>,
-        id,
-        uploadStore,
-        stateDir ?? uploadStore?.getDir() ?? '',
-      )
-      const accepted = resolved.files.length > 0
-        ? sm.sendContent(id, resolved.content, resolved.files)
-        : sm.sendContent(id, resolved.content)
+      const accepted = await sm.sendContent(id, v.body.content)
       return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
     }
     log.info(`POST /sessions/${id}/messages — ${v.body.text.length} chars`)
-    const accepted = sm.send(id, v.body.text)
+    const accepted = await sm.send(id, v.body.text)
     return c.json({ ok: true, message: { uuid: accepted.uuid, receivedAt: accepted.receivedAt } })
   })
 

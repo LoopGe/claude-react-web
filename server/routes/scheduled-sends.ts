@@ -20,9 +20,8 @@ export function buildScheduledSendRouter(
     const body = await safeJson<{ fireAt?: unknown; text?: unknown; content?: unknown }>(c.req)
     const v = validateSendBody(body)
     if (!v.ok) return c.json({ error: v.error }, v.status)
-    // Scheduled bodies fire through sm.sendContent without the upload
-    // resolution POST /messages performs, so a FileBlock here would reach the
-    // SDK unprojected. Refuse until the schedule path resolves uploads.
+    // Scheduled sends remain text/image-only by contract. Although the manager
+    // now owns upload resolution, the schedule feature still refuses files.
     if ('content' in v.body && v.body.content.some(isFileBlock)) {
       return c.json({ error: 'file attachments cannot be scheduled yet' }, 400)
     }

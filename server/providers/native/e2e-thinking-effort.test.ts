@@ -391,7 +391,7 @@ describe('native steering through SessionManager', () => {
 
     await sm.send(id, 'start the turn')
     await streamingStarted
-    const steer = sm.send(id, 'pivot')
+    const steer = await sm.send(id, 'pivot')
     // Admission is the steering path, not the next-turn queue: the bubble is
     // stamped steeredAt and never enters promptUuids (it starts no turn).
     expect(liveSession(sm, id).steeredInFlight.has(steer.uuid!)).toBe(true)
@@ -468,7 +468,7 @@ describe('native steering through SessionManager', () => {
 
     await sm.send(id, 'start the turn')
     await streamingStarted
-    const steer = sm.send(id, 'late pivot')
+    const steer = await sm.send(id, 'late pivot')
     release()
     // The turn ends, the manager requeues the leftover, and the requeued
     // prompt runs as its own turn: two terminal frames, two API requests.

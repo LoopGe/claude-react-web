@@ -36,9 +36,27 @@ import { WEB_SEARCH_GUIDANCE } from './tools/web-search.js'
 import { WEB_FETCH_GUIDANCE } from './tools/web-fetch.js'
 import type { ToolDef } from './tools/types.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
+import type { UploadStore } from '../../upload-store.js'
+import { copyConsumedAt, projectFileBlocksForProvider, type AgentUserMessage } from '../../agent-message.js'
 import { extractToolProfile } from '../../../shared/tool-profile.js'
 
 const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool, notebookEditTool, askUserQuestionTool]
+
+/** Pre-fidelity native sessions consume the same legacy handle as before. The
+ *  subclass lives at the provider boundary so the manager stays neutral. */
+class LegacyNativeSession extends NativeSession {
+  override enqueueUserMessage(message: AgentUserMessage): void {
+    const projected = projectFileBlocksForProvider(message)
+    super.enqueueUserMessage(projected)
+    copyConsumedAt(projected, message)
+  }
+
+  override sendControlMessage(message: AgentUserMessage): void {
+    const projected = projectFileBlocksForProvider(message)
+    super.sendControlMessage(projected)
+    copyConsumedAt(projected, message)
+  }
+}
 
 /** The Agent tool's prompt section. The text is the tool def's own guidance
  *  (one exported constant), so the section and the schema cannot drift. */
@@ -132,14 +150,20 @@ export class NativeProvider implements AgentProvider {
    *  against; forwarded to every session this provider creates. */
   readonly agentStore?: AgentDefinitionStore
 
+  /** Shared registry reference for the structured-attachment pipeline. The
+   *  provider deliberately never constructs an independent store. */
+  readonly uploadStore?: UploadStore
+
   constructor(opts: {
     stateDir?: string
     authFor?: (name: string) => OAuthClientProvider | undefined
     agentStore?: AgentDefinitionStore
+    uploadStore?: UploadStore
   } = {}) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
     this.agentStore = opts.agentStore
+    this.uploadStore = opts.uploadStore
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
@@ -172,7 +196,8 @@ export class NativeProvider implements AgentProvider {
       authToken: opts.profile?.authToken ?? requireAuthToken(),
     })
     try {
-      return new NativeSession({
+      const SessionClass = config.nativeAttachmentFidelity ? NativeSession : LegacyNativeSession
+      return new SessionClass({
         id: opts.id,
         cwd: opts.cwd ?? process.cwd(),
         stateDir: this.stateDir,

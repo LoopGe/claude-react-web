@@ -148,6 +148,7 @@ export async function createServerContext(opts: ServerContextOptions): Promise<S
     claudeBinary,
     autoResume: true,
     crashRecovery: true,
+    uploadStore,
   })
 
   // The config-management tool servers (skills / MCP / marketplace) are
