@@ -51,6 +51,21 @@ describe('MpStore', () => {
     await s.flush()
   })
 
+  it('enabledKeysFor scopes enabled keys to one marketplace', async () => {
+    const s = new MpStore({ stateDir: dir })
+    await s.load()
+    s.upsert(fakeEntry('mkt1'))
+    s.upsert(fakeEntry('mkt2'))
+    s.setEnabled('plugA', 'mkt1', true)
+    s.setEnabled('plugB', 'mkt1', true)
+    s.setEnabled('plugA', 'mkt2', true)
+    s.setEnabled('plugC', 'mkt2', false) // explicit disable drops the key
+
+    expect(s.enabledKeysFor('mkt1').sort()).toEqual(['plugA@mkt1', 'plugB@mkt1'])
+    expect(s.enabledKeysFor('mkt2')).toEqual(['plugA@mkt2'])
+    expect(s.enabledKeysFor('missing')).toEqual([])
+  })
+
   it('round-trips an entry through disk', async () => {
     const s = new MpStore({ stateDir: dir })
     await s.load()
