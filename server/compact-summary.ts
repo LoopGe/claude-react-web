@@ -21,16 +21,30 @@ const COMPACT_SYSTEM_PROMPT = `You are compressing a Claude Code conversation so
 4. Concrete artifacts: file paths, function/component names, commands run.
 5. The immediate next step, if one is apparent.
 
-Write in dense prose, not bullet soup. Do NOT restate generic status ("we chatted about X"). Keep file paths, error messages, and code identifiers verbatim. Omit anything the continuation cannot act on (greetings, sign-offs, ceremony). Start directly.`
+Write in dense prose, not bullet soup. Do NOT restate generic status ("we chatted about X"). Keep file paths, error messages, and code identifiers verbatim. When attachment blocks are present, preserve the upload id and name needed for later AttachmentRead calls, and state any hydration truncation or omission that limits what you actually saw. Omit anything the continuation cannot act on (greetings, sign-offs, ceremony). Start directly.`
+
+export interface CompactSummaryOptions {
+  /** Ordered hydrated handles/text and native image/document blocks. */
+  attachmentContent?: readonly unknown[]
+  /** Current effective session model, required only for native media. */
+  effectiveModel?: string
+  hasAttachments?: boolean
+  hasNativeMedia?: boolean
+}
 
 /** Summarise a session's message history into a compact continuation seed.
  *  Returns an empty string when the history has no compressible content
  *  (e.g. no user/assistant turns) — the caller should then skip seeding and
  *  fall back to a plain clear. `target` (the session's profile credentials +
  *  its resolved model) comes from SessionManager.auxTargetFor. */
-export async function summarizeForCompact(messages: SDKMessage[], target?: AuxLlmTarget): Promise<string> {
+export async function summarizeForCompact(
+  messages: SDKMessage[],
+  target?: AuxLlmTarget,
+  options?: CompactSummaryOptions,
+): Promise<string> {
   const { lines, language } = extractHistory(messages)
-  if (lines.length === 0) return ''
+  const attachments = options?.attachmentContent ?? []
+  if (lines.length === 0 && attachments.length === 0) return ''
 
   if (!target?.authToken) {
     throw new Error("compact unavailable: the session's profile has no authToken configured. Set authToken in config.json.")
@@ -41,14 +55,20 @@ export async function summarizeForCompact(messages: SDKMessage[], target?: AuxLl
       ? `\n\n---\nWrite the hand-off summary in ${language}.`
       : `\n\n---\nWrite the hand-off summary in the same language the user uses in their messages above.`,
   })
-  const model = target.model
+  const nativeMedia = options?.hasNativeMedia === true || attachments.some((block) => {
+    const type = (block as { type?: unknown })?.type
+    return type === 'image' || type === 'document'
+  })
+  const model = nativeMedia ? options?.effectiveModel : target.model
   if (!model) throw new Error('No model configured for compact summary and session has no model')
 
   const text = await callAnthropicMessages({
     model,
     target,
     system: COMPACT_SYSTEM_PROMPT,
-    userContent: transcript,
+    userContent: attachments.length > 0
+      ? [{ type: 'text', text: transcript }, ...attachments]
+      : transcript,
     // 2048: reasoning-model thinking headroom — see recap.ts. Thinking
     // consumes max_tokens before the summary text on GLM / DeepSeek
     // gateways; 1000 was sized for the summary alone.
@@ -58,5 +78,9 @@ export async function summarizeForCompact(messages: SDKMessage[], target?: AuxLl
   })
   // Compact summaries are plain prose; collapse the same whitespace-trim
   // recap uses (no code fences / JSX fragments to strip here).
-  return text.replace(/\s{2,}/g, ' ').trim()
+  const summary = text.replace(/\s{2,}/g, ' ').trim()
+  if (!summary && attachments.length > 0) {
+    throw new Error('empty compact summary for attachment input')
+  }
+  return summary
 }

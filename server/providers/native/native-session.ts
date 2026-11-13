@@ -23,7 +23,7 @@ import { callAnthropicMessages } from '../../anthropic-api.js'
 import { config, type ProviderProfile } from '../../config.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
-import type { ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
+import type { ProviderAttachmentOccurrence, ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
 import { runTurn, type LoopDeps, type PersistedToolResult } from './loop.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
@@ -33,7 +33,8 @@ import { buildForkSeed } from './session-log/fork.js'
 import { contextSnapshot, historyFromEvents, repairInterruptedTurn } from './session-log/replay.js'
 import { NativeSessionStorageError } from './session-log/errors.js'
 import { nativeSessionLogPath } from './session-log/paths.js'
-import type { NativeLogEvent, NativeSubagentDescriptorEvent, NativeTurnEndReason } from './session-log/format.js'
+import type { NativeFileAttachment, NativeLogEvent, NativeSubagentDescriptorEvent, NativeTurnEndReason } from './session-log/format.js'
+import { nativeAttachmentOccurrences } from '../../attachment-reference-index.js'
 import { mcpToolDefs } from './mcp/tools.js'
 import type { NativeMcpConnections } from './mcp/connections.js'
 import type { ToolDef } from './tools/types.js'
@@ -1363,6 +1364,76 @@ export class NativeSession implements ProviderSessionHandle {
     this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'compact summary')
     this.history.push({ role: 'user', content: message.message.content })
+  }
+
+  getAttachmentOccurrences(): readonly ProviderAttachmentOccurrence[] {
+    const occurrences: ProviderAttachmentOccurrence[] = []
+    for (const event of this.log.events) {
+      if (event.type !== 'user') continue
+      for (let outerIndex = 0; outerIndex < event.message.content.length; outerIndex++) {
+        const outer = event.message.content[outerIndex] as {
+          type?: unknown
+          attachment?: NativeFileAttachment
+          content?: unknown
+        }
+        if (outer?.type === 'file' && outer.attachment) {
+          occurrences.push({
+            messageUuid: event.uuid,
+            blockPath: [outerIndex],
+            attachment: outer.attachment,
+          })
+          continue
+        }
+        if (outer?.type !== 'tool_result' || !Array.isArray(outer.content)) continue
+        for (let innerIndex = 0; innerIndex < outer.content.length; innerIndex++) {
+          const inner = outer.content[innerIndex] as {
+            type?: unknown
+            attachment?: NativeFileAttachment
+          }
+          if (inner?.type !== 'file' || !inner.attachment) continue
+          occurrences.push({
+            messageUuid: event.uuid,
+            blockPath: [outerIndex, innerIndex],
+            attachment: inner.attachment,
+          })
+        }
+      }
+    }
+    return occurrences
+  }
+
+  getAttachmentCatalog(): readonly NativeFileAttachment[] {
+    return nativeAttachmentOccurrences(this.log.events).map((attachment) => ({ ...attachment }))
+  }
+
+  /** Manual replacement handoff: catalog first, summary second, one awaited
+   * flush. The manager keeps the new session unpublished until this resolves. */
+  async seedCompactSummary(
+    summary: string,
+    opts: { uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[] },
+  ): Promise<void> {
+    if (this._closed) throw new Error('session is closed')
+    if (!summary.trim()) throw new Error('empty summary')
+    if (opts.attachments.length > 0) {
+      await this.log.migrateToV2()
+      this.log.append({
+        type: 'session/attachments',
+        attachments: opts.attachments.map((attachment) => ({ ...attachment })),
+        timestamp: opts.timestamp,
+      })
+    }
+    this.log.append({
+      type: 'user',
+      uuid: opts.uuid,
+      session_id: this.opts.id,
+      parent_tool_use_id: null,
+      timestamp: opts.timestamp,
+      message: { role: 'user', content: [{ type: 'text', text: summary }] },
+      isCompactSummary: true,
+    })
+    await this.log.flush()
+    this.syncAttachmentReferences()
+    this.history.push({ role: 'user', content: [{ type: 'text', text: summary }] })
   }
 
   /** Compaction-only projection of the durable raw-user → instruction pairs.

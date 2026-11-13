@@ -397,6 +397,7 @@ function stringUserMsg(text: string) {
 
 interface LogEventLike {
   type: string
+  uuid?: string
   reason?: string
   text?: string
   isCompactSummary?: boolean
@@ -407,6 +408,8 @@ interface LogEventLike {
 interface LogLike {
   header: { id: string; isSeeded: boolean; inheritedEventCount: number }
   events: LogEventLike[]
+  migrateToV2(): Promise<void>
+  flush(): Promise<void>
 }
 
 function logOf(session: unknown): LogLike {
@@ -4376,6 +4379,160 @@ describe('NativeSession', () => {
     expect(persisted?.type === 'user' ? persisted.message.content : undefined).toEqual([
       { type: 'text', text: 'compact summary' },
     ])
+  })
+
+  it('exposes exact attachment occurrence block paths and the full handoff catalog', async () => {
+    const dir = await tempDir('native-attachment-occurrences-')
+    const seeded = NativeSessionLog.open({ stateDir: dir, id: 'occurrences', cwd: dir, resume: false })
+    await seeded.migrateToV2()
+    const direct: NativeFileAttachment = {
+      id: 'direct', name: 'direct.txt', size: 4, digest: 'a'.repeat(64),
+      path: join(dir, 'direct.txt'), modelForm: 'handle',
+    }
+    const nested: NativeFileAttachment = {
+      id: 'nested', name: 'nested.txt', size: 4, digest: 'b'.repeat(64),
+      path: join(dir, 'nested.txt'), modelForm: 'handle',
+    }
+    seeded.append({
+      type: 'user', uuid: 'direct-user', session_id: 'occurrences', parent_tool_use_id: null,
+      timestamp: '2026-11-13T00:00:00.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment: direct }] },
+    })
+    seeded.append({
+      type: 'user', uuid: 'tool-user', session_id: 'occurrences', parent_tool_use_id: 'agent-1',
+      timestamp: '2026-11-13T00:00:01.000Z',
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read-1', content: [
+        { type: 'text', text: 'Read direct.txt' }, { type: 'file', attachment: nested },
+      ] }] },
+    })
+    await seeded.flush()
+    await seeded.close()
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'occurrences', cwd: dir, resume: 'occurrences' })
+
+    const handle = session as unknown as {
+      getAttachmentOccurrences(): readonly unknown[]
+      getAttachmentCatalog(): readonly NativeFileAttachment[]
+    }
+    expect(handle.getAttachmentOccurrences()).toEqual([
+      { messageUuid: 'direct-user', blockPath: [1], attachment: direct },
+      { messageUuid: 'tool-user', blockPath: [0, 1], attachment: nested },
+    ])
+    expect(handle.getAttachmentCatalog()).toEqual([direct, nested])
+    await session.destroy()
+  })
+
+  it('durably seeds catalog before summary so AttachmentRead works in the handoff log', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const dir = await tempDir('native-compact-handoff-')
+    const bytes = Buffer.from('handoff attachment body')
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const path = aliasPathOf(attachmentRoot(dir), digest, 'handoff.txt')
+    await mkdir(join(path, '..'), { recursive: true })
+    await writeFile(path, bytes)
+    const store = new UploadStore({ stateDir: dir })
+    store.record([{
+      id: 'handoff', path, cwd: dir, name: 'handoff.txt', size: bytes.length, digest,
+      uploadedAt: 1, sessionTitle: '', sessionId: 'old-session',
+    }])
+    const attachment: NativeFileAttachment = {
+      id: 'handoff', name: 'handoff.txt', size: bytes.length, digest, path, modelForm: 'handle',
+    }
+    let active: ReturnType<NativeProvider['createSession']> | undefined
+    try {
+      const oldLog = NativeSessionLog.open({ stateDir: dir, id: 'old-session', cwd: dir, resume: false })
+      await oldLog.migrateToV2()
+      oldLog.append({
+        type: 'user', uuid: 'old-user', session_id: 'old-session', parent_tool_use_id: null,
+        timestamp: '2026-11-13T00:00:00.000Z',
+        message: { role: 'user', content: [{ type: 'file', attachment }] },
+      })
+      await oldLog.flush()
+      await oldLog.close()
+      const oldProvider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const oldSession = oldProvider.createSession({ id: 'old-session', cwd: dir, resume: 'old-session' })
+      const catalog = (oldSession as unknown as { getAttachmentCatalog(): readonly NativeFileAttachment[] })
+        .getAttachmentCatalog()
+      await oldSession.destroy()
+
+      const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+      const provider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        capturingStreamer([attachmentReadTurn('read-handoff', attachment.id), textTurn('done')], requests)
+      const session = provider.createSession({
+        id: 'new-session', cwd: dir,
+        canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+      })
+      active = session
+      await (session as unknown as {
+        seedCompactSummary(summary: string, opts: {
+          uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[]
+        }): Promise<void>
+      }).seedCompactSummary('HANDOFF SUMMARY', {
+        uuid: 'summary-user', timestamp: '2026-11-13T00:00:02.000Z', attachments: catalog,
+      })
+
+      const events = logOf(session).events
+      const catalogIndex = events.findIndex((event) => event.type === 'session/attachments')
+      const summaryIndex = events.findIndex((event) => event.type === 'user' && event.uuid === 'summary-user')
+      expect(catalogIndex).toBeGreaterThanOrEqual(0)
+      expect(summaryIndex).toBe(catalogIndex + 1)
+      expect(events[catalogIndex]).toMatchObject({ attachments: [attachment] })
+
+      const frames: Frame[] = []
+      void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+      session.enqueueUserMessage({ ...userMsg('read the handoff'), uuid: 'read-handoff-turn' } as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'done')).toBe(true))
+      expect(JSON.stringify(requests[1].messages)).toContain('handoff attachment body')
+    } finally {
+      await active?.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('does not append another attachment catalog during in-place auto-compact', async () => {
+    const dir = await tempDir('native-auto-compact-catalog-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'auto-catalog', cwd: dir })
+    const attachment: NativeFileAttachment = {
+      id: 'kept', name: 'kept.txt', size: 4, digest: 'c'.repeat(64),
+      path: join(dir, 'kept.txt'), modelForm: 'handle',
+    }
+    await (session as unknown as {
+      seedCompactSummary(summary: string, opts: {
+        uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[]
+      }): Promise<void>
+    }).seedCompactSummary('FIRST HANDOFF', {
+      uuid: 'first-summary', timestamp: '2026-11-13T00:00:00.000Z', attachments: [attachment],
+    })
+
+    await session.compactInPlace?.('AUTO SUMMARY', { uuid: 'auto', timestamp: '2026-11-13T00:00:01.000Z' })
+
+    expect(logOf(session).events.filter((event) => event.type === 'session/attachments')).toHaveLength(1)
+    await session.destroy()
+  })
+
+  it('rejects a compact seed when the shared catalog+summary flush fails', async () => {
+    const dir = await tempDir('native-compact-seed-flush-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'seed-flush', cwd: dir })
+    const attachment: NativeFileAttachment = {
+      id: 'flush', name: 'flush.txt', size: 4, digest: 'd'.repeat(64),
+      path: join(dir, 'flush.txt'), modelForm: 'handle',
+    }
+    await logOf(session).migrateToV2()
+    vi.spyOn(logOf(session), 'flush').mockRejectedValueOnce(new Error('seed flush failed'))
+
+    await expect((session as unknown as {
+      seedCompactSummary(summary: string, opts: {
+        uuid: string; timestamp: string; attachments: readonly NativeFileAttachment[]
+      }): Promise<void>
+    }).seedCompactSummary('MUST NOT PUBLISH', {
+      uuid: 'failed-summary', timestamp: '2026-11-13T00:00:00.000Z', attachments: [attachment],
+    })).rejects.toThrow('seed flush failed')
+    expect(JSON.stringify((session as unknown as { history: unknown[] }).history)).not.toContain('MUST NOT PUBLISH')
+    await session.destroy()
   })
 
   it('exposes history, existence and deletion over the state dir', async () => {

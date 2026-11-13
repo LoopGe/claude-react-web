@@ -64,4 +64,16 @@ describe('session clear route', () => {
     const res = await app.request('/sessions/X/clear', postClear({ deleteTranscript: true }))
     expect(res.status).toBe(500)
   })
+
+  it('surfaces durable seed failures and ignores client-supplied handoff fields', async () => {
+    const { app, sm } = makeApp(() => {
+      throw new Error('compact catalog+summary flush failed')
+    })
+    const res = await app.request('/sessions/X/clear', postClear({
+      seedText: 'CLIENT SUPPLIED', handoff: true, attachments: [{ id: 'forged' }],
+    }))
+
+    expect(res.status).toBe(500)
+    expect(sm.clear).toHaveBeenCalledWith('X')
+  })
 })

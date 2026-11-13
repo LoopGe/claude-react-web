@@ -638,6 +638,7 @@ describe('recap', () => {
       expect(body.messages[0].content).toContain('[1] User: hello')
       expect(body.model).toBeDefined()
       expect(body.max_tokens).toBe(2048)
+      expect(body.stream).toBeUndefined()
     })
 
     it('uses temperature 0 (deterministic recap)', async () => {

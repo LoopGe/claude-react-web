@@ -9,6 +9,21 @@ import type { SandboxSetting } from '../../shared/sandbox.js'
 import type { InProcessHookForward, InProcessSubagentStop, InProcessTaskSnapshot } from './claude/inprocess-hooks.js'
 import type { SessionToolProfile } from '../../shared/tool-profile.js'
 import type { SupplementOutcome } from './steering-format.js'
+import type { NativeFileAttachment } from './native/session-log/format.js'
+
+export interface ProviderAttachmentOccurrence {
+  messageUuid: string
+  /** Direct user content is [contentIndex]; a tool_result file is
+   * [outerContentIndex, innerContentIndex]. */
+  blockPath: readonly number[]
+  attachment: NativeFileAttachment
+}
+
+export interface ProviderCompactSeed {
+  uuid: string
+  timestamp: string
+  attachments: readonly NativeFileAttachment[]
+}
 
 export type { SupplementOutcome } from './steering-format.js'
 
@@ -282,6 +297,15 @@ export interface ProviderSessionHandle {
    *  projection. The manager anchors each canonical body to the original user
    *  UUID without exposing the instruction in UI history or search. */
   getSkillCompactionEntries?(): readonly { afterUserUuid: string; body: string }[]
+  /** Full-log attachment occurrences for compact hydration. Public top-level
+   * FileBlocks join by message UUID + blockPath; nested tool-result occurrences
+   * use the provider's resolved metadata directly. */
+  getAttachmentOccurrences?(): readonly ProviderAttachmentOccurrence[]
+  /** Authorization catalog copied once into a manual replacement session. */
+  getAttachmentCatalog?(): readonly NativeFileAttachment[]
+  /** Durably append catalog (when non-empty) then summary and await their shared
+   * flush. The manager publishes the replacement only after this resolves. */
+  seedCompactSummary?(summary: string, opts: ProviderCompactSeed): Promise<void>
   /** Compact the conversation in place (P1.1 auto-compact): append the
    *  provider's compact boundary, then restart the model history from the
    *  provider's captured context snapshot plus `summary`. Only legal while the

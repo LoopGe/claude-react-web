@@ -116,4 +116,37 @@ describe('summarizeForCompact', () => {
     const summary = await summarizeForCompact([userMsg('hi'), assistantMsg('hello')], TARGET)
     expect(summary).toBe('line one line two end')
   })
+
+  it('summarizes attachment-only input instead of treating it as empty history', async () => {
+    const summary = await summarizeForCompact([], TARGET, {
+      attachmentContent: [{ type: 'text', text: 'Upload id: notes\nhello from the attachment' }],
+      effectiveModel: 'effective-session-model',
+    })
+
+    expect(summary).toBe('The user is building a settings panel.')
+    const opts = mockCall.mock.calls[0][0]
+    expect(opts.model).toBe(TARGET.model)
+    expect(opts.userContent).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'text', text: expect.stringContaining('hello from the attachment') }),
+    ]))
+  })
+
+  it('uses the effective session model only when compact content carries native media', async () => {
+    await summarizeForCompact([], TARGET, {
+      attachmentContent: [{
+        type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
+      }],
+      effectiveModel: 'effective-session-model',
+    })
+
+    expect(mockCall.mock.calls[0][0].model).toBe('effective-session-model')
+  })
+
+  it('rejects a blank summary whenever attachment input was present', async () => {
+    mockCall.mockResolvedValueOnce('  \n\t ')
+    await expect(summarizeForCompact([], TARGET, {
+      attachmentContent: [{ type: 'text', text: 'Upload id: notes' }],
+      effectiveModel: 'effective-session-model',
+    })).rejects.toThrow(/empty/i)
+  })
 })

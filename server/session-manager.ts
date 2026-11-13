@@ -47,6 +47,7 @@ import { McpConfigStore } from './mcp-config.js'
 import { agentUnusableReason, normalizeAgentName, type AgentDefinitionStore } from './agent-definition-store.js'
 import { RecapManager } from './recap.js'
 import { summarizeForCompact } from './compact-summary.js'
+import { buildCompactAttachmentContent } from './compact-attachments.js'
 import type { SessionActivity, SessionPhase, SessionRecap, SessionTurnSnapshot } from './session-types.js'
 import {
   applyToolProfile,
@@ -156,7 +157,7 @@ import { deleteTranscriptFile, deleteTranscriptFiles, findTranscriptFile, isSafe
 import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
-import type { AgentProvider, ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
+import type { AgentProvider, ProviderCapabilities, ProviderCompactSeed, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
 import { findRanges } from '../shared/search/match.js'
 import { extractMessageSearchSegments } from '../shared/search/extract.js'
 import { countMessageSearchMatches, locateMessageSearchMatch } from '../shared/search/segments.js'
@@ -908,6 +909,13 @@ export class SessionManager {
   private providers: ProviderRegistry
   private defaultProvider: string
   private globalSubscribers = new Map<string, GlobalSubscriber>()
+  /** Replacement sessions whose provider seed is not durable yet. They stay
+   * out of the store, visible lists and every global frame until published. */
+  private readonly deferredPublications = new Map<string, {
+    joinGroupOf?: string
+    evictingSource?: boolean
+    replacesSource?: boolean
+  }>()
   /** Per-connection subscribers for dev-only `client-debug-request` frames.
    *  Deliberately SEPARATE from `globalSubscribers`: internal consumers
    *  (ScheduledSendManager) also hold global subscriptions for the process
@@ -1503,7 +1511,7 @@ export class SessionManager {
    *  tell which arrives first, which races with the optimistic POST
    *  response and produces duplicate cards. */
   private writeStore(s: Session): void {
-    if (!this.store) return
+    if (!this.store || this.deferredPublications.has(s.id)) return
     this.store.upsert({
       id: s.id,
       provider: s.provider,
@@ -1556,6 +1564,14 @@ export class SessionManager {
   }
 
   private broadcastGlobal(ev: GlobalSessionEvent): void {
+    const sessionId = 'session' in ev
+      ? ev.session.id
+      : 'sessionId' in ev
+        ? ev.sessionId
+        : 'id' in ev
+          ? ev.id
+          : undefined
+    if (sessionId && this.deferredPublications.has(sessionId)) return
     for (const sub of this.globalSubscribers.values()) sub.push(ev)
   }
 
@@ -3188,6 +3204,8 @@ export class SessionManager {
      *  undefined. Skip only the spawn-time override projection; clear re-applies
      *  the RAM override afterward without persisting it as the new base. */
     preserveBaseSkillPolicy = false,
+    /** Hold store/list/created publication behind a provider durable seed. */
+    deferPublication = false,
   ): SessionInfo {
     const providerName = opts.provider ?? this.defaultProvider
     const provider = this.providers.get(providerName)
@@ -3624,6 +3642,9 @@ export class SessionManager {
     this.taskResultStore.revive(id)
     this.promptUuidStore.revive(id)
     this.steeredStore.revive(id)
+    if (deferPublication) {
+      this.deferredPublications.set(id, { joinGroupOf, evictingSource, replacesSource })
+    }
     this.sessions.set(id, session)
     // Fill session.tasks from the durable sidecar (fire-and-forget — see the
     // method). AFTER the map insert so a load that lands late still folds into
@@ -3654,16 +3675,47 @@ export class SessionManager {
     this.writeStore(session)
     // `joinGroupOf` (set by /clear, restart, fork) is conditionally spread so
     // the wire frame stays clean (no `undefined` key) for plain creates.
+    if (!deferPublication) {
+      this.broadcastGlobal({
+        kind: 'created',
+        session: this.info(session),
+        ...(joinGroupOf ? { joinGroupOf } : {}),
+        ...(evictingSource ? { evictingSource: true } : {}),
+        ...(replacesSource ? { replacesSource: true } : {}),
+      })
+      this.captureGitHead(session)
+    }
+
+    return this.info(session)
+  }
+
+  private publishDeferredSession(id: string): SessionInfo {
+    const deferred = this.deferredPublications.get(id)
+    if (!deferred) return this.info(this.requireRunnable(id))
+    const session = this.requireRunnable(id)
+    // Clear the suppression gate only after the provider's durable barrier has
+    // resolved. The created frame is the first globally visible mutation.
+    this.deferredPublications.delete(id)
+    this.writeStore(session)
     this.broadcastGlobal({
       kind: 'created',
       session: this.info(session),
-      ...(joinGroupOf ? { joinGroupOf } : {}),
-      ...(evictingSource ? { evictingSource: true } : {}),
-      ...(replacesSource ? { replacesSource: true } : {}),
+      ...(deferred.joinGroupOf ? { joinGroupOf: deferred.joinGroupOf } : {}),
+      ...(deferred.evictingSource ? { evictingSource: true } : {}),
+      ...(deferred.replacesSource ? { replacesSource: true } : {}),
     })
     this.captureGitHead(session)
-
     return this.info(session)
+  }
+
+  private async discardUnpublishedSession(id: string): Promise<void> {
+    try {
+      // Keep suppression active through teardown so neither update nor removed
+      // can expose a session that was never successfully published.
+      await this.unload(id, { removeFromStore: true, awaitDestroy: true })
+    } finally {
+      this.deferredPublications.delete(id)
+    }
   }
 
   /** Send a user turn into an existing session. */
@@ -4563,7 +4615,7 @@ export class SessionManager {
    *
    *  Idempotent: a second clear() while one is already in flight returns the
    *  current SessionInfo without re-driving the lifecycle. */
-  async clear(id: string, opts?: { seedText?: string; handoff?: boolean; deleteTranscript?: boolean }): Promise<SessionInfo> {
+  async clear(id: string, opts?: { seedText?: string; handoff?: boolean; deleteTranscript?: boolean; attachments?: ProviderCompactSeed['attachments'] }): Promise<SessionInfo> {
     this.cancelPendingSend(id, 'clear')
     // Idempotency fast path BEFORE queueing on the op lock: a second clear()
     // while one is in flight returns the current info at once, as it always
@@ -4584,7 +4636,7 @@ export class SessionManager {
 
   private async doClear(
     id: string,
-    opts?: { seedText?: string; handoff?: boolean; deleteTranscript?: boolean },
+    opts?: { seedText?: string; handoff?: boolean; deleteTranscript?: boolean; attachments?: ProviderCompactSeed['attachments'] },
     replacementId?: string,
   ): Promise<SessionInfo> {
     if (replacementId) {
@@ -4806,6 +4858,7 @@ export class SessionManager {
       // keeps the `s.clearing` idempotency guard effective for the whole
       // spawn+fastMode window: a concurrent second clear(id) returns X's info
       // instead of racing into a 404 once X is removed.
+      const deferSeedPublication = Boolean(opts?.seedText && typeof s.handle.seedCompactSummary === 'function')
       const newY = this.spawn(
         randomUUID(),
         freshOpts,
@@ -4823,6 +4876,7 @@ export class SessionManager {
         undefined, // replacesSource
         settings.toolProfile,
         resetBase !== undefined,
+        deferSeedPublication,
       )
       const newYId = newY.id
 
@@ -4854,22 +4908,30 @@ export class SessionManager {
         }
       }
 
-      // Optional compaction seed: when this clear was requested by compact(),
-      // inject the hand-off summary into Y so the continuation can pick up
-      // where X left off. Seeded as a `shouldQuery:false` user message (appended
-      // to Y's transcript without triggering a turn; merged into the next real
-      // user message) plus a synthetic `compact_boundary` divider so the client
-      // renders the familiar compact divider + summary. Must happen while Y is
-      // live and X is still attached — the swap that follows is then identical
-      // to a plain /clear. Best-effort: a failure is logged and the clear still
-      // completes (Y is usable, just without the summary seed).
+      // Optional compaction seed. Native replacements stay unpublished until
+      // their catalog+summary share one durable flush; legacy providers keep
+      // the existing best-effort control-message path.
       if (opts?.seedText) {
         try {
-          this.seedCompactSummary(newYId, opts.seedText, opts.handoff === true)
+          await this.seedCompactSummary(
+            newYId,
+            opts.seedText,
+            opts.handoff === true,
+            opts.attachments,
+          )
         } catch (err) {
+          if (deferSeedPublication) {
+            try {
+              await this.discardUnpublishedSession(newYId)
+            } catch (cleanupErr) {
+              log.warn(`[session ${newYId}] clear: destroying unpublished replacement failed:`, cleanupErr)
+            }
+            throw err
+          }
           log.warn(`[session ${newYId}] clear: seeding compact summary failed:`, err)
         }
       }
+      if (deferSeedPublication) this.publishDeferredSession(newYId)
 
       // Detach X now that Y is live. The ordinary path destroys the live
       // Query, removes X from the store, and leaves its transcript resumable.
@@ -4930,7 +4992,7 @@ export class SessionManager {
     // summarizer always saw subagent tool frames; it still sees subagent
     // frames, including the now-forwarded text/thinking ones).
     const merged = this.mergedHistoryForCompaction(s)
-    const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'))
+    const summary = await this.summarizeMergedForCompact(s, merged)
     // No post-await phase re-check here: doClear owns that invariant (a
     // seeded clear 409s when input raced the summarize window) and runs it
     // under the op lock immediately before its drain — a check here would
@@ -4948,7 +5010,8 @@ export class SessionManager {
       return this.clear(id)
     }
     log.info(`[session ${id}] compact: summarised ${merged.length} messages, seeding fresh session`)
-    return this.clear(id, { seedText: summary, handoff: opts?.handoff === true })
+    const attachments = s.handle.getAttachmentCatalog?.()
+    return this.clear(id, { seedText: summary, handoff: opts?.handoff === true, attachments })
   }
 
   /** Seed a freshly-spawned session Y with a compact hand-off summary.
@@ -4969,9 +5032,24 @@ export class SessionManager {
    *
    *  The pump's drop-filter discards the seed's eventual text-only echo
    *  (`parent_tool_use_id === null`), so the ring holds exactly one copy. */
-  private seedCompactSummary(sessionId: string, summary: string, handoff: boolean): void {
+  private async seedCompactSummary(
+    sessionId: string,
+    summary: string,
+    handoff: boolean,
+    attachments?: ProviderCompactSeed['attachments'],
+  ): Promise<void> {
     const s = this.sessions.get(sessionId)
     if (!s || !s.running) return
+    const seedUuid = randomUUID()
+    const timestamp = new Date().toISOString()
+    const durableSeed = s.handle.seedCompactSummary
+    if (durableSeed) {
+      await durableSeed.call(s.handle, summary, {
+        uuid: seedUuid,
+        timestamp,
+        attachments: attachments ?? [],
+      })
+    }
 
     // 1) Client-facing divider — never sent to the SDK. pre_tokens reflects
     //    the session's last-known context usage (or 0 before any snapshot).
@@ -5004,8 +5082,9 @@ export class SessionManager {
     }
 
     // 2) User-role summary — seed the SDK (no turn) AND broadcast locally.
+    // Native already persisted it through the durable barrier above.
     const control = s.handle.sendControlMessage
-    if (typeof control !== 'function') {
+    if (!durableSeed && typeof control !== 'function') {
       throw new HttpError(501, `provider ${s.provider} does not support compact seeding`)
     }
     const seed: SDKUserMessage & { isCompactSummary: true } = {
@@ -5015,10 +5094,10 @@ export class SessionManager {
       isSynthetic: true,
       isCompactSummary: true,
       shouldQuery: false,
-      uuid: randomUUID(),
+      uuid: seedUuid,
       session_id: s.id,
     }
-    control.call(s.handle, seed)
+    if (!durableSeed) control.call(s.handle, seed)
     stampReceivedAt(seed)
     pushBounded(s.history, seed, this.historyCap)
     // Seq-assign the hand-off seed before broadcast (Task 3).
@@ -5068,7 +5147,8 @@ export class SessionManager {
       const threshold = s.autoCompactWindow
         ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
       if (usage.totalTokens < threshold) return
-      const summary = await summarizeForCompact(this.mergedHistoryForCompaction(s), this.auxTargetFor(s.id, 'recap'))
+      const merged = this.mergedHistoryForCompaction(s)
+      const summary = await this.summarizeMergedForCompact(s, merged)
       if (!summary) return
       // A user turn (or a load/clear/delete) can win the summarization window.
       // Re-check identity and phase before touching anything.
@@ -7471,6 +7551,42 @@ export class SessionManager {
     this.broadcastGlobal({ kind: 'update', session: this.info(s) })
   }
 
+  /** Shared manual/auto compact input. Claude has no occurrence provider and
+   * retains byte-for-byte legacy summarizer input; native gets a private,
+   * bounded attachment projection and an effective-model media request. */
+  private async summarizeMergedForCompact(s: Session, merged: SDKMessage[]): Promise<string> {
+    let hasAttachments = false
+    let options: {
+      attachmentContent: readonly unknown[]
+      effectiveModel?: string
+      hasAttachments: boolean
+      hasNativeMedia: boolean
+    } | undefined
+    const occurrences = s.handle.getAttachmentOccurrences?.()
+    if (occurrences) {
+      const projection = await buildCompactAttachmentContent(merged, occurrences, {
+        uploadStore: this.uploadStore,
+        stateDir: this.store!.getDir(),
+      })
+      hasAttachments = projection.hasAttachments
+      if (hasAttachments) {
+        options = {
+          attachmentContent: projection.content,
+          effectiveModel: s.handle.getEffectiveSettings?.().model ?? s.model,
+          hasAttachments,
+          hasNativeMedia: projection.hasNativeMedia,
+        }
+      }
+    }
+    const summary = await summarizeForCompact(merged, this.auxTargetFor(s.id, 'recap'), options)
+    // A summarizer mock/provider that resolves blank must never turn an
+    // attachment-bearing compact into a destructive plain clear.
+    if (!summary && hasAttachments) {
+      throw new HttpError(422, 'empty compact summary for attachment input')
+    }
+    return summary
+  }
+
   /** Compact summarizer input: the ordinary main+subagent merged view plus
    *  durable native skill instructions anchored to their raw user turns. The
    *  projection is deliberately a copy — the rings, disk history and search
@@ -8458,12 +8574,13 @@ export class SessionManager {
     const out: SessionInfo[] = []
     const seen = new Set<string>()
     for (const s of this.sessions.values()) {
+      if (this.deferredPublications.has(s.id)) continue
       out.push(this.info(s))
       seen.add(s.id)
     }
     if (this.store) {
       for (const meta of this.store.list()) {
-        if (seen.has(meta.id)) continue
+        if (seen.has(meta.id) || this.deferredPublications.has(meta.id)) continue
         out.push(this.infoFromMeta(meta))
       }
     }
@@ -8482,6 +8599,7 @@ export class SessionManager {
   listActivity(): SessionActivity[] {
     const out: SessionActivity[] = []
     for (const s of this.sessions.values()) {
+      if (this.deferredPublications.has(s.id)) continue
       const isWorking = s.running && s.pendingTurns > 0
       out.push({
         sessionId: s.id,

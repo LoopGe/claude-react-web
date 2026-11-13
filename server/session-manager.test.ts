@@ -320,6 +320,14 @@ vi.mock('./compact-summary.js', () => ({
   summarizeForCompact: vi.fn(async () => 'MOCK SUMMARY'),
 }))
 
+// Native attachment hydration is exercised against real stores in its own
+// suite. These manager tests control its result to isolate lifecycle behavior.
+vi.mock('./compact-attachments.js', () => ({
+  buildCompactAttachmentContent: vi.fn(async () => ({
+    content: [], hasAttachments: false, hasNativeMedia: false,
+  })),
+}))
+
 // session-worktree wrapped so tests can force ensureWorktreeForResume to
 // throw once (worktree-resume transient-failure split). Everything defaults
 // to the real implementation; only tests that opt in mock it.
@@ -365,6 +373,7 @@ import { McpConfigStore } from './mcp-config.js'
 import { MpStore } from './mp-store.js'
 import { execCommand as mockExecCommand } from './exec.js'
 import { summarizeForCompact } from './compact-summary.js'
+import { buildCompactAttachmentContent } from './compact-attachments.js'
 import { buildSessionRouter } from './routes/sessions.js'
 import { HttpError } from './errors.js'
 import { execFile as execFileCb } from 'node:child_process'
@@ -537,6 +546,10 @@ describe('SessionManager', () => {
     vi.mocked(mockExecCommand).mockClear()
     vi.mocked(summarizeForCompact).mockReset()
     vi.mocked(summarizeForCompact).mockResolvedValue('MOCK SUMMARY')
+    vi.mocked(buildCompactAttachmentContent).mockReset()
+    vi.mocked(buildCompactAttachmentContent).mockResolvedValue({
+      content: [], hasAttachments: false, hasNativeMedia: false,
+    })
     dir = makeTmpDir()
     store = new SessionStore({ stateDir: dir })
     await store.load()
@@ -2856,6 +2869,147 @@ describe('SessionManager', () => {
     const live = sm.list().filter((s) => s.running)
     expect(live).toHaveLength(1)
     expect(sm.getHistory(live[0].id)!).toHaveLength(2)
+  })
+
+  it.each(['missing', 'digest', 'utf8'] as const)('compact preserves X when selected attachment hydration fails: %s', async (failure) => {
+    const info = await sm.create({})
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    live.handle.getAttachmentOccurrences = () => [{
+      messageUuid: 'u1', blockPath: [0],
+      attachment: { id: failure } as never,
+    }]
+    const historyBefore = sm.getHistory(info.id)
+    vi.mocked(buildCompactAttachmentContent).mockRejectedValueOnce(new Error(`${failure} attachment`))
+
+    await expect(sm.compact(info.id)).rejects.toThrow(`${failure} attachment`)
+
+    expect(sm.get(info.id)).toBeDefined()
+    expect(sm.getHistory(info.id)).toEqual(historyBefore)
+    expect(mockHandles).toHaveLength(1)
+  })
+
+  it('does not turn a blank attachment summary into a plain clear', async () => {
+    const info = await sm.create({})
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    live.handle.getAttachmentOccurrences = () => [{
+      messageUuid: 'u1', blockPath: [0], attachment: { id: 'notes' } as never,
+    }]
+    vi.mocked(buildCompactAttachmentContent).mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'Upload id: notes' }],
+      hasAttachments: true,
+      hasNativeMedia: false,
+    })
+    vi.mocked(summarizeForCompact).mockResolvedValueOnce('')
+
+    await expect(sm.compact(info.id)).rejects.toThrow(/empty/i)
+    expect(sm.get(info.id)).toBeDefined()
+    expect(mockHandles).toHaveLength(1)
+  })
+
+  it('defers Y publication until its durable catalog+summary seed completes', async () => {
+    const info = await sm.create({ model: 'effective-model' })
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    const catalog = [{ id: 'catalog-entry', name: 'notes.txt' }] as never[]
+    live.handle.getAttachmentCatalog = vi.fn(() => catalog)
+    live.handle.getAttachmentOccurrences = () => [{
+      messageUuid: 'u1', blockPath: [0], attachment: catalog[0],
+    }]
+    vi.mocked(buildCompactAttachmentContent).mockResolvedValueOnce({
+      content: [{ type: 'document', source: { type: 'base64', data: 'aGVsbG8=' } }],
+      hasAttachments: true,
+      hasNativeMedia: true,
+    })
+    let releaseSeed!: () => void
+    const seedMock = vi.fn((_summary: string, _opts: unknown) => new Promise<void>((resolve) => { releaseSeed = resolve }))
+    const proto = ClaudeSessionHandle.prototype as unknown as Record<string, unknown>
+    const previousSeed = Object.getOwnPropertyDescriptor(ClaudeSessionHandle.prototype, 'seedCompactSummary')
+    proto.seedCompactSummary = seedMock
+    const globalSpy = vi.spyOn(sm as unknown as { broadcastGlobal(event: unknown): void }, 'broadcastGlobal')
+    try {
+      const pending = sm.compact(info.id, { handoff: true })
+      await vi.waitFor(() => expect(seedMock).toHaveBeenCalledTimes(1))
+
+      expect(sm.list().map((session) => session.id)).toEqual([info.id])
+      expect(globalSpy.mock.calls.some(([event]) =>
+        (event as { kind?: string }).kind === 'created')).toBe(false)
+      expect(vi.mocked(summarizeForCompact).mock.calls[0][2]).toMatchObject({
+        effectiveModel: 'effective-model',
+        hasNativeMedia: true,
+      })
+      expect(seedMock.mock.calls[0][1]).toMatchObject({ attachments: catalog })
+
+      releaseSeed()
+      const next = await pending
+      expect(sm.list().map((session) => session.id)).toContain(next.id)
+      expect(globalSpy.mock.calls.some(([event]) =>
+        (event as { kind?: string }).kind === 'created'
+        && (event as { session?: { id?: string } }).session?.id === next.id)).toBe(true)
+      expect(live.handle.getAttachmentCatalog).toHaveBeenCalledTimes(1)
+    } finally {
+      releaseSeed?.()
+      globalSpy.mockRestore()
+      if (previousSeed) Object.defineProperty(ClaudeSessionHandle.prototype, 'seedCompactSummary', previousSeed)
+      else delete proto.seedCompactSummary
+    }
+  })
+
+  it('destroys an unpublished Y and preserves X when the durable seed flush fails', async () => {
+    const info = await sm.create({})
+    const historyBefore = sm.getHistory(info.id)
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    live.handle.getAttachmentCatalog = vi.fn(() => [{ id: 'catalog-entry' }] as never[])
+    const seedMock = vi.fn(async () => { throw new Error('seed flush failed') })
+    const proto = ClaudeSessionHandle.prototype as unknown as Record<string, unknown>
+    const previousSeed = Object.getOwnPropertyDescriptor(ClaudeSessionHandle.prototype, 'seedCompactSummary')
+    proto.seedCompactSummary = seedMock
+    const globalSpy = vi.spyOn(sm as unknown as { broadcastGlobal(event: unknown): void }, 'broadcastGlobal')
+    const clearedSpy = vi.spyOn(sm, 'broadcastSessionCleared')
+    try {
+      await expect(sm.compact(info.id, { handoff: true })).rejects.toThrow('seed flush failed')
+
+      expect(mockHandles).toHaveLength(2)
+      const ghostId = mockHandles[1].options.sessionId as string
+      expect(mockHandles[1].close).toHaveBeenCalled()
+      expect(sm.list().map((session) => session.id)).toEqual([info.id])
+      expect(store.get(ghostId)).toBeUndefined()
+      expect(sm.get(info.id)).toBeDefined()
+      expect(sm.getHistory(info.id)).toEqual(historyBefore)
+      expect(globalSpy.mock.calls.some(([event]) =>
+        (event as { kind?: string }).kind === 'created'
+        && (event as { session?: { id?: string } }).session?.id === ghostId)).toBe(false)
+      expect(clearedSpy).not.toHaveBeenCalled()
+    } finally {
+      globalSpy.mockRestore()
+      clearedSpy.mockRestore()
+      if (previousSeed) Object.defineProperty(ClaudeSessionHandle.prototype, 'seedCompactSummary', previousSeed)
+      else delete proto.seedCompactSummary
+    }
+  })
+
+  it('auto-compact hydrates attachments without copying a duplicate catalog', async () => {
+    const info = await sm.create({})
+    const live = (sm as unknown as { sessions: Map<string, Session> }).sessions.get(info.id)!
+    live.handle.getAttachmentOccurrences = () => [{
+      messageUuid: 'u1', blockPath: [0], attachment: { id: 'notes' } as never,
+    }]
+    live.handle.getAttachmentCatalog = vi.fn(() => [{ id: 'notes' }] as never[])
+    live.handle.compactInPlace = vi.fn(async () => {})
+    live.lastContextUsage = {
+      totalTokens: 90, maxTokens: 100, rawMaxTokens: 100, percentage: 90, model: 'test-model',
+    }
+    vi.mocked(buildCompactAttachmentContent).mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'hydrated notes' }],
+      hasAttachments: true,
+      hasNativeMedia: false,
+    })
+
+    await (sm as unknown as { maybeAutoCompact(session: Session): Promise<void> }).maybeAutoCompact(live)
+
+    expect(live.handle.compactInPlace).toHaveBeenCalledWith('MOCK SUMMARY', {
+      uuid: expect.any(String), timestamp: expect.any(String),
+    })
+    expect(live.handle.getAttachmentCatalog).not.toHaveBeenCalled()
+    expect(buildCompactAttachmentContent).toHaveBeenCalledTimes(1)
   })
 
   it('listActivity() emits coarse activity snapshots for live sessions', async () => {
