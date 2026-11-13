@@ -29,7 +29,7 @@ class ResizeObserverMock {
 }
 const observers: ResizeObserverMock[] = []
 
-const triggers: HTMLButtonElement[] = []
+const triggers: HTMLElement[] = []
 
 function makeRect(left: number, top: number, width = 80, height = 20): DOMRect {
   return {
@@ -214,6 +214,209 @@ describe('HoverPopover lifecycle', () => {
       vi.advanceTimersByTime(200)
     })
     expect(pop()).not.toBeNull()
+  })
+
+  it('keeps a keyboard-focused hint open when the pointer crosses the trigger', () => {
+    const { trigger } = setup()
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(pop()).not.toBeNull()
+    fireEvent.pointerEnter(trigger)
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('closes a pointer-focused text input hint after pointerleave', () => {
+    const trigger = document.createElement('input')
+    document.body.appendChild(trigger)
+    triggers.push(trigger)
+    render(<HoverPopover triggerRef={{ current: trigger }}>Input hint</HoverPopover>)
+    fireEvent.pointerEnter(trigger)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(pop()).not.toBeNull()
+    fireEvent.pointerDown(trigger, { button: 0 })
+    trigger.focus()
+    fireEvent.pointerUp(trigger, { button: 0 })
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).toBeNull()
+  })
+
+  it('retains the hint when a focused trigger returns to keyboard input', () => {
+    const { trigger } = setup()
+    fireEvent.pointerEnter(trigger)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    fireEvent.pointerDown(trigger, { button: 0 })
+    trigger.focus()
+    fireEvent.pointerUp(trigger, { button: 0 })
+    fireEvent.keyDown(trigger, { key: 'Tab' })
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('does not replace keyboard retention for a middle-click', () => {
+    const { trigger } = setup()
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    fireEvent.pointerDown(trigger, { button: 1 })
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('does not autofocus an interactive popover after clicking an already-focused trigger during dwell', () => {
+    const { trigger } = setup({ interactive: true })
+    fireEvent.pointerEnter(trigger)
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(100)
+    })
+    fireEvent.pointerDown(trigger, { button: 0 })
+    fireEvent.pointerUp(trigger, { button: 0 })
+    act(() => {
+      vi.advanceTimersByTime(100)
+    })
+    expect(pop()).not.toBeNull()
+    expect(document.activeElement).not.toBe(pop())
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).toBeNull()
+  })
+
+  it('keeps keyboard retention when an unrelated control is pressed without taking focus', () => {
+    const { trigger } = setup()
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    fireEvent.pointerLeave(trigger)
+    fireEvent.pointerDown(document.body, { button: 0 })
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('does not autofocus a pointer reopen after a keyboard-opened dialog closes', () => {
+    const { trigger } = setup({ interactive: true })
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(document.activeElement).toBe(pop())
+    fireEvent.keyDown(pop()!, { key: 'Escape' })
+    expect(pop()).toBeNull()
+    fireEvent.pointerEnter(trigger)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(document.activeElement).not.toBe(pop())
+  })
+
+  it('does not turn a modifier-only keypress into keyboard retention', () => {
+    const { trigger } = setup()
+    fireEvent.pointerEnter(trigger)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    fireEvent.pointerDown(trigger, { button: 0 })
+    trigger.focus()
+    fireEvent.pointerUp(trigger, { button: 0 })
+    fireEvent.keyDown(trigger, { key: 'Shift' })
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).toBeNull()
+  })
+
+  it('preserves keyboard provenance when a window blur emits a null focusout target', () => {
+    const { trigger } = setup()
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    fireEvent.focusOut(trigger, { relatedTarget: null })
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).not.toBeNull()
+    hasFocus.mockRestore()
+  })
+
+  it('resets pointer provenance when the trigger node is replaced', () => {
+    function Harness({ version }: { version: number }) {
+      const ref = useRef<HTMLButtonElement>(null)
+      return (
+        <>
+          <button key={version} ref={ref}>version {version}</button>
+          <HoverPopover triggerRef={ref}>details</HoverPopover>
+        </>
+      )
+    }
+    const { rerender } = render(<Harness version={1} />)
+    const first = document.querySelector('button')!
+    fireEvent.pointerEnter(first)
+    fireEvent.pointerDown(first, { button: 0 })
+    first.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    rerender(<Harness version={2} />)
+    const second = document.querySelector('button')!
+    second.focus()
+    fireEvent.pointerLeave(second)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('keeps keyboard retention when a right-click leaves focus unchanged', () => {
+    const { trigger } = setup()
+    trigger.focus()
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    fireEvent.pointerDown(trigger, { button: 2 })
+    fireEvent.pointerLeave(trigger)
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    expect(pop()).not.toBeNull()
+  })
+
+  it('moves focus into an already-open interactive popover on keyboard focus', () => {
+    const { trigger } = setup({ interactive: true })
+    fireEvent.pointerEnter(trigger)
+    act(() => {
+      vi.advanceTimersByTime(200)
+    })
+    expect(document.activeElement).not.toBe(pop())
+    trigger.focus()
+    expect(document.activeElement).toBe(pop())
   })
 
   it('opens on focus and closes on focusout', () => {

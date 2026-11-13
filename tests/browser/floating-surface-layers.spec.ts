@@ -29,6 +29,32 @@ test('floating surface: right-click closes hover and only a fresh hover restores
   await expect(page.locator('.hover-pop')).toBeVisible()
 })
 
+test('floating surface: primary click does not pin a passive hover after pointerleave', async ({ page }) => {
+  await openFixture(page)
+  await hover(page, '#background-hover')
+  await expect(page.locator('.hover-pop')).toBeVisible()
+
+  await page.locator('#background-hover').click()
+  await page.mouse.move(1000, 500)
+  await page.waitForTimeout(400)
+  await expect(page.locator('.hover-pop')).toHaveCount(0)
+})
+
+test('floating surface: clicking an already keyboard-focused trigger does not pin its hover', async ({ page }) => {
+  await openFixture(page)
+  const trigger = page.locator('#background-hover')
+  await hover(page, '#background-hover')
+  await expect(page.locator('.hover-pop')).toBeVisible()
+  await page.keyboard.press('Tab')
+  await expect(trigger).toBeFocused()
+  await page.waitForTimeout(250)
+
+  await trigger.click()
+  await page.mouse.move(1000, 500)
+  await page.waitForTimeout(400)
+  await expect(page.locator('.hover-pop')).toHaveCount(0)
+})
+
 test('floating surface: menu open-close invalidates the pending dwell', async ({ page }) => {
   await openFixture(page)
   await hover(page, '#background-hover')

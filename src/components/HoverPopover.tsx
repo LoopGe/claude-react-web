@@ -23,8 +23,11 @@ import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatingSurface'
 import { useHoverAdmission } from '../hooks/useHoverAdmission'
 import { isNodeInSurfaceBranch } from '../hooks/floating-surface-registry'
+import { isPointerFocusTask } from '../hooks/focus-modality'
 import { usePopoverMotion } from '../utils/transitions'
 import { markPortaledSurface, PANEL_SELECTOR } from '../theme'
+
+const MODIFIER_ONLY_KEYS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock', 'Fn', 'FnLock', 'Hyper', 'Super', 'Symbol'])
 
 export interface HoverPopoverProps {
   /** Element that owns the hover/focus trigger. */
@@ -71,6 +74,14 @@ export function HoverPopover({
   // Whether the pending open came from keyboard focus. An interactive dialog
   // opened by Tab must receive focus; a pointer-opened one must not steal it.
   const openByFocus = useRef(false)
+  const keyboardFocusRef = useRef(false)
+  const windowBlurRef = useRef(false)
+  const interactiveRef = useRef(interactive)
+  const previousInteractiveRef = useRef(interactive)
+  const hasKeyboardTriggerFocus = useCallback((trigger: HTMLElement | null) => {
+    const active = document.activeElement
+    return active !== null && keyboardFocusRef.current && trigger?.contains(active) === true
+  }, [])
   useLayoutEffect(() => {
     openRef.current = open
   }, [open])
@@ -105,8 +116,17 @@ export function HoverPopover({
     clearTimer(openTimer)
     clearTimer(closeTimer)
     cancelAttempt()
+    openByFocus.current = false
+    keyboardFocusRef.current = keyboardFocusRef.current && triggerRef.current?.contains(document.activeElement) === true
+    windowBlurRef.current = false
     setOpen(false)
-  }, [cancelAttempt])
+  }, [cancelAttempt, triggerRef])
+  useLayoutEffect(() => {
+    interactiveRef.current = interactive
+    if (previousInteractiveRef.current === interactive) return
+    previousInteractiveRef.current = interactive
+    close()
+  }, [close, interactive])
   const { surfaceId } = useFloatingSurface({
     kind: interactive ? 'popover' : 'tooltip',
     active: open,
@@ -123,6 +143,10 @@ export function HoverPopover({
   }, [cancelAttempt])
   const armOpen = useCallback(() => {
     cancelClose()
+    if (openRef.current) {
+      cancelOpen()
+      return
+    }
     cancelOpen()
     if (!canOpen()) return
     if (!armAttempt(() => clearTimer(openTimer))) return
@@ -141,10 +165,10 @@ export function HoverPopover({
       // leave: moving the mouse away must not dismiss a panel being tabbed
       // through.
       const active = document.activeElement
-      if (active !== null && (ref.current?.contains(active) || triggerRef.current?.contains(active) || isNodeInSurfaceBranch(surfaceId, active))) return
+      if (active !== null && (ref.current?.contains(active) || hasKeyboardTriggerFocus(triggerRef.current) || isNodeInSurfaceBranch(surfaceId, active))) return
       setOpen(false)
     }, closeDelayMs)
-  }, [closeDelayMs, cancelClose, ref, surfaceId, triggerRef])
+  }, [closeDelayMs, cancelClose, hasKeyboardTriggerFocus, ref, surfaceId, triggerRef])
 
   // A selection change closes an open card even when no pointer event fires
   // (keyboard session switch, a reordered strip under a stationary pointer).
@@ -176,26 +200,67 @@ export function HoverPopover({
       && previous.cancelOpen === cancelOpen
       && previous.disabled === disabled) return
     previous?.cleanup()
-    if (previous && previous.trigger !== trigger && openRef.current) remeasure()
+    if (previous && previous.trigger !== trigger) {
+      windowBlurRef.current = false
+      const keyboardFocused = trigger?.contains(document.activeElement) === true && !isPointerFocusTask()
+      openByFocus.current = keyboardFocused
+      keyboardFocusRef.current = keyboardFocused
+      if (openRef.current) remeasure()
+    }
     if (disabled || !trigger) {
       listenerBindingRef.current = { trigger, armClose, armOpen, cancelClose, cancelOpen, disabled, cleanup: () => {} }
       return
     }
-    const onEnter = () => {
+    if (previous?.disabled) {
       openByFocus.current = false
+      keyboardFocusRef.current = false
+      windowBlurRef.current = false
+    }
+    const onEnter = () => {
+      if (!hasKeyboardTriggerFocus(trigger)) openByFocus.current = false
       cancelClose()
       armOpen()
     }
     const onLeave = () => {
-      if (openByFocus.current && trigger.contains(document.activeElement)) {
+      if (hasKeyboardTriggerFocus(trigger)) {
         if (openRef.current) armClose()
         return
+      }
+      if (!trigger.contains(document.activeElement)) {
+        windowBlurRef.current = false
+        keyboardFocusRef.current = false
+        openByFocus.current = false
       }
       cancelOpen()
       if (openRef.current) armClose()
     }
-    const onFocusIn = () => {
+    const onPointerDown = (event: PointerEvent) => {
+      windowBlurRef.current = false
+      const primaryActivation = event.button === 0 && !(event.ctrlKey && navigator.platform.startsWith('Mac'))
+      if (primaryActivation) {
+        openByFocus.current = false
+        keyboardFocusRef.current = false
+      }
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || MODIFIER_ONLY_KEYS.has(event.key)) return
+      keyboardFocusRef.current = true
       openByFocus.current = true
+    }
+    const onFocusIn = (event: FocusEvent) => {
+      if (windowBlurRef.current && !isPointerFocusTask()) {
+        windowBlurRef.current = false
+        cancelClose()
+        armOpen()
+        return
+      }
+      windowBlurRef.current = false
+      const fromPointer = isPointerFocusTask()
+      openByFocus.current = !fromPointer
+      keyboardFocusRef.current = !fromPointer
+      const previous = event.relatedTarget as Node | null
+      const fromSurface = previous !== null && (trigger.contains(previous) || isNodeInSurfaceBranch(surfaceId, previous))
+      if (!fromPointer && !fromSurface && openRef.current && interactiveRef.current) ref.current?.focus()
       cancelClose()
       armOpen()
     }
@@ -203,10 +268,19 @@ export function HoverPopover({
       cancelOpen()
       const next = event.relatedTarget as Node | null
       if (next && (trigger.contains(next) || ref.current?.contains(next) || isNodeInSurfaceBranch(surfaceId, next))) return
+      if (next === null && trigger.contains(document.activeElement) && !document.hasFocus()) {
+        windowBlurRef.current = true
+        return
+      }
+      windowBlurRef.current = false
+      openByFocus.current = false
+      keyboardFocusRef.current = false
       if (openRef.current) armClose()
     }
     trigger.addEventListener('pointerenter', onEnter)
     trigger.addEventListener('pointerleave', onLeave)
+    trigger.addEventListener('pointerdown', onPointerDown, true)
+    trigger.addEventListener('keydown', onKeyDown)
     trigger.addEventListener('focusin', onFocusIn)
     trigger.addEventListener('focusout', onFocusOut)
     listenerBindingRef.current = {
@@ -219,6 +293,8 @@ export function HoverPopover({
       cleanup: () => {
         trigger.removeEventListener('pointerenter', onEnter)
         trigger.removeEventListener('pointerleave', onLeave)
+        trigger.removeEventListener('pointerdown', onPointerDown, true)
+        trigger.removeEventListener('keydown', onKeyDown)
         trigger.removeEventListener('focusin', onFocusIn)
         trigger.removeEventListener('focusout', onFocusOut)
         cancelOpen()
@@ -237,8 +313,8 @@ export function HoverPopover({
   // A dialog opened by keyboard focus must receive focus; a pointer hover must
   // not steal it from the page.
   useLayoutEffect(() => {
-    if (open && interactive && openByFocus.current) ref.current?.focus()
-  }, [open, interactive, ref])
+    if (open && interactive && openByFocus.current && !hidden) ref.current?.focus()
+  }, [open, interactive, hidden, ref])
 
   // Interactive surfaces can hold focus and pointer; dismiss them like a menu.
   useOutsideMouseDown({ ref, onClose: close, triggerRef, surfaceId, active: open && interactive })

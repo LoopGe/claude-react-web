@@ -148,6 +148,31 @@ describe('SessionNavStrip', () => {
     expect(onActivateGroup).toHaveBeenCalledWith('g1')
   })
 
+  it('closes a group hover after a primary click and pointerleave', () => {
+    vi.useFakeTimers()
+    try {
+      renderStrip(baseSections())
+      const chip = screen.getByRole('button', { name: '前端' })
+      fireEvent.pointerEnter(chip)
+      act(() => {
+        vi.advanceTimersByTime(200)
+      })
+      expect(document.querySelector('.hover-pop')).not.toBeNull()
+
+      fireEvent.pointerDown(chip, { button: 0 })
+      chip.focus()
+      fireEvent.pointerUp(chip, { button: 0 })
+      fireEvent.click(chip)
+      fireEvent.pointerLeave(chip)
+      act(() => {
+        vi.advanceTimersByTime(150)
+      })
+      expect(document.querySelector('.hover-pop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('marks the focused tab and active group chip as pressed', () => {
     renderStrip(baseSections(), { focusedId: 's2', activeGroupId: 'g1' })
     expect(screen.getByRole('button', { name: 'Alpha' }).getAttribute('aria-pressed')).toBe('false')

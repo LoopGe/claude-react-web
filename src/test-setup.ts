@@ -85,6 +85,8 @@ afterEach(async () => {
   // every node-env test too.
   const { setAppMotionOff } = await import('./utils/reduced-motion')
   setAppMotionOff(false)
+  const { __resetFocusModalityForTests } = await import('./hooks/focus-modality')
+  __resetFocusModalityForTests()
   const { cleanup } = await import('@testing-library/react')
   cleanup()
 })
