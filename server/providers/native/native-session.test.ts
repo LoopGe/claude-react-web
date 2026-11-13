@@ -3856,6 +3856,56 @@ describe('NativeSession', () => {
     }
   })
 
+  it('honors an explicit enqueue that arrives during failed turn/end finalization', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const dir = await tempDir('native-migration-finalization-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([], requests)
+    const session = provider.createSession({ id: 'migration-finalization', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    const flushStarted = deferred<void>()
+    const releaseFlush = deferred<void>()
+    try {
+      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      vi.spyOn(sessionLog, 'migrateToV2').mockRejectedValue(new Error('permanent migration failure'))
+      const originalFlush = sessionLog.flush.bind(sessionLog)
+      let gateTurnEnd = true
+      vi.spyOn(sessionLog, 'flush').mockImplementation(async () => {
+        if (gateTurnEnd && sessionLog.events.at(-1)?.type === 'turn/end') {
+          gateTurnEnd = false
+          flushStarted.resolve()
+          await releaseFlush.promise
+        }
+        return originalFlush()
+      })
+      session.enqueueUserMessage(structuredUserMsg('first-attachment') as never)
+      session.enqueueUserMessage({ ...userMsg('already queued'), uuid: 'later' } as never)
+      await flushStarted.promise
+      expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1)
+
+      session.enqueueUserMessage({ ...userMsg('explicit during flush'), uuid: 'explicit' } as never)
+      expect((session as unknown as { pumping: boolean }).pumping).toBe(true)
+      releaseFlush.resolve()
+
+      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      expect(sessionLog.migrateToV2).toHaveBeenCalledTimes(2)
+      expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2)
+      expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(2)
+      expect(session.queueDepth).toBe(3)
+      expect(requests).toEqual([])
+      expect(session.drainQueuedInput!().map((message) => message.uuid)).toEqual([
+        'first-attachment', 'later', 'explicit',
+      ])
+    } finally {
+      releaseFlush.resolve()
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
   it('keeps a raw append failure pending and withdraws it through every queued-input path', async () => {
     const previous = { ...config }
     __setConfigForTest({ nativeAttachmentFidelity: true })

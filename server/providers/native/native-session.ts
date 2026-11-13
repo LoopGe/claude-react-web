@@ -275,6 +275,9 @@ export class NativeSession implements ProviderSessionHandle {
   /** Consumed from FIFO but not yet appended. It remains withdrawable and is
    * always retried before any later input after a migration/append failure. */
   private pendingDurableInitial: PendingDurableInitial | null = null
+  /** Monotonic explicit-enqueue marker. A pre-append failure captures this
+   * value so only an enqueue observed AFTER that failure can release its pause. */
+  private enqueueGeneration = 0
   private readonly ctx: FrameContext
   /** Append-only persistence for this session. Every constructor path opens it
    *  (fresh create, resume, or fork-seeded) before `system/init` is pushed. */
@@ -1092,6 +1095,7 @@ export class NativeSession implements ProviderSessionHandle {
       let initialMessagesOwned = false
       let rawAppended = false
       let pauseForDurableRetry = false
+      let pauseEnqueueGeneration = 0
       try {
         // Capture every persona-controlled execution field at one boundary.
         // Discovery/flush/MCP awaits below must not let a live control switch
@@ -1227,6 +1231,7 @@ export class NativeSession implements ProviderSessionHandle {
         if (!initialMessagesOwned) this.history.push(...appendedInitialMessages)
         if (!rawAppended && this.pendingDurableInitial === pending) {
           pauseForDurableRetry = true
+          pauseEnqueueGeneration = this.enqueueGeneration
         } else if (rawAppended && this.pendingDurableInitial === pending) {
           // A skill append can fail after the raw append. Never retry the raw
           // event into a duplicate; the restored history matches disk exactly.
@@ -1269,10 +1274,10 @@ export class NativeSession implements ProviderSessionHandle {
       } catch (err) {
         log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)
       }
-      // Park even when later input is already queued. Only a subsequent
-      // explicit enqueue may start another attempt; queued input must never
-      // turn a persistent storage failure into an unbounded retry loop.
-      if (pauseForDurableRetry) break
+      // Park even when later input is already queued. Only an enqueue observed
+      // after this failure (including during turn/end finalization) releases
+      // the pause, exactly once; older queued input cannot drive a retry loop.
+      if (pauseForDurableRetry && this.enqueueGeneration === pauseEnqueueGeneration) break
     }
   }
 
@@ -1282,6 +1287,7 @@ export class NativeSession implements ProviderSessionHandle {
     // the pump consumes it (see pumpLoop). The WeakMap keeps the provider's
     // AgentUserMessage contract untouched.
     this.receivedAt.set(message, Date.now())
+    this.enqueueGeneration++
     this.input.push(message)
     if (!this.pumping) {
       this.pumping = true
