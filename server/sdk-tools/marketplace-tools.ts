@@ -2,15 +2,18 @@
 //
 // Exposes the Claude Plugin Marketplace (the git-repo marketplace, `mp-store`)
 // to the agent as `mcp__marketplace-tools__*`: list marketplaces, list a
-// marketplace's plugins, add a marketplace by URL, check upstream updates and
-// enable/disable a plugin. The host owns the store, the clone/parse/refresh
-// semantics (`mp-ops`) and the DTO shapes, so this module holds no policy of
-// its own — it only shapes the tool surface and the read-only set.
+// marketplace's plugins, add a marketplace by URL, check upstream updates,
+// enable/disable a plugin and hard-remove a marketplace. The host owns the
+// store, the clone/parse/refresh/remove semantics (`mp-ops`) and the DTO
+// shapes, so this module holds no policy of its own — it only shapes the tool
+// surface and the read-only set.
 //
 // `add` clones and parses a repo; `set_plugin_enabled` writes the enabled
-// map. A host failure (rejected URL, unknown marketplace/plugin, parse error)
-// arrives as a rejected promise and `guard` turns it into the `isError` text
-// result the model reads, never a rejected MCP call.
+// map; `remove` drops the whole entry and is refused without an explicit
+// `confirm: true` (same gate as the REST DELETE route). A host failure
+// (rejected URL, unknown marketplace/plugin, parse error) arrives as a
+// rejected promise and `guard` turns it into the `isError` text result the
+// model reads, never a rejected MCP call.
 
 import { z } from 'zod'
 import { tool, type SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
@@ -43,6 +46,7 @@ export interface MarketplaceToolsHost {
   add(url: string, ref?: string): Promise<MarketplaceAddResult>
   checkUpdates(): Promise<MpUpdateStatusItem[]>
   setPluginEnabled(id: string, plugin: string, enabled: boolean): Promise<PluginListItem>
+  remove(id: string): Promise<void>
 }
 
 /** The tool definitions for the marketplace-tools server bound to the host.
@@ -92,6 +96,20 @@ export function buildMarketplaceTools(host: MarketplaceToolsHost): SdkMcpToolDef
       },
       async (a) => guard(async () => json({ plugin: await host.setPluginEnabled(a.id, a.plugin, a.enabled) })),
     ),
+    tool(
+      'remove',
+      'Hard-remove a plugin marketplace: disables its enabled plugins on every live session, then deletes the entry, its enabled-plugin flags and its clone directory. Destructive — requires confirm: true.',
+      {
+        id: z.string().describe('marketplace id (from list)'),
+        confirm: z.boolean().optional().describe('must be true; the call is refused otherwise'),
+      },
+      async (a) =>
+        guard(async () => {
+          if (a.confirm !== true) throw new Error('confirm: true required for destructive remove')
+          await host.remove(a.id)
+          return json({ ok: true })
+        }),
+    ),
   ]
 }
 
@@ -100,7 +118,7 @@ export function buildMarketplaceTools(host: MarketplaceToolsHost): SdkMcpToolDef
 export function createMarketplaceTools(host: MarketplaceToolsHost): FirstPartyToolServer {
   return {
     name: MARKETPLACE_TOOLS_SERVER_NAME,
-    description: 'List, add and inspect plugin marketplaces and enable or disable their plugins',
+    description: 'List, add, inspect and remove plugin marketplaces and enable or disable their plugins',
     defaultEnabled: true,
     requiresCwd: false,
     buildTools: () => buildMarketplaceTools(host),

@@ -16,6 +16,7 @@ vi.mock('../hooks/useApi', () => ({ api: { get: getMock, post: postMock } }))
 
 import { ProjectPopover } from './ProjectPopover'
 import { __resetOpenPathCapabilityForTest } from '../hooks/useOpenPathCapability'
+import { __resetOpenPathAppsForTest } from '../hooks/useOpenPathApps'
 
 /** Trigger nodes appended by renderPopover, removed in afterEach. */
 const triggers: HTMLButtonElement[] = []
@@ -27,6 +28,7 @@ beforeEach(() => {
   // The capability probe is module-cached for the page lifetime; reset it so
   // each test gets its own probe.
   __resetOpenPathCapabilityForTest()
+  __resetOpenPathAppsForTest()
   // jsdom reports no Mac platform — default to the Mac wording (most of this
   // app's users; tests below assert against it).
   Object.defineProperty(navigator, 'platform', { value: 'MacIntel', configurable: true })
@@ -154,6 +156,69 @@ describe('ProjectPopover', () => {
     expect(props.onClose).not.toHaveBeenCalled()
     fireEvent.mouseDown(document.body)
     expect(props.onClose).toHaveBeenCalledOnce()
+  })
+
+  // --- Brand "Open in …" buttons (VS Code / Cursor / …) ----------------------
+  // Same gates as the sidebar menu: loopback capability + per-target
+  // availability from GET /open-path/apps. The getMock serves BOTH probes —
+  // route by path — so these tests mock with an implementation, not a value.
+
+  function mockProbes(local: boolean, apps: string[] | Error): void {
+    getMock.mockImplementation((path: string) => {
+      if (path === '/open-path/apps') {
+        return apps instanceof Error ? Promise.reject(apps) : Promise.resolve({ apps })
+      }
+      return Promise.resolve({ local })
+    })
+  }
+
+  it('shows a brand button per available target and hides unavailable ones', async () => {
+    mockProbes(true, ['vscode', 'cursor', 'zed', 'iterm2'])
+    const { findByText, queryByText } = renderPopover()
+    expect(await findByText('Open in VS Code')).toBeTruthy()
+    expect(queryByText('Open in Cursor')).toBeTruthy()
+    expect(queryByText('Open in Zed')).toBeTruthy()
+    expect(queryByText('Open in iTerm2')).toBeTruthy()
+    expect(queryByText('Open in Windows Terminal')).toBeNull() // not in apps
+  })
+
+  it('hides brand buttons when the apps probe fails or is empty', async () => {
+    mockProbes(true, [])
+    const first = renderPopover()
+    expect(await first.findByText(/Reveal in Finder/)).toBeTruthy()
+    expect(first.queryByText('Open in VS Code')).toBeNull()
+    // A failed probe is not cached — the next mount retries (and still hides
+    // the brand buttons when it fails again).
+    first.unmount()
+    mockProbes(true, new Error('network down'))
+    const second = renderPopover()
+    expect(await second.findByText(/Reveal in Finder/)).toBeTruthy()
+    expect(second.queryByText('Open in VS Code')).toBeNull()
+  })
+
+  it('posts brand targets like the generic ones', async () => {
+    mockProbes(true, ['vscode'])
+    postMock.mockResolvedValue({ ok: true })
+    const { findByText } = renderPopover()
+    fireEvent.click(await findByText('Open in VS Code'))
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith('/open-path', {
+        path: '/Users/loop/Codes/claude-react-web',
+        target: 'vscode',
+      }),
+    )
+  })
+
+  it('renders brand glyphs filled by their themed brand variable', async () => {
+    mockProbes(true, ['vscode'])
+    const { findByText } = renderPopover()
+    await findByText('Open in VS Code')
+    const button = [...document.querySelectorAll('.project-pop-action')].find((b) =>
+      b.textContent === 'Open in VS Code',
+    )!
+    const svg = button.querySelector('svg')!
+    expect(svg.getAttribute('viewBox')).toBe('0 0 24 24')
+    expect(svg.querySelector('path')!.getAttribute('fill')).toBe('var(--brand-vscode)')
   })
 
   // --- Pixel-grid alignment -------------------------------------------------

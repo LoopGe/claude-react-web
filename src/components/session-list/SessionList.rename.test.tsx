@@ -15,7 +15,10 @@ import type { ConfirmRequest } from '../../hooks/useDialogHosts'
 
 vi.mock('../../hooks/useApi', () => ({
   api: {
-    get: vi.fn(),
+    // The open-path probes (mounted by SessionContextMenu since the
+    // open-in group landed) fire on menu mount and must resolve; `get`
+    // answers non-local + no apps so the group stays hidden here.
+    get: vi.fn(() => Promise.resolve({ local: false, apps: [] })),
     post: vi.fn(),
     patch: vi.fn(),
     put: vi.fn(),

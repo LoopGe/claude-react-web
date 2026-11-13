@@ -525,6 +525,21 @@
   from { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(calc(-1 * var(--motion-distance-sm))); }
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
+/* Flyout submenu: carries BOTH ctx-menu classes so the whole surface
+   language (tokens, glass fill, border, shadow) applies unchanged, then
+   overrides only the positioning — it is an absolutely-positioned CHILD of
+   the fixed .ctx-menu portal (the container is its origin), offset by
+   inline styles from ContextMenu.tsx (top aligned to the parent row,
+   left:100% / right:100% side flip). */
+.ctx-submenu {
+  position: absolute;
+  min-width: 160px;
+  z-index: 1;
+}
+/* Parent rows of a flyout: label flexes, disclosure glyph sits muted at the
+   trailing edge. */
+.ctx-menu-parent { padding-right: var(--space-2); }
+.ctx-menu-arrow { color: var(--fg-muted); font-size: var(--fs-xs); margin-left: auto; }
 .ctx-menu-item {
   display: flex;
   align-items: center;

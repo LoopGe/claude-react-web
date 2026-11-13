@@ -288,3 +288,88 @@ describe('ContextMenu', () => {
     expect(onCloseB).toHaveBeenCalledOnce()
   })
 })
+
+// Submenu support: a row with `children` renders as a disclosure parent; the
+// flyout lives INSIDE the same portal container (a nested portal would trip
+// the one-open-at-a-time floating-surface registry and close the parent).
+// Open: hover or click on the parent; switch: hovering another row; Escape
+// unwinds submenu first, menu second.
+describe('ContextMenu submenus', () => {
+  function SubmenuHarness(props: { onClose: ReturnType<typeof vi.fn>; onVs: ReturnType<typeof vi.fn> }) {
+    const items: ContextMenuItem[] = [
+      { label: 'Plain', onClick: () => {} },
+      {
+        label: 'Open in',
+        children: [
+          { label: 'VS Code', onClick: props.onVs },
+          { label: 'Zed' },
+        ],
+      },
+    ]
+    return <ContextMenu x={0} y={0} items={items} onClose={props.onClose} />
+  }
+
+  const findParent = (): HTMLButtonElement =>
+    [...document.querySelectorAll<HTMLButtonElement>('.ctx-menu-item')].find(
+      (b) => b.querySelector('.ctx-menu-label')?.textContent === 'Open in',
+    )!
+
+  it('renders the parent row as a disclosure and keeps the flyout closed initially', () => {
+    const { onVs } = { onVs: vi.fn() }
+    render(<SubmenuHarness onClose={vi.fn()} onVs={onVs} />)
+    const labels = Array.from(document.querySelectorAll('.ctx-menu-label')).map((e) => e.textContent)
+    expect(labels).toEqual(['Plain', 'Open in']) // flyout rows absent
+    const parent = findParent()
+    expect(parent.getAttribute('aria-haspopup')).toBe('menu')
+    expect(parent.getAttribute('aria-expanded')).toBe('false')
+    expect(parent.querySelector('.ctx-menu-arrow')).not.toBeNull()
+    expect(document.querySelector('.ctx-submenu')).toBeNull()
+  })
+
+  it('opens the flyout on click and fires the child onClick + menu onClose', () => {
+    const onVs = vi.fn()
+    const onClose = vi.fn()
+    render(<SubmenuHarness onClose={onClose} onVs={onVs} />)
+    fireEvent.click(findParent())
+    const flyout = document.querySelector('.ctx-submenu')!
+    expect(flyout).not.toBeNull()
+    expect(findParent().getAttribute('aria-expanded')).toBe('true')
+    const vsRow = [...flyout.querySelectorAll<HTMLButtonElement>('.ctx-menu-item')].find(
+      (b) => b.querySelector('.ctx-menu-label')?.textContent === 'VS Code',
+    )!
+    fireEvent.click(vsRow)
+    expect(onVs).toHaveBeenCalledOnce()
+    expect(onClose).toHaveBeenCalledOnce() // the whole menu closes on leaf click
+  })
+
+  it('toggles the flyout closed on a second parent click', () => {
+    render(<SubmenuHarness onClose={vi.fn()} onVs={vi.fn()} />)
+    fireEvent.click(findParent())
+    expect(document.querySelector('.ctx-submenu')).not.toBeNull()
+    fireEvent.click(findParent())
+    expect(document.querySelector('.ctx-submenu')).toBeNull()
+  })
+
+  it('opens on hover and closes when the pointer moves onto a plain row', () => {
+    render(<SubmenuHarness onClose={vi.fn()} onVs={vi.fn()} />)
+    fireEvent.mouseEnter(findParent())
+    expect(document.querySelector('.ctx-submenu')).not.toBeNull()
+    const plain = [...document.querySelectorAll<HTMLButtonElement>('.ctx-menu-item')].find(
+      (b) => b.querySelector('.ctx-menu-label')?.textContent === 'Plain',
+    )!
+    fireEvent.mouseEnter(plain)
+    expect(document.querySelector('.ctx-submenu')).toBeNull()
+  })
+
+  it('Escape unwinds the flyout first and only then closes the menu', () => {
+    const onClose = vi.fn()
+    render(<SubmenuHarness onClose={onClose} onVs={vi.fn()} />)
+    fireEvent.click(findParent())
+    expect(document.querySelector('.ctx-submenu')).not.toBeNull()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(document.querySelector('.ctx-submenu')).toBeNull()
+    expect(onClose).not.toHaveBeenCalled() // menu survives the first Esc
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+})

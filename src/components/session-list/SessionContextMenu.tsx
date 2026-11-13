@@ -2,6 +2,14 @@ import { useContext } from 'react'
 import { ContextMenu, type ContextMenuItem } from '../ContextMenu'
 import { writeClipboard, COPY_FAILED_MESSAGE } from '../../hooks/useCopy'
 import { ToastShowContext } from '../../hooks/toastContext'
+import { useOpenPathCapability } from '../../hooks/useOpenPathCapability'
+import { useOpenPathApps } from '../../hooks/useOpenPathApps'
+import { useOpenPath } from '../../hooks/useOpenPath'
+import { isMacClient } from '../../utils/client-platform'
+import { BRAND_ICONS } from '../icons/BrandIcons'
+import { OpenPathIcon } from '../icons/OpenPathIcon'
+import { IconTerminal } from '../icons/ToolIcons'
+import { OPEN_PATH_APP_LABELS, type OpenPathTarget } from '../../../shared/open-path'
 import type { SessionGroup, SessionInfo } from '../../types'
 import { sessionTitleOrFallback } from '../../utils/session-title'
 import { worktreeDeleteWarning } from './worktree-delete-warning'
@@ -18,6 +26,8 @@ import {
   IconRefresh,
   IconClipboard,
   IconMoon,
+  IconLayers,
+  IconExternalLink,
 } from '../icons/ToolIcons'
 
 export interface SessionContextMenuProps {
@@ -93,6 +103,12 @@ export function SessionContextMenu({
   // previously needed no provider at all and must not start requiring one.
   // Declared above the null-session early return: hooks can't run conditionally.
   const showToast = useContext(ToastShowContext)
+  // Open-in group inputs (hooks before the null-session early return). The
+  // three gates ALL hold or the group is absent: loopback capability, the
+  // target being installed on the server machine, and a session cwd.
+  const local = useOpenPathCapability()
+  const apps = useOpenPathApps()
+  const { open: openOnServer, pending: openPending } = useOpenPath()
   if (!session) return null
   const items: ContextMenuItem[] = [
     {
@@ -214,14 +230,16 @@ export function SessionContextMenu({
         })
       }
       if (availableGroups.length > 0) {
-        items.push({ label: 'Move to group ▸', icon: '→', disabled: true })
-        for (const g of availableGroups) {
-          items.push({
-            label: `  ${g.name} (${g.sessionIds.length}/${maxGroupSize})`,
-            icon: ' ',
+        // A real submenu (the flyout machinery in ContextMenu) — replaces the
+        // old disabled header row + space-padded pseudo-children.
+        items.push({
+          label: 'Move to group',
+          icon: <IconLayers size={14} />,
+          children: availableGroups.map((g) => ({
+            label: `${g.name} (${g.sessionIds.length}/${maxGroupSize})`,
             onClick: () => onAddToGroup(anchor.id, g.id),
-          })
-        }
+          })),
+        })
       }
       return items
     })(),
@@ -246,6 +264,65 @@ export function SessionContextMenu({
         else showToast?.('error', COPY_FAILED_MESSAGE)
       },
     },
+    // --- Open-in group: launch the session cwd in a file manager / terminal /
+    // editor ON THE SERVER MACHINE (the open-path routes). Same launch helper
+    // as the project popover's buttons; availability comes from GET
+    // /open-path/apps so a target that isn't installed is never offered.
+    // Rendered as ONE submenu parent — the group was 7 flat rows and was
+    // diluting an already-long primary menu.
+    ...(() => {
+      const cwd = session.cwd
+      if (local !== true || apps === null || !cwd) return []
+      const targets: OpenPathTarget[] = ['finder', 'terminal', ...apps]
+      const items: ContextMenuItem[] = []
+      for (const target of targets) {
+        const icon =
+          target === 'finder' ? (
+            // The two OS targets render the REAL OS icon extracted by the
+            // server (OpenPathIcon), falling back to the generic glyph when
+            // this machine/client pairing has no extraction.
+            <OpenPathIcon target="finder" fallback={<IconFolder size={14} />} />
+          ) : target === 'terminal' ? (
+            <OpenPathIcon target="terminal" fallback={<IconTerminal size={14} />} />
+          ) : BRAND_ICONS[target] ? (
+            // Brand glyphs are keyed by the exact target id (BrandIcons).
+            (() => {
+              const BrandIcon = BRAND_ICONS[target]!
+              return <BrandIcon size={14} />
+            })()
+          ) : null
+        if (!icon) continue
+        const label =
+          target === 'finder'
+            ? isMacClient()
+              ? 'Reveal in Finder'
+              : 'Open in file manager'
+            : target === 'terminal'
+              ? isMacClient()
+                ? 'Open in Terminal'
+                : 'Open in terminal'
+              : target === 'browser'
+                // `browser` is never in `apps` (OPEN_PATH_APP_TARGETS has no
+                // install probe for it) — unreachable, listed for narrowing.
+                ? undefined
+                : OPEN_PATH_APP_LABELS[target]
+        if (label === undefined) continue
+        items.push({
+          label,
+          icon,
+          disabled: openPending !== null,
+          onClick: () => {
+            void openOnServer(target, cwd).then((outcome) => {
+              if (!outcome.ok) showToast?.('error', outcome.message ?? `Failed to open ${cwd}`)
+            })
+          },
+        })
+      }
+      // Nothing available (or only the gated-out brand targets): no group at
+      // all, not an empty parent.
+      if (items.length === 0) return []
+      return [{ label: '' } as ContextMenuItem, { label: 'Open in', icon: <IconExternalLink size={14} />, children: items }]
+    })(),
     { label: '' }, // separator
     // "Close panel" is only offered for ungrouped sessions. A grouped
     // session already has "Remove from group" above, and under the

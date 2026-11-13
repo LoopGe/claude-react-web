@@ -14,6 +14,7 @@ const host = {
   add: vi.fn(async () => ({ id: 'mp', displayName: 'MP', plugins: [], warnings: [] })),
   checkUpdates: vi.fn(async () => []),
   setPluginEnabled: vi.fn(async () => ({ name: 'p1', enabled: true })),
+  remove: vi.fn(async () => {}),
 }
 
 const asHost = host as unknown as MarketplaceToolsHost
@@ -39,9 +40,21 @@ describe('marketplace-tools', () => {
     for (const name of ['list', 'plugins', 'check_updates']) {
       expect(readOnlyHintOf(name)).toBe(true)
     }
-    for (const name of ['add', 'set_plugin_enabled']) {
+    for (const name of ['add', 'set_plugin_enabled', 'remove']) {
       expect(readOnlyHintOf(name) ?? false).toBe(false)
     }
+  })
+
+  it('remove forwards the id when confirm is true', async () => {
+    await call('remove', { id: 'mp', confirm: true })
+    expect(host.remove).toHaveBeenCalledWith('mp')
+  })
+
+  it('remove refuses to call the host without confirm', async () => {
+    const res = await call('remove', { id: 'mp', confirm: false })
+    expect(host.remove).not.toHaveBeenCalled()
+    expect(res.isError).toBe(true)
+    expect(text(res)).toContain('confirm: true')
   })
 
   it('add forwards url/ref to the host', async () => {

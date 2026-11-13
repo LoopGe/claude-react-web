@@ -13,12 +13,16 @@
 
 import { memo, useState } from 'react'
 import { useOpenPathCapability } from '../hooks/useOpenPathCapability'
+import { useOpenPathApps } from '../hooks/useOpenPathApps'
+import { useOpenPath } from '../hooks/useOpenPath'
 import { useCopy } from '../hooks/useCopy'
-import { api } from '../hooks/useApi'
+import { isMacClient } from '../utils/client-platform'
 import { AnchoredPopover } from './AnchoredPopover'
 import { basenameOf, initialOf } from '../utils/paths'
-import type { OpenPathTarget } from '../../shared/open-path'
-import { IconCheck, IconCopy, IconTerminal } from './icons/ToolIcons'
+import { OPEN_PATH_APP_LABELS, type OpenPathTarget } from '../../shared/open-path'
+import { IconCheck, IconCopy, IconFolder, IconTerminal } from './icons/ToolIcons'
+import { OpenPathIcon } from './icons/OpenPathIcon'
+import { BRAND_ICONS } from './icons/BrandIcons'
 
 export interface ProjectPopoverProps {
   /** The session's working directory (the project root). */
@@ -29,42 +33,26 @@ export interface ProjectPopoverProps {
   onClose: () => void
 }
 
-/** The actions run on the server machine; when that is this machine (the
- *  local case, and the only case where the buttons render) the client's OS
- *  matches the server's, so the userAgent decides the wording ("Finder" on
- *  a Mac, generic "file manager" elsewhere). Read lazily (not at module
- *  load) so tests can stub navigator.platform. */
-function isMacClient(): boolean {
-  return /Mac|iPhone|iPad/.test(navigator.platform)
-}
-
 export const ProjectPopover = memo(function ProjectPopover({
   path,
   triggerRef,
   onClose,
 }: ProjectPopoverProps) {
   const local = useOpenPathCapability()
+  const apps = useOpenPathApps()
   const { copied, copy } = useCopy()
-  // Which server action is in flight (if any) — disables the buttons so a
-  // double-click can't spawn the target app twice, and shows which one is
-  // working. The spawn is fast (~ms) but `open` can take ~100ms+.
-  const [pendingTarget, setPendingTarget] = useState<OpenPathTarget | null>(null)
+  // The launch helper is shared with the session context-menu's "Open in …"
+  // items (useOpenPath owns the in-flight guard and outcome normalization);
+  // this popover keeps its inline error row as the presentation.
+  const { open, pending: pendingTarget } = useOpenPath()
   const [openError, setOpenError] = useState<string | null>(null)
 
   const openOnServer = (target: OpenPathTarget) => {
     if (pendingTarget) return
     setOpenError(null)
-    setPendingTarget(target)
-    api
-      .post('/open-path', { path, target })
-      .catch((err: unknown) => {
-        const message =
-          typeof err === 'object' && err !== null && 'message' in err
-            ? String((err as { message: unknown }).message)
-            : String(err)
-        setOpenError(message)
-      })
-      .finally(() => setPendingTarget(null))
+    void open(target, path).then((outcome) => {
+      if (!outcome.ok) setOpenError(outcome.message ?? 'open failed')
+    })
   }
 
   return (
@@ -97,6 +85,7 @@ export const ProjectPopover = memo(function ProjectPopover({
               disabled={pendingTarget !== null}
               onClick={() => openOnServer('finder')}
             >
+              <OpenPathIcon target="finder" fallback={<IconFolder size={14} />} />
               {isMacClient() ? 'Reveal in Finder' : 'Open in file manager'}
             </button>
             <button
@@ -105,9 +94,30 @@ export const ProjectPopover = memo(function ProjectPopover({
               disabled={pendingTarget !== null}
               onClick={() => openOnServer('terminal')}
             >
-              <IconTerminal aria-hidden />
+              <OpenPathIcon target="terminal" fallback={<IconTerminal size={14} />} />
               {isMacClient() ? 'Open in Terminal' : 'Open in terminal'}
             </button>
+            {/* Brand "Open in …" buttons — the targets the /apps probe
+                reports installed on the server machine, rendered with their
+                brand glyphs (filled by the themed --brand-* variables). Same
+                gates and launch helper as the generic entries above, and the
+                same wording as the session context-menu's open-in group. */}
+            {apps?.map((target) => {
+              const BrandIcon = BRAND_ICONS[target]
+              if (BrandIcon === undefined) return null
+              return (
+                <button
+                  key={target}
+                  type="button"
+                  className="project-pop-action"
+                  disabled={pendingTarget !== null}
+                  onClick={() => openOnServer(target)}
+                >
+                  <BrandIcon size={14} aria-hidden />
+                  {OPEN_PATH_APP_LABELS[target]}
+                </button>
+              )
+            })}
           </>
         )}
       </div>

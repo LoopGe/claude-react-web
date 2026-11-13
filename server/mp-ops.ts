@@ -247,6 +247,35 @@ export async function setMarketplacePluginEnabled(
   return toPluginListItem(pluginEntry, enabled)
 }
 
+/** Hard-remove one marketplace: disable its enabled plugins on every live
+ *  session FIRST (so the SDK never sees enabled flags pointing at a deleted
+ *  clone dir), then drop the entry — index, scoped enabledPlugins keys and
+ *  the clone dir. Confirm gating stays at the surface (route query flag /
+ *  tool input), not here.
+ *
+ *  The disable pass converges on the store's enabled keys for this
+ *  marketplace: an enable toggled concurrently while the loop is awaiting
+ *  would otherwise be stripped by removeEntry without ever being
+ *  pushed-disabled to live sessions. Only the store flags persist past
+ *  removeEntry — pushing a disable does not clear them — so already-pushed
+ *  keys are tracked and never re-pushed. */
+export async function removeMarketplace(store: MpStore, sm: SessionManager, id: string): Promise<void> {
+  assertSafeName(id, 'marketplace id')
+  if (!store.has(id)) throw new HttpError(404, `marketplace ${id} not found`)
+
+  const pushed = new Set<string>()
+  for (;;) {
+    const remaining = store.enabledKeysFor(id).filter((k) => !pushed.has(k))
+    if (remaining.length === 0) break
+    for (const key of remaining) {
+      await applyPluginToggleToLiveSessions(sm, key, false)
+      pushed.add(key)
+    }
+  }
+
+  await store.removeEntry(id)
+}
+
 /** Ensure the external repo backing a git-subdir plugin is cloned and checked
  *  out at the pinned sha. Idempotent:
  *   - clone dir absent → full clone + checkout sha

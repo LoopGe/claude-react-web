@@ -31,6 +31,7 @@ import {
   checkMarketplaceUpdates,
   listMarketplacePlugins,
   listMarketplaces,
+  removeMarketplace,
   setMarketplacePluginEnabled,
 } from '../mp-ops.js'
 import { HttpError } from '../errors.js'
@@ -84,6 +85,7 @@ export function registerConfigToolServers(deps: ConfigToolsDeps): void {
     checkUpdates: () => checkMarketplaceUpdates(deps.mpStore),
     setPluginEnabled: (id, plugin, enabled) =>
       setMarketplacePluginEnabled(deps.mpStore, deps.sm, id, plugin, enabled),
+    remove: (id) => removeMarketplace(deps.mpStore, deps.sm, id),
   }
 
   for (const server of [

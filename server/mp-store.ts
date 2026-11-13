@@ -439,6 +439,19 @@ export class MpStore extends JsonFileStore<MpEntry> {
     return out
   }
 
+  /** Snapshot of the enabled keys scoped to one marketplace
+   *  (`<plugin>@<id>` form, as applyFlagSettings expects). The single home
+   *  for the suffix-scoping rule — callers must not hand-roll
+   *  `endsWith(`@${id}`)` filters over enabledKeys(). */
+  enabledKeysFor(marketplace: string): string[] {
+    const suffix = `@${marketplace}`
+    const out: string[] = []
+    for (const [k, v] of this.enabled) {
+      if (v && k.endsWith(suffix)) out.push(k)
+    }
+    return out
+  }
+
   /** Snapshot of every enabled `<plugin>@<marketplace>` key. Used by the
    *  toggle route to push state into live sessions. */
   enabledKeys(): string[] {

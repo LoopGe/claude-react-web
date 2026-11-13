@@ -16,6 +16,11 @@ import { useFloatingSurface, FloatingSurfaceProvider } from '../hooks/useFloatin
 import type { FloatingDismissReason } from '../hooks/floating-surface-registry'
 import { markPortaledSurface } from '../theme'
 
+/** Trailing disclosure glyph for submenu parent rows. */
+function SubmenuArrow() {
+  return <span className="ctx-menu-arrow" aria-hidden>▸</span>
+}
+
 export interface ContextMenuItem {
   /** Shown in the menu. Falsy = render a separator instead. */
   label?: string
@@ -29,6 +34,14 @@ export interface ContextMenuItem {
   danger?: boolean
   /** Disabled rows are visible but don't fire. */
   disabled?: boolean
+  /**
+   * Nested flyout rows. Renders the row as a submenu parent (▸ disclosure);
+   * the flyout opens on hover or click INSIDE this menu's portal container —
+   * a nested portal would register a second floating surface and the
+   * one-open-at-a-time registry would close the parent menu on open. Only
+   * one submenu is open at a time; Escape unwinds it before the menu.
+   */
+  children?: ContextMenuItem[]
 }
 
 interface Props {
@@ -70,6 +83,19 @@ export const ContextMenu = memo(function ContextMenu({
   // Measured position after layout — nudged inward if the menu would
   // otherwise overflow the viewport.
   const [pos, setPos] = useState<{ x: number; y: number }>({ x, y })
+  // --- Submenu state ---------------------------------------------------------
+  // One flyout at a time, keyed by the index into the COLLAPSED visible list
+  // (the same array the rows render from). The ref mirrors the state because
+  // the Escape path (onEscape below) and the row handlers must agree
+  // synchronously — the state alone lags one commit behind hover switches.
+  const [openSub, setOpenSub] = useState<number | null>(null)
+  const openSubRef = useRef<number | null>(null)
+  const [subPos, setSubPos] = useState<{ top: number; side: 'left' | 'right' }>({ top: 0, side: 'right' })
+  const subRef = useRef<HTMLDivElement>(null)
+  const setSubOpen = (index: number | null): void => {
+    openSubRef.current = index
+    setOpenSub(index)
+  }
   // Under reduced motion, snap (duration:0) instead of fading — see
   // useMotionTransition.
   const { popover } = usePopoverMotion()
@@ -85,7 +111,12 @@ export const ContextMenu = memo(function ContextMenu({
     getContainer: () => ref.current,
     getTrigger: () => triggerRef?.current ?? null,
     onDismiss: onClose,
-    onEscape: () => onClose(),
+    // Escape unwinds an open flyout first (the menu stays); the registry
+    // reads this callback through a ref, so the closure below is always live.
+    onEscape: () => {
+      if (openSubRef.current !== null) setSubOpen(null)
+      else onClose()
+    },
   })
 
   useLayoutEffect(() => {
@@ -118,6 +149,33 @@ export const ContextMenu = memo(function ContextMenu({
     return () => observer.disconnect()
   }, [x, y, placement, itemsLayoutKey, autoFocus])
 
+  // Flyout placement, measured after the submenu mounts: vertically aligned
+  // to the parent row (clamped to the viewport), opening to the menu's right
+  // and flipping to its left when that would overflow. Coordinates are
+  // relative to the menu container — the submenu is an absolutely-positioned
+  // child of the fixed-position portal, so the container IS its origin.
+  useLayoutEffect(() => {
+    if (openSub === null) return
+    const container = ref.current
+    const sub = subRef.current
+    // The parent row is found by its open-marker attribute, not a ref: the
+    // rows render from the same pass that sets openSub, and the
+    // react-compiler lint rightly rejects ref access during render.
+    const row = container?.querySelector<HTMLButtonElement>('.ctx-menu-parent[data-submenu-open="true"]')
+    if (!row || !container || !sub) return
+    const menuRect = container.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    const subRect = sub.getBoundingClientRect()
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    let top = rowRect.top - menuRect.top
+    if (menuRect.top + top + subRect.height > vh - 4) {
+      top = Math.max(0, vh - 4 - subRect.height - menuRect.top)
+    }
+    const fitsRight = menuRect.left + menuRect.width + subRect.width <= vw - 4
+    setSubPos({ top, side: fitsRight ? 'right' : 'left' })
+  }, [openSub])
+
   // Default 'ignore': right-click (button 2) must NOT close a right-click
   // menu — the browser fires `contextmenu` next, which the owning component
   // uses to open a replacement menu, and closing on mousedown would be a
@@ -127,6 +185,24 @@ export const ContextMenu = memo(function ContextMenu({
   // `mousedown` beats `click` — feels snappier and avoids swallowing a
   // subsequent click on another interactive element (the hook's default).
   useOutsideMouseDown({ ref, onClose, triggerRef, surfaceId, nonPrimary })
+
+  // Collapse consecutive separators and trim leading/trailing ones. Callers
+  // build the item list from conditional spreads, so a separator can end up
+  // adjacent to another (or at an edge) when the items between them are
+  // absent — dropping those here keeps every caller's separator placement
+  // simple without each one having to track its neighbours. `openSub` indexes
+  // THIS array (rows and the flyout both render from it).
+  const visible: ContextMenuItem[] = []
+  for (const item of items) {
+    const isSep = !item.label
+    if (isSep) {
+      const last = visible[visible.length - 1]
+      // Skip leading separators and consecutive separators.
+      if (visible.length === 0 || !last.label) continue
+    }
+    visible.push(item)
+  }
+  if (visible.length > 0 && !visible[visible.length - 1].label) visible.pop()
 
   const onMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Tab'].includes(event.key)) return
@@ -173,33 +249,37 @@ export const ContextMenu = memo(function ContextMenu({
       onMouseDown={(e) => e.stopPropagation()}
     >
       {(() => {
-        // Collapse consecutive separators and trim leading/trailing ones.
-        // Callers build the item list from conditional spreads, so a separator
-        // can end up adjacent to another (or at an edge) when the items
-        // between them are absent — e.g. a panel menu whose Side Chat /
-        // Settings / Close-panel rows are all gated off. Dropping those here
-        // keeps every caller's separator placement simple without each one
-        // having to track its neighbours.
-        const visible: ContextMenuItem[] = []
-        for (const item of items) {
-          const isSep = !item.label
-          if (isSep) {
-            const last = visible[visible.length - 1]
-            // Skip leading separators and consecutive separators.
-            if (visible.length === 0 || !last.label) continue
-          }
-          visible.push(item)
-        }
-        // Trim a trailing separator.
-        if (visible.length > 0 && !visible[visible.length - 1].label) visible.pop()
         return visible.map((item, i) => {
           if (!item.label) return <div key={`sep-${i}`} className="ctx-menu-sep" role="separator" />
+          if (item.children && item.children.length > 0) {
+            return (
+              <button
+                key={`${i}-${item.label}`}
+                className="ctx-menu-item ctx-menu-parent"
+                role="menuitem"
+                aria-haspopup="menu"
+                aria-expanded={openSub === i}
+                data-submenu-open={openSub === i || undefined}
+                disabled={item.disabled}
+                onMouseEnter={() => setSubOpen(i)}
+                onClick={() => {
+                  if (item.disabled) return
+                  setSubOpen(openSub === i ? null : i)
+                }}
+              >
+                {item.icon && <span className="ctx-menu-icon" style={item.iconStyle} aria-hidden>{item.icon}</span>}
+                <span className="ctx-menu-label">{item.label}</span>
+                <SubmenuArrow />
+              </button>
+            )
+          }
           return (
             <button
               key={`${i}-${item.label}`}
               className={`ctx-menu-item ${item.danger ? 'danger' : ''}`}
               role="menuitem"
               disabled={item.disabled}
+              onMouseEnter={() => setSubOpen(null)}
               onClick={() => {
                 if (item.disabled) return
                 item.onClick?.()
@@ -211,6 +291,40 @@ export const ContextMenu = memo(function ContextMenu({
             </button>
           )
         })
+      })()}
+      {(() => {
+        const parent = openSub !== null ? visible[openSub] : null
+        if (parent === null || !parent.children || parent.children.length === 0) return null
+        return (
+          <div
+            ref={subRef}
+            className="ctx-menu ctx-submenu"
+            role="menu"
+            aria-label={parent.label}
+            style={{ top: subPos.top, ...(subPos.side === 'right' ? { left: '100%' } : { right: '100%' }) }}
+          >
+            {parent.children.map((child, ci) =>
+              child.label ? (
+                <button
+                  key={`${ci}-${child.label}`}
+                  className={`ctx-menu-item ${child.danger ? 'danger' : ''}`}
+                  role="menuitem"
+                  disabled={child.disabled}
+                  onClick={() => {
+                    if (child.disabled) return
+                    child.onClick?.()
+                    onClose()
+                  }}
+                >
+                  {child.icon && <span className="ctx-menu-icon" style={child.iconStyle} aria-hidden>{child.icon}</span>}
+                  <span className="ctx-menu-label">{child.label}</span>
+                </button>
+              ) : (
+                <div key={`sub-sep-${ci}`} className="ctx-menu-sep" role="separator" />
+              ),
+            )}
+          </div>
+        )
       })()}
         </motion.div>,
         // Portal to <body>: `pos` above is in VIEWPORT coordinates, and any

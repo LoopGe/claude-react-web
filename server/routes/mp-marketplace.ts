@@ -20,12 +20,12 @@ import { gitBranchName, gitPull } from '../git-clone.js'
 import { parseRepoManifest } from '../marketplace-parser.js'
 import {
   addMarketplaceByUrl,
-  applyPluginToggleToLiveSessions,
   assertSafeName,
   checkMarketplaceUpdates,
   ensureExternalClone,
   listMarketplacePlugins,
   listMarketplaces,
+  removeMarketplace,
   setMarketplacePluginEnabled,
   toMpListItem,
 } from '../mp-ops.js'
@@ -115,17 +115,7 @@ export function buildMpRouter(sm: SessionManager, store: MpStore): Hono {
     if (confirm !== 'true') {
       throw new HttpError(400, 'confirm=true required for destructive remove')
     }
-    if (!store.has(id)) throw new HttpError(404, `marketplace ${id} not found`)
-
-    // Best-effort: tell every live session to disable the plugins from
-    // this marketplace BEFORE we drop the entry, so the SDK doesn't
-    // briefly see stale enabled flags pointing at a deleted dir.
-    const removedKeys = store.enabledKeys().filter((k) => k.endsWith(`@${id}`))
-    for (const key of removedKeys) {
-      await applyPluginToggleToLiveSessions(sm, key, false)
-    }
-
-    await store.removeEntry(id)
+    await removeMarketplace(store, sm, id)
     return c.json({ ok: true })
   })
 

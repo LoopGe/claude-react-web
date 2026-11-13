@@ -17,17 +17,24 @@ import { resolve } from 'node:path'
 
 type SpawnChild = EventEmitter & { unref: () => void }
 
-const { execFileMock, spawnMock, platformMock } = vi.hoisted(() => ({
+const { execFileMock, spawnMock, platformMock, extractIconMock } = vi.hoisted(() => ({
   execFileMock: vi.fn<(file: string, args: string[], opts: unknown, cb: (err: Error | null) => void) => void>(),
   spawnMock: vi.fn<(file: string, args: string[], opts: unknown) => SpawnChild>(),
   platformMock: vi.fn<() => string>(),
+  extractIconMock: vi.fn<(target: string, platform: string) => Promise<{ bytes: Buffer; contentType: string } | null>>(),
 }))
 
 vi.mock('node:child_process', () => ({ execFile: execFileMock, spawn: spawnMock }))
-vi.mock('node:os', () => ({ platform: platformMock }))
+vi.mock('node:os', () => ({ platform: platformMock, homedir: () => '/home/test-user' }))
+// The extractors run real subprocesses on the host; the route tests mock the
+// module boundary and exercise cache/404/gating behavior instead.
+vi.mock('../open-path-icons.js', () => ({
+  extractTargetIcon: extractIconMock,
+  hostIconDeps: { temp: {}, run: vi.fn(), readBytes: vi.fn(), fileExists: vi.fn(), listDir: vi.fn(), env: {}, home: '' },
+}))
 
 // Import the router AFTER the mocks are registered.
-const { buildOpenPathRouter } = await import('./open-path.js')
+const { buildOpenPathRouter, availableAppsFor } = await import('./open-path.js')
 const { createErrorHandler } = await import('../errors.js')
 
 function makeApp() {
@@ -66,6 +73,7 @@ function stubSpawnEvent(event: 'spawn' | 'error', error?: Error) {
 beforeEach(async () => {
   execFileMock.mockReset()
   spawnMock.mockReset()
+  extractIconMock.mockReset()
   platformMock.mockReset()
   platformMock.mockReturnValue('darwin')
   execFileMock.mockImplementation((_file, _args, _opts, cb) => cb(null))
@@ -394,5 +402,243 @@ describe('POST /open-path', () => {
     const [command, args] = spawnMock.mock.calls[0]
     expect(command).toBe('xdg-open')
     expect(args[0].endsWith('/page.html')).toBe(true)
+  })
+})
+
+// The editor/terminal brand targets. Candidates are the launch table's rows
+// (first existing binary wins at launch time via ENOENT fall-through); the
+// /apps probe reuses the same rows' probe descriptors so the menu only
+// offers what the server machine can actually launch.
+describe('brand targets', () => {
+  it('spawns `open -a` for the macOS brand apps', async () => {
+    const app = makeApp()
+    await req(app, 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+    expect(execFileMock).toHaveBeenCalledWith(
+      'open',
+      ['-a', 'Visual Studio Code', tmpDir],
+      expect.anything(),
+      expect.anything(),
+    )
+    await req(app, 'POST', '/open-path', { path: tmpDir, target: 'iterm2' }, '127.0.0.1')
+    expect(execFileMock).toHaveBeenCalledWith('open', ['-a', 'iTerm', tmpDir], expect.anything(), expect.anything())
+    await req(app, 'POST', '/open-path', { path: tmpDir, target: 'zed' }, '127.0.0.1')
+    expect(execFileMock).toHaveBeenCalledWith('open', ['-a', 'Zed', tmpDir], expect.anything(), expect.anything())
+  })
+
+  it('spawns PATH CLIs for linux brand targets', async () => {
+    platformMock.mockReturnValue('linux')
+    const app = makeApp()
+    for (const target of ['vscode', 'cursor', 'zed']) {
+      execFileMock.mockClear()
+      await req(app, 'POST', '/open-path', { path: tmpDir, target }, '127.0.0.1')
+      expect(execFileMock).toHaveBeenCalledTimes(1)
+      const [file, args] = execFileMock.mock.calls[0]!
+      expect(file).toBe(target === 'vscode' ? 'code' : target)
+      expect(args).toEqual([tmpDir])
+    }
+  })
+
+  it('expands win32 exe candidates from the environment and never shells out', async () => {
+    process.env.LOCALAPPDATA = '/w/LocalAppData'
+    process.env.ProgramFiles = '/w/ProgramFiles'
+    try {
+      platformMock.mockReturnValue('win32')
+      const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+      expect(res.status).toBe(200)
+      expect(execFileMock).toHaveBeenCalledWith(
+        '/w/LocalAppData/Programs/Microsoft VS Code/Code.exe',
+        [tmpDir],
+        expect.anything(),
+        expect.anything(),
+      )
+    } finally {
+      delete process.env.LOCALAPPDATA
+      delete process.env.ProgramFiles
+    }
+  })
+
+  it('404s a brand target that has no candidates on this platform', async () => {
+    platformMock.mockReturnValue('linux')
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'iterm2' }, '127.0.0.1')
+    expect(res.status).toBe(404)
+    expect(execFileMock).not.toHaveBeenCalled()
+  })
+
+  it('falls through darwin candidates on ENOENT (bundle missing, CLI fallback)', async () => {
+    const spawned: string[] = []
+    execFileMock.mockImplementation((file, _args, _opts, cb) => {
+      spawned.push(file as string)
+      if (file === 'open') {
+        const err = new Error('not found') as Error & { code: number }
+        err.code = 1 // `open -a` reports a missing app as a nonzero exit, not ENOENT
+        cb(err)
+      } else {
+        cb(null)
+      }
+    })
+    const res = await req(makeApp(), 'POST', '/open-path', { path: tmpDir, target: 'vscode' }, '127.0.0.1')
+    expect(res.status).toBe(200)
+    expect(spawned).toEqual(['open', 'code'])
+  })
+})
+
+describe('GET /open-path/apps', () => {
+  it('returns the availability list shape', async () => {
+    const res = await req(makeApp(), 'GET', '/open-path/apps')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { apps: string[] }
+    expect(Array.isArray(body.apps)).toBe(true)
+    for (const id of body.apps) {
+      expect(['vscode', 'cursor', 'zed', 'iterm2', 'windowsterminal']).toContain(id)
+    }
+  })
+})
+
+// Availability probing is a pure function over injected fs facts — the route
+// test above only pins the shape, because the real machine's /Applications
+// must never leak into expectations.
+describe('availableAppsFor', () => {
+  // The function is exported for direct unit testing; the route test above
+  // only pins the response shape, because the real machine's /Applications
+  // must never leak into expectations.
+
+  const noopEnv = Object.freeze({ PATH: '/usr/bin' })
+
+  function deps(
+    files: readonly string[] = [],
+    dirs: readonly string[] = [],
+  ): {
+    fileExists: (p: string) => Promise<boolean>
+    dirExists: (p: string) => Promise<boolean>
+    executableExists: (p: string) => Promise<boolean>
+  } {
+    return {
+      fileExists: async (p) => files.includes(p),
+      dirExists: async (p) => dirs.includes(p),
+      // Executability defaults to the same fixture set: the tests below that
+      // care pin it explicitly.
+      executableExists: async (p) => files.includes(p),
+    }
+  }
+
+  it('detects a macOS bundle in /Applications (bundle + CLI probes)', async () => {
+    const apps = await availableAppsFor('darwin', noopEnv, '/home/u', deps([], ['/Applications/Visual Studio Code.app']))
+    expect(apps).toContain('vscode')
+    // CLI fallback alone also counts: bundle missing, `code` on PATH.
+    const cliOnly = await availableAppsFor('darwin', noopEnv, '/home/u', deps(['/usr/bin/code'], []))
+    expect(cliOnly).toContain('vscode')
+  })
+
+  it('does not offer a macOS app whose bundle and CLI are both absent', async () => {
+    const apps = await availableAppsFor('darwin', noopEnv, '/home/u', deps([], []))
+    expect(apps).toEqual([])
+  })
+
+  it('detects win32 installs via expanded exe paths', async () => {
+    const apps = await availableAppsFor(
+      'win32',
+      Object.freeze({ LOCALAPPDATA: '/w/LocalAppData', PATH: '/w' }),
+      '/home/u',
+      deps(['/w/LocalAppData/Programs/cursor/Cursor.exe'], []),
+    )
+    expect(apps).toEqual(['cursor'])
+  })
+
+  it('scans PATH for linux CLIs and keeps catalog order', async () => {
+    const apps = await availableAppsFor(
+      'linux',
+      Object.freeze({ PATH: '/opt/bin:/usr/local/bin' }),
+      '/home/u',
+      deps(['/opt/bin/zed', '/usr/local/bin/code'], []),
+    )
+    expect(apps).toEqual(['vscode', 'zed'])
+  })
+
+  it('never offers windowsterminal off win32', async () => {
+    const apps = await availableAppsFor('darwin', noopEnv, '/home/u', deps([], ['/Applications/Visual Studio Code.app']))
+    expect(apps).not.toContain('windowsterminal')
+  })
+
+  it('does not advertise windowsterminal on win32 (generic terminal is already wt)', async () => {
+    // `wt -d` IS the win32 generic-terminal launcher, so a brand row would
+    // render two identical menu entries — the id stays POST-valid but /apps
+    // never offers it.
+    const apps = await availableAppsFor(
+      'win32',
+      Object.freeze({ LOCALAPPDATA: '/w/LocalAppData', PATH: '/w' }),
+      '/home/u',
+      deps(['/w/LocalAppData/Programs/cursor/Cursor.exe', '/w/wt.exe'], []),
+    )
+    expect(apps).toEqual(['cursor'])
+  })
+
+  it('requires executability for PATH probes (a stale file does not shadow)', async () => {
+    // A non-executable file named `code` on PATH must not make the probe
+    // offer vscode (the POST would EACCES and 500 while the real bundle sits
+    // untried); executability is a separate injected fact from existence.
+    const apps = await availableAppsFor(
+      'linux',
+      Object.freeze({ PATH: '/opt/bin' }),
+      '/home/u',
+      {
+        fileExists: async () => true,
+        dirExists: async () => false,
+        executableExists: async (p) => p !== '/opt/bin/code' && p !== '/opt/bin/cursor',
+      },
+    )
+    expect(apps).toEqual(['zed'])
+  })
+})
+
+// GET /open-path/icons/:target — the OS glyphs for finder/terminal, extracted
+// once per router instance (per-process cache) and served with long-lived
+// cache headers; 404 is the protocol's "genuinely does not exist here" and
+// the client falls back to its generic glyph on it.
+describe('GET /open-path/icons/:target', () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+
+  it('serves the extracted png with immutable-ish cache headers', async () => {
+    extractIconMock.mockResolvedValue({ bytes: PNG, contentType: 'image/png' })
+    const res = await req(makeApp(), 'GET', '/open-path/icons/finder')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('image/png')
+    expect(res.headers.get('cache-control')).toBe('public, max-age=3600')
+    expect(Buffer.from(await res.arrayBuffer()).equals(PNG)).toBe(true)
+    expect(extractIconMock.mock.calls[0]?.slice(0, 2)).toEqual(['finder', 'darwin'])
+  })
+
+  it('serves svg content types too', async () => {
+    extractIconMock.mockResolvedValue({ bytes: Buffer.from('<svg/>'), contentType: 'image/svg+xml' })
+    const res = await req(makeApp(), 'GET', '/open-path/icons/terminal')
+    expect(res.headers.get('content-type')).toBe('image/svg+xml')
+  })
+
+  it('extracts each target once per router instance (process cache)', async () => {
+    extractIconMock.mockResolvedValue({ bytes: PNG, contentType: 'image/png' })
+    const app = makeApp()
+    await req(app, 'GET', '/open-path/icons/finder')
+    await req(app, 'GET', '/open-path/icons/finder')
+    await req(app, 'GET', '/open-path/icons/terminal')
+    expect(extractIconMock).toHaveBeenCalledTimes(2) // finder + terminal, not 3
+  })
+
+  it('answers 404 (no cache headers) when the icon does not exist on this platform', async () => {
+    extractIconMock.mockResolvedValue(null)
+    const res = await req(makeApp(), 'GET', '/open-path/icons/finder')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+  })
+
+  it('404s brand targets — their glyphs are client-side static, never extracted', async () => {
+    const res = await req(makeApp(), 'GET', '/open-path/icons/vscode')
+    expect(res.status).toBe(404)
+    expect(extractIconMock).not.toHaveBeenCalled()
+  })
+
+  it('403s remote peers like every other open-path route', async () => {
+    extractIconMock.mockResolvedValue({ bytes: PNG, contentType: 'image/png' })
+    const res = await req(makeApp(), 'GET', '/open-path/icons/finder', undefined, '192.168.1.5')
+    expect(res.status).toBe(403)
+    expect(extractIconMock).not.toHaveBeenCalled()
   })
 })
