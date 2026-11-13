@@ -97,6 +97,8 @@ function baseDeps(over: Partial<AgentToolDeps> = {}): AgentToolDeps {
     streamFor: async function* () { /* replaced by tests */ },
     requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
     emit: () => {},
+    persistToolResult: () => {},
+    attachmentProjection: { stateDir: process.cwd() },
     appendDescriptor: async (input) => ({ ...input, seq: 0, timestamp: 't' }),
     ...over,
   }
@@ -652,6 +654,25 @@ describe('createAgentTool', () => {
     await runAgent(agent, { description: 'd', prompt: 'p', subagent_type: 'inherit' })
 
     expect(modes).toEqual(['default', 'default'])
+  })
+
+  it('persists nested tool results under the agent parent with the live frame UUID', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 'nested-tool', 'Noop', '{}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    const persisted: Array<{ uuid: string; parent: string | null }> = []
+    const agent = createAgentTool(baseDeps({
+      streamFor: s.streamFor.bind(s),
+      emit: (frame) => emitted.push(frame as Frame),
+      persistToolResult: (record, parent) => persisted.push({ uuid: record.uuid, parent }),
+    }))
+
+    await runAgent(agent, { description: 'd', prompt: 'p' })
+
+    const frame = emitted.find((candidate) => candidate.type === 'user')!
+    expect(persisted).toEqual([{ uuid: frame.uuid, parent: 'tu-parent' }])
   })
 
   it.each(['Agent', 'Task'] as const)('reports a non-natural %s final round with its partial report', async (toolName) => {

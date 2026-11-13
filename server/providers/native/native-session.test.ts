@@ -288,6 +288,26 @@ function userMsg(text: string) {
   }
 }
 
+function structuredUserMsg(uuid: string, text = '/demo do this') {
+  return {
+    ...userMsg(text),
+    uuid,
+    message: {
+      role: 'user' as const,
+      content: [
+        {
+          type: 'file',
+          attachment: {
+            id: 'upload-1', name: 'notes.txt', size: 4, digest: 'a'.repeat(64),
+            path: join(tmpdir(), 'registry', 'notes.txt'),
+          },
+        },
+        { type: 'text', text },
+      ],
+    },
+  }
+}
+
 function agentDefinition(overrides: Partial<StoredAgentDefinition> = {}): StoredAgentDefinition {
   return {
     name: 'reviewer',
@@ -2736,6 +2756,40 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('keeps a file-before-skill raw message before its canonical instruction', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const dir = await tempDir('native-file-skill-')
+    await writeProjectSkill(dir, 'demo', { body: '# demo body' })
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([textTurn('ok')], requests)
+    const session = provider.createSession({ id: 'file-skill', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      const queued = structuredUserMsg('file-skill-user')
+      session.enqueueUserMessage(queued as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'ok')).toBe(true))
+
+      const rawContent = requests[0].messages.at(-2) as { role: string; content: Array<{ type: string; text?: string }> }
+      const instruction = requests[0].messages.at(-1) as { role: string; content: Array<{ type: string; text?: string }> }
+      expect(rawContent.content.map((block) => block.type)).toEqual(['text', 'text'])
+      expect(rawContent.content[0].text).toContain('Upload id: upload-1')
+      expect(rawContent.content[1]).toEqual({ type: 'text', text: '/demo do this' })
+      expect(instruction.content[0].text).toBe(canonicalSkillBody(dir, 'demo', '# demo body'))
+      expect(JSON.stringify(requests[0].messages)).not.toContain('"type":"file"')
+      expect(queued.message.content[0]).toMatchObject({ type: 'file' })
+      expect(logOf(session).events.filter((event) => event.type === 'user' || event.type === 'session/skill')).toEqual([
+        expect.objectContaining({ type: 'user', uuid: 'file-skill-user' }),
+        expect.objectContaining({ type: 'session/skill', name: 'demo' }),
+      ])
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
   it('exposes durable skill bodies across catalog reload and resume for compaction', async () => {
     const dir = await tempDir('native-skill-compaction-entries-')
     await writeProjectSkill(dir, 'demo', { body: '# demo body' })
@@ -3362,24 +3416,18 @@ describe('NativeSession', () => {
     await resumed.destroy()
   })
 
-  it('persists a live sidechain user frame with its real parent', async () => {
+  it('persists a live sidechain tool result with its real parent', async () => {
     const dir = await tempDir('native-side-persist-')
     const provider = new NativeProvider({ stateDir: dir })
     const session = provider.createSession({ id: 'side-persist', cwd: dir })
     const internals = session as unknown as {
-      persistFrame(frame: unknown): void
+      persistToolResult(record: { uuid: string; result: { type: 'tool_result'; tool_use_id: string; content: Array<{ type: 'text'; text: string }>; is_error: boolean } }, parent: string | null): void
       log: { flush: () => Promise<void> }
     }
-    internals.persistFrame({
-      type: 'user',
+    internals.persistToolResult({
       uuid: 'side-result',
-      session_id: 'side-persist',
-      parent_tool_use_id: 'tu-agent',
-      message: {
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'inner-tool', content: [{ type: 'text', text: 'ok' }], is_error: false }],
-      },
-    })
+      result: { type: 'tool_result', tool_use_id: 'inner-tool', content: [{ type: 'text', text: 'ok' }], is_error: false },
+    }, 'tu-agent')
     await internals.log.flush()
     const eventOf = (events: Array<{ type: string }>) =>
       events.find((e) => (e as { uuid?: string }).uuid === 'side-result') as { parent_tool_use_id?: string } | undefined
@@ -3665,6 +3713,170 @@ describe('NativeSession', () => {
     expect(userTexts(session)).toEqual(['first'])
     expect(frames.filter((f) => f.type === 'result')).toHaveLength(1)
     await session.destroy()
+  })
+
+  it('retries a failed structured migration before later input and consumes only after append', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const dir = await tempDir('native-migration-retry-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('first ok'), textTurn('second ok')], requests)
+    const consumed: string[] = []
+    const session = provider.createSession({
+      id: 'migration-retry', cwd: dir,
+      onUserMessageConsumed: (message) => consumed.push(message.uuid!),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      const migrate = sessionLog.migrateToV2.bind(sessionLog)
+      let fail = true
+      vi.spyOn(sessionLog, 'migrateToV2').mockImplementation(async () => {
+        if (fail) {
+          fail = false
+          throw new Error('migration failed')
+        }
+        return migrate()
+      })
+
+      session.enqueueUserMessage(structuredUserMsg('first-attachment') as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      expect(session.queueDepth).toBe(1)
+      expect(consumed).toEqual([])
+      expect(requests).toEqual([])
+      expect(JSON.stringify((session as unknown as { history: unknown[] }).history)).not.toContain('upload-1')
+      expect(logOf(session).events.some((event) => event.type === 'user')).toBe(false)
+
+      session.enqueueUserMessage({ ...userMsg('later input'), uuid: 'later' } as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(3))
+      expect(consumed).toEqual(['first-attachment', 'later'])
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[0].messages)).toContain('Upload id: upload-1')
+      expect(JSON.stringify(requests[0].messages)).not.toContain('later input')
+      expect(logOf(session).events.filter((event) => event.type === 'user').map((event) =>
+        (event as unknown as { uuid: string }).uuid)).toEqual(['first-attachment', 'later'])
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('retries a failed pending prompt when later input is already queued', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const dir = await tempDir('native-migration-queued-retry-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([textTurn('first ok'), textTurn('second ok')], requests)
+    const session = provider.createSession({ id: 'migration-queued-retry', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      const migrate = sessionLog.migrateToV2.bind(sessionLog)
+      const gate = deferred<void>()
+      let first = true
+      vi.spyOn(sessionLog, 'migrateToV2').mockImplementation(async () => {
+        if (first) {
+          first = false
+          await gate.promise
+          throw new Error('migration failed')
+        }
+        return migrate()
+      })
+      session.enqueueUserMessage(structuredUserMsg('first-attachment') as never)
+      session.enqueueUserMessage({ ...userMsg('already queued'), uuid: 'later' } as never)
+      await vi.waitFor(() => expect(sessionLog.migrateToV2).toHaveBeenCalledOnce())
+      gate.resolve()
+
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(3))
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[0].messages)).toContain('Upload id: upload-1')
+      expect(JSON.stringify(requests[0].messages)).not.toContain('already queued')
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('keeps a raw append failure pending and withdraws it through every queued-input path', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const dir = await tempDir('native-append-withdraw-')
+    try {
+      for (const mode of ['clear', 'drain', 'cancel'] as const) {
+        const provider = providerWithStreamer([textTurn('after withdrawal')], dir)
+        const session = provider.createSession({ id: `append-withdraw-${mode}`, cwd: dir })
+        const frames: Frame[] = []
+        void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+        const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+        const originalAppend = sessionLog.append.bind(sessionLog)
+        vi.spyOn(sessionLog, 'append').mockImplementation((event) => {
+          if (event.type === 'user' && event.uuid === 'withdraw-me') throw new Error('append failed')
+          return originalAppend(event)
+        })
+
+        session.enqueueUserMessage(structuredUserMsg('withdraw-me') as never)
+        await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+        await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+        expect(session.queueDepth).toBe(1)
+        expect(JSON.stringify((session as unknown as { history: unknown[] }).history)).not.toContain('upload-1')
+
+        if (mode === 'clear') expect(session.clearQueuedInput()).toBe(1)
+        else if (mode === 'drain') {
+          expect(session.drainQueuedInput!().map((message) => message.uuid)).toEqual(['withdraw-me'])
+        } else await session.interrupt?.({ cancelQueued: true })
+        expect(session.queueDepth).toBe(0)
+        expect(logOf(session).events.some((event) => event.type === 'user')).toBe(false)
+        await session.destroy()
+      }
+    } finally {
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('restores an appended prompt exactly once when a later projection fails', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const dir = await tempDir('native-projection-retry-')
+    const seeded = NativeSessionLog.open({ stateDir: dir, id: 'projection-failure', cwd: dir, resume: false })
+    await seeded.migrateToV2()
+    seeded.append({
+      type: 'user', uuid: 'old-pdf', session_id: 'projection-failure', parent_tool_use_id: null,
+      timestamp: '2026-11-13T00:00:00.000Z',
+      message: { role: 'user', content: [{
+        type: 'file',
+        attachment: {
+          id: 'old-upload', name: 'old.pdf', size: 4, digest: 'b'.repeat(64), path: join(dir, 'old.pdf'),
+          mediaType: 'application/pdf', modelForm: 'pdf-document',
+        },
+      }] },
+    })
+    await seeded.flush()
+    await seeded.close()
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([], requests)
+    const session = provider.createSession({ id: 'projection-failure', cwd: dir, resume: 'projection-failure' })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage({ ...userMsg('new prompt'), uuid: 'new-prompt' } as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+      expect(requests).toEqual([])
+      const history = (session as unknown as { history: Array<{ content: unknown[] }> }).history
+      expect(history.filter((message) => JSON.stringify(message).includes('old-upload'))).toHaveLength(1)
+      expect(history.filter((message) => JSON.stringify(message).includes('new prompt'))).toHaveLength(1)
+      expect(logOf(session).events.filter((event) => event.type === 'user')).toHaveLength(2)
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
   })
 
   it('a plain interrupt keeps the queued turn for the next turn', async () => {

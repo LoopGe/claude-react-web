@@ -16,6 +16,7 @@ import type { FileBlock } from '../shared/attachments.js'
 import { createPushable } from './pushable.js'
 import { fileHandleText } from '../shared/upload-handle.js'
 import { NativeProvider } from './providers/native/native-provider.js'
+import { nativeFileHandleText } from './providers/native/attachment-projection.js'
 import { __setConfigForTest } from './config.js'
 import { rmRf } from './__test-utils__/index.js'
 
@@ -377,7 +378,10 @@ describe('native provider attachment boundary', () => {
       const userMessage = requests[0]!.filter((message) => (message as { role?: string }).role === 'user').at(-1)
       const content = (userMessage as { content: unknown[] }).content
       if (fidelity) {
-        expect(content).toEqual([resolved])
+        expect(content).toEqual([{
+          type: 'text',
+          text: nativeFileHandleText({ ...resolved.attachment, modelForm: 'handle' }),
+        }])
       } else {
         expect(content).toEqual([{
           type: 'text',

@@ -201,6 +201,7 @@ export class NativeProvider implements AgentProvider {
         id: opts.id,
         cwd: opts.cwd ?? process.cwd(),
         stateDir: this.stateDir,
+        uploadStore: this.uploadStore,
         resume: opts.resume,
         forkSession: opts.forkSession,
         resumeSessionAt: opts.resumeSessionAt,

@@ -33,6 +33,12 @@ describe('frames', () => {
     expect(block.is_error).toBe(false)
   })
 
+  it('uses the caller-supplied tool result UUID without replacing its text-only UI content', () => {
+    const f = toolResultFrame(ctx, 't1', 'summary', false, 'shared-result-uuid')
+    expect(f.uuid).toBe('shared-result-uuid')
+    expect(f.message.content[0].content).toEqual([{ type: 'text', text: 'summary' }])
+  })
+
   it('api_retry frame uses the client contract field names', () => {
     const f = apiRetryFrame(ctx, { attempt: 3, maxRetries: 10, delayMs: 26_000 })
     expect(f.subtype).toBe('api_retry')

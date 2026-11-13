@@ -43,8 +43,8 @@ export function defaultFrameContext(sessionId: string, parentToolUseId?: string 
   return { sessionId, uuid: () => crypto.randomUUID(), parentToolUseId: parentToolUseId ?? null }
 }
 
-function base(ctx: FrameContext, type: string): Record<string, unknown> {
-  return { type, session_id: ctx.sessionId, uuid: ctx.uuid(), parent_tool_use_id: ctx.parentToolUseId ?? null }
+function base(ctx: FrameContext, type: string, uuid = ctx.uuid()): Record<string, unknown> {
+  return { type, session_id: ctx.sessionId, uuid, parent_tool_use_id: ctx.parentToolUseId ?? null }
 }
 
 export function assistantFrame(
@@ -65,9 +65,9 @@ export function assistantFrame(
   } as AgentMessage
 }
 
-export function toolResultFrame(ctx: FrameContext, toolUseId: string, text: string, isError: boolean): Frame {
+export function toolResultFrame(ctx: FrameContext, toolUseId: string, text: string, isError: boolean, uuid?: string): Frame {
   return {
-    ...base(ctx, 'user'),
+    ...base(ctx, 'user', uuid),
     message: {
       role: 'user',
       content: [{

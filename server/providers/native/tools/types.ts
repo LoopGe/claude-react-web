@@ -1,4 +1,6 @@
 // server/providers/native/tools/types.ts
+import type { NativeFileBlock } from '../session-log/format.js'
+
 export class ToolInputError extends Error {}
 
 /** Map a stat failure onto a tool error: a missing target is the model's input
@@ -17,7 +19,10 @@ export interface ToolContext {
 }
 
 export interface ToolOutcome {
+  /** Text-only UI summary. Structured content, when present, is the canonical
+   * model/log result and normally starts with the same summary TextBlock. */
   text: string
+  content?: Array<{ type: 'text'; text: string } | NativeFileBlock>
   isError?: boolean
 }
 

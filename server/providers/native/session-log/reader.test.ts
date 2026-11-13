@@ -244,6 +244,30 @@ describe('native history reader', () => {
     expect(entries.map((entry) => entry.index)).toEqual([0, 1])
     expect(JSON.stringify(entries)).not.toContain('session/attachments')
   })
+  it('restores public top-level files and omits structured files inside tool results', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    await log.migrateToV2()
+    const attachment = {
+      id: 'upload-1', name: 'notes.txt', size: 123, digest: 'e'.repeat(64),
+      path: '/registry/notes.txt', mediaType: 'text/plain', modelForm: 'handle' as const,
+    }
+    log.append({ type: 'user', uuid: 'structured', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-13T00:00:00.000Z', message: { role: 'user', content: [{ type: 'file', attachment }] } })
+    log.append({ type: 'user', uuid: 'result', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-13T00:00:01.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'text', text: 'read notes.txt' }, { type: 'file', attachment }], is_error: false }] } })
+    await log.flush()
+    await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    const messages = page.messages as Array<{ uuid: string; message: { content: Array<{ type: string; attachment?: unknown; content?: unknown[] }> } }>
+    expect(messages[0].message.content[0]).toEqual({
+      type: 'file', attachment: { id: attachment.id, name: attachment.name, size: attachment.size, digest: attachment.digest },
+    })
+    expect(messages[1].message.content[0].content).toEqual([{ type: 'text', text: 'read notes.txt' }])
+    expect(pageText(page)).not.toContain('/registry/notes.txt')
+    expect(pageText(page)).not.toContain('modelForm')
+    expect(pageText(page)).not.toContain('mediaType')
+    expect(JSON.stringify(await readNativeHistoryEntries(dir, 's1'))).not.toContain('/registry/notes.txt')
+  })
   it('returns an empty page for a missing log', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
     expect(await readNativeHistoryPage(dir, 'nope', { limit: 10 })).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })

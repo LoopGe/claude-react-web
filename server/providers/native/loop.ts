@@ -4,6 +4,20 @@ import { assistantFrame, isRetainedThinkingBlock, resultFrame, streamEventFrame,
 import type { CanonicalEvent, CanonicalUsagePartial } from './canonical.js'
 import type { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
+import { projectNativeMessages, type NativeProjectionOptions } from './attachment-projection.js'
+import type { NativeFileBlock } from './session-log/format.js'
+
+export interface CanonicalToolResult {
+  type: 'tool_result'
+  tool_use_id: string
+  content: Array<{ type: 'text'; text: string } | NativeFileBlock>
+  is_error: boolean
+}
+
+export interface PersistedToolResult {
+  uuid: string
+  result: CanonicalToolResult
+}
 
 export interface LoopDeps {
   stream(req: { model: string; system: string; tools: unknown[]; messages: unknown[]; signal: AbortSignal }): AsyncIterable<CanonicalEvent>
@@ -20,6 +34,11 @@ export interface LoopDeps {
    *  ordinary permission denials. */
   requestPermission(toolName: string, input: Record<string, unknown>, toolUseId: string, signal: AbortSignal): Promise<{ allowed: boolean; input: Record<string, unknown>; message?: string; questionResult?: boolean }>
   emit(frame: AgentMessage): void
+  /** Append the canonical result exactly once. The same UUID is passed to the
+   * text-only UI frame, so disk replay and live rendering share identity. */
+  persistToolResult(result: PersistedToolResult): void
+  /** Registry/state context for the per-round canonical request projection. */
+  attachmentProjection: NativeProjectionOptions
   system: string
   /** Emit the terminal result frame at the end of the turn (default true). A
    *  nested (sidechain) runner sets this to false: its frames belong to a
@@ -99,7 +118,7 @@ export async function runTurn(
     let roundUsage: Usage = { input_tokens: 0, output_tokens: 0 }
     for await (const ev of deps.stream({
       model, system: deps.system, tools: deps.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.schema })),
-      messages: history, signal,
+      messages: await projectNativeMessages(history, deps.attachmentProjection, signal), signal,
     })) {
       switch (ev.kind) {
         case 'message_start': {
@@ -165,7 +184,7 @@ export async function runTurn(
       if (capped && stopReason !== 'end_turn') isError = true
       break
     }
-    const results: unknown[] = []
+    const results: CanonicalToolResult[] = []
     if (capped) {
       isError = true
       finalText = content.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text).join('')
@@ -204,6 +223,7 @@ export async function runTurn(
         continue
       }
       let text: string
+      let resultContent: CanonicalToolResult['content'] | undefined
       let runFailed = false
       try {
         const execute = (taskSignal: AbortSignal) =>
@@ -218,12 +238,13 @@ export async function runTurn(
             }, execute, signal, ctx.parentToolUseId ?? undefined)
           : await execute(signal)
         text = outcome.text
+        resultContent = outcome.content
         runFailed = outcome.isError ?? false
       } catch (err) {
         text = err instanceof Error ? err.message : String(err)
         runFailed = true
       }
-      results.push({ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text }], is_error: runFailed })
+      results.push({ type: 'tool_result', tool_use_id: call.id, content: resultContent ?? [{ type: 'text', text }], is_error: runFailed })
     }
     // An abort mid-response leaves tool_use blocks unanswered. The API
     // requires every tool_use to be matched by a tool_result in the next user
@@ -233,9 +254,13 @@ export async function runTurn(
       results.push({ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: 'aborted' }], is_error: true })
     }
     // tool_result frames are built with the caller's frameCtx, so they carry
-    // the REAL session id.
-    for (const r of results) {
-      deps.emit(toolResultFrame(ctx, (r as { tool_use_id: string }).tool_use_id, (r as { content: Array<{ text: string }> }).content[0].text, (r as { is_error?: boolean }).is_error ?? false))
+    // the REAL session id. Persistence and the UI share one minted UUID; the
+    // frame deliberately carries only the text summary, never internal files.
+    for (const result of results) {
+      const uuid = ctx.uuid()
+      deps.persistToolResult({ uuid, result })
+      const summary = result.content.find((block): block is { type: 'text'; text: string } => block.type === 'text')?.text ?? ''
+      deps.emit(toolResultFrame(ctx, result.tool_use_id, summary, result.is_error, uuid))
     }
     history.push({ role: 'user', content: results })
     if (capped) break

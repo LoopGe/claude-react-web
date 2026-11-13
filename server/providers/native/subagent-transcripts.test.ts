@@ -165,6 +165,28 @@ describe('projectNativeSubagentLine', () => {
     expect(assistant.parent_tool_use_id).toBe(AGENT)
     expect(toolResult.parent_tool_use_id).toBe(AGENT)
   })
+
+  it('removes server-only attachment data from standalone prompts and tool results', () => {
+    const attachment = {
+      id: 'upload-1', name: 'notes.txt', size: 4, digest: 'a'.repeat(64),
+      path: '/private/registry/notes.txt', mediaType: 'text/plain', modelForm: 'handle',
+    }
+    const prompt = sidechainUser('file-prompt', AGENT, [{ type: 'file', attachment }]) as RawLine
+    const result = sidechainUser('file-result', AGENT, [{
+      type: 'tool_result', tool_use_id: 'inner-tool',
+      content: [{ type: 'text', text: 'read notes.txt' }, { type: 'file', attachment }],
+    }]) as RawLine
+
+    const projectedPrompt = projectNativeSubagentLine(prompt, SESSION)
+    const projectedResult = projectNativeSubagentLine(result, SESSION)
+    expect(JSON.stringify([projectedPrompt, projectedResult])).not.toContain('/private/registry')
+    expect(JSON.stringify([projectedPrompt, projectedResult])).not.toContain('modelForm')
+    expect((projectedPrompt as { message: { content: unknown[] } }).message.content).toEqual([{
+      type: 'file', attachment: { id: attachment.id, name: attachment.name, size: attachment.size, digest: attachment.digest },
+    }])
+    expect(firstToolResultContent(projectedResult)).toEqual([{ type: 'text', text: 'read notes.txt' }])
+    expect((prompt.message as { content: Array<{ attachment: unknown }> }).content[0].attachment).toBe(attachment)
+  })
 })
 
 describe('readNativeSubagentTranscript', () => {

@@ -1,7 +1,7 @@
 // server/providers/native/subagent.ts
 import type { AgentMessage } from '../../agent-message.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
-import { runTurn, type LoopDeps } from './loop.js'
+import { runTurn, type LoopDeps, type PersistedToolResult } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
 import type { Frame, FrameContext } from './frames.js'
 import type { NativeTaskManager } from './task-manager.js'
@@ -10,6 +10,7 @@ import type { EffortLevel } from './anthropic-stream.js'
 import { profileFromDefinition, type NativeAgentProfile } from './agent-profile.js'
 import { filterToolsForProfile } from './agent-tools.js'
 import type { NativeSkillView } from './skills.js'
+import type { NativeProjectionOptions } from './attachment-projection.js'
 import { isValidNativeMaxTurns } from './session-log/format.js'
 import type { NativeSubagentDescriptorEvent } from './session-log/format.js'
 import {
@@ -59,6 +60,10 @@ export interface AgentToolDeps {
   /** The session's persist+push path. Parentage comes from the nested frame
    *  context, so this is forwarded unchanged. */
   emit(frame: AgentMessage): void
+  /** Canonical nested result persistence; parentage is explicit because the
+   * shared session log also persists main-thread results. */
+  persistToolResult(result: PersistedToolResult, parentToolUseId: string | null): void
+  attachmentProjection: NativeProjectionOptions
   /** Durable catalog identity. Descriptors deliberately bypass emit and model
    *  history; a nested request may start only after this append resolves. */
   appendDescriptor(
@@ -209,6 +214,8 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
               }
               deps.emit(frame)
             },
+            persistToolResult: (result) => deps.persistToolResult(result, nestedCtx.parentToolUseId ?? null),
+            attachmentProjection: deps.attachmentProjection,
             system: nestedSystem,
             emitResult: false,
           },

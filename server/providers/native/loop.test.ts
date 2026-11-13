@@ -64,6 +64,8 @@ const baseDeps = (over: Partial<LoopDeps>): LoopDeps => ({
   tasks: new NativeTaskManager(() => {}),
   requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
   emit: () => {},
+  persistToolResult: () => {},
+  attachmentProjection: { stateDir: process.cwd() },
   system: 'SYS',
   ...over,
 })
@@ -702,6 +704,72 @@ describe('runTurn', () => {
     expect(assistant.message.content[0]).toEqual({ type: 'thinking', thinking: 'plan', signature: 'sig-1sig-2' })
     const second = s.calls[1] as Array<{ role: string; content: unknown[] }>
     expect(second[1].content[0]).toEqual({ type: 'thinking', thinking: 'plan', signature: 'sig-1sig-2' })
+  })
+
+  it('projects structured files on every tool round without modifying canonical history', async () => {
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'Read', '{"file_path":"a.txt"}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const attachment = {
+      id: 'upload-1', name: 'notes.txt', size: 4, digest: 'a'.repeat(64),
+      path: '/registry/notes.txt', modelForm: 'handle' as const,
+    }
+    const initial = { role: 'user' as const, content: [{ type: 'file', attachment }, { type: 'text', text: 'read it' }] }
+    const history: unknown[] = []
+
+    await runTurn(
+      baseDeps({ stream: s.stream.bind(s) }),
+      defaultFrameContext('sess-1'), history, initial, 'm1', new AbortController().signal,
+    )
+
+    expect(s.calls).toHaveLength(2)
+    for (const request of s.calls) expect(JSON.stringify(request)).not.toContain('"type":"file"')
+    expect(JSON.stringify(s.calls[0])).toContain('Upload id: upload-1')
+    expect(JSON.stringify(s.calls[1])).toContain('Upload id: upload-1')
+    expect(history[0]).toEqual(initial)
+    expect((history[0] as { content: unknown[] }).content[0]).toBe(initial.content[0])
+  })
+
+  it('persists structured tool content once and shares its UUID with the text-only UI frame', async () => {
+    const attachment = {
+      id: 'upload-1', name: 'notes.txt', size: 4, digest: 'a'.repeat(64),
+      path: '/registry/notes.txt', modelForm: 'handle' as const,
+    }
+    const tool: ToolDef = {
+      ...readTool,
+      async run() {
+        return {
+          text: 'read notes.txt',
+          content: [{ type: 'text', text: 'read notes.txt' }, { type: 'file', attachment }],
+        }
+      },
+    }
+    const s = scriptedStreamer([
+      [startStop, ...toolUseBlock(0, 't1', 'Read', '{}'), deltaStop('tool_use')],
+      [startStop, ...textBlock(0, 'done'), deltaStop('end_turn')],
+    ])
+    const emitted: Frame[] = []
+    const persisted: Array<{ uuid: string; result: { content: unknown[] } }> = []
+    const history: unknown[] = []
+
+    await runTurn(
+      baseDeps({
+        stream: s.stream.bind(s), tools: [tool], emit: (frame) => emitted.push(frame as Frame),
+        persistToolResult: (record) => persisted.push(record),
+      }),
+      defaultFrameContext('sess-1'), history, { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      'm1', new AbortController().signal,
+    )
+
+    const frame = emitted.find((candidate) => candidate.type === 'user')!
+    expect(persisted).toHaveLength(1)
+    expect(frame.uuid).toBe(persisted[0].uuid)
+    expect((frame.message.content[0] as { content: unknown }).content).toEqual([{ type: 'text', text: 'read notes.txt' }])
+    expect(persisted[0].result.content).toEqual([{ type: 'text', text: 'read notes.txt' }, { type: 'file', attachment }])
+    expect(JSON.stringify(s.calls[1])).not.toContain('"type":"file"')
+    expect(JSON.stringify(s.calls[1])).toContain('Upload id: upload-1')
+    expect(JSON.stringify(history.at(-2))).toContain('"type":"file"')
   })
 })
 

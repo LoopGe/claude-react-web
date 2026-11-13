@@ -24,7 +24,7 @@ import { config, type ProviderProfile } from '../../config.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
-import { runTurn, type LoopDeps } from './loop.js'
+import { runTurn, type LoopDeps, type PersistedToolResult } from './loop.js'
 import { streamAnthropicMessages, EFFORT_LEVELS, type EffortLevel } from './anthropic-stream.js'
 import type { CanonicalEvent } from './canonical.js'
 import { apiRetryFrame, defaultFrameContext, informationalFrame, resultFrame, type Frame, type FrameContext, type Usage } from './frames.js'
@@ -62,6 +62,11 @@ import type { SessionToolProfile } from '../../../shared/tool-profile.js'
 import { formatSupplementInstruction, type SupplementOutcome } from '../steering-format.js'
 import { isQuestionResult } from '../../permission-broker.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
+import type { UploadStore } from '../../upload-store.js'
+
+interface PendingDurableInitial {
+  message: AgentUserMessage
+}
 
 const log = createLogger('native')
 
@@ -85,6 +90,25 @@ function persistedUserMessage(message: { content: unknown }): { role: 'user'; co
     role: 'user',
     content: typeof content === 'string' ? [{ type: 'text', text: content }] : (content as unknown[]),
   }
+}
+
+/** Assign the generic Task-3 model form at the persistence boundary. Task 5
+ * extends this decision for eligible PDFs; request projection never rewrites it. */
+function nativeUserMessage(message: { content: unknown }): { role: 'user'; content: unknown[] } {
+  const persisted = persistedUserMessage(message)
+  return {
+    ...persisted,
+    content: persisted.content.map((value) => {
+      if (typeof value !== 'object' || value === null || (value as { type?: unknown }).type !== 'file') return value
+      const block = value as { type: 'file'; attachment: Record<string, unknown> }
+      return { ...block, attachment: { ...block.attachment, modelForm: 'handle' } }
+    }),
+  }
+}
+
+function containsStructuredFile(content: unknown[]): boolean {
+  return content.some((block) => typeof block === 'object' && block !== null
+    && (block as { type?: unknown }).type === 'file')
 }
 
 /** `/name args` — the composer's slash-command shape for a user-invoked skill.
@@ -170,6 +194,9 @@ export interface NativeSessionOptions {
   cwd: string
   /** Resolved native state dir (`<stateDir>/native-sessions/<id>/session.v1.jsonl`). */
   stateDir: string
+  /** Shared upload registry, injected by the provider for authorized byte
+   * projections. Plain handle-only sessions do not read it. */
+  uploadStore?: UploadStore
   /** Resume this session's own log (non-fork), or the source log id for a fork. */
   resume?: string
   /** Fork from `resume`'s log into `id` instead of resuming it. */
@@ -245,6 +272,9 @@ export class NativeSession implements ProviderSessionHandle {
 
   private readonly output: Pushable<AgentMessage>
   private readonly input: AgentUserMessage[] = []
+  /** Consumed from FIFO but not yet appended. It remains withdrawable and is
+   * always retried before any later input after a migration/append failure. */
+  private pendingDurableInitial: PendingDurableInitial | null = null
   private readonly ctx: FrameContext
   /** Append-only persistence for this session. Every constructor path opens it
    *  (fresh create, resume, or fork-seeded) before `system/init` is pushed. */
@@ -409,6 +439,8 @@ export class NativeSession implements ProviderSessionHandle {
         this.persistFrame(frame)
         this.output.push(frame)
       },
+      persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
+      attachmentProjection: { uploadStore: opts.uploadStore, stateDir: opts.stateDir },
       appendDescriptor: async (input) => await this.log.appendDurable({
         ...input,
         timestamp: new Date().toISOString(),
@@ -774,7 +806,7 @@ export class NativeSession implements ProviderSessionHandle {
   readonly processExited: Promise<unknown> = Promise.resolve()
 
   get queueDepth(): number {
-    return this.input.length
+    return this.input.length + (this.pendingDurableInitial ? 1 : 0)
   }
 
   get messages(): AsyncIterable<AgentMessage> {
@@ -874,52 +906,50 @@ export class NativeSession implements ProviderSessionHandle {
     return testStream ? testStream(req) : this.defaultStream(req, opts)
   }
 
-  /** Persist the durable half of the frame stream: model-visible assistant
-   *  messages and tool_result user messages (main thread AND sidechain — the
-   *  latter carry their spawning tool_use id, so replay can keep them out of
-   *  the main history while the transcript still renders them). Everything
-   *  else (stream_event, system/init, result, api_retry) is UI-only and never
-   *  enters the log. Fire-and-forget — the turn-end flush is the barrier. */
+  /** Persist an assistant UI frame. Canonical tool results use
+   * `persistToolResult` below instead: their structured content is not present
+   * on the deliberately text-only UI frame. */
   private persistFrame(frame: AgentMessage): void {
     const f = frame as Frame
-    if (f.type === 'assistant') {
-      this.log.append({
-        type: 'assistant',
-        uuid: f.uuid!,
-        session_id: this.opts.id,
-        parent_tool_use_id: f.parent_tool_use_id ?? null,
-        timestamp: new Date().toISOString(),
-        message: f.message,
-      })
-      // Keep the flush promise so `requestPermission` can await it before any
-      // tool executes. The catch keeps a text-only turn (which never reaches
-      // requestPermission) from producing an unhandled rejection; a tool turn
-      // re-awaits the same promise and surfaces the failure as its error.
-      const flush = this.log.flush()
-      this.assistantFlush = flush
-      void flush.catch((err) => log.warn(`[${this.opts.id}] failed to flush assistant frame:`, err))
-      // One assistant frame = one API round. Summing here (rather than from
-      // the turn's final usage) keeps the live per-model totals identical to
-      // what `restoreUsage` rebuilds from the log.
-      const usage = usageOf(f.message.usage)
-      if (usage) {
-        const model = typeof f.message.model === 'string' && f.message.model ? f.message.model : this.model
-        this.usageByModel.set(
-          model,
-          addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage),
-        )
-      }
-    } else if (f.type === 'user') {
-      this.log.append({
-        type: 'user',
-        uuid: f.uuid!,
-        session_id: this.opts.id,
-        parent_tool_use_id: f.parent_tool_use_id ?? null,
-        timestamp: new Date().toISOString(),
-        message: persistedUserMessage(f.message),
-      })
-      flushInBackground(this.log, this.opts.id, 'tool result')
+    if (f.type !== 'assistant') return
+    this.log.append({
+      type: 'assistant',
+      uuid: f.uuid!,
+      session_id: this.opts.id,
+      parent_tool_use_id: f.parent_tool_use_id ?? null,
+      timestamp: new Date().toISOString(),
+      message: f.message,
+    })
+    // Keep the flush promise so `requestPermission` can await it before any
+    // tool executes. The catch keeps a text-only turn (which never reaches
+    // requestPermission) from producing an unhandled rejection; a tool turn
+    // re-awaits the same promise and surfaces the failure as its error.
+    const flush = this.log.flush()
+    this.assistantFlush = flush
+    void flush.catch((err) => log.warn(`[${this.opts.id}] failed to flush assistant frame:`, err))
+    // One assistant frame = one API round. Summing here (rather than from
+    // the turn's final usage) keeps the live per-model totals identical to
+    // what `restoreUsage` rebuilds from the log.
+    const usage = usageOf(f.message.usage)
+    if (usage) {
+      const model = typeof f.message.model === 'string' && f.message.model ? f.message.model : this.model
+      this.usageByModel.set(
+        model,
+        addUsage(this.usageByModel.get(model) ?? { input_tokens: 0, output_tokens: 0 }, usage),
+      )
     }
+  }
+
+  private persistToolResult(record: PersistedToolResult, parentToolUseId: string | null): void {
+    this.log.append({
+      type: 'user',
+      uuid: record.uuid,
+      session_id: this.opts.id,
+      parent_tool_use_id: parentToolUseId,
+      timestamp: new Date().toISOString(),
+      message: { role: 'user', content: [record.result] },
+    })
+    flushInBackground(this.log, this.opts.id, 'tool result')
   }
 
   /** A turn that throws after its assistant message entered the log (a failed
@@ -1042,12 +1072,10 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   private async pumpLoop(): Promise<void> {
-    while (!this._closed && this.input.length > 0) {
-      const next = this.input.shift() as AgentUserMessage
-      this.opts.onUserMessageConsumed?.(next)
-      // The turn has started, so mid-run steering admission opens. It stays
-      // open until the manager settles the turn (noteTurnSettled).
-      this.steeringOpen = true
+    while (!this._closed && (this.pendingDurableInitial !== null || this.input.length > 0)) {
+      const pending = this.pendingDurableInitial ?? { message: this.input.shift() as AgentUserMessage }
+      this.pendingDurableInitial = pending
+      const next = pending.message
       // Fresh per-turn signal, armed BEFORE the persistence await: interrupt()
       // kills THIS turn only, and must stay responsive while the consumed
       // turn's write is in flight (the session survives for the next message).
@@ -1060,7 +1088,10 @@ export class NativeSession implements ProviderSessionHandle {
       // `lastUsage` here would make `restoreUsage` sum it again after restart.
       let endUsage: Usage | undefined
       let initialMessages: Array<{ role: 'user'; content: unknown[] }> = []
+      let appendedInitialMessages: Array<{ role: 'user'; content: unknown[] }> = []
       let initialMessagesOwned = false
+      let rawAppended = false
+      let pauseForDurableRetry = false
       try {
         // Capture every persona-controlled execution field at one boundary.
         // Discovery/flush/MCP awaits below must not let a live control switch
@@ -1087,14 +1118,22 @@ export class NativeSession implements ProviderSessionHandle {
           skillError = err
         }
 
-        // The consumed turn must be persisted on EVERY path — the client has
-        // already marked it "sent". Keep the original content as the user
-        // event, then append the optional canonical instruction as history-only
-        // metadata. One flush covers both before the model can see either.
+        // Persist the raw prompt before consumption is acknowledged. A v1 log
+        // upgrades before its first structured occurrence; a failed migration
+        // or raw append leaves `pendingDurableInitial` withdrawable and pauses
+        // the FIFO so later input cannot overtake it.
         const timestamp = new Date(this.receivedAt.get(next)!).toISOString()
+        const persisted = nativeUserMessage(next.message)
+        if (this.pendingDurableInitial !== pending) {
+          throw new Error('initial message was withdrawn before persistence')
+        }
+        if (containsStructuredFile(persisted.content)) await this.log.migrateToV2()
+        if (this.pendingDurableInitial !== pending) {
+          throw new Error('initial message was withdrawn before persistence')
+        }
         const rawMessage = {
           role: 'user',
-          content: next.message.content,
+          content: typeof next.message.content === 'string' ? next.message.content : persisted.content,
         } as { role: 'user'; content: unknown[] }
         initialMessages = [rawMessage]
         this.log.append({
@@ -1103,8 +1142,10 @@ export class NativeSession implements ProviderSessionHandle {
           session_id: this.opts.id,
           parent_tool_use_id: null,
           timestamp,
-          message: persistedUserMessage(next.message),
+          message: persisted,
         })
+        rawAppended = true
+        appendedInitialMessages = [rawMessage]
         if (invocation) {
           const instruction = {
             role: 'user',
@@ -1117,7 +1158,13 @@ export class NativeSession implements ProviderSessionHandle {
             body: invocation.body,
             timestamp,
           })
+          appendedInitialMessages.push(instruction)
         }
+        this.pendingDurableInitial = null
+        this.opts.onUserMessageConsumed?.(next)
+        // The prompt is now durable in the writer's event stream, so steering
+        // admission may open. It closes when the manager settles the turn.
+        this.steeringOpen = true
         await this.log.flush()
         if (skillError !== undefined) throw skillError
         // MCP discovery is awaited per turn, not at spawn: a slow server never
@@ -1152,6 +1199,8 @@ export class NativeSession implements ProviderSessionHandle {
               this.persistFrame(frame)
               this.output.push(frame)
             },
+            persistToolResult: (result) => this.persistToolResult(result, null),
+            attachmentProjection: { uploadStore: this.opts.uploadStore, stateDir: this.opts.stateDir },
             system: turnSystem,
             fastModeState: () => (this.fastMode ? 'on' : 'off'),
             drainSupplement: () => this.injectSupplements(),
@@ -1171,11 +1220,18 @@ export class NativeSession implements ProviderSessionHandle {
         endReason = res.isError ? 'error' : 'completed'
         if (!res.isError) endUsage = res.usage
       } catch (err) {
-        // Before runTurn's ownership callback, no model request could have
-        // consumed the initial messages. Restore that exact ordered pair so
-        // the next live request matches disk replay. Once the loop owns them,
-        // its history append is the only copy.
-        if (!initialMessagesOwned) this.history.push(...initialMessages)
+        // A pre-append failure owns no canonical history and keeps the pending
+        // prompt at the FIFO head. Once raw append succeeds, later failures
+        // restore exactly the appended prefix (raw plus any appended skill),
+        // unless runTurn already took ownership of that same prefix.
+        if (!initialMessagesOwned) this.history.push(...appendedInitialMessages)
+        if (!rawAppended && this.pendingDurableInitial === pending) {
+          pauseForDurableRetry = true
+        } else if (rawAppended && this.pendingDurableInitial === pending) {
+          // A skill append can fail after the raw append. Never retry the raw
+          // event into a duplicate; the restored history matches disk exactly.
+          this.pendingDurableInitial = null
+        }
         // The assistant message may already be in `history` with unanswered
         // tool calls (the failure can land at the pre-tool barrier); close
         // them before the next request is built.
@@ -1213,6 +1269,7 @@ export class NativeSession implements ProviderSessionHandle {
       } catch (err) {
         log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)
       }
+      if (pauseForDurableRetry && this.input.length === 0) break
     }
   }
 
@@ -1284,7 +1341,7 @@ export class NativeSession implements ProviderSessionHandle {
   async compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void> {
     if (this._closed) throw new Error('session is closed')
     if (this.turnAbort !== null) throw new Error('a turn is in flight')
-    if (this.input.length > 0) throw new Error('input is queued')
+    if (this.queueDepth > 0) throw new Error('input is queued')
     // An empty summary would persist a `session/compact` line the parser
     // rejects as corrupt (it requires a non-empty `text`), bricking resume.
     if (!summary.trim()) throw new Error('empty summary')
@@ -1309,11 +1366,13 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   clearQueuedInput(): number {
-    return this.input.splice(0).length
+    return this.drainQueuedInput().length
   }
 
   drainQueuedInput(): AgentUserMessage[] {
-    return this.input.splice(0)
+    const pending = this.pendingDurableInitial
+    this.pendingDurableInitial = null
+    return [...(pending ? [pending.message] : []), ...this.input.splice(0)]
   }
 
   /** Mid-run steering intake: admitted ONLY while a turn is live — i.e. since
@@ -1390,7 +1449,7 @@ export class NativeSession implements ProviderSessionHandle {
     // for the next one — the manager's contract (and claude's Query.interrupt
     // behavior). Only `cancelQueued` drops them; the manager has already
     // drained its host queue and will broadcast the withdrawal.
-    if (opts?.cancelQueued) this.input.splice(0)
+    if (opts?.cancelQueued) this.drainQueuedInput()
     // NO frame emission here — the pumpLoop catch emits the single
     // 'interrupted by user' result frame.
     this.turnAbort?.abort(new Error('interrupted by user'))

@@ -7,6 +7,7 @@ import type { RawLine } from '../../history-reader.js'
 import { normalizeSubagentLine } from '../../subagent-transcripts.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import type { NativeSubagentCatalogEntry } from './session-log/subagents.js'
+import { publicNativeHistoryLine } from './attachment-projection.js'
 
 function hasPrompt(entry: NativeSubagentCatalogEntry): boolean {
   return typeof entry.prompt === 'string' && entry.prompt.trim().length > 0
@@ -20,7 +21,7 @@ function hasPrompt(entry: NativeSubagentCatalogEntry): boolean {
  *  full-recall lines keep their original bytes. */
 export function projectNativeSubagentLine(line: RawLine, sessionId: string): unknown | undefined {
   if (line.type !== 'user' && line.type !== 'assistant') return undefined
-  const standalone = structuredClone(line)
+  const standalone = structuredClone(publicNativeHistoryLine(line))
   delete standalone.parent_tool_use_id
   return normalizeSubagentLine(standalone, sessionId)
 }

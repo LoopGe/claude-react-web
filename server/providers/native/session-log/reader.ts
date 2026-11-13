@@ -31,6 +31,7 @@ import { isSidechainEvent, parseEventLine, parseHeaderLine } from './format.js'
 import type { NativeCompactEvent } from './format.js'
 import { nativeSessionLogPath } from './paths.js'
 import { repairRenderableLines } from './replay.js'
+import { publicNativeHistoryLine } from '../attachment-projection.js'
 
 function emptyPage(): HistoryPage {
   return { messages: [], totalCount: 0, startIndex: 0, hasMore: false }
@@ -176,7 +177,7 @@ export async function readNativeHistoryEntries(
 ): Promise<HistoryEntry[]> {
   const lines = await loadFlooredLines(stateDir, id)
   if (!lines) return []
-  const stream = filterAfterUuid(withRepair(lines), opts.afterUuid)
+  const stream = filterAfterUuid(withRepair(lines), opts.afterUuid).map(publicNativeHistoryLine)
   // This path feeds searchMessages and the transcript seq backfill, both of
   // which must see only top-level turns. Entries keep their FULL-STREAM index
   // — the same index `readNativeHistoryPage` assigns — so a hit's
@@ -202,5 +203,6 @@ export async function readNativeHistoryPage(
 ): Promise<HistoryPage> {
   const lines = await loadFlooredLines(stateDir, id)
   if (!lines) return emptyPage()
-  return paginateRenderable(filterAfterUuid(withRepair(lines), opts.afterUuid), id, opts)
+  const stream = filterAfterUuid(withRepair(lines), opts.afterUuid).map(publicNativeHistoryLine)
+  return paginateRenderable(stream, id, opts)
 }
