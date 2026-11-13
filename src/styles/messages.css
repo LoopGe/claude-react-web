@@ -3165,92 +3165,104 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 }
 
 /* --- Plan card -------------------------------------------------------
-   ExitPlanMode renders the proposed plan inline. Markdown body lives in
-   .plan-card-body; the header carries an icon + status pill (pending /
-   approved / rejected). Amber-tinted to match the plan-mode panel cue.
-   Used both inline in transcripts (ToolUseBlock) and in the permission
-   dialog (PermissionDialog) — keep the styles agnostic of context. */
-.plan-card {
-  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
-  border-left: 3px solid var(--warn);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--warn) 6%, var(--bg-elev));
-  margin: var(--space-2) 0;
-  /* overflow:clip clips to the border-radius (so .plan-card-allowed's
-     bottom background respects the rounded corners) without establishing
-     a new BFC.
-
-     IMPORTANT — do NOT add `min-height: 0` here. In the PermissionDialog
-     this card is a flex child of .modal-section (flex:1; min-height:0;
-     overflow-y:auto). Setting min-height:0 lets the flex algorithm shrink
-     the card below its content height, and `overflow:clip` then silently
-     clips the overflowing markdown — .modal-section never sees overflow,
-     so its scrollbar never appears. With min-height:auto (the default),
-     the card grows to fit its content; when content exceeds the
-     available height, .modal-section overflows and scrolls correctly. */
-  overflow: clip;
+   The approval dialog uses borderless .perm-plan-content so Markdown
+   participates directly in .modal-section overflow measurement. Inline
+   status and disclosure styling live on details.plan-card-collapsible. */
+.perm-plan-content {
+  flex: 0 0 auto;
+}
+.perm-plan-content .plan-card-body {
+  padding: 0;
+}
+.perm-plan-content .plan-card-body > :first-child {
+  margin-top: 0;
+}
+.perm-feedback-title {
+  color: var(--fg);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+.perm-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.perm-plan-actions .btn {
+  min-width: 0;
+  height: 36px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perm-plan-actions .btn-icon {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+}
+.perm-more-trigger {
+  flex: 0 0 auto;
+  align-self: center;
 }
 .plan-card-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, var(--border));
+  border-bottom: 1px solid var(--border);
   font-size: var(--fs-base);
+}
+.plan-card-chevron {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg-muted);
+  transition: transform var(--motion-duration-base) var(--motion-ease-standard);
+}
+details.plan-card-collapsible[data-state="closed"] .plan-card-chevron {
+  transform: rotate(-90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-card-chevron {
+    transition: none;
+  }
 }
 .plan-card-icon {
   font-size: var(--fs-md);
 }
 .plan-card-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-weight: 600;
   color: var(--fg);
 }
 .plan-card-status {
   margin-left: auto;
-  padding: var(--space-0-5) var(--space-2);
-  font-size: var(--fs-2xs);
-  font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--warn) 18%, var(--bg-elev));
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   color: var(--warn-text);
-  border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent);
-  /* Status flips remount the pill (AnimatedDetails key={status}), so this
-     entrance pops the new state in; the color transition lets any in-place
-     state updates (e.g. a live allow channel resolving without a remount)
-     morph smoothly rather than snap. */
-  transition:
-    background-color var(--motion-duration-base) var(--motion-ease-standard),
-    color var(--motion-duration-base) var(--motion-ease-standard),
-    border-color var(--motion-duration-base) var(--motion-ease-standard);
-  animation: plan-status-in var(--motion-duration-base) var(--motion-ease-emphasized) both;
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
-@keyframes plan-status-in {
-  from {
-    opacity: 0;
-    transform: scale(0.88);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .plan-card-status {
-    animation: none;
-    transition: none;
-  }
+.plan-card-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: currentColor;
 }
 .plan-card-status.approved {
-  background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
   color: var(--ok-text);
-  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 }
 .plan-card-status.rejected {
-  background: color-mix(in srgb, var(--danger) 14%, var(--bg-elev));
   color: var(--danger-text);
-  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
 .plan-card-body {
   padding: var(--space-1) var(--space-3-5);
@@ -3268,8 +3280,8 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 }
 .plan-card-allowed {
   padding: var(--space-2) var(--space-3-5) var(--space-2-5);
-  border-top: 1px dashed color-mix(in srgb, var(--warn) 25%, var(--border));
-  background: color-mix(in srgb, var(--warn) 4%, transparent);
+  border-top: 1px dashed var(--border);
+  background: var(--bg-elev-2);
 }
 .plan-card-allowed-label {
   font-size: var(--fs-xs);
@@ -3298,12 +3310,18 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
 /* Collapsible variant — used by Chat to wrap the plan card in a <details>
    so long plans fold by default. The summary doubles as the header. */
 details.plan-card-collapsible {
-  border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+  border: 1px solid var(--border);
   border-left: 3px solid var(--warn);
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--warn) 6%, var(--bg-elev));
+  background: var(--bg-elev);
   margin: var(--space-2) 0;
   overflow: clip;
+}
+details.plan-card-collapsible.approved {
+  border-left-color: var(--ok);
+}
+details.plan-card-collapsible.rejected {
+  border-left-color: var(--danger);
 }
 details.plan-card-collapsible > summary {
   list-style: none;
@@ -3313,7 +3331,7 @@ details.plan-card-collapsible > summary {
 }
 details.plan-card-collapsible > summary::-webkit-details-marker { display: none; }
 details.plan-card-collapsible[data-state="open"] > summary {
-  border-bottom: 1px solid color-mix(in srgb, var(--warn) 25%, var(--border));
+  border-bottom: 1px solid var(--border);
 }
 details.plan-card-collapsible > summary > .plan-card-header {
   border-bottom: none;
@@ -3710,6 +3728,7 @@ details.question-inline-card-minimized {
 }
 /* "Review plan" pill on a minimized pending plan card. Mirrors question-inline-reopen. */
 .plan-card-reopen {
+  flex: 0 0 auto;
   padding: var(--space-0-5) var(--space-2-5);
   font-size: var(--fs-xs);
   font-weight: 600;

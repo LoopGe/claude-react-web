@@ -502,6 +502,8 @@
    see the note in layout.css). */
 .ctx-menu {
   position: fixed;
+  max-height: calc(100vh - var(--space-2));
+  overflow-y: auto;
   min-width: 180px;
   padding: var(--space-1);
   background: var(--bg-elev);

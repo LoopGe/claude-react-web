@@ -15,6 +15,8 @@ import type { PlanTargetMode } from '../hooks/usePermissionChannel'
 import { Markdown } from './Markdown'
 import { useOverlayScrollbar } from '../hooks/useOverlayScrollbar'
 import { Overlay } from './Overlay'
+import { ContextMenu } from './ContextMenu'
+import type { FloatingDismissReason } from '../hooks/floating-surface-registry'
 import { HoverHint } from './HoverHint'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 import { IconClipboardList, IconLock, IconX } from './icons/ToolIcons'
@@ -28,6 +30,18 @@ type PermissionRequestPermission = Extract<PermissionRequest, { kind: 'permissio
  *  needle so `computePlanStatus` classifies the resulting tool_result as
  *  `rejected` (not `approved`), and tells the model the user stopped the turn. */
 const PLAN_STOP_MESSAGE = 'Plan denied by user — stopping the turn.'
+
+function planTargetModeFor(currentMode: PermissionMode | undefined): PlanTargetMode {
+  return currentMode === 'acceptEdits' || currentMode === 'bypassPermissions'
+    ? currentMode
+    : 'default'
+}
+
+const PLAN_MORE_APPROVALS: Array<{ label: string; mode: PlanTargetMode }> = [
+  { label: 'Approve & review each', mode: 'default' },
+  { label: 'Approve & auto-accept edits', mode: 'acceptEdits' },
+  { label: 'Approve & bypass', mode: 'bypassPermissions' },
+]
 
 interface Props {
   open?: boolean
@@ -43,10 +57,8 @@ interface Props {
    *  empty.  May be undefined on first render (before the tool_result
    *  arrives); the dialog re-renders once the map is populated. */
   planContentMap?: ReadonlyMap<string, string>
-  /** The session's current permission mode. On a plan-approval card, the
-   *  approve option matching the current mode is promoted to the primary
-   *  (first, highlighted) button so approving defaults to "keep running the
-   *  way I already chose" rather than silently downgrading the mode. */
+  /** The session's current permission mode. Plan approval preserves the
+   *  executable modes and exits plan/unsupported modes into `default`. */
   currentMode?: PermissionMode
   /** Minimize the dialog (plan requests only). Hides the overlay so the
    *  user can read the transcript; the inline PlanCard provides a reopen. */
@@ -57,6 +69,12 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   const [showRaw, setShowRaw] = useState(false)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState('')
+  const [planView, setPlanView] = useState<'review' | 'feedback'>('review')
+  const feedbackRef = useRef<HTMLTextAreaElement>(null)
+  const requestChangesRef = useRef<HTMLButtonElement>(null)
+  const previousPlanView = useRef<'review' | 'feedback'>('review')
+  const [moreAnchor, setMoreAnchor] = useState<{ x: number; y: number } | null>(null)
+  const moreTriggerRef = useRef<HTMLButtonElement>(null)
   // Ref provides a synchronous guard so that rapid double-clicks
   // can't slip through before React commits the state update.
   const busyRef = useRef(false)
@@ -79,6 +97,47 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   useEffect(() => {
     if (defaultToNo) denyRef.current?.focus()
   }, [defaultToNo, request.id])
+
+  useEffect(() => {
+    if (planView === 'feedback') feedbackRef.current?.focus()
+    else if (previousPlanView.current === 'feedback') requestChangesRef.current?.focus()
+    previousPlanView.current = planView
+  }, [planView])
+
+  const closeMore = (reason?: FloatingDismissReason) => {
+    setMoreAnchor(null)
+    if (reason) return
+    const active = document.activeElement
+    const inMenuFlow =
+      moreTriggerRef.current?.contains(active) ||
+      (active instanceof Element && active.closest('[role="menu"]'))
+    if (inMenuFlow) moreTriggerRef.current?.focus({ preventScroll: true })
+  }
+
+  const moreOpen = moreAnchor !== null
+  useEffect(() => {
+    if (!moreOpen) return
+    const trigger = moreTriggerRef.current
+    if (!trigger) return
+    const syncAnchor = () => {
+      const rect = trigger.getBoundingClientRect()
+      if (rect.width === 0 || rect.height === 0) {
+        setMoreAnchor(null)
+        return
+      }
+      const next = { x: rect.left, y: rect.top - 4 }
+      setMoreAnchor(current => current?.x === next.x && current.y === next.y ? current : next)
+    }
+    const observer = new ResizeObserver(syncAnchor)
+    observer.observe(trigger)
+    const card = trigger.closest('.perm-card')
+    if (card) observer.observe(card)
+    window.addEventListener('resize', syncAnchor)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', syncAnchor)
+    }
+  }, [moreOpen])
 
   const click = (
     d:
@@ -124,26 +183,6 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
     ? (planInput.allowedPrompts as Array<{ tool?: string; prompt?: string }>)
     : []
 
-  // Plan-approval execution-mode options. The one matching the session's
-  // current mode is floated to the front (and rendered as the primary button)
-  // so approving defaults to "keep running the way I already chose" instead of
-  // silently downgrading the mode. `plan` and `default` both map to the
-  // default (review-each) option since there's no distinct "stay in plan".
-  // `auto` is intentionally not offered — it can't function on this backend
-  // (see PERMISSION_MODES in types.ts).
-  const PLAN_APPROVE_OPTIONS: Array<{ mode: PlanTargetMode; label: string; title: string }> = [
-    { mode: 'acceptEdits', label: 'Approve & auto-accept edits', title: 'Approve and auto-accept file edits; other tools still prompt' },
-    { mode: 'default', label: 'Approve & review each', title: 'Approve and review each action as it comes' },
-    { mode: 'bypassPermissions', label: 'Approve & bypass', title: 'Approve and skip all permission prompts (use with care)' },
-  ]
-  const orderedPlanOptions = [...PLAN_APPROVE_OPTIONS].sort(
-    (a, b) => Number(b.mode === currentMode) - Number(a.mode === currentMode),
-  )
-  // Lay the approve buttons out two-per-row (robust to any option count).
-  const planOptionRows: typeof orderedPlanOptions[] = []
-  for (let r = 0; r < orderedPlanOptions.length; r += 2) {
-    planOptionRows.push(orderedPlanOptions.slice(r, r + 2))
-  }
 
   const headline = request.title ?? (
     isPlanRequest
@@ -160,7 +199,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
   return (
     <Overlay
       variant="perm"
-      ariaLabel={isPlanRequest ? 'Plan ready for review' : 'Tool permission required'}
+      ariaLabel={isPlanRequest ? 'Review plan' : 'Tool permission required'}
       open={open}
       onClose={handleEscape}
       backdropDismiss={false}
@@ -174,14 +213,17 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
       <div className="modal-header">
         <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span aria-hidden style={{ display: 'inline-flex' }}>{isPlanRequest ? <IconClipboardList size={16} /> : <IconLock size={16} />}</span>
-          {isPlanRequest ? 'Plan ready for review' : 'Tool permission required'}
+          {isPlanRequest ? 'Review plan' : 'Tool permission required'}
         </h3>
         {onMinimize && (
           <button
             className="btn-icon"
             aria-label="Minimize"
             disabled={busy}
-            onClick={onMinimize}
+            onClick={() => {
+              setMoreAnchor(null)
+              onMinimize()
+            }}
           >
             <IconX size={14} />
           </button>
@@ -189,11 +231,11 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
       </div>
 
       <div className="modal-section" ref={setModalSectionOs}>
-        <div className="perm-headline">{headline}</div>
+        {!isPlanRequest && <div className="perm-headline">{headline}</div>}
         {request.description && <div className="perm-sub">{request.description}</div>}
 
         {isPlanRequest ? (
-          <div className="plan-card" style={{ marginTop: 10 }}>
+          <div className="perm-plan-content">
             <div className="plan-card-body">
               {planText
                 ? <Markdown text={planText} />
@@ -239,13 +281,15 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
           </>
         )}
 
-        <button
-          type="button"
-          className="perm-raw-toggle"
-          onClick={() => setShowRaw((v) => !v)}
-        >
-          {showRaw ? 'Hide raw input' : 'Show raw input'}
-        </button>
+        {!isPlanRequest && (
+          <button
+            type="button"
+            className="perm-raw-toggle"
+            onClick={() => setShowRaw((v) => !v)}
+          >
+            {showRaw ? 'Hide raw input' : 'Show raw input'}
+          </button>
+        )}
         {showRaw && (
           <pre className="perm-raw">{JSON.stringify(request.input, null, 2)}</pre>
         )}
@@ -254,70 +298,109 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
       <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
         {isPlanRequest ? (
           <>
-            {/* Approving a plan exits plan mode and switches the session to
-                the chosen execution mode (the SDK's read-only plan lock is
-                released and replaced). Each button approves AND picks how
-                Claude runs from here. The option matching the session's
-                current mode is promoted to the primary (first) button. */}
-            {planOptionRows.map((row, rowIdx) => (
-              <div key={rowIdx} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {row.map((opt, i) => {
-                  const isPrimary = rowIdx === 0 && i === 0
-                  const matchesCurrent = opt.mode === currentMode
-                  return (
-                    <HoverHint key={opt.mode} label={opt.title} side="top" disabled={!opt.title}>
-                        <button
-                          className={`btn ${isPrimary ? 'btn-primary' : ''}`}
-                          onClick={() => click({ behavior: 'allow', persistForSession: false, planTargetMode: opt.mode })}
-                          disabled={busy}
-                          style={{ flex: 1 }}
-                        >
-                          {opt.label}{matchesCurrent ? ' (current)' : ''}
-                        </button>
-                      </HoverHint>
-                  )
-                })}
-              </div>
-            ))}
-            <textarea
-              className="perm-feedback-input"
-              placeholder="Tell Claude what to change"
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
-              disabled={busy}
-              rows={2}
-              aria-label="Plan feedback"
-            />
-            <div style={{ display: 'flex', gap: 8 }}>
-              <HoverHint
-                label="Send this feedback to Claude — it keeps planning in this turn"
-                side="top"
-              >
-                <button
-                  className="btn"
-                  onClick={() => click({ behavior: 'deny', message: `Plan denied by user. Feedback: ${feedback.trim()}` })}
-                  disabled={busy || feedback.trim().length === 0}
-                  style={{ flex: 1 }}
-                >
-                  Send feedback
-                </button>
-              </HoverHint>
-              <HoverHint label="Stop this turn and return to the input box" side="top">
-                <button
-                  className="btn btn-danger"
-                  onClick={() => click({ behavior: 'deny', message: PLAN_STOP_MESSAGE, interrupt: true })}
+            {planView === 'review' ? (
+              <>
+                <span className="hint" style={{ textAlign: 'center' }}>
+                  {currentMode === 'default' || currentMode === 'acceptEdits' || currentMode === 'bypassPermissions'
+                    ? 'Approval continues in your current permission mode.'
+                    : 'Approval exits plan mode and continues in review-each mode.'}
+                </span>
+                <div className="perm-plan-actions">
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => click({ behavior: 'allow', persistForSession: false, planTargetMode: planTargetModeFor(currentMode) })}
+                    disabled={busy}
+                    style={{ flex: 1 }}
+                  >
+                    Approve plan
+                  </button>
+                  <button
+                    ref={requestChangesRef}
+                    className="btn"
+                    onClick={() => {
+                      setMoreAnchor(null)
+                      setPlanView('feedback')
+                    }}
+                    disabled={busy}
+                    style={{ flex: 1 }}
+                  >
+                    Request changes
+                  </button>
+                  <button
+                    ref={moreTriggerRef}
+                    type="button"
+                    className="btn-icon perm-more-trigger"
+                    aria-label="More options"
+                    aria-haspopup="menu"
+                    aria-expanded={moreAnchor != null}
+                    onClick={(e) => {
+                      if (moreAnchor) {
+                        closeMore()
+                        return
+                      }
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      setMoreAnchor({ x: rect.left, y: rect.top - 4 })
+                    }}
+                  >
+                    ⋯
+                  </button>
+                </div>
+                {moreAnchor && (
+                  <ContextMenu
+                    x={moreAnchor.x}
+                    y={moreAnchor.y}
+                    placement="above"
+                    items={[
+                      ...PLAN_MORE_APPROVALS.map(option => ({
+                        label: option.label,
+                        disabled: busy,
+                        onClick: () => click({ behavior: 'allow', persistForSession: false, planTargetMode: option.mode }),
+                      })),
+                      {},
+                      { label: showRaw ? 'Hide raw input' : 'Show raw input', onClick: () => setShowRaw((v) => !v) },
+                      {},
+                      { label: 'Stop & take over', danger: true, disabled: busy, onClick: () => click({ behavior: 'deny', message: PLAN_STOP_MESSAGE, interrupt: true }) },
+                    ]}
+                    onClose={closeMore}
+                    triggerRef={moreTriggerRef}
+                    autoFocus
+                    nonPrimary="close"
+                  />
+                )}
+              </>
+            ) : (
+              <>
+                <div className="perm-feedback-title">What should Claude change?</div>
+                <textarea
+                  ref={feedbackRef}
+                  className="perm-feedback-input"
+                  placeholder="Tell Claude what to change"
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
                   disabled={busy}
-                  style={{ flex: 1 }}
-                >
-                  Stop & take over
-                </button>
-              </HoverHint>
-            </div>
-            <span className="hint" style={{ textAlign: 'center' }}>
-              Approving exits plan mode and lets Claude execute in the chosen
-              mode. "Send feedback" returns your note to Claude so it can
-              revise. "Stop & take over" ends this turn so you can type.
-            </span>
+                  rows={2}
+                  aria-label="Plan feedback"
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <HoverHint
+                    label="Send this feedback to Claude — it keeps planning in this turn"
+                    side="top"
+                  >
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => click({ behavior: 'deny', message: `Plan denied by user. Feedback: ${feedback.trim()}` })}
+                      disabled={busy || feedback.trim().length === 0}
+                      style={{ flex: 1 }}
+                    >
+                      Send feedback
+                    </button>
+                  </HoverHint>
+                  <button className="btn" onClick={() => setPlanView('review')} disabled={busy}>
+                    Back
+                  </button>
+                </div>
+              </>
+            )}
           </>
         ) : (
           <>

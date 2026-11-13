@@ -359,6 +359,7 @@ export const SideChatDrawer = memo(function SideChatDrawer({
       {pendingHead?.kind === 'permission' && (
         <div className="side-chat-drawer-permission">
           <PermissionDialog
+            key={pendingHead.id}
             open
             request={pendingHead}
             onDecide={(d) => void permissions.decide(pendingHead.id, d)}

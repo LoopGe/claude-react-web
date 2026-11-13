@@ -20,7 +20,7 @@
 //   · SideChatAutoScroll reading items length + streamingContent from the store
 
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { act, render } from '@testing-library/react'
+import { act, render, fireEvent, within, screen } from '@testing-library/react'
 import { getEscapeStackCount } from '../hooks/floating-surface-registry'
 import type { Key, ReactNode } from 'react'
 
@@ -471,4 +471,59 @@ describe('SideChatDrawer (session-synchronizer migration)', () => {
     // The scroll effect re-fired for the streaming-content change.
     expect(scrollTopSetter).toHaveBeenCalled()
   }, 15_000)
+
+  it('resets plan feedback and raw state when the pending request changes', () => {
+    const request = (id: string, toolUseID: string): UsePermissionChannel['pending'][number] => ({
+      kind: 'permission',
+      id,
+      toolName: 'ExitPlanMode',
+      input: { plan: `Plan for ${id}` },
+      toolUseID,
+      createdAt: 0,
+    })
+    const props = makeProps({
+      permissions: { ...noopPermissions, pending: [request('p1', 'tu1')] },
+    })
+    const { container, rerender } = render(<SideChatDrawer {...props} />)
+    fireEvent.click(within(container).getByRole('button', { name: 'More options' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show raw input' }))
+    expect(container.querySelector('.perm-raw')).toBeTruthy()
+    fireEvent.click(within(container).getByRole('button', { name: 'Request changes' }))
+    fireEvent.change(within(container).getByRole('textbox', { name: 'Plan feedback' }), {
+      target: { value: 'draft for p1' },
+    })
+
+    rerender(<SideChatDrawer {...makeProps({
+      permissions: { ...noopPermissions, pending: [request('p2', 'tu2')] },
+    })} />)
+
+    expect(within(container).queryByRole('textbox', { name: 'Plan feedback' })).toBeNull()
+    expect(container.querySelector('.perm-raw')).toBeNull()
+    expect(within(container).queryByRole('button', { name: 'Minimize' })).toBeNull()
+    fireEvent.click(within(container).getByRole('button', { name: 'Request changes' }))
+    expect((within(container).getByRole('textbox', { name: 'Plan feedback' }) as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('closes an open More menu when the pending request changes', () => {
+    const request = (id: string, toolUseID: string): UsePermissionChannel['pending'][number] => ({
+      kind: 'permission',
+      id,
+      toolName: 'ExitPlanMode',
+      input: { plan: `Plan for ${id}` },
+      toolUseID,
+      createdAt: 0,
+    })
+    const props = makeProps({
+      permissions: { ...noopPermissions, pending: [request('p1', 'tu1')] },
+    })
+    const { container, rerender } = render(<SideChatDrawer {...props} />)
+    fireEvent.click(within(container).getByRole('button', { name: 'More options' }))
+    expect(screen.getByRole('menu')).toBeTruthy()
+
+    rerender(<SideChatDrawer {...makeProps({
+      permissions: { ...noopPermissions, pending: [request('p2', 'tu2')] },
+    })} />)
+
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
 })

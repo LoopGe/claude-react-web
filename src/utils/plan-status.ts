@@ -10,7 +10,7 @@
 // This module is pure so it can be tested without React.
 
 import type { Block, SdkMessage } from '../types'
-import { REJECTION_NEEDLES } from '../session-store/normalize'
+import { classifyPlanResult } from '../session-store/normalize'
 import { PLAN_TOOL_NAMES } from '../constants/toolNames'
 
 /** Lookup: tool_use_id → 'approved' | 'rejected' | 'pending'. */
@@ -47,10 +47,7 @@ export function computePlanStatus(messages: readonly SdkMessage[]): PlanStatusMa
     for (const b of blocks) {
       if (b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue
       if (!out.has(b.tool_use_id)) continue
-      const text = textOfContent(b.content)
-      const lower = text.toLowerCase()
-      const rejected = REJECTION_NEEDLES.some((n) => lower.includes(n))
-      out.set(b.tool_use_id, rejected ? 'rejected' : 'approved')
+      out.set(b.tool_use_id, classifyPlanResult(b.content, b.is_error === true))
     }
   }
 
@@ -61,13 +58,4 @@ function blocksFromMessage(m: SdkMessage): Block[] {
   const content = m.message?.content
   if (Array.isArray(content)) return content as Block[]
   return []
-}
-
-function textOfContent(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return ''
-  return (content as Block[])
-    .map((b) => (typeof b?.text === 'string' ? b.text : ''))
-    .filter(Boolean)
-    .join('\n')
 }

@@ -94,13 +94,18 @@ export const ContextMenu = memo(function ContextMenu({
     // No accent to carry (nothing in .ctx-menu reads --accent), but the
     // wallpaper fill remap must still reach the hover/active rows.
     markPortaledSurface(el)
-    const rect = el.getBoundingClientRect()
-    const vw = window.innerWidth
-    const vh = window.innerHeight
-    const nx = Math.min(x, vw - rect.width - 4)
-    const anchorY = placement === 'above' ? y - rect.height : y
-    const ny = Math.min(anchorY, vh - rect.height - 4)
-    setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
+    const clampToViewport = () => {
+      const rect = el.getBoundingClientRect()
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      const nx = Math.min(x, vw - rect.width - 4)
+      const anchorY = placement === 'above' ? y - rect.height : y
+      const ny = Math.min(anchorY, vh - rect.height - 4)
+      setPos({ x: Math.max(4, nx), y: Math.max(4, ny) })
+    }
+    clampToViewport()
+    const observer = new ResizeObserver(clampToViewport)
+    observer.observe(el)
     // Keyboard-owned menus (autoFocus) land on the first enabled row — the
     // menu is portaled to the end of <body>, so without an explicit move the
     // items sit outside the trigger's tab path. preventScroll so a clamp that
@@ -110,6 +115,7 @@ export const ContextMenu = memo(function ContextMenu({
       el.querySelector<HTMLButtonElement>('.ctx-menu-item:not(:disabled)')
         ?.focus({ preventScroll: true })
     }
+    return () => observer.disconnect()
   }, [x, y, placement, itemsLayoutKey, autoFocus])
 
   // Default 'ignore': right-click (button 2) must NOT close a right-click
@@ -122,6 +128,27 @@ export const ContextMenu = memo(function ContextMenu({
   // subsequent click on another interactive element (the hook's default).
   useOutsideMouseDown({ ref, onClose, triggerRef, surfaceId, nonPrimary })
 
+  const onMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End', 'Tab'].includes(event.key)) return
+    const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('.ctx-menu-item:not(:disabled)'))
+    if (buttons.length === 0) return
+    event.preventDefault()
+    const active = document.activeElement
+    const index = buttons.indexOf(active as HTMLButtonElement)
+    let next = index
+    if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = buttons.length - 1
+    else if (event.key === 'ArrowDown') next = index < 0 ? 0 : (index + 1) % buttons.length
+    else if (event.key === 'ArrowUp') next = index < 0 ? buttons.length - 1 : (index - 1 + buttons.length) % buttons.length
+    else if (event.key === 'Tab') {
+      const direction = event.shiftKey ? -1 : 1
+      next = index < 0
+        ? (direction === 1 ? 0 : buttons.length - 1)
+        : (index + direction + buttons.length) % buttons.length
+    }
+    buttons[next]?.focus()
+  }
+
   return (
     <FloatingSurfaceProvider surfaceId={surfaceId}>
       {createPortal(
@@ -130,6 +157,8 @@ export const ContextMenu = memo(function ContextMenu({
       className="ctx-menu"
       style={{ left: pos.x, top: pos.y }}
       role="menu"
+      aria-orientation="vertical"
+      onKeyDown={onMenuKeyDown}
       // Pop in/out from the anchor (top-left origin set on .ctx-menu in CSS)
       // — mirrors the old ctx-menu-in/ctx-menu-out keyframes: scale 0.98 +
       // small vertical nudge. pointerEvents:'none' on exit replaces the old

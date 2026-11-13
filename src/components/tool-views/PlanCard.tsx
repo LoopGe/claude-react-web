@@ -10,7 +10,7 @@ import { Markdown } from '../Markdown'
 import { usePlanStatus, usePlanContent } from '../../hooks/usePlanStatus'
 import { useReopenQuestion } from '../../hooks/useReopenQuestion'
 import { AnimatedDetails } from '../AnimatedCollapse'
-import { IconClipboardList } from '../icons/ToolIcons'
+import { IconChevronDown, IconClipboardList } from '../icons/ToolIcons'
 
 /**
  * Plan card. Renders the proposed plan as markdown so headings, lists,
@@ -53,12 +53,12 @@ export const PlanCard = memo(function PlanCard({
   const { minimizedPlanToolUseIds, onReopenPlan } = useReopenQuestion()
   const isMinimized = status === 'pending' && !!toolUseId && minimizedPlanToolUseIds.has(toolUseId)
   const statusLabel =
-    status === 'approved' ? 'approved' : status === 'rejected' ? 'rejected' : 'pending'
+    status === 'approved' ? 'Approved' : status === 'rejected' ? 'Rejected' : 'Pending review'
   const statusTitle =
     status === 'approved'
       ? 'You approved this plan — Claude exited plan mode and started executing.'
       : status === 'rejected'
-        ? 'You chose to keep planning — Claude received feedback and is revising.'
+        ? 'This plan was not approved.'
         : 'Pending your decision.'
   // Pending plans auto-expand (the user wants to read them right now);
   // resolved plans collapse to a one-line summary by default to keep
@@ -69,10 +69,13 @@ export const PlanCard = memo(function PlanCard({
   return (
     <AnimatedDetails
       key={status}
-      className={`plan-card-collapsible${isMinimized ? ' plan-card-minimized' : ''}`}
+      className={`plan-card-collapsible ${status}${isMinimized ? ' plan-card-minimized' : ''}`}
       defaultOpen={defaultOpen}
       summary={(
         <div className="plan-card-header">
+          <span className="plan-card-chevron" aria-hidden>
+            <IconChevronDown size={14} />
+          </span>
           <span className="plan-card-icon" aria-hidden>
             <IconClipboardList size={14} />
           </span>

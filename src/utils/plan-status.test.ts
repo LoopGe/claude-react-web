@@ -77,6 +77,96 @@ describe('computePlanStatus', () => {
     expect(out.get('tu_1')).toBe('approved')
   })
 
+  it('ignores rejection words inside an explicitly approved plan body', () => {
+    const raw =
+      'User has approved your plan. You can now start coding.\n\n' +
+      '## Approved Plan:\n# Plan Card refactor\n' +
+      '- Keep rejected as an internal status.\n' +
+      '- Preserve "denied by user" in denial messages.'
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', raw),
+    ])
+    expect(out.get('tu_1')).toBe('approved')
+  })
+
+  it('keeps rejection when denial feedback quotes an Approved Plan section', () => {
+    const raw =
+      'Plan denied by user. Feedback: revise this draft\n\n' +
+      '## Approved Plan:\n# Old draft\n- rejected step'
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', raw),
+    ])
+    expect(out.get('tu_1')).toBe('rejected')
+  })
+
+  it('ignores rejection words in approval metadata paths', () => {
+    const raw =
+      'User has approved your plan.\n\n' +
+      'Your plan has been saved to: /tmp/rejected/plan.md\n\n' +
+      '## Approved Plan:\n# Title'
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', raw),
+    ])
+    expect(out.get('tu_1')).toBe('approved')
+  })
+
+  it('approves a generic plan with an introduction and rejection words in its body', () => {
+    const raw = 'Here is the plan:\n\n## Steps\n- Remove rejected states'
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', raw),
+    ])
+    expect(out.get('tu_1')).toBe('approved')
+  })
+
+  it('approves a generic plan when its introduction mentions rejected states', () => {
+    const raw = 'Here is the plan for rejected states:\n\n## Steps\n- implement'
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', raw),
+    ])
+    expect(out.get('tu_1')).toBe('approved')
+  })
+
+  it('recognizes a denial after leading blank lines', () => {
+    const raw = '\nPlan denied by user. Feedback: revise\n\n## Approved Plan:\n# Old'
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', raw),
+    ])
+    expect(out.get('tu_1')).toBe('rejected')
+  })
+
+  it('recognizes the harness rejection envelope', () => {
+    const raw =
+      "The user doesn't want to proceed with this tool use. The tool use was rejected " +
+      '(eg. if it was a file edit, the new_string was NOT written to the file).'
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', raw),
+    ])
+    expect(out.get('tu_1')).toBe('rejected')
+  })
+
+  it('recognizes a direct Denied by user result', () => {
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', 'Denied by user'),
+    ])
+    expect(out.get('tu_1')).toBe('rejected')
+  })
+
+  it('approves a plan whose title starts with Rejected', () => {
+    const out = computePlanStatus([
+      asstWithToolUse('ExitPlanMode', 'tu_1'),
+      userToolResult('tu_1', 'Rejected states\n\n- Remove legacy rejected labels'),
+    ])
+    expect(out.get('tu_1')).toBe('approved')
+  })
+
   it('matches case-insensitively against rejection needles', () => {
     const out = computePlanStatus([
       asstWithToolUse('ExitPlanMode', 'tu_1'),

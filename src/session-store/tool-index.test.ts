@@ -246,6 +246,29 @@ describe('updateToolIndexMirror: plan approval/rejection/content', () => {
     expect(m.planContent.get('tu_plan')).toBe('# Title\n- step 1\n- step 2')
   })
 
+  it('keeps approval when the approved plan body contains rejection words', () => {
+    const raw =
+      'User has approved your plan. You can now start coding.\n\n' +
+      '## Approved Plan:\n# Plan Card refactor\n' +
+      '- Keep rejected as an internal status.\n' +
+      '- Preserve "denied by user" in denial messages.'
+    let m = fresh()
+    m = updateToolIndexMirror(m, planStart('tu_plan'))
+    m = updateToolIndexMirror(m, user([toolResult('tu_plan', { content: raw })], 'u-1'))
+    expect(m.planStatus.get('tu_plan')).toBe('approved')
+    expect(m.planContent.get('tu_plan')).toContain('Keep rejected as an internal status.')
+  })
+
+  it('approves a generic Markdown echo whose body contains rejection words', () => {
+    let m = fresh()
+    m = updateToolIndexMirror(m, planStart('tu_plan'))
+    m = updateToolIndexMirror(
+      m,
+      user([toolResult('tu_plan', { content: '## Plan\n- Document rejected states' })], 'u-1'),
+    )
+    expect(m.planStatus.get('tu_plan')).toBe('approved')
+  })
+
   it('captures nothing into planContent from a rejection result', () => {
     let m = fresh()
     m = updateToolIndexMirror(m, planStart('tu_plan'))

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, fireEvent, within, cleanup } from '@testing-library/react'
+import { render, fireEvent, within, cleanup, screen } from '@testing-library/react'
 import { PermissionDialog } from './PermissionDialog'
-import type { PermissionRequest, PermissionMode } from '../types'
+import type { PermissionRequest } from '../types'
 
 // Cleanup is registered globally in src/test-setup.ts. It matters here: before
 // any of this, each test's <PermissionDialog> — and its `useFocusTrap`
@@ -37,57 +37,46 @@ function toolRequest(): Extract<PermissionRequest, { kind: 'permission' }> {
   }
 }
 
-/** Text of every footer button, in DOM order. */
-function buttonLabels(container: HTMLElement): string[] {
-  return within(container)
-    .getAllByRole('button')
-    .map((b) => b.textContent?.trim() ?? '')
-    // Drop the "Show raw input" toggle and the new deny actions; the plan
-    // ordering tests only assert on Approve labels.
-    .filter((t) => t.startsWith('Approve'))
-}
-
 describe('PermissionDialog plan approval', () => {
-  it('promotes the option matching the current mode to the primary (first) button', () => {
-    const { container } = render(
-      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'bypassPermissions'} />,
-    )
-    const labels = buttonLabels(container)
-    // bypass option floated to front and marked (current).
-    expect(labels[0]).toBe('Approve & bypass (current)')
-    // The primary button carries btn-primary.
-    const primary = within(container).getByRole('button', { name: /Approve & bypass/ })
-    expect(primary.className).toContain('btn-primary')
-  })
-
-  it('marks acceptEdits as current when that is the session mode', () => {
-    const { container } = render(
-      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'acceptEdits'} />,
-    )
-    expect(buttonLabels(container)[0]).toBe('Approve & auto-accept edits (current)')
-  })
-
-  it('falls back to the default ordering when current mode has no plan option (e.g. plan/dontAsk)', () => {
-    const { container } = render(
-      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'plan' as PermissionMode} />,
-    )
-    // No option equals 'plan', so original order is preserved; first is acceptEdits.
-    const labels = buttonLabels(container)
-    expect(labels[0]).toBe('Approve & auto-accept edits')
-    expect(labels.some((l) => l.includes('(current)'))).toBe(false)
-  })
-
-  it('passes the chosen execution mode through onDecide', () => {
+  it.each([
+    ['default', 'default'],
+    ['acceptEdits', 'acceptEdits'],
+    ['bypassPermissions', 'bypassPermissions'],
+    ['plan', 'default'],
+    ['auto', 'default'],
+    ['dontAsk', 'default'],
+    [undefined, 'default'],
+  ] as const)('maps current mode %s to plan target %s', (currentMode, planTargetMode) => {
     const onDecide = vi.fn()
     const { container } = render(
-      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
+      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={currentMode} />,
     )
-    fireEvent.click(within(container).getByRole('button', { name: /Approve & bypass/ }))
+    const approve = within(container).getByRole('button', { name: 'Approve plan' })
+    expect(approve.className).toContain('btn-primary')
+    fireEvent.click(approve)
     expect(onDecide).toHaveBeenCalledWith({
       behavior: 'allow',
       persistForSession: false,
-      planTargetMode: 'bypassPermissions',
+      planTargetMode,
     })
+  })
+
+  it('describes the review-each fallback without claiming to preserve the current mode', () => {
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'auto'} />,
+    )
+    expect(container.textContent).toContain('Approval exits plan mode and continues in review-each mode.')
+    expect(container.textContent).not.toContain('Approval continues in your current permission mode.')
+  })
+
+  it('offers one approval action without execution-mode choices', () => {
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'default'} />,
+    )
+    expect(within(container).getAllByRole('button', { name: 'Approve plan' })).toHaveLength(1)
+    expect(within(container).queryByRole('button', { name: /Approve & auto-accept edits/ })).toBeNull()
+    expect(within(container).queryByRole('button', { name: /Approve & review each/ })).toBeNull()
+    expect(within(container).queryByRole('button', { name: /Approve & bypass/ })).toBeNull()
   })
 
   it('non-plan requests are unaffected (Allow once / Deny)', () => {
@@ -102,20 +91,41 @@ describe('PermissionDialog plan approval', () => {
     expect(labels.some((l) => l.startsWith('Approve'))).toBe(false)
   })
 
-  it('renders a feedback input and two deny actions for a plan request', () => {
+  it('keeps feedback hidden until Request changes is selected', () => {
     const { container } = render(
       <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'default'} />,
     )
-    expect(within(container).getByPlaceholderText('Tell Claude what to change')).toBeTruthy()
-    expect(within(container).getByRole('button', { name: /Send feedback/i })).toBeTruthy()
-    expect(within(container).getByRole('button', { name: /Stop & take over/i })).toBeTruthy()
+    expect(within(container).queryByRole('textbox', { name: 'Plan feedback' })).toBeNull()
+    fireEvent.click(within(container).getByRole('button', { name: 'Request changes' }))
+    const input = within(container).getByRole('textbox', { name: 'Plan feedback' })
+    expect(document.activeElement).toBe(input)
   })
 
-  it('disables Send feedback when the input is empty', () => {
+  it('Back returns to review without deciding and preserves the feedback draft', () => {
+    const onDecide = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
+    )
+    fireEvent.click(within(container).getByRole('button', { name: 'Request changes' }))
+    const input = within(container).getByRole('textbox', { name: 'Plan feedback' })
+    fireEvent.change(input, { target: { value: 'add more tests' } })
+    fireEvent.click(within(container).getByRole('button', { name: 'Back' }))
+    expect(onDecide).not.toHaveBeenCalled()
+    expect(within(container).queryByRole('textbox', { name: 'Plan feedback' })).toBeNull()
+    const requestChanges = within(container).getByRole('button', { name: 'Request changes' })
+    expect(document.activeElement).toBe(requestChanges)
+    fireEvent.click(requestChanges)
+    expect((within(container).getByRole('textbox', { name: 'Plan feedback' }) as HTMLTextAreaElement).value).toBe('add more tests')
+  })
+
+  it('disables Send feedback for empty and whitespace-only input', () => {
     const { container } = render(
       <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'default'} />,
     )
+    fireEvent.click(within(container).getByRole('button', { name: 'Request changes' }))
     const btn = within(container).getByRole('button', { name: /Send feedback/i }) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+    fireEvent.change(within(container).getByRole('textbox', { name: 'Plan feedback' }), { target: { value: '   ' } })
     expect(btn.disabled).toBe(true)
   })
 
@@ -124,7 +134,8 @@ describe('PermissionDialog plan approval', () => {
     const { container } = render(
       <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
     )
-    const input = within(container).getByPlaceholderText('Tell Claude what to change') as HTMLTextAreaElement
+    fireEvent.click(within(container).getByRole('button', { name: 'Request changes' }))
+    const input = within(container).getByRole('textbox', { name: 'Plan feedback' })
     fireEvent.change(input, { target: { value: 'add more tests' } })
     fireEvent.click(within(container).getByRole('button', { name: /Send feedback/i }))
     expect(onDecide).toHaveBeenCalledWith({
@@ -133,12 +144,94 @@ describe('PermissionDialog plan approval', () => {
     })
   })
 
+  it('does not submit feedback through Ctrl+Enter or Meta+Enter', () => {
+    const onDecide = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
+    )
+    fireEvent.click(within(container).getByRole('button', { name: 'Request changes' }))
+    const input = within(container).getByRole('textbox', { name: 'Plan feedback' })
+    fireEvent.change(input, { target: { value: 'add more tests' } })
+    fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true })
+    fireEvent.keyDown(input, { key: 'Enter', metaKey: true })
+    expect(onDecide).not.toHaveBeenCalled()
+  })
+
+  it('moves plan raw input and Stop into More options', () => {
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'default'} />,
+    )
+    expect(within(container).queryByRole('button', { name: 'Show raw input' })).toBeNull()
+    expect(within(container).queryByRole('button', { name: /Stop & take over/i })).toBeNull()
+    fireEvent.click(within(container).getByRole('button', { name: 'More options' }))
+    expect(screen.getByRole('menuitem', { name: 'Show raw input' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: /Stop & take over/i })).toBeTruthy()
+  })
+
+  it.each([
+    ['Approve & review each', 'default'],
+    ['Approve & auto-accept edits', 'acceptEdits'],
+    ['Approve & bypass', 'bypassPermissions'],
+  ] as const)('approves from More options with %s', (label, planTargetMode) => {
+    const onDecide = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
+    )
+    fireEvent.click(within(container).getByRole('button', { name: 'More options' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: label }))
+    expect(onDecide).toHaveBeenCalledWith({
+      behavior: 'allow',
+      persistForSession: false,
+      planTargetMode,
+    })
+  })
+
+  it('toggles formatted raw input from the portaled More menu', () => {
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={vi.fn()} currentMode={'default'} />,
+    )
+    fireEvent.click(within(container).getByRole('button', { name: 'More options' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show raw input' }))
+    expect(container.querySelector('.perm-raw')?.textContent).toContain('"plan": "Build the thing"')
+    expect(screen.queryByRole('menu')).toBeNull()
+    fireEvent.click(within(container).getByRole('button', { name: 'More options' }))
+    expect(screen.getByRole('menuitem', { name: 'Hide raw input' })).toBeTruthy()
+  })
+
+  it('closes More options on the first Esc and stops only on the second Esc', () => {
+    const onDecide = vi.fn()
+    const { container } = render(
+      <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
+    )
+    const trigger = within(container).getByRole('button', { name: 'More options' })
+    fireEvent.click(trigger)
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(onDecide).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(trigger)
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(onDecide).toHaveBeenCalledWith({
+      behavior: 'deny',
+      message: 'Plan denied by user — stopping the turn.',
+      interrupt: true,
+    })
+  })
+
+  it('keeps raw input inline for ordinary tool permissions', () => {
+    const { container } = render(
+      <PermissionDialog request={toolRequest()} onDecide={vi.fn()} currentMode={'default'} />,
+    )
+    expect(within(container).getByRole('button', { name: 'Show raw input' })).toBeTruthy()
+    expect(within(container).queryByRole('button', { name: 'More options' })).toBeNull()
+  })
+
   it('Stop & take over emits deny with interrupt:true and a stop message', () => {
     const onDecide = vi.fn()
     const { container } = render(
       <PermissionDialog request={planRequest()} onDecide={onDecide} currentMode={'default'} />,
     )
-    fireEvent.click(within(container).getByRole('button', { name: /Stop & take over/i }))
+    fireEvent.click(within(container).getByRole('button', { name: 'More options' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Stop & take over/i }))
     expect(onDecide).toHaveBeenCalledWith({
       behavior: 'deny',
       message: 'Plan denied by user — stopping the turn.',

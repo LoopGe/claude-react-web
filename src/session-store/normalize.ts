@@ -33,18 +33,6 @@ export { isLocalCommandLogUserMessage, shouldHideByDefault }
 // module. The single implementation lives in shared/user-frames.ts.
 export { isTaskNotificationUserMessage, userMessageHasToolResult }
 export type { TaskNotificationStatus }
-/** Strings the SDK / canUseTool deny path uses to mean "user said no".
- *  Matched against tool_result.content text — case-insensitive substring
- *  match. Both Anthropic CLI and our own deny path land here.
- *  Exported so plan-status.ts can share the same rule set. */
-export const REJECTION_NEEDLES = [
-  'keep planning',
-  'user chose to keep planning',
-  'rejected',
-  'permission denied',
-  'denied by user',
-]
-
 /** Subtypes the server persists for `system` frames (server/history-reader.ts
  *  KEEP_SYSTEM_SUBTYPES). Other system frames (init, …) are broadcast live but
  *  never written to disk, so they can't anchor a history page. */
@@ -950,15 +938,23 @@ export function getToolResultEntries(
   return out
 }
 
+const PLAN_REJECTION_PREFIX = /^(?:plan\s+denied\s+by\s+user|denied\s+by\s+user|user\s+denied\b|user\s+chose\s+to\s+keep\s+planning|keep\s+planning\b|permission\s+denied\b|rejected\s+by\s+(?:the\s+)?user\b|the\s+user\s+doesn['’]t\s+want\s+to\s+proceed\b|(?:the\s+)?tool\s+use\s+was\s+rejected\b)/i
+
+/** Reject only explicit denial envelopes. Approved plan contents, metadata and
+ *  introductory prose are arbitrary Markdown and must not be scanned for
+ *  rejection words. Anything without a denial prefix is an approval. */
+export function classifyPlanResult(content: unknown, isError = false): Exclude<PlanStatus, 'pending'> {
+  if (isError) return 'rejected'
+  return PLAN_REJECTION_PREFIX.test(textOfContent(content).trimStart()) ? 'rejected' : 'approved'
+}
+
 export function getPlanResultDecisions(msg: SdkMessage, known: ReadonlyMap<string, PlanStatus>): Array<{ toolUseId: string; status: PlanStatus }> {
   if (msg.type !== 'user') return []
   const out: Array<{ toolUseId: string; status: PlanStatus }> = []
   for (const block of getBlocks(msg)) {
     if (block.type !== 'tool_result' || typeof block.tool_use_id !== 'string') continue
     if (!known.has(block.tool_use_id)) continue
-    const text = textOfContent(block.content).toLowerCase()
-    const rejected = REJECTION_NEEDLES.some((needle) => text.includes(needle))
-    out.push({ toolUseId: block.tool_use_id, status: rejected ? 'rejected' : 'approved' })
+    out.push({ toolUseId: block.tool_use_id, status: classifyPlanResult(block.content, block.is_error === true) })
   }
   return out
 }

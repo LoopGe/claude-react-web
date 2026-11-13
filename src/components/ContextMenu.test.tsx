@@ -86,6 +86,32 @@ describe('ContextMenu', () => {
     expect(document.activeElement).toBe(enabled)
   })
 
+  it('supports arrow keys, Home/End and cyclic Tab navigation', () => {
+    const items: ContextMenuItem[] = [
+      { label: 'One', onClick: () => {} },
+      { label: 'Two', onClick: () => {} },
+      { label: 'Three', onClick: () => {} },
+    ]
+    render(<ContextMenu x={0} y={0} items={items} onClose={() => {}} autoFocus />)
+    const menu = document.querySelector('.ctx-menu')!
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>('.ctx-menu-item'))
+    expect(document.activeElement).toBe(buttons[0])
+    fireEvent.keyDown(menu, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(buttons[1])
+    fireEvent.keyDown(menu, { key: 'End' })
+    expect(document.activeElement).toBe(buttons[2])
+    fireEvent.keyDown(menu, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(buttons[0])
+    fireEvent.keyDown(menu, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(buttons[2])
+    fireEvent.keyDown(menu, { key: 'Home' })
+    expect(document.activeElement).toBe(buttons[0])
+    fireEvent.keyDown(menu, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(buttons[2])
+    fireEvent.keyDown(menu, { key: 'Tab' })
+    expect(document.activeElement).toBe(buttons[0])
+  })
+
   it('keeps the menu mounted through the exit animation, then unmounts (AnimatePresence)', async () => {
     // Open/close motion is now driven by motion.div + AnimatePresence (the
     // old isExiting/data-state="closing" prop is gone). Smoke test that
