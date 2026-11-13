@@ -1140,10 +1140,12 @@ export class NativeSession implements ProviderSessionHandle {
         // the FIFO so later input cannot overtake it.
         const timestamp = new Date(this.receivedAt.get(next)!).toISOString()
         const persisted = nativeUserMessage(next.message)
+        if (this._closed) throw new Error('session destroyed before persistence')
         if (this.pendingDurableInitial !== pending) {
           throw new Error('initial message was withdrawn before persistence')
         }
         if (containsStructuredFile(persisted.content)) await this.log.migrateToV2()
+        if (this._closed) throw new Error('session destroyed before persistence')
         if (this.pendingDurableInitial !== pending) {
           throw new Error('initial message was withdrawn before persistence')
         }
@@ -1238,7 +1240,7 @@ export class NativeSession implements ProviderSessionHandle {
         endReason = res.isError ? 'error' : 'completed'
         if (!res.isError) endUsage = res.usage
       } catch (err) {
-        if (!rawAppended) this.opts.onUserMessagePersistence?.(next, 'failed')
+        if (!rawAppended && !this._closed) this.opts.onUserMessagePersistence?.(next, 'failed')
         // A pre-append failure owns no canonical history and keeps the pending
         // prompt at the FIFO head. Once raw append succeeds, later failures
         // restore exactly the appended prefix (raw plus any appended skill),
@@ -1741,14 +1743,14 @@ export class NativeSession implements ProviderSessionHandle {
     this.sessionAbort.abort(new Error('aborted'))
   }
 
-  async destroy(): Promise<void> {
+  async destroy(reason?: string): Promise<void> {
     if (this._closed) return
     this._closed = true
     this.sessionAbort.abort(new Error('destroyed'))
-    // Withdraw the pending durable prompt BEFORE any teardown await. A pump
-    // paused before migration/raw append will now fail its identity check
-    // instead of persisting an occurrence after the host releases its lease.
-    this.drainQueuedInput()
+    // Crash recovery transfers pending input to respawnInPlace; keep its FIFO
+    // and leases while the _closed checks above stop the old pump. Every other
+    // teardown withdraws that input before releasing its lease.
+    if (reason !== 'crash-recovery') this.drainQueuedInput()
     // Abort first, then close: closeAll aborts every record synchronously, so
     // a hung handshake / in-flight call cannot hold teardown open. Idempotent.
     await this.mcp?.closeAll()

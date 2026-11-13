@@ -475,6 +475,76 @@ describe('SessionManager attachment dispatch serialization', () => {
       await fx.sm.shutdown()
     }
   })
+
+  it('carries pending native input and leases through crash recovery in FIFO order', async () => {
+    const fx = await makeFixture()
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const registry = new ProviderRegistry()
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    registry.register(native)
+    native._testStream = async function* () {
+      yield { kind: 'message_start', usage: { input_tokens: 1, output_tokens: 1 } }
+      yield { kind: 'block_start', index: 0, block: { type: 'text' } }
+      yield { kind: 'block_delta', index: 0, delta: { type: 'text', text: 'recovered' } }
+      yield { kind: 'block_end', index: 0 }
+      yield { kind: 'message_end', stopReason: 'end_turn', usage: { output_tokens: 1 } }
+    }
+    const sessionStore = new SessionStore({ stateDir: fx.stateDir })
+    await sessionStore.load()
+    const sm = new SessionManager({ store: sessionStore, providers: registry, uploadStore: fx.store, crashRecovery: true })
+    let releaseMigration!: () => void
+    const migrationGate = new Promise<void>((resolve) => { releaseMigration = resolve })
+    let migrationStarted!: () => void
+    const started = new Promise<void>((resolve) => { migrationStarted = resolve })
+    let firstMigration = true
+    const originalMigrate = NativeSessionLog.prototype.migrateToV2
+    const migrateSpy = vi.spyOn(NativeSessionLog.prototype, 'migrateToV2').mockImplementation(
+      async function (this: NativeSessionLog) {
+        if (firstMigration) {
+          firstMigration = false
+          migrationStarted()
+        }
+        await migrationGate
+        await originalMigrate.call(this)
+      },
+    )
+    try {
+      const info = await sm.create({ provider: 'native', cwd: fx.stateDir })
+      fx.store.record([{ ...fx.entry, sessionId: info.id }])
+      const manager = sm as unknown as {
+        sessions: Map<string, { handle: ProviderSessionHandle }>
+        handleProcessExit(info: { sessionId: string; code: number; signal: null; killed: boolean }): void
+        attachmentSendLeases: Map<string, Map<string, Set<string>>>
+      }
+      const first = await sm.sendContent(info.id, [fileBlock(fx.entry)])
+      await started
+      const second = await sm.send(info.id, 'queued behind the attachment')
+      const oldHandle = manager.sessions.get(info.id)!.handle
+      expect(manager.attachmentSendLeases.get(info.id)?.has(first.uuid!)).toBe(true)
+
+      manager.handleProcessExit({ sessionId: info.id, code: 1, signal: null, killed: false })
+      await vi.waitFor(() => expect(manager.sessions.get(info.id)!.handle).not.toBe(oldHandle))
+      const newHandle = manager.sessions.get(info.id)!.handle
+      const internals = newHandle as unknown as {
+        pendingDurableInitial: { message: AgentUserMessage } | null
+        input: AgentUserMessage[]
+      }
+      expect([
+        internals.pendingDurableInitial?.message.uuid,
+        ...internals.input.map((message) => message.uuid),
+      ]).toEqual([first.uuid, second.uuid])
+      expect(manager.attachmentSendLeases.get(info.id)?.has(first.uuid!)).toBe(true)
+
+      releaseMigration()
+      await vi.waitFor(() => expect(manager.attachmentSendLeases.has(info.id)).toBe(false))
+      expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(true)
+    } finally {
+      releaseMigration()
+      migrateSpy.mockRestore()
+      await sm.shutdown()
+      await fx.sm.shutdown()
+    }
+  })
 })
 
 function smSendContent(fx: Fixture) {
