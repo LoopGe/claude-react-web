@@ -319,7 +319,7 @@ describe('AttachmentRead', () => {
     expect((failure as Error).message).not.toContain(fx.path)
   })
 
-  it('allows the same digest in main and agent partitions but dedups within one partition', async () => {
+  it('allows the same digest in main and agent partitions but returns a handle for a same-partition duplicate', async () => {
     const fx = await fixture({
       bytes: Buffer.from('%PDF-1.4\nshared'),
       name: 'document.pdf',
@@ -330,8 +330,12 @@ describe('AttachmentRead', () => {
     expect(main.isError).not.toBe(true)
     expect(agent.isError).not.toBe(true)
     const duplicate = await run(fx, { id: 'upload-1' }, { toolUseId: 'duplicate-read', historyKey: 'main' })
-    expect(duplicate.isError).toBe(true)
-    expect(duplicate.text).toMatch(/budget|already|duplicate/i)
+    expect(duplicate.isError).not.toBe(true)
+    expect(duplicate.text).toBe('Read PDF document.pdf')
+    expect(duplicate.content).toEqual([
+      { type: 'text', text: 'Read PDF document.pdf' },
+      { type: 'file', attachment: { ...fx.occurrence, modelForm: 'handle' } },
+    ])
     expect(vi.mocked(createReadStream).mock.calls).toHaveLength(2)
   })
 

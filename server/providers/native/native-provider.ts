@@ -194,7 +194,7 @@ export class NativeProvider implements AgentProvider {
           sessionId: opts.id,
           pdfBudgets,
           preparedPdfs,
-          pdfDocumentsEnabled: () => config.nativePdfDocuments,
+          pdfDocumentsEnabled: () => config.nativeAttachmentFidelity && config.nativePdfDocuments,
         })]
       : TOOLS
     const system = renderSystem({ withAgentSection: true, systemPromptAppend }, tools)

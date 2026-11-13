@@ -4141,6 +4141,48 @@ describe('NativeSession', () => {
     }
   })
 
+  it('stops creating new AttachmentRead documents when fidelity is disabled after spawn', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true, nativePdfDocuments: true })
+    const dir = await tempDir('native-pdf-live-gate-')
+    const { store, attachment } = await pdfUpload(dir)
+    const seeded = NativeSessionLog.open({ stateDir: dir, id: 'pdf-live-gate', cwd: dir, resume: false })
+    await seeded.migrateToV2()
+    seeded.append({
+      type: 'user', uuid: 'pdf-handle', session_id: 'pdf-live-gate', parent_tool_use_id: null,
+      timestamp: '2026-11-13T00:00:00.000Z',
+      message: { role: 'user', content: [{ type: 'file', attachment: { ...attachment, modelForm: 'handle' } }] },
+    })
+    await seeded.flush()
+    await seeded.close()
+
+    const provider = new NativeProvider({ stateDir: dir, uploadStore: store })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([attachmentReadTurn('read-pdf', attachment.id), textTurn('done')], requests)
+    const session = provider.createSession({
+      id: 'pdf-live-gate', cwd: dir, resume: 'pdf-live-gate',
+      canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      // The tool remains installed on this already-spawned session, but new
+      // document allocation must observe the live fidelity gate.
+      __setConfigForTest({ nativeAttachmentFidelity: false, nativePdfDocuments: true })
+      session.enqueueUserMessage({ ...userMsg('read it'), uuid: 'read-it' } as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'done')).toBe(true))
+      expect(requests).toHaveLength(2)
+      const secondRound = JSON.stringify(requests[1].messages)
+      expect(secondRound).toContain('PDF document reading is disabled for new occurrences')
+      expect(secondRound).not.toContain('"type":"document"')
+      expect(JSON.stringify(logOf(session).events)).not.toContain('pdf-document')
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
   it('a plain interrupt keeps the queued turn for the next turn', async () => {
     const dir = await tempDir('native-keep-queued-')
     const provider = new NativeProvider({ stateDir: dir })

@@ -223,11 +223,20 @@ async function readPdf(
   // Both holds are synchronous and adjacent: after authorization, no byte-read
   // await can let another reader claim either the partition or session capacity.
   const attempt = deps.pdfBudgets.reservePdfBudget(historyKey, resolved.size, resolved.digest)
+  if (!attempt.ok && attempt.reason === 'duplicate') {
+    const text = `Read PDF ${resolved.name}`
+    return {
+      text,
+      content: [
+        { type: 'text', text },
+        { type: 'file', attachment: { ...resolved, modelForm: 'handle' } },
+      ],
+    }
+  }
   if (!attempt.ok) {
-    const reason = attempt.reason === 'duplicate'
-      ? 'a PDF document with this digest already exists in this history partition'
-      : `the history PDF budget of ${PDF_MAX_BASE64_CHARS.toLocaleString('en-US')} base64 characters is exhausted`
-    throw new PdfBudgetError(reason)
+    throw new PdfBudgetError(
+      `the history PDF budget of ${PDF_MAX_BASE64_CHARS.toLocaleString('en-US')} base64 characters is exhausted`,
+    )
   }
   let prepared: ReturnType<PreparedPdfStore['reserve']>
   try {
