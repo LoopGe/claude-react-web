@@ -9753,7 +9753,7 @@ export class SessionManager {
       session.toolProfile,
     ) as Options & { enabledMcpServers?: unknown }
     delete sdkOptions.enabledMcpServers
-    session.handle = provider.createSession({
+    try { session.handle = provider.createSession({
       id: session.id,
       provider: session.provider,
       profile: effectiveProfileFor(session.profileId),
@@ -9797,6 +9797,12 @@ export class SessionManager {
       systemPromptAppend: session.parentId ? SIDE_DEVELOPER_INSTRUCTIONS : undefined,
       providerExtras: { sdkOptions },
     })
+    } catch (err) {
+      // The old queue is already drained. If no replacement can accept it,
+      // terminate its lease ownership instead of stranding it in this local.
+      this.releaseAttachmentLeasesForMessages(session.id, pendingInput)
+      throw err
+    }
     // Re-enqueue recovered turns onto the fresh handle, oldest first.
     for (const msg of pendingInput) session.handle.enqueueUserMessage(msg)
     session.running = true
@@ -9913,6 +9919,10 @@ export class SessionManager {
       // cause) — log the recovery-failure detail separately. The user
       // sees the crash reason on reload, not a generic "recovery failed".
       log.error(`[session ${session.id}] crash-recovery Step 1 buildResumeOpts failed:`, err)
+      // No replacement will take ownership of the input preserved by the
+      // crash-recovery destroy. Withdraw it and terminally release its leases.
+      const preserved = session.handle.drainQueuedInput?.() ?? []
+      this.releaseAttachmentLeasesForMessages(session.id, preserved)
       return this.crashRecoveryGiveUp(session)
     }
     // Re-check liveness after the async MCP refresh — a concurrent unload()

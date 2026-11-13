@@ -545,6 +545,90 @@ describe('SessionManager attachment dispatch serialization', () => {
       await fx.sm.shutdown()
     }
   })
+
+  it.each(['buildResumeOpts', 'createSession'] as const)(
+    'releases every preserved attachment lease when crash recovery fails in %s',
+    async (failurePoint) => {
+      const fx = await makeFixture()
+      __setConfigForTest({ nativeAttachmentFidelity: true })
+      const registry = new ProviderRegistry()
+      const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+      registry.register(native)
+      const sessionStore = new SessionStore({ stateDir: fx.stateDir })
+      await sessionStore.load()
+      const sm = new SessionManager({ store: sessionStore, providers: registry, uploadStore: fx.store, crashRecovery: true })
+      let releaseMigration!: () => void
+      let migrationFinished!: () => void
+      const migrationGate = new Promise<void>((resolve) => { releaseMigration = resolve })
+      const finished = new Promise<void>((resolve) => { migrationFinished = resolve })
+      let migrationStarted!: () => void
+      const started = new Promise<void>((resolve) => { migrationStarted = resolve })
+      let firstMigration = true
+      const originalMigrate = NativeSessionLog.prototype.migrateToV2
+      const migrateSpy = vi.spyOn(NativeSessionLog.prototype, 'migrateToV2').mockImplementation(
+        async function (this: NativeSessionLog) {
+          if (firstMigration) {
+            firstMigration = false
+            migrationStarted()
+          }
+          await migrationGate
+          try {
+            await originalMigrate.call(this)
+          } finally {
+            migrationFinished()
+          }
+        },
+      )
+      const originalCreate = native.createSession.bind(native)
+      let createCalls = 0
+      const createSpy = vi.spyOn(native, 'createSession').mockImplementation((opts) => {
+        createCalls++
+        if (failurePoint === 'createSession' && createCalls === 2) {
+          throw new Error('replacement creation failed')
+        }
+        return originalCreate(opts)
+      })
+      try {
+        const info = await sm.create({ provider: 'native', cwd: fx.stateDir })
+        fx.store.record([{ ...fx.entry, sessionId: info.id }])
+        const manager = sm as unknown as {
+          sessions: Map<string, { handle: ProviderSessionHandle; terminated: boolean }>
+          handleProcessExit(info: { sessionId: string; code: number; signal: null; killed: boolean }): void
+          buildResumeOpts(session: { handle: ProviderSessionHandle }): Promise<Record<string, unknown>>
+          attachmentSendLeases: Map<string, Map<string, Set<string>>>
+        }
+        if (failurePoint === 'buildResumeOpts') {
+          manager.buildResumeOpts = async () => { throw new Error('resume options failed') }
+        }
+        await sm.sendContent(info.id, [fileBlock(fx.entry)])
+        await started
+        await sm.sendContent(info.id, [fileBlock(fx.entry)])
+        const oldHandle = manager.sessions.get(info.id)!.handle
+        expect(manager.attachmentSendLeases.get(info.id)?.size).toBe(2)
+
+        manager.handleProcessExit({ sessionId: info.id, code: 1, signal: null, killed: false })
+        await vi.waitFor(() => expect(manager.sessions.get(info.id)!.terminated).toBe(true))
+        expect(manager.attachmentSendLeases.has(info.id)).toBe(false)
+        expect(oldHandle.queueDepth).toBe(0)
+        expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(false)
+
+        const app = new Hono()
+        app.route('/', buildUploadRouter(sm, fx.store))
+        expect((await app.request(`/uploads/${fx.entry.id}`, { method: 'DELETE' })).status).toBe(200)
+        releaseMigration()
+        await finished
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(JSON.stringify(loadNativeSessionLogSync(fx.stateDir, info.id)?.events))
+          .not.toContain(`"id":"${fx.entry.id}"`)
+      } finally {
+        releaseMigration()
+        migrateSpy.mockRestore()
+        createSpy.mockRestore()
+        await sm.shutdown()
+        await fx.sm.shutdown()
+      }
+    },
+  )
 })
 
 function smSendContent(fx: Fixture) {
