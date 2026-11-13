@@ -8369,7 +8369,6 @@ export class SessionManager {
   async unload(id: string, opts: { terminated?: boolean; reason?: string; removeFromStore?: boolean; awaitDestroy?: boolean } = {}): Promise<void> {
     const s = this.sessions.get(id)
     if (!s) return
-    this.releaseAllAttachmentLeases(id)
     if (opts.terminated) {
       s.terminated = true
       if (opts.reason) s.terminatedReason = opts.reason
@@ -8387,6 +8386,9 @@ export class SessionManager {
     else void this.destroyProviderHandle(id, s.handle, opts.reason ?? 'unload').catch((err) => {
       log.warn(`[session ${id}] provider destroy failed:`, err)
     })
+    // Native destroy withdraws pending durable input synchronously, before its
+    // first await. Only then may their deletion leases be released.
+    this.releaseAllAttachmentLeases(id)
     // When terminating (explicit delete or graceful shutdown), await the
     // pump so the SDK subprocess has time to exit cleanly.
     if (opts.terminated) {

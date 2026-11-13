@@ -5,6 +5,7 @@ import { Readable } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import { Hono } from 'hono'
 import { projectFileBlocksForSdk } from './session-manager.js'
 import { SessionManager } from './session-manager.js'
 import { SessionStore } from './persistence.js'
@@ -19,6 +20,8 @@ import { NativeProvider } from './providers/native/native-provider.js'
 import { nativeFileHandleText } from './providers/native/attachment-projection.js'
 import { __setConfigForTest } from './config.js'
 import { rmRf } from './__test-utils__/index.js'
+import { buildUploadRouter } from './routes/uploads.js'
+import { NativeSessionLog, loadNativeSessionLogSync } from './providers/native/session-log/log.js'
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
@@ -405,6 +408,69 @@ describe('SessionManager attachment dispatch serialization', () => {
       await sm.interrupt(info.id, { cancelQueued: true })
       expect(fx.store.attachmentReferences.hasReference(fx.entry.id)).toBe(false)
     } finally {
+      await sm.shutdown()
+      await fx.sm.shutdown()
+    }
+  })
+
+  it('withdraws pre-append native input before unload releases its upload lease', async () => {
+    const fx = await makeFixture()
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const registry = new ProviderRegistry()
+    const native = new NativeProvider({ stateDir: fx.stateDir, uploadStore: fx.store })
+    registry.register(native)
+    const sessionStore = new SessionStore({ stateDir: fx.stateDir })
+    await sessionStore.load()
+    const sm = new SessionManager({ store: sessionStore, providers: registry, uploadStore: fx.store })
+    let releaseMigration!: () => void
+    let releaseTeardown!: () => void
+    const migrationGate = new Promise<void>((resolve) => { releaseMigration = resolve })
+    const teardownGate = new Promise<void>((resolve) => { releaseTeardown = resolve })
+    let migrationStarted!: () => void
+    let migrationFinished!: () => void
+    const started = new Promise<void>((resolve) => { migrationStarted = resolve })
+    const finished = new Promise<void>((resolve) => { migrationFinished = resolve })
+    try {
+      const info = await sm.create({ provider: 'native', cwd: fx.stateDir })
+      fx.store.record([{ ...fx.entry, sessionId: info.id }])
+      const nativeSession = (sm as unknown as {
+        sessions: Map<string, { handle: ProviderSessionHandle }>
+      }).sessions.get(info.id)!.handle
+      const internals = nativeSession as unknown as {
+        log: NativeSessionLog
+        tasks: { destroy(): Promise<void> }
+      }
+      const originalMigrate = internals.log.migrateToV2.bind(internals.log)
+      vi.spyOn(internals.log, 'migrateToV2').mockImplementation(async () => {
+        migrationStarted()
+        await migrationGate
+        await originalMigrate()
+        migrationFinished()
+      })
+      const originalDestroy = internals.tasks.destroy.bind(internals.tasks)
+      vi.spyOn(internals.tasks, 'destroy').mockImplementation(async () => {
+        await teardownGate
+        await originalDestroy()
+      })
+
+      await sm.sendContent(info.id, [fileBlock(fx.entry)])
+      await started
+      const app = new Hono()
+      app.route('/', buildUploadRouter(sm, fx.store))
+      await sm.unload(info.id)
+      expect((await app.request(`/uploads/${fx.entry.id}`, { method: 'DELETE' })).status).toBe(200)
+      expect(fx.store.getById(fx.entry.id)).toBeUndefined()
+
+      releaseMigration()
+      await finished
+      await new Promise((resolve) => setImmediate(resolve))
+      await internals.log.flush()
+      releaseTeardown()
+      const snapshot = loadNativeSessionLogSync(fx.stateDir, info.id)
+      expect(JSON.stringify(snapshot?.events)).not.toContain(`"id":"${fx.entry.id}"`)
+    } finally {
+      releaseMigration()
+      releaseTeardown()
       await sm.shutdown()
       await fx.sm.shutdown()
     }

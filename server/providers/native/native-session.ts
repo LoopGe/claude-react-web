@@ -1745,6 +1745,10 @@ export class NativeSession implements ProviderSessionHandle {
     if (this._closed) return
     this._closed = true
     this.sessionAbort.abort(new Error('destroyed'))
+    // Withdraw the pending durable prompt BEFORE any teardown await. A pump
+    // paused before migration/raw append will now fail its identity check
+    // instead of persisting an occurrence after the host releases its lease.
+    this.drainQueuedInput()
     // Abort first, then close: closeAll aborts every record synchronously, so
     // a hung handshake / in-flight call cannot hold teardown open. Idempotent.
     await this.mcp?.closeAll()
