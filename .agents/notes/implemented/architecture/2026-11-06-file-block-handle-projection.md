@@ -16,6 +16,14 @@ but the SDK request must still express the file as text.
 
 ## Decision
 
+This is the Claude SDK projection decision. The [native attachment fidelity
+design](../../../../docs/superpowers/specs/2026-11-13-native-attachment-fidelity-design.md)
+preserves structured occurrences in the native v2 log and adds controlled
+`AttachmentRead` plus stable PDF document projection. That native design is a
+proposal until its implementation lands. It leaves the Claude handle shape
+unchanged, while explicitly proposing shared send-resolution, hashing and
+ordering changes around it.
+
 File attachments are app-level `FileBlock`s (`{ type:'file', attachment:
 { id, name, size, digest? } }`) inside user content.
 
