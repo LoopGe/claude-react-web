@@ -20,7 +20,8 @@ import { isMacClient } from '../utils/client-platform'
 import { AnchoredPopover } from './AnchoredPopover'
 import { basenameOf, initialOf } from '../utils/paths'
 import { OPEN_PATH_APP_LABELS, type OpenPathTarget } from '../../shared/open-path'
-import { IconCheck, IconCopy, IconTerminal } from './icons/ToolIcons'
+import { IconCheck, IconCopy, IconFolder, IconTerminal } from './icons/ToolIcons'
+import { OpenPathIcon } from './icons/OpenPathIcon'
 import { BRAND_ICONS } from './icons/BrandIcons'
 
 export interface ProjectPopoverProps {
@@ -84,6 +85,7 @@ export const ProjectPopover = memo(function ProjectPopover({
               disabled={pendingTarget !== null}
               onClick={() => openOnServer('finder')}
             >
+              <OpenPathIcon target="finder" fallback={<IconFolder size={14} />} />
               {isMacClient() ? 'Reveal in Finder' : 'Open in file manager'}
             </button>
             <button
@@ -92,7 +94,7 @@ export const ProjectPopover = memo(function ProjectPopover({
               disabled={pendingTarget !== null}
               onClick={() => openOnServer('terminal')}
             >
-              <IconTerminal aria-hidden />
+              <OpenPathIcon target="terminal" fallback={<IconTerminal size={14} />} />
               {isMacClient() ? 'Open in Terminal' : 'Open in terminal'}
             </button>
             {/* Brand "Open in …" buttons — the targets the /apps probe

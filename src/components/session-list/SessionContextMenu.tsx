@@ -7,6 +7,7 @@ import { useOpenPathApps } from '../../hooks/useOpenPathApps'
 import { useOpenPath } from '../../hooks/useOpenPath'
 import { isMacClient } from '../../utils/client-platform'
 import { BRAND_ICONS } from '../icons/BrandIcons'
+import { OpenPathIcon } from '../icons/OpenPathIcon'
 import { IconTerminal } from '../icons/ToolIcons'
 import { OPEN_PATH_APP_LABELS, type OpenPathTarget } from '../../../shared/open-path'
 import type { SessionGroup, SessionInfo } from '../../types'
@@ -277,9 +278,12 @@ export function SessionContextMenu({
       for (const target of targets) {
         const icon =
           target === 'finder' ? (
-            <IconFolder size={14} />
+            // The two OS targets render the REAL OS icon extracted by the
+            // server (OpenPathIcon), falling back to the generic glyph when
+            // this machine/client pairing has no extraction.
+            <OpenPathIcon target="finder" fallback={<IconFolder size={14} />} />
           ) : target === 'terminal' ? (
-            <IconTerminal size={14} />
+            <OpenPathIcon target="terminal" fallback={<IconTerminal size={14} />} />
           ) : BRAND_ICONS[target] ? (
             // Brand glyphs are keyed by the exact target id (BrandIcons).
             (() => {

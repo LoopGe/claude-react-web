@@ -29,6 +29,11 @@ export const OPEN_PATH_TARGETS = [
  *  exists). */
 export const OPEN_PATH_APP_TARGETS = ['vscode', 'cursor', 'zed', 'iterm2', 'windowsterminal'] as const
 
+/** The two OS glyphs served by GET /open-path/icons/:target as extracted
+ *  real-OS icons (everything else in the target set renders client-side
+ *  static SVG). */
+export type OpenPathGlyphTarget = 'finder' | 'terminal'
+
 /** Menu/button labels for the brand targets, keyed by target id — the single
  *  source shared by the project popover buttons and the session context-menu
  *  open-in group so the two surfaces cannot drift. */

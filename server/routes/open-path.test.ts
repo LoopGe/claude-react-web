@@ -17,14 +17,21 @@ import { resolve } from 'node:path'
 
 type SpawnChild = EventEmitter & { unref: () => void }
 
-const { execFileMock, spawnMock, platformMock } = vi.hoisted(() => ({
+const { execFileMock, spawnMock, platformMock, extractIconMock } = vi.hoisted(() => ({
   execFileMock: vi.fn<(file: string, args: string[], opts: unknown, cb: (err: Error | null) => void) => void>(),
   spawnMock: vi.fn<(file: string, args: string[], opts: unknown) => SpawnChild>(),
   platformMock: vi.fn<() => string>(),
+  extractIconMock: vi.fn<(target: string, platform: string) => Promise<{ bytes: Buffer; contentType: string } | null>>(),
 }))
 
 vi.mock('node:child_process', () => ({ execFile: execFileMock, spawn: spawnMock }))
 vi.mock('node:os', () => ({ platform: platformMock, homedir: () => '/home/test-user' }))
+// The extractors run real subprocesses on the host; the route tests mock the
+// module boundary and exercise cache/404/gating behavior instead.
+vi.mock('../open-path-icons.js', () => ({
+  extractTargetIcon: extractIconMock,
+  hostIconDeps: { temp: {}, run: vi.fn(), readBytes: vi.fn(), fileExists: vi.fn(), listDir: vi.fn(), env: {}, home: '' },
+}))
 
 // Import the router AFTER the mocks are registered.
 const { buildOpenPathRouter, availableAppsFor } = await import('./open-path.js')
@@ -66,6 +73,7 @@ function stubSpawnEvent(event: 'spawn' | 'error', error?: Error) {
 beforeEach(async () => {
   execFileMock.mockReset()
   spawnMock.mockReset()
+  extractIconMock.mockReset()
   platformMock.mockReset()
   platformMock.mockReturnValue('darwin')
   execFileMock.mockImplementation((_file, _args, _opts, cb) => cb(null))
@@ -579,5 +587,58 @@ describe('availableAppsFor', () => {
       },
     )
     expect(apps).toEqual(['zed'])
+  })
+})
+
+// GET /open-path/icons/:target — the OS glyphs for finder/terminal, extracted
+// once per router instance (per-process cache) and served with long-lived
+// cache headers; 404 is the protocol's "genuinely does not exist here" and
+// the client falls back to its generic glyph on it.
+describe('GET /open-path/icons/:target', () => {
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47])
+
+  it('serves the extracted png with immutable-ish cache headers', async () => {
+    extractIconMock.mockResolvedValue({ bytes: PNG, contentType: 'image/png' })
+    const res = await req(makeApp(), 'GET', '/open-path/icons/finder')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('image/png')
+    expect(res.headers.get('cache-control')).toBe('public, max-age=3600')
+    expect(Buffer.from(await res.arrayBuffer()).equals(PNG)).toBe(true)
+    expect(extractIconMock.mock.calls[0]?.slice(0, 2)).toEqual(['finder', 'darwin'])
+  })
+
+  it('serves svg content types too', async () => {
+    extractIconMock.mockResolvedValue({ bytes: Buffer.from('<svg/>'), contentType: 'image/svg+xml' })
+    const res = await req(makeApp(), 'GET', '/open-path/icons/terminal')
+    expect(res.headers.get('content-type')).toBe('image/svg+xml')
+  })
+
+  it('extracts each target once per router instance (process cache)', async () => {
+    extractIconMock.mockResolvedValue({ bytes: PNG, contentType: 'image/png' })
+    const app = makeApp()
+    await req(app, 'GET', '/open-path/icons/finder')
+    await req(app, 'GET', '/open-path/icons/finder')
+    await req(app, 'GET', '/open-path/icons/terminal')
+    expect(extractIconMock).toHaveBeenCalledTimes(2) // finder + terminal, not 3
+  })
+
+  it('answers 404 (no cache headers) when the icon does not exist on this platform', async () => {
+    extractIconMock.mockResolvedValue(null)
+    const res = await req(makeApp(), 'GET', '/open-path/icons/finder')
+    expect(res.status).toBe(404)
+    expect(res.headers.get('cache-control')).toBe('no-store')
+  })
+
+  it('404s brand targets — their glyphs are client-side static, never extracted', async () => {
+    const res = await req(makeApp(), 'GET', '/open-path/icons/vscode')
+    expect(res.status).toBe(404)
+    expect(extractIconMock).not.toHaveBeenCalled()
+  })
+
+  it('403s remote peers like every other open-path route', async () => {
+    extractIconMock.mockResolvedValue({ bytes: PNG, contentType: 'image/png' })
+    const res = await req(makeApp(), 'GET', '/open-path/icons/finder', undefined, '192.168.1.5')
+    expect(res.status).toBe(403)
+    expect(extractIconMock).not.toHaveBeenCalled()
   })
 })

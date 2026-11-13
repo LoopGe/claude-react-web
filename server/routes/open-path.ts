@@ -35,6 +35,7 @@ import {
   type OpenPathAppsPayload,
   type OpenPathTarget,
 } from '../../shared/open-path.js'
+import { extractTargetIcon, hostIconDeps, type ExtractedIcon, type OpenPathGlyphTarget } from '../open-path-icons.js'
 
 const log = createLogger('open-path')
 
@@ -314,6 +315,9 @@ function launchBrowser(file: string, args: string[]): Promise<void> {
 
 export function buildOpenPathRouter(): Hono {
   const app = new Hono()
+  // Per-instance icon cache — keyed by target (the platform is fixed for the
+  // process), one extraction attempt per target per instance lifetime.
+  const iconCache = new Map<string, Promise<ExtractedIcon | null>>()
 
   // Capability probe for the client UI: show the Reveal/Open buttons only
   // when THIS request comes from the server machine. Same gate as the POST.
@@ -353,6 +357,35 @@ export function buildOpenPathRouter(): Hono {
     })
     const payload: OpenPathAppsPayload = { apps }
     return c.json(payload)
+  })
+
+  app.get('/open-path/icons/:target', async (c) => {
+    // Same gate as the POST: the answer is a fact about this machine.
+    assertLocal(c)
+    const target = c.req.param('target') as OpenPathGlyphTarget
+    // Brand targets are static client-side SVGs — extraction exists only for
+    // the two OS glyphs.
+    if (target !== 'finder' && target !== 'terminal') {
+      return c.json({ code: 'not-found', message: `no extractable icon for ${target}` }, 404)
+    }
+    // One extraction per target per router instance (a router instance is one
+    // process): the OS icon cannot change without a restart.
+    let pending = iconCache.get(target)
+    if (pending === undefined) {
+      pending = extractTargetIcon(target, platform(), { ...hostIconDeps, env: process.env, home: homedir() })
+      iconCache.set(target, pending)
+    }
+    const icon: ExtractedIcon | null = await pending
+    if (icon === null) {
+      // The protocol's "genuinely does not exist here" — no-store so a later
+      // restart (new install) gets a fresh attempt.
+      return c.json({ code: 'not-found', message: `no icon for ${target} on ${platform()}` }, 404, {
+        'cache-control': 'no-store',
+      })
+    }
+    return new Response(new Uint8Array(icon.bytes), {
+      headers: { 'content-type': icon.contentType, 'cache-control': 'public, max-age=3600' },
+    })
   })
 
   app.post('/open-path', async (c) => {
