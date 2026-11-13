@@ -36,7 +36,8 @@ import { ResultConsumedCtx } from './message-list/result-consumed-context'
 import { extractUserText, makeResultConsumed, toolResultConsumedKey } from './message-list/rendering'
 import { MessageView } from './message-list/MessageView'
 import { userBodyFoldKey } from './message-list/fold-key'
-import { countMatches } from '../search'
+import { extractMessageSearchSegments } from '../search'
+import { countMessageSearchMatches } from '../../shared/search/segments'
 import { ToolGroupCard } from './message-list/ToolGroupCard'
 import { BottomOverlaySpacer } from './message-list/views/frame-views'
 import {
@@ -1386,13 +1387,10 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
       isEntering ? 'msg-enter' : '',
       isRevealRow ? TRANSCRIPT_REVEAL_ROW_CLASS : '',
     )
-    // Fold inputs for a real-user row, computed on the CANONICAL search
-    // view: countMatches over item.plainText is the exact predicate Chat's
-    // match counter uses (types.ts documents plainText as the search SSOT),
-    // so force-open fires exactly when a <mark> exists in this body — a
-    // raw-substring probe over the markdown source diverges (queries
-    // spanning "**" find marks but no substring) and would leave the
-    // navigated-to mark clipped under the fold.
+    // Fold and reveal inputs for a real-user row use the same independent
+    // search segments as both server indexes. Attachment names therefore pin
+    // the body open just like Markdown matches, without changing canonical
+    // plainText's prompt-editing/dedup role.
     const isHumanRow = isHumanUserMessage(item.msg)
     // Key construction joins the FULL message text (multi-MB on a big
     // paste) — only pay for it when the Set can actually hold it. With an
@@ -1406,7 +1404,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const foldSearchHit =
       isHumanRow &&
       !!sq?.trim() &&
-      countMatches(item.plainText, sq.trim()) > 0
+      countMessageSearchMatches(extractMessageSearchSegments(item.msg), sq.trim()) > 0
     // Which transcript item holds the active search match, when it landed
     // inside THIS row's tool group. The per-member gating (which member gets
     // activeMatchInItem) is owned inside ToolGroupCard.
@@ -1429,7 +1427,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const searchQueryForRow =
       !sq?.trim()
         ? undefined
-        : activeRowIdx != null || activeGroupMemberIdx != null || item.plainText == null || countMatches(item.plainText, sq.trim()) > 0
+        : activeRowIdx != null || activeGroupMemberIdx != null || countMessageSearchMatches(extractMessageSearchSegments(item.msg), sq.trim()) > 0
           ? sq
           : undefined
     const rowBody = item.toolGroup ? (
@@ -1599,7 +1597,7 @@ export const MessageList = memo(function MessageList({ items, working, toolGroup
     const out: VirtuosoItem[] = new Array(base.length)
     for (let i = 0; i < base.length; i++) {
       const it = base[i]
-      const matches = it.plainText == null || countMatches(it.plainText, searchTick.trim()) > 0
+      const matches = countMessageSearchMatches(extractMessageSearchSegments(it.msg), searchTick.trim()) > 0
       if (matches) {
         if (!copied) { for (let j = 0; j < i; j++) out[j] = base[j]; copied = true }
         out[i] = { ...it, searchTick } as TranscriptRow

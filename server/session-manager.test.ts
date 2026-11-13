@@ -8717,6 +8717,42 @@ describe('SessionManager', () => {
     })
   })
 
+  describe('global attachment search segments', () => {
+    function managerWithHistory(messages: Array<Record<string, unknown>>): SessionManager {
+      const info = { id: 's-search', title: 'Search', cwd: TEST_CWD, provider: 'claude', lastTurnAt: 10, lastActivityAt: 10 }
+      const provider = { readHistoryEntries: async () => messages.map((message, index) => ({ index, message })) }
+      return {
+        list: () => [info],
+        sessions: new Map(),
+        store: undefined,
+        providers: new Map([['claude', provider]]),
+        defaultProvider: 'claude',
+        searchMessages: SessionManager.prototype.searchMessages,
+      } as unknown as SessionManager
+    }
+
+    it('finds attachment names without cross-segment phrases or handle internals', async () => {
+      const sm = managerWithHistory([
+        { type: 'user', uuid: 'u-text', parent_tool_use_id: null, message: { role: 'user', content: 'report' } },
+        { type: 'user', uuid: 'u-file', parent_tool_use_id: null, message: { role: 'user', content: [
+          { type: 'text', text: 'before' },
+          { type: 'file', attachment: { id: 'upload-1', name: 'report.pdf', size: 42, digest: 'a'.repeat(64), path: '/private/report.pdf' } },
+          { type: 'text', text: 'after' },
+        ] } },
+      ])
+
+      const hits = await sm.searchMessages('report')
+      expect(hits.map((hit) => [hit.messageUuid, hit.matchOrdinal, hit.messageMatchOrdinal])).toEqual([
+        ['u-text', 0, 0],
+        ['u-file', 1, 0],
+      ])
+      expect(hits[1]?.snippet).toBe('report.pdf')
+      expect(await sm.searchMessages('before report')).toEqual([])
+      expect(await sm.searchMessages('/private/report.pdf')).toEqual([])
+      expect(await sm.searchMessages('a'.repeat(64))).toEqual([])
+    })
+  })
+
   describe('TaskResultStore wiring', () => {
     it('hydrates session.tasks from the sidecar across a manager restart', async () => {
       // 1. Seed the sidecar under a KNOWN session id. `create()` always mints

@@ -541,6 +541,48 @@ describe('SessionSearchPreview', () => {
     expect(onBack).toHaveBeenCalled()
   })
 
+  it('activates an attachment-only per-session hit using its local ordinal', () => {
+    const page = {
+      ...PAGE,
+      messages: [{
+        seq: 5,
+        uuid: 'u-file',
+        msg: {
+          type: 'user',
+          uuid: 'u-file',
+          parent_tool_use_id: null,
+          message: { role: 'user', content: [{ type: 'file', attachment: { id: 'upload-1', name: 'report.pdf', size: 42 } }] },
+        },
+      }],
+    }
+    const { container } = renderPreview(
+      { page: page as MessagePreviewState['page'] },
+      { target: { kind: 'hit', hit: { ...HIT, messageSeq: 5, messageUuid: 'u-file', role: 'user', matchOrdinal: 0 }, query: 'report' } },
+    )
+    expect(container.querySelector('.msg-file-chip mark.search-hl-active')?.textContent).toBe('report')
+  })
+
+  it('uses the global jump local ordinal rather than its session-wide ordinal', () => {
+    const page = {
+      ...PAGE,
+      messages: [{
+        seq: 5,
+        uuid: 'u-file',
+        msg: {
+          type: 'user',
+          uuid: 'u-file',
+          parent_tool_use_id: null,
+          message: { role: 'user', content: [{ type: 'file', attachment: { id: 'upload-1', name: 'report.pdf', size: 42 } }] },
+        },
+      }],
+    }
+    const { container } = renderPreview(
+      { page: page as MessagePreviewState['page'] },
+      { target: { kind: 'uuid', uuid: 'u-file', query: 'report', matchOrdinal: 7, messageMatchOrdinal: 0 } },
+    )
+    expect(container.querySelector('.msg-file-chip mark.search-hl-active')?.textContent).toBe('report')
+  })
+
   it('shows loading, not-found and failure states', () => {
     renderPreview({ page: null, loading: true })
     expect(screen.getByText('Loading…')).toBeTruthy()

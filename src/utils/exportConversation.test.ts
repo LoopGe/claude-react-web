@@ -77,4 +77,32 @@ describe('exportConversation', () => {
     expect(texts[0]).not.toContain('verbatim read-only copy')
     vi.unstubAllGlobals()
   })
+
+  it('exports text and attachments in their original order', () => {
+    const texts: string[] = []
+    vi.stubGlobal('Blob', class {
+      constructor(parts: string[]) { texts.push(parts.join('')) }
+    })
+    vi.stubGlobal('URL', {
+      ...URL,
+      createObjectURL: vi.fn(() => 'blob:ordered-file-test'),
+      revokeObjectURL: vi.fn(),
+    })
+    const messages = [{
+      type: 'user',
+      uuid: 'ordered',
+      message: { role: 'user', content: [
+        { type: 'text', text: 'before' },
+        { type: 'file', attachment: { id: 'u1', name: 'a.pdf', size: 3 } },
+        { type: 'text', text: 'after' },
+      ] },
+    }] as unknown as SdkMessage[]
+
+    exportConversation(messages, 'ordered-file-test')
+
+    const body = texts[0]
+    expect(body.indexOf('before')).toBeLessThan(body.indexOf('a.pdf'))
+    expect(body.indexOf('a.pdf')).toBeLessThan(body.indexOf('after'))
+    vi.unstubAllGlobals()
+  })
 })

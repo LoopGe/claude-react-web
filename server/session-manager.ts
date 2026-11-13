@@ -157,8 +157,9 @@ import { jsonlPageCache } from './jsonl-cache.js'
 import { readTurnAnchorsFromDisk } from './history-reader.js'
 import { createDefaultProviders } from './providers/default-providers.js'
 import type { AgentProvider, ProviderCapabilities, ProviderInterruptReceipt, ProviderSessionHandle, SupplementOutcome } from './providers/types.js'
-import { countMatches, findRanges } from '../shared/search/match.js'
-import { extractMessagePlainText } from '../shared/search/extract.js'
+import { findRanges } from '../shared/search/match.js'
+import { extractMessageSearchSegments } from '../shared/search/extract.js'
+import { countMessageSearchMatches, locateMessageSearchMatch } from '../shared/search/segments.js'
 import type { MessageSearchHit } from '../shared/search-results.js'
 import type { ProviderRegistry } from './providers/registry.js'
 import {
@@ -8751,10 +8752,11 @@ export class SessionManager {
 
       let sessionMatchOrdinal = 0
       for (const entry of entries) {
-        const plainText = extractMessagePlainText(entry.message as SDKMessage)
-        if (!plainText) continue
-        const matchCount = countMatches(plainText, q)
+        const segments = extractMessageSearchSegments(entry.message as SDKMessage)
+        const matchCount = countMessageSearchMatches(segments, q)
         if (matchCount === 0) continue
+        const first = locateMessageSearchMatch(segments, q, 0)
+        if (first === null) continue
         const matchOrdinal = sessionMatchOrdinal
         sessionMatchOrdinal += matchCount
         const uuid = messageUuid(entry.message)
@@ -8766,9 +8768,10 @@ export class SessionManager {
           messageUuid: uuid ?? String(entry.index),
           messageIndex: entry.index,
           messageType: messageType(entry.message),
-          snippet: buildSnippet(plainText, q),
+          snippet: buildSnippet(segments[first.segmentIndex].text, q),
           matchCount,
           matchOrdinal,
+          messageMatchOrdinal: 0,
           lastModified: info.lastTurnAt ?? info.lastActivityAt,
         })
       }

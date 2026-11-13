@@ -5,7 +5,8 @@
 // sync — exactly the bug this whole subsystem exists to prevent.
 
 import { describe, it, expect } from 'vitest'
-import { extractPlainText, parseMarkdownToHast } from '../extract'
+import { extractPlainText, parseMarkdownToHast, extractMessageSearchSegments } from '../extract'
+import { countMessageSearchMatches } from '../../../shared/search/segments'
 import { findRanges } from '../match'
 import { rehypeHighlightQuery } from '../rehype-highlight'
 import type { HastNode } from '../hast-walk'
@@ -144,5 +145,20 @@ describe('search alignment invariant', () => {
       rehypeHighlightQuery(q)(tree)
       expect(markedCharCount(tree)).toBe(rangesCharCount(ranges))
     }
+  })
+
+  it('does not create a cross-segment phrase when attachments separate text', () => {
+    const segments = extractMessageSearchSegments({
+      type: 'user',
+      parent_tool_use_id: null,
+      message: { content: [
+        { type: 'text', text: '**before**' },
+        { type: 'file', attachment: { id: 'u1', name: 'report.pdf', size: 3 } },
+        { type: 'text', text: 'after' },
+      ] },
+    })
+    expect(segments.map((segment) => segment.text)).toEqual(['before', 'report.pdf', 'after'])
+    expect(countMessageSearchMatches(segments, 'before report')).toBe(0)
+    expect(countMessageSearchMatches(segments, 'report after')).toBe(0)
   })
 })

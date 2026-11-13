@@ -36,6 +36,7 @@ import {
 } from './types'
 import {
   msgTime,
+  hasStructuredUserFiles,
   recomputeActiveWorktree,
   toTranscriptItem,
 } from './normalize'
@@ -47,17 +48,11 @@ import { reapplyDismissed } from './sidechain-index'
 import { sweepAtTurnEnd } from './turn-status'
 import { applyPermissionRequest } from './tool-index'
 
-/** Keep-first uuid dedup over a REPLAY_REPLACE payload. A single
- *  server-built burst is a contiguous ring slice and never repeats a uuid —
- *  the only shape that does is a superseded-burst concatenation
- *  ([older-burst-prefix][newer-full-burst], produced by the retired server
- *  write-queue supersede), whose overlap the
- *  cache-split below cannot see (it only splits against the cache, not
- *  within the payload). Without this, a cold store renders the overlap
- *  twice. Two-pass: the first scan exits without rebuilding when every
- *  uuid is unique (the overwhelmingly common case); uuid-less frames can
- *  never collide and are always kept. Exported for tests (same pattern as
- *  splitReplayAgainstCache). */
+/** Deduplicate a REPLAY_REPLACE payload by uuid. A single server-built burst
+ *  is normally a contiguous ring slice without repeats, but a superseded-burst
+ *  concatenation can repeat uuids, and native/seq replay can offer two fidelity
+ *  levels for the same user uuid. Ordinary duplicates keep the first copy;
+ *  a structured FileBlock copy replaces a legacy handle at the same position. */
 export function dedupeReplayPayload(messages: SdkMessage[]): SdkMessage[] {
   const uuids = new Set<string>()
   let hasDup = false
@@ -71,7 +66,7 @@ export function dedupeReplayPayload(messages: SdkMessage[]): SdkMessage[] {
     uuids.add(u)
   }
   if (!hasDup) return messages
-  const kept = new Set<string>()
+  const indexByUuid = new Map<string, number>()
   const out: SdkMessage[] = []
   for (const m of messages) {
     const u = typeof m?.uuid === 'string' ? m.uuid : null
@@ -79,9 +74,16 @@ export function dedupeReplayPayload(messages: SdkMessage[]): SdkMessage[] {
       out.push(m)
       continue
     }
-    if (kept.has(u)) continue
-    kept.add(u)
-    out.push(m)
+    const existing = indexByUuid.get(u)
+    if (existing === undefined) {
+      indexByUuid.set(u, out.length)
+      out.push(m)
+      continue
+    }
+    // Native structured history and the seq sidecar can carry the same uuid.
+    // Keep one bubble, but upgrade a legacy handle to its richer FileBlock
+    // copy (and never downgrade the structured copy in the reverse order).
+    if (hasStructuredUserFiles(m) && !hasStructuredUserFiles(out[existing])) out[existing] = m
   }
   return out
 }
@@ -381,6 +383,7 @@ function replaceStaleCachedMessages(state: SessionState, incoming: SdkMessage[])
     if (idx === undefined) continue
     const cached = messages[idx]
     if (cached === msg) continue
+    if (hasStructuredUserFiles(cached) && !hasStructuredUserFiles(msg)) continue
     // Shape compare, not identity: the cache copy went through JSON
     // round-trips (persist) and the projection, so reference equality never
     // holds for a degraded copy and rarely for an intact one. Only runs for

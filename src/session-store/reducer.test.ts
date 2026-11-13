@@ -17,6 +17,7 @@ function degradedProjection(msg: SdkMessage): SdkMessage {
 import { createInitialSessionState, type SessionState, type ServerMirror } from './types'
 import { isTrimBoundary } from './normalize'
 import type { PermissionRequest, SdkMessage, TaskRecordUi } from '../types'
+import { fileHandleText } from '../../shared/upload-handle'
 
 const hasId = (ids: ReadonlyMap<string, unknown>, id: string) => ids.has(id)
 const isEmpty = (ids: ReadonlyMap<string, unknown>) => ids.size === 0
@@ -5332,6 +5333,30 @@ describe('REPLAY_REPLACE payload dedup (superseded-burst concatenation)', () => 
       asstMsg('a2', 'more'),
     ])
     expect(ids(state)).toEqual(['u1', 'a1', 'a2'])
+  })
+  it('keeps one bubble and upgrades a legacy handle to its structured same-uuid copy', () => {
+    const ref = { id: 'upload-1', name: 'report.pdf', size: 42 }
+    const handle = { type: 'user', uuid: 'u-file', parent_tool_use_id: null, message: { role: 'user', content: fileHandleText(ref, '/tmp/report.pdf') } } as unknown as SdkMessage
+    const structured = { type: 'user', uuid: 'u-file', parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'file', attachment: ref }] } } as unknown as SdkMessage
+
+    const upgraded = replay(createInitialSessionState('s'), [handle, structured])
+    expect(ids(upgraded)).toEqual(['u-file'])
+    expect(upgraded.mirror.messages[0]).toBe(structured)
+
+    const notDowngraded = replay(createInitialSessionState('s'), [structured, handle])
+    expect(ids(notDowngraded)).toEqual(['u-file'])
+    expect(notDowngraded.mirror.messages[0]).toBe(structured)
+  })
+
+  it('does not let a same-uuid replay handle overwrite a cached structured copy', () => {
+    const ref = { id: 'upload-1', name: 'report.pdf', size: 42 }
+    const structured = { type: 'user', uuid: 'u-file', parent_tool_use_id: null, receivedAt: 1, message: { role: 'user', content: [{ type: 'file', attachment: ref }] } } as unknown as SdkMessage
+    const handle = { ...structured, message: { role: 'user', content: fileHandleText(ref, '/tmp/report.pdf') } } as unknown as SdkMessage
+    const cache = seedCache([structured])
+
+    const state = replay(cache, [handle])
+    expect(ids(state)).toEqual(['u-file'])
+    expect(state.mirror.messages[0]).toBe(structured)
   })
 })
 

@@ -63,7 +63,7 @@ import { buildWhenContext, whenHolds } from './app-plugins/when'
 import type { PaletteItem } from './components/CommandPalette'
 import type { WsServerFrame } from './ws-types'
 import type { MessageSearchHit } from '../shared/search-results'
-import type { MessageJumpTarget } from '../shared/message-jump'
+import { createMessageJumpTarget, type MessageJumpTarget } from '../shared/message-jump'
 import type { NewSessionForm, PermissionMode, SessionInfo, SessionGroup, SidebarSection } from './types'
 import type { ClearSessionOptions } from './local-commands'
 import { PERMISSION_MODE_CYCLE } from './types'
@@ -2556,12 +2556,7 @@ export function App() {
   const handleSelectMessage = useCallback(
     (hit: MessageSearchHit, query: string) => {
       openSearchPanel(hit.sessionId)
-      const target: MessageJumpTarget = {
-        nonce: ++jumpNonceRef.current,
-        sessionId: hit.sessionId,
-        messageUuid: hit.messageUuid,
-        query,
-      }
+      const target = createMessageJumpTarget(hit, query, ++jumpNonceRef.current)
       setMessageJumpTarget(target)
       void handleSelect(hit.sessionId)
     },

@@ -129,6 +129,15 @@ describe('extractMessagePlainText', () => {
     expect(extractMessagePlainText(msg)).toBeNull()
   })
 
+  it('keeps attachment names out of canonical plainText', () => {
+    const msg = {
+      type: 'user',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'file', attachment: { id: 'u1', name: 'report.pdf', size: 3 } }] },
+    } as unknown as SdkMessage
+    expect(extractMessagePlainText(msg)).toBeNull()
+  })
+
   it('falls back to msg.error for system error frames', () => {
     const msg = { type: 'system', subtype: 'error', error: 'boom' } as unknown as SdkMessage
     expect(extractMessagePlainText(msg)).toBe('boom')

@@ -3,18 +3,38 @@ import { render } from '@testing-library/react'
 import { UserFileAttachments } from './UserFileAttachments'
 
 describe('UserFileAttachments', () => {
-  it('renders one chip per file, linked to the stored copy', () => {
-    const { getByText, getAllByRole } = render(
-      <UserFileAttachments files={[
-        { id: 'u1', name: 'a.pdf', size: 2048 },
-        { id: 'u2', name: 'b.txt', size: 3 },
-      ]} />,
+  it('renders a file chip linked to the stored copy', () => {
+    const { getByText, getByRole } = render(
+      <UserFileAttachments
+        file={{ id: 'u1', name: 'a.pdf', size: 2048 }}
+        occurrenceKey="u1:1"
+      />,
     )
-    expect(getByText('a.pdf')).toBeTruthy()
     expect(getByText('2.0 KB')).toBeTruthy()
-    const links = getAllByRole('link')
-    expect(links).toHaveLength(2)
-    expect(links[0].getAttribute('href')).toBe('/api/uploads/u1/content')
-    expect(links[1].getAttribute('href')).toBe('/api/uploads/u2/content')
+    expect(getByRole('link').getAttribute('href')).toBe('/api/uploads/u1/content')
+    expect(getByRole('link').getAttribute('data-file-occurrence')).toBe('u1:1')
+  })
+
+  it('highlights only the matched file name and marks the active occurrence', () => {
+    const { getByRole, rerender } = render(
+      <UserFileAttachments
+        file={{ id: 'u1', name: 'annual-report.pdf', size: 2048 }}
+        occurrenceKey="u1:1"
+        searchQuery="report"
+        active={false}
+      />,
+    )
+    expect(getByRole('link').querySelector('mark.search-hl')?.textContent).toBe('report')
+    expect(getByRole('link').querySelector('mark.search-hl-active')).toBeNull()
+
+    rerender(
+      <UserFileAttachments
+        file={{ id: 'u1', name: 'annual-report.pdf', size: 2048 }}
+        occurrenceKey="u1:1"
+        searchQuery="report"
+        active
+      />,
+    )
+    expect(getByRole('link').querySelector('mark.search-hl-active')?.textContent).toBe('report')
   })
 })

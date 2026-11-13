@@ -3,7 +3,7 @@
 // implementation files — that keeps the module's surface area small
 // and migrations contained.
 
-export { extractPlainText, extractMessagePlainText, extractToolUseDiffText } from './extract'
+export { extractPlainText, extractMessagePlainText, extractMessageSearchSegments, extractToolUseDiffText } from './extract'
 export { findRanges, countMatches } from './match'
 export { rehypeHighlightQuery } from './rehype-highlight'
 export { lineDiff, type LineDiffOp } from './line-diff'

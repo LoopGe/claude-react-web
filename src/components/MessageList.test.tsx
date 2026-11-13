@@ -5543,6 +5543,20 @@ describe('diff search highlighting', () => {
   })
 })
 
+describe('attachment search highlighting', () => {
+  it('renders an attachment-only hit and activates its chip', () => {
+    const msg = makeMsg('user', {
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'file', attachment: { id: 'upload-1', name: 'report.pdf', size: 42 } }] },
+    })
+    const items = [{ id: 'file-1', msg, plainText: null, isCompactSummary: false, hiddenByDefault: false }] as TranscriptItem[]
+    const { container } = render(
+      <MessageList items={items} searchQuery="report" searchActiveMsgIdx={0} searchActiveMatchInItem={0} />,
+    )
+    expect(container.querySelector('.msg-file-chip mark.search-hl-active')?.textContent).toBe('report')
+  })
+})
+
 describe('worktree markers', () => {
   it('renders EnterWorktree as a lightweight marker with the worktree name', () => {
     const items = toItems([
@@ -5704,6 +5718,19 @@ describe('long user-message body fold', () => {
     // Search-hit override: never hide the <mark> the user navigated to.
     expect(container.querySelector('.fold-clamped')).toBeNull()
     expect(container.querySelector('.fold-toggle')).toBeNull()
+  })
+
+  it('force-opens when only an attachment name matches', () => {
+    mockScrollHeight = FOLD_MAX_PX + 160
+    const msg = makeMsg('user', {
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'file', attachment: { id: 'upload-1', name: 'report.pdf', size: 42 } }] },
+    })
+    const items = [{ id: 'file-fold', msg, plainText: null, isCompactSummary: false, hiddenByDefault: false }] as TranscriptItem[]
+    const { container } = render(<MessageList items={items} searchQuery="report" />)
+    expect(container.querySelector('.fold-clamped')).toBeNull()
+    expect(container.querySelector('.fold-toggle')).toBeNull()
+    expect(container.querySelector('.msg-file-chip mark.search-hl')).toBeTruthy()
   })
 
   it('keeps folding when searchQuery does not match this message', () => {

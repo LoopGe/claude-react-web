@@ -21,7 +21,7 @@ import { DraftTextBody } from './draft-body'
 import { TurnChangesCard } from './TurnChangesCard'
 import { useResultConsumed } from './result-consumed-context'
 import { blockRendersContent, willRenderEmpty } from './rendering'
-import { splitUserBlocks } from '../../utils/file-blocks'
+import { splitUserContentSegments } from '../../utils/file-blocks'
 import { UserFileAttachments } from './UserFileAttachments'
 import { HoverHint } from '../HoverHint'
 import { FoldableBody } from './FoldableBody'
@@ -161,10 +161,9 @@ export const MessageView = memo(function MessageView({
    *  swaps pendingId for the server uuid; a row-id key would miss and snap
    *  the body shut mid-send). Required — MessageList is the only caller. */
   foldExpanded: boolean
-  /** Whether the canonical search view (item.plainText + countMatches — the
-   *  same SSOT the match counter and <mark> renderer use) hits this message.
-   *  Forces the body fully open with no toggle so a navigated-to mark can
-   *  never hide under the fold clamp. Required — see foldExpanded. */
+  /** Whether the independent message search segments hit this message.
+   *  Forces the body fully open with no toggle so a navigated-to Markdown
+   *  mark or attachment chip can never hide under the fold clamp. */
   foldSearchHit: boolean
   /** Toggle this row's body expansion. Stable callback from MessageList;
    *  receives userBodyFoldKey(msg). Required — see foldExpanded. */
@@ -283,7 +282,78 @@ export const MessageView = memo(function MessageView({
   const isResultConsumed = useResultConsumed()
 
   if (type === 'user') {
-    const { text: userContent, images: imageBlocks, files: fileBlocks } = splitUserBlocks(blocks)
+    const userSegments = splitUserContentSegments(blocks)
+    const userContent = userSegments
+      .filter((segment) => segment.type === 'text')
+      .map((segment) => segment.text)
+      .join('') || null
+    const userTextActive = new Map<number, number>()
+    const userFileActive = new Set<number>()
+    const userQuery = searchQuery?.trim()
+    if (userQuery && activeMatchInItem != null && activeMatchInItem >= 0) {
+      let remaining = activeMatchInItem
+      for (let i = 0; i < userSegments.length; i++) {
+        const segment = userSegments[i]
+        const count = segment.type === 'text'
+          ? countMatches(extractPlainText(segment.text), userQuery)
+          : segment.type === 'file'
+            ? countMatches(segment.file.name, userQuery)
+            : 0
+        if (remaining < count) {
+          if (segment.type === 'text') userTextActive.set(i, remaining)
+          else if (segment.type === 'file') userFileActive.add(i)
+          break
+        }
+        remaining -= count
+      }
+    }
+    const occurrenceKey = (id: string, index: number) => `${id}:${index}`
+    const renderUserSegment = (segment: (typeof userSegments)[number], index: number, bash = false) => {
+      if (segment.type === 'file') {
+        return (
+          <UserFileAttachments
+            key={occurrenceKey(segment.file.id, index)}
+            file={segment.file}
+            occurrenceKey={occurrenceKey(segment.file.id, index)}
+            searchQuery={searchQuery}
+            active={userFileActive.has(index)}
+          />
+        )
+      }
+      if (segment.type === 'image') {
+        return <div key={`img-${index}`} className="msg-image-row"><BlockView block={segment.block} /></div>
+      }
+      if (bash && segment.text.includes('<bash-input>')) {
+        return (
+          <BashMessage
+            key={`bash-${index}`}
+            text={segment.text}
+            sending={sending}
+            onAbort={onAbortBash}
+            searchQuery={searchQuery}
+            activeMatchInItem={userTextActive.get(index)}
+          />
+        )
+      }
+      if (bash) {
+        return (
+          <div key={`text-${index}`} className="msg user">
+            <div className="msg-body">
+              <Markdown text={segment.text} breaks searchQuery={searchQuery} activeMatchIdx={userTextActive.get(index)} />
+            </div>
+          </div>
+        )
+      }
+      return (
+        <Markdown
+          key={`text-${index}`}
+          text={segment.text}
+          breaks
+          searchQuery={searchQuery}
+          activeMatchIdx={userTextActive.get(index)}
+        />
+      )
+    }
     // Tool results that have been consumed by their card (generic ToolCard
     // inline merge, or PlanCard / QuestionCard) are suppressed here. Only
     // ORPHAN results —whose tool_use_id matched no card —fall through to
@@ -353,7 +423,7 @@ export const MessageView = memo(function MessageView({
     // of a normal "you" bubble. The placeholder (optimistic, pre-POST) only
     // has <bash-input>; the server-injected result adds <bash-stdout> etc.
     if (userContent && userContent.includes('<bash-input>')) {
-      return <BashMessage text={userContent} sending={sending} onAbort={onAbortBash} searchQuery={searchQuery} activeMatchInItem={activeMatchInItem} />
+      return <>{userSegments.map((segment, index) => renderUserSegment(segment, index, true))}</>
     }
     // Other synthetic user-role messages the SDK explicitly marks non-human
     // via `origin`/`isSynthetic` (peer / channel / coordinator /
@@ -477,28 +547,15 @@ export const MessageView = memo(function MessageView({
         </div>
         )}
         <div className="msg-body">
-          {/* Search-hit override (mirrors ToolGroupCard's hasSearchHit):
-              foldSearchHit comes from MessageList on the canonical plainText
-              view — the same SSOT as the match counter and the <mark>
-              renderer — so a body is pinned open with no toggle exactly
-              when a navigated-to mark exists inside it. Raw-substring
-              probing of the markdown source diverges from that view (a
-              query spanning "**" finds no substring but does find a mark)
-              and would leave the mark clipped under the fold. */}
+          {/* Search-hit override: foldSearchHit is computed from the same
+              independent segments as the server indexes, so both Markdown
+              matches and attachment-name hits pin the body open. */}
           <FoldableBody
             expanded={foldExpanded}
             forceOpen={foldSearchHit}
             onToggle={() => onToggleFold(userBodyFoldKey(msg))}
           >
-            {imageBlocks.length > 0 && (
-              <div className="msg-image-row">
-                {imageBlocks.map((b, i) => (
-                  <BlockView key={`img-${i}`} block={b} />
-                ))}
-              </div>
-            )}
-            {fileBlocks.length > 0 && <UserFileAttachments files={fileBlocks} />}
-            {userContent && <Markdown text={userContent} breaks searchQuery={searchQuery} activeMatchIdx={activeMatchInItem} />}
+            {userSegments.map((segment, index) => renderUserSegment(segment, index))}
           </FoldableBody>
         </div>
       </div>

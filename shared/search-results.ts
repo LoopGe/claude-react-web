@@ -10,6 +10,8 @@ export interface MessageSearchHit {
   matchCount: number
   /** 0-based index of this hit's first match within the session-wide search results. */
   matchOrdinal: number
+  /** Message-local ordinal used by the single-message preview renderer. */
+  messageMatchOrdinal?: number
   lastModified: number
 }
 

@@ -2,7 +2,7 @@
 // download. Pure client-side — no server round-trip needed.
 
 import type { Block, SdkMessage } from '../types'
-import { splitUserBlocks } from './file-blocks'
+import { splitUserContentSegments } from './file-blocks'
 import { formatBytes } from './format'
 
 /** Convert the SDK message array into Markdown and trigger a download. */
@@ -31,14 +31,14 @@ export function exportConversation(messages: SdkMessage[], title?: string): void
       const blocks = typeof content === 'string'
         ? [{ type: 'text', text: content } as Block]
         : Array.isArray(content) ? content as Block[] : []
-      const parts = splitUserBlocks(blocks)
-      if (!parts.text && parts.files.length === 0) continue
+      const segments = splitUserContentSegments(blocks)
+      if (!segments.some((segment) => segment.type === 'file' || (segment.type === 'text' && segment.text !== ''))) continue
 
       lines.push('## You')
       lines.push('')
-      if (parts.text) lines.push(parts.text)
-      for (const file of parts.files) {
-        lines.push(`- 📎 ${file.name} (${formatBytes(file.size)})`)
+      for (const segment of segments) {
+        if (segment.type === 'text') lines.push(segment.text)
+        else if (segment.type === 'file') lines.push(`- 📎 ${segment.file.name} (${formatBytes(segment.file.size)})`)
       }
       lines.push('')
     } else if (msg.type === 'assistant') {

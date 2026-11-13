@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt, deleteTranscriptFiles, normalize } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
+import { fileHandleText } from '../shared/upload-handle.js'
 
 // Creating a symlink needs no privileges on POSIX but does on Windows unless a
 // junction is used. Probe once so the symlink test is skipped only where the
@@ -855,6 +856,26 @@ describe('parseLastUserPrompt — tail text → last prompt preview', () => {
     // the first \n must be discarded, not parsed.
     const tail = `,"torn": true}` + '\n' + jsonl([{ type: 'last-prompt', lastPrompt: 'after torn line' }])
     expect(parseLastUserPrompt(tail)).toBe('after torn line')
+  })
+
+  it('falls back to a legacy handle attachment name only when no prompt text remains', () => {
+    const handle = fileHandleText({ id: 'u1', name: 'report.pdf', size: 42 }, '/private/report.pdf')
+    expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: handle }]))).toBe('report.pdf')
+    expect(parseLastUserPrompt(jsonl([{ type: 'last-prompt', lastPrompt: `before ${handle}` }]))).toBe('before')
+  })
+
+  it('falls back to a structured FileBlock name for an attachment-only prompt', () => {
+    expect(parseLastUserPrompt(jsonl([{
+      type: 'user',
+      message: { role: 'user', content: [{ type: 'file', attachment: { id: 'u1', name: 'report.pdf', size: 42 } }] },
+    }]))).toBe('report.pdf')
+    expect(parseLastUserPrompt(jsonl([{
+      type: 'user',
+      message: { role: 'user', content: [
+        { type: 'text', text: 'before' },
+        { type: 'file', attachment: { id: 'u1', name: 'report.pdf', size: 42 } },
+      ] },
+    }]))).toBe('before')
   })
 
   it('returns undefined for corrupt rows, blank last-prompt values, and empty input', () => {

@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { CommandPalette } from './CommandPalette'
 import type { Shortcut } from '../hooks/useKeyboardShortcuts'
+import { createMessageJumpTarget } from '../../shared/message-jump'
+import type { MessageSearchHit } from '../../shared/search-results'
 
 // happy-dom implements scrollIntoView natively; these tests replace it with a
 // spy, and this puts the real method back so nothing leaks into other files.
@@ -39,6 +41,30 @@ function setup() {
   const rows = () => Array.from(document.querySelectorAll<HTMLElement>('[data-palette-option]'))
   return { scrollIntoView, rows, shortcuts, onClose }
 }
+
+describe('message jump projection', () => {
+  it('preserves both global and message-local match ordinals for preview navigation', () => {
+    const hit: MessageSearchHit = {
+      id: 's1:u1',
+      sessionId: 's1',
+      messageUuid: 'u1',
+      messageIndex: 4,
+      snippet: 'report.pdf',
+      matchCount: 1,
+      matchOrdinal: 7,
+      messageMatchOrdinal: 0,
+      lastModified: 10,
+    }
+    expect(createMessageJumpTarget(hit, 'report', 3)).toEqual({
+      nonce: 3,
+      sessionId: 's1',
+      messageUuid: 'u1',
+      query: 'report',
+      matchOrdinal: 7,
+      messageMatchOrdinal: 0,
+    })
+  })
+})
 
 describe('CommandPalette', () => {
   // Shared useListSelection wiring: hover only moves the highlight; the arrow

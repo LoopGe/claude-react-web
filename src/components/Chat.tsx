@@ -1334,7 +1334,13 @@ export const Chat = memo(function Chat({
   const initialSearchTarget = useMemo<MessagePreviewTarget | undefined>(
     () =>
       messageJumpTarget && messageJumpTarget.sessionId === session.id
-        ? { kind: 'uuid', uuid: messageJumpTarget.messageUuid, query: messageJumpTarget.query }
+        ? {
+            kind: 'uuid',
+            uuid: messageJumpTarget.messageUuid,
+            query: messageJumpTarget.query,
+            matchOrdinal: messageJumpTarget.matchOrdinal,
+            messageMatchOrdinal: messageJumpTarget.messageMatchOrdinal,
+          }
         : undefined,
     [messageJumpTarget, session.id],
   )

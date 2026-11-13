@@ -6,6 +6,8 @@ import { WorkflowProvider } from '../hooks/useWorkflowContext'
 import { SkillProvider, skillRecordAsSubagent } from '../hooks/useSkillContext'
 import { toTranscriptItem, getBlocks, extractToolUseId } from '../session-store/normalize'
 import { countMatches } from '../search/match'
+import { extractMessageSearchSegments } from '../search'
+import { countMessageSearchMatches } from '../../shared/search/segments'
 import { createInitialServerMirror } from '../session-store/types'
 import { updateIndexesMirror, drainPendingResults } from '../session-store/index-pipeline'
 import { useMessagePreview, type MessagePreviewTarget } from '../hooks/useMessagePreview'
@@ -191,6 +193,10 @@ export function SessionSearchPreview({
       ? [roleLabel(target.hit.role), formatTime(target.hit.timestamp)].filter(Boolean).join(' · ')
       : 'From the command palette'
 
+  const targetMatchOrdinal = target.kind === 'hit'
+    ? target.hit.matchOrdinal ?? 0
+    : target.messageMatchOrdinal ?? target.matchOrdinal ?? 0
+
   const transcript = (
     <MessageList
       key={target.kind === 'hit' ? `hit:${target.hit.messageSeq}` : `uuid:${target.uuid}`}
@@ -208,7 +214,7 @@ export function SessionSearchPreview({
       showMessageHeaders={showMessageHeaders}
       searchQuery={target.query}
       searchActiveMsgIdx={targetItemIndex >= 0 ? targetItemIndex : undefined}
-      searchActiveMatchInItem={targetItemIndex >= 0 ? 0 : undefined}
+      searchActiveMatchInItem={targetItemIndex >= 0 ? targetMatchOrdinal : undefined}
       replayReady
     />
   )
@@ -233,7 +239,7 @@ export function SessionSearchPreview({
     ? (() => {
         const sourceIndex = items.findIndex((item) =>
           item.msg.parent_tool_use_id === sidechainId && item.msg.type === 'assistant' &&
-          countMatches(item.plainText ?? '', target.query) > 0,
+          countMessageSearchMatches(extractMessageSearchSegments(item.msg), target.query) > 0,
         )
         return sourceIndex >= 0 ? sourceIndex : -1000
       })()
@@ -258,7 +264,7 @@ export function SessionSearchPreview({
       showMessageHeaders={showMessageHeaders}
       searchQuery={target.query}
       searchActiveMsgIdx={sidechainTargetItemIndex}
-      searchActiveMatchInItem={sidechainTargetItemIndex >= 0 || sidechainTargetItemIndex === -1000 ? 0 : undefined}
+      searchActiveMatchInItem={sidechainTargetItemIndex >= 0 || sidechainTargetItemIndex === -1000 ? targetMatchOrdinal : undefined}
       replayReady
       emptyStateContent={
         <div className="search-preview-state">No sidechain messages in this page</div>

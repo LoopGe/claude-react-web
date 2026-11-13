@@ -9,7 +9,15 @@ import type { TranscriptPageResponse } from '../../shared/transcript-page'
  *  CommandPalette message hit (uuid only). */
 export type MessagePreviewTarget =
   | { kind: 'hit'; hit: SessionSearchHit; query: string }
-  | { kind: 'uuid'; uuid: string; query: string }
+  | {
+      kind: 'uuid'
+      uuid: string
+      query: string
+      /** Session-wide global-search ordinal, retained with the jump. */
+      matchOrdinal?: number
+      /** Message-local ordinal consumed by the preview renderer. */
+      messageMatchOrdinal?: number
+    }
 
 export interface PreviewMessage {
   seq: number

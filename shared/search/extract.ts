@@ -40,11 +40,15 @@ import { lineDiff } from './line-diff.js'
 import { rehypeStripStructuralWhitespace } from './rehype-strip-structural-whitespace.js'
 import { htmlAsTextHandlers } from '../markdown-html-text.js'
 import { stripFileHandles } from '../upload-handle.js'
+import { isFileBlock } from '../attachments.js'
+import { splitFileHandleText, type MessageSearchSegment } from './segments.js'
 
 interface SearchableMessage {
   type?: string
+  subtype?: string
   error?: unknown
   message?: unknown
+  parent_tool_use_id?: string | null
 }
 
 interface SearchableBlock {
@@ -218,4 +222,67 @@ export function extractMessagePlainText(msg: SearchableMessage): string | null {
     return msg.error || null
   }
   return null
+}
+
+/** Build the independent search document for a message. Canonical plainText
+ * above deliberately stays unchanged for prompt editing and dedup; this view
+ * adds only user-visible attachment names and keeps every renderer's matches
+ * in its own segment. */
+export function extractMessageSearchSegments(msg: SearchableMessage): MessageSearchSegment[] {
+  const out: MessageSearchSegment[] = []
+  const pushMarkdown = (markdown: string): void => {
+    const text = extractPlainText(markdown)
+    if (text) out.push({ type: 'text', text })
+  }
+  const message = msg.message
+  const content = message && typeof message === 'object' ? (message as { content?: unknown }).content : undefined
+  const blocks = Array.isArray(content) ? content as SearchableBlock[] : null
+  const isRealUser = msg.type === 'user' && msg.parent_tool_use_id == null &&
+    !(blocks?.some((block) => block.type === 'tool_result') ?? false)
+  const pushUserText = (raw: string): void => {
+    if (!isRealUser) {
+      pushMarkdown(stripFileHandles(raw))
+      return
+    }
+    for (const segment of splitFileHandleText(raw)) {
+      if (segment.type === 'text') pushMarkdown(segment.text)
+      else out.push({
+        type: 'attachment',
+        text: segment.file.name,
+        attachment: { id: segment.file.id, name: segment.file.name, size: segment.file.size },
+      })
+    }
+  }
+
+  if (typeof content === 'string') {
+    pushUserText(content)
+  } else if (blocks) {
+    for (const b of blocks) {
+      if (b.type === 'text' && typeof b.text === 'string') {
+        pushUserText(b.text)
+      } else if (isRealUser && isFileBlock(b)) {
+        const file = b.attachment
+        out.push({
+          type: 'attachment',
+          text: file.name,
+          attachment: { id: file.id, name: file.name, size: file.size },
+        })
+      } else if (b.type === 'tool_result') {
+        const rc = (b as { content?: unknown }).content
+        if (typeof rc === 'string') {
+          pushMarkdown(rc)
+        } else if (Array.isArray(rc)) {
+          for (const inner of rc as SearchableBlock[]) {
+            if (inner.type === 'text' && typeof inner.text === 'string') pushMarkdown(inner.text)
+          }
+        }
+      } else if (b.type === 'tool_use') {
+        const text = extractToolUseDiffText(b.input, b.name)
+        if (text) out.push({ type: 'text', text })
+      }
+    }
+  } else if (msg.type === 'system' && typeof msg.error === 'string' && msg.error) {
+    out.push({ type: 'text', text: msg.error })
+  }
+  return out
 }

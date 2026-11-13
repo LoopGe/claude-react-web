@@ -48,6 +48,7 @@ import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
 import { condensePromptPreview } from '../shared/prompt-preview.js'
 import { stripFileHandles } from '../shared/upload-handle.js'
+import { extractMessageSearchSegments } from '../shared/search/extract.js'
 
 const log = createLogger('history')
 
@@ -247,6 +248,19 @@ function isInterruptPlaceholder(content: unknown): boolean {
  *  (command expansions etc. — anything starting with an XML tag, mirroring
  *  the SDK's own firstPrompt derivation) are skipped, matching the
  *  renderable-subset rules above. Corrupt rows are skipped. */
+function attachmentNameFallback(content: unknown): string | undefined {
+  const segments = extractMessageSearchSegments({
+    type: 'user',
+    parent_tool_use_id: null,
+    message: { content },
+  })
+  const names = segments
+    .filter((segment) => segment.type === 'attachment')
+    .map((segment) => segment.text)
+    .join(' ')
+  return names ? condensePromptPreview(names) : undefined
+}
+
 export function parseLastUserPrompt(tail: string): string | undefined {
   if (!tail.trim()) return undefined
   let lastPromptHit: { index: number; text: string | undefined } | undefined
@@ -269,7 +283,12 @@ export function parseLastUserPrompt(tail: string): string | undefined {
       // empty" (fresh/failed turn, post-clear bookkeeping). Recording it —
       // instead of skipping to an older user message — keeps the reader's
       // recency-by-file-position rule honest. text may be undefined here.
-      const raw = typeof o.lastPrompt === 'string' ? condensePromptPreview(stripFileHandles(o.lastPrompt)) : undefined
+      const raw = typeof o.lastPrompt === 'string'
+        ? (() => {
+            const cleaned = stripFileHandles(o.lastPrompt as string)
+            return cleaned ? condensePromptPreview(cleaned) : attachmentNameFallback(o.lastPrompt)
+          })()
+        : undefined
       lastPromptHit = { index: i, text: raw || undefined }
       continue
     }
@@ -280,6 +299,10 @@ export function parseLastUserPrompt(tail: string): string | undefined {
         if (!isInterruptPlaceholder(cleaned) && !SYNTHETIC_FRAME_PREFIX_RE.test(cleaned)) {
           const text = condensePromptPreview(cleaned)
           if (text) userHit = { index: i, text }
+          else {
+            const fallback = attachmentNameFallback(content)
+            if (fallback) userHit = { index: i, text: fallback }
+          }
         }
         continue
       }
@@ -300,6 +323,9 @@ export function parseLastUserPrompt(tail: string): string | undefined {
         if (!hasToolResult && joined && !SYNTHETIC_FRAME_PREFIX_RE.test(joined)) {
           const text = condensePromptPreview(joined)
           if (text) userHit = { index: i, text }
+        } else if (!hasToolResult && !joined) {
+          const fallback = attachmentNameFallback(content)
+          if (fallback) userHit = { index: i, text: fallback }
         }
       }
     }

@@ -224,4 +224,45 @@ describe('createSessionSearchIndex', () => {
     expect(b.totalHits).toBe(3)
     expect(deps.getWindow).toHaveBeenCalledTimes(1)
   })
+
+  it('finds attachment-only names with a message-local ordinal and no cross-segment matches', async () => {
+    const msg = {
+      seq: 0,
+      uuid: 'u-file',
+      msg: {
+        type: 'user',
+        uuid: 'u-file',
+        parent_tool_use_id: null,
+        message: { role: 'user', content: [
+          { type: 'text', text: 'before' },
+          { type: 'file', attachment: { id: 'upload-1', name: 'report.pdf', size: 42, digest: 'a'.repeat(64) } },
+          { type: 'text', text: 'after' },
+        ] },
+      },
+    }
+    const deps = makeDeps({ files: [msg] })
+    const index = createSessionSearchIndex(deps)
+
+    const hit = (await index.search('files', 'report.pdf', 100)).hits[0]
+    expect(hit).toMatchObject({ messageSeq: 0, matchCount: 1, matchOrdinal: 0, snippet: 'report.pdf', turnPrompt: 'before after' })
+    expect((await index.search('files', 'before report', 100)).hits).toEqual([])
+    expect((await index.search('files', 'a'.repeat(64), 100)).hits).toEqual([])
+  })
+
+  it('uses only the attachment name as an attachment-only turn prompt fallback', async () => {
+    const msg = {
+      seq: 0,
+      uuid: 'u-file-only',
+      msg: {
+        type: 'user',
+        uuid: 'u-file-only',
+        parent_tool_use_id: null,
+        message: { role: 'user', content: [{ type: 'file', attachment: { id: 'upload-1', name: 'report.pdf', size: 42 } }] },
+      },
+    }
+    const deps = makeDeps({ files: [msg] })
+    const index = createSessionSearchIndex(deps)
+    const res = await index.search('files', 'report.pdf', 100)
+    expect(res.hits[0]?.turnPrompt).toBe('report.pdf')
+  })
 })

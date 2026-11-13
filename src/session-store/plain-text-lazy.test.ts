@@ -168,6 +168,16 @@ describe('topLevelUserPromptSignature keeps its cached plaintext parameter', () 
     expect(mockedExtract).not.toHaveBeenCalled()
   })
 
+  it('keeps attachment-only prompt signatures empty instead of folding in search names', () => {
+    const msg = {
+      type: 'user',
+      uuid: 'file-only',
+      parent_tool_use_id: null,
+      message: { content: [{ type: 'file', attachment: { id: 'u1', name: 'report.pdf', size: 3 } }] },
+    } as unknown as SdkMessage
+    expect(topLevelUserPromptSignature(msg)).toBe('')
+  })
+
   it('recomputes via the pipeline when no cache is supplied (undefined)', () => {
     const msg = userPrompt('Hello **world**')
     const sig = topLevelUserPromptSignature(msg)

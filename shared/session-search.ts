@@ -21,6 +21,8 @@ export interface SessionSearchHit {
   snippet: string
   /** Occurrences inside this message (not the number of hits). */
   matchCount: number
+  /** Message-local ordinal of the hit's first match. */
+  matchOrdinal?: number
   /** Present for tool_result hits: the tool_use this result belongs to. */
   ownerToolUseId?: string
 }

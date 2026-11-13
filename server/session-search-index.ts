@@ -11,8 +11,8 @@
  * and only reads messages above it on subsequent queries. A generation change
  * (`/clear`) invalidates the cache and triggers a full rebuild.
  */
-import { countMatches } from '../shared/search/match.js'
-import { extractMessagePlainText } from '../shared/search/extract.js'
+import { extractMessageSearchSegments } from '../shared/search/extract.js'
+import { countMessageSearchMatches, locateMessageSearchMatch, type MessageSearchSegment } from '../shared/search/segments.js'
 import { shouldHideByDefault } from '../shared/message-visibility.js'
 import { userMessageHasToolResult } from '../shared/user-frames.js'
 import type { TranscriptPageMessage, TranscriptPageResponse } from '../shared/transcript-page.js'
@@ -44,7 +44,7 @@ interface Row {
   messageSeq: number
   uuid: string | null
   role: SessionSearchRole
-  text: string
+  segments: MessageSearchSegment[]
   turnSeq: number
   turnNo: number
   turnPrompt: string
@@ -156,10 +156,12 @@ function consume(state: IndexState, messages: readonly TranscriptPageMessage[]):
       }
     }
 
+    const segments = extractMessageSearchSegments(msg as Parameters<typeof extractMessageSearchSegments>[0])
     if (isRealUserPrompt(msg)) {
       state.turn.turnNo += 1
       state.turn.turnSeq = entry.seq
-      const promptText = extractMessagePlainText(msg as Parameters<typeof extractMessagePlainText>[0]) ?? ''
+      const text = segments.filter((segment) => segment.type === 'text').map((segment) => segment.text).join('\n\n')
+      const promptText = text || segments.filter((segment) => segment.type === 'attachment').map((segment) => segment.text).join(' ')
       state.turn.turnPrompt = turnPromptOf(promptText) || 'Session start'
     } else if (state.turn.turnNo === 0) {
       state.turn.turnNo = 1
@@ -178,8 +180,7 @@ function consume(state: IndexState, messages: readonly TranscriptPageMessage[]):
       if (ownerSeq === undefined) continue
     }
 
-    const text = extractMessagePlainText(msg as Parameters<typeof extractMessagePlainText>[0])
-    if (!text) continue
+    if (segments.length === 0) continue
     const timestamp = timestampOf(msg)
 
     state.rows.push({
@@ -187,7 +188,7 @@ function consume(state: IndexState, messages: readonly TranscriptPageMessage[]):
       messageSeq: entry.seq,
       uuid: typeof msg.uuid === 'string' ? msg.uuid : null,
       role: isToolResult ? 'tool_result' : msg.type === 'user' ? 'user' : 'assistant',
-      text,
+      segments,
       turnSeq: state.turn.turnSeq,
       turnNo: state.turn.turnNo,
       turnPrompt: state.turn.turnPrompt,
@@ -295,7 +296,10 @@ export function createSessionSearchIndex(deps: SessionSearchDeps): SessionSearch
 
       const all: SessionSearchHit[] = []
       for (const row of state.rows) {
-        if (!row.text.toLowerCase().includes(q.toLowerCase())) continue
+        const matchCount = countMessageSearchMatches(row.segments, q)
+        if (matchCount === 0) continue
+        const first = locateMessageSearchMatch(row.segments, q, 0)
+        if (first === null) continue
         all.push({
           seq: row.seq,
           messageSeq: row.messageSeq,
@@ -305,8 +309,9 @@ export function createSessionSearchIndex(deps: SessionSearchDeps): SessionSearch
           turnPrompt: row.turnPrompt,
           role: row.role,
           ...(row.timestamp !== undefined ? { timestamp: row.timestamp } : {}),
-          snippet: buildSnippet(row.text, q),
-          matchCount: countMatches(row.text, q),
+          snippet: buildSnippet(row.segments[first.segmentIndex].text, q),
+          matchCount,
+          matchOrdinal: 0,
           ...(row.ownerToolUseId !== undefined ? { ownerToolUseId: row.ownerToolUseId } : {}),
         })
       }

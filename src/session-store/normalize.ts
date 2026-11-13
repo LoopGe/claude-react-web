@@ -15,6 +15,7 @@ import { randomId } from '../utils/uuid'
 import { extractMessagePlainText } from '../search'
 import { parseWorkflowMeta, scriptPathBasename } from './workflow-meta'
 import { isEmptyResultFrame } from '../../shared/results.js'
+import { isFileBlock } from '../../shared/attachments.js'
 import {
   isTaskNotificationUserMessage,
   normalizeTaskStatus,
@@ -237,6 +238,15 @@ export function retractedUuidsOf(msg: SdkMessage): string[] {
     : undefined
   return [...(Array.isArray(supersedes) ? supersedes : []), ...(Array.isArray(retracted) ? retracted : [])]
     .filter((u): u is string => typeof u === 'string' && u.length > 0)
+}
+
+/** Attachment fidelity used by same-uuid replay merging. A structured
+ * FileBlock is richer than the model-facing handle text and must never be
+ * replaced by that lower-fidelity projection. */
+export function hasStructuredUserFiles(msg: SdkMessage): boolean {
+  if (msg.type !== 'user') return false
+  const content = msg.message?.content
+  return Array.isArray(content) && content.some((block) => isFileBlock(block))
 }
 
 /** Content signature of a TOP-LEVEL user prompt, used to dedup the same
