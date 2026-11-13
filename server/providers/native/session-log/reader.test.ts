@@ -220,6 +220,30 @@ describe('native history reader', () => {
     expect(history).toContain('/after')
     expect(history).toContain('POST-COMPACT SKILL BODY')
   })
+  it('keeps a v2 attachment catalog out of pages, search entries and seq backfill', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
+    const log = NativeSessionLog.open({ stateDir: dir, id: 's1', cwd: '/repo', resume: false })
+    log.append({ type: 'user', uuid: 'plain', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-13T00:00:00.000Z', message: { role: 'user', content: [{ type: 'text', text: 'plain' }] } })
+    await log.flush()
+    await log.migrateToV2()
+    const attachment = {
+      id: 'upload-1', name: 'notes.txt', size: 123, digest: 'e'.repeat(64),
+      path: '/registry/notes.txt', mediaType: 'text/plain', modelForm: 'handle' as const,
+    }
+    log.append({ type: 'session/attachments', attachments: [attachment], timestamp: '2026-11-13T00:00:01.000Z' })
+    log.append({ type: 'user', uuid: 'structured', session_id: 's1', parent_tool_use_id: null, timestamp: '2026-11-13T00:00:02.000Z', message: { role: 'user', content: [{ type: 'file', attachment }] } })
+    await log.flush()
+    await log.close()
+
+    const page = await readNativeHistoryPage(dir, 's1', { limit: 10 })
+    expect((page.messages as Array<{ uuid: string }>).map((message) => message.uuid)).toEqual(['plain', 'structured'])
+    expect(pageText(page)).not.toContain('session/attachments')
+    expect(pageText(page)).not.toContain('catalog-time')
+    const entries = await readNativeHistoryEntries(dir, 's1')
+    expect(entries.map((entry) => (entry.message as { uuid: string }).uuid)).toEqual(['plain', 'structured'])
+    expect(entries.map((entry) => entry.index)).toEqual([0, 1])
+    expect(JSON.stringify(entries)).not.toContain('session/attachments')
+  })
   it('returns an empty page for a missing log', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-reader-'))
     expect(await readNativeHistoryPage(dir, 'nope', { limit: 10 })).toEqual({ messages: [], totalCount: 0, startIndex: 0, hasMore: false })

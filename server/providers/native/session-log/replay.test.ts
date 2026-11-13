@@ -339,6 +339,33 @@ describe('replay', () => {
     ]
     expect(repairInterruptedTurn(events).synthetic).toEqual([])
   })
+  it('keeps canonical v2 file blocks synchronous and ignores attachment catalogs without splitting tool results', () => {
+    const attachment = {
+      id: 'upload-1', name: 'notes.txt', size: 123, digest: 'f'.repeat(64),
+      path: '/registry/notes.txt', mediaType: 'text/plain', modelForm: 'handle',
+    }
+    const structuredUser = parseEventLine({
+      seq: 0, type: 'user', uuid: 'structured', session_id: 's', parent_tool_use_id: null, timestamp: 't',
+      message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment }, { type: 'text', text: 'after' }] },
+    }, 0, 's', 'p', 2)
+    const catalog = parseEventLine({ seq: 3, type: 'session/attachments', attachments: [attachment], timestamp: 't' }, 3, 's', 'p', 2)
+    const events = [
+      structuredUser,
+      assistant(1, [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }]),
+      result(2, 't1'),
+      catalog,
+      result(4, 't2'),
+    ]
+
+    expect(historyFromEvents(events)).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment }, { type: 'text', text: 'after' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }, { type: 'tool_use', id: 't2', name: 'Read', input: {} }] },
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'ok' }], is_error: false },
+        { type: 'tool_result', tool_use_id: 't2', content: [{ type: 'text', text: 'ok' }], is_error: false },
+      ] },
+    ])
+  })
 })
 
 describe('repairRenderableLines', () => {

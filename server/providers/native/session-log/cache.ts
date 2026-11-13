@@ -47,6 +47,8 @@ import type { NativeSubagentCatalog } from './subagents.js'
 export interface NativeHistoryLoad {
   lines: RawLine[]
   subagents: NativeSubagentCatalog
+  /** Actual header version; the filename is not a format discriminator. */
+  version: number
   size: number
   mtimeMs: number
 }
@@ -169,6 +171,7 @@ async function fullParse(
     id,
     lines: collectRenderable(snapshot.events),
     subagents: buildNativeSubagentCatalog(snapshot.events),
+    version: snapshot.header.v,
     parsedBytes: snapshot.completeBytes,
     nextSeq: snapshot.events.length,
     size,
@@ -210,7 +213,7 @@ async function appendParse(
   const events: NativeLogEvent[] = []
   let nextSeq = cached.nextSeq
   for (const line of rawLines) {
-    events.push(parseEventLine(parseLine(line, id, path), nextSeq++, id, path))
+    events.push(parseEventLine(parseLine(line, id, path), nextSeq++, id, path, cached.version))
   }
   const lines = collectRenderable(events)
 
@@ -218,6 +221,7 @@ async function appendParse(
     id,
     lines: lines.length > 0 ? cached.lines.concat(lines) : cached.lines,
     subagents: extendNativeSubagentCatalog(cached.subagents, events),
+    version: cached.version,
     parsedBytes: cached.parsedBytes + lastNewline + 1,
     nextSeq,
     size,

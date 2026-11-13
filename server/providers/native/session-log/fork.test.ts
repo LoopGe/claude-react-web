@@ -198,4 +198,43 @@ describe('buildForkSeed', () => {
       expect.stringContaining('/new'),
     ])
   })
+  it('preserves v2 attachment occurrences, user uuids and catalog structure across a fork', () => {
+    const attachment = {
+      id: 'upload-1', name: 'notes.txt', size: 123, digest: 'd'.repeat(64),
+      path: '/registry/notes.txt', mediaType: 'text/plain', modelForm: 'handle',
+    }
+    const sourceV2 = {
+      header: { type: 'session/header', v: 2, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
+      events: [
+        { seq: 0, type: 'user', uuid: 'structured-user', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment }, { type: 'text', text: 'after' }] } },
+        { seq: 1, type: 'session/attachments', attachments: [attachment], timestamp: 'catalog-time' },
+        { seq: 2, type: 'assistant', uuid: 'answer-uuid', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+      ],
+      path: '/p', completeBytes: 0, totalBytes: 0,
+    } as never
+
+    const seed = buildForkSeed({ source: sourceV2, sourceId: 'src', newId: 'dst', cwd: '/new', resumeSessionAt: 'answer-uuid' })
+
+    expect(seed.version).toBe(2)
+    expect(seed.events.slice(0, 3)).toEqual([
+      { seq: 0, type: 'user', uuid: 'structured-user', session_id: 'dst', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'before' }, { type: 'file', attachment }, { type: 'text', text: 'after' }] } },
+      { seq: 1, type: 'session/attachments', attachments: [attachment], timestamp: 'catalog-time' },
+      { seq: 2, type: 'assistant', uuid: 'answer-uuid', session_id: 'dst', parent_tool_use_id: null, timestamp: 't', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ])
+    const history = historyFromEvents(seed.events)
+    expect(JSON.stringify(history)).toContain('"type":"file"')
+    expect(JSON.stringify(history)).not.toContain('session/attachments')
+  })
+  it('does not invent an attachment catalog for a raw-only v2 prefix', () => {
+    const rawOnly = {
+      header: { type: 'session/header', v: 2, id: 'src', cwd: '/old', createdAt: 1, isSeeded: false, inheritedEventCount: 0 },
+      events: [
+        { seq: 0, type: 'user', uuid: 'raw-user', session_id: 'src', parent_tool_use_id: null, timestamp: 't', message: { role: 'user', content: [{ type: 'text', text: 'raw only' }] } },
+      ],
+      path: '/p', completeBytes: 0, totalBytes: 0,
+    } as never
+    const seed = buildForkSeed({ source: rawOnly, sourceId: 'src', newId: 'dst', cwd: '/new', resumeSessionAt: 'raw-user' })
+    expect(seed.events.filter((event) => event.type === 'session/attachments')).toEqual([])
+    expect(historyFromEvents(seed.events)).toContainEqual({ role: 'user', content: [{ type: 'text', text: 'raw only' }] })
+  })
 })

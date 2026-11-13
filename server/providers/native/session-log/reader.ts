@@ -27,7 +27,7 @@ import { resolve } from 'node:path'
 import { normalize, paginateRenderable } from '../../../history-reader.js'
 import type { HistoryEntry, HistoryPage, RawLine } from '../../../history-reader.js'
 import { nativeHistoryCache } from './cache.js'
-import { isSidechainEvent, parseEventLine } from './format.js'
+import { isSidechainEvent, parseEventLine, parseHeaderLine } from './format.js'
 import type { NativeCompactEvent } from './format.js'
 import { nativeSessionLogPath } from './paths.js'
 import { repairRenderableLines } from './replay.js'
@@ -76,6 +76,8 @@ function touchCompact(key: string, entry: CompactMemo): CompactMemo {
  *  event just to find one, and the backwards `lastIndexOf` walk avoids
  *  materializing the whole line array. */
 function findLastCompact(text: string, id: string, path: string): NativeCompactEvent | null {
+  const headerEnd = text.indexOf('\n')
+  const header = parseHeaderLine(JSON.parse(text.slice(0, headerEnd)), id, path)
   let end = text.lastIndexOf('\n')
   while (end >= 0) {
     const start = text.lastIndexOf('\n', end - 1) + 1
@@ -88,7 +90,7 @@ function findLastCompact(text: string, id: string, path: string): NativeCompactE
     // numeric seq; skip anything else rather than feeding the header to the
     // event parser.
     if (typeof raw.seq !== 'number') continue
-    const event = parseEventLine(raw, raw.seq, id, path)
+    const event = parseEventLine(raw, raw.seq, id, path, header.v)
     if (event.type === 'session/compact') return event
   }
   return null

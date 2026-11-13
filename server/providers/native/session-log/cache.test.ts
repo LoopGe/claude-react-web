@@ -135,6 +135,44 @@ describe('native history cache skill instructions', () => {
   })
 })
 
+describe('native history cache v2 migration', () => {
+  it('invalidates a warm v1 entry and fully reparses v2 attachments instead of using v1 appendParse', async () => {
+    const log = await openLog()
+    const stateDir = dir!
+    log.append(origin('before'))
+    await log.flush()
+    const first = await nativeHistoryCache.load(stateDir, 's1')
+    expect(first?.version).toBe(1)
+
+    await log.migrateToV2()
+    const attachment = {
+      id: 'upload-1',
+      name: 'notes.txt',
+      size: 12,
+      digest: 'c'.repeat(64),
+      path: '/registry/notes.txt',
+      mediaType: 'text/plain',
+      modelForm: 'handle' as const,
+    }
+    log.append({
+      type: 'user',
+      uuid: 'structured-user',
+      session_id: 's1',
+      parent_tool_use_id: null,
+      timestamp: '2026-11-13T00:00:00.000Z',
+      message: { role: 'user', content: [{ type: 'file', attachment }] },
+    })
+    log.append({ type: 'session/attachments', attachments: [attachment], timestamp: '2026-11-13T00:00:01.000Z' })
+    await log.flush()
+
+    const migrated = await nativeHistoryCache.load(stateDir, 's1')
+    expect(migrated?.version).toBe(2)
+    expect(migrated?.lines.map((line) => line.uuid)).toEqual(['origin-before', 'structured-user'])
+    expect(JSON.stringify(migrated?.lines)).not.toContain('session/attachments')
+    await log.close()
+  })
+})
+
 describe('native history cache subagent catalogs', () => {
   it('updates the catalog on a descriptor-only append without replacing renderable lines', async () => {
     const stateDir = dir = await mkdtemp(join(tmpdir(), 'native-cache-'))

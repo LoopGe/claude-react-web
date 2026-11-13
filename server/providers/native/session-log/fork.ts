@@ -32,6 +32,7 @@ export interface NativeForkSeed {
   events: NativeLogEvent[]
   inheritedEventCount: number
   isSeeded: true
+  version: number
 }
 
 /** `/name args` — the same whole-text grammar used by live slash expansion. */
@@ -98,5 +99,5 @@ export function buildForkSeed(opts: BuildForkSeedOptions): NativeForkSeed {
   append({ type: 'turn/end', reason: 'forked' })
   append({ type: 'session/context', text: contextSnapshot(cwd) })
 
-  return { events, inheritedEventCount: copied.length, isSeeded: true }
+  return { events, inheritedEventCount: copied.length, isSeeded: true, version: source.header.v }
 }

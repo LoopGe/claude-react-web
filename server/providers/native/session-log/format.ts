@@ -12,8 +12,11 @@ import { isSdkAgentPermissionMode } from '../../../../shared/agent-definitions.j
 import type { SessionToolProfile } from '../../../../shared/tool-profile.js'
 import { NATIVE_AGENT_EFFORT_LEVELS } from '../agent-profile.js'
 import type { NativeAgentBase, NativeAgentProfile, NativeAgentSelectionEvent } from '../agent-profile.js'
+import type { ResolvedFileAttachment } from '../../../agent-message.js'
 
 export const NATIVE_SESSION_LOG_VERSION = 1
+export const NATIVE_SESSION_LOG_V2 = 2
+const SUPPORTED_NATIVE_SESSION_LOG_VERSIONS = [NATIVE_SESSION_LOG_VERSION, NATIVE_SESSION_LOG_V2] as const
 
 /** Execution values shared by descriptor persistence and Agent admission:
  *  only a positive integer can bound a nested run. */
@@ -36,6 +39,25 @@ export type NativeTurnEndReason = 'completed' | 'interrupted' | 'error' | 'forke
 export interface NativeUsage {
   input_tokens: number
   output_tokens: number
+}
+
+export interface NativeFileAttachment extends ResolvedFileAttachment {
+  /** Assigned once before the occurrence is first persisted; never rewritten. */
+  modelForm: 'handle' | 'pdf-document'
+}
+
+export interface NativeFileBlock {
+  type: 'file'
+  attachment: NativeFileAttachment
+}
+
+/** Hidden authorization catalog. It never enters model history, renderable
+ *  transcript lines, search, or the transcript seq backfill. */
+export interface NativeAttachmentCatalogEvent {
+  seq: number
+  type: 'session/attachments'
+  attachments: NativeFileAttachment[]
+  timestamp: string
 }
 
 export interface NativeUserEvent {
@@ -147,6 +169,7 @@ export type NativeLogEvent =
   | NativeSupplementEvent
   | NativeSkillInvocationEvent
   | NativeSubagentDescriptorEvent
+  | NativeAttachmentCatalogEvent
   | NativeAgentSelectionEvent
 
 export type NativeEventInput =
@@ -159,6 +182,7 @@ export type NativeEventInput =
   | Omit<NativeSupplementEvent, 'seq'>
   | Omit<NativeSkillInvocationEvent, 'seq'>
   | Omit<NativeSubagentDescriptorEvent, 'seq'>
+  | Omit<NativeAttachmentCatalogEvent, 'seq'>
   | Omit<NativeAgentSelectionEvent, 'seq'>
 
 /** True for a sidechain (nested-runner) user/assistant frame — one carrying a
@@ -233,6 +257,10 @@ const AGENT_BASE_KEYS = new Set(['model', 'permissionMode', 'effortLevel', 'skil
 const TOOL_PROFILE_KEYS = new Set(['tools', 'allowedTools', 'disallowedTools', 'toolAliases', 'toolConfig'])
 const AGENT_MEMORY_VALUES = ['user', 'project', 'local']
 const SKILL_INVOCATION_KEYS = new Set(['seq', 'type', 'name', 'body', 'timestamp'])
+const ATTACHMENT_CATALOG_KEYS = new Set(['seq', 'type', 'attachments', 'timestamp'])
+const NATIVE_FILE_KEYS = new Set(['type', 'attachment'])
+const NATIVE_ATTACHMENT_KEYS = new Set(['id', 'name', 'size', 'digest', 'path', 'mediaType', 'modelForm'])
+const SHA256_PATTERN = /^[a-f0-9]{64}$/
 const SUBAGENT_DESCRIPTOR_KEYS = new Set([
   'seq', 'type', 'toolUseId', 'parentToolUseId', 'kind', 'toolName', 'label', 'depth', 'profile', 'timestamp',
 ])
@@ -251,6 +279,96 @@ function requireKnownKeys(
 ): void {
   for (const key of Object.keys(raw)) {
     if (!allowed.has(key)) corrupt(sessionId, path, `${label} has unknown field '${key}'`)
+  }
+}
+
+function parseNativeAttachment(
+  raw: unknown,
+  sessionId: string,
+  path: string,
+): NativeFileAttachment {
+  if (!isObject(raw)) corrupt(sessionId, path, 'native file attachment must be an object')
+  requireKnownKeys(raw, NATIVE_ATTACHMENT_KEYS, 'native file attachment', sessionId, path)
+  for (const field of ['id', 'name', 'path'] as const) {
+    if (typeof raw[field] !== 'string' || raw[field].trim().length === 0) {
+      corrupt(sessionId, path, `native file attachment ${field} must be a non-empty string`)
+    }
+  }
+  if (typeof raw.size !== 'number' || !Number.isSafeInteger(raw.size) || raw.size < 0) {
+    corrupt(sessionId, path, 'native file attachment size must be a non-negative safe integer')
+  }
+  if (typeof raw.digest !== 'string' || !SHA256_PATTERN.test(raw.digest)) {
+    corrupt(sessionId, path, 'native file attachment digest must be a lowercase sha256')
+  }
+  if (raw.mediaType !== undefined && (typeof raw.mediaType !== 'string' || raw.mediaType.trim().length === 0)) {
+    corrupt(sessionId, path, 'native file attachment mediaType must be a non-empty string')
+  }
+  if (raw.modelForm !== 'handle' && raw.modelForm !== 'pdf-document') {
+    corrupt(sessionId, path, 'native file attachment modelForm must be handle or pdf-document')
+  }
+  if (raw.modelForm === 'pdf-document' && raw.mediaType !== 'application/pdf') {
+    corrupt(sessionId, path, 'pdf-document attachment requires application/pdf mediaType')
+  }
+  return {
+    id: raw.id as string,
+    name: raw.name as string,
+    size: raw.size,
+    digest: raw.digest,
+    path: raw.path as string,
+    ...(raw.mediaType === undefined ? {} : { mediaType: raw.mediaType as string }),
+    modelForm: raw.modelForm,
+  }
+}
+
+function parseNativeFileBlock(raw: JsonObject, sessionId: string, path: string): NativeFileBlock {
+  requireKnownKeys(raw, NATIVE_FILE_KEYS, 'native file block', sessionId, path)
+  return { type: 'file', attachment: parseNativeAttachment(raw.attachment, sessionId, path) }
+}
+
+/** Native files are legal only in a user event's direct content or one level
+ *  inside a tool_result. Other content blocks retain their existing opaque
+ *  SDK-compatible shape. */
+function parseUserContent(
+  content: unknown[],
+  version: number,
+  sessionId: string,
+  path: string,
+): unknown[] {
+  const parseBlock = (block: unknown): unknown => {
+    if (!isObject(block)) return block
+    if (block.type === 'file') {
+      if (version === NATIVE_SESSION_LOG_VERSION) {
+        corrupt(sessionId, path, 'v1 user event cannot contain a structured file block')
+      }
+      return parseNativeFileBlock(block, sessionId, path)
+    }
+    if (block.type === 'tool_result' && Array.isArray(block.content)) {
+      return { ...block, content: block.content.map(parseBlock) }
+    }
+    return block
+  }
+  return content.map(parseBlock)
+}
+
+function parseAttachmentCatalog(
+  raw: JsonObject,
+  seq: number,
+  version: number,
+  sessionId: string,
+  path: string,
+): NativeAttachmentCatalogEvent {
+  if (version === NATIVE_SESSION_LOG_VERSION) {
+    corrupt(sessionId, path, 'v1 log cannot contain a session/attachments event')
+  }
+  requireKnownKeys(raw, ATTACHMENT_CATALOG_KEYS, 'session/attachments event', sessionId, path)
+  if (!Array.isArray(raw.attachments)) {
+    corrupt(sessionId, path, 'session/attachments event attachments must be an array')
+  }
+  return {
+    seq,
+    type: 'session/attachments',
+    attachments: raw.attachments.map((attachment) => parseNativeAttachment(attachment, sessionId, path)),
+    timestamp: requireNonEmptyString(raw, 'timestamp', sessionId, path),
   }
 }
 
@@ -537,14 +655,19 @@ function parseAgentSelection(
   }
 }
 
-export function parseHeaderLine(raw: unknown, sessionId: string, path: string): NativeSessionHeader {
+export function parseHeaderLine(
+  raw: unknown,
+  sessionId: string,
+  path: string,
+  acceptedVersions: readonly number[] = SUPPORTED_NATIVE_SESSION_LOG_VERSIONS,
+): NativeSessionHeader {
   if (!isObject(raw)) corrupt(sessionId, path, 'session header must be an object')
   if (raw.type !== 'session/header') corrupt(sessionId, path, `expected session/header, got '${String(raw.type)}'`)
   if (typeof raw.v !== 'number') corrupt(sessionId, path, 'session header v must be a number')
-  if (raw.v !== NATIVE_SESSION_LOG_VERSION) {
+  if (!acceptedVersions.includes(raw.v)) {
     throw new NativeSessionStorageError(
       'unsupported-version',
-      `unsupported session log version ${raw.v} (expected ${NATIVE_SESSION_LOG_VERSION})`,
+      `unsupported session log version ${raw.v} (expected ${acceptedVersions.join(' or ')})`,
       sessionId,
       path,
     )
@@ -572,6 +695,7 @@ export function parseEventLine(
   expectedSeq: number,
   sessionId: string,
   path: string,
+  version: number = NATIVE_SESSION_LOG_VERSION,
 ): NativeLogEvent {
   if (!isObject(raw)) corrupt(sessionId, path, 'event must be an object')
   if (typeof raw.seq !== 'number') corrupt(sessionId, path, 'event seq must be a number')
@@ -591,7 +715,10 @@ export function parseEventLine(
         session_id: requireString(raw, 'session_id', sessionId, path),
         parent_tool_use_id: parentToolUseId,
         timestamp: requireString(raw, 'timestamp', sessionId, path),
-        message: message as unknown as NativeUserEvent['message'],
+        message: {
+          ...message,
+          content: parseUserContent(message.content as unknown[], version, sessionId, path),
+        } as unknown as NativeUserEvent['message'],
       }
       if (raw.isCompactSummary !== undefined) {
         if (raw.isCompactSummary !== true) corrupt(sessionId, path, 'user event isCompactSummary must be true')
@@ -671,6 +798,9 @@ export function parseEventLine(
         body: requireNonEmptyString(raw, 'body', sessionId, path),
         timestamp: requireString(raw, 'timestamp', sessionId, path),
       }
+
+    case 'session/attachments':
+      return parseAttachmentCatalog(raw, seq, version, sessionId, path)
 
     case 'session/agent':
       return parseAgentSelection(raw, seq, sessionId, path)

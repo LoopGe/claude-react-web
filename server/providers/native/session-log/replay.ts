@@ -70,8 +70,10 @@ export function contextSnapshot(cwd: string): string {
  *   user message — the API requires every tool_result for an assistant turn
  *   in a single user message.
  * - `turn/end` and `session/end-seed` are log bookkeeping, not model messages.
- * - `session/agent` is history-only selection state, not a model message. It
- *   neither enters the rebuilt history nor closes an open tool-result group.
+ * - `session/agent` and `session/attachments` are history-only metadata, not
+ *   model messages. Neither closes an open tool-result group. Native file
+ *   blocks remain structured canonical content; request projection is async
+ *   and deliberately does not belong in this synchronous rebuild.
  * - a `session/compact` event is a floor: everything before the LAST one is
  *   superseded by the captured context snapshot and the summary, so replay
  *   starts there instead of rebuilding the pre-compact conversation.
@@ -164,6 +166,7 @@ export function historyFromEvents(events: readonly NativeLogEvent[]): unknown[] 
         openResults = null
         break
       case 'session/agent':
+      case 'session/attachments':
         break
       default:
         break

@@ -3,8 +3,8 @@
 // State-dir and file layout for native session logs:
 //   <stateDir>/native-sessions/<id>/session.v1.jsonl
 //
-// The version segment lives in the file name so a future format bump can
-// coexist with existing logs instead of guessing at their shape.
+// `header.v` is the actual format version. The v1 filename is only a stable
+// storage key, retained so migration never creates a second log of truth.
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -25,4 +25,8 @@ export function nativeSessionDir(stateDir: string, id: string): string {
 
 export function nativeSessionLogPath(stateDir: string, id: string): string {
   return join(nativeSessionDir(stateDir, id), SESSION_LOG_FILE)
+}
+
+export function nativeSessionMigrationTempPath(stateDir: string, id: string): string {
+  return `${nativeSessionLogPath(stateDir, id)}.migrating`
 }

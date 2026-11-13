@@ -5,7 +5,51 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NativeSessionLog, deleteNativeSessionLog, hasNativeSessionLog, loadNativeSessionLogSync } from './log.js'
 import { NativeSessionStorageError } from './errors.js'
-import { nativeSessionLogPath } from './paths.js'
+import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
+
+const fsMigration = vi.hoisted(() => ({
+  beforeRename: null as (() => void) | null,
+  failRename: false,
+  renameCompleted: false,
+  appendOpenFailurePath: null as string | null,
+  directorySyncFailurePath: null as string | null,
+  closed: [] as string[],
+}))
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import('node:fs/promises')
+  return {
+    ...actual,
+    open: (async (path: string, flags: string, mode?: number) => {
+      if (fsMigration.renameCompleted && fsMigration.appendOpenFailurePath === path && flags === 'a') {
+        fsMigration.appendOpenFailurePath = null
+        throw new Error('reopen after rename failed')
+      }
+      const handle = await actual.open(path, flags, mode)
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === 'close') {
+            return async () => {
+              fsMigration.closed.push(String(path))
+              return target.close()
+            }
+          }
+          if (property === 'sync' && fsMigration.directorySyncFailurePath === String(path)) {
+            return async () => { throw new Error('directory fsync failed') }
+          }
+          const value = Reflect.get(target, property)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+    }) as typeof actual.open,
+    rename: (async (oldPath: string, newPath: string) => {
+      fsMigration.beforeRename?.()
+      if (fsMigration.failRename) throw new Error('rename failed')
+      await actual.rename(oldPath, newPath)
+      fsMigration.renameCompleted = true
+    }) as typeof actual.rename,
+  }
+})
 
 // Hold the bytes a resume READ returns while the on-disk file keeps growing.
 // This reproduces the same-id takeover race deterministically: the previous
@@ -26,10 +70,37 @@ vi.mock('node:fs', async (importOriginal) => {
 })
 
 let dir: string
-afterEach(async () => { if (dir) await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) })
+const originalPlatform = process.platform
+afterEach(async () => {
+  fsMigration.beforeRename = null
+  fsMigration.failRename = false
+  fsMigration.renameCompleted = false
+  fsMigration.appendOpenFailurePath = null
+  fsMigration.directorySyncFailurePath = null
+  fsMigration.closed = []
+  Object.defineProperty(process, 'platform', { value: originalPlatform, configurable: true })
+  if (dir) await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+})
 const fresh = async () => { dir = await mkdtemp(join(tmpdir(), 'native-log-')); return dir }
 
 const userEvent = (uuid: string) => ({ type: 'user' as const, uuid, session_id: 's1', parent_tool_use_id: null as null, timestamp: '2026-11-09T00:00:00.000Z', message: { role: 'user' as const, content: [{ type: 'text', text: 'hi' }] } })
+const nativeAttachment = {
+  id: 'upload-1',
+  name: 'notes.txt',
+  size: 123,
+  digest: 'b'.repeat(64),
+  path: '/registry/notes.txt',
+  mediaType: 'text/plain',
+  modelForm: 'handle' as const,
+}
+const nativeFileUser = {
+  type: 'user' as const,
+  uuid: 'file-user',
+  session_id: 's1',
+  parent_tool_use_id: null,
+  timestamp: '2026-11-13T00:00:00.000Z',
+  message: { role: 'user' as const, content: [{ type: 'file', attachment: nativeAttachment }] },
+}
 
 const expectStorageError = (fn: () => unknown, kind: NativeSessionStorageError['kind']) => {
   try {
@@ -486,6 +557,89 @@ describe('NativeSessionLog', () => {
     await original.close()
   })
 
+  it('migrates a drained v1 log to v2 and persists structured attachments and their catalog', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('before-migration'))
+    await log.flush()
+    expect(log.header.v).toBe(1)
+
+    await log.migrateToV2()
+    log.append(nativeFileUser)
+    log.append({ type: 'session/attachments', attachments: [nativeAttachment], timestamp: '2026-11-13T00:00:01.000Z' })
+    await log.flush()
+    await log.close()
+
+    const snapshot = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snapshot.header.v).toBe(2)
+    expect(snapshot.events.map((event) => event.seq)).toEqual([0, 1, 2])
+    expect(snapshot.events[1]).toMatchObject({ uuid: 'file-user', message: { content: [{ type: 'file', attachment: nativeAttachment }] } })
+    expect(snapshot.events[2]).toMatchObject({ type: 'session/attachments', attachments: [nativeAttachment] })
+  })
+
+  it('closes both the live writer and temp file before rename', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('u1'))
+    await log.flush()
+    const path = nativeSessionLogPath(stateDir, 's1')
+    const temp = nativeSessionMigrationTempPath(stateDir, 's1')
+    fsMigration.beforeRename = () => {
+      expect(fsMigration.closed).toContain(path)
+      expect(fsMigration.closed).toContain(temp)
+    }
+
+    await log.migrateToV2()
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.header.v).toBe(2)
+    await log.close()
+  })
+
+  it('reopens v1 and accepts later durable turns when rename fails', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('u1'))
+    await log.flush()
+    fsMigration.failRename = true
+
+    await expect(log.migrateToV2()).rejects.toThrow('rename failed')
+    fsMigration.failRename = false
+    expect(log.header.v).toBe(1)
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.header.v).toBe(1)
+    await log.appendDurable({ type: 'turn/end', reason: 'completed' })
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((event) => event.type)).toEqual(['user', 'turn/end'])
+    await log.close()
+  })
+
+  it('closes the live session after a post-rename directory fsync failure', async () => {
+    const stateDir = await fresh()
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('u1'))
+    await log.flush()
+    fsMigration.directorySyncFailurePath = nativeSessionDir(stateDir, 's1')
+
+    await expect(log.migrateToV2()).rejects.toThrow('directory fsync failed')
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.header.v).toBe(2)
+    await expect(log.appendDurable({ type: 'turn/end', reason: 'completed' })).rejects.toThrow(/closed/)
+    expect(() => log.append(userEvent('must-not-be-accepted'))).toThrow(/closed/)
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.events).toHaveLength(1)
+    await log.close()
+  })
+
+  it('closes the live session after a post-rename reopen failure', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('u1'))
+    await log.flush()
+    fsMigration.appendOpenFailurePath = nativeSessionLogPath(stateDir, 's1')
+
+    await expect(log.migrateToV2()).rejects.toThrow('reopen after rename failed')
+    expect(loadNativeSessionLogSync(stateDir, 's1')!.header.v).toBe(2)
+    await expect(log.appendDurable({ type: 'turn/end', reason: 'completed' })).rejects.toThrow(/closed/)
+    expect(() => log.append(userEvent('must-not-be-accepted'))).toThrow(/closed/)
+    await log.close()
+  })
+
   it('refuses a fresh open over an existing log', async () => {
     const stateDir = await fresh()
     const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
@@ -576,7 +730,7 @@ describe('NativeSessionLog', () => {
     log.append(userEvent('u1')); await log.flush(); await log.close()
     const path = nativeSessionLogPath(stateDir, 's1')
     const lines = (await readFile(path, 'utf8')).split('\n')
-    lines[0] = lines[0].replace('"v":1', '"v":2')
+    lines[0] = lines[0].replace('"v":1', '"v":3')
     await writeFile(path, lines.join('\n'))
     expect(() => loadNativeSessionLogSync(stateDir, 's1')).toThrow(/unsupported|version/i)
   })

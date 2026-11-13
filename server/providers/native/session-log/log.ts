@@ -21,19 +21,20 @@
 // (dropping it would be silent data loss).
 
 import { mkdirSync, readFileSync, truncateSync, writeFileSync } from 'node:fs'
-import { open as openFile, readFile, rm, stat } from 'node:fs/promises'
+import { open as openFile, readFile, rename, rm, stat } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { NativeSessionStorageError } from './errors.js'
 import {
   NATIVE_SESSION_LOG_VERSION,
+  NATIVE_SESSION_LOG_V2,
   parseEventLine,
   parseHeaderLine,
   serializeEvent,
   serializeHeader,
 } from './format.js'
 import type { NativeEventInput, NativeLogEvent, NativeSessionHeader } from './format.js'
-import { nativeSessionDir, nativeSessionLogPath } from './paths.js'
+import { nativeSessionDir, nativeSessionLogPath, nativeSessionMigrationTempPath } from './paths.js'
 
 export interface NativeSessionLogSnapshot {
   header: NativeSessionHeader
@@ -52,6 +53,8 @@ export interface NativeSeed {
   events: NativeLogEvent[]
   inheritedEventCount: number
   isSeeded: boolean
+  /** A fork preserves its source version; ordinary fresh seeds remain v1. */
+  version?: number
 }
 
 export interface OpenNativeSessionLogOptions {
@@ -91,13 +94,35 @@ function parseLogBuffer(buffer: Buffer, sessionId: string, path: string): Native
   const events = lines
     .slice(1)
     .map((line, index) =>
-      parseEventLine(parseLine(line, index + 2, sessionId, path), index, sessionId, path),
+      parseEventLine(parseLine(line, index + 2, sessionId, path), index, sessionId, path, header.v),
     )
   return { header, events, path, completeBytes, totalBytes: buffer.length }
 }
 
 function serializeLog(header: NativeSessionHeader, events: NativeLogEvent[]): string {
   return serializeHeader(header) + '\n' + events.map((event) => serializeEvent(event) + '\n').join('')
+}
+
+async function writeAll(handle: FileHandle, chunk: Buffer, path: string): Promise<void> {
+  let offset = 0
+  while (offset < chunk.length) {
+    const { bytesWritten } = await handle.write(chunk, offset, chunk.length - offset)
+    if (bytesWritten === 0) throw new Error(`session log write made no progress: ${path}`)
+    offset += bytesWritten
+  }
+}
+
+async function syncDirectory(stateDir: string, id: string): Promise<void> {
+  // NTFS metadata journaling owns directory-entry durability; Windows refuses
+  // fsync on a directory handle. This is the same explicit exception used by
+  // the attachment object store.
+  if (process.platform === 'win32') return
+  const handle = await openFile(nativeSessionDir(stateDir, id), 'r')
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
 }
 
 export function loadNativeSessionLogSync(
@@ -166,6 +191,11 @@ export class NativeSessionLog {
   private handle: FileHandle | null = null
   private flushChain: Promise<void> = Promise.resolve()
   private closePromise: Promise<void> | null = null
+  private migrationPromise: Promise<void> | null = null
+  /** Events accepted after the migration gate are buffered separately, so the
+   *  pre-gate drain cannot accidentally write them into the v1 source. */
+  private migrationAppends: NativeLogEvent[] | null = null
+  private migrationFatal: unknown = null
   private superseded = false
   private closed = false
 
@@ -173,6 +203,7 @@ export class NativeSessionLog {
     header: NativeSessionHeader,
     events: NativeLogEvent[],
     path: string,
+    private readonly stateDir: string,
     registryKey: string,
   ) {
     this.header = header
@@ -209,7 +240,7 @@ export class NativeSessionLog {
       mkdirSync(nativeSessionDir(stateDir, id), { recursive: true })
       header = {
         type: 'session/header',
-        v: NATIVE_SESSION_LOG_VERSION,
+        v: seed?.version ?? NATIVE_SESSION_LOG_VERSION,
         id,
         cwd,
         createdAt: Date.now(),
@@ -235,20 +266,147 @@ export class NativeSessionLog {
     const registryKey = resolve(path)
     const previous = writers.get(registryKey)
     if (previous) previous.markSuperseded()
-    const log = new NativeSessionLog(header, events, path, registryKey)
+    const log = new NativeSessionLog(header, events, path, stateDir, registryKey)
     writers.set(registryKey, log)
     return log
   }
 
   append(input: NativeEventInput): NativeLogEvent {
+    if (this.migrationFatal) {
+      throw new Error(`session log writer is closed after a failed migration: ${this.path}`, { cause: this.migrationFatal })
+    }
     const event = { ...input, seq: this.events.length } as NativeLogEvent
     this.events.push(event)
     // A superseded or closed writer must never buffer again: its file belongs
     // to another writer, or its own handle is about to be destroyed.
-    if (!this.superseded && !this.closed) this.pending.push(Buffer.from(serializeEvent(event) + '\n', 'utf8'))
+    if (!this.superseded && !this.closed) {
+      if (this.migrationAppends) this.migrationAppends.push(event)
+      else this.pending.push(Buffer.from(serializeEvent(event) + '\n', 'utf8'))
+    }
     return event
   }
 
+  /** Atomically upgrade this writer's v1 log in place. The gate is installed
+   *  synchronously, before the first await, so later flushes and durable
+   *  appends queue behind the whole copy/fsync/rename/reopen sequence. */
+  migrateToV2(): Promise<void> {
+    if (this.migrationPromise) return this.migrationPromise
+    this.assertDurableWriterActive()
+    if (this.header.v === NATIVE_SESSION_LOG_V2) return Promise.resolve()
+    this.migrationAppends = []
+    const run = this.flushChain.then(() => this.performMigration())
+    const tracked = run.finally(() => {
+      // A pre-rename failure leaves a live v1 writer that may retry. A fatal
+      // post-rename failure stays closed and can never be retried on this object.
+      if (!this.closed && this.header.v === NATIVE_SESSION_LOG_VERSION) this.migrationPromise = null
+    })
+    this.migrationPromise = tracked
+    this.flushChain = tracked.then(
+      () => undefined,
+      () => undefined,
+    )
+    return tracked
+  }
+
+  private async performMigration(): Promise<void> {
+    const queued = this.migrationAppends
+    if (!queued) throw new Error('migration gate is not installed')
+    const temp = nativeSessionMigrationTempPath(this.stateDir, this.header.id)
+    let renamed = false
+    try {
+      // Flush every event accepted before the gate. Post-gate appends live in
+      // `queued`, not `pending`, and therefore cannot leak into the v1 copy.
+      while (this.pending.length > 0) await this.writePending(false)
+      this.assertDurableWriterActive()
+      await this.closeHandle()
+
+      // Preserve every source byte after the header, including event ordering
+      // and serialization. Only header.v changes.
+      const original = await readFile(this.path)
+      const snapshot = parseLogBuffer(original, this.header.id, this.path)
+      const firstNewline = original.indexOf(0x0a)
+      const migrated = Buffer.concat([
+        Buffer.from(serializeHeader({ ...snapshot.header, v: NATIVE_SESSION_LOG_V2 }), 'utf8'),
+        original.subarray(firstNewline),
+      ])
+      const tempHandle = await openFile(temp, 'w')
+      try {
+        await writeAll(tempHandle, migrated, temp)
+        await tempHandle.sync()
+      } finally {
+        // Windows requires both handles closed before the replacement rename.
+        await tempHandle.close()
+      }
+      this.assertDurableWriterActive()
+      await rename(temp, this.path)
+      renamed = true
+      this.header.v = NATIVE_SESSION_LOG_V2
+      await syncDirectory(this.stateDir, this.header.id)
+
+      // Re-read the replacement with the v2 parser before accepting any queued
+      // append. This proves the on-disk seq chain and drops any stale v1 cache
+      // snapshot as the source of the writer's new baseline.
+      const reloaded = await loadNativeSessionLog(this.stateDir, this.header.id)
+      if (!reloaded || reloaded.header.v !== NATIVE_SESSION_LOG_V2) {
+        throw new Error(`migrated session log did not reload as v2: ${this.path}`)
+      }
+      this.handle = await openFile(this.path, 'a')
+      this.events.splice(0, this.events.length, ...reloaded.events, ...queued)
+      const { nativeHistoryCache } = await import('./cache.js')
+      nativeHistoryCache.invalidate(this.header.id)
+      this.releaseMigrationAppends(queued)
+    } catch (err) {
+      if (this.superseded) {
+        this.migrationAppends = null
+        throw err
+      }
+      if (!renamed) {
+        // The source is still v1. Reopen it before releasing the gate; if even
+        // that fails, the writer is closed rather than pretending to be live.
+        try {
+          await this.closeHandle()
+          this.handle = await openFile(this.path, 'a')
+          this.releaseMigrationAppends(queued)
+        } catch (reopenErr) {
+          await this.failMigration(err)
+          throw new AggregateError([err, reopenErr], `failed to reopen v1 session log: ${this.path}`)
+        }
+        try {
+          await rm(temp, { force: true })
+        } catch (cleanupErr) {
+          throw new AggregateError([err, cleanupErr], `failed to clean migration temp: ${temp}`)
+        }
+      } else {
+        // The replacement has already happened. Never roll it back, and never
+        // acknowledge another turn while directory durability or the writer's
+        // reopened state is unknown.
+        await this.failMigration(err)
+      }
+      throw err
+    }
+  }
+
+  private releaseMigrationAppends(queued: NativeLogEvent[]): void {
+    if (!this.closed && !this.superseded) {
+      for (const event of queued) this.pending.push(Buffer.from(serializeEvent(event) + '\n', 'utf8'))
+    }
+    this.migrationAppends = null
+  }
+
+  private async failMigration(cause: unknown): Promise<void> {
+    this.migrationFatal = cause
+    this.closed = true
+    this.pending = []
+    this.migrationAppends = null
+    await this.closeHandle()
+  }
+
+  private async closeHandle(): Promise<void> {
+    if (!this.handle) return
+    const handle = this.handle
+    this.handle = null
+    await handle.close()
+  }
   /** Append one control event as an atomic durable reservation. Ordinary
    *  append/flush keeps its crash-recovery semantics; this stricter path is for
    *  selections that must not become visible in memory OR replay after a

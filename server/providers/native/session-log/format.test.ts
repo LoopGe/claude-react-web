@@ -89,11 +89,21 @@ describe('session log format', () => {
     expect(NATIVE_SESSION_LOG_VERSION).toBe(1)
     expect(parseHeaderLine(JSON.parse(serializeHeader(header)), 's1', 'p')).toEqual(header)
   })
+  it('accepts v1 and v2 headers while keeping v1 as the fresh-write version', () => {
+    expect(parseHeaderLine({ ...header, v: 2 }, 's1', 'p')).toEqual({ ...header, v: 2 })
+  })
   it('rejects an unknown version', () => {
-    expect(() => parseHeaderLine({ ...header, v: 2 }, 's1', 'p')).toThrow(NativeSessionStorageError)
-    try { parseHeaderLine({ ...header, v: 2 }, 's1', 'p') } catch (e) {
+    expect(() => parseHeaderLine({ ...header, v: 3 }, 's1', 'p')).toThrow(NativeSessionStorageError)
+    try { parseHeaderLine({ ...header, v: 3 }, 's1', 'p') } catch (e) {
       expect((e as NativeSessionStorageError).kind).toBe('unsupported-version')
     }
+  })
+  it('keeps the legacy v1-only parser closed to v2 logs', () => {
+    try { parseHeaderLine({ ...header, v: 2 }, 's1', 'p', [1]) } catch (e) {
+      expect((e as NativeSessionStorageError).kind).toBe('unsupported-version')
+      return
+    }
+    throw new Error('expected the v1-only parser to reject v2')
   })
   it('accepts each known event and enforces contiguous seq', () => {
     const events = [
@@ -294,5 +304,96 @@ describe('session log format', () => {
   })
   it('rejects a user event without a timestamp', () => {
     expect(() => parseEventLine({ seq: 0, type: 'user', uuid: 'u', session_id: 's1', parent_tool_use_id: null, message: { role: 'user', content: [] } }, 0, 's1', 'p')).toThrow(/timestamp/)
+  })
+
+  const nativeAttachment = {
+    id: 'upload-1',
+    name: 'notes.txt',
+    size: 123,
+    digest: 'a'.repeat(64),
+    path: '/state/claude-web-attachments/v1/ab/' + 'a'.repeat(64) + '-notes.txt',
+    mediaType: 'text/plain',
+    modelForm: 'handle',
+  }
+  const nativeFile = { type: 'file', attachment: nativeAttachment }
+  const v2User = {
+    seq: 0,
+    type: 'user',
+    uuid: 'u-v2',
+    session_id: 's1',
+    parent_tool_use_id: null,
+    timestamp: '2026-11-13T00:00:00.000Z',
+    message: { role: 'user', content: [{ type: 'text', text: 'before' }, nativeFile, { type: 'text', text: 'after' }] },
+  }
+  const parseV2 = (raw: unknown) => parseEventLine(raw, 0, 's1', 'p', 2)
+  const expectCorruptV2 = (raw: unknown) => {
+    try { parseV2(raw) } catch (error) {
+      expect((error as NativeSessionStorageError).kind).toBe('corrupt')
+      return
+    }
+    throw new Error('expected corrupt v2 event')
+  }
+
+  it('round-trips v2 native files and the hidden attachment catalog', () => {
+    expect(parseV2(JSON.parse(JSON.stringify(v2User)))).toEqual(v2User)
+    const catalog = {
+      seq: 0,
+      type: 'session/attachments',
+      attachments: [{ ...nativeAttachment, mediaType: 'application/pdf', modelForm: 'pdf-document' }],
+      timestamp: '2026-11-13T00:00:01.000Z',
+    }
+    expect(parseV2(JSON.parse(JSON.stringify(catalog)))).toEqual(catalog)
+  })
+  it('keeps a legacy v1 handle readable but rejects structured v2 shapes in v1', () => {
+    const legacy = {
+      ...v2User,
+      message: { role: 'user', content: [{ type: 'text', text: '[File: notes.txt (123 bytes, sha256: aaaaaaaa, upload id: upload-1)] Read /legacy/notes.txt' }] },
+    }
+    expect(parseEventLine(legacy, 0, 's1', 'p')).toEqual(legacy)
+    expectCorrupt(v2User)
+    expectCorrupt({ seq: 0, type: 'session/attachments', attachments: [nativeAttachment], timestamp: 't' })
+  })
+  it('strictly validates every native attachment field and rejects unknown fields', () => {
+    const cases: unknown[] = [
+      { ...nativeFile, injected: true },
+      { type: 'file', attachment: { ...nativeAttachment, injected: true } },
+      ...['id', 'name', 'path'].map((field) => ({ type: 'file', attachment: { ...nativeAttachment, [field]: '' } })),
+      ...[-1, 1.5, Number.MAX_SAFE_INTEGER + 1].map((size) => ({ type: 'file', attachment: { ...nativeAttachment, size } })),
+      ...['a'.repeat(63), 'A'.repeat(64), 'g'.repeat(64)].map((digest) => ({ type: 'file', attachment: { ...nativeAttachment, digest } })),
+      { type: 'file', attachment: { ...nativeAttachment, mediaType: '' } },
+      { type: 'file', attachment: { ...nativeAttachment, modelForm: 'document' } },
+      { type: 'file', attachment: { ...nativeAttachment, modelForm: 'pdf-document' } },
+      { type: 'file', attachment: { ...nativeAttachment, modelForm: 'pdf-document', mediaType: 'text/plain' } },
+    ]
+    for (const field of ['id', 'name', 'size', 'digest', 'path', 'modelForm']) {
+      const attachment = { ...nativeAttachment } as Record<string, unknown>
+      delete attachment[field]
+      cases.push({ type: 'file', attachment })
+    }
+    for (const attachment of cases) expectCorruptV2({ ...v2User, message: { role: 'user', content: [attachment] } })
+  })
+  it('validates native files nested in tool_result content', () => {
+    const event = {
+      ...v2User,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'text', text: 'Read notes.txt' }, nativeFile] }],
+      },
+    }
+    expect(parseV2(event)).toEqual(event)
+    expectCorruptV2({
+      ...event,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read-1', content: [{ ...nativeFile, attachment: { ...nativeAttachment, digest: 'bad' } }] }] },
+    })
+    expectCorrupt(event)
+  })
+  it('rejects malformed attachment catalogs', () => {
+    const valid = { seq: 0, type: 'session/attachments', attachments: [nativeAttachment], timestamp: 't' }
+    for (const raw of [
+      { ...valid, injected: true },
+      { ...valid, attachments: nativeAttachment },
+      { ...valid, attachments: [{ ...nativeAttachment, modelForm: 'pdf-document' }] },
+      { ...valid, timestamp: '' },
+    ]) expectCorruptV2(raw)
   })
 })

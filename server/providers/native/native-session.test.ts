@@ -3892,7 +3892,7 @@ describe('NativeSession', () => {
     await log.flush(); await log.close()
     const path = nativeSessionLogPath(dir, 'p2')
     const raw = await readFile(path, 'utf8')
-    await writeFile(path, raw.replace('"v":1', '"v":2'))
+    await writeFile(path, raw.replace('"v":1', '"v":3'))
     expect(await provider.hasTranscript({ id: 'p2', cwd: dir } as never)).toBe(true)
     await expect(provider.readHistoryEntries!('p2', {})).rejects.toThrow(/unsupported|version/i)
     await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
@@ -4414,7 +4414,7 @@ describe('NativeSession', () => {
     const session = provider.createSession({ id: 'corrupt', cwd: dir })
     await session.destroy()
     const path = nativeSessionLogPath(dir, 'corrupt')
-    writeFileSync(path, readFileSync(path, 'utf8').replace('"v":1', '"v":2'))
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"v":1', '"v":3'))
     let caught: unknown
     try {
       provider.createSession({ id: 'corrupt', cwd: dir, resume: 'corrupt' })
@@ -4431,7 +4431,7 @@ describe('NativeSession', () => {
     const seed = provider.createSession({ id: 'leak', cwd: dir })
     await seed.destroy()
     const path = nativeSessionLogPath(dir, 'leak')
-    writeFileSync(path, readFileSync(path, 'utf8').replace('"v":1', '"v":2'))
+    writeFileSync(path, readFileSync(path, 'utf8').replace('"v":1', '"v":3'))
 
     // The connect is queued by `load` before the resume throw; without the
     // provider's teardown it would run forever with no owner.
