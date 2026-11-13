@@ -1269,7 +1269,10 @@ export class NativeSession implements ProviderSessionHandle {
       } catch (err) {
         log.warn(`[${this.opts.id}] failed to persist turn/end:`, err)
       }
-      if (pauseForDurableRetry && this.input.length === 0) break
+      // Park even when later input is already queued. Only a subsequent
+      // explicit enqueue may start another attempt; queued input must never
+      // turn a persistent storage failure into an unbounded retry loop.
+      if (pauseForDurableRetry) break
     }
   }
 

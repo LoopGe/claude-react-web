@@ -3765,14 +3765,14 @@ describe('NativeSession', () => {
     }
   })
 
-  it('retries a failed pending prompt when later input is already queued', async () => {
+  it('waits for explicit input before retrying when later input is already queued', async () => {
     const previous = { ...config }
     __setConfigForTest({ nativeAttachmentFidelity: true })
     const dir = await tempDir('native-migration-queued-retry-')
     const provider = new NativeProvider({ stateDir: dir })
     const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
     ;(provider as unknown as { _testStream: unknown })._testStream =
-      capturingStreamer([textTurn('first ok'), textTurn('second ok')], requests)
+      capturingStreamer([textTurn('first ok'), textTurn('second ok'), textTurn('third ok')], requests)
     const session = provider.createSession({ id: 'migration-queued-retry', cwd: dir })
     const frames: Frame[] = []
     void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
@@ -3794,10 +3794,62 @@ describe('NativeSession', () => {
       await vi.waitFor(() => expect(sessionLog.migrateToV2).toHaveBeenCalledOnce())
       gate.resolve()
 
-      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(3))
-      expect(requests).toHaveLength(2)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      expect(session.queueDepth).toBe(2)
+      expect(requests).toEqual([])
+      expect(sessionLog.migrateToV2).toHaveBeenCalledOnce()
+
+      session.enqueueUserMessage({ ...userMsg('explicit retry'), uuid: 'explicit' } as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(4))
+      expect(requests).toHaveLength(3)
       expect(JSON.stringify(requests[0].messages)).toContain('Upload id: upload-1')
-      expect(JSON.stringify(requests[0].messages)).not.toContain('already queued')
+      expect(sentUserContent(requests[1])).toEqual([{ type: 'text', text: 'already queued' }])
+      expect(sentUserContent(requests[2])).toEqual([{ type: 'text', text: 'explicit retry' }])
+      expect(logOf(session).events.filter((event) => event.type === 'user').map((event) =>
+        (event as unknown as { uuid: string }).uuid)).toEqual(['first-attachment', 'later', 'explicit'])
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('pauses a persistent pre-append failure until explicit input and preserves withdrawal FIFO', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true })
+    const dir = await tempDir('native-migration-persistent-')
+    const provider = new NativeProvider({ stateDir: dir })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream = capturingStreamer([], requests)
+    const session = provider.createSession({ id: 'migration-persistent', cwd: dir })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      const sessionLog = (session as unknown as { log: NativeSessionLog }).log
+      vi.spyOn(sessionLog, 'migrateToV2').mockRejectedValue(new Error('permanent migration failure'))
+      session.enqueueUserMessage(structuredUserMsg('first-attachment') as never)
+      session.enqueueUserMessage({ ...userMsg('already queued'), uuid: 'later' } as never)
+
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(1))
+      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      expect(sessionLog.migrateToV2).toHaveBeenCalledOnce()
+      expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(1)
+      expect(session.queueDepth).toBe(2)
+      expect(requests).toEqual([])
+
+      session.enqueueUserMessage({ ...userMsg('explicit retry'), uuid: 'explicit' } as never)
+      await vi.waitFor(() => expect(frames.filter((frame) => frame.type === 'result')).toHaveLength(2))
+      await vi.waitFor(() => expect((session as unknown as { pumping: boolean }).pumping).toBe(false))
+      expect(sessionLog.migrateToV2).toHaveBeenCalledTimes(2)
+      expect(logOf(session).events.filter((event) => event.type === 'turn/end')).toHaveLength(2)
+      expect(session.queueDepth).toBe(3)
+      expect(requests).toEqual([])
+
+      expect(session.drainQueuedInput!().map((message) => message.uuid)).toEqual([
+        'first-attachment', 'later', 'explicit',
+      ])
+      expect(session.queueDepth).toBe(0)
+      expect(logOf(session).events.some((event) => event.type === 'user')).toBe(false)
     } finally {
       await session.destroy()
       __setConfigForTest(previous)
