@@ -369,7 +369,7 @@ const MAX_TOOL_RESULT_CHARS = 50_000
 /** Maximum base64 chars kept in a single `tool_result` IMAGE block.
  *  Base64 is ~4/3× binary size, so 2M chars ≈ 1.5MB binary — above a typical
  *  viewport screenshot while keeping any single image well under the WS
- *  write-queue overflow ceiling (WsWriteQueue.MAX_QUEUE_CHARS = 8M) that
+ *  write-queue overflow ceiling (WsWriteQueue.MAX_QUEUE_CHARS = 16M) that
  *  caused the "Stream reconnecting…" loop. Oversized images are REPLACED with
  *  a text marker rather than truncated: a cut base64 string decode-fails and
  *  renders as a broken <img> in the client (imageBlockToDataUrl), while a

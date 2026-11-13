@@ -24,9 +24,9 @@ const BACKPRESSURE_HIGH = 1_000_000
  *  alive (TCP-wise) but never catches up could grow this buffer without
  *  bound. When the cap is exceeded we force-close the socket so the
  *  client reconnects (mirrors the async-subscription overflow strategy).
- *  8M chars is generous enough that it only trips on a pathologically
+ *  16M chars is generous enough that it only trips on a pathologically
  *  slow client, not a transient slow spell. */
-const MAX_QUEUE_CHARS = 8_000_000
+const MAX_QUEUE_CHARS = 16_000_000
 
 /**
  * Async write queue with backpressure control for a single WebSocket.

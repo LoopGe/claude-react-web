@@ -65,9 +65,17 @@ describe('WsWriteQueue', () => {
     expect(ws.closeCalls).toHaveLength(0)
   })
 
+  it('delivers the observed tasks snapshot that exceeded the old 8M ceiling', () => {
+    const { ws, queue } = makeQueue()
+    const snapshot = 'x'.repeat(8_018_020)
+    queue.enqueueRaw(snapshot, 'tasks-snapshot')
+    expect(ws.closeCalls).toHaveLength(0)
+    expect(ws.sent).toEqual([snapshot])
+  })
+
   it('exceeding MAX_QUEUE_CHARS force-closes the socket (slow-client overflow path)', () => {
     const { ws, queue } = makeQueue()
-    const big = 'x'.repeat(8_000_001)
+    const big = 'x'.repeat(16_000_001)
     queue.enqueueRaw(big, 'message')
     expect(ws.closeCalls).toHaveLength(1)
     expect(ws.closeCalls[0]!.code).toBe(1011)
@@ -78,7 +86,7 @@ describe('WsWriteQueue', () => {
 
   it('frames just under the cap do not close', () => {
     const { ws, queue } = makeQueue()
-    queue.enqueueRaw('y'.repeat(7_999_999), 'message')
+    queue.enqueueRaw('y'.repeat(15_999_999), 'message')
     expect(ws.closeCalls).toHaveLength(0)
   })
 
