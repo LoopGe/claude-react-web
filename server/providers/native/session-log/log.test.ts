@@ -631,6 +631,33 @@ describe('NativeSessionLog', () => {
     await log.close()
   })
 
+  it('rejects an unstarted durable reservation instead of acknowledging it behind migration', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('committed'))
+    await log.flush()
+    fsMigration.failRename = true
+
+    const durable = log.appendDurable({
+      type: 'session/agent',
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })
+    const migration = log.migrateToV2()
+    await Promise.all([
+      expect(durable).rejects.toThrow(/migration/),
+      expect(migration).rejects.toThrow('rename failed'),
+    ])
+    fsMigration.failRename = false
+
+    await log.flush()
+    const snapshot = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snapshot.header.v).toBe(1)
+    expect(snapshot.events.map((event) => event.type)).toEqual(['user'])
+    await log.close()
+  })
+
   it('finishes durable rollback before migration and routes restored structured appends through the gate', async () => {
     const stateDir = await fresh()
     const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })

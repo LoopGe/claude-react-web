@@ -436,6 +436,7 @@ export class NativeSessionLog {
   }
 
   private async performAppendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
+    this.assertDurableReservationNotGated()
     // A resolved flush can still leave pending bytes: its captured chunk may
     // have excluded an ordinary append that landed while the write was in
     // flight. Drain until the buffer is quiescent, checking writer ownership
@@ -451,6 +452,7 @@ export class NativeSessionLog {
     const preEventCount = this.events.length
     const preSize = (await stat(this.path)).size
     this.assertDurableWriterActive()
+    this.assertDurableReservationNotGated()
     let reservation: NativeLogEvent | undefined
     let flushSucceeded = false
     try {
@@ -497,6 +499,12 @@ export class NativeSessionLog {
     // Otherwise a racing close's queued allowClosed flush owns these bytes.
     if (this.migrationAppends) this.migrationAppends.push(restored)
     else this.pending.push(Buffer.from(serializeEvent(restored) + '\n', 'utf8'))
+  }
+
+  private assertDurableReservationNotGated(): void {
+    if (this.migrationAppends) {
+      throw new Error(`session log migration prevents a new durable reservation: ${this.path}`)
+    }
   }
 
   private assertDurableWriterActive(): void {
