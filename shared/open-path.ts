@@ -28,6 +28,17 @@ export const OPEN_PATH_TARGETS = [
  *  browser entry, which has no install probe — the OS default browser always
  *  exists). */
 export const OPEN_PATH_APP_TARGETS = ['vscode', 'cursor', 'zed', 'iterm2', 'windowsterminal'] as const
+
+/** Menu/button labels for the brand targets, keyed by target id — the single
+ *  source shared by the project popover buttons and the session context-menu
+ *  open-in group so the two surfaces cannot drift. */
+export const OPEN_PATH_APP_LABELS: Readonly<Record<(typeof OPEN_PATH_APP_TARGETS)[number], string>> = {
+  vscode: 'Open in VS Code',
+  cursor: 'Open in Cursor',
+  zed: 'Open in Zed',
+  iterm2: 'Open in iTerm2',
+  windowsterminal: 'Open in Windows Terminal',
+}
 export type OpenPathTarget = (typeof OPEN_PATH_TARGETS)[number]
 
 export function isOpenPathTarget(v: unknown): v is OpenPathTarget {

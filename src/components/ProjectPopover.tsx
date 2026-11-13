@@ -13,13 +13,15 @@
 
 import { memo, useState } from 'react'
 import { useOpenPathCapability } from '../hooks/useOpenPathCapability'
+import { useOpenPathApps } from '../hooks/useOpenPathApps'
 import { useOpenPath } from '../hooks/useOpenPath'
 import { useCopy } from '../hooks/useCopy'
 import { isMacClient } from '../utils/client-platform'
 import { AnchoredPopover } from './AnchoredPopover'
 import { basenameOf, initialOf } from '../utils/paths'
-import type { OpenPathTarget } from '../../shared/open-path'
+import { OPEN_PATH_APP_LABELS, type OpenPathTarget } from '../../shared/open-path'
 import { IconCheck, IconCopy, IconTerminal } from './icons/ToolIcons'
+import { BRAND_ICONS } from './icons/BrandIcons'
 
 export interface ProjectPopoverProps {
   /** The session's working directory (the project root). */
@@ -36,6 +38,7 @@ export const ProjectPopover = memo(function ProjectPopover({
   onClose,
 }: ProjectPopoverProps) {
   const local = useOpenPathCapability()
+  const apps = useOpenPathApps()
   const { copied, copy } = useCopy()
   // The launch helper is shared with the session context-menu's "Open in …"
   // items (useOpenPath owns the in-flight guard and outcome normalization);
@@ -92,6 +95,27 @@ export const ProjectPopover = memo(function ProjectPopover({
               <IconTerminal aria-hidden />
               {isMacClient() ? 'Open in Terminal' : 'Open in terminal'}
             </button>
+            {/* Brand "Open in …" buttons — the targets the /apps probe
+                reports installed on the server machine, rendered with their
+                brand glyphs (filled by the themed --brand-* variables). Same
+                gates and launch helper as the generic entries above, and the
+                same wording as the session context-menu's open-in group. */}
+            {apps?.map((target) => {
+              const BrandIcon = BRAND_ICONS[target]
+              if (BrandIcon === undefined) return null
+              return (
+                <button
+                  key={target}
+                  type="button"
+                  className="project-pop-action"
+                  disabled={pendingTarget !== null}
+                  onClick={() => openOnServer(target)}
+                >
+                  <BrandIcon size={14} aria-hidden />
+                  {OPEN_PATH_APP_LABELS[target]}
+                </button>
+              )
+            })}
           </>
         )}
       </div>

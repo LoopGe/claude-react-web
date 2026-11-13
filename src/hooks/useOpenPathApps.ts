@@ -15,12 +15,15 @@
 
 import { useEffect, useState } from 'react'
 import { api } from './useApi'
-import { OPEN_PATH_APP_TARGETS, type OpenPathAppsPayload, type OpenPathTarget } from '../../shared/open-path'
+import { OPEN_PATH_APP_TARGETS, type OpenPathAppsPayload } from '../../shared/open-path'
 
-let cached: OpenPathTarget[] | null = null
-let inflight: Promise<OpenPathTarget[]> | null = null
+/** The brand targets, as a precise union (never 'finder'/'terminal'/'browser'). */
+export type OpenPathAppTarget = (typeof OPEN_PATH_APP_TARGETS)[number]
 
-function probe(): Promise<OpenPathTarget[]> {
+let cached: OpenPathAppTarget[] | null = null
+let inflight: Promise<OpenPathAppTarget[]> | null = null
+
+function probe(): Promise<OpenPathAppTarget[]> {
   if (!inflight) {
     inflight = api
       .get<OpenPathAppsPayload>('/open-path/apps')
@@ -29,7 +32,7 @@ function probe(): Promise<OpenPathTarget[]> {
         // is a FAILURE, not "nothing installed": throw so the catch below
         // clears the memo and the next mount retries.
         if (!Array.isArray(r.apps)) throw new Error('malformed /open-path/apps payload')
-        const apps = r.apps.filter((id): id is OpenPathTarget =>
+        const apps = r.apps.filter((id): id is OpenPathAppTarget =>
           typeof id === 'string' && (OPEN_PATH_APP_TARGETS as readonly string[]).includes(id))
         cached = apps
         return apps
@@ -47,8 +50,8 @@ function probe(): Promise<OpenPathTarget[]> {
 
 /** The brand targets installed on the server machine, in catalog order;
  *  `null` while the probe is in flight; `[]` when none are available. */
-export function useOpenPathApps(): OpenPathTarget[] | null {
-  const [apps, setApps] = useState<OpenPathTarget[] | null>(cached)
+export function useOpenPathApps(): OpenPathAppTarget[] | null {
+  const [apps, setApps] = useState<OpenPathAppTarget[] | null>(cached)
   useEffect(() => {
     if (cached !== null) return
     let cancelled = false

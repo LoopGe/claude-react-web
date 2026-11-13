@@ -8,7 +8,7 @@ import { useOpenPath } from '../../hooks/useOpenPath'
 import { isMacClient } from '../../utils/client-platform'
 import { BRAND_ICONS } from '../icons/BrandIcons'
 import { IconTerminal } from '../icons/ToolIcons'
-import type { OpenPathTarget } from '../../../shared/open-path'
+import { OPEN_PATH_APP_LABELS, type OpenPathTarget } from '../../../shared/open-path'
 import type { SessionGroup, SessionInfo } from '../../types'
 import { sessionTitleOrFallback } from '../../utils/session-title'
 import { worktreeDeleteWarning } from './worktree-delete-warning'
@@ -266,13 +266,6 @@ export function SessionContextMenu({
     ...(() => {
       const cwd = session.cwd
       if (local !== true || apps === null || !cwd) return []
-      const brandLabels: Partial<Record<OpenPathTarget, string>> = {
-        vscode: 'Open in VS Code',
-        cursor: 'Open in Cursor',
-        zed: 'Open in Zed',
-        iterm2: 'Open in iTerm2',
-        windowsterminal: 'Open in Windows Terminal',
-      }
       const targets: OpenPathTarget[] = ['finder', 'terminal', ...apps]
       const items: ContextMenuItem[] = []
       for (const target of targets) {
@@ -298,7 +291,11 @@ export function SessionContextMenu({
               ? isMacClient()
                 ? 'Open in Terminal'
                 : 'Open in terminal'
-              : brandLabels[target]
+              : target === 'browser'
+                // `browser` is never in `apps` (OPEN_PATH_APP_TARGETS has no
+                // install probe for it) — unreachable, listed for narrowing.
+                ? undefined
+                : OPEN_PATH_APP_LABELS[target]
         if (label === undefined) continue
         items.push({
           label,
