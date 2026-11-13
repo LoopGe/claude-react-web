@@ -4,11 +4,11 @@ claude-react-web reads its server-side configuration from a JSON file at startup
 
 ## Location
 
-| Path | Purpose |
-|------|---------|
-| `~/.claude-react-web/config.json` | Default config location |
-| `--state-dir <path>` CLI flag | Override the entire state directory; `config.json` is read from there |
-| `--config <path>` CLI flag | Read/write `config.json` at an explicit path (leading `~` expands to the home dir); wins over `--state-dir` for the config file only |
+| Path                              | Purpose                                                                                                                              |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `~/.claude-react-web/config.json` | Default config location                                                                                                              |
+| `--state-dir <path>` CLI flag     | Override the entire state directory; `config.json` is read from there                                                                |
+| `--config <path>` CLI flag        | Read/write `config.json` at an explicit path (leading `~` expands to the home dir); wins over `--state-dir` for the config file only |
 
 The file is optional — if missing or malformed, built-in defaults are used silently.
 
@@ -16,20 +16,16 @@ The file is optional — if missing or malformed, built-in defaults are used sil
 
 ### `modelList`
 
-| | |
-|---|---|
-| Type | `string[]` |
+|         |                                                                                                 |
+| ------- | ----------------------------------------------------------------------------------------------- |
+| Type    | `string[]`                                                                                      |
 | Default | `["anthropic/claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-3-5-20241022"]` |
 
 Available models for new sessions, shown as a dropdown in the UI. The **first entry** becomes the default model for new sessions.
 
 ```json
 {
-  "modelList": [
-    "anthropic/claude-sonnet-4-20250514",
-    "claude-opus-4-20250514",
-    "claude-haiku-3-5-20241022"
-  ]
+  "modelList": ["anthropic/claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-3-5-20241022"]
 }
 ```
 
@@ -39,9 +35,9 @@ The CLI `--model` flag takes priority over the first entry when launching.
 
 ### `recapModel`
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                                                |
+| ------- | ---------------------------------------------- |
+| Type    | `string`                                       |
 | Default | `""` (unset — the session's aux model is used) |
 
 Model used to generate AI session summaries (recaps). **Empty means "use the session's aux
@@ -56,7 +52,7 @@ Per-profile, and the credentials follow the model: recaps, compact summaries, co
 the classifier all authenticate against the **session's** profile — the one that session is pinned
 to, or the active profile when it has no pin — never a different one. A session pinned elsewhere
 therefore spends its own subscription, exactly like its CLI subprocess does. (Switching the active
-profile therefore changes where an *unpinned* session's aux calls authenticate, matching the fact
+profile therefore changes where an _unpinned_ session's aux calls authenticate, matching the fact
 that a running unpinned session keeps its spawn-time credentials until it is restarted.)
 
 Per-profile: this field lives on each entry of `profiles[]` (a top-level `recapModel` is migrated
@@ -72,9 +68,9 @@ into `profiles[0]` on first load and is no longer written).
 
 ### `maxUploadBytes`
 
-| | |
-|---|---|
-| Type | `number` (bytes) |
+|         |                    |
+| ------- | ------------------ |
+| Type    | `number` (bytes)   |
 | Default | `26214400` (25 MB) |
 
 Maximum file upload size. Files larger than this are rejected before upload. Must be a positive integer.
@@ -89,9 +85,9 @@ Maximum file upload size. Files larger than this are rejected before upload. Mus
 
 ### `commitMessageModel`
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                                                |
+| ------- | ---------------------------------------------- |
+| Type    | `string`                                       |
 | Default | `""` (unset — the session's aux model is used) |
 
 Model used by the AI commit-message generator in the GitPanel "This session" view. Empty means
@@ -111,9 +107,9 @@ to a locally-derived `chore:` message rather than an error.
 
 ### `autoClassifierModel`
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                                                |
+| ------- | ---------------------------------------------- |
+| Type    | `string`                                       |
 | Default | `""` (unset — the session's aux model is used) |
 
 Model used by the `auto` permission-mode security classifier, which judges each tool call that
@@ -135,10 +131,10 @@ session's model is a large/slow one. There is no UI for it; set it via `config.j
 
 ### `historyCap`
 
-| | |
-|---|---|
-| Type | `number` (messages) |
-| Default | `500` |
+|         |                     |
+| ------- | ------------------- |
+| Type    | `number` (messages) |
+| Default | `500`               |
 
 Maximum number of messages kept in memory per session. When the cap is reached, the oldest messages are discarded from the in-memory ring buffer. This does **not** affect the full conversation stored on disk by the SDK (`~/.claude/projects/`, or under `CLAUDE_CONFIG_DIR` when that is set) — the complete history is always available for resume.
 
@@ -154,10 +150,10 @@ Must be a positive integer. Higher values use more memory but allow the UI to sc
 
 ### `subagentHistoryCap`
 
-| | |
-|---|---|
-| Type | `number` (messages) |
-| Default | `300` |
+|         |                     |
+| ------- | ------------------- |
+| Type    | `number` (messages) |
+| Default | `300`               |
 
 Maximum number of **subagent frames** (messages with `parent_tool_use_id` set — subagent tool hops plus the text/thinking frames forwarded when `forwardSubagentText` is on) kept in memory per session. These live in a separate ring from `historyCap`, so a long subagent turn can only evict older subagent frames — it can never push main-thread messages out of the replay window.
 
@@ -173,10 +169,10 @@ Must be a positive integer. Boot-time only (requires a server restart); not writ
 
 ### `forwardSubagentText`
 
-| | |
-|---|---|
-| Type | `boolean` |
-| Default | `true` |
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `true`    |
 
 Forward subagent text/thinking blocks into the message stream (SDK `Options.forwardSubagentText`) so the client's SubagentOverlay can render the full nested transcript — thinking, text, and tool calls interleaved — instead of only tool cards.
 
@@ -190,13 +186,12 @@ Spawn-time only: the flag is applied when each session's SDK subprocess starts, 
 
 ---
 
-
 ### `workingStuckMs`
 
-| | |
-|---|---|
-| Type | `number` (milliseconds) |
-| Default | `3600000` (1 hour) |
+|         |                         |
+| ------- | ----------------------- |
+| Type    | `number` (milliseconds) |
+| Default | `3600000` (1 hour)      |
 
 How long a session may stay in the "working" state with no SDK activity before it is considered stuck and auto-interrupted. Set to `0` to disable the watchdog entirely.
 
@@ -212,10 +207,10 @@ Must be a non-negative integer.
 
 ### `nativeAutoCompact`
 
-| | |
-|---|---|
-| Type | `boolean` |
-| Default | `true` |
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `true`    |
 
 Enable the **native provider's** in-place auto-compact. When an idle native session's context crosses the auto-compact window, the host summarizes the conversation and resets the model history in place (same session id; the log gains an append-only `session/compact` boundary). The `claude` provider compacts through the CLI instead, so this flag only affects `provider: 'native'` sessions.
 
@@ -231,10 +226,10 @@ Read at trigger time, so a restart is not required.
 
 ### `nativeAutoCompactRatio`
 
-| | |
-|---|---|
-| Type | `number` |
-| Default | `0.8` |
+|         |          |
+| ------- | -------- |
+| Type    | `number` |
+| Default | `0.8`    |
 
 Fraction of the context window at which the native auto-compact trigger fires when the session has no explicit `autoCompactWindow`: it compacts once `totalTokens >= maxTokens × ratio`.
 
@@ -248,12 +243,58 @@ Must be greater than `0`; values above `1` are clamped to `1`. A value of `0` (o
 
 ---
 
+### `nativeAttachmentFidelity`
+
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `true`    |
+
+Preserve structured file occurrences in the native provider instead of reducing new sends to handle text before the provider sees them. Native logs migrate from header v1 to v2 on the first structured attachment; the physical filename remains `session.v1.jsonl` for storage compatibility. Older servers reject v2 explicitly, while this server continues to read legacy v1 handles without inventing missing digests.
+
+```json
+{
+  "nativeAttachmentFidelity": false
+}
+```
+
+Set this to `false` only when legacy handle input is required for new native sends. Existing v2 history and its persisted model form are not rewritten by the switch.
+
+Canonical history stores attachment references, never PDF base64. Each model request projects a handle or a verified native PDF document. The browser receives public id/name/size/digest blocks without registry paths, server-only model-form metadata, or document base64. Native `AttachmentRead` verifies the current log reference, registry entry, path containment, size and digest before returning bounded text or a PDF result.
+
+Eligible PDFs are limited to **20 MiB** each. Their encoded documents are capped at **28,000,000 base64 characters per model-history partition**, and a user message's image plus newly assigned PDF data observes the same 28,000,000-character combined cap. Duplicate or over-budget occurrences remain handles. Manual and automatic compact hydrate at most **65,536 raw bytes per text attachment** and **262,144 raw bytes per compact request**, with explicit truncation or omission markers.
+
+A missing or tampered alias fails only the operation that needs its bytes; history remains readable. Restore the verified alias and retry the turn to project it again. A gateway document/API failure is returned as the real error rather than silently converting the occurrence to a handle. `nativePdfDocuments: false` affects only new occurrences, so it cannot repair an already persisted `pdf-document` for a gateway that cannot accept it; use `/clear` or a new session for that recovery.
+
+Upload deletion returns `409` while any live, dormant, forked or compact-handoff native log still references the upload, or while an in-flight send holds its deletion lease. This prevents compact and later reads from losing their verified bytes.
+
+---
+
+### `nativePdfDocuments`
+
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `true`    |
+
+Allow eligible new native PDF occurrences to use native `document` blocks after magic-byte, registry, digest, size and budget checks. This setting is effective only while `nativeAttachmentFidelity` is enabled and does not affect ordinary text attachments or images.
+
+```json
+{
+  "nativePdfDocuments": false
+}
+```
+
+The switch is read when a new occurrence is persisted. It never rewrites an existing handle or document, and later tool rounds, resume and fork retain the original history prefix.
+
+---
+
 ### `maxGroupPanels`
 
-| | |
-|---|---|
-| Type | `number` |
-| Default | `3` |
+|         |          |
+| ------- | -------- |
+| Type    | `number` |
+| Default | `3`      |
 
 Maximum number of sessions a group may contain, and therefore the maximum number of side-by-side chat panels opened when that group is activated. The main grid is group-centric: it always shows either a single ungrouped session or the members of one group, so this one value governs both. Must be in the range 2–5.
 
@@ -269,9 +310,9 @@ Values outside the 2–5 range are clamped. This replaced the previous per-brows
 
 ### `authToken`
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                        |
+| ------- | ---------------------- |
+| Type    | `string`               |
 | Default | _(none — must be set)_ |
 
 Anthropic credential forwarded to each Claude SDK subprocess as an `Authorization: Bearer <token>` header. Works against both the official API and Anthropic-compatible proxies. The server warns at startup when this is unset, and API calls fail until it is configured. Can also be filled in from the in-app settings panel.
@@ -286,9 +327,9 @@ Anthropic credential forwarded to each Claude SDK subprocess as an `Authorizatio
 
 ### `baseUrl`
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                               |
+| ------- | ----------------------------- |
+| Type    | `string`                      |
 | Default | `"https://api.anthropic.com"` |
 
 API endpoint the SDK talks to. Override to point at a proxy or relay. Any trailing slash is stripped during load.
@@ -303,9 +344,9 @@ API endpoint the SDK talks to. Override to point at a proxy or relay. Any traili
 
 ### `accessToken`
 
-| | |
-|---|---|
-| Type | `string` |
+|         |          |
+| ------- | -------- |
+| Type    | `string` |
 | Default | _(none)_ |
 
 Shared **web access** token (distinct from `authToken` above). When set, every visitor must supply it once via `/?token=<token>` before the UI loads. Auto-generated and enforced when the server binds to a non-loopback host. Pin a stable value here to keep the same token across restarts.
@@ -322,10 +363,10 @@ Shared **web access** token (distinct from `authToken` above). When set, every v
 
 ### `logToFile`
 
-| | |
-|---|---|
-| Type | `boolean` |
-| Default | `false` |
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `false`   |
 
 When `true`, server logs are written to a file under `<stateDir>/logs/` in addition to stdout.
 
@@ -341,9 +382,9 @@ The runtime log level and scope filter are controlled separately via the `LOG_LE
 
 ### `updateCheckRegistry`
 
-| | |
-|---|---|
-| Type | `string` |
+|         |                                |
+| ------- | ------------------------------ |
+| Type    | `string`                       |
 | Default | `"https://registry.npmjs.org"` |
 
 npm registry URL the update checker probes for new releases. Set to an empty string to disable the update check entirely (the banner stays hidden and the About tab shows "disabled"). Override to point at a private registry.
@@ -358,10 +399,10 @@ npm registry URL the update checker probes for new releases. Set to an empty str
 
 ### `allowSensitivePathEdits`
 
-| | |
-|---|---|
-| Type | `boolean` |
-| Default | `false` |
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `false`   |
 
 When `true`, `acceptEdits` and `bypassPermissions` modes also auto-approve edits and commands targeting "sensitive" config paths (`.git/`, `.claude/`, `.vscode/`, `.idea/`, and shell/git config files such as `.bashrc`, `.gitconfig`) that otherwise still prompt even in those modes. Off (default) preserves the safe behavior.
 
@@ -382,10 +423,10 @@ This only relaxes the sensitive-path safety check — it does **not** affect:
 
 ### `appToolsGit`
 
-| | |
-|---|---|
-| Type | `boolean` |
-| Default | `true` |
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `true`    |
 
 Global default for injecting the first-party `git-tools` in-process MCP server (status, log, stage, commit, branch, stash, …) into sessions. The agent can then call `mcp__git-tools__*` tools directly; writes go through the session's normal permission flow. Per-session overrides (`POST /sessions/:id/app-tools`, or the "Let Claude use git tools" toggle in the MCP settings tab) take priority — sessions without an override inherit this value.
 
@@ -403,10 +444,10 @@ Set to `false` to stop injecting git tools by default:
 
 ### `maxOutputTokens`
 
-| | |
-|---|---|
-| Type | `number` (tokens) |
-| Default | `128000` |
+|         |                   |
+| ------- | ----------------- |
+| Type    | `number` (tokens) |
+| Default | `128000`          |
 
 Maximum output tokens for a single model response, passed to the `claude` CLI subprocess as `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. `0` means "use the CLI's own default" (64000), which truncates long single responses with `API Error: Claude's response exceeded the 64000 output token maximum`.
 
@@ -424,10 +465,10 @@ Raise it when the model's own output ceiling allows (current-generation models s
 
 ### `fileSnapshots`
 
-| | |
-|---|---|
-| Type | `boolean` |
-| Default | `true` |
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `true`    |
 
 Enable the shadow-repo snapshot sidecar that powers offline file rewind. When enabled, each session captures a lightweight git snapshot at every user message, allowing files to be restored to any prior message state even after the session has gone dormant or been terminated. When disabled, `GET /sessions/:id/file-snapshots` reports `available: false` with reason `disabled`.
 
@@ -445,9 +486,9 @@ Sessions started outside a git repository are never snapshotted regardless of th
 
 ### `fileSnapshotsMaxUntrackedBytes`
 
-| | |
-|---|---|
-| Type | `number` (bytes) |
+|         |                  |
+| ------- | ---------------- |
+| Type    | `number` (bytes) |
 | Default | `2097152` (2 MB) |
 
 Per-file size limit applied **only to untracked files** during each snapshot capture. An untracked file whose byte size exceeds this value is excluded from the snapshot (the file stays in the working directory untouched). Tracked (git-indexed) files are always captured regardless of size. Ignored files are also excluded (via `check-ignore` against the source repo rules).
@@ -466,10 +507,10 @@ Must be a positive integer.
 
 ### `autoStart`
 
-| | |
-|---|---|
-| Type | `boolean` |
-| Default | `false` |
+|         |           |
+| ------- | --------- |
+| Type    | `boolean` |
+| Default | `false`   |
 
 Daemon auto-start **desired state**. Managed by `POST /api/daemon/enable|disable` and the
 `claude-react-web daemon install|uninstall` commands, which also perform the OS-level
@@ -528,18 +569,17 @@ in `server/config.ts` (the same set the in-app settings panel can change);
 `authToken` / `accessToken` are never writable from the command line — edit
 `config.json` for those. Run `claude-react-web <command> --help` for flags.
 
-
 ## Client-side settings (localStorage)
 
 Some UI layout and behavior constants are stored in the browser's `localStorage` instead of `config.json`. These are per-browser and don't require a server restart:
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `claude-react-web:sidebar-min-px` | `180` | Sidebar minimum width (px) |
-| `claude-react-web:sidebar-max-px` | `480` | Sidebar maximum width (px) |
-| `claude-react-web:panel-min-ratio` | `0.15` | Minimum panel width as a fraction of viewport |
-| `claude-react-web:follow-debounce-ms` | `150` | Auto-scroll debounce delay (ms) |
-| `claude-react-web:recent-models-cap` | `10` | Max recent models remembered |
-| `claude-react-web:recent-cwds-cap` | `10` | Max recent working directories remembered |
+| Key                                   | Default | Description                                   |
+| ------------------------------------- | ------- | --------------------------------------------- |
+| `claude-react-web:sidebar-min-px`     | `180`   | Sidebar minimum width (px)                    |
+| `claude-react-web:sidebar-max-px`     | `480`   | Sidebar maximum width (px)                    |
+| `claude-react-web:panel-min-ratio`    | `0.15`  | Minimum panel width as a fraction of viewport |
+| `claude-react-web:follow-debounce-ms` | `150`   | Auto-scroll debounce delay (ms)               |
+| `claude-react-web:recent-models-cap`  | `10`    | Max recent models remembered                  |
+| `claude-react-web:recent-cwds-cap`    | `10`    | Max recent working directories remembered     |
 
 To change these, open browser DevTools → Application → Local Storage and edit the values directly. All values are clamped to safe ranges at runtime.

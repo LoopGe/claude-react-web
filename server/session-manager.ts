@@ -2566,12 +2566,13 @@ export class SessionManager {
     if (inheritedTasks.length > 0) {
       await this.taskResultStore.save(forkId, inheritedTasks)
     }
-    const bridgedPromptUuids = await this.preseedForkTranscript(forkId, id, { seed: opts?.historySeed })
+    const forkSeed = await this.preseedForkTranscript(forkId, id, { seed: opts?.historySeed })
+    const bridgedPromptUuids = forkSeed.promptUuids
     const forkInfo = this.spawn(
       forkId,
       forkOpts,
       undefined,
-      opts?.historySeed,
+      forkSeed.historySeed,
       parentOverride,
       // Carry the source's pure-UI pref overrides + first-party tool pins onto
       // the fork so a pinned header / auto-recap / tool-group-card /
@@ -3090,7 +3091,7 @@ export class SessionManager {
     // same afterUuid filter every Side-Chat history read applies). Without
     // this, a first live message would take seq 0 ahead of the inherited rows.
     const sideChatId = randomUUID()
-    const bridgedPromptUuids = await this.preseedForkTranscript(sideChatId, parentId, { afterUuid: forkBoundaryUuid })
+    const { promptUuids: bridgedPromptUuids } = await this.preseedForkTranscript(sideChatId, parentId, { afterUuid: forkBoundaryUuid })
     // promptUuids (round 3): seed the live Side Chat's in-memory list with
     // the bridged mappings — same onPromptEcho writeAtomic-REPLACE rationale
     // as fork().
@@ -7930,30 +7931,32 @@ export class SessionManager {
    *  keeping `v` would mix identity spaces across the fork's transcript and
    *  break uuid-keyed eviction for inherited rows.
    *
-   *  Returns the bridged entries so the caller can ALSO seed the live
-   *  session's in-memory `promptUuids` at spawn (round 3): onPromptEcho
+   *  Returns the bridged mappings and the same composed rows. The caller seeds
+   *  the live session's in-memory `promptUuids` at spawn (round 3): onPromptEcho
    *  persists the whole in-memory list with writeAtomic REPLACE semantics,
    *  so without the in-memory seed the fork's first post-fork echo would
    *  overwrite the sidecar file and wipe the bridged mappings off disk —
    *  reintroducing the very duplication this pre-seed exists to prevent,
-   *  on the normal fork→send→restart flow. */
+   *  on the normal fork→send→restart flow. Seeding the live rings from those
+   *  same rows also keeps compaction from seeing only post-copy turns. */
   private async preseedForkTranscript(
     forkId: string,
     sourceId: string,
     opts: { seed?: SDKMessage[]; afterUuid?: string } = {},
-  ): Promise<PromptUuidEntry[]> {
+  ): Promise<{ promptUuids: PromptUuidEntry[]; historySeed: SDKMessage[] }> {
     const t = this.getOrCreateTranscript(forkId)
-    if (t.reconciled) return []
+    if (t.reconciled) return { promptUuids: [], historySeed: opts.seed ?? [] }
     try {
       t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
       const entries = opts.seed ?? (await this.composeTranscriptEntries(sourceId, opts.afterUuid))
       backfillFromEntries(t, entries)
-      return await this.bridgeInheritedPromptUuids(forkId, sourceId, entries)
+      const promptUuids = await this.bridgeInheritedPromptUuids(forkId, sourceId, entries)
+      return { promptUuids, historySeed: entries }
     } catch (err) {
       // Degraded but usable — same posture as ensureTranscriptReconciled.
       t.degraded = true
       log.warn(`[session ${forkId}] transcript pre-seed failed: ${(err as Error).message ?? err}`)
-      return []
+      return { promptUuids: [], historySeed: opts.seed ?? [] }
     } finally {
       t.reconciled = true
     }

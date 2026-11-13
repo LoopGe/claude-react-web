@@ -31,24 +31,24 @@ describe('config', () => {
     expect(config.recapModel).toBe('')
     expect(config.commitMessageModel).toBe('')
     expect(config.autoClassifierModel).toBe('')
-    expect(config.nativeAttachmentFidelity).toBe(false)
+    expect(config.nativeAttachmentFidelity).toBe(true)
     expect(config.nativePdfDocuments).toBe(true)
   })
 
-  it('loads an explicit nativeAttachmentFidelity opt-in without changing the default', async () => {
-    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeAttachmentFidelity: true }))
-    await loadConfig(dir)
-    expect(config.nativeAttachmentFidelity).toBe(true)
-    writeFileSync(join(dir, 'config.json'), '{}')
+  it('loads an explicit nativeAttachmentFidelity opt-out without changing the default', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativeAttachmentFidelity: false }))
     await loadConfig(dir)
     expect(config.nativeAttachmentFidelity).toBe(false)
+    writeFileSync(join(dir, 'config.json'), '{}')
+    await loadConfig(dir)
+    expect(config.nativeAttachmentFidelity).toBe(true)
   })
 
   it('loads nativePdfDocuments=false and restores its default independently of the fidelity gate', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativePdfDocuments: false }))
     await loadConfig(dir)
     expect(config.nativePdfDocuments).toBe(false)
-    expect(config.nativeAttachmentFidelity).toBe(false)
+    expect(config.nativeAttachmentFidelity).toBe(true)
     writeFileSync(join(dir, 'config.json'), '{}')
     await loadConfig(dir)
     expect(config.nativePdfDocuments).toBe(true)

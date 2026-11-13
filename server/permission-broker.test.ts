@@ -423,9 +423,26 @@ describe('PermissionBroker', () => {
     it('dontAsk auto-allows read-only built-in tools', async () => {
       const session = makeFakeSession({ permissionMode: 'dontAsk' })
       const canUseTool = broker.buildCanUseTool(session, vi.fn())
-      const result = await canUseTool('Read', { file_path: 'a.txt' }, ctx())
+      for (const [name, input] of [
+        ['Read', { file_path: 'a.txt' }],
+        ['AttachmentRead', { id: 'upload-1' }],
+      ] as const) {
+        const result = await canUseTool(name, input, ctx())
+        expect(result).toMatchObject({ behavior: 'allow' })
+      }
+      expect(session.pending.size).toBe(0)
+    })
+
+    it('auto auto-allows AttachmentRead without consulting the classifier', async () => {
+      const { classifyToolAction } = await import('./auto-classifier.js')
+      const mockClassify = vi.mocked(classifyToolAction)
+      mockClassify.mockClear()
+      const session = makeFakeSession({ permissionMode: 'auto' })
+      const canUseTool = broker.buildCanUseTool(session, vi.fn())
+      const result = await canUseTool('AttachmentRead', { id: 'upload-1' }, ctx())
       expect(result).toMatchObject({ behavior: 'allow' })
       expect(session.pending.size).toBe(0)
+      expect(mockClassify).not.toHaveBeenCalled()
     })
 
     it('dontAsk auto-allows the Skill tool (a skill load is read-only)', async () => {

@@ -105,7 +105,7 @@ interface ConfigFile {
    *  Default: true. */
   nativeAutoCompact?: boolean
   /** Preserve resolved file blocks for the native attachment-fidelity pipeline.
-   *  Default false until the full native live/replay/compact path is enabled. */
+   *  Default: true. Disable only to retain legacy handle input for new sends. */
   nativeAttachmentFidelity?: boolean
   /** Inline verified PDFs as native document blocks for NEW native occurrences.
    * Effective only inside nativeAttachmentFidelity; never rewrites old history.
@@ -261,7 +261,7 @@ export interface ServerConfig {
   /** Enable the native provider's in-place auto-compact — see
    *  ConfigFile.nativeAutoCompact. Default: true. */
   readonly nativeAutoCompact: boolean
-  /** Native structured-attachment pipeline gate. Default: false. */
+  /** Native structured-attachment pipeline gate. Default: true. */
   readonly nativeAttachmentFidelity: boolean
   /** Native document projection for new PDF occurrences. Default: true. */
   readonly nativePdfDocuments: boolean
@@ -380,7 +380,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   subagentHistoryCap: 300,
   forwardSubagentText: true,
   nativeAutoCompact: true,
-  nativeAttachmentFidelity: false,
+  nativeAttachmentFidelity: true,
   nativePdfDocuments: true,
   nativeAutoCompactRatio: 0.8,
   workingStuckMs: 60 * 60 * 1000,

@@ -95,6 +95,7 @@ const log = createLogger('broker')
  *  auto-denied under dontAsk. Bash is handled separately via isReadOnlyBash. */
 const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
   'Read',
+  'AttachmentRead',
   'Grep',
   'Glob',
   // Directory listing: read-only entry metadata, no file contents.
@@ -113,7 +114,7 @@ const READONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
  *  Aligned with SDK's SAFE_YOLO_ALLOWLISTED_TOOLS. */
 const SAFE_AUTO_TOOLS: ReadonlySet<string> = new Set([
   // Read-only
-  'Read', 'Grep', 'Glob', 'LS', 'NotebookRead',
+  'Read', 'AttachmentRead', 'Grep', 'Glob', 'LS', 'NotebookRead',
   // A skill load only reads SKILL.md into the conversation (both providers).
   'Skill',
   // Code intelligence (read-only)
