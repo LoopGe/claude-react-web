@@ -2,8 +2,9 @@
 //
 // The append-only writer/loader for native session logs. A log is a JSONL file:
 // one `session/header` line followed by `seq`-numbered events. Appends are
-// buffered and flushed explicitly; `flush` writes and fsyncs through a single
-// serialized chain so concurrent callers cannot interleave.
+// buffered and flushed explicitly; flushes, durable reservations/rollbacks,
+// and migration all pass through one serialized writer-operation queue so
+// concurrent callers cannot interleave file mutations.
 //
 // A module-level registry owns one live writer per resolved log path. Opening
 // a new writer for the same path (resume, fork seed, fresh create) supersedes
@@ -73,6 +74,18 @@ function isErrno(err: unknown, code: string): boolean {
 
 function corrupt(sessionId: string, path: string, message: string): never {
   throw new NativeSessionStorageError('corrupt', message, sessionId, path)
+}
+
+function eventRequiresV2(event: NativeEventInput | NativeLogEvent): boolean {
+  if (event.type === 'session/attachments') return true
+  if (event.type !== 'user') return false
+  const containsFile = (content: unknown[]): boolean => content.some((block) => {
+    if (typeof block !== 'object' || block === null) return false
+    const candidate = block as { type?: unknown; content?: unknown }
+    if (candidate.type === 'file') return true
+    return candidate.type === 'tool_result' && Array.isArray(candidate.content) && containsFile(candidate.content)
+  })
+  return containsFile(event.message.content)
 }
 
 function parseLine(line: string, lineNo: number, sessionId: string, path: string): unknown {
@@ -189,7 +202,7 @@ export class NativeSessionLog {
 // replace it with U+FFFD.
   private pending: Buffer[] = []
   private handle: FileHandle | null = null
-  private flushChain: Promise<void> = Promise.resolve()
+  private operationChain: Promise<void> = Promise.resolve()
   private closePromise: Promise<void> | null = null
   private migrationPromise: Promise<void> | null = null
   /** Events accepted after the migration gate are buffered separately, so the
@@ -294,17 +307,13 @@ export class NativeSessionLog {
     this.assertDurableWriterActive()
     if (this.header.v === NATIVE_SESSION_LOG_V2) return Promise.resolve()
     this.migrationAppends = []
-    const run = this.flushChain.then(() => this.performMigration())
+    const run = this.enqueueWriterOperation(() => this.performMigration())
     const tracked = run.finally(() => {
       // A pre-rename failure leaves a live v1 writer that may retry. A fatal
       // post-rename failure stays closed and can never be retried on this object.
       if (!this.closed && this.header.v === NATIVE_SESSION_LOG_VERSION) this.migrationPromise = null
     })
     this.migrationPromise = tracked
-    this.flushChain = tracked.then(
-      () => undefined,
-      () => undefined,
-    )
     return tracked
   }
 
@@ -360,6 +369,14 @@ export class NativeSessionLog {
         this.migrationAppends = null
         throw err
       }
+      if (!renamed && queued.some(eventRequiresV2)) {
+        // Reopening v1 is safe only for v1-compatible queued events. A queued
+        // structured occurrence still requires the migration that just failed;
+        // discard the uncommitted gate and close rather than corrupting v1.
+        this.events.splice(this.events.length - queued.length, queued.length)
+        await this.failMigration(err)
+        throw err
+      }
       if (!renamed) {
         // The source is still v1. Reopen it before releasing the gate; if even
         // that fails, the writer is closed rather than pretending to be live.
@@ -412,13 +429,19 @@ export class NativeSessionLog {
    *  selections that must not become visible in memory OR replay after a
    *  genuine write failure. Every non-rejected event appended after the prior
    *  flush is preserved with a fresh contiguous seq on rollback. */
-  async appendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
+  appendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
+    // The reservation AND any rollback share the writer-operation queue with
+    // migration. No stat/truncate/restore step can interleave with its copy.
+    return this.enqueueWriterOperation(() => this.performAppendDurable(input))
+  }
+
+  private async performAppendDurable(input: NativeEventInput): Promise<NativeLogEvent> {
     // A resolved flush can still leave pending bytes: its captured chunk may
     // have excluded an ordinary append that landed while the write was in
     // flight. Drain until the buffer is quiescent, checking writer ownership
     // after every await so a close/superseded no-op flush cannot spin here.
     while (true) {
-      await this.flush()
+      await this.writePending(false)
       this.assertDurableWriterActive()
       if (this.pending.length === 0) break
     }
@@ -432,7 +455,7 @@ export class NativeSessionLog {
     let flushSucceeded = false
     try {
       reservation = this.append(input)
-      await this.flush()
+      await this.writePending(false)
       flushSucceeded = true
       // writePending deliberately no-ops after takeover/close. A resolved flush
       // is durable only while this writer still owns the path.
@@ -444,6 +467,10 @@ export class NativeSessionLog {
       if (flushSucceeded && this.closed && !this.superseded) throw err
       const appended = this.events.splice(preEventCount)
       this.pending = []
+      if (this.migrationAppends) {
+        const rolledBack = new Set(appended)
+        this.migrationAppends = this.migrationAppends.filter((event) => !rolledBack.has(event))
+      }
       // A replacement writer may already have committed newer events. Never
       // truncate its file; only discard this stale writer's uncommitted state.
       if (this.superseded) throw err
@@ -465,9 +492,11 @@ export class NativeSessionLog {
     const restored = { ...rest, seq: this.events.length } as NativeLogEvent
     this.events.push(restored)
     // Restoration belongs to the durable operation, not the public append
-    // contract. A racing close disables new public buffering, but its queued
-    // allowClosed flush still owns these restored bytes.
-    this.pending.push(Buffer.from(serializeEvent(restored) + '\n', 'utf8'))
+    // contract. It re-enters the active migration gate when one exists, so a
+    // restored structured event cannot be drained into the v1 source copy.
+    // Otherwise a racing close's queued allowClosed flush owns these bytes.
+    if (this.migrationAppends) this.migrationAppends.push(restored)
+    else this.pending.push(Buffer.from(serializeEvent(restored) + '\n', 'utf8'))
   }
 
   private assertDurableWriterActive(): void {
@@ -484,13 +513,17 @@ export class NativeSessionLog {
     return this.closePromise
   }
 
-  private enqueueFlush(allowClosed: boolean): Promise<void> {
-    const run = this.flushChain.then(() => this.writePending(allowClosed))
-    this.flushChain = run.then(
+  private enqueueWriterOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.operationChain.then(operation)
+    this.operationChain = run.then(
       () => undefined,
       () => undefined,
     )
     return run
+  }
+
+  private enqueueFlush(allowClosed: boolean): Promise<void> {
+    return this.enqueueWriterOperation(() => this.writePending(allowClosed))
   }
 
   private async writePending(allowClosed: boolean): Promise<void> {

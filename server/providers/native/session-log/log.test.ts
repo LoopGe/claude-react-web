@@ -1,4 +1,5 @@
 // log.test.ts
+import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -607,6 +608,81 @@ describe('NativeSessionLog', () => {
     expect(loadNativeSessionLogSync(stateDir, 's1')!.header.v).toBe(1)
     await log.appendDurable({ type: 'turn/end', reason: 'completed' })
     expect(loadNativeSessionLogSync(stateDir, 's1')!.events.map((event) => event.type)).toEqual(['user', 'turn/end'])
+    await log.close()
+  })
+
+  it('does not release a structured append into v1 when rename fails', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('u1'))
+    await log.flush()
+    fsMigration.failRename = true
+    fsMigration.beforeRename = () => { log.append(nativeFileUser) }
+
+    await expect(log.migrateToV2()).rejects.toThrow('rename failed')
+    fsMigration.beforeRename = null
+    fsMigration.failRename = false
+    await log.flush()
+
+    const snapshot = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snapshot.header.v).toBe(1)
+    expect(snapshot.events.map((event) => event.type)).toEqual(['user'])
+    await expect(log.appendDurable({ type: 'turn/end', reason: 'completed' })).rejects.toThrow(/closed/)
+    await log.close()
+  })
+
+  it('finishes durable rollback before migration and routes restored structured appends through the gate', async () => {
+    const stateDir = await fresh()
+    const log = NativeSessionLog.open({ stateDir, id: 's1', cwd: '/repo', resume: false })
+    log.append(userEvent('committed'))
+    await log.flush()
+    const path = nativeSessionLogPath(stateDir, 's1')
+    let markWriteStarted!: () => void
+    const writeStarted = new Promise<void>((resolve) => { markWriteStarted = resolve })
+    let releaseFailedWrite!: () => void
+    const failedWrite = new Promise<void>((resolve) => { releaseFailedWrite = resolve })
+    const handle = {
+      write: async (chunk: Buffer, offset: number, length: number) => {
+        const bytes = chunk.subarray(offset, offset + length)
+        if (chunk.toString('utf8').includes('"type":"session/agent"')) {
+          const partial = bytes.subarray(0, Math.min(5, bytes.length))
+          await writeFile(path, partial, { flag: 'a' })
+          markWriteStarted()
+          await failedWrite
+          throw new Error('durable write failed during migration')
+        }
+        await writeFile(path, bytes, { flag: 'a' })
+        return { bytesWritten: bytes.length, buffer: chunk }
+      },
+      sync: async () => undefined,
+      close: async () => undefined,
+    }
+    ;(log as unknown as { ensureHandle: () => Promise<unknown> }).ensureHandle = async () => handle
+    fsTruncate.calls.length = 0
+    fsMigration.beforeRename = () => {
+      expect(fsTruncate.calls.some((call) => call.path === path)).toBe(true)
+      expect(readFileSync(path, 'utf8')).not.toContain('file-user')
+    }
+
+    const durable = log.appendDurable({
+      type: 'session/agent',
+      name: null,
+      base: { model: 'base-model', permissionMode: 'default' },
+      timestamp: '2026-11-11T00:00:00.000Z',
+    })
+    await writeStarted
+    const migration = log.migrateToV2()
+    log.append(nativeFileUser)
+    releaseFailedWrite()
+
+    await expect(durable).rejects.toThrow('durable write failed during migration')
+    await expect(migration).resolves.toBeUndefined()
+    await log.flush()
+    const snapshot = loadNativeSessionLogSync(stateDir, 's1')!
+    expect(snapshot.header.v).toBe(2)
+    expect(snapshot.events.map((event) => event.seq)).toEqual([0, 1])
+    expect(snapshot.events.map((event) => event.type === 'user' && event.uuid)).toEqual(['committed', 'file-user'])
+    fsMigration.beforeRename = null
     await log.close()
   })
 
