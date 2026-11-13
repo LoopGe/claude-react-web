@@ -111,11 +111,15 @@ describe('mp-ops', () => {
 
   describe('removeMarketplace', () => {
     it('disables this marketplace\'s enabled plugins on live sessions, then removes the entry', async () => {
+      // The mock is kept as a typed reference outside the fake-store cast:
+      // read back through `as unknown as MpStore` it is a plain function,
+      // not the MockInstance toHaveBeenCalledBefore needs.
+      const removeEntry = vi.fn(async () => {})
       const store = {
         has: (id: string) => id === 'mp-id',
         get: (id: string) => (id === 'mp-id' ? entry() : null),
         enabledKeysFor: (id: string) => (id === 'mp-id' ? ['p1@mp-id'] : []),
-        removeEntry: vi.fn(async () => {}),
+        removeEntry,
       } as unknown as MpStore
       const sm = {
         list: () => [
@@ -130,10 +134,10 @@ describe('mp-ops', () => {
 
       expect(sm.togglePlugin).toHaveBeenCalledTimes(1)
       expect(sm.togglePlugin).toHaveBeenCalledWith('live', 'p1@mp-id', false)
-      expect(store.removeEntry).toHaveBeenCalledWith('mp-id')
+      expect(removeEntry).toHaveBeenCalledWith('mp-id')
       // Live sessions must be told BEFORE the entry (and its clone dir)
       // disappears — that ordering is the point of the disable pass.
-      expect(sm.togglePlugin).toHaveBeenCalledBefore(store.removeEntry)
+      expect(sm.togglePlugin).toHaveBeenCalledBefore(removeEntry)
     })
 
     it('re-reads enabled keys until the marketplace has none left (concurrent enable)', async () => {
