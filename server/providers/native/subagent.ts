@@ -227,6 +227,10 @@ export function createAgentTool(deps: AgentToolDeps, toolName: 'Agent' | 'Task' 
         )
       } catch (err) {
         return { text: err instanceof Error ? err.message : String(err), isError: true }
+      } finally {
+        // A foreground child ends with its parent; a detached child reaches this
+        // only when its own task ends. Neither may clear another history's reads.
+        deps.attachmentProjection.preparedPdfs?.clearHistory(nestedCtx.parentToolUseId ?? 'main')
       }
 
       // A scripted or in-flight stream may ignore the signal, so the abort is

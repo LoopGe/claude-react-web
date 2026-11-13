@@ -64,9 +64,17 @@ import { isQuestionResult } from '../../permission-broker.js'
 import type { ThinkingDisplay, ThinkingSetting } from '../../../shared/session-info.js'
 import type { UploadStore } from '../../upload-store.js'
 import type { NativeAttachmentReferenceIndex } from '../../attachment-reference-index.js'
+import {
+  assignPdfModelForms,
+  PdfBudgetLedger,
+  PreparedPdfStore,
+  type PdfBudgetReservation,
+} from './pdf-documents.js'
 
 interface PendingDurableInitial {
   message: AgentUserMessage
+  persisted?: { role: 'user'; content: unknown[] }
+  pdfReservations?: PdfBudgetReservation[]
 }
 
 const log = createLogger('native')
@@ -93,18 +101,10 @@ function persistedUserMessage(message: { content: unknown }): { role: 'user'; co
   }
 }
 
-/** Assign the generic Task-3 model form at the persistence boundary. Task 5
- * extends this decision for eligible PDFs; request projection never rewrites it. */
+/** Normalize a raw prompt for persistence. PDF model forms are assigned once
+ * at the pump's transactional budget boundary, never during request projection. */
 function nativeUserMessage(message: { content: unknown }): { role: 'user'; content: unknown[] } {
-  const persisted = persistedUserMessage(message)
-  return {
-    ...persisted,
-    content: persisted.content.map((value) => {
-      if (typeof value !== 'object' || value === null || (value as { type?: unknown }).type !== 'file') return value
-      const block = value as { type: 'file'; attachment: Record<string, unknown> }
-      return { ...block, attachment: { ...block.attachment, modelForm: 'handle' } }
-    }),
-  }
+  return persistedUserMessage(message)
 }
 
 function containsStructuredFile(content: unknown[]): boolean {
@@ -200,6 +200,9 @@ export interface NativeSessionOptions {
   uploadStore?: UploadStore
   /** Derived reference view shared with upload deletion. */
   attachmentReferences?: NativeAttachmentReferenceIndex
+  /** Shared with AttachmentRead. Optional for direct handle-only unit sessions. */
+  pdfBudgets?: PdfBudgetLedger
+  preparedPdfs?: PreparedPdfStore
   /** Resume this session's own log (non-fork), or the source log id for a fork. */
   resume?: string
   /** Fork from `resume`'s log into `id` instead of resuming it. */
@@ -301,6 +304,8 @@ export class NativeSession implements ProviderSessionHandle {
   private turnAbort: AbortController | null = null
   /** Conversation state sent to the API on every turn (mutated in place by runTurn). */
   private readonly history: unknown[] = []
+  private readonly pdfBudgets: PdfBudgetLedger
+  private readonly preparedPdfs: PreparedPdfStore
   /** Builtins plus the MCP tools discovered as of the last rebuild. Replaced
    *  (never mutated) so a mid-turn `setServers`/toggle only affects the NEXT
    *  turn: the running turn holds the snapshot its `runTurn` started with. */
@@ -407,6 +412,8 @@ export class NativeSession implements ProviderSessionHandle {
     this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
     this.effortLevel = this.baseEffortLevel
     this.fastMode = opts.fastMode === true
+    this.pdfBudgets = opts.pdfBudgets ?? new PdfBudgetLedger()
+    this.preparedPdfs = opts.preparedPdfs ?? new PreparedPdfStore(this.pdfBudgets)
     // Built after `this.model` is bound: the model getter must observe a live
     // switch, not the spawn-time value.
     this.webFetchTool = createWebFetchTool({
@@ -449,7 +456,11 @@ export class NativeSession implements ProviderSessionHandle {
         this.output.push(frame)
       },
       persistToolResult: (result, parentToolUseId) => this.persistToolResult(result, parentToolUseId),
-      attachmentProjection: { uploadStore: opts.uploadStore, stateDir: opts.stateDir },
+      attachmentProjection: {
+        uploadStore: opts.uploadStore,
+        stateDir: opts.stateDir,
+        preparedPdfs: this.preparedPdfs,
+      },
       appendDescriptor: async (input) => await this.log.appendDurable({
         ...input,
         timestamp: new Date().toISOString(),
@@ -469,6 +480,7 @@ export class NativeSession implements ProviderSessionHandle {
     } else {
       this.log = this.openFreshLog(opts)
     }
+    this.pdfBudgets.rebuildFromEvents(this.log.events)
     this.syncAttachmentReferences()
     // session-health's stuck-GC force-unloads sessions whose init never
     // lands — push it first, before any turn output. `fast_mode_state` is
@@ -963,6 +975,7 @@ export class NativeSession implements ProviderSessionHandle {
       timestamp: new Date().toISOString(),
       message: { role: 'user', content: [record.result] },
     })
+    this.preparedPdfs.confirmPersisted(record.result.tool_use_id)
     this.syncAttachmentReferences()
     flushInBackground(this.log, this.opts.id, 'tool result')
   }
@@ -1139,7 +1152,17 @@ export class NativeSession implements ProviderSessionHandle {
         // or raw append leaves `pendingDurableInitial` withdrawable and pauses
         // the FIFO so later input cannot overtake it.
         const timestamp = new Date(this.receivedAt.get(next)!).toISOString()
-        const persisted = nativeUserMessage(next.message)
+        if (!pending.persisted) {
+          const normalized = nativeUserMessage(next.message)
+          const assigned = assignPdfModelForms(
+            normalized.content,
+            this.pdfBudgets,
+            config.nativeAttachmentFidelity && config.nativePdfDocuments,
+          )
+          pending.persisted = { ...normalized, content: assigned.content }
+          pending.pdfReservations = assigned.reservations
+        }
+        const persisted = pending.persisted
         if (this._closed) throw new Error('session destroyed before persistence')
         if (this.pendingDurableInitial !== pending) {
           throw new Error('initial message was withdrawn before persistence')
@@ -1162,6 +1185,8 @@ export class NativeSession implements ProviderSessionHandle {
           timestamp,
           message: persisted,
         })
+        for (const reservation of pending.pdfReservations ?? []) this.pdfBudgets.confirm(reservation)
+        pending.pdfReservations = []
         rawAppended = true
         this.syncAttachmentReferences()
         this.opts.onUserMessagePersistence?.(next, 'appended')
@@ -1220,7 +1245,11 @@ export class NativeSession implements ProviderSessionHandle {
               this.output.push(frame)
             },
             persistToolResult: (result) => this.persistToolResult(result, null),
-            attachmentProjection: { uploadStore: this.opts.uploadStore, stateDir: this.opts.stateDir },
+            attachmentProjection: {
+              uploadStore: this.opts.uploadStore,
+              stateDir: this.opts.stateDir,
+              preparedPdfs: this.preparedPdfs,
+            },
             system: turnSystem,
             fastModeState: () => (this.fastMode ? 'on' : 'off'),
             drainSupplement: () => this.injectSupplements(),
@@ -1275,6 +1304,7 @@ export class NativeSession implements ProviderSessionHandle {
         }))
         endReason = interrupted ? 'interrupted' : 'error'
       } finally {
+        this.preparedPdfs.clearHistory('main')
         this.turnAbort = null
       }
       // Exactly one turn/end per turn, OUTSIDE the turn try/catch: a flush
@@ -1381,6 +1411,7 @@ export class NativeSession implements ProviderSessionHandle {
       timestamp: opts.timestamp,
     })
     await this.log.flush()
+    this.pdfBudgets.rebuildFromEvents(this.log.events)
     // History is a readonly array mutated in place; splice keeps every holder
     // of the reference (the pump loop) looking at the compacted conversation.
     this.history.splice(
@@ -1398,6 +1429,7 @@ export class NativeSession implements ProviderSessionHandle {
 
   drainQueuedInput(): AgentUserMessage[] {
     const pending = this.pendingDurableInitial
+    for (const reservation of pending?.pdfReservations ?? []) this.pdfBudgets.release(reservation)
     this.pendingDurableInitial = null
     return [...(pending ? [pending.message] : []), ...this.input.splice(0)]
   }

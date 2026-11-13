@@ -9,6 +9,7 @@ import type { ToolDef } from './tools/types.js'
 import { createAttachmentReadTool } from './tools/attachment-read.js'
 import { NativeAttachmentReferenceIndex } from '../../attachment-reference-index.js'
 import { UploadStore } from '../../upload-store.js'
+import { PdfBudgetLedger, PreparedPdfStore } from './pdf-documents.js'
 
 function tool(name: string, readOnlyHint?: unknown): ToolDef {
   return {
@@ -42,11 +43,15 @@ describe('Explore agent role', () => {
 
   it('keeps AttachmentRead in the read-only role without changing other tool metadata', () => {
     const stateDir = process.cwd()
+    const pdfBudgets = new PdfBudgetLedger()
     const attachmentRead = createAttachmentReadTool({
       uploadStore: new UploadStore({ stateDir }),
       stateDir,
       referenceIndex: new NativeAttachmentReferenceIndex({ stateDir }),
       sessionId: 'explore-session',
+      pdfBudgets,
+      preparedPdfs: new PreparedPdfStore(pdfBudgets),
+      pdfDocumentsEnabled: () => true,
     })
     const read = tool('Read', true)
     const write = tool('Write', false)

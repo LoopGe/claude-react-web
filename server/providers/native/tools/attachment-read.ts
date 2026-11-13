@@ -9,6 +9,16 @@ import { HttpError } from '../../../errors.js'
 import { createLogger } from '../../../log.js'
 import type { NativeAttachmentReferenceIndex } from '../../../attachment-reference-index.js'
 import type { UploadStore } from '../../../upload-store.js'
+import {
+  PDF_MAX_BASE64_CHARS,
+  PDF_MAX_BYTES,
+  PdfReadError,
+  readAuthorizedPdfDocument,
+  safePdfReadReason,
+  type PdfBudgetLedger,
+  type PreparedPdfStore,
+} from '../pdf-documents.js'
+import type { NativeFileAttachment } from '../session-log/format.js'
 import type { ToolDef, ToolOutcome } from './types.js'
 
 const MAX_LINES = 2000
@@ -20,12 +30,20 @@ const log = createLogger('attachment-read')
 export const ATTACHMENT_READ_GUIDANCE =
   'Use AttachmentRead with an upload id from an attachment handle to read its text; never substitute a registry path or a digest reference.'
 
-export interface AttachmentReadDeps {
+interface AttachmentReadBaseDeps {
   uploadStore: UploadStore
   stateDir: string
   referenceIndex: NativeAttachmentReferenceIndex
   sessionId: string
 }
+
+interface PdfReadDeps {
+  pdfBudgets: PdfBudgetLedger
+  preparedPdfs: PreparedPdfStore
+  pdfDocumentsEnabled: () => boolean
+}
+
+export interface AttachmentReadDeps extends AttachmentReadBaseDeps, PdfReadDeps {}
 
 interface ReadTextInput extends Record<string, unknown> {
   id: string
@@ -34,6 +52,7 @@ interface ReadTextInput extends Record<string, unknown> {
 }
 
 class InvalidUtf8Error extends Error {}
+class PdfBudgetError extends Error {}
 
 function utf8Prefix(value: string, maxBytes: number): { text: string; complete: boolean } {
   let bytes = 0
@@ -56,6 +75,8 @@ function errorOutcome(id: string, name: string | undefined, reason: string): Too
 
 function safeReason(err: unknown): string {
   if (err instanceof InvalidUtf8Error) return 'attachment is not valid UTF-8 text'
+  if (err instanceof PdfBudgetError) return err.message
+  if (err instanceof PdfReadError) return safePdfReadReason(err)
   if (err instanceof AttachmentStoreError) {
     if (err.code === 'corrupt') return 'attachment failed integrity verification'
     if (err.code === 'missing') return 'uploaded file is missing'
@@ -192,6 +213,47 @@ async function readText(
   return window.render(resolved.name)
 }
 
+async function readPdf(
+  deps: AttachmentReadDeps,
+  resolved: NativeFileAttachment,
+  historyKey: string,
+  toolUseId: string | undefined,
+  signal: AbortSignal,
+): Promise<ToolOutcome> {
+  // Both holds are synchronous and adjacent: after authorization, no byte-read
+  // await can let another reader claim either the partition or session capacity.
+  const attempt = deps.pdfBudgets.reservePdfBudget(historyKey, resolved.size, resolved.digest)
+  if (!attempt.ok) {
+    const reason = attempt.reason === 'duplicate'
+      ? 'a PDF document with this digest already exists in this history partition'
+      : `the history PDF budget of ${PDF_MAX_BASE64_CHARS.toLocaleString('en-US')} base64 characters is exhausted`
+    throw new PdfBudgetError(reason)
+  }
+  let prepared: ReturnType<PreparedPdfStore['reserve']>
+  try {
+    prepared = deps.preparedPdfs.reserve(toolUseId ?? '', resolved, attempt.reservation)
+  } catch (err) {
+    deps.pdfBudgets.release(attempt.reservation)
+    throw new PdfBudgetError(err instanceof Error ? err.message : String(err))
+  }
+  try {
+    const document = await readAuthorizedPdfDocument(resolved, deps.stateDir, signal)
+    deps.preparedPdfs.complete(prepared, document)
+    const attachment: NativeFileAttachment = { ...resolved, modelForm: 'pdf-document' }
+    const text = `Read PDF ${resolved.name}`
+    return {
+      text,
+      content: [
+        { type: 'text', text },
+        { type: 'file', attachment },
+      ],
+    }
+  } catch (err) {
+    deps.preparedPdfs.release(toolUseId ?? '')
+    throw err
+  }
+}
+
 export function createAttachmentReadTool(deps: AttachmentReadDeps): ToolDef<ReadTextInput> {
   return {
     name: 'AttachmentRead',
@@ -220,10 +282,23 @@ export function createAttachmentReadTool(deps: AttachmentReadDeps): ToolDef<Read
           return errorOutcome(input.id, undefined, 'upload is not referenced by this session\'s native log')
         }
         if (occurrence.mediaType === 'application/pdf') {
+          // Authorization precedes every PDF-specific result, including input
+          // rejection. Pagination still rejects before opening file bytes.
+          const authorized = await resolveAuthorizedAttachment(occurrence, {
+            uploadStore: deps.uploadStore,
+            stateDir: deps.stateDir,
+          })
+          const resolved: NativeFileAttachment = { ...authorized, modelForm: occurrence.modelForm }
           if (input.offset !== undefined || input.limit !== undefined) {
             return errorOutcome(input.id, occurrence.name, 'PDF attachments do not accept offset or limit pagination')
           }
-          return errorOutcome(input.id, occurrence.name, 'PDF document reading is not available for this attachment')
+          if (!deps.pdfDocumentsEnabled()) {
+            return errorOutcome(input.id, occurrence.name, 'PDF document reading is disabled for new occurrences')
+          }
+          if (resolved.size > PDF_MAX_BYTES) {
+            return errorOutcome(input.id, occurrence.name, 'PDF exceeds the 20 MiB document limit')
+          }
+          return await readPdf(deps, resolved, ctx.historyKey ?? 'main', ctx.toolUseId, ctx.signal)
         }
         const offset = Math.max(1, Math.floor(input.offset ?? 1))
         const limit = Math.min(MAX_LINES, Math.max(1, Math.floor(input.limit ?? MAX_LINES)))

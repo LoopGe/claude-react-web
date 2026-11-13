@@ -32,6 +32,7 @@ describe('config', () => {
     expect(config.commitMessageModel).toBe('')
     expect(config.autoClassifierModel).toBe('')
     expect(config.nativeAttachmentFidelity).toBe(false)
+    expect(config.nativePdfDocuments).toBe(true)
   })
 
   it('loads an explicit nativeAttachmentFidelity opt-in without changing the default', async () => {
@@ -41,6 +42,16 @@ describe('config', () => {
     writeFileSync(join(dir, 'config.json'), '{}')
     await loadConfig(dir)
     expect(config.nativeAttachmentFidelity).toBe(false)
+  })
+
+  it('loads nativePdfDocuments=false and restores its default independently of the fidelity gate', async () => {
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ nativePdfDocuments: false }))
+    await loadConfig(dir)
+    expect(config.nativePdfDocuments).toBe(false)
+    expect(config.nativeAttachmentFidelity).toBe(false)
+    writeFileSync(join(dir, 'config.json'), '{}')
+    await loadConfig(dir)
+    expect(config.nativePdfDocuments).toBe(true)
   })
 
   it('config object is frozen', () => {

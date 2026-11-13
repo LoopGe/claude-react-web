@@ -1,7 +1,25 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { nativeFileHandleText, projectNativeMessages, publicNativeHistoryLine } from './attachment-projection.js'
 import type { NativeFileAttachment } from './session-log/format.js'
 import type { RawLine } from '../../history-reader.js'
+import { aliasPathOf, attachmentRoot } from '../../attachment-paths.js'
+import { UploadStore } from '../../upload-store.js'
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return { ...actual, createReadStream: vi.fn(actual.createReadStream) }
+})
+
+const dirs: string[] = []
+afterEach(async () => {
+  vi.mocked(createReadStream).mockRestore()
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+})
 
 const attachment: NativeFileAttachment = {
   id: 'upload-1', name: 'notes.txt', size: 123, digest: 'abcdef0123456789'.repeat(4),
@@ -66,5 +84,59 @@ describe('native attachment projection', () => {
       { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'read notes.txt' }] },
     ])
     expect(((line.message as { content: Array<{ attachment: unknown }> }).content[0]).attachment).toBe(attachment)
+  })
+
+  it('projects verified PDF document blocks on every round and rejects a modified alias', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'pdf-projection-state-'))
+    const cwd = await mkdtemp(join(tmpdir(), 'pdf-projection-cwd-'))
+    dirs.push(stateDir, cwd)
+    const bytes = Buffer.from('%PDF-1.4\nverified body')
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const path = aliasPathOf(attachmentRoot(stateDir), digest, 'document.pdf')
+    await mkdir(join(path, '..'), { recursive: true })
+    await writeFile(path, bytes)
+    const uploadStore = new UploadStore({ stateDir })
+    uploadStore.record([{
+      id: 'pdf-1', path, cwd, name: 'document.pdf', size: bytes.length, digest,
+      uploadedAt: 1, sessionTitle: '', sessionId: 'session-1',
+    }])
+    const pdfAttachment: NativeFileAttachment = {
+      id: 'pdf-1', name: 'document.pdf', size: bytes.length, digest, path,
+      mediaType: 'application/pdf', modelForm: 'pdf-document',
+    }
+    const history = [{
+      role: 'user',
+      content: [
+        { type: 'file', attachment: pdfAttachment },
+        { type: 'tool_result', tool_use_id: 'read-1', content: [{ type: 'file', attachment: pdfAttachment }] },
+      ],
+    }]
+    const before = structuredClone(history)
+    const opts = { stateDir, uploadStore }
+
+    const first = await projectNativeMessages(history, opts, new AbortController().signal) as Array<{
+      content: Array<{ type: string; source?: { data: string }; title?: string; context?: string; content?: Array<{ type: string }> }>
+    }>
+    expect(first[0].content[0]).toMatchObject({
+      type: 'document',
+      source: { type: 'base64', media_type: 'application/pdf', data: bytes.toString('base64') },
+      title: 'document.pdf',
+      context: 'Upload id: pdf-1',
+    })
+    expect(first[0].content[0].source?.data).not.toContain('\n')
+    expect(first[0].content[1].content?.[0].type).toBe('document')
+    expect(history).toEqual(before)
+    expect(JSON.stringify(history)).not.toContain(bytes.toString('base64'))
+
+    await projectNativeMessages(history, opts, new AbortController().signal)
+    // Two direct + two tool-result projections each perform a fresh verified read.
+    expect(vi.mocked(createReadStream).mock.calls).toHaveLength(4)
+
+    await writeFile(path, '%PDF-1.4\ntampered body')
+    const failure = await projectNativeMessages(history, opts, new AbortController().signal).catch((err: unknown) => err)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toMatch(/integrity|read/i)
+    expect((failure as Error).message).not.toContain(path)
+    expect(history).toEqual(before)
   })
 })

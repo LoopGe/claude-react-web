@@ -14,7 +14,7 @@ import { NativeSessionLog, loadNativeSessionLogSync } from './session-log/log.js
 import { nativeSessionLogPath } from './session-log/paths.js'
 import { historyFromEvents } from './session-log/replay.js'
 import { readNativeHistoryEntries } from './session-log/reader.js'
-import type { NativeEventInput, NativeLogEvent } from './session-log/format.js'
+import type { NativeEventInput, NativeFileAttachment, NativeLogEvent } from './session-log/format.js'
 import { formatSupplementInstruction } from '../steering-format.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { NativeSkillCatalog } from './skills.js'
@@ -309,6 +309,44 @@ function structuredUserMsg(uuid: string, text = '/demo do this') {
       ],
     },
   }
+}
+
+async function pdfUpload(stateDir: string, id = 'pdf-1', bytes = Buffer.from('%PDF-1.4\nstable body')) {
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  const name = `${id}.pdf`
+  const path = aliasPathOf(attachmentRoot(stateDir), digest, name)
+  await mkdir(join(path, '..'), { recursive: true })
+  await writeFile(path, bytes)
+  const store = new UploadStore({ stateDir })
+  store.record([{
+    id, path, cwd: stateDir, name, size: bytes.length, digest,
+    uploadedAt: 1, sessionTitle: '', sessionId: 'pdf-stable',
+  }])
+  const attachment: Omit<NativeFileAttachment, 'modelForm'> = {
+    id, name, size: bytes.length, digest, path, mediaType: 'application/pdf',
+  }
+  return { store, attachment, bytes }
+}
+
+function pdfUserMsg(uuid: string, attachment: Omit<NativeFileAttachment, 'modelForm'>) {
+  return {
+    ...userMsg('inspect the PDF'),
+    uuid,
+    message: {
+      role: 'user' as const,
+      content: [{ type: 'file', attachment }, { type: 'text', text: 'inspect the PDF' }],
+    },
+  }
+}
+
+function attachmentReadTurn(toolUseId: string, uploadId: string): CanonicalEvent[] {
+  return [
+    { kind: 'message_start', usage: { input_tokens: 10, output_tokens: 1 } },
+    { kind: 'block_start', index: 0, block: { type: 'tool_use', id: toolUseId, name: 'AttachmentRead' } },
+    { kind: 'block_delta', index: 0, delta: { type: 'tool_input', json: JSON.stringify({ id: uploadId }) } },
+    { kind: 'block_end', index: 0 },
+    { kind: 'message_end', stopReason: 'tool_use', usage: { output_tokens: 5 } },
+  ]
 }
 
 function agentDefinition(overrides: Partial<StoredAgentDefinition> = {}): StoredAgentDefinition {
@@ -3978,6 +4016,125 @@ describe('NativeSession', () => {
       expect(history.filter((message) => JSON.stringify(message).includes('old-upload'))).toHaveLength(1)
       expect(history.filter((message) => JSON.stringify(message).includes('new prompt'))).toHaveLength(1)
       expect(logOf(session).events.filter((event) => event.type === 'user')).toHaveLength(2)
+    } finally {
+      await session.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('keeps PDF document history byte-for-byte stable across tool rounds, resume, and fork', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true, nativePdfDocuments: true })
+    const dir = await tempDir('native-pdf-stable-')
+    const { store, attachment, bytes } = await pdfUpload(dir)
+    let active: ReturnType<NativeProvider['createSession']> | undefined
+    try {
+      const provider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+      ;(provider as unknown as { _testStream: unknown })._testStream =
+        capturingStreamer([toolTurn('read-package'), textTurn('done')], requests)
+      const session = provider.createSession({
+        id: 'pdf-stable', cwd: dir,
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: { file_path: 'package.json' } }),
+      })
+      active = session
+      const frames: Frame[] = []
+      void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+      session.enqueueUserMessage(pdfUserMsg('pdf-initial', attachment) as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'done')).toBe(true))
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[0].messages)).toContain('"type":"document"')
+      expect(JSON.stringify(requests[0].messages)).toContain(bytes.toString('base64'))
+      expect(requests[1].messages.slice(0, requests[0].messages.length)).toEqual(requests[0].messages)
+      expect(JSON.stringify(logOf(session).events)).not.toContain('"type":"document"')
+      expect(JSON.stringify(logOf(session).events)).not.toContain(bytes.toString('base64'))
+      await session.destroy()
+      active = undefined
+
+      // The new-occurrence switch is not a migration: old documents still project.
+      __setConfigForTest({ nativeAttachmentFidelity: true, nativePdfDocuments: false })
+      const resumedProvider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const resumedRequests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+      ;(resumedProvider as unknown as { _testStream: unknown })._testStream =
+        capturingStreamer([textTurn('resumed done')], resumedRequests)
+      const resumed = resumedProvider.createSession({ id: 'pdf-stable', cwd: dir, resume: 'pdf-stable' })
+      active = resumed
+      const resumedFrames: Frame[] = []
+      void (async () => { for await (const frame of resumed.messages) resumedFrames.push(frame as Frame) })()
+      resumed.enqueueUserMessage({ ...userMsg('after resume'), uuid: 'after-resume' } as never)
+      await vi.waitFor(() => expect(resumedFrames.some((frame) => frame.type === 'result' && frame.result === 'resumed done')).toBe(true))
+      expect(resumedRequests[0].messages.slice(0, requests[1].messages.length)).toEqual(requests[1].messages)
+      await resumed.destroy()
+      active = undefined
+
+      const forkProvider = new NativeProvider({ stateDir: dir, uploadStore: store })
+      const forkRequests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+      ;(forkProvider as unknown as { _testStream: unknown })._testStream =
+        capturingStreamer([textTurn('fork done')], forkRequests)
+      const fork = forkProvider.createSession({
+        id: 'pdf-fork', cwd: dir, resume: 'pdf-stable', forkSession: true,
+      })
+      active = fork
+      const forkFrames: Frame[] = []
+      void (async () => { for await (const frame of fork.messages) forkFrames.push(frame as Frame) })()
+      fork.enqueueUserMessage({ ...userMsg('after fork'), uuid: 'after-fork' } as never)
+      await vi.waitFor(() => expect(forkFrames.some((frame) => frame.type === 'result' && frame.result === 'fork done')).toBe(true))
+      expect(forkRequests[0].messages.slice(0, requests[1].messages.length)).toEqual(requests[1].messages)
+      expect(JSON.stringify(forkRequests[0].messages)).toContain('"type":"document"')
+    } finally {
+      await active?.destroy()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('persists AttachmentRead PDF results as structured files and projects documents only on the wire', async () => {
+    const previous = { ...config }
+    __setConfigForTest({ nativeAttachmentFidelity: true, nativePdfDocuments: true })
+    const dir = await tempDir('native-pdf-read-result-')
+    const { store, attachment, bytes } = await pdfUpload(dir)
+    const seeded = NativeSessionLog.open({ stateDir: dir, id: 'pdf-read', cwd: dir, resume: false })
+    await seeded.migrateToV2()
+    seeded.append({
+      type: 'user', uuid: 'pdf-handle', session_id: 'pdf-read', parent_tool_use_id: null,
+      timestamp: '2026-11-13T00:00:00.000Z',
+      message: { role: 'user', content: [{ type: 'file', attachment: { ...attachment, modelForm: 'handle' } }] },
+    })
+    await seeded.flush()
+    await seeded.close()
+
+    const provider = new NativeProvider({ stateDir: dir, uploadStore: store })
+    const requests: Array<{ messages: unknown[] } & Record<string, unknown>> = []
+    ;(provider as unknown as { _testStream: unknown })._testStream =
+      capturingStreamer([attachmentReadTurn('read-pdf', attachment.id), textTurn('done')], requests)
+    const session = provider.createSession({
+      id: 'pdf-read', cwd: dir, resume: 'pdf-read',
+      canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage({ ...userMsg('read it'), uuid: 'read-it' } as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result' && frame.result === 'done')).toBe(true))
+      expect(requests).toHaveLength(2)
+      expect(JSON.stringify(requests[0].messages)).toContain('Upload id: pdf-1')
+      expect(JSON.stringify(requests[0].messages)).not.toContain('"type":"document"')
+      const secondRound = JSON.stringify(requests[1].messages)
+      expect(secondRound).toContain('"type":"document"')
+      expect(secondRound).toContain(bytes.toString('base64'))
+      expect(secondRound).toContain('Read PDF pdf-1.pdf')
+
+      const resultEvent = logOf(session).events.find((event) => JSON.stringify(event).includes('read-pdf')
+        && JSON.stringify(event).includes('pdf-document'))
+      expect(resultEvent).toBeDefined()
+      expect(JSON.stringify(resultEvent)).toContain('"type":"file"')
+      expect(JSON.stringify(resultEvent)).not.toContain('"type":"document"')
+      expect(JSON.stringify(resultEvent)).not.toContain(bytes.toString('base64'))
+      const uiResult = frames.find((frame) => frame.type === 'user'
+        && JSON.stringify(frame).includes('read-pdf')
+        && JSON.stringify(frame).includes('Read PDF pdf-1.pdf'))
+      expect(uiResult).toBeDefined()
+      expect(JSON.stringify(uiResult)).not.toContain('pdf-document')
+      expect(JSON.stringify(uiResult)).not.toContain(bytes.toString('base64'))
     } finally {
       await session.destroy()
       __setConfigForTest(previous)

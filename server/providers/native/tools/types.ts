@@ -13,6 +13,9 @@ export function statError(err: unknown, missingMessage: string): ToolInputError 
 export interface ToolContext {
   cwd: string
   signal: AbortSignal
+  /** Actual model-history partition: `main` or the spawning Agent tool-use id.
+   * Used by tools whose allocations must not cross sidechain boundaries. */
+  historyKey?: string
   /** The `tool_use` id of the call being executed. Lets a tool anchor nested
    *  (sidechain) frames to itself. */
   toolUseId?: string

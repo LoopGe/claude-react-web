@@ -1,13 +1,23 @@
 import type { RawLine } from '../../history-reader.js'
 import type { UploadStore } from '../../upload-store.js'
-import { resolveAuthorizedAttachment } from '../../attachment-access.js'
+import { createLogger } from '../../log.js'
 import type { NativeFileAttachment } from './session-log/format.js'
+import {
+  loadPdfDocument,
+  safePdfReadReason,
+  type PreparedPdfStore,
+} from './pdf-documents.js'
+
+const log = createLogger('attachment-projection')
 
 export interface NativeProjectionOptions {
   /** Required only by byte-bearing projections. Plain handles never read the
    * registry or attachment bytes. */
   uploadStore?: UploadStore
   stateDir: string
+  /** One verified AttachmentRead result may be consumed by the immediately
+   * following projection. Later rounds always re-read and re-verify. */
+  preparedPdfs?: PreparedPdfStore
 }
 
 /** The native handle is deliberately fixed text: changing the active tool
@@ -40,7 +50,12 @@ function isNativeFileBlock(block: unknown): block is ContentBlockLike & { type: 
     && (block as ContentBlockLike).attachment !== null
 }
 
-async function modelBlock(block: unknown, opts: NativeProjectionOptions, signal: AbortSignal): Promise<unknown> {
+async function modelBlock(
+  block: unknown,
+  opts: NativeProjectionOptions,
+  signal: AbortSignal,
+  toolUseId?: string,
+): Promise<unknown> {
   if (!isNativeFileBlock(block)) return block
   const attachment = block.attachment
   if (attachment.modelForm === 'handle') {
@@ -48,16 +63,25 @@ async function modelBlock(block: unknown, opts: NativeProjectionOptions, signal:
   }
   if (attachment.modelForm === 'pdf-document') {
     if (signal.aborted) throw signal.reason
+    if (toolUseId && opts.preparedPdfs) {
+      const prepared = opts.preparedPdfs.consume(toolUseId, attachment)
+      if (prepared) return prepared
+    }
     if (!opts.uploadStore) {
       throw new Error(`upload registry is unavailable for attachment: ${attachment.id}`)
     }
-    // Task 5 replaces this authorization-only boundary with the one-stream
-    // verified document projection. Never send the canonical file block raw.
-    await resolveAuthorizedAttachment(attachment, {
-      uploadStore: opts.uploadStore,
-      stateDir: opts.stateDir,
-    })
-    throw new Error(`PDF document projection is not available for attachment: ${attachment.id}`)
+    try {
+      return await loadPdfDocument(attachment, {
+        uploadStore: opts.uploadStore,
+        stateDir: opts.stateDir,
+      }, signal)
+    } catch (err) {
+      if (signal.aborted) throw signal.reason
+      log.warn(`PDF projection failed for upload ${attachment.id}: ${err instanceof Error ? err.message : String(err)}`)
+      throw new Error(
+        `PDF document projection failed for upload ${attachment.id} (${attachment.name}): ${safePdfReadReason(err)}`,
+      )
+    }
   }
   throw new Error(`unsupported native attachment model form: ${String(attachment.modelForm)}`)
 }
@@ -79,7 +103,12 @@ export async function projectNativeMessages(
       if (block?.type !== 'tool_result' || !Array.isArray(block.content)) continue
       const inner = block.content as unknown[]
       for (let innerIndex = 0; innerIndex < inner.length; innerIndex++) {
-        inner[innerIndex] = await modelBlock(inner[innerIndex], opts, signal)
+        inner[innerIndex] = await modelBlock(
+          inner[innerIndex],
+          opts,
+          signal,
+          typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined,
+        )
       }
     }
   }

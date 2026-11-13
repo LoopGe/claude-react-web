@@ -227,7 +227,12 @@ export async function runTurn(
       let runFailed = false
       try {
         const execute = (taskSignal: AbortSignal) =>
-          tool.run(decision.input as never, { cwd: deps.cwd, signal: taskSignal, toolUseId: call.id })
+          tool.run(decision.input as never, {
+            cwd: deps.cwd,
+            signal: taskSignal,
+            toolUseId: call.id,
+            historyKey: ctx.parentToolUseId ?? 'main',
+          })
         const backgroundable = tool.backgroundable
         const outcome = backgroundable
           ? await deps.tasks.runForeground({

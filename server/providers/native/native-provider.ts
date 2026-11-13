@@ -38,6 +38,7 @@ import type { ToolDef } from './tools/types.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
 import type { UploadStore } from '../../upload-store.js'
 import { NativeAttachmentReferenceIndex } from '../../attachment-reference-index.js'
+import { PdfBudgetLedger, PreparedPdfStore } from './pdf-documents.js'
 import { createAttachmentReadTool } from './tools/index.js'
 import { copyConsumedAt, projectFileBlocksForProvider, type AgentUserMessage } from '../../agent-message.js'
 import { extractToolProfile } from '../../../shared/tool-profile.js'
@@ -183,12 +184,17 @@ export class NativeProvider implements AgentProvider {
     // prompt advertises Agent; the subagent prompt does not — nested tools drop
     // Agent, and guidance for a tool the model cannot call is misleading.
     const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
+    const pdfBudgets = new PdfBudgetLedger()
+    const preparedPdfs = new PreparedPdfStore(pdfBudgets)
     const tools = config.nativeAttachmentFidelity && this.uploadStore
       ? [...TOOLS, createAttachmentReadTool({
           uploadStore: this.uploadStore,
           stateDir: this.stateDir,
           referenceIndex: this.attachmentReferences,
           sessionId: opts.id,
+          pdfBudgets,
+          preparedPdfs,
+          pdfDocumentsEnabled: () => config.nativePdfDocuments,
         })]
       : TOOLS
     const system = renderSystem({ withAgentSection: true, systemPromptAppend }, tools)
@@ -216,6 +222,8 @@ export class NativeProvider implements AgentProvider {
         stateDir: this.stateDir,
         uploadStore: this.uploadStore,
         attachmentReferences: this.attachmentReferences,
+        pdfBudgets,
+        preparedPdfs,
         resume: opts.resume,
         forkSession: opts.forkSession,
         resumeSessionAt: opts.resumeSessionAt,

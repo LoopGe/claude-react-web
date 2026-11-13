@@ -107,6 +107,10 @@ interface ConfigFile {
   /** Preserve resolved file blocks for the native attachment-fidelity pipeline.
    *  Default false until the full native live/replay/compact path is enabled. */
   nativeAttachmentFidelity?: boolean
+  /** Inline verified PDFs as native document blocks for NEW native occurrences.
+   * Effective only inside nativeAttachmentFidelity; never rewrites old history.
+   * Default: true. */
+  nativePdfDocuments?: boolean
   /** Fraction of the context window at which the native auto-compact trigger
    *  fires when the session has no explicit `autoCompactWindow`
    *  (`totalTokens >= maxTokens * ratio`). Range (0, 1]. Default: 0.8. */
@@ -259,6 +263,8 @@ export interface ServerConfig {
   readonly nativeAutoCompact: boolean
   /** Native structured-attachment pipeline gate. Default: false. */
   readonly nativeAttachmentFidelity: boolean
+  /** Native document projection for new PDF occurrences. Default: true. */
+  readonly nativePdfDocuments: boolean
   /** Native auto-compact threshold ratio — see
    *  ConfigFile.nativeAutoCompactRatio. Range (0, 1]. Default: 0.8. */
   readonly nativeAutoCompactRatio: number
@@ -375,6 +381,7 @@ const DEFAULTS: ServerConfig = Object.freeze<ServerConfig>({
   forwardSubagentText: true,
   nativeAutoCompact: true,
   nativeAttachmentFidelity: false,
+  nativePdfDocuments: true,
   nativeAutoCompactRatio: 0.8,
   workingStuckMs: 60 * 60 * 1000,
   maxGroupPanels: 3,
@@ -649,6 +656,11 @@ function applyParsedConfig(file_: ConfigFile, stateDir: string, _file: string): 
   if (typeof file_.nativeAttachmentFidelity === 'boolean') {
     ;(merged as { nativeAttachmentFidelity: boolean }).nativeAttachmentFidelity = file_.nativeAttachmentFidelity
     log.info(`nativeAttachmentFidelity: ${merged.nativeAttachmentFidelity}`)
+  }
+
+  if (typeof file_.nativePdfDocuments === 'boolean') {
+    ;(merged as { nativePdfDocuments: boolean }).nativePdfDocuments = file_.nativePdfDocuments
+    log.info(`nativePdfDocuments: ${merged.nativePdfDocuments}`)
   }
 
   // Ratio is a fraction of the context window; values above 1 are clamped to

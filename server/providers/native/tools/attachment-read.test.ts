@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { createAttachmentReadTool } from './attachment-read.js'
+import { projectNativeMessages } from '../attachment-projection.js'
+import { PDF_MAX_BYTES, PdfBudgetLedger, PreparedPdfStore } from '../pdf-documents.js'
 import { NativeAttachmentReferenceIndex } from '../../../attachment-reference-index.js'
 import { aliasPathOf, attachmentRoot } from '../../../attachment-paths.js'
 import { UploadStore } from '../../../upload-store.js'
@@ -33,30 +35,38 @@ interface Fixture {
   index: NativeAttachmentReferenceIndex
   occurrence: NativeFileAttachment
   tool: ReturnType<typeof createAttachmentReadTool>
+  pdfBudgets: PdfBudgetLedger
+  preparedPdfs: PreparedPdfStore
 }
 
 async function fixture(options: {
+  id?: string
   bytes?: Buffer
   name?: string
   mediaType?: string
   references?: boolean
+  reportedSize?: number
+  pdfDocumentsEnabled?: boolean
+  shared?: { pdfBudgets: PdfBudgetLedger; preparedPdfs: PreparedPdfStore }
 } = {}): Promise<Fixture> {
   const stateDir = await mkdtemp(join(tmpdir(), 'attachment-read-state-'))
   const cwd = await mkdtemp(join(tmpdir(), 'attachment-read-cwd-'))
   dirs.push(stateDir, cwd)
   const bytes = options.bytes ?? Buffer.from('one\ntwo\nthree\nfour', 'utf8')
   const name = options.name ?? 'notes.txt'
+  const id = options.id ?? 'upload-1'
   const digest = createHash('sha256').update(bytes).digest('hex')
+  const size = options.reportedSize ?? bytes.length
   const path = aliasPathOf(attachmentRoot(stateDir), digest, name)
   await mkdir(join(path, '..'), { recursive: true })
   await writeFile(path, bytes)
   const store = new UploadStore({ stateDir })
   store.record([{
-    id: 'upload-1', path, cwd, name, size: bytes.length, digest,
+    id, path, cwd, name, size, digest,
     uploadedAt: 1, sessionTitle: '', sessionId: 'session-1',
   }])
   const occurrence: NativeFileAttachment = {
-    id: 'upload-1', name, size: bytes.length, digest, path,
+    id, name, size, digest, path,
     ...(options.mediaType === undefined ? {} : { mediaType: options.mediaType }),
     modelForm: 'handle',
   }
@@ -72,17 +82,31 @@ async function fixture(options: {
       message: { role: 'user', content: [{ type: 'file', attachment: occurrence }] },
     }])
   }
+  const pdfBudgets = options.shared?.pdfBudgets ?? new PdfBudgetLedger()
+  const preparedPdfs = options.shared?.preparedPdfs ?? new PreparedPdfStore(pdfBudgets)
   const tool = createAttachmentReadTool({
     uploadStore: store,
     stateDir,
     referenceIndex: index,
     sessionId: 'session-1',
+    pdfBudgets,
+    preparedPdfs,
+    pdfDocumentsEnabled: () => options.pdfDocumentsEnabled !== false,
   })
-  return { stateDir, cwd, path, store, index, occurrence, tool }
+  return { stateDir, cwd, path, store, index, occurrence, tool, pdfBudgets, preparedPdfs }
 }
 
-function run(fx: Fixture, input: { id: string; offset?: number; limit?: number }) {
-  return fx.tool.run(input, { cwd: fx.cwd, signal: new AbortController().signal })
+function run(
+  fx: Fixture,
+  input: { id: string; offset?: number; limit?: number },
+  context: { toolUseId?: string; historyKey?: string } = {},
+) {
+  return fx.tool.run(input, {
+    cwd: fx.cwd,
+    signal: new AbortController().signal,
+    toolUseId: context.toolUseId ?? 'tool-1',
+    historyKey: context.historyKey ?? 'main',
+  })
 }
 
 describe('AttachmentRead', () => {
@@ -235,4 +259,138 @@ describe('AttachmentRead', () => {
       expect(vi.mocked(createReadStream).mock.calls.length).toBe(calls)
     },
   )
+
+  it('authorizes a PDF before pagination rejection', async () => {
+    const fx = await fixture({
+      bytes: Buffer.from('%PDF-1.4\nbody'),
+      name: 'document.pdf',
+      mediaType: 'application/pdf',
+    })
+    fx.store.record([{ ...fx.store.getById('upload-1')!, path: join(fx.cwd, 'other.pdf') }])
+    const outcome = await run(fx, { id: 'upload-1', offset: 2 })
+    expect(outcome.isError).toBe(true)
+    expect(outcome.text).toContain('registry')
+    expect(outcome.text).not.toMatch(/pagination/i)
+    expect(vi.mocked(createReadStream)).not.toHaveBeenCalled()
+  })
+
+  it('returns structured PDF content and consumes PreparedPdf without a double read', async () => {
+    const bytes = Buffer.from('%PDF-1.4\nprepared body')
+    const fx = await fixture({ bytes, name: 'document.pdf', mediaType: 'application/pdf' })
+    const outcome = await run(fx, { id: 'upload-1' })
+    expect(outcome.isError).not.toBe(true)
+    expect(outcome.text).toBe('Read PDF document.pdf')
+    expect(outcome.content).toHaveLength(2)
+    expect(outcome.content?.[0]).toEqual({ type: 'text', text: 'Read PDF document.pdf' })
+    expect(outcome.content?.[1]).toMatchObject({
+      type: 'file',
+      attachment: { id: 'upload-1', modelForm: 'pdf-document' },
+    })
+    expect(JSON.stringify(outcome)).not.toContain(bytes.toString('base64'))
+    expect(vi.mocked(createReadStream).mock.calls).toHaveLength(1)
+
+    fx.preparedPdfs.confirmPersisted('tool-1')
+    const history = [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: outcome.content }] }]
+    const projected = await projectNativeMessages(history, {
+      stateDir: fx.stateDir,
+      uploadStore: fx.store,
+      preparedPdfs: fx.preparedPdfs,
+    }, new AbortController().signal) as Array<{ content: Array<{ content: Array<{ type: string; source?: { data: string } }> }> }>
+    expect(projected[0].content[0].content[1]).toMatchObject({
+      type: 'document',
+      source: { data: bytes.toString('base64') },
+    })
+    expect(vi.mocked(createReadStream).mock.calls).toHaveLength(1)
+
+    await projectNativeMessages(history, {
+      stateDir: fx.stateDir,
+      uploadStore: fx.store,
+      preparedPdfs: fx.preparedPdfs,
+    }, new AbortController().signal)
+    expect(vi.mocked(createReadStream).mock.calls).toHaveLength(2)
+
+    await writeFile(fx.path, '%PDF-1.4\ntampered body')
+    const failure = await projectNativeMessages(history, {
+      stateDir: fx.stateDir,
+      uploadStore: fx.store,
+      preparedPdfs: fx.preparedPdfs,
+    }, new AbortController().signal).catch((err: unknown) => err)
+    expect((failure as Error).message).toMatch(/integrity/i)
+    expect((failure as Error).message).not.toContain(fx.path)
+  })
+
+  it('allows the same digest in main and agent partitions but dedups within one partition', async () => {
+    const fx = await fixture({
+      bytes: Buffer.from('%PDF-1.4\nshared'),
+      name: 'document.pdf',
+      mediaType: 'application/pdf',
+    })
+    const main = await run(fx, { id: 'upload-1' }, { toolUseId: 'main-read', historyKey: 'main' })
+    const agent = await run(fx, { id: 'upload-1' }, { toolUseId: 'agent-read', historyKey: 'agent-1' })
+    expect(main.isError).not.toBe(true)
+    expect(agent.isError).not.toBe(true)
+    const duplicate = await run(fx, { id: 'upload-1' }, { toolUseId: 'duplicate-read', historyKey: 'main' })
+    expect(duplicate.isError).toBe(true)
+    expect(duplicate.text).toMatch(/budget|already|duplicate/i)
+    expect(vi.mocked(createReadStream).mock.calls).toHaveLength(2)
+  })
+
+  it('rejects disabled, oversized, and non-magic PDFs without returning document content', async () => {
+    const disabled = await fixture({
+      bytes: Buffer.from('%PDF-1.4\nbody'), name: 'document.pdf', mediaType: 'application/pdf', pdfDocumentsEnabled: false,
+    })
+    const disabledOutcome = await run(disabled, { id: 'upload-1' })
+    expect(disabledOutcome.isError).toBe(true)
+    expect(disabledOutcome.text).toMatch(/disabled/i)
+    expect(vi.mocked(createReadStream)).not.toHaveBeenCalled()
+
+    const oversized = await fixture({
+      bytes: Buffer.from('%PDF-1.4\nbody'), name: 'document.pdf', mediaType: 'application/pdf', reportedSize: PDF_MAX_BYTES + 1,
+    })
+    const oversizedOutcome = await run(oversized, { id: 'upload-1' })
+    expect(oversizedOutcome.isError).toBe(true)
+    expect(oversizedOutcome.text).toMatch(/20 MiB/i)
+    expect(vi.mocked(createReadStream).mock.calls).toHaveLength(0)
+
+    const nonMagic = await fixture({ bytes: Buffer.from('plain text'), name: 'document.pdf', mediaType: 'application/pdf' })
+    const nonMagicOutcome = await run(nonMagic, { id: 'upload-1' })
+    expect(nonMagicOutcome.isError).toBe(true)
+    expect(nonMagicOutcome.text).toMatch(/magic|PDF/i)
+    expect(nonMagicOutcome.content).toBeUndefined()
+  })
+
+  it('reserves a second concurrent maximum-size PDF before opening its bytes', async () => {
+    const firstBytes = Buffer.alloc(PDF_MAX_BYTES)
+    firstBytes.write('%PDF-')
+    const secondBytes = Buffer.alloc(PDF_MAX_BYTES)
+    secondBytes.write('%PDF-')
+    secondBytes[secondBytes.length - 1] = 1
+    const pdfBudgets = new PdfBudgetLedger()
+    const shared = { pdfBudgets, preparedPdfs: new PreparedPdfStore(pdfBudgets) }
+    const first = await fixture({ id: 'first', bytes: firstBytes, name: 'first.pdf', mediaType: 'application/pdf', shared })
+    const second = await fixture({ id: 'second', bytes: secondBytes, name: 'second.pdf', mediaType: 'application/pdf', shared })
+
+    let notifyStarted!: () => void
+    let release!: () => void
+    const started = new Promise<void>((resolve) => { notifyStarted = resolve })
+    vi.mocked(createReadStream).mockImplementationOnce(() => Readable.from((async function* () {
+      yield firstBytes
+      notifyStarted()
+      await new Promise<void>((resolve) => { release = resolve })
+    })()) as ReturnType<typeof createReadStream>)
+    const pending = run(first, { id: 'first' }, { toolUseId: 'first-read' })
+    let completed: Awaited<typeof pending>
+    try {
+      await started
+      const calls = vi.mocked(createReadStream).mock.calls.length
+      const rejected = await run(second, { id: 'second' }, { toolUseId: 'second-read' })
+      expect(rejected.isError).toBe(true)
+      expect(rejected.text).toMatch(/budget|20 MiB|28,000,000/i)
+      expect(vi.mocked(createReadStream).mock.calls.length).toBe(calls)
+    } finally {
+      release()
+      completed = await pending
+    }
+    expect(completed.isError).not.toBe(true)
+  })
 })
