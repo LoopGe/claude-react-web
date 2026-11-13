@@ -21,7 +21,8 @@ import type { Context } from 'hono'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { access, constants, stat } from 'node:fs/promises'
-import { isAbsolute, join } from 'node:path'
+import { isAbsolute } from 'node:path'
+import { joinForPlatform } from '../platform-path.js'
 import { pathToFileURL } from 'node:url'
 import { homedir, platform } from 'node:os'
 import { createLogger } from '../log.js'
@@ -249,8 +250,8 @@ async function probeCandidate(
 ): Promise<boolean> {
   switch (candidate.probe.kind) {
     case 'mac-app':
-      for (const root of ['/Applications', join(home, 'Applications')]) {
-        if (await deps.dirExists(join(root, `${candidate.probe.name}.app`))) return true
+      for (const root of ['/Applications', joinForPlatform('darwin', home, 'Applications')]) {
+        if (await deps.dirExists(joinForPlatform('darwin', root, `${candidate.probe.name}.app`))) return true
       }
       return false
     case 'file': {
@@ -261,7 +262,7 @@ async function probeCandidate(
       const paths = (env.PATH ?? '').split(pathDelimiter(platformName)).filter((p) => p !== '')
       for (const dir of paths) {
         const exeName = platformName === 'win32' ? `${candidate.probe.name}.exe` : candidate.probe.name
-        if (await deps.executableExists(join(dir, exeName))) return true
+        if (await deps.executableExists(joinForPlatform(platformName, dir, exeName))) return true
       }
       return false
     }

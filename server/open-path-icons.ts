@@ -16,6 +16,7 @@
 // (never a shell), per-command timeouts, temp files cleaned up in finally.
 
 import { join } from 'node:path'
+import { joinForPlatform } from './platform-path.js'
 import { mkdtemp, readdir, readFile, rm, writeFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -87,9 +88,9 @@ const DARWIN_BUNDLES: Record<OpenPathGlyphTarget, string> = {
 /** First `.icns` in the bundle Resources — the fallback when Info.plist
  *  declares no `CFBundleIconFile` (or one that is not on disk). */
 async function darwinIcnsName(bundle: string, deps: IconDeps): Promise<string | null> {
-  const resources = join(bundle, 'Contents', 'Resources')
+  const resources = joinForPlatform('darwin', bundle, 'Contents', 'Resources')
   const declared = await deps
-    .run('plutil', ['-convert', 'json', '-o', '-', join(bundle, 'Contents', 'Info.plist')], RUN_TIMEOUT_MS)
+    .run('plutil', ['-convert', 'json', '-o', '-', joinForPlatform('darwin', bundle, 'Contents', 'Info.plist')], RUN_TIMEOUT_MS)
     .then((r) => {
       try {
         const value = (JSON.parse(r.stdout) as { CFBundleIconFile?: unknown }).CFBundleIconFile
@@ -99,7 +100,7 @@ async function darwinIcnsName(bundle: string, deps: IconDeps): Promise<string | 
       }
     })
     .catch(() => null)
-  if (declared !== null && (await deps.fileExists(join(resources, declared)))) return declared
+  if (declared !== null && (await deps.fileExists(joinForPlatform('darwin', resources, declared)))) return declared
   try {
     return (await deps.listDir(resources)).find((entry) => entry.endsWith('.icns')) ?? null
   } catch {
@@ -109,13 +110,13 @@ async function darwinIcnsName(bundle: string, deps: IconDeps): Promise<string | 
 
 async function extractDarwin(target: OpenPathGlyphTarget, deps: IconDeps): Promise<ExtractedIcon | null> {
   const bundle = DARWIN_BUNDLES[target]
-  if (!(await deps.fileExists(join(bundle, 'Contents', 'Info.plist')))) return null
+  if (!(await deps.fileExists(joinForPlatform('darwin', bundle, 'Contents', 'Info.plist')))) return null
   const icnsName = await darwinIcnsName(bundle, deps)
   if (icnsName === null) return null
-  const icnsPath = join(bundle, 'Contents', 'Resources', icnsName)
+  const icnsPath = joinForPlatform('darwin', bundle, 'Contents', 'Resources', icnsName)
   const dir = await deps.temp.dir()
   try {
-    const out = join(dir, 'icon.png')
+    const out = joinForPlatform('darwin', dir, 'icon.png')
     await deps.run('sips', ['-s', 'format', 'png', '-Z', '128', icnsPath, '--out', out], RUN_TIMEOUT_MS)
     return { bytes: await deps.temp.readFile(out), contentType: 'image/png' }
   } finally {
@@ -152,7 +153,7 @@ async function extractWin32(target: OpenPathGlyphTarget, deps: IconDeps): Promis
   const dir = await deps.temp.dir()
   try {
     const script = await deps.temp.writeFile(dir, 'extract-icon.ps1', PS_SCRIPT)
-    const out = join(dir, 'icon.png')
+    const out = joinForPlatform('win32', dir, 'icon.png')
     await deps.run(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, exe, out],
@@ -187,12 +188,12 @@ function parseDesktopIcon(text: string): string | null {
 
 async function extractLinux(target: OpenPathGlyphTarget, deps: IconDeps): Promise<ExtractedIcon | null> {
   const dataDirs = [
-    deps.env.XDG_DATA_HOME ?? join(deps.home, '.local/share'),
+    deps.env.XDG_DATA_HOME ?? joinForPlatform('linux', deps.home, '.local/share'),
     ...(deps.env.XDG_DATA_DIRS ?? '/usr/local/share:/usr/share').split(':'),
   ].filter((d) => d !== '')
   for (const id of LINUX_DESKTOP_IDS[target]) {
     for (const dataDir of dataDirs) {
-      const entryPath = join(dataDir, 'applications', `${id}.desktop`)
+      const entryPath = joinForPlatform('linux', dataDir, 'applications', `${id}.desktop`)
       if (!(await deps.fileExists(entryPath))) continue
       let iconName: string | null = null
       try {
@@ -215,9 +216,9 @@ async function extractLinux(target: OpenPathGlyphTarget, deps: IconDeps): Promis
       }
       const candidates: string[] = []
       for (const size of HICOLOR_SIZES) {
-        for (const ext of ICON_EXTS) candidates.push(join(dataDir, 'icons/hicolor', size, 'apps', `${iconName}.${ext}`))
+        for (const ext of ICON_EXTS) candidates.push(joinForPlatform('linux', dataDir, 'icons/hicolor', size, 'apps', `${iconName}.${ext}`))
       }
-      for (const ext of ICON_EXTS) candidates.push(join(dataDir, 'pixmaps', `${iconName}.${ext}`))
+      for (const ext of ICON_EXTS) candidates.push(joinForPlatform('linux', dataDir, 'pixmaps', `${iconName}.${ext}`))
       for (const candidate of candidates) {
         if (!(await deps.fileExists(candidate))) continue
         const type = contentTypeOf(candidate)
