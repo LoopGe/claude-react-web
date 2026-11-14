@@ -33,6 +33,35 @@ The CLI `--model` flag takes priority over the first entry when launching.
 
 ---
 
+### `modelContextWindows`
+
+|         |                                  |
+| ------- | -------------------------------- |
+| Type    | `Record<string, number>`         |
+| Default | unset (no per-model overrides)     |
+
+Optional native-provider context-window overrides on each entry of `profiles[]`. Keys must exactly match the full model id sent by that profile, including any vendor prefix; values must be positive safe integers. Overrides never leak into another profile, even when both use the same model id.
+
+```json
+{
+  "profiles": [{
+    "id": "gateway-a",
+    "name": "Gateway A",
+    "baseUrl": "https://gateway.example",
+    "modelList": ["vendor/model-x"],
+    "modelContextWindows": {
+      "vendor/model-x": 512000
+    }
+  }]
+}
+```
+
+For an exact `{profile, baseUrl, model}` route, an override wins. Otherwise native queries the Anthropic Messages-compatible model endpoint for a positive `max_input_tokens`; confirmed values may be larger or smaller than 200K. Missing, unsupported, invalid, or failed discovery falls back to 200K without blocking message sends. Other response fields and other protocols are not interpreted as context capacity.
+
+Web import treats this mapping as route configuration. A source mapping replaces the target mapping wholesale. If the source imports `modelList` or `baseUrl` without a mapping, the target's old mapping is cleared so it cannot apply to the new route; importing neither routing field leaves it unchanged. A legacy top-level `modelContextWindows` migrates into `profiles[0]` on first load.
+
+---
+
 ### `recapModel`
 
 |         |                                                |
@@ -231,7 +260,9 @@ Read at trigger time, so a restart is not required.
 | Type    | `number` |
 | Default | `0.8`    |
 
-Fraction of the context window at which the native auto-compact trigger fires when the session has no explicit `autoCompactWindow`: it compacts once `totalTokens >= maxTokens × ratio`.
+Fraction used by the native provider's default auto-compact threshold. Native reserves its request output cap and returns `min(floor(maxTokens × ratio), maxTokens - 16384)`; when no positive proactive threshold is viable it returns `autoCompactThreshold: 0` and skips proactive compaction.
+
+An explicit session `autoCompactWindow` wins over the provider threshold. The direct `totalTokens >= maxTokens × ratio` manager calculation is only a compatibility fallback for old cached snapshots whose threshold is `undefined`; a provider threshold of `0` must not fall back to this ratio.
 
 ```json
 {

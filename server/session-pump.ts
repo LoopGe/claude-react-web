@@ -2027,10 +2027,8 @@ export interface LiteContextUsage {
    *  bar can show throughput alongside context fill. */
   outputTokens?: number
   /** Token count at which the SDK's auto-compact triggers, derived from
-   *  the model's effective context window. Present once a `result` has
-   *  supplied `modelUsage[model].contextWindow`/`maxOutputTokens`; the
-   *  client renders "X% until auto-compact" from it. Carried forward onto
-   *  mid-turn `assistant` snapshots so the warning stays live. */
+   *  the model's effective context window or supplied by SDK facts. Zero is an
+   *  authoritative "no viable proactive threshold"; undefined means no fact. */
   autoCompactThreshold?: number
   /** The picked model's advertised max output tokens (from
    *  `modelUsage[model].maxOutputTokens`). Carried forward like the
@@ -2102,8 +2100,8 @@ export interface SdkAutoCompactFacts {
    *  while the live snapshot's model still matches — a model switch (explicit
    *  or a CLI-side fallback) changes the window and invalidates them. */
   model: string
-  /** Token count at which the CLI actually triggers auto-compact. Absent when
-   *  the CLI reported none (auto-compact off / unsupported backend). */
+  /** Token count at which the CLI actually triggers auto-compact. Zero means
+   *  no viable proactive threshold; absent means the CLI reported no fact. */
   threshold?: number
   /** The CLI's RESOLVED auto-compact window (the model's believed limit, or a
    *  smaller compaction-policy window). Recorded for diagnostics — it is
@@ -2129,7 +2127,7 @@ export function parseSdkAutoCompactFacts(raw: unknown): SdkAutoCompactFacts | nu
   }
   if (typeof r.model !== 'string' || r.model.length === 0) return null
   const facts: SdkAutoCompactFacts = { model: r.model }
-  if (typeof r.autoCompactThreshold === 'number' && Number.isFinite(r.autoCompactThreshold) && r.autoCompactThreshold > 0) {
+  if (typeof r.autoCompactThreshold === 'number' && Number.isFinite(r.autoCompactThreshold) && r.autoCompactThreshold >= 0) {
     facts.threshold = Math.round(r.autoCompactThreshold)
   }
   if (typeof r.rawMaxTokens === 'number' && Number.isFinite(r.rawMaxTokens) && r.rawMaxTokens > 0) {
@@ -2536,7 +2534,7 @@ export function liteContextUsageFromSdkUsage(
     model,
     source: 'probe',
   }
-  if (typeof r.autoCompactThreshold === 'number' && Number.isFinite(r.autoCompactThreshold) && r.autoCompactThreshold > 0) {
+  if (typeof r.autoCompactThreshold === 'number' && Number.isFinite(r.autoCompactThreshold) && r.autoCompactThreshold >= 0) {
     out.autoCompactThreshold = Math.round(r.autoCompactThreshold)
   } else if (
     sameModel

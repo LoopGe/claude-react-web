@@ -3218,6 +3218,16 @@ describe('liteContextUsageFromSdkUsage', () => {
     outputTokens: 10372,
   })
 
+  it('preserves a confirmed zero threshold instead of carrying the previous positive value', () => {
+    const out = liteContextUsageFromSdkUsage(
+      { ...cliPayload, autoCompactThreshold: 0 },
+      aggregateLast(),
+    )
+
+    expect(out).not.toBeNull()
+    expect(out!.autoCompactThreshold).toBe(0)
+  })
+
   it('builds the corrected snapshot from the CLI payload (per-call buckets only from apiUsage)', () => {
     const out = liteContextUsageFromSdkUsage(cliPayload, aggregateLast())
     expect(out).not.toBeNull()
@@ -3759,11 +3769,18 @@ describe('parseSdkAutoCompactFacts', () => {
     expect(
       parseSdkAutoCompactFacts({
         model: 'm',
-        autoCompactThreshold: 0,
+        autoCompactThreshold: -1,
         rawMaxTokens: -1,
         isAutoCompactEnabled: 'yes',
       }),
     ).toEqual({ model: 'm' })
+  })
+
+  it('distinguishes a confirmed zero threshold from a missing threshold', () => {
+    expect(parseSdkAutoCompactFacts({ model: 'm', autoCompactThreshold: 0 })).toEqual({
+      model: 'm',
+      threshold: 0,
+    })
   })
 
   it('rounds fractional token counts', () => {
@@ -3781,6 +3798,12 @@ describe('liteContextUsageFromResult with authoritative facts', () => {
       usage: { input_tokens: 50000 },
       modelUsage: { 'claude-opus-4-7': { contextWindow: 200000, maxOutputTokens: 32000 } },
     })
+
+  it("prefers the CLI's zero threshold over the locally derived one", () => {
+    const facts: SdkAutoCompactFacts = { model: 'claude-opus-4-7', threshold: 0 }
+    const out = liteContextUsageFromResult(result(), facts)
+    expect(out!.autoCompactThreshold).toBe(0)
+  })
 
   it("prefers the CLI's threshold over the locally derived one", () => {
     // Formula would say 200000 − 20000 − 13000 = 167000; the CLI says 164500.
@@ -3906,6 +3929,21 @@ describe('applySdkAutoCompactFacts', () => {
     // Nothing else in the snapshot is disturbed.
     expect(pushes[0].totalTokens).toBe(50000)
     expect(pushes[0].maxTokens).toBe(200000)
+  })
+
+  it('lets a same-model zero threshold replace the previous positive facts and snapshot', () => {
+    const { session } = makePumpSession([])
+    session.lastSdkAutoCompact = { model: 'claude-opus-4-7', threshold: 164500, enabled: true }
+    session.lastContextUsage = { ...snapshot(), autoCompactThreshold: 164500 }
+    const pushes: LiteContextUsage[] = []
+    addContextSubscriber(session, pushes)
+
+    applySdkAutoCompactFacts(session, { model: 'claude-opus-4-7', threshold: 0 })
+
+    expect(session.lastSdkAutoCompact).toEqual({ model: 'claude-opus-4-7', threshold: 0, enabled: true })
+    expect(session.lastContextUsage!.autoCompactThreshold).toBe(0)
+    expect(pushes).toHaveLength(1)
+    expect(pushes[0].autoCompactThreshold).toBe(0)
   })
 
   it('caches the facts even with no snapshot yet, so the next turn uses them', () => {

@@ -2806,6 +2806,238 @@ describe('SessionManager', () => {
     expect(JSON.stringify(replacementHistory)).not.toContain('AUTO SKILL BODY')
   })
 
+  describe('native auto-compact pressure and pre-dispatch checks', () => {
+    const liveSession = (id: string): Session =>
+      (sm as unknown as { sessions: Map<string, Session> }).sessions.get(id)!
+    const callAutoCompact = (
+      session: Session,
+      pressure?: {
+        totalTokens: number
+        maxTokens: number
+        model: string
+        autoCompactThreshold?: number
+      } | null,
+    ) => (sm as unknown as {
+      maybeAutoCompact(
+        session: Session,
+        pressure?: {
+          totalTokens: number
+          maxTokens: number
+          model: string
+          autoCompactThreshold?: number
+        } | null,
+      ): Promise<void>
+    }).maybeAutoCompact(session, pressure)
+    const cachedUsage = (overrides: Partial<Session['lastContextUsage']> = {}) => ({
+      totalTokens: 90,
+      maxTokens: 100,
+      rawMaxTokens: 100,
+      percentage: 90,
+      model: 'test-model',
+      ...overrides,
+    })
+
+    it('skips compact when the provider confirms threshold zero', async () => {
+      const info = await sm.create({})
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      live.lastContextUsage = cachedUsage({ autoCompactThreshold: 0 })
+
+      await callAutoCompact(live)
+
+      expect(live.handle.compactInPlace).not.toHaveBeenCalled()
+      expect(summarizeForCompact).not.toHaveBeenCalled()
+    })
+
+    it('uses a positive provider threshold before the ratio fallback', async () => {
+      const info = await sm.create({})
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      // Ratio would fire at 80, but the provider's 100 threshold has not fired.
+      live.lastContextUsage = cachedUsage({ autoCompactThreshold: 100 })
+
+      await callAutoCompact(live)
+
+      expect(live.handle.compactInPlace).not.toHaveBeenCalled()
+    })
+
+    it('uses an explicit autoCompactWindow before the provider threshold', async () => {
+      const info = await sm.create({ settings: { autoCompactWindow: 80 } } as unknown as Parameters<typeof sm.create>[0])
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      live.lastContextUsage = cachedUsage({ autoCompactThreshold: 100 })
+
+      await callAutoCompact(live)
+
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+    })
+
+    it('uses the ratio fallback only when the threshold is absent', async () => {
+      const info = await sm.create({})
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      live.lastContextUsage = cachedUsage()
+
+      await callAutoCompact(live)
+
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+    })
+
+    it('accepts raw over-window pressure instead of narrowing it through the cached UI snapshot', async () => {
+      const info = await sm.create({})
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      live.lastContextUsage = cachedUsage({
+        totalTokens: 300_000,
+        maxTokens: 1_000_000,
+        rawMaxTokens: 1_000_000,
+        percentage: 30,
+        model: 'large',
+        autoCompactThreshold: 800_000,
+      })
+
+      await callAutoCompact(live, {
+        totalTokens: 300_000,
+        maxTokens: 200_000,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      })
+
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+      const boundary = live.history.find((message) =>
+        message.type === 'system' && message.subtype === 'compact_boundary')
+      expect(boundary).toMatchObject({ compact_metadata: { pre_tokens: 300_000 } })
+    })
+
+    async function nativeSendFixture(model = 'large') {
+      captureNativeRequests(sm)
+      const info = await sm.create({ provider: 'native', cwd: TEST_CWD, model })
+      const live = liveSession(info.id)
+      const enqueue = vi.spyOn(live.handle, 'enqueueUserMessage')
+      return { info, live, enqueue }
+    }
+
+    it('compacts against current raw usage before an idle native send enqueues', async () => {
+      const { info, live, enqueue } = await nativeSendFixture()
+      live.lastContextUsage = cachedUsage({
+        totalTokens: 100_000,
+        maxTokens: 1_000_000,
+        rawMaxTokens: 1_000_000,
+        percentage: 10,
+        model: 'large',
+        autoCompactThreshold: 800_000,
+      })
+      live.handle.getContextUsage = vi.fn(async () => ({
+        totalTokens: 300_000,
+        maxTokens: 200_000,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      }))
+      live.handle.compactInPlace = vi.fn(async () => {})
+
+      await sm.send(info.id, 'down-switch')
+
+      expect(live.handle.getContextUsage).toHaveBeenCalledTimes(1)
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+      expect(enqueue).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(live.handle.compactInPlace).mock.invocationCallOrder[0])
+        .toBeLessThan(enqueue.mock.invocationCallOrder[0])
+    })
+
+    it('runs the same precheck for sendContent and honors threshold zero', async () => {
+      const { info, live, enqueue } = await nativeSendFixture()
+      live.handle.getContextUsage = vi.fn(async () => ({
+        totalTokens: 300_000,
+        maxTokens: 16_000,
+        model: 'small',
+        autoCompactThreshold: 0,
+      }))
+      live.handle.compactInPlace = vi.fn(async () => {})
+
+      await sm.sendContent(info.id, [{ type: 'text', text: 'no viable proactive threshold' }])
+
+      expect(live.handle.getContextUsage).toHaveBeenCalledTimes(1)
+      expect(live.handle.compactInPlace).not.toHaveBeenCalled()
+      expect(enqueue).toHaveBeenCalledTimes(1)
+    })
+
+    it.each(['working', 'queued'] as const)('does not start a usage precheck while %s', async (phase) => {
+      const { info, live } = await nativeSendFixture()
+      live.handle.getContextUsage = vi.fn(async () => ({
+        totalTokens: 300_000,
+        maxTokens: 200_000,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      }))
+      live.handle.compactInPlace = vi.fn(async () => {})
+      if (phase === 'working') live.pendingTurns = 1
+      else Object.defineProperty(live.handle, 'queueDepth', { configurable: true, value: 1 })
+
+      await sm.send(info.id, phase)
+
+      expect(live.handle.getContextUsage).not.toHaveBeenCalled()
+      expect(live.handle.compactInPlace).not.toHaveBeenCalled()
+    })
+
+    it('logs a summary failure and still enqueues the user message', async () => {
+      const { info, live, enqueue } = await nativeSendFixture()
+      live.handle.getContextUsage = vi.fn(async () => ({
+        totalTokens: 300_000,
+        maxTokens: 200_000,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      }))
+      live.handle.compactInPlace = vi.fn(async () => {})
+      vi.mocked(summarizeForCompact).mockRejectedValueOnce(new Error('summary unavailable'))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        await expect(sm.send(info.id, 'still send')).resolves.toMatchObject({
+          message: { content: 'still send' },
+        })
+
+        expect(enqueue).toHaveBeenCalledTimes(1)
+        expect(warn.mock.calls.some((args) =>
+          args.join(' ').includes('auto-compact before send failed') &&
+          args.join(' ').includes('summary unavailable'))).toBe(true)
+      } finally {
+        warn.mockRestore()
+      }
+    })
+
+    it('surfaces usage-control errors instead of treating them as compact failures', async () => {
+      const { info, live, enqueue } = await nativeSendFixture()
+      live.handle.getContextUsage = vi.fn(async () => { throw new Error('usage control unavailable') })
+      live.handle.compactInPlace = vi.fn(async () => {})
+
+      await expect(sm.send(info.id, 'must not dispatch')).rejects.toMatchObject({
+        status: 502,
+        message: 'context usage failed: usage control unavailable',
+      })
+      expect(enqueue).not.toHaveBeenCalled()
+      expect(live.handle.compactInPlace).not.toHaveBeenCalled()
+    })
+
+    it('rechecks send currency after the usage await', async () => {
+      const { info, live, enqueue } = await nativeSendFixture()
+      let resolveUsage!: (value: unknown) => void
+      live.handle.getContextUsage = vi.fn(() => new Promise((resolve) => { resolveUsage = resolve }))
+      const pending = sm.send(info.id, 'cancel me')
+      await vi.waitFor(() => expect(live.handle.getContextUsage).toHaveBeenCalledTimes(1))
+
+      ;(sm as unknown as { cancelPendingSend(id: string, reason: 'interrupt'): void })
+        .cancelPendingSend(info.id, 'interrupt')
+      resolveUsage({
+        totalTokens: 1,
+        maxTokens: 200_000,
+        model: 'large',
+        autoCompactThreshold: 160_000,
+      })
+
+      await expect(pending).rejects.toMatchObject({ status: 409 })
+      expect(enqueue).not.toHaveBeenCalled()
+    })
+  })
+
   it('compact() keeps Claude summarizer input byte-for-byte unchanged without the optional provider method', async () => {
     const info = await sm.create({})
     await sm.send(info.id, 'ordinary turn')

@@ -826,6 +826,39 @@ export function userTextOf(msg: AnyAgentUserMessage): string {
     .join('\n')
 }
 
+interface AutoCompactPressure {
+  totalTokens: number
+  maxTokens: number
+  model: string
+  autoCompactThreshold?: number
+}
+
+/** Narrow only the raw control response used for compaction. Unlike the UI
+ *  snapshot parser, an old history larger than a newly selected model window
+ *  is valid pressure and must not be rejected. */
+function autoCompactPressureFromRaw(raw: unknown): AutoCompactPressure | null {
+  if (!raw || typeof raw !== 'object') return null
+  const r = raw as {
+    totalTokens?: unknown
+    maxTokens?: unknown
+    model?: unknown
+    autoCompactThreshold?: unknown
+  }
+  if (typeof r.totalTokens !== 'number' || !Number.isFinite(r.totalTokens) || r.totalTokens < 0) return null
+  if (typeof r.maxTokens !== 'number' || !Number.isFinite(r.maxTokens) || r.maxTokens <= 0) return null
+  if (typeof r.model !== 'string' || r.model.length === 0) return null
+  if (
+    r.autoCompactThreshold !== undefined &&
+    (typeof r.autoCompactThreshold !== 'number' || !Number.isFinite(r.autoCompactThreshold) || r.autoCompactThreshold < 0)
+  ) return null
+  return {
+    totalTokens: r.totalTokens,
+    maxTokens: r.maxTokens,
+    model: r.model,
+    ...(r.autoCompactThreshold !== undefined ? { autoCompactThreshold: r.autoCompactThreshold } : {}),
+  }
+}
+
 export class SessionManager {
   private sessions = new Map<string, Session>()
   /** Real-exit promises for CLIs whose Session was unloaded but which may
@@ -3722,9 +3755,13 @@ export class SessionManager {
   async send(id: string, text: string): Promise<SentUserMessage> {
     const s = this.requireSendable(id)
     const lifecycle = this.beginSend(s)
-    return this.opLock.run(id, () => {
+    return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
       try {
+        if (s.provider === 'native' && this.phaseOf(s) === 'idle') {
+          await this.autoCompactBeforeSend(s, lifecycle)
+          this.assertSendCurrent(s, lifecycle)
+        }
         // Note: the `/clear` slash command is intercepted client-side by
         // src/local-commands.ts, which POSTs /sessions/:id/clear instead of
         // routing through this method (the headless `claude` binary refuses
@@ -3805,10 +3842,15 @@ export class SessionManager {
     const lifecycle = this.beginSend(s)
     return this.opLock.run(id, async () => {
       this.assertSendCurrent(s, lifecycle)
-      const leaseIds = this.acquireAttachmentLeases(content)
+      let leaseIds = new Set<string>()
       let nativeLeaseRegistered = false
       let userUuid: string | undefined
       try {
+        if (s.provider === 'native' && this.phaseOf(s) === 'idle') {
+          await this.autoCompactBeforeSend(s, lifecycle)
+          this.assertSendCurrent(s, lifecycle)
+        }
+        leaseIds = this.acquireAttachmentLeases(content)
         const providerContent = content.some((block) => block.type === 'file')
           ? await resolveAttachmentContent(content, {
               sessionId: id,
@@ -3903,6 +3945,23 @@ export class SessionManager {
       throw new HttpError(409, `session ${s.id} changed while attachments were resolving`)
     }
     state.controller = lifecycle.controller
+  }
+
+  /** Refresh native pressure before an idle dispatch. The usage control call is
+   *  authoritative and its errors surface to the sender; only the compact /
+   *  summary stage is fail-open so a summarizer outage cannot eat user input. */
+  private async autoCompactBeforeSend(
+    s: Session,
+    lifecycle: SendLifecycleState & { controller: AbortController },
+  ): Promise<void> {
+    if (s.provider !== 'native' || this.phaseOf(s) !== 'idle') return
+    const raw = await this.contextUsage(s.id)
+    this.assertSendCurrent(s, lifecycle)
+    try {
+      await this.maybeAutoCompact(s, autoCompactPressureFromRaw(raw))
+    } catch (err) {
+      log.warn(`[session ${s.id}] auto-compact before send failed:`, err)
+    }
   }
 
   private dispatchNewUserMessage(s: Session, userMsg: AgentUserMessage): SentUserMessage
@@ -5117,13 +5176,17 @@ export class SessionManager {
    *  CLI-managed JSONL.
    *
    *  Fire-and-forget from `onTurnSettling` (via setImmediate, so the pump has
-   *  already cleared `turnActive` / decremented `pendingTurns`). Every guard
-   *  is a cheap early return: config off, provider without the capability,
-   *  not idle, or a prior trigger still in flight. After the summary await the
-   *  identity + phase are re-checked — a user turn can start during the LLM
-   *  round-trip, and the provider refuses a compact while a turn is in flight
-   *  or input is queued. `autoCompacting` is released in `finally` on every
-   *  path.
+   *  already cleared `turnActive` / decremented `pendingTurns`), or awaited
+   *  before an idle native dispatch with freshly fetched raw pressure. Raw
+   *  pressure may exceed the new model window after a down-switch; it does not
+   *  pass through the UI snapshot parser. Every guard is a cheap early return:
+   *  config off, provider without the capability, not idle, or a prior trigger
+   *  still in flight. Explicit `autoCompactWindow` wins over the provider
+   *  threshold; only an undefined threshold uses the legacy ratio, while zero
+   *  disables proactive compaction. After the summary await the identity +
+   *  phase are re-checked — a user turn can start during the LLM round-trip,
+   *  and the provider refuses a compact while a turn is in flight or input is
+   *  queued. `autoCompacting` is released in `finally` on every path.
    *
    *  Manager state is reset to match the provider's restarted history: the
    *  ring, prompt-uuid pairing, steering in-flight map, withdrawal window,
@@ -5135,7 +5198,7 @@ export class SessionManager {
    *  Background task records and file snapshots survive (the provider's
    *  compaction does not touch them). The client resets its transcript on the
    *  `session-cleared` signal, then paints the new divider + summary. */
-  private async maybeAutoCompact(s: Session): Promise<void> {
+  private async maybeAutoCompact(s: Session, pressure?: AutoCompactPressure | null): Promise<void> {
     if (!defaultConfig.nativeAutoCompact) return
     const compactInPlace = s.handle.compactInPlace
     if (!compactInPlace) return
@@ -5143,11 +5206,14 @@ export class SessionManager {
     if (s.autoCompacting) return
     s.autoCompacting = true
     try {
-      const usage = this.getCachedContextUsage(s.id) ?? s.lastContextUsage
+      const usage = pressure === undefined
+        ? this.getCachedContextUsage(s.id) ?? s.lastContextUsage
+        : pressure
       if (!usage) return
       const threshold = s.autoCompactWindow
+        ?? usage.autoCompactThreshold
         ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
-      if (usage.totalTokens < threshold) return
+      if (threshold <= 0 || usage.totalTokens < threshold) return
       const merged = this.mergedHistoryForCompaction(s)
       const summary = await this.summarizeMergedForCompact(s, merged)
       if (!summary) return
