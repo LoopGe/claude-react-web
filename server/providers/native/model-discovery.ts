@@ -9,25 +9,29 @@ class DiscoveryFailure extends Error {}
 
 function diagnosticBaseUrl(baseUrl: string): string {
   try {
-    const url = new URL(baseUrl)
-    url.username = ''
-    url.password = ''
-    url.search = ''
-    url.hash = ''
-    return url.toString()
+    return new URL(baseUrl).origin
   } catch {
     return '<invalid-url>'
   }
 }
 
-async function readBoundedBody(response: Response): Promise<string> {
+function cancelResponseBody(response: Response): void {
+  if (response.body) void response.body.cancel().catch(() => undefined)
+}
+
+async function readBoundedBody(response: Response, signal: AbortSignal): Promise<string> {
   if (!response.body) throw new DiscoveryFailure('Anthropic model discovery returned an empty body')
   const reader = response.body.getReader()
+  const onAbort = () => {
+    void reader.cancel().catch(() => undefined)
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
   const chunks: Uint8Array[] = []
   let total = 0
   try {
     for (;;) {
       const next = await reader.read()
+      if (signal.aborted) throw new DiscoveryFailure('Anthropic model discovery timed out')
       if (next.done) break
       if (total + next.value.byteLength > MAX_RESPONSE_BYTES) {
         await reader.cancel().catch(() => undefined)
@@ -37,6 +41,7 @@ async function readBoundedBody(response: Response): Promise<string> {
       total += next.value.byteLength
     }
   } finally {
+    signal.removeEventListener('abort', onAbort)
     reader.releaseLock()
   }
   const bytes = new Uint8Array(total)
@@ -97,11 +102,15 @@ export class AnthropicModelDiscovery implements NativeModelDiscovery {
       redirect: 'error',
       signal,
     })
+    if (signal.aborted) {
+      cancelResponseBody(response)
+      throw new DiscoveryFailure('Anthropic model discovery timed out')
+    }
     if (!response.ok) {
-      if (response.body) void response.body.cancel().catch(() => undefined)
+      cancelResponseBody(response)
       throw new DiscoveryFailure(`Anthropic model discovery returned HTTP ${response.status}`)
     }
-    const text = await readBoundedBody(response)
+    const text = await readBoundedBody(response, signal)
     let body: unknown
     try {
       body = JSON.parse(text)

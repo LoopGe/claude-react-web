@@ -55,6 +55,10 @@ async function errorFrom(promise: Promise<unknown>): Promise<Error> {
   return error as Error
 }
 
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 5; i++) await Promise.resolve()
+}
+
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
@@ -216,6 +220,100 @@ describe('AnthropicModelDiscovery', () => {
     expect(settled).toBe(true)
     expect(requestSignal?.aborted).toBe(true)
     expect(await observed).toMatchObject({ message: expect.stringMatching(/timed out/i) })
+  })
+
+  it('cancels a late response without starting body processing', async () => {
+    vi.useFakeTimers()
+    let resolveFetch!: (response: Response) => void
+    const fetchResponse = new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    })
+    const fetchFn = vi.fn<typeof fetch>(() => fetchResponse)
+    const discovery = new AnthropicModelDiscovery({ fetchFn })
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull() {},
+      cancel() {
+        cancelled = true
+      },
+    })
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    const originalGetReader = body.getReader.bind(body)
+    const getReader = vi.spyOn(body, 'getReader').mockImplementation(() => {
+      reader = originalGetReader()
+      return reader
+    })
+    const response = new Response(body)
+    const observed = discovery.retrieve(makeRoute()).catch((error: unknown) => error)
+
+    try {
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(await observed).toMatchObject({ message: expect.stringMatching(/timed out/i) })
+      await vi.advanceTimersByTimeAsync(1_000)
+      resolveFetch(response)
+      await flushMicrotasks()
+
+      expect(cancelled).toBe(true)
+      expect(getReader).not.toHaveBeenCalled()
+    } finally {
+      if (reader) await reader.cancel().catch(() => undefined)
+      else await body.cancel().catch(() => undefined)
+    }
+  })
+
+  it('cancels a pending body read at the deadline and does not decode afterward', async () => {
+    vi.useFakeTimers()
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull() {},
+      cancel() {
+        cancelled = true
+      },
+    })
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    const originalGetReader = body.getReader.bind(body)
+    const getReader = vi.spyOn(body, 'getReader').mockImplementation(() => {
+      reader = originalGetReader()
+      return reader
+    })
+    const decode = vi.spyOn(TextDecoder.prototype, 'decode')
+    const discovery = new AnthropicModelDiscovery({
+      fetchFn: vi.fn<typeof fetch>(async () => new Response(body)),
+    })
+    const observed = discovery.retrieve(makeRoute()).catch((error: unknown) => error)
+
+    try {
+      await flushMicrotasks()
+      expect(getReader).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(await observed).toMatchObject({ message: expect.stringMatching(/timed out/i) })
+      await flushMicrotasks()
+
+      expect(cancelled).toBe(true)
+      expect(decode).not.toHaveBeenCalled()
+    } finally {
+      if (reader) await reader.cancel().catch(() => undefined)
+      else await body.cancel().catch(() => undefined)
+    }
+  })
+
+  it('omits URL-path credentials from diagnostic logs', async () => {
+    const previous = getLogConfig()
+    const route = makeRoute()
+    route.baseUrl = `https://gateway.example/${TOKEN}`
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    setLogConfig({ level: 'debug', scopes: ['native-model-discovery'] })
+    try {
+      const discovery = new AnthropicModelDiscovery({
+        fetchFn: vi.fn<typeof fetch>(async () => new Response('secret-body', { status: 503 })),
+      })
+      await expect(discovery.retrieve(route)).rejects.toThrow(/503/)
+      const output = logSpy.mock.calls.flat().join(' ')
+      expect(output).toContain('503')
+      expect(output).not.toContain(TOKEN)
+    } finally {
+      setLogConfig(previous)
+    }
   })
 
   it('keeps credentials and response bodies out of diagnostic logs', async () => {
