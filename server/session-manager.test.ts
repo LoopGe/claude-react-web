@@ -3017,6 +3017,92 @@ describe('SessionManager', () => {
       expect(live.handle.compactInPlace).not.toHaveBeenCalled()
     })
 
+    it('joins an in-flight post-turn compact before enqueue without summarizing twice', async () => {
+      const { info, live, enqueue } = await nativeSendFixture()
+      let compacted = false
+      live.lastContextUsage = cachedUsage({
+        totalTokens: 300_000,
+        maxTokens: 200_000,
+        rawMaxTokens: 200_000,
+        percentage: 150,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      })
+      live.handle.getContextUsage = vi.fn(async () => ({
+        totalTokens: compacted ? 0 : 300_000,
+        maxTokens: 200_000,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      }))
+      live.handle.compactInPlace = vi.fn(async () => { compacted = true })
+      let releaseSummary!: (summary: string) => void
+      vi.mocked(summarizeForCompact).mockImplementationOnce(
+        () => new Promise<string>((resolve) => { releaseSummary = resolve }),
+      )
+      const postTurn = callAutoCompact(live)
+      await vi.waitFor(() => expect(summarizeForCompact).toHaveBeenCalledTimes(1))
+
+      const pendingSend = sm.send(info.id, 'wait for compact')
+      await tick()
+      try {
+        expect(enqueue).not.toHaveBeenCalled()
+        expect(live.handle.getContextUsage).not.toHaveBeenCalled()
+      } finally {
+        releaseSummary('JOINED SUMMARY')
+        await postTurn
+        await pendingSend
+      }
+
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+      expect(summarizeForCompact).toHaveBeenCalledTimes(1)
+      expect(live.handle.getContextUsage).toHaveBeenCalledTimes(1)
+      expect(enqueue).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(live.handle.compactInPlace).mock.invocationCallOrder[0])
+        .toBeLessThan(enqueue.mock.invocationCallOrder[0])
+    })
+
+    it('refetches usage when a post-turn compact starts and finishes during the usage await', async () => {
+      const { info, live, enqueue } = await nativeSendFixture()
+      let compacted = false
+      live.lastContextUsage = cachedUsage({
+        totalTokens: 300_000,
+        maxTokens: 200_000,
+        rawMaxTokens: 200_000,
+        percentage: 150,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      })
+      let resolveFirstUsage!: (value: unknown) => void
+      live.handle.getContextUsage = vi.fn()
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstUsage = resolve }))
+        .mockImplementation(async () => ({
+          totalTokens: compacted ? 0 : 300_000,
+          maxTokens: 200_000,
+          model: 'small',
+          autoCompactThreshold: 160_000,
+        }))
+      live.handle.compactInPlace = vi.fn(async () => { compacted = true })
+
+      const pendingSend = sm.send(info.id, 'fresh pressure only')
+      await vi.waitFor(() => expect(live.handle.getContextUsage).toHaveBeenCalledTimes(1))
+      await callAutoCompact(live)
+      expect(compacted).toBe(true)
+      resolveFirstUsage({
+        totalTokens: 300_000,
+        maxTokens: 200_000,
+        model: 'small',
+        autoCompactThreshold: 160_000,
+      })
+      await pendingSend
+
+      expect(live.handle.getContextUsage).toHaveBeenCalledTimes(2)
+      expect(summarizeForCompact).toHaveBeenCalledTimes(1)
+      expect(live.handle.compactInPlace).toHaveBeenCalledTimes(1)
+      expect(enqueue).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(live.handle.compactInPlace).mock.invocationCallOrder[0])
+        .toBeLessThan(enqueue.mock.invocationCallOrder[0])
+    })
+
     it('rechecks send currency after the usage await', async () => {
       const { info, live, enqueue } = await nativeSendFixture()
       let resolveUsage!: (value: unknown) => void

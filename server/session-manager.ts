@@ -861,6 +861,10 @@ function autoCompactPressureFromRaw(raw: unknown): AutoCompactPressure | null {
 
 export class SessionManager {
   private sessions = new Map<string, Session>()
+  /** Latest auto-compact operation per session. Retained after settlement so a
+   *  pre-dispatch check can detect (and re-read pressure after) a compaction
+   *  that both started and finished while its usage control call was awaited. */
+  private autoCompactOperations = new WeakMap<Session, Promise<void>>()
   /** Real-exit promises for CLIs whose Session was unloaded but which may
    *  still be closing. Kept across sleep/delete without retaining SDK handles. */
   private closingHandles = new Map<string, Set<Promise<unknown>>>()
@@ -3947,20 +3951,44 @@ export class SessionManager {
     state.controller = lifecycle.controller
   }
 
-  /** Refresh native pressure before an idle dispatch. The usage control call is
-   *  authoritative and its errors surface to the sender; only the compact /
-   *  summary stage is fail-open so a summarizer outage cannot eat user input. */
+  /** Refresh native pressure before an idle dispatch. An in-flight post-turn
+   *  compact is joined first, and operation identity is compared across the
+   *  usage await so no stale snapshot can bypass compaction. The usage control
+   *  call is authoritative and its errors surface to the sender; only the
+   *  compact / summary stage is fail-open so a summarizer outage cannot eat
+   *  user input. */
   private async autoCompactBeforeSend(
     s: Session,
     lifecycle: SendLifecycleState & { controller: AbortController },
   ): Promise<void> {
     if (s.provider !== 'native' || this.phaseOf(s) !== 'idle') return
-    const raw = await this.contextUsage(s.id)
-    this.assertSendCurrent(s, lifecycle)
-    try {
-      await this.maybeAutoCompact(s, autoCompactPressureFromRaw(raw))
-    } catch (err) {
-      log.warn(`[session ${s.id}] auto-compact before send failed:`, err)
+    let joined: Promise<void> | undefined
+    for (;;) {
+      const inFlight = this.autoCompactOperations.get(s)
+      if (inFlight !== undefined && inFlight !== joined) {
+        try {
+          await inFlight
+        } catch (err) {
+          log.warn(`[session ${s.id}] auto-compact before send failed:`, err)
+        }
+        this.assertSendCurrent(s, lifecycle)
+        joined = inFlight
+        continue
+      }
+      const operationBeforeUsage = this.autoCompactOperations.get(s)
+      const raw = await this.contextUsage(s.id)
+      this.assertSendCurrent(s, lifecycle)
+      // A post-turn trigger may have compacted while the control call was in
+      // flight. Its raw snapshot is now stale even if the operation has already
+      // settled, so join the latest handle and fetch pressure again.
+      if (this.autoCompactOperations.get(s) !== operationBeforeUsage) continue
+      try {
+        await this.maybeAutoCompact(s, autoCompactPressureFromRaw(raw))
+      } catch (err) {
+        log.warn(`[session ${s.id}] auto-compact before send failed:`, err)
+      }
+      this.assertSendCurrent(s, lifecycle)
+      return
     }
   }
 
@@ -5205,76 +5233,85 @@ export class SessionManager {
     if (this.phaseOf(s) !== 'idle') return
     if (s.autoCompacting) return
     s.autoCompacting = true
-    try {
-      const usage = pressure === undefined
-        ? this.getCachedContextUsage(s.id) ?? s.lastContextUsage
-        : pressure
-      if (!usage) return
-      const threshold = s.autoCompactWindow
-        ?? usage.autoCompactThreshold
-        ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
-      if (threshold <= 0 || usage.totalTokens < threshold) return
-      const merged = this.mergedHistoryForCompaction(s)
-      const summary = await this.summarizeMergedForCompact(s, merged)
-      if (!summary) return
-      // A user turn (or a load/clear/delete) can win the summarization window.
-      // Re-check identity and phase before touching anything.
-      if (this.sessions.get(s.id) !== s || this.phaseOf(s) !== 'idle') return
-      const preTokens = usage.totalTokens
-      const uuid = randomUUID()
-      const timestamp = new Date().toISOString()
-      // The seq generation must survive the store swap below: `session-cleared`
-      // makes every client arm a `generation + 1` floor, and the re-created
-      // store starts at 0. Carrying the bump is what lets the follow-up tail
-      // fetch and live frames re-anchor instead of retrying forever.
-      const prevGeneration = this.transcriptStores.get(s.id)?.store.generation ?? 0
-      await compactInPlace.call(s.handle, summary, { uuid, timestamp })
-      await this.removeTranscriptState(s.id)
-      // Establish the fresh seq space now, but do NOT publish the new
-      // generation yet: a panel that reads while the sidecar removals run must
-      // not adopt a generation ahead of the final one (its `session-cleared`
-      // floor is local + 1, so adopting `prev + 1` early would arm `prev + 2`
-      // and wedge the tab). The fresh store reports 0, which is never ahead of
-      // the final `prev + 1`; the floor is a MINIMUM, so 0 re-anchors safely.
-      // `reconciled` is set because this seq space is defined by the two
-      // frames below, not by a disk backfill (which would collide with the
-      // boundary uuid).
-      const fresh = this.getOrCreateTranscript(s.id)
-      fresh.reconciled = true
-      const sidecarResets: Array<[string, () => Promise<void>]> = [
-        ['prompt-uuid', () => this.promptUuidStore.remove(s.id)],
-        ['steered', () => this.steeredStore.remove(s.id)],
-        ['turn-anchor', () => this.turnAnchorStore.remove(s.id)],
-        ['result-frame', () => this.resultFrameStore.remove(s.id)],
-      ]
-      for (const [label, remove] of sidecarResets) {
-        try {
-          await remove()
-        } catch (err) {
-          log.warn(`[session ${s.id}] auto-compact: ${label} sidecar reset failed:`, err)
-        }
-      }
-      // One synchronous block from here: publish the new generation, restart
-      // the seq space, wipe the in-memory state, signal, push the new frames.
-      // No await may be introduced between these statements — a client that
-      // samples the generation in between would arm a floor one too high.
-      fresh.store.continueGeneration(prevGeneration)
-      s.history = []
-      s.subagentHistory = []
-      s.promptUuids = []
-      s.steeredInFlight.clear()
-      s.withdrawnUuids = []
-      s.pendingSnapshotAnchors = undefined
-      s.lastContextUsage = undefined
-      this.broadcastSessionCleared(s.id)
-      this.pushCompactFrames(s, summary, uuid, timestamp, preTokens)
-      log.info(
-        `[session ${s.id}] auto-compact: reset transcript in place ` +
-        `(pre_tokens=${preTokens}, threshold=${threshold})`,
-      )
-    } finally {
+    const operation = this.runAutoCompact(s, pressure, compactInPlace)
+    const tracked = operation.finally(() => {
       s.autoCompacting = false
+    })
+    this.autoCompactOperations.set(s, tracked)
+    return tracked
+  }
+
+  private async runAutoCompact(
+    s: Session,
+    pressure: AutoCompactPressure | null | undefined,
+    compactInPlace: NonNullable<ProviderSessionHandle['compactInPlace']>,
+  ): Promise<void> {
+    const usage = pressure === undefined
+      ? this.getCachedContextUsage(s.id) ?? s.lastContextUsage
+      : pressure
+    if (!usage) return
+    const threshold = s.autoCompactWindow
+      ?? usage.autoCompactThreshold
+      ?? Math.floor(usage.maxTokens * defaultConfig.nativeAutoCompactRatio)
+    if (threshold <= 0 || usage.totalTokens < threshold) return
+    const merged = this.mergedHistoryForCompaction(s)
+    const summary = await this.summarizeMergedForCompact(s, merged)
+    if (!summary) return
+    // A user turn (or a load/clear/delete) can win the summarization window.
+    // Re-check identity and phase before touching anything.
+    if (this.sessions.get(s.id) !== s || this.phaseOf(s) !== 'idle') return
+    const preTokens = usage.totalTokens
+    const uuid = randomUUID()
+    const timestamp = new Date().toISOString()
+    // The seq generation must survive the store swap below: `session-cleared`
+    // makes every client arm a `generation + 1` floor, and the re-created
+    // store starts at 0. Carrying the bump is what lets the follow-up tail
+    // fetch and live frames re-anchor instead of retrying forever.
+    const prevGeneration = this.transcriptStores.get(s.id)?.store.generation ?? 0
+    await compactInPlace.call(s.handle, summary, { uuid, timestamp })
+    await this.removeTranscriptState(s.id)
+    // Establish the fresh seq space now, but do NOT publish the new
+    // generation yet: a panel that reads while the sidecar removals run must
+    // not adopt a generation ahead of the final one (its `session-cleared`
+    // floor is local + 1, so adopting `prev + 1` early would arm `prev + 2`
+    // and wedge the tab). The fresh store reports 0, which is never ahead of
+    // the final `prev + 1`; the floor is a MINIMUM, so 0 re-anchors safely.
+    // `reconciled` is set because this seq space is defined by the two
+    // frames below, not by a disk backfill (which would collide with the
+    // boundary uuid).
+    const fresh = this.getOrCreateTranscript(s.id)
+    fresh.reconciled = true
+    const sidecarResets: Array<[string, () => Promise<void>]> = [
+      ['prompt-uuid', () => this.promptUuidStore.remove(s.id)],
+      ['steered', () => this.steeredStore.remove(s.id)],
+      ['turn-anchor', () => this.turnAnchorStore.remove(s.id)],
+      ['result-frame', () => this.resultFrameStore.remove(s.id)],
+    ]
+    for (const [label, remove] of sidecarResets) {
+      try {
+        await remove()
+      } catch (err) {
+        log.warn(`[session ${s.id}] auto-compact: ${label} sidecar reset failed:`, err)
+      }
     }
+    // One synchronous block from here: publish the new generation, restart
+    // the seq space, wipe the in-memory state, signal, push the new frames.
+    // No await may be introduced between these statements — a client that
+    // samples the generation in between would arm a floor one too high.
+    fresh.store.continueGeneration(prevGeneration)
+    s.history = []
+    s.subagentHistory = []
+    s.promptUuids = []
+    s.steeredInFlight.clear()
+    s.withdrawnUuids = []
+    s.pendingSnapshotAnchors = undefined
+    s.lastContextUsage = undefined
+    this.broadcastSessionCleared(s.id)
+    this.pushCompactFrames(s, summary, uuid, timestamp, preTokens)
+    log.info(
+      `[session ${s.id}] auto-compact: reset transcript in place ` +
+      `(pre_tokens=${preTokens}, threshold=${threshold})`,
+    )
   }
 
   /** Push the client-facing half of an in-place auto-compact: the synthetic
