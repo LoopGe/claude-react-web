@@ -61,6 +61,8 @@ export class NativeSkillCatalog {
   private overrides: Record<string, NativeSkillState> = {}
   private entries: CatalogEntry[] = []
   private byName = new Map<string, CatalogEntry>()
+  private nextGeneration = 0
+  private committedGeneration = 0
 
   constructor(cwd: string | undefined) {
     this.cwd = cwd
@@ -80,6 +82,7 @@ export class NativeSkillCatalog {
 
   /** Re-read both skill roots and cache every valid skill's body. */
   async reload(): Promise<void> {
+    const generation = ++this.nextGeneration
     const { skills } = await listSkills(this.cwd)
     // listSkills returns user scope first, project scope second; a project
     // skill with the same name wins — the project is the more specific owner.
@@ -108,8 +111,10 @@ export class NativeSkillCatalog {
       entries.push({ record, document })
     }
     entries.sort((a, b) => a.record.name.localeCompare(b.record.name))
+    if (generation <= this.committedGeneration) return
     this.entries = entries
     this.byName = new Map(entries.map((entry) => [entry.record.name, entry]))
+    this.committedGeneration = generation
   }
 
   /** An immutable view over the CURRENT cached entries and overrides. A turn
