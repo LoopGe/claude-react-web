@@ -5,7 +5,7 @@
 // Registration lives in ../default-providers.ts alongside ClaudeProvider.
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
-import { config, DEFAULT_PROFILE, requireAuthToken } from '../../config.js'
+import { config, DEFAULT_PROFILE, type ProviderProfile, type ServerConfig } from '../../config.js'
 import { resolveActiveProfile } from '../../profiles.js'
 import { HttpError } from '../../errors.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
@@ -161,6 +161,7 @@ export class NativeProvider implements AgentProvider {
   readonly uploadStore?: UploadStore
   readonly attachmentReferences: NativeAttachmentReferenceIndex
   private readonly modelContext: NativeModelContextResolver
+  private readonly fallbackProfiles = new WeakMap<ServerConfig, ProviderProfile>()
 
   constructor(opts: {
     stateDir?: string
@@ -181,6 +182,24 @@ export class NativeProvider implements AgentProvider {
     })
     this.attachmentReferences = opts.uploadStore?.attachmentReferences
       ?? new NativeAttachmentReferenceIndex({ stateDir: this.stateDir })
+  }
+
+  private fallbackProfile(): ProviderProfile {
+    const cached = this.fallbackProfiles.get(config)
+    if (cached) return cached
+    // Legacy/unloaded config has no profile objects. Snapshot its scalar values
+    // once per config generation so requests and discovery share one route.
+    const profile = {
+      ...DEFAULT_PROFILE,
+      authToken: config.authToken ?? '',
+      baseUrl: config.baseUrl,
+      modelList: config.modelList,
+      modelGroups: config.modelGroups,
+      recapModel: config.recapModel,
+      commitMessageModel: config.commitMessageModel,
+    }
+    this.fallbackProfiles.set(config, profile)
+    return profile
   }
 
   createSession(opts: CreateSessionOptions): ProviderSessionHandle {
@@ -221,11 +240,17 @@ export class NativeProvider implements AgentProvider {
     // The constructor can throw on real paths (corrupt/unsupported log, missing
     // fork log). The queued connect has no owner then, so it must be torn down
     // here or it would run forever and leak its children.
-    const profile = opts.profile ?? resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE)
-    const credentials = () => ({
-      baseUrl: opts.profile?.baseUrl ?? config.baseUrl,
-      authToken: opts.profile?.authToken ?? requireAuthToken(),
-    })
+    const profile = opts.profile ?? (config.profiles.length > 0
+      ? resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE)
+      : this.fallbackProfile())
+    const credentials = () => {
+      if (opts.profile === undefined && !profile.authToken) {
+        // Preserve the lazy missing-token failure without consulting a newer
+        // active profile, whose credential belongs to a different route.
+        throw new HttpError(401, 'authToken is not configured. Set `authToken` in config.json (and optionally `baseUrl`).')
+      }
+      return { baseUrl: profile.baseUrl, authToken: profile.authToken }
+    }
     try {
       const SessionClass = config.nativeAttachmentFidelity ? NativeSession : LegacyNativeSession
       return new SessionClass({

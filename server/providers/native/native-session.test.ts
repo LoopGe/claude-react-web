@@ -616,6 +616,32 @@ describe('NativeSession', () => {
     }
   })
 
+  it('re-reads usage after a deferred context resolution completes', async () => {
+    const dir = await tempDir('native-context-usage-refresh-')
+    const resolution = deferred<NativeModelContext>()
+    const { modelContext, resolve } = resolverOf(async () => resolution.promise)
+    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* () {
+      for (const event of textTurn('done')) yield event
+    }
+    const session = provider.createSession({ id: 'context-usage-refresh', cwd: dir, model: 'model-a' })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    const pending = session.getContextUsage?.() as Promise<NativeContextUsage>
+    try {
+      await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1))
+      session.enqueueUserMessage(userMsg('go') as never)
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+      resolution.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
+      await expect(pending).resolves.toMatchObject({
+        totalTokens: 10, model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000,
+      })
+    } finally {
+      resolution.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
+      await session.destroy()
+    }
+  })
+
   it('discards a deferred result when the model changes and resolves the latest generation', async () => {
     const dir = await tempDir('native-context-generation-')
     const modelA = deferred<NativeModelContext>()
@@ -736,6 +762,86 @@ describe('NativeSession', () => {
     } finally {
       await session.destroy()
       discovery.mockRestore()
+    }
+  })
+
+  it('keeps route credentials on the resolved profile across an active-profile switch', async () => {
+    const dir = await tempDir('native-context-profile-switch-')
+    const previous = { ...config }
+    const profileA = {
+      id: 'profile-a', name: 'Profile A', authToken: 'token-a', baseUrl: 'https://a.example.test',
+      modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '',
+    }
+    const profileB = {
+      id: 'profile-b', name: 'Profile B', authToken: 'token-b', baseUrl: 'https://b.example.test',
+      modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '',
+    }
+    let seen: { providerId: string; baseUrl: string; authToken: string } | undefined
+    const discovery = vi.spyOn(AnthropicModelDiscovery.prototype, 'retrieve').mockImplementation(async (route) => {
+      seen = {
+        providerId: route.providerId,
+        baseUrl: route.baseUrl,
+        authToken: route.credentials().authToken,
+      }
+      return 1_000_000
+    })
+    let session: ReturnType<NativeProvider['createSession']> | undefined
+    try {
+      __setConfigForTest({
+        profiles: [profileA, profileB], activeProfileId: profileA.id,
+        authToken: profileA.authToken, baseUrl: profileA.baseUrl,
+      })
+      const provider = new NativeProvider({ stateDir: dir })
+      session = provider.createSession({ id: 'context-profile-switch', cwd: dir, model: 'model-a' })
+      __setConfigForTest({
+        profiles: [profileA, profileB], activeProfileId: profileB.id,
+        authToken: profileB.authToken, baseUrl: profileB.baseUrl,
+      })
+
+      await session.getContextUsage?.()
+      expect(seen).toEqual({ providerId: 'profile-a', baseUrl: 'https://a.example.test', authToken: 'token-a' })
+    } finally {
+      await session?.destroy()
+      discovery.mockRestore()
+      __setConfigForTest(previous)
+    }
+  })
+
+  it('keeps missing resolved-profile credentials lazy after an active-profile switch', async () => {
+    const dir = await tempDir('native-context-profile-missing-token-')
+    const previous = { ...config }
+    const profileA = {
+      id: 'profile-a', name: 'Profile A', authToken: '', baseUrl: 'https://a.example.test',
+      modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '',
+    }
+    const profileB = {
+      id: 'profile-b', name: 'Profile B', authToken: 'token-b', baseUrl: 'https://b.example.test',
+      modelList: [], modelGroups: [], recapModel: '', commitMessageModel: '',
+    }
+    let route: NativeModelRoute | undefined
+    const discovery = vi.spyOn(AnthropicModelDiscovery.prototype, 'retrieve').mockImplementation(async (candidate) => {
+      route = candidate
+      return undefined
+    })
+    let session: ReturnType<NativeProvider['createSession']> | undefined
+    try {
+      __setConfigForTest({
+        profiles: [profileA, profileB], activeProfileId: profileA.id,
+        authToken: profileA.authToken, baseUrl: profileA.baseUrl,
+      })
+      const provider = new NativeProvider({ stateDir: dir })
+      session = provider.createSession({ id: 'context-profile-missing-token', cwd: dir, model: 'model-a' })
+      __setConfigForTest({
+        profiles: [profileA, profileB], activeProfileId: profileB.id,
+        authToken: profileB.authToken, baseUrl: profileB.baseUrl,
+      })
+
+      await session.getContextUsage?.()
+      expect(() => route!.credentials()).toThrow(/authToken is not configured/)
+    } finally {
+      await session?.destroy()
+      discovery.mockRestore()
+      __setConfigForTest(previous)
     }
   })
 

@@ -1653,7 +1653,6 @@ export class NativeSession implements ProviderSessionHandle {
   async getContextUsage(): Promise<unknown> {
     // Match the pump's mid-turn formula: prompt tokens = input + cache reads
     // + cache writes. Output is not part of the window the next request sends.
-    const usage = this.lastUsage
     for (;;) {
       const generation = this.modelGeneration
       const model = this.model
@@ -1668,6 +1667,7 @@ export class NativeSession implements ProviderSessionHandle {
           })).contextWindow
         : DEFAULT_CONTEXT_WINDOW
       if (generation !== this.modelGeneration) continue
+      const usage = this.lastUsage
       const outputReservedWindow = contextWindow - DEFAULT_MAX_TOKENS
       return {
         totalTokens:
