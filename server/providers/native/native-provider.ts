@@ -5,7 +5,8 @@
 // Registration lives in ../default-providers.ts alongside ClaudeProvider.
 
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
-import { config, requireAuthToken } from '../../config.js'
+import { config, DEFAULT_PROFILE, requireAuthToken } from '../../config.js'
+import { resolveActiveProfile } from '../../profiles.js'
 import { HttpError } from '../../errors.js'
 import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
@@ -14,6 +15,8 @@ import type { LoopDeps } from './loop.js'
 import { NativeMcpConnections } from './mcp/connections.js'
 import { PromptSectionRegistry, IDENTITY_SECTION, type PromptSection } from './prompt/sections.js'
 import { NativeSession } from './native-session.js'
+import { NativeModelContextResolver } from './model-context.js'
+import { AnthropicModelDiscovery } from './model-discovery.js'
 import { AGENT_GUIDANCE } from './subagent.js'
 import { SKILL_GUIDANCE } from './tools/skill.js'
 import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
@@ -157,17 +160,25 @@ export class NativeProvider implements AgentProvider {
    *  provider deliberately never constructs an independent store. */
   readonly uploadStore?: UploadStore
   readonly attachmentReferences: NativeAttachmentReferenceIndex
+  private readonly modelContext: NativeModelContextResolver
 
   constructor(opts: {
     stateDir?: string
     authFor?: (name: string) => OAuthClientProvider | undefined
     agentStore?: AgentDefinitionStore
     uploadStore?: UploadStore
+    modelContext?: NativeModelContextResolver
   } = {}) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
     this.agentStore = opts.agentStore
     this.uploadStore = opts.uploadStore
+    const discovery = new AnthropicModelDiscovery()
+    this.modelContext = opts.modelContext ?? new NativeModelContextResolver({
+      discovery: {
+        retrieve: async (route) => this._testStream ? undefined : discovery.retrieve(route),
+      },
+    })
     this.attachmentReferences = opts.uploadStore?.attachmentReferences
       ?? new NativeAttachmentReferenceIndex({ stateDir: this.stateDir })
   }
@@ -210,6 +221,7 @@ export class NativeProvider implements AgentProvider {
     // The constructor can throw on real paths (corrupt/unsupported log, missing
     // fork log). The queued connect has no owner then, so it must be torn down
     // here or it would run forever and leak its children.
+    const profile = opts.profile ?? resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE)
     const credentials = () => ({
       baseUrl: opts.profile?.baseUrl ?? config.baseUrl,
       authToken: opts.profile?.authToken ?? requireAuthToken(),
@@ -233,7 +245,8 @@ export class NativeProvider implements AgentProvider {
         thinking: opts.thinking,
         effortLevel: opts.effortLevel,
         fastMode: opts.fastMode,
-        profile: opts.profile,
+        profile,
+        modelContext: this.modelContext,
         credentials,
         tools,
         mcp,

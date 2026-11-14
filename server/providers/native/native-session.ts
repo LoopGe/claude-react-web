@@ -20,7 +20,8 @@
 import { createPushable, type Pushable } from '../../pushable.js'
 import { createLogger } from '../../log.js'
 import { callAnthropicMessages } from '../../anthropic-api.js'
-import { config, type ProviderProfile } from '../../config.js'
+import { config, DEFAULT_PROFILE, type ProviderProfile } from '../../config.js'
+import { resolveActiveProfile } from '../../profiles.js'
 import { effortLevelsForModel, supportsFastModeForModel } from '../../effort-capability.js'
 import type { AgentMessage, AgentUserMessage } from '../../agent-message.js'
 import type { ProviderAttachmentOccurrence, ProviderInterruptReceipt, ProviderResetBaseSettings, ProviderSessionHandle } from '../types.js'
@@ -71,6 +72,7 @@ import {
   PreparedPdfStore,
   type PdfBudgetReservation,
 } from './pdf-documents.js'
+import { DEFAULT_CONTEXT_WINDOW, type NativeModelContextResolver } from './model-context.js'
 
 interface PendingDurableInitial {
   message: AgentUserMessage
@@ -82,7 +84,6 @@ const log = createLogger('native')
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5'
 const DEFAULT_MAX_TOKENS = 16384
-const CONTEXT_WINDOW = 200_000
 
 /** The aux prompt for `generateTitle`. The manager trims and persists the
  *  caller's first text block, so the model must answer with the title alone. */
@@ -228,6 +229,9 @@ export interface NativeSessionOptions {
   /** The resolved provider profile, threaded from the manager. `supportedModels`
    *  prefers its model list; absent (unit tests) = the global config's. */
   profile?: ProviderProfile
+  /** Shared route-capacity resolver owned by the provider. Direct unit
+   * sessions without one retain the 200K fallback. */
+  modelContext?: NativeModelContextResolver
   /** Resolved lazily, on the first real network turn — a session must be
    *  creatable on an unconfigured machine (the failure surfaces as a loud
    *  turn error, not a create-time throw). */
@@ -360,6 +364,8 @@ export class NativeSession implements ProviderSessionHandle {
   /** A legacy unsupported-preset drop is visible only after system/init. */
   private legacyAgentDropNotice: string | undefined
   private model: string
+  private modelGeneration = 0
+  private readonly profile: ProviderProfile
   /** Live permission mode: setPermissionMode keeps it current for the lifetime
    *  of the session — the spawn-time opts value is only the starting point, so
    *  a bypass-spawned session can be downgraded mid-flight. */
@@ -409,6 +415,7 @@ export class NativeSession implements ProviderSessionHandle {
     this.baseSkillPolicy = Array.isArray(opts.skills) ? [...opts.skills] : opts.skills
     this.baseToolProfile = opts.toolProfile ? structuredClone(opts.toolProfile) : undefined
     this.model = this.baseModel
+    this.profile = opts.profile ?? resolveActiveProfile(config.profiles, config.activeProfileId, DEFAULT_PROFILE)
     this.permissionMode = this.basePermissionMode ?? 'default'
     this.thinking = opts.thinking
     this.thinkingDisplay = opts.thinking && 'display' in opts.thinking ? opts.thinking.display : undefined
@@ -516,7 +523,9 @@ export class NativeSession implements ProviderSessionHandle {
   }
 
   private applyEffectiveProfile(): void {
-    this.model = this.currentProfile?.model ?? this.baseModel
+    const model = this.currentProfile?.model ?? this.baseModel
+    if (model !== this.model) this.modelGeneration++
+    this.model = model
     this.permissionMode = this.currentProfile?.permissionMode ?? this.basePermissionMode ?? 'default'
     this.effortLevel = this.currentProfile?.effort ?? this.baseEffortLevel
   }
@@ -1639,18 +1648,38 @@ export class NativeSession implements ProviderSessionHandle {
 
   /** Wire shape consumed by the host's reconcile probe
    *  (liteContextUsageFromSdkUsage in session-pump.ts): { totalTokens,
-   *  maxTokens, model }. */
+   *  maxTokens, model, autoCompactThreshold }. Capacity is resolved for the
+   *  captured route and retried when an actual effective-model change lands. */
   async getContextUsage(): Promise<unknown> {
     // Match the pump's mid-turn formula: prompt tokens = input + cache reads
     // + cache writes. Output is not part of the window the next request sends.
     const usage = this.lastUsage
-    return {
-      totalTokens:
-        usage.input_tokens
-        + (usage.cache_read_input_tokens ?? 0)
-        + (usage.cache_creation_input_tokens ?? 0),
-      maxTokens: CONTEXT_WINDOW,
-      model: this.model,
+    for (;;) {
+      const generation = this.modelGeneration
+      const model = this.model
+      const contextWindow = this.opts.modelContext
+        ? (await this.opts.modelContext.resolve({
+            profile: this.profile,
+            providerId: this.profile.id,
+            baseUrl: this.profile.baseUrl,
+            model,
+            api: 'anthropic-messages',
+            credentials: this.opts.credentials,
+          })).contextWindow
+        : DEFAULT_CONTEXT_WINDOW
+      if (generation !== this.modelGeneration) continue
+      const outputReservedWindow = contextWindow - DEFAULT_MAX_TOKENS
+      return {
+        totalTokens:
+          usage.input_tokens
+          + (usage.cache_read_input_tokens ?? 0)
+          + (usage.cache_creation_input_tokens ?? 0),
+        maxTokens: contextWindow,
+        model,
+        autoCompactThreshold: outputReservedWindow > 0
+          ? Math.min(Math.floor(contextWindow * config.nativeAutoCompactRatio), outputReservedWindow)
+          : 0,
+      }
     }
   }
 

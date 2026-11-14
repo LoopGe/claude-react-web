@@ -33,6 +33,8 @@ import type { CanonicalEvent } from './canonical.js'
 import { buildRequestBody } from './anthropic-stream.js'
 import type { Frame } from './frames.js'
 import { config, __setConfigForTest } from '../../config.js'
+import { AnthropicModelDiscovery } from './model-discovery.js'
+import { NativeModelContextResolver, type NativeModelContext, type NativeModelRoute } from './model-context.js'
 import { HttpError } from '../../errors.js'
 import { QUESTION_RESULT } from '../../permission-broker.js'
 import type { NativeTaskManager } from './task-manager.js'
@@ -372,6 +374,18 @@ type CapturedRequest = {
   tools: Array<{ name: string }>
 } & Record<string, unknown>
 
+type NativeContextUsage = {
+  totalTokens: number
+  maxTokens: number
+  model: string
+  autoCompactThreshold: number
+}
+
+function resolverOf(resolveRoute: (route: NativeModelRoute) => Promise<NativeModelContext>) {
+  const resolve = vi.fn(resolveRoute)
+  return { modelContext: { resolve } as unknown as NativeModelContextResolver, resolve }
+}
+
 function effectiveSettingsOf(session: unknown) {
   return (session as {
     getEffectiveSettings?: () => {
@@ -574,13 +588,176 @@ describe('NativeSession', () => {
     await vi.waitFor(() => {
       expect(frames.some((f) => f.type === 'result')).toBe(true)
     })
-    const usage = (await session.getContextUsage?.()) as { totalTokens: number; maxTokens: number; model: string }
-    // { totalTokens, maxTokens, model } — prompt tokens are input + cache
-    // (the scripted turn has input 10, no cache; output does not count).
+    const usage = (await session.getContextUsage?.()) as NativeContextUsage
+    // Prompt tokens are input + cache (the scripted turn has input 10, no
+    // cache; output does not count). The default 200K window retains 160K.
     expect(usage.totalTokens).toBe(10)
     expect(usage.maxTokens).toBe(200_000)
+    expect(usage.autoCompactThreshold).toBe(160_000)
     expect(typeof usage.model).toBe('string')
     await session.destroy()
+  })
+
+  it.each([
+    { model: 'model-a', contextWindow: 1_000_000, autoCompactThreshold: 800_000 },
+    { model: 'model-b', contextWindow: 200_000, autoCompactThreshold: 160_000 },
+    { model: 'model-c', contextWindow: 128_000, autoCompactThreshold: 102_400 },
+    { model: 'model-d', contextWindow: 16_000, autoCompactThreshold: 0 },
+  ])('uses the resolved $contextWindow-token window for $model', async ({ model, contextWindow, autoCompactThreshold }) => {
+    const dir = await tempDir('native-context-window-')
+    const { modelContext } = resolverOf(async () => ({ contextWindow, source: 'endpoint' }))
+    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const session = provider.createSession({ id: `context-${model}`, cwd: dir, model })
+    try {
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage).toMatchObject({ model, maxTokens: contextWindow, autoCompactThreshold })
+    } finally {
+      await session.destroy()
+    }
+  })
+
+  it('discards a deferred result when the model changes and resolves the latest generation', async () => {
+    const dir = await tempDir('native-context-generation-')
+    const modelA = deferred<NativeModelContext>()
+    const { modelContext, resolve } = resolverOf(async (route) => {
+      if (route.model === 'model-a') return modelA.promise
+      return { contextWindow: 128_000, source: 'endpoint' }
+    })
+    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const session = provider.createSession({ id: 'context-generation', cwd: dir, model: 'model-a' })
+    const first = session.getContextUsage?.() as Promise<NativeContextUsage>
+    try {
+      await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1))
+      await session.setModel?.('model-b')
+      const second = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(second).toMatchObject({ model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 102_400 })
+
+      modelA.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
+      await expect(first).resolves.toMatchObject({
+        model: 'model-b', maxTokens: 128_000, autoCompactThreshold: 102_400,
+      })
+      expect(resolve.mock.calls.map(([route]) => route.model)).toEqual(['model-a', 'model-b', 'model-b'])
+    } finally {
+      modelA.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
+      await session.destroy()
+    }
+  })
+
+  it('does not reuse the captured result across an A-B-A model generation', async () => {
+    const dir = await tempDir('native-context-generation-aba-')
+    const firstA = deferred<NativeModelContext>()
+    const { modelContext, resolve } = resolverOf(async () => firstA.promise)
+    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const session = provider.createSession({ id: 'context-generation-aba', cwd: dir, model: 'model-a' })
+    const pending = session.getContextUsage?.() as Promise<NativeContextUsage>
+    try {
+      await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1))
+      await session.setModel?.('model-b')
+      await session.setModel?.('model-a')
+      resolve.mockImplementation(async () => ({ contextWindow: 16_000, source: 'override' }))
+      firstA.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
+
+      await expect(pending).resolves.toMatchObject({
+        model: 'model-a', maxTokens: 16_000, autoCompactThreshold: 0,
+      })
+      expect(resolve.mock.calls.map(([route]) => route.model)).toEqual(['model-a', 'model-a'])
+    } finally {
+      firstA.resolve({ contextWindow: 1_000_000, source: 'endpoint' })
+      await session.destroy()
+    }
+  })
+
+  it.each([
+    { label: 'resume', fork: false },
+    { label: 'fork', fork: true },
+  ])('re-resolves the restored route on $label without adding native events', async ({ fork }) => {
+    const dir = await tempDir(`native-context-restore-${fork ? 'fork' : 'resume'}-`)
+    const { modelContext, resolve } = resolverOf(async () => ({ contextWindow: 1_000_000, source: 'endpoint' }))
+    const provider = new NativeProvider({ stateDir: dir, modelContext })
+    const source = provider.createSession({ id: 'context-source', cwd: dir, model: 'model-a' })
+    await source.destroy()
+    const restored = provider.createSession({
+      id: fork ? 'context-fork' : 'context-source',
+      cwd: dir,
+      model: 'model-a',
+      resume: 'context-source',
+      forkSession: fork,
+    })
+    try {
+      const before = structuredClone(logOf(restored).events)
+      const usage = (await restored.getContextUsage?.()) as NativeContextUsage
+      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000 })
+      expect(logOf(restored).events).toEqual(before)
+      expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
+        model: 'model-a', providerId: 'default', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages',
+      }))
+    } finally {
+      await restored.destroy()
+    }
+  })
+
+  it('keeps the turn-start model when setModel changes during a scripted request', async () => {
+    const dir = await tempDir('native-turn-model-context-')
+    const requests: CapturedRequest[] = []
+    const started = deferred<void>()
+    const release = deferred<void>()
+    const provider = new NativeProvider({ stateDir: dir })
+    ;(provider as unknown as { _testStream: unknown })._testStream = async function* (req: CapturedRequest) {
+      requests.push(structuredClone(req))
+      started.resolve()
+      await release.promise
+      for (const event of textTurn('done')) yield event
+    }
+    const session = provider.createSession({ id: 'turn-model-context', cwd: dir, model: 'model-a' })
+    const frames: Frame[] = []
+    void (async () => { for await (const frame of session.messages) frames.push(frame as Frame) })()
+    try {
+      session.enqueueUserMessage(userMsg('go') as never)
+      await started.promise
+      await session.setModel?.('model-b')
+      release.resolve()
+      await vi.waitFor(() => expect(frames.some((frame) => frame.type === 'result')).toBe(true))
+      expect(requests[0].model).toBe('model-a')
+    } finally {
+      release.resolve()
+      await session.destroy()
+    }
+  })
+
+  it('uses the default discovery when no scripted stream is installed', async () => {
+    const dir = await tempDir('native-context-discovery-')
+    const discovery = vi.spyOn(AnthropicModelDiscovery.prototype, 'retrieve').mockResolvedValue(1_000_000)
+    const provider = new NativeProvider({ stateDir: dir })
+    const session = provider.createSession({ id: 'context-discovery', cwd: dir, model: 'model-a' })
+    try {
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage).toMatchObject({ model: 'model-a', maxTokens: 1_000_000, autoCompactThreshold: 800_000 })
+      expect(discovery).toHaveBeenCalledTimes(1)
+    } finally {
+      await session.destroy()
+      discovery.mockRestore()
+    }
+  })
+
+  it.each([
+    { label: 'before createSession', late: false },
+    { label: 'after createSession', late: true },
+  ])('suppresses default discovery when the scripted stream is installed $label', async ({ late }) => {
+    const dir = await tempDir(`native-context-discovery-guard-${late ? 'late' : 'early'}-`)
+    const discovery = vi.spyOn(AnthropicModelDiscovery.prototype, 'retrieve').mockResolvedValue(1_000_000)
+    const provider = new NativeProvider({ stateDir: dir })
+    const scripted = async function* () { yield* [] }
+    if (!late) (provider as unknown as { _testStream: unknown })._testStream = scripted
+    const session = provider.createSession({ id: 'context-discovery-guard', cwd: dir, model: 'model-a' })
+    if (late) (provider as unknown as { _testStream: unknown })._testStream = scripted
+    try {
+      const usage = (await session.getContextUsage?.()) as NativeContextUsage
+      expect(usage).toMatchObject({ maxTokens: 200_000, autoCompactThreshold: 160_000 })
+      expect(discovery).not.toHaveBeenCalled()
+    } finally {
+      await session.destroy()
+      discovery.mockRestore()
+    }
   })
 
   it('interrupt during tool processing does not park the turn: next tool skipped, exactly one interrupted result', async () => {
