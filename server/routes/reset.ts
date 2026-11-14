@@ -80,13 +80,15 @@ export function buildResetRouter(deps: ResetRouterDeps): Hono {
               const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
               existing.profiles = profiles.map((p) => {
                 if (typeof p !== 'object' || p === null) return p
-                return {
+                const next = {
                   ...p,
                   modelList: [...DEFAULT_PROFILE.modelList],
                   modelGroups: [...DEFAULT_PROFILE.modelGroups],
                   recapModel: DEFAULT_PROFILE.recapModel,
                   commitMessageModel: DEFAULT_PROFILE.commitMessageModel,
                 }
+                delete next.modelContextWindows
+                return next
               })
             })
             await loadConfig(deps.configDir)

@@ -174,6 +174,27 @@ describe('POST /config/reset', () => {
     expect(loadConfig).toHaveBeenCalled()
   })
 
+  it('app-settings deletes model context window overrides with the other model fields', async () => {
+    const app = buildResetRouter(makeDeps() as any)
+    const res = await app.request('/config/reset', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ items: ['app-settings'] }),
+    })
+    expect(res.status).toBe(200)
+
+    const mutateArg = (queueConfigWrite as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][1] as (existing: Record<string, unknown>) => void
+    const fixture = {
+      profiles: [{
+        id: 'default', name: 'Default', authToken: 'keep-me', baseUrl: 'https://gw',
+        modelList: ['vendor/a'], modelContextWindows: { 'vendor/a': 1_000_000 },
+      }],
+    }
+    mutateArg(fixture)
+
+    expect((fixture.profiles as Array<Record<string, unknown>>)[0].modelContextWindows).toBeUndefined()
+  })
+
   it('rejects unknown items with 400', async () => {
     const app = buildResetRouter(makeDeps() as any)
     const res = await app.request('/config/reset', {
