@@ -453,6 +453,10 @@
 .perm-card .modal-footer {
   flex-shrink: 0;
 }
+.perm-card .btn-icon:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .perm-feedback-input {
   width: 100%;
   resize: vertical;
@@ -472,31 +476,6 @@
 .perm-feedback-input:disabled {
   opacity: 0.6;
 }
-/* Minimize (×) button in the QuestionDialog header — hides the dialog so
-   the user can read the conversation behind it; the question stays pending
-   and the inline message card re-opens it. */
-.question-minimize-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--size-28px);
-  height: var(--size-28px);
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-.question-minimize-btn:hover:not(:disabled) {
-  background: var(--btn-hover-bg);
-  color: var(--fg);
-}
-.question-minimize-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
 /* Custom right-click menu. `position: fixed` at the cursor, portalled to
    <body> by ContextMenu.tsx (viewport coordinates + containing-block hazard —
    see the note in layout.css). */

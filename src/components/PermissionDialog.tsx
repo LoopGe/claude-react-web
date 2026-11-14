@@ -305,7 +305,7 @@ export const PermissionDialog = memo(function PermissionDialog({ open = true, re
                     ? 'Approval continues in your current permission mode.'
                     : 'Approval exits plan mode and continues in review-each mode.'}
                 </span>
-                <div className="perm-plan-actions">
+                <div className="perm-plan-actions decision-actions">
                   <button
                     className="btn btn-primary"
                     onClick={() => click({ behavior: 'allow', persistForSession: false, planTargetMode: planTargetModeFor(currentMode) })}

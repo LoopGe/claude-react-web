@@ -69,18 +69,18 @@ export const PlanCard = memo(function PlanCard({
   return (
     <AnimatedDetails
       key={status}
-      className={`plan-card-collapsible ${status}${isMinimized ? ' plan-card-minimized' : ''}`}
+      className={`plan-card-collapsible decision-card ${status}${isMinimized ? ' plan-card-minimized' : ''}`}
       defaultOpen={defaultOpen}
       summary={(
-        <div className="plan-card-header">
-          <span className="plan-card-chevron" aria-hidden>
+        <div className="plan-card-header decision-card-header">
+          <span className="plan-card-chevron decision-card-chevron" aria-hidden>
             <IconChevronDown size={14} />
           </span>
-          <span className="plan-card-icon" aria-hidden>
+          <span className="plan-card-icon decision-card-icon" aria-hidden>
             <IconClipboardList size={14} />
           </span>
-          <span className="plan-card-title">Plan proposal</span>
-          <span className={`plan-card-status ${status}`} title={statusTitle}>
+          <span className="plan-card-title decision-card-title">Plan proposal</span>
+          <span className={`plan-card-status decision-card-status ${status}`} title={statusTitle}>
             {statusLabel}
           </span>
           {isMinimized && toolUseId && (

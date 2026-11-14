@@ -3182,20 +3182,20 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   font-size: var(--fs-base);
   font-weight: 600;
 }
-.perm-plan-actions {
+.decision-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
 }
-.perm-plan-actions .btn {
+.decision-actions .btn {
   min-width: 0;
-  height: 36px;
+  min-height: 36px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.perm-plan-actions .btn-icon {
+.decision-actions .btn-icon {
   width: 36px;
   min-width: 36px;
   height: 36px;
@@ -3206,7 +3206,7 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   flex: 0 0 auto;
   align-self: center;
 }
-.plan-card-header {
+.decision-card-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -3216,24 +3216,24 @@ details.bash-tool-collapsible > summary::-webkit-details-marker { display: none;
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-base);
 }
-.plan-card-chevron {
+.decision-card-chevron {
   display: inline-flex;
   align-items: center;
   color: var(--fg-muted);
   transition: transform var(--motion-duration-base) var(--motion-ease-standard);
 }
-details.plan-card-collapsible[data-state="closed"] .plan-card-chevron {
+details.decision-card[data-state="closed"] .decision-card-chevron {
   transform: rotate(-90deg);
 }
 @media (prefers-reduced-motion: reduce) {
-  .plan-card-chevron {
+  .decision-card-chevron {
     transition: none;
   }
 }
-.plan-card-icon {
+.decision-card-icon {
   font-size: var(--fs-md);
 }
-.plan-card-title {
+.decision-card-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3241,22 +3241,24 @@ details.plan-card-collapsible[data-state="closed"] .plan-card-chevron {
   font-weight: 600;
   color: var(--fg);
 }
-.plan-card-status {
+.decision-card-status {
   margin-left: auto;
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  color: var(--warn-text);
   font-size: var(--fs-xs);
   white-space: nowrap;
 }
-.plan-card-status::before {
+.decision-card-status::before {
   content: "";
   width: 6px;
   height: 6px;
   border-radius: var(--radius-circle);
   background: currentColor;
+}
+.plan-card-status {
+  color: var(--warn-text);
 }
 .plan-card-status.approved {
   color: var(--ok-text);
@@ -3307,9 +3309,9 @@ details.plan-card-collapsible[data-state="closed"] .plan-card-chevron {
   border-radius: var(--radius-3xs);
   font-size: var(--fs-xs);
 }
-/* Collapsible variant — used by Chat to wrap the plan card in a <details>
-   so long plans fold by default. The summary doubles as the header. */
-details.plan-card-collapsible {
+/* Shared disclosure shell for PlanCard and QuestionCard. The summary
+   doubles as the header; semantic rail colors stay on each card type. */
+details.decision-card {
   border: 1px solid var(--border);
   border-left: 3px solid var(--warn);
   border-radius: var(--radius-sm);
@@ -3323,17 +3325,17 @@ details.plan-card-collapsible.approved {
 details.plan-card-collapsible.rejected {
   border-left-color: var(--danger);
 }
-details.plan-card-collapsible > summary {
+details.decision-card > summary {
   list-style: none;
   cursor: pointer;
   padding: var(--space-2) var(--space-3);
   user-select: none;
 }
-details.plan-card-collapsible > summary::-webkit-details-marker { display: none; }
-details.plan-card-collapsible[data-state="open"] > summary {
+details.decision-card > summary::-webkit-details-marker { display: none; }
+details.decision-card[data-state="open"] > summary {
   border-bottom: 1px solid var(--border);
 }
-details.plan-card-collapsible > summary > .plan-card-header {
+details.decision-card > summary > .decision-card-header {
   border-bottom: none;
   padding: 0;
 }
@@ -3360,6 +3362,11 @@ details.plan-card-collapsible > summary > .plan-card-header {
    Interactive dialog shown when the SDK calls AskUserQuestion. Reuses
    .perm-overlay / .perm-card for the frame; the rest below styles the
    per-question forms and selectable options. */
+.question-actions .btn {
+  flex: 1 1 120px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .question-body {
   display: flex;
   flex-direction: column;
@@ -3369,18 +3376,16 @@ details.plan-card-collapsible > summary > .plan-card-header {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+}
+.question-block + .question-block {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
 }
 .question-header {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
   color: var(--fg-muted);
 }
 .question-chip {
@@ -3646,67 +3651,31 @@ details.plan-card-collapsible > summary > .plan-card-header {
 }
 
 /* --- Inline AskUserQuestion card -------------------------------------
-   Rendered inside the transcript by ToolUseBlock when the model asks
-   a question. Pending cards auto-expand so the user can read the
-   prompt; resolved cards collapse to a one-line summary so long
-   transcripts stay scannable. Accent-tinted to read as informational
-   (vs amber/warn for plans). */
+   Uses the shared decision-card shell and disclosure header. Accent is
+   reserved for pending/clarified questions; answered and skipped states
+   use their semantic rail colors. */
 details.question-inline-card {
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  border-left: 3px solid var(--accent);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--accent) 5%, var(--bg-elev));
-  margin: var(--space-2) 0;
-  overflow: clip;
+  border-left-color: var(--accent);
 }
-details.question-inline-card > summary {
-  list-style: none;
-  cursor: pointer;
-  padding: var(--space-2) var(--space-3);
-  user-select: none;
+details.question-inline-card.answered {
+  border-left-color: var(--ok);
 }
-details.question-inline-card > summary::-webkit-details-marker { display: none; }
-details.question-inline-card[data-state="open"] > summary {
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
-}
-.question-inline-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--fs-base);
-}
-.question-inline-icon {
-  font-size: var(--fs-md);
-}
-.question-inline-title {
-  font-weight: 600;
-  color: var(--fg);
+details.question-inline-card.skipped {
+  border-left-color: var(--fg-muted);
 }
 .question-inline-status {
-  margin-left: auto;
-  padding: var(--space-0-5) var(--space-2);
-  font-size: var(--fs-2xs);
-  font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
   color: var(--accent-text);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 .question-inline-status.answered {
-  background: color-mix(in srgb, var(--ok) 16%, var(--bg-elev));
   color: var(--ok-text);
-  border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 }
 .question-inline-status.skipped {
-  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
   color: var(--fg-muted);
-  border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
 }
-/* "Click to answer" pill on a minimized pending question card. Sits after
-   the status chip (which has margin-left:auto). */
+/* "Answer questions" pill on a minimized pending question card. Sits after
+   the status text (which has margin-left:auto). */
 .question-inline-reopen {
+  flex: 0 0 auto;
   padding: var(--space-0-5) var(--space-2-5);
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -3777,9 +3746,8 @@ details.question-inline-card .question-inline-body {
   padding: var(--space-2-5) var(--space-3-5) var(--space-3);
   display: flex;
   flex-direction: column;
-  /* Matches the QuestionDialog's .question-body rhythm: boxed
-     .question-block rows at a 14px gap. The item boxes carry the structural
-     boundary between questions; this gap keeps the boxes apart. */
+  /* Matches the QuestionDialog's .question-body rhythm. Borderless
+     question sections use a separator and this gap to stay distinct. */
   gap: var(--space-3-5);
 }
 .question-inline-empty {
@@ -3791,13 +3759,10 @@ details.question-inline-card .question-inline-body {
   display: flex;
   flex-direction: column;
   gap: var(--space-1-5);
-  /* Boxed like the QuestionDialog's .question-block (bg + border + padding +
-   * radius). The box edge is the structural separator between questions in
-   * multi-question cards; without it the boundary was bare whitespace. */
-  padding: var(--space-3);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+}
+.question-inline-item + .question-inline-item {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
 }
 .question-inline-item.skipped {
   opacity: 0.65;
@@ -3807,21 +3772,12 @@ details.question-inline-card .question-inline-body {
   align-items: center;
   gap: var(--space-2);
   font-size: var(--fs-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
   color: var(--fg-muted);
 }
 .question-inline-skipped-badge {
   margin-left: auto;
-  padding: 1px 6px;
-  font-size: var(--fs-2xs);
-  font-family: var(--mono);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--fg-muted) 12%, transparent);
+  font-size: var(--fs-xs);
   color: var(--fg-muted);
-  border: 1px solid color-mix(in srgb, var(--fg-muted) 30%, transparent);
 }
 .question-inline-options {
   list-style: none;
@@ -3836,9 +3792,8 @@ details.question-inline-card .question-inline-body {
   align-items: flex-start;
   gap: var(--space-2-5);
   padding: var(--space-1-5) var(--space-2-5);
-  /* One elevation step above the boxed .question-inline-item (--bg), so the
-     option keeps its contrast inside the item box — same step the
-     QuestionDialog uses (block --bg, option --bg-elev). */
+  /* Options keep their own bordered surface because selection is part of
+     the content; the question sections around them stay borderless. */
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);

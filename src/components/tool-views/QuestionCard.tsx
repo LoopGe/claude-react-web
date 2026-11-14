@@ -10,6 +10,7 @@ import { useQuestionAnswers } from '../../hooks/useQuestionAnswers'
 import { useReopenQuestion } from '../../hooks/useReopenQuestion'
 import { AnimatedDetails } from '../AnimatedCollapse'
 import {
+  IconChevronDown,
   IconCheckSquare,
   IconCircle,
   IconCircleDot,
@@ -62,7 +63,10 @@ export const QuestionCard = memo(function QuestionCard({
   // The dialog is minimized (hidden) but the question is still awaiting an
   // answer; let the user click this card to bring the dialog back.
   const isMinimized = status === 'pending' && !!toolUseId && minimizedToolUseIds.has(toolUseId)
-  const statusLabel = status
+  const statusLabel =
+    status === 'pending'
+      ? 'Pending answer'
+      : status.charAt(0).toUpperCase() + status.slice(1)
   const statusTitle =
     status === 'answered'
       ? 'You answered - Claude received your selections.'
@@ -78,17 +82,20 @@ export const QuestionCard = memo(function QuestionCard({
   return (
     <AnimatedDetails
       key={status}
-      className={`question-inline-card question-inline-card-${status}${isMinimized ? ' question-inline-card-minimized' : ''}`}
+      className={`question-inline-card decision-card ${status}${isMinimized ? ' question-inline-card-minimized' : ''}`}
       defaultOpen={defaultOpen}
       summary={(
-        <div className="question-inline-header">
-          <span className="question-inline-icon" aria-hidden>
+        <div className="question-inline-header decision-card-header">
+          <span className="question-inline-chevron decision-card-chevron" aria-hidden>
+            <IconChevronDown size={14} />
+          </span>
+          <span className="question-inline-icon decision-card-icon" aria-hidden>
             <IconMessageQuestion size={14} />
           </span>
-          <span className="question-inline-title">
+          <span className="question-inline-title decision-card-title">
             {questions.length === 1 ? 'Question for you' : `${questions.length} questions for you`}
           </span>
-          <span className={`question-inline-status ${status}`} title={statusTitle}>
+          <span className={`question-inline-status decision-card-status ${status}`} title={statusTitle}>
             {statusLabel}
           </span>
           {isMinimized && toolUseId && (
@@ -104,7 +111,7 @@ export const QuestionCard = memo(function QuestionCard({
               }}
               title="Reopen question dialog"
             >
-              Click to answer
+              Answer questions
             </button>
           )}
         </div>
@@ -167,7 +174,7 @@ function QuestionItemView({
         {question.header && <span className="question-chip">{question.header}</span>}
         <span className="question-index">Q{index + 1}</span>
         {isMulti && <span className="question-mode">multi-select</span>}
-        {skipped && <span className="question-inline-skipped-badge">skipped</span>}
+        {skipped && <span className="question-inline-skipped-badge">Skipped</span>}
       </div>
       <div className="question-text">{question.question}</div>
       <ul className="question-inline-options">

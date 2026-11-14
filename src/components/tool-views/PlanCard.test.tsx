@@ -45,8 +45,10 @@ describe('PlanCard', () => {
     const details = container.querySelector('details')!
     expect(details.getAttribute('data-state')).toBe(dataState)
     expect(details.classList).toContain(status)
+    expect(details.classList).toContain('decision-card')
     expect(container.querySelector('.plan-card-status')?.textContent).toBe(label)
     expect(container.querySelector('.plan-card-chevron')).toBeTruthy()
+    expect(container.querySelector('.plan-card-chevron')?.classList).toContain('decision-card-chevron')
   })
 
   it('uses a neutral explanation for a rejected plan', () => {

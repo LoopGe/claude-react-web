@@ -241,7 +241,7 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
   return (
     <Overlay
       variant="perm"
-      ariaLabel="Claude is asking"
+      ariaLabel="Answer questions"
       open={open}
       onClose={cancel}
       backdropDismiss={false}
@@ -254,11 +254,11 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
       <div className="modal-header">
         <h3 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span aria-hidden style={{ display: 'inline-flex' }}><IconMessageCircle size={16} /></span>
-          Claude is asking
+          Answer questions
         </h3>
         <button
           type="button"
-          className="question-minimize-btn"
+          className="btn-icon"
           onClick={onMinimize}
           disabled={busy}
           aria-label="Minimize"
@@ -303,28 +303,26 @@ export function QuestionDialog({ open = true, request, onSubmit, onClarify, onSk
       )}
 
       <div className="modal-footer" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            className="btn"
-            onClick={cancel}
-            disabled={busy}
-            style={{ flex: 1 }}
-            title={clarifying ? 'Back to the questions' : 'Skip every question — the model will continue with no guidance'}
-          >
-            {clarifying ? 'Back' : 'Skip all'}
-          </button>
-          {!clarifying && (
-            <button className="btn" onClick={enterClarification} disabled={busy} style={{ flex: 1 }}>
-              Chat about this
-            </button>
-          )}
+        <div className="question-actions decision-actions">
           <button
             className="btn btn-primary"
             onClick={clarifying ? clarify : submit}
             disabled={busy || (clarifying ? !feedback.trim() : !hasAnyAnswer)}
-            style={{ flex: 2 }}
           >
             {clarifying ? 'Send clarification' : 'Send answers'}
+          </button>
+          {!clarifying && (
+            <button className="btn" onClick={enterClarification} disabled={busy}>
+              Chat about this
+            </button>
+          )}
+          <button
+            className="btn"
+            onClick={cancel}
+            disabled={busy}
+            title={clarifying ? 'Back to the questions' : 'Skip every question — the model will continue with no guidance'}
+          >
+            {clarifying ? 'Back' : 'Skip all'}
           </button>
         </div>
         <span className="hint" style={{ textAlign: 'center' }}>
