@@ -179,6 +179,7 @@ export interface ProviderProfile {
   baseUrl: string
   modelList: string[]
   modelGroups: ModelGroupConfig[]
+  modelContextWindows?: Record<string, number>
   recapModel: string
   commitMessageModel: string
   isActive: boolean

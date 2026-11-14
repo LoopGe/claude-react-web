@@ -5,7 +5,7 @@ import { tempDir, rmRf } from './__test-utils__/index.js'
 import { MANIFEST_REL_PATH } from './marketplace-parser.js'
 import { MpStore } from './mp-store.js'
 import { DEFAULT_PROFILE } from './config.js'
-import { readSourceCredentials, readSourceMcp, readSourceMarketplaces } from './web-import.js'
+import { readSourceCredentials, readSourceMcp, readSourceMarketplaces, hasUsableProfileFields } from './web-import.js'
 
 /** 网页版的 config.json：active profile 是数组里的第二条（用户切换过），
  *  第一条是旧的、带一个假 token —— 导入必须认 active 那条。 */
@@ -112,6 +112,58 @@ describe('readSourceCredentials', () => {
     const cred = await readSourceCredentials(dir)
     expect(cred.modelGroups).toEqual([{ id: 'g1', name: 'G1', opus: 'o-1', sonnet: 's-1', main: 'opus' }])
     expect(cred.present.modelGroups).toBe(true)
+  })
+
+  it('reads model context windows as a present, independent copy', async () => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Work', authToken: 'sk-ant-work1234', baseUrl: 'https://work.example.com',
+        modelList: ['vendor/a'], modelContextWindows: {
+          'vendor/a': 1_000_000, 'vendor/b': 128_000, invalid: '128000', zero: 0, '': 200_000,
+        },
+      }],
+      activeProfileId: 'default',
+    }), 'utf8')
+
+    const first = await readSourceCredentials(dir)
+    expect(first.modelContextWindows).toEqual({ 'vendor/a': 1_000_000, 'vendor/b': 128_000 })
+    expect(first.present.modelContextWindows).toBe(true)
+
+    first.modelContextWindows!['vendor/a'] = 1
+    const second = await readSourceCredentials(dir)
+    expect(second.modelContextWindows).toEqual({ 'vendor/a': 1_000_000, 'vendor/b': 128_000 })
+    expect(second.modelContextWindows).not.toBe(first.modelContextWindows)
+  })
+
+  it('treats a valid model context map as usable without any other profile fields', async () => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Overrides', modelContextWindows: { 'vendor/a': 1_000_000 },
+      }],
+      activeProfileId: 'default',
+    }), 'utf8')
+
+    const cred = await readSourceCredentials(dir)
+    expect(cred.present.modelContextWindows).toBe(true)
+    expect(hasUsableProfileFields(cred.present)).toBe(true)
+  })
+
+  it('does not treat an all-invalid model context map as a usable field', async () => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Invalid',
+        modelContextWindows: { string: '128000', zero: 0, negative: -1, fraction: 1.5, '': 200_000 },
+      }],
+      activeProfileId: 'default',
+    }), 'utf8')
+
+    const cred = await readSourceCredentials(dir)
+    expect(cred.modelContextWindows).toBeUndefined()
+    expect(cred.present.modelContextWindows).toBe(false)
+    expect(hasUsableProfileFields(cred.present)).toBe(false)
   })
 
   // 畸形分组只该被 coerce 一次。早先 present 那一格对着同一个

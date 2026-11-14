@@ -231,6 +231,35 @@ describe('profiles router', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
+  it('preserves model context windows when an edit does not touch them', async () => {
+    const { promises: fs } = await import('node:fs')
+    const { join } = await import('node:path')
+    const { tmpdir } = await import('node:os')
+    const configMod = await import('../config.js')
+    const dir = await fs.mkdtemp(join(tmpdir(), 'crw-profiles-context-'))
+    await fs.writeFile(join(dir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Gateway', authToken: 'sk-x', baseUrl: 'https://gw.example',
+        modelList: ['vendor/a'], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelContextWindows: { 'vendor/a': 1_000_000, 'vendor/b': 128_000 },
+      }],
+      activeProfileId: 'default',
+    }))
+    const app = appWith(dir)
+
+    const res = await app.request('/profiles/default', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed' }),
+    })
+    expect(res.status).toBe(200)
+
+    const onDisk = JSON.parse(await fs.readFile(join(dir, 'config.json'), 'utf8'))
+    expect(onDisk.profiles[0].modelContextWindows).toEqual({ 'vendor/a': 1_000_000, 'vendor/b': 128_000 })
+    expect(configMod.config.profiles[0].modelContextWindows).toEqual({ 'vendor/a': 1_000_000, 'vendor/b': 128_000 })
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
   it('deletes every copy when two raw entries share an id', async () => {
     // The reader resolves the LAST copy (dedup, last wins). Removing only that
     // index would leave a shadowed duplicate that the id still resolves to, so

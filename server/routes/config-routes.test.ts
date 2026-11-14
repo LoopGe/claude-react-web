@@ -205,6 +205,27 @@ describe('config routes — full defaults', () => {
       rmSync(stateDir, { recursive: true, force: true })
     }
   })
+
+  it('returns each profile model context window map', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'crw-cfgfull-context-'))
+    writeFileSync(join(stateDir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Default', authToken: 'sk-x', baseUrl: 'https://gw.example',
+        modelList: ['vendor/a'], modelGroups: [], recapModel: '', commitMessageModel: '',
+        modelContextWindows: { 'vendor/a': 1_000_000, 'vendor/b': 128_000 },
+      }],
+      activeProfileId: 'default',
+    }))
+    try {
+      await loadConfig(stateDir)
+      const res = await buildConfigRouter({} as unknown as SessionManager, stateDir).request('/config/full')
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { profiles: Array<{ modelContextWindows?: Record<string, number> }> }
+      expect(body.profiles[0].modelContextWindows).toEqual({ 'vendor/a': 1_000_000, 'vendor/b': 128_000 })
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('config routes — non-object inputs must not 500', () => {

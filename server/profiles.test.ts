@@ -188,6 +188,47 @@ describe('coerceProfiles', () => {
   })
 })
 
+describe('model context window overrides', () => {
+  it('keeps only positive safe integer values keyed by non-empty model ids', () => {
+    const [profile] = coerceProfiles([{
+      id: 'a',
+      name: 'A',
+      modelContextWindows: {
+        'vendor/a': 1_000_000,
+        'vendor/b': 128_000,
+        string: '128000',
+        zero: 0,
+        negative: -1,
+        fraction: 1.5,
+        nan: NaN,
+        unsafe: Number.MAX_SAFE_INTEGER + 1,
+        '': 200_000,
+      },
+    }], FALLBACK)
+
+    expect(profile.modelContextWindows).toEqual({ 'vendor/a': 1_000_000, 'vendor/b': 128_000 })
+    expect(Object.isFrozen(profile.modelContextWindows)).toBe(true)
+  })
+
+  it('does not inherit overrides from the fallback or another profile', () => {
+    const fallback = { ...FALLBACK, modelContextWindows: { 'vendor/fallback': 64_000 } }
+    const profiles = coerceProfiles([
+      { id: 'a', name: 'A', modelContextWindows: { 'vendor/a': 1_000_000 } },
+      { id: 'b', name: 'B' },
+    ], fallback)
+
+    expect(profiles[0].modelContextWindows).toEqual({ 'vendor/a': 1_000_000 })
+    expect(profiles[1].modelContextWindows).toBeUndefined()
+  })
+
+  it('rejects non-object maps and maps with no valid entries', () => {
+    for (const modelContextWindows of [null, [], 'nope', {}, { bad: '1000' }]) {
+      const [profile] = coerceProfiles([{ id: 'a', name: 'A', modelContextWindows }], FALLBACK)
+      expect(profile.modelContextWindows).toBeUndefined()
+    }
+  })
+})
+
 describe('coerceModelGroups', () => {
   it('mirrors the legacy validation: drops malformed, keeps last dup', () => {
     const groups: ModelGroupConfig[] = [
@@ -203,7 +244,10 @@ describe('coerceModelGroups', () => {
 describe('profileFromLegacyFields', () => {
   it('maps full legacy fields into a default profile', () => {
     const p = profileFromLegacyFields(
-      { authToken: 'tok', baseUrl: 'https://gw/', modelList: ['m'], recapModel: 'r', commitMessageModel: 'c', modelGroups: [] },
+      {
+        authToken: 'tok', baseUrl: 'https://gw/', modelList: ['m'], recapModel: 'r',
+        commitMessageModel: 'c', modelGroups: [], modelContextWindows: { 'vendor/a': 1_000_000 },
+      },
       FALLBACK,
     )
     expect(p.id).toBe('default')
@@ -211,6 +255,7 @@ describe('profileFromLegacyFields', () => {
     expect(p.baseUrl).toBe('https://gw')
     expect(p.modelList).toEqual(['m'])
     expect(p.recapModel).toBe('r')
+    expect(p.modelContextWindows).toEqual({ 'vendor/a': 1_000_000 })
   })
   it('fills missing fields from the fallback', () => {
     const p = profileFromLegacyFields({}, FALLBACK)

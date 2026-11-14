@@ -408,8 +408,8 @@ describe('POST /api/config/web-import — credentials', () => {
   })
 
   // 源里一条**可用** profile 都没有时（`profiles: []`、字段全空白的 profile、或
-  // 还是 legacy 顶层形状——readSourceCredentials 根本不看那六个顶层键），
-  // 写入循环的六个 `if (cred.present.X)` 全为假：源里的值一个都落不到 profile。
+  // 还是 legacy 顶层形状——readSourceCredentials 根本不看那七个顶层键），
+  // 写入循环的七个 `if (cred.present.X)` 全为假：源里的值一个都落不到 profile。
   // 那种情况必须报 imported: false —— 客户端行上写 Imported 是谎报（用户以为
   // 凭证搬过来了，桌面版其实还是未配置）。
   it('reports imported:false when the source has no usable profile to write', async () => {
@@ -517,6 +517,94 @@ describe('POST /api/config/web-import — credentials', () => {
     await loadConfig(stateDir)
     expect(config.authToken).toBeUndefined()
     expect(config.recapModel).toBe('keep-me')
+  })
+})
+
+describe('POST /api/config/web-import — model context windows', () => {
+  let stateDir: string
+  let sourceDir: string
+
+  beforeEach(async () => {
+    stateDir = tempDir('web-import-context-dst')
+    sourceDir = tempDir('web-import-context-src')
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, 'config.json'), JSON.stringify({
+      profiles: [{
+        id: 'default', name: 'Default', authToken: 'sk-target', baseUrl: 'https://target.example.com',
+        modelList: ['target/model'], recapModel: 'keep-me',
+        modelContextWindows: { 'target/old': 200_000 },
+      }],
+      activeProfileId: 'default',
+    }), 'utf8')
+    await loadConfig(stateDir)
+  })
+  afterEach(() => { rmRf(stateDir); rmRf(sourceDir) })
+
+  function writeSource(profile: Record<string, unknown>): void {
+    mkdirSync(sourceDir, { recursive: true })
+    writeFileSync(join(sourceDir, 'config.json'), JSON.stringify({
+      profiles: [{ id: 'default', name: 'Source', ...profile }],
+      activeProfileId: 'default',
+    }), 'utf8')
+  }
+
+  async function postCredentials() {
+    const app = await makeRouter(stateDir, sourceDir)
+    return await app.request('/api/config/web-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ credentials: true }),
+    })
+  }
+
+  function targetProfile(): Record<string, unknown> {
+    const raw = JSON.parse(readFileSync(join(stateDir, 'config.json'), 'utf8'))
+    return raw.profiles[0]
+  }
+
+  it('replaces the target map when the source has a valid map', async () => {
+    writeSource({
+      authToken: 'sk-source', baseUrl: 'https://source.example.com', modelList: ['vendor/a'],
+      modelContextWindows: { 'vendor/a': 1_000_000, 'vendor/b': 128_000 },
+    })
+
+    const res = await postCredentials()
+    expect(res.status).toBe(200)
+    expect((await res.json() as { credentials: { imported: boolean } }).credentials.imported).toBe(true)
+    expect(targetProfile().modelContextWindows).toEqual({ 'vendor/a': 1_000_000, 'vendor/b': 128_000 })
+  })
+
+  it.each([
+    ['modelList', { modelList: ['source/model'] }],
+    ['baseUrl', { baseUrl: 'https://source.example.com' }],
+  ])('clears the target map when the source imports %s without a map', async (_field, profile) => {
+    writeSource(profile)
+
+    const res = await postCredentials()
+    expect(res.status).toBe(200)
+    expect((await res.json() as { credentials: { imported: boolean } }).credentials.imported).toBe(true)
+    expect(targetProfile().modelContextWindows).toBeUndefined()
+  })
+
+  it('keeps the target map when the source imports no routing fields', async () => {
+    writeSource({ recapModel: 'source-recap' })
+
+    const res = await postCredentials()
+    expect(res.status).toBe(200)
+    expect((await res.json() as { credentials: { imported: boolean } }).credentials.imported).toBe(true)
+    expect(targetProfile().modelContextWindows).toEqual({ 'target/old': 200_000 })
+    expect(targetProfile().baseUrl).toBe('https://target.example.com')
+    expect(targetProfile().modelList).toEqual(['target/model'])
+  })
+
+  it('does not treat an all-invalid source map as a usable profile', async () => {
+    writeSource({ modelContextWindows: { string: '128000', zero: 0, negative: -1, fraction: 1.5 } })
+    const before = targetProfile()
+
+    const res = await postCredentials()
+    expect(res.status).toBe(200)
+    expect((await res.json() as { credentials: { imported: boolean } }).credentials.imported).toBe(false)
+    expect(targetProfile()).toEqual(before)
   })
 })
 

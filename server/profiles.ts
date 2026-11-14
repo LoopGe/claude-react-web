@@ -13,14 +13,32 @@ const log = createLogger('profiles')
 // guard one hand-edited reserved id would re-emit its line on every save.
 const warnedReservedIds = new Set<string>()
 
-/** The six legacy top-level credential/model fields migrated into profiles[0]. */
+/** The seven legacy top-level credential/model fields migrated into profiles[0]. */
 export interface LegacyProfileFields {
   authToken?: string
   baseUrl?: string
   modelList?: string[]
   modelGroups?: ModelGroupConfig[]
+  modelContextWindows?: Record<string, number>
   recapModel?: string
   commitMessageModel?: string
+}
+
+/** Keep exact model-id overrides whose capacities are positive safe integers.
+ *  Invalid entries are dropped independently so one bad value cannot hide the
+ *  usable overrides. Keys are deliberately not trimmed or normalized: lookup
+ *  uses the complete request model id verbatim. */
+export function coerceModelContextWindows(raw: unknown): Record<string, number> | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined
+  const entries: Array<[string, number]> = []
+  for (const [model, contextWindow] of Object.entries(raw)) {
+    if (!model || typeof contextWindow !== 'number' || !Number.isSafeInteger(contextWindow) || contextWindow <= 0) {
+      log.warn(`dropping invalid model context window for ${model || '(empty model id)'}`)
+      continue
+    }
+    entries.push([model, contextWindow])
+  }
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
 }
 
 /** modelList[0], or '' for an empty list. */
@@ -170,6 +188,7 @@ export function coerceProfileEntries(raw: unknown, fallback: ProviderProfile): C
       ? e.baseUrl.trim().replace(/\/+$/, '')
       : fallback.baseUrl
     const modelList = normalizeModelList(e.modelList, fallback.modelList)
+    const modelContextWindows = coerceModelContextWindows(e.modelContextWindows)
     const recapModel = typeof e.recapModel === 'string' && e.recapModel.trim()
       ? e.recapModel.trim() : fallback.recapModel
     const commitMessageModel = typeof e.commitMessageModel === 'string' && e.commitMessageModel.trim()
@@ -180,6 +199,7 @@ export function coerceProfileEntries(raw: unknown, fallback: ProviderProfile): C
       profile: {
         id, name, authToken, baseUrl, modelList,
         modelGroups: coerceModelGroups(e.modelGroups),
+        ...(modelContextWindows ? { modelContextWindows: Object.freeze(modelContextWindows) } : {}),
         recapModel, commitMessageModel,
       },
     })
@@ -192,12 +212,13 @@ export function coerceProfiles(raw: unknown, fallback: ProviderProfile): Provide
   return coerceProfileEntries(raw, fallback).map((entry) => entry.profile)
 }
 
-/** Build a ProviderProfile from the six legacy top-level fields (migration
+/** Build a ProviderProfile from the seven legacy top-level fields (migration
  *  helper). Missing fields fall back to the synthetic fallback. */
 export function profileFromLegacyFields(
   f: LegacyProfileFields,
   fallback: ProviderProfile,
 ): ProviderProfile {
+  const modelContextWindows = coerceModelContextWindows(f.modelContextWindows)
   return {
     id: 'default',
     name: 'Default',
@@ -206,6 +227,7 @@ export function profileFromLegacyFields(
       ? f.baseUrl.trim().replace(/\/+$/, '') : fallback.baseUrl,
     modelList: normalizeModelList(f.modelList, fallback.modelList),
     modelGroups: Array.isArray(f.modelGroups) ? coerceModelGroups(f.modelGroups) : [...fallback.modelGroups],
+    ...(modelContextWindows ? { modelContextWindows: Object.freeze(modelContextWindows) } : {}),
     recapModel: typeof f.recapModel === 'string' && f.recapModel.trim()
       ? f.recapModel.trim() : fallback.recapModel,
     commitMessageModel: typeof f.commitMessageModel === 'string' && f.commitMessageModel.trim()

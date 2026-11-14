@@ -58,6 +58,8 @@ export interface ProviderProfile {
   baseUrl: string
   modelList: readonly string[]
   modelGroups: readonly ModelGroupConfig[]
+  /** Exact request model id → context capacity. No cross-profile inheritance. */
+  modelContextWindows?: Readonly<Record<string, number>>
   /** Model for AI session recaps. EMPTY = use the session's own model.
    *  Never a hardcoded default: a model id this profile's provider does not
    *  serve is rejected at request time (third-party gateways answer 401 for
@@ -72,6 +74,7 @@ export interface ProviderProfile {
 interface ConfigFile {
   modelList?: string[]
   modelGroups?: ModelGroupConfig[]
+  modelContextWindows?: Record<string, number>
   /** Model used for AI session recaps (the "(default)" option in the
    *  profile UI). EMPTY — the default — means "use the session's own model";
    *  set it to a specific id to force a cheaper/stronger model. Stored as a
@@ -557,9 +560,9 @@ export async function loadConfig(stateDir: string): Promise<void> {
 /** The pre-`profiles` top-level credential/model keys. Exported because writers
  *  that materialize a profile also have to retire them in the same pass —
  *  leaving one behind lets a later empty `profiles` resurrect a stale value. */
-export const LEGACY_PROFILE_KEYS = ['authToken', 'baseUrl', 'modelList', 'modelGroups', 'recapModel', 'commitMessageModel'] as const
+export const LEGACY_PROFILE_KEYS = ['authToken', 'baseUrl', 'modelList', 'modelGroups', 'modelContextWindows', 'recapModel', 'commitMessageModel'] as const
 
-/** Hard-migrate the six legacy top-level credential/model fields into a
+/** Hard-migrate the seven legacy top-level credential/model fields into a
  *  `profiles[0]` + `activeProfileId` on first load. Runs once: when `profiles`
  *  is already present it is a no-op. Never throws — a write failure is logged
  *  and the in-memory migration still proceeds. */
@@ -1100,7 +1103,10 @@ export async function clearCredentials(stateDir: string): Promise<void> {
     const profiles = Array.isArray(existing.profiles) ? existing.profiles : []
     existing.profiles = profiles.map((p) => {
       if (typeof p !== 'object' || p === null || Array.isArray(p)) return p
-      return { ...p, authToken: '', baseUrl: DEFAULTS.baseUrl }
+      const next = { ...p, authToken: '', baseUrl: DEFAULTS.baseUrl }
+      // Capacities belong to the old route, not the official-endpoint default.
+      delete next.modelContextWindows
+      return next
     })
   })
   await loadConfig(stateDir)

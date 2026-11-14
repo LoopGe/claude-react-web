@@ -190,8 +190,8 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
    *  只写源里确实存在的字段：源没有的保留桌面版现状，不清空。
    *
    *  源里一条**可用** profile 都没有时（`profiles: []`、字段全空白的 profile、
-   *  或还是 legacy 顶层形状——readSourceCredentials 根本不看那六个顶层键），
-   *  下面写入循环的六个 `if (cred.present.X)` 全为假：源里的值一个都落不到
+   *  或还是 legacy 顶层形状——readSourceCredentials 根本不看那七个顶层键），
+   *  下面写入循环的七个 `if (cred.present.X)` 全为假：源里的值一个都落不到
    *  profile。那种情况必须报 imported: false —— 客户端行上写 Imported 是谎报
    *  （用户以为凭证搬过来了，桌面版其实还是未配置）。
    *  返回 `nothingWritten` 而不是提前 return：config heal 那一整段（与
@@ -225,6 +225,11 @@ export function buildWebImportRouter(deps: WebImportRouterDeps): Hono {
       if (cred.present.baseUrl) prof.baseUrl = cred.baseUrl
       if (cred.present.modelList) prof.modelList = cred.modelList
       if (cred.present.modelGroups) prof.modelGroups = cred.modelGroups
+      if (cred.present.modelContextWindows) {
+        prof.modelContextWindows = { ...cred.modelContextWindows }
+      } else if (cred.present.modelList || cred.present.baseUrl) {
+        delete prof.modelContextWindows
+      }
       if (cred.present.recapModel) prof.recapModel = cred.recapModel
       if (cred.present.commitMessageModel) prof.commitMessageModel = cred.commitMessageModel
       profilesArr[hit.index] = prof

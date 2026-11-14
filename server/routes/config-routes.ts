@@ -262,6 +262,7 @@ export function buildConfigRouter(sm: SessionManager, configDir?: string): Hono 
         baseUrl: p.baseUrl,
         modelList: p.modelList,
         modelGroups: p.modelGroups,
+        ...(p.modelContextWindows ? { modelContextWindows: { ...p.modelContextWindows } } : {}),
         recapModel: p.recapModel,
         commitMessageModel: p.commitMessageModel,
         isActive: p.id === serverConfig.activeProfileId,

@@ -752,6 +752,7 @@ describe('provider-profile migration + derived fields', () => {
       modelList: ['m1', 'm2'],
       recapModel: 'r-model',
       commitMessageModel: 'c-model',
+      modelContextWindows: { 'vendor/a': 1_000_000, 'vendor/b': 128_000 },
     }))
     vi.spyOn(console, 'log').mockImplementation(() => {})
     await loadConfig(dir)
@@ -759,9 +760,11 @@ describe('provider-profile migration + derived fields', () => {
     expect(raw.profiles).toHaveLength(1)
     expect(raw.profiles[0].authToken).toBe('legacy-token')
     expect(raw.profiles[0].baseUrl).toBe('https://gw.example.com')
+    expect(raw.profiles[0].modelContextWindows).toEqual({ 'vendor/a': 1_000_000, 'vendor/b': 128_000 })
     expect(raw.activeProfileId).toBe('default')
     expect(raw.authToken).toBeUndefined()
     expect(raw.modelList).toBeUndefined()
+    expect(raw.modelContextWindows).toBeUndefined()
     // Derived fields reflect the migrated profile.
     expect(config.modelList).toEqual(['m1', 'm2'])
     expect(config.authToken).toBe('legacy-token')
@@ -814,8 +817,8 @@ describe('provider-profile migration + derived fields', () => {
   it('clearCredentials blanks every profile token and baseUrl', async () => {
     writeFileSync(join(dir, 'config.json'), JSON.stringify({
       profiles: [
-        { id: 'a', name: 'A', authToken: 't1', baseUrl: 'https://gw1', modelList: ['ma'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
-        { id: 'b', name: 'B', authToken: 't2', baseUrl: 'https://gw2', modelList: ['mb'], modelGroups: [], recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'a', name: 'A', authToken: 't1', baseUrl: 'https://gw1', modelList: ['ma'], modelGroups: [], modelContextWindows: { ma: 512_000 }, recapModel: 'r', commitMessageModel: 'c' },
+        { id: 'b', name: 'B', authToken: 't2', baseUrl: 'https://gw2', modelList: ['mb'], modelGroups: [], modelContextWindows: { mb: 128_000 }, recapModel: 'r', commitMessageModel: 'c' },
       ],
       activeProfileId: 'a',
     }))
@@ -826,6 +829,7 @@ describe('provider-profile migration + derived fields', () => {
     const raw = JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8'))
     expect(raw.profiles.every((p: { authToken: string; baseUrl: string }) => p.authToken === '')).toBe(true)
     expect(raw.profiles[0].baseUrl).toBe('https://api.anthropic.com')
+    expect(raw.profiles.every((p: { modelContextWindows?: Record<string, number> }) => p.modelContextWindows === undefined)).toBe(true)
   })
 })
 
