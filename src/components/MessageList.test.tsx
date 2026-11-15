@@ -2093,6 +2093,9 @@ describe('MessageList', () => {
         act(() => { fireEvent.scroll(scroller) })
         expect(state.appWrites).toBe(writes + 2)
         act(() => { setCollapseAnimating(fold, false) })
+        // The settle owns one rendering step of stand-down (the pacing probe
+        // latch); the deferred write lands on the next frame.
+        act(() => { vi.advanceTimersByTime(20) })
         act(() => { vi.advanceTimersByTime(20) })
         expect(state.appWrites).toBe(writes + 3)
         expect(scroller.scrollTop).toBe(236)
@@ -2129,6 +2132,7 @@ describe('MessageList', () => {
         act(() => { vi.advanceTimersByTime(20) })
         act(() => { setCollapseAnimating(fold, false) })
         act(() => { vi.advanceTimersByTime(20) })
+        act(() => { vi.advanceTimersByTime(20) })
         expect(state.appWrites).toBe(writes + 2)
         expect(scroller.scrollTop).toBe(222)
       } finally {
@@ -2155,6 +2159,7 @@ describe('MessageList', () => {
         act(() => { fireResize(scroller) })
         expect(scrollTo).not.toHaveBeenCalled()
         act(() => { setCollapseAnimating(fold, false) })
+        act(() => { vi.advanceTimersByTime(20) })
         act(() => { vi.advanceTimersByTime(20) })
         expect(state.appWrites).toBe(writes + 1)
         expect(scroller.scrollTop).toBe(244)
@@ -2306,6 +2311,7 @@ describe('MessageList', () => {
         act(() => { vi.advanceTimersByTime(20) })
         act(() => { setCollapseAnimating(fold, false) })
         act(() => { vi.advanceTimersByTime(20) })
+        act(() => { vi.advanceTimersByTime(20) })
 
         expect(state.appWrites).toBe(writes + 2)
         expect(scroller.scrollTop).toBe(208)
@@ -2328,6 +2334,7 @@ describe('MessageList', () => {
 
         // No item-list RO occurs before the fold is cancelled.
         act(() => { setCollapseAnimating(fold, false) })
+        act(() => { vi.advanceTimersByTime(20) })
         act(() => { vi.advanceTimersByTime(20) })
 
         expect(state.appWrites).toBe(writes + 1)

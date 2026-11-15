@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  anyCollapseAnimatingInside,
+  anyCollapseMotionInside,
   bodyHeightDelta,
+  claimCollapseMotionInside,
   currentBodyHeight,
   releaseAncestorCollapsePins,
   setCollapseAnimating,
@@ -160,5 +163,78 @@ describe('snapshotBodyHeights', () => {
     expect(snap.get(body)).toBeCloseTo(55.333, 3)
     setCollapseAnimating(body, false)
     body.remove()
+  })
+})
+
+describe('anyCollapseAnimatingInside (strict)', () => {
+  it('reports a body while it is registered and clears the moment it settles', () => {
+    // Strict on purpose: AnimatedCollapse's ancestor observer re-pins from the
+    // settle's own tail delivery, so the settle must NOT read as animating.
+    const [body] = nest(1)
+    document.body.appendChild(body)
+    setCollapseAnimating(body, true)
+    expect(anyCollapseAnimatingInside(document.body)).toBe(true)
+
+    setCollapseAnimating(body, false)
+    expect(anyCollapseAnimatingInside(document.body)).toBe(false)
+
+    claimCollapseMotionInside(document.body)
+    body.remove()
+  })
+})
+
+describe('anyCollapseMotionInside (pacing probe)', () => {
+  it('reports a body while it is registered', () => {
+    const [body] = nest(1)
+    document.body.appendChild(body)
+    setCollapseAnimating(body, true)
+
+    expect(anyCollapseMotionInside(document.body)).toBe(true)
+
+    setCollapseAnimating(body, false)
+    claimCollapseMotionInside(document.body)
+    body.remove()
+  })
+
+  it('keeps reporting through the settle-tail delivery, then clears once claimed', () => {
+    // The final size's ResizeObserver observation lands one rendering step
+    // after the settle write. The scroll machinery paces itself off this
+    // probe (fold owner, sampleFold, verify stand-down, fold-lockstep gate),
+    // so a body that just settled — including the motion-off SNAP path,
+    // which never registers but still settles through finishOpen/finishClosed
+    // — must read as motion until that delivery is claimed.
+    const [body] = nest(1)
+    document.body.appendChild(body)
+    setCollapseAnimating(body, true)
+    setCollapseAnimating(body, false)
+
+    expect(anyCollapseMotionInside(document.body)).toBe(true)
+
+    // The measurement site claims the latch (one stand-down per settle)…
+    expect(claimCollapseMotionInside(document.body)).toBe(true)
+    // …and the probe is quiet again for any later genuine change.
+    expect(anyCollapseMotionInside(document.body)).toBe(false)
+
+    body.remove()
+  })
+
+  it('does not report a settled body outside the queried root', () => {
+    const [inside] = nest(1)
+    const [outside] = nest(1)
+    document.body.appendChild(inside)
+    setCollapseAnimating(inside, true)
+    setCollapseAnimating(inside, false)
+    setCollapseAnimating(outside, true)
+    setCollapseAnimating(outside, false)
+
+    const otherRoot = document.createElement('div')
+    document.body.appendChild(otherRoot)
+    expect(anyCollapseMotionInside(otherRoot)).toBe(false)
+    expect(anyCollapseMotionInside(document.body)).toBe(true)
+
+    claimCollapseMotionInside(document.body)
+    inside.remove()
+    outside.remove()
+    otherRoot.remove()
   })
 })

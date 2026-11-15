@@ -1,5 +1,5 @@
 import type { VirtuosoHandle } from 'react-virtuoso'
-import { anyCollapseAnimatingInside } from '../collapse-animation'
+import { anyCollapseMotionInside, claimCollapseMotionInside } from '../collapse-animation'
 import { createFoldScrollSession, type FoldFrame, type FoldScrollSession } from './fold-scroll-session'
 import { PANEL_RESHOW_SETTLE_MS } from '../panel-transition'
 import { snapToDevicePx } from '../../utils/pixel-grid'
@@ -79,6 +79,11 @@ const SEEK_HOLD_FRAMES = 8
 const SEEK_EASE_FRAME_LIMIT = 600
 const TRAILING_MICRO_PIN_MS = 250
 const SETTLE_VERIFY_MS = 1500
+/** How long a detected anchor fight suppresses re-writing the exact same
+ *  (scrollHeight, scrollTop) geometry. A recurring fight refreshes the
+ *  timestamp at each give-up, so an ongoing churn burst stays suppressed
+ *  while it lasts and following resumes one window after it ends. */
+const ANCHOR_FIGHT_MEMORY_MS = 500
 const SETTLE_STABLE_FRAMES = 3
 
 const browserScrollScheduler: ScrollScheduler = {
@@ -215,6 +220,10 @@ export function createTranscriptScrollWriter({
     cancelAllWork()
     cancelAllCallbacks()
     deferredOwner = null
+    // The fight is geometry-keyed to the OLD element; a re-attach (epoch bump,
+    // StrictMode replay) presents a fresh transcript whose geometry may
+    // coincide with the recorded fight purely by scroll restoration.
+    anchorFight = null
   }
 
   function acceptEpoch(epoch: number): boolean {
@@ -248,9 +257,38 @@ export function createTranscriptScrollWriter({
     })
   }
 
-  function writeAbsoluteBottom(epoch: number): void {
-    if (disposed || epoch !== currentEpoch || !element) return
-    element.scrollTop = element.scrollHeight
+  /** Geometry of the most recently detected anchor fight: an absolute-bottom
+   *  write that was pulled back above the position it wrote to within its own
+   *  frame (scroll anchoring over render-window churn, browser clamps).
+   *
+   *  Writer-scope, deliberately ACROSS verify passes: bailing inside one pass
+   *  only bounds intra-pass writes — the pull-back's own scroll event re-arms
+   *  the follow invariant, whose pin starts a fresh pass with fresh memory,
+   *  and the write/pull-back fight survives at scroll-event rate (measured:
+   *  895 identical no-progress writes under motion-off). With the memory
+   *  here, a write requested against the EXACT fought geometry is skipped
+   *  (the work completes unwritten) until the geometry changes or the window
+   *  expires — genuine growth or a user move present different (sh, top) and
+   *  clear the memory by mismatch, so following resumes the moment the fight
+   *  is over. */
+  let anchorFight: { sh: number; top: number; at: number } | null = null
+
+  /** Writes `element.scrollTop = element.scrollHeight`, unless that exact
+   *  write is a known-lost fight (see `anchorFight`). Returns whether the
+   *  write actually happened — a skipped write means "give this pass up". */
+  function writeAbsoluteBottom(epoch: number): boolean {
+    if (disposed || epoch !== currentEpoch || !element) return false
+    const el = element
+    if (anchorFight) {
+      if (Date.now() - anchorFight.at <= ANCHOR_FIGHT_MEMORY_MS
+        && anchorFight.sh === el.scrollHeight
+        && anchorFight.top === el.scrollTop) {
+        return false
+      }
+      anchorFight = null
+    }
+    el.scrollTop = el.scrollHeight
+    return true
   }
 
   function startFollow(owner: FollowOwner): void {
@@ -371,10 +409,15 @@ export function createTranscriptScrollWriter({
   function startFold(owner: FoldOwner): void {
     const step = () => {
       const el = element!
-      if (el.clientHeight === 0 || !anyCollapseAnimatingInside(el)) {
+      if (el.clientHeight === 0 || !anyCollapseMotionInside(el)) {
         finishOwner(owner)
         return
       }
+      // This frame IS a rendering-step boundary: claim the settle-tail latch
+      // (one stand-down per settle) so the owner lands on the next frame —
+      // after the settled body's one-frame-late box observation — instead of
+      // pacing on an unconsumed latch forever.
+      claimCollapseMotionInside(el)
       schedule(owner, step)
     }
     schedule(owner, step)
@@ -383,12 +426,16 @@ export function createTranscriptScrollWriter({
   function sampleFold(owner: FoldOwner, frame: FoldFrame): void {
     if (!ownerIsCurrent(owner)) return
     const el = element!
-    if (!anyCollapseAnimatingInside(el)) {
+    if (!anyCollapseMotionInside(el)) {
       finishOwner(owner)
       return
     }
     const itemList = el.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]')
     if (!itemList) return
+    // Claim only once the sample is actually reachable: consuming the one
+    // stand-down per settle and then returning early would spend the tail's
+    // pacing on nothing.
+    claimCollapseMotionInside(el)
     for (const work of scheduledWork.values()) {
       if (work.request.kind === 'absolute-bottom' && work.request.delivery === 'next-observation') {
         owner.session.requestAbsoluteBottom()
@@ -397,10 +444,17 @@ export function createTranscriptScrollWriter({
     }
     const sample = owner.session.sample(frame)
     if (sample.kind === 'absolute-bottom') {
-      clearFoldTransform(owner)
-      writeAbsoluteBottom(owner.epoch)
-      owner.session.reconcileAbsolute(el.scrollTop)
-      consumeNextObservationAlignments()
+      if (writeAbsoluteBottom(owner.epoch)) {
+        // The write landed: clear the compensation transform and reconcile
+        // the ledger to the landed position.
+        clearFoldTransform(owner)
+        owner.session.reconcileAbsolute(el.scrollTop)
+        consumeNextObservationAlignments()
+      }
+      // Suppressed (known anchor fight): KEEP the transform and the ledger —
+      // they are still holding the viewport at the compensated position, so
+      // clearing them would jump it to the fought geometry. The next sample
+      // retries once the suppression window lapses.
       return
     }
     el.scrollTop = snapToDevicePx(sample.ledger, frame.devicePixelRatio)
@@ -589,22 +643,70 @@ export function createTranscriptScrollWriter({
     work.firedKind = 'verify'
     work.deadline = deadline
     work.stableFrames = stableFrames
+    // The scrollTop of the previous tick's absolute write, when that tick
+    // wrote. The verify loop's premise is that a non-zero shortfall means
+    // "the layout moved after we pinned" and one absolute write corrects it.
+    // During streaming churn a higher power — Virtuoso's scroll anchoring over
+    // the render-window churn, browser clamps — can undo the write within the
+    // same frame, so the tick would re-write at frame rate until its deadline,
+    // each write re-armed by the churn's own GEOMETRY_CHANGED pins (measured
+    // 2026-11-14: 895 identical no-progress writes at ~23/s under motion-off,
+    // the viewport ping-ponging between the written bottom and the anchor's
+    // pull-back).
+    //
+    // The give-up signature is GEOMETRIC, not a shortfall comparison: bail
+    // only when the viewport was pulled back ABOVE the position we wrote to
+    // (scroll anchoring / clamp — nothing else moves it up while the user is
+    // excluded by the intent guard and a user leave cancels this work via
+    // USER_LEFT). Fresh genuine growth keeps scrollTop at the written position
+    // and raises scrollHeight instead — that is the append pin's and the next
+    // pass's job, and it must NOT be read as a lost fight.
+    let lastWrittenTop: number | null = null
     const tick = () => {
       if (Date.now() > work.deadline) {
         completeWork(work.id)
         return
       }
       const el = element!
-      if (activeOwner || anyCollapseAnimatingInside(el)) {
+      if (activeOwner) {
+        scheduleVerificationFrame(work, tick)
+        return
+      }
+      if (anyCollapseMotionInside(el)) {
+        // A settle's tail delivery lands this frame; claim the latch so the
+        // stand-down lasts exactly one rendering step and the tick resumes.
+        claimCollapseMotionInside(el)
         scheduleVerificationFrame(work, tick)
         return
       }
       const short = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
       if (short > BOTTOM_EPSILON_PX) {
+        if (lastWrittenTop !== null && el.scrollTop < lastWrittenTop - BOTTOM_EPSILON_PX) {
+          // Our last write was pulled back above the position we wrote to —
+          // scroll anchoring / clamp moved the viewport while the user is
+          // excluded by the intent guard (a user leave cancels this work via
+          // USER_LEFT). Two accepted false-positive shapes: a START_RESTORE
+          // owner that repositioned the viewport mid-pass (standing down
+          // after a restore is CORRECT — never fight the restore), and a
+          // content shrink above the viewport (its sh change misses the
+          // fight memory on the next pass, so suppression self-clears).
+          // Record the fought geometry (writer-scope: the next pass's writes
+          // against it are skipped) and give this pass up.
+          anchorFight = { sh: el.scrollHeight, top: el.scrollTop, at: Date.now() }
+          completeWork(work.id)
+          return
+        }
         work.stableFrames = 0
-        writeAbsoluteBottom(work.epoch)
+        lastWrittenTop = el.scrollHeight - el.clientHeight
+        if (!writeAbsoluteBottom(work.epoch)) {
+          // The write was suppressed as a known fight; a pass whose only
+          // action was suppressed cannot verify anything.
+          completeWork(work.id)
+          return
+        }
         consumeAbsoluteAlignments()
       } else {
+        lastWrittenTop = null
         work.stableFrames += 1
         if (work.stableFrames >= SETTLE_STABLE_FRAMES) {
           completeWork(work.id)
@@ -654,7 +756,13 @@ export function createTranscriptScrollWriter({
         return
       }
     }
-    writeAbsoluteBottom(epoch)
+    if (!writeAbsoluteBottom(epoch)) {
+      // The write was suppressed as a known anchor fight. Retire only THIS
+      // work — the other queued alignments still owe their writes once the
+      // suppression window lapses and the geometry changes.
+      completeWork(id)
+      return
+    }
     consumeAbsoluteAlignments()
     completeWork(id)
   }

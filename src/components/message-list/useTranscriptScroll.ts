@@ -23,7 +23,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
-import { anyCollapseAnimatingInside, snapshotBodyHeights } from '../collapse-animation'
+import { anyCollapseAnimatingInside, claimCollapseMotionInside, snapshotBodyHeights } from '../collapse-animation'
 import { useLocalStorage } from '../../hooks/useLocalStorage'
 import { scrollDebug as dbg } from './scroll-debug'
 import { clamp } from '../../utils/clamp'
@@ -470,6 +470,10 @@ export function useTranscriptScroll({
   ) => {
     if (!el || scrollStateRef.current.intent !== 'follow') return
     if (scrollStateRef.current.owner.kind === 'follow' && !allowDuringAnimation) return
+    // STRICT probe on purpose: a settle-TAIL latch here would start a fold
+    // owner whose FOLD_STARTED cancels an in-flight follow ease (the append
+    // pin runs with allowDuringAnimation and lands its write regardless).
+    // The latch's pacing consumers are the RO gate and the writer's loops.
     if (anyCollapseAnimatingInside(el)) startFoldOwner()
 
     const absoluteId = requestWork('absolute-bottom', delivery)
@@ -584,6 +588,8 @@ export function useTranscriptScroll({
         writer: 'follow-invariant',
         event: event?.type ?? 'GEOMETRY_CHANGED',
         distanceFromBottom: getDistanceFromTrueBottom(el),
+        scrollHeight: el.scrollHeight,
+        clientHeight: el.clientHeight,
       }))
       pinToBottom(el)
     }
@@ -597,6 +603,8 @@ export function useTranscriptScroll({
       atBottom,
       atTrueBottom,
       following,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
     }))
 
     if (userLeft) {
@@ -814,7 +822,15 @@ export function useTranscriptScroll({
       const itemListDelta = lastItemListH == null ? null : itemListH - lastItemListH
       const contentHeight = contentHeightOf(scroller)
       const contentDelta = contentHeight - lastContentHeight
+      // STRICT for FOLD_OBSERVED: that event cancels an away restore owner,
+      // and a settle-tail latch (which can outlive its claimers indefinitely)
+      // must never read as a fold there. The latch is CLAIMED at this
+      // boundary instead — this delivery IS the tail's observation, so taking
+      // the one stand-down here both paces the fold owner's tail frame below
+      // and silently retires a stale latch no other consumer ever claimed.
       const foldAnimating = anyCollapseAnimatingInside(scroller)
+      const tailClaimed = !foldAnimating && claimCollapseMotionInside(scroller)
+      const foldMotion = foldAnimating || tailClaimed
       const foldOwner = scrollStateRef.current.owner.kind === 'fold'
         ? scrollStateRef.current.owner.token
         : null
@@ -836,7 +852,7 @@ export function useTranscriptScroll({
           devicePixelRatio: window.devicePixelRatio || 1,
         }
         dispatch({ type: 'FOLD_FRAME', token, frame })
-        if (foldAnimating && scrollStateRef.current.intent === 'follow') {
+        if (foldMotion && scrollStateRef.current.intent === 'follow') {
           lastItemListH = itemListH
           lastPaddingTop = paddingTop
           lastPaddingBottom = paddingBottom
@@ -990,7 +1006,7 @@ export function useTranscriptScroll({
       // that same move, and (with the follow invariant now enforcing the
       // bottom) dropping it would erase the user's nudge instead of leaving.
       if (scrollStateRef.current.owner.kind === 'follow' && !(userDriven && isScrollingUp)) return
-      dbg('scroll-handler', () => ({ isScrollingUp, userDriven, isUserLeave, following: scrollStateRef.current.intent === 'follow', prevScrollTop, scrollTop: el.scrollTop, distTrue }))
+      dbg('scroll-handler', () => ({ isScrollingUp, userDriven, isUserLeave, following: scrollStateRef.current.intent === 'follow', prevScrollTop, scrollTop: el.scrollTop, distTrue, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }))
       if (isUserLeave) {
         syncBottomGeometry(el, { type: 'USER_LEFT' })
       } else if (!isScrollingUp && distTrue <= BOTTOM_EPSILON_PX && !justReshowed()) {

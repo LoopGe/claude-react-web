@@ -435,6 +435,78 @@ describe('work scheduling', () => {
     expect(onWorkConsumed).toHaveBeenCalledExactlyOnceWith(9)
   })
 
+  it('gives up when its absolute write is undone with no shortfall progress', () => {
+    // Streaming churn can undo the write within the same frame (Virtuoso
+    // anchoring / clamps pull the viewport back off the written bottom), so
+    // the next tick re-reads the SAME shortfall it just wrote against. One
+    // retry of a fight that cannot be won would run at frame rate until the
+    // deadline — bail after the first no-progress write instead.
+    const scheduler = new FakeScheduler()
+    const { element } = makeScroller()
+    const onWorkConsumed = vi.fn()
+    const writer = createTranscriptScrollWriter({ scheduler, onWorkConsumed })
+    writer.attach(element)
+    writer.execute([
+      { type: 'SCHEDULE_WORK', epoch: 1, work: work('verify') },
+      { type: 'WRITE_ABSOLUTE_BOTTOM', epoch: 1, workId: 9, kind: 'verify' },
+    ])
+
+    scheduler.flushFrames()
+    expect(element.scrollTop).toBe(1000)
+
+    // The anchor restores the pre-write geometry before tick 2 reads it.
+    element.scrollTop = 0
+    scheduler.flushFrames()
+
+    expect(scheduler.pendingFrames).toBe(0)
+    expect(onWorkConsumed).toHaveBeenCalledExactlyOnceWith(9)
+
+    // The fought geometry is remembered ACROSS passes: the pull-back's scroll
+    // event re-arms the follow invariant, and the fresh pass's write against
+    // the exact same (scrollHeight, scrollTop) is suppressed — one unwritten
+    // pass instead of a write/pull-back loop at scroll-event rate.
+    writer.execute([
+      { type: 'SCHEDULE_WORK', epoch: 1, work: work('verify', 20) },
+      { type: 'WRITE_ABSOLUTE_BOTTOM', epoch: 1, workId: 20, kind: 'verify' },
+    ])
+    scheduler.flushFrames()
+    expect(element.scrollTop).toBe(0)
+    expect(scheduler.pendingFrames).toBe(0)
+    expect(onWorkConsumed).toHaveBeenCalledWith(20)
+  })
+
+  it('does not give up when content grew after a landed write', () => {
+    // The geometric give-up signature is a viewport pulled back ABOVE the
+    // written position (anchoring / clamp). Genuine growth keeps scrollTop at
+    // the written position and raises scrollHeight — that must re-write, not
+    // bail, or the pass dies 100px short of the true bottom.
+    const scheduler = new FakeScheduler()
+    const { element } = makeScroller()
+    const onWorkConsumed = vi.fn()
+    const writer = createTranscriptScrollWriter({ scheduler, onWorkConsumed })
+    writer.attach(element)
+    writer.execute([
+      { type: 'SCHEDULE_WORK', epoch: 1, work: work('verify') },
+      { type: 'WRITE_ABSOLUTE_BOTTOM', epoch: 1, workId: 9, kind: 'verify' },
+    ])
+
+    scheduler.flushFrames()
+    expect(element.scrollTop).toBe(1000)
+
+    // Fresh growth: content 300px taller, the written position still held.
+    Object.defineProperty(element, 'scrollHeight', { configurable: true, value: 1300 })
+    scheduler.flushFrames()
+    expect(element.scrollTop).toBe(1300)
+    expect(scheduler.pendingFrames).toBe(1)
+
+    // The re-written bottom holds; the pass completes through its stable frames.
+    scheduler.flushFrames()
+    scheduler.flushFrames()
+    scheduler.flushFrames()
+    expect(scheduler.pendingFrames).toBe(0)
+    expect(onWorkConsumed).toHaveBeenCalledExactlyOnceWith(9)
+  })
+
   it('does not restart the original verification deadline on sustained requests', () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(1000)
     try {
@@ -638,6 +710,9 @@ describe('fold transform ownership', () => {
 
     setCollapseAnimating(body, false)
     animatingBodies.delete(body)
+    // The settle latches one rendering step of stand-down (the pacing probe);
+    // the owner lands on the frame AFTER the settle's tail delivery.
+    scheduler.flushFrames()
     scheduler.flushFrames()
     expect(itemList.style.transform).toBe('')
     expect(scheduler.pendingFrames).toBe(0)

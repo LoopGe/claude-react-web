@@ -1350,6 +1350,21 @@ button.tool-group-failed-jump:focus-visible {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+  /* Same carve-out as the Off block below: react-virtuoso rewrites the
+     item-list's padding-top on every range recalc, and a 0.01ms duration
+     turns each write into a real transition whose computed value lags the
+     write by a frame — the geometry feedback loop behind the transcript
+     scroll flicker (see the Off block's comment for the full mechanism).
+     SAME SAFETY INVARIANT as the Off block: nothing inside the scroller may
+     wait on `transitionend` — a future transcript component that does (the
+     way PinnedUserMessage and RecapWindow do just OUTSIDE the scroller)
+     would hang waiting for an event that a 0s duration never fires. */
+  .chat-virtuoso-scroller,
+  .chat-virtuoso-scroller *,
+  .chat-virtuoso-scroller *::before,
+  .chat-virtuoso-scroller *::after {
+    transition-duration: 0s !important;
+  }
   /* Neutralise the state-change ENTRANCE animations added for overlays
      and menus — these are decorative
      motion-on-state-change (WCAG 2.3.3), unlike the load-bearing spinners
@@ -1430,6 +1445,26 @@ button.tool-group-failed-jump:focus-visible {
   transition-delay: 0s !important;
   animation-delay: 0s !important;
   scroll-behavior: auto !important;
+}
+/* The transcript's virtualization internals get a true 0s, not 0.01ms.
+   `transition-property`'s initial value is `all`, so an element that never
+   declares a transition has duration 0s and none runs — but the 0.01ms
+   hammer above turns that into a REAL 0.01ms transition on every style
+   write. react-virtuoso rewrites the item-list's padding-top on every
+   range recalc; under the hammer each write started a transition whose
+   computed value lagged the write by a frame, and that one-frame-behind
+   geometry fed straight back into Virtuoso's next computation — the
+   scrollHeight flip-flop behind the "关动画后滚动上下跳动" report
+   (measured 2026-11-15: restoring transition-duration alone took the
+   synthetic-scroll flicker count 59 → 0 at unchanged JS motion gates).
+   Nothing inside the scroller observes transitionend while Off (FoldableBody
+   skips tweening under motionSuppressed), so 0s — a transition that never
+   starts, computed value lands with the write — is the honest snap here. */
+[data-motion="off"] .chat-virtuoso-scroller,
+[data-motion="off"] .chat-virtuoso-scroller *,
+[data-motion="off"] .chat-virtuoso-scroller *::before,
+[data-motion="off"] .chat-virtuoso-scroller *::after {
+  transition-duration: 0s !important;
 }
 /* Decorative entrance/state animations with hardcoded durations (everything
    token-driven already snaps to 0.01ms). */

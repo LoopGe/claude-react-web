@@ -25,7 +25,11 @@ const unsettledTails = new Set<WeakRef<HTMLElement>>()
  *  before/after the matching `classList.add/remove('animating')`. A settle
  *  also latches the body's TAIL (see anyCollapseMotionInside): its final
  *  size's ResizeObserver delivery lands in a later rendering step, and
- *  consumers must stand down when that delivery arrives — however late. */
+ *  consumers must stand down when that delivery arrives — however late. The
+ *  latch deliberately has NO wall-clock expiry: its pacing consumers are the
+ *  scroll writer's rendering-step loops (which claim promptly), and its
+ *  measurement consumers need the one-shot to cover arbitrarily-late
+ *  deliveries under long tasks. */
 export function setCollapseAnimating(el: HTMLElement, animating: boolean): void {
   if (animating) {
     animatingBodies.add(el)
@@ -64,7 +68,16 @@ function findSettledTail(root: ParentNode, consume: boolean): boolean {
 }
 
 /** True when any AnimatedCollapse inside `root` is mid-animation (an
- *  open/close fold or a resize tween). O(animated collapses), not O(subtree). */
+ *  open/close fold or a resize tween). O(animated collapses), not O(subtree).
+ *
+ *  STRICT: a body that just settled reads false again, even though its final
+ *  size's ResizeObserver delivery is still one rendering step away. Consumers
+ *  that must pace themselves through that delivery — the transcript scroll
+ *  machinery's fold owner and settle-verify stand-down — use
+ *  anyCollapseMotionInside instead. AnimatedCollapse's own ancestor observer
+ *  deliberately keeps the strict probe: the tail delivery is the observation
+ *  that RE-PINS the ancestor, and seeing the latch there would disable the
+ *  body's resize handling for good. */
 export function anyCollapseAnimatingInside(root: ParentNode | null): boolean {
   if (!root || animatingBodies.size === 0) return false
   for (const el of animatingBodies) {
@@ -76,10 +89,21 @@ export function anyCollapseAnimatingInside(root: ParentNode | null): boolean {
 /** True while collapse HEIGHT MOTION is still in effect inside `root`: a
  *  collapse is mid-animation there, or one settled and its tail delivery has
  *  not been claimed yet (see claimCollapseMotionInside). The stand-down rule
- *  for consumers that must not answer collapse-driven height changes with a
- *  height animation of their own but are not the tail's own measurement —
- *  useAutoHeightTransition's key-driven tween start and its tween-chaining
- *  `finish`. Does NOT consume the latch. */
+ *  for consumers that pace themselves across a settle's one-frame-late box
+ *  observation — the transcript scroll machinery's fold owner keep-alive,
+ *  sampleFold, the settle-verify tick and the item-list fold-lockstep gate.
+ *
+ *  This probe is what makes the motion-off SNAP path pace correctly: the
+ *  snap never registers a body while animating (animateHeight returns before
+ *  the registry write), but finishOpen/finishClosed still settle through
+ *  setCollapseAnimating(false), which latches — so under Off the scroll
+ *  machinery stands down for exactly the snap's tail-delivery frame instead
+ *  of writing through it. Measured 2026-11-14: without the latch the verify
+ *  loop wrote scrollTop at 60fps through every streaming snap, feeding a
+ *  Virtuoso range flap — the "关动画后消息列表上下跳动" report.
+ *
+ *  AnimatedCollapse's own ancestor observer deliberately does NOT use this —
+ *  see anyCollapseAnimatingInside. Does NOT consume the latch. */
 export function anyCollapseMotionInside(root: ParentNode | null): boolean {
   if (anyCollapseAnimatingInside(root)) return true
   if (!root) return false
@@ -87,21 +111,21 @@ export function anyCollapseMotionInside(root: ParentNode | null): boolean {
 }
 
 /** The measurement-site twin of anyCollapseMotionInside: same query, but the
- *  settle-tail latch is CONSUMED on match — one stand-down per settle, taken
- *  by the first box observation inside the root, which is exactly the tail's
- *  ResizeObserver delivery (a collapse settles in the same task as its final
- *  height write; that size's observation is one rendering step behind, and
- *  under a long task arbitrarily behind — a one-shot latch covers that with
- *  no wall-clock window). A later genuine change is free to animate. The
- *  latch is root-scoped like the animating check: a fold settling in one
- *  surface (a transcript) must not suppress a height tween in another (a
- *  settings panel). */
+ *  settle-tail latch is CONSUMED on match. First claimer wins, and the
+ *  claimers are all rendering-step boundaries: the scroll writer's fold-owner
+ *  step and `sampleFold`, the settle-verify tick, and useAutoHeightTransition's
+ *  own box observation. A claim may therefore land one rendering step BEFORE
+ *  the tail's ResizeObserver delivery — the claiming step IS that frame's
+ *  stand-down — so consumers must not assume the delivery has been observed,
+ *  only that the one stand-down per settle has been taken. A later genuine
+ *  change is free to animate. The latch is root-scoped like the animating
+ *  check: a fold settling in one surface (a transcript) must not suppress a
+ *  height tween in another (a settings panel). */
 export function claimCollapseMotionInside(root: ParentNode | null): boolean {
   if (anyCollapseAnimatingInside(root)) return true
   if (!root) return false
   return findSettledTail(root, true)
 }
-
 /** Drop the pinned height of the collapse bodies above `el`, stopping at the
  *  first folded (0px) one — see the walk's `break` for why that is the end of
  *  the chain that can be affected.
