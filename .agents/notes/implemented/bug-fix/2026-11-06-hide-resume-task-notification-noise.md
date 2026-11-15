@@ -104,3 +104,7 @@ Tests pin both directions: `normalize.test.ts` (recovery notice hidden;
 foldable-with-result hidden; monitor event and unroutable result kept) and
 `shared/user-frames.test.ts` (`classifyTaskNotificationInjection`, including
 whitespace-only payload elements).
+
+## Related
+
+[Task output streaming architecture](../../proposed/architecture/2026-11-14-task-output-streaming.md) proposes output-ref storage and bounded reads for large unroutable payloads. The neutral-card and status-only hiding decisions above remain current; that proposal does not change them while it is waiting on upstream event contracts.

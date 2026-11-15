@@ -41,3 +41,7 @@ Lifecycle, loop, tool, host, and client tests pin signal ownership, nested detac
 The shared manager makes parent/child ownership and removable signal subscriptions explicit instead of distributing them across tool branches. Inline task-notification results let TasksPanel and SubagentCard display the real report without a second model-history result or a provider-specific XML format.
 
 Final-output-only retrieval is less useful for very long commands than streaming output, but avoids a new progress protocol. `TaskOutput` cannot retrieve pre-restart tasks even though TasksPanel retains their historical rows; cross-process recovery would require a different execution and output-storage architecture.
+
+## Related
+
+[Task output streaming architecture](../../proposed/architecture/2026-11-14-task-output-streaming.md) proposes the live-output and cross-process output-storage architecture deferred here. It remains blocked on the upstream event and byte contracts; the final-output-only behavior above is still the shipped reality.
