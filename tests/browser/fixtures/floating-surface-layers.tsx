@@ -60,7 +60,16 @@ function Fixture() {
             key="fixture-menu"
             x={menu.x}
             y={menu.y}
-            items={[{ label: 'Run', onClick: () => {} }]}
+            items={[
+              { label: 'Run', onClick: () => {} },
+              {
+                label: 'Open in',
+                children: [
+                  { label: 'VS Code', onClick: () => {} },
+                  { label: 'Zed', onClick: () => {} },
+                ],
+              },
+            ]}
             onClose={() => setMenu(null)}
           />
         )}

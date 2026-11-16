@@ -30,7 +30,7 @@ vi.mock('node:os', () => ({ platform: platformMock, homedir: () => '/home/test-u
 // module boundary and exercise cache/404/gating behavior instead.
 vi.mock('../open-path-icons.js', () => ({
   extractTargetIcon: extractIconMock,
-  hostIconDeps: { temp: {}, run: vi.fn(), readBytes: vi.fn(), fileExists: vi.fn(), listDir: vi.fn(), env: {}, home: '' },
+  hostIconDeps: { temp: {}, run: vi.fn(), readBytes: vi.fn(), fileExists: vi.fn(), resolveExecutable: vi.fn(), listDir: vi.fn(), env: {}, home: '' },
 }))
 
 // Import the router AFTER the mocks are registered.

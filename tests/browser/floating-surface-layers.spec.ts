@@ -29,6 +29,32 @@ test('floating surface: right-click closes hover and only a fresh hover restores
   await expect(page.locator('.hover-pop')).toBeVisible()
 })
 
+test('floating surface: submenu stays visible outside the primary menu scrollport', async ({ page }) => {
+  await openFixture(page)
+  await page.locator('#background-hover').click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Open in', exact: true }).hover()
+  const submenu = page.locator('.ctx-submenu')
+  await expect(submenu).toBeVisible()
+
+  const layout = await page.locator('body > .ctx-menu').evaluate((menu) => {
+    const flyout = menu.querySelector<HTMLElement>('.ctx-submenu')
+    if (!flyout) throw new Error('Submenu did not mount')
+    const rect = flyout.getBoundingClientRect()
+    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
+    const hitInsideFlyout = hit !== null && flyout.contains(hit)
+    menu.scrollLeft = 100
+    return {
+      hitInsideFlyout,
+      horizontalScrollAfterAttempt: menu.scrollLeft,
+    }
+  })
+  expect(layout.hitInsideFlyout).toBe(true)
+  expect(layout.horizontalScrollAfterAttempt).toBe(0)
+
+  await page.getByRole('menuitem', { name: 'VS Code', exact: true }).click()
+  await expect(page.locator('body > .ctx-menu')).toHaveCount(0)
+})
+
 test('floating surface: primary click does not pin a passive hover after pointerleave', async ({ page }) => {
   await openFixture(page)
   await hover(page, '#background-hover')

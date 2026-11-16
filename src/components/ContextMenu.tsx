@@ -230,7 +230,7 @@ export const ContextMenu = memo(function ContextMenu({
       {createPortal(
         <motion.div
       ref={ref}
-      className="ctx-menu"
+      className="ctx-menu ctx-menu-shell"
       style={{ left: pos.x, top: pos.y }}
       role="menu"
       aria-orientation="vertical"
@@ -248,8 +248,8 @@ export const ContextMenu = memo(function ContextMenu({
       // window) doesn't fire when the user clicks the menu itself.
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {(() => {
-        return visible.map((item, i) => {
+      <div className="ctx-menu-items">
+        {visible.map((item, i) => {
           if (!item.label) return <div key={`sep-${i}`} className="ctx-menu-sep" role="separator" />
           if (item.children && item.children.length > 0) {
             return (
@@ -290,8 +290,8 @@ export const ContextMenu = memo(function ContextMenu({
               <span className="ctx-menu-label">{item.label}</span>
             </button>
           )
-        })
-      })()}
+        })}
+      </div>
       {(() => {
         const parent = openSub !== null ? visible[openSub] : null
         if (parent === null || !parent.children || parent.children.length === 0) return null

@@ -17,7 +17,7 @@
 
 import { join } from 'node:path'
 import { joinForPlatform } from './platform-path.js'
-import { mkdtemp, readdir, readFile, rm, writeFile, stat } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile, stat, lstat, readlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -40,6 +40,8 @@ export interface IconDeps {
   run: (file: string, args: readonly string[], timeoutMs: number) => Promise<{ stdout: string }>
   readBytes: (path: string) => Promise<Buffer>
   fileExists: (path: string) => Promise<boolean>
+  /** Resolve App Execution Aliases without realpath's stat on the alias. */
+  resolveExecutable: (path: string) => Promise<string>
   listDir: (path: string) => Promise<string[]>
   /** Temp scratchpad for converter outputs and generated scripts. */
   temp: {
@@ -63,6 +65,7 @@ export const hostIconDeps: IconDeps = {
       return false
     }
   },
+  resolveExecutable: async (p) => (await lstat(p)).isSymbolicLink() ? readlink(p) : p,
   listDir: (p) => readdir(p),
   temp: {
     dir: () => mkdtemp(join(tmpdir(), 'crw-icon-')),
@@ -148,15 +151,26 @@ const WIN32_EXES: Record<OpenPathGlyphTarget, string> = {
 }
 
 async function extractWin32(target: OpenPathGlyphTarget, deps: IconDeps): Promise<ExtractedIcon | null> {
-  const exe = expandTemplate(WIN32_EXES[target], deps.env)
-  if (exe === null || !(await deps.fileExists(exe))) return null
+  const expanded = expandTemplate(WIN32_EXES[target], deps.env)
+  // Some Windows launchers omit LOCALAPPDATA. The terminal alias still lives
+  // under the current user's known per-user profile, supplied by os.homedir().
+  const exe = expanded ?? (target === 'terminal'
+    ? joinForPlatform('win32', deps.home, 'AppData/Local/Microsoft/WindowsApps/wt.exe')
+    : null)
+  if (exe === null) return null
+  // wt.exe in WindowsApps is an alias: extracting from it yields Windows'
+  // generic executable icon. lstat+readlink reaches the packaged exe, whose
+  // associated icon is the real Terminal glyph (realpath stats the alias and
+  // can fail with EACCES before resolving it).
+  const iconExe = await deps.resolveExecutable(exe)
+  if (!(await deps.fileExists(iconExe))) return null
   const dir = await deps.temp.dir()
   try {
     const script = await deps.temp.writeFile(dir, 'extract-icon.ps1', PS_SCRIPT)
     const out = joinForPlatform('win32', dir, 'icon.png')
     await deps.run(
       'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, exe, out],
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, iconExe, out],
       PS_TIMEOUT_MS,
     )
     return { bytes: await deps.temp.readFile(out), contentType: 'image/png' }

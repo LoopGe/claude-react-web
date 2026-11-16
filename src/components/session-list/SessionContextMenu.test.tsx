@@ -180,10 +180,7 @@ describe('SessionContextMenu open-in group', () => {
   // The open-in group is a submenu: every assertion below must open the
   // flyout (click the parent row) before querying the leaf rows.
   const openFlyout = (): void => {
-    const parent = [...document.querySelectorAll('.ctx-menu > .ctx-menu-item')].find(
-      (b) => b.querySelector('.ctx-menu-label')?.textContent === 'Open in',
-    )
-    if (parent) fireEvent.click(parent)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open in' }))
   }
 
   const enableAll = (): void => {
@@ -315,10 +312,7 @@ describe('SessionContextMenu move-to-group submenu', () => {
   }
 
   const openMoveToGroup = (): HTMLElement => {
-    const parent = [...document.querySelectorAll('.ctx-menu > .ctx-menu-item')].find(
-      (b) => b.querySelector('.ctx-menu-label')?.textContent === 'Move to group',
-    )!
-    fireEvent.click(parent)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Move to group' }))
     return document.querySelector('.ctx-submenu')!
   }
 
@@ -351,7 +345,7 @@ describe('SessionContextMenu move-to-group submenu', () => {
         groups={[{ id: 'g-mine', name: 'Mine', sessionIds: ['sess-1'] }, ...groupProps.groups]}
       />,
     )
-    const labels = [...document.querySelectorAll('.ctx-menu > .ctx-menu-item .ctx-menu-label')]
+    const labels = [...document.querySelectorAll('.ctx-menu-items > .ctx-menu-item .ctx-menu-label')]
       .map((e) => e.textContent)
     expect(labels).toContain('Remove from group')
     expect(labels).toContain('Move to group')

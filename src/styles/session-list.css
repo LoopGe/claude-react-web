@@ -504,6 +504,19 @@
   from { opacity: 0; transform: scale(var(--motion-scale-enter)) translateY(calc(-1 * var(--motion-distance-sm))); }
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
+/* Only the primary rows scroll. The flyout is their absolute-positioned
+   sibling, so it can paint outside this menu without becoming horizontal
+   overflow inside the scrollport. Scoped to ContextMenu's shell because the
+   desktop titlebar shares .ctx-menu without this inner structure. */
+.ctx-menu-shell {
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+}
+.ctx-menu-items {
+  min-height: 0;
+  overflow-y: auto;
+}
 /* Flyout submenu: carries BOTH ctx-menu classes so the whole surface
    language (tokens, glass fill, border, shadow) applies unchanged, then
    overrides only the positioning — it is an absolutely-positioned CHILD of
@@ -513,6 +526,7 @@
 .ctx-submenu {
   position: absolute;
   min-width: 160px;
+  overflow-y: auto;
   z-index: 1;
 }
 /* Parent rows of a flyout: label flexes, disclosure glyph sits muted at the

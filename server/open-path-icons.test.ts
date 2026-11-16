@@ -15,7 +15,7 @@ import { extractTargetIcon, type IconDeps } from './open-path-icons.js'
 /** In-memory fs fixture: paths → bytes (text files stored as utf8). */
 function fixtureFs(files: Record<string, string | Buffer>): Pick<
   IconDeps,
-  'readBytes' | 'fileExists' | 'listDir'
+  'readBytes' | 'fileExists' | 'resolveExecutable' | 'listDir'
 > {
   return {
     readBytes: async (p) => {
@@ -24,6 +24,7 @@ function fixtureFs(files: Record<string, string | Buffer>): Pick<
       return typeof v === 'string' ? Buffer.from(v, 'utf8') : v
     },
     fileExists: async (p) => files[p] !== undefined,
+    resolveExecutable: async (p) => p,
     listDir: async (p) =>
       Object.keys(files)
         .filter((k) => k.startsWith(p.endsWith('/') ? p : p + '/'))
@@ -137,6 +138,46 @@ describe('extractTargetIcon — win32', () => {
     expect(psArgs).toContain('C:/Windows/explorer.exe')
     expect(psArgs).toContain('/tmp/icon-tmp/icon.png')
     expect(scriptBodies[0]).toContain('ExtractAssociatedIcon')
+  })
+
+  it('uses the OS home for the terminal alias when LOCALAPPDATA is unavailable', async () => {
+    const wt = 'C:/Users/u/AppData/Local/Microsoft/WindowsApps/wt.exe'
+    const { temp } = fixtureTemp({ '/tmp/icon-tmp/icon.png': PNG })
+    let psArgs: readonly string[] = []
+    const deps: IconDeps = {
+      ...fixtureFs({ [wt]: 'MZ' }),
+      temp,
+      env: {},
+      home: 'C:/Users/u',
+      run: async (_file, args) => {
+        psArgs = args
+        return { stdout: '' }
+      },
+    }
+    const icon = await extractTargetIcon('terminal', 'win32', deps)
+    expect(icon?.contentType).toBe('image/png')
+    expect(psArgs).toContain(wt)
+  })
+
+  it('extracts the terminal icon from the app execution alias target', async () => {
+    const wt = 'C:/Users/u/AppData/Local/Microsoft/WindowsApps/wt.exe'
+    const packagedWt = 'C:/Program Files/WindowsApps/Microsoft.WindowsTerminal_test/wt.exe'
+    const { temp } = fixtureTemp({ '/tmp/icon-tmp/icon.png': PNG })
+    let psArgs: readonly string[] = []
+    const deps: IconDeps = {
+      ...fixtureFs({ [packagedWt]: 'MZ' }),
+      resolveExecutable: async (path: string) => path === wt ? packagedWt : path,
+      temp,
+      env: {},
+      home: 'C:/Users/u',
+      run: async (_file, args) => {
+        psArgs = args
+        return { stdout: '' }
+      },
+    }
+    const icon = await extractTargetIcon('terminal', 'win32', deps)
+    expect(icon?.contentType).toBe('image/png')
+    expect(psArgs).toContain(packagedWt)
   })
 
   it('resolves null when the exe path does not exist', async () => {
