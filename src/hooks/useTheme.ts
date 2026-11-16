@@ -8,13 +8,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocalStorage } from './useLocalStorage'
+import { useTransparencyMode } from './useTransparencyMode'
 import {
   ACCENT_COLORS,
   ACCENT_COLOR_KEY,
   accentStrongFor,
   onAccentFor,
 } from '../theme'
-import { applySkin, applyTheme, applyTransparency, getStoredSkin, getStoredTheme, isAccentLocked, onSystemThemeChange, toggleTheme, TRANSPARENCY_KEY, type Skin, type Theme } from '../utils/theme'
+import { applySkin, applyTheme, applyTransparency, getStoredSkin, getStoredTheme, isAccentLocked, onSystemThemeChange, toggleTheme, type Skin, type Theme, type TransparencyMode } from '../utils/theme'
 
 export interface UseThemeResult {
   theme: Theme
@@ -27,9 +28,9 @@ export interface UseThemeResult {
   setSkin: (skin: Skin) => void
   accentColor: string
   setAccentColor: (v: string) => void
-  /** Global frosted-glass translucency — on (default) or off (opaque). */
-  transparency: boolean
-  setTransparency: (v: boolean) => void
+  /** Global transparency: glass, floating-glass-only no-frost, or fully opaque. */
+  transparency: TransparencyMode
+  setTransparency: (v: TransparencyMode) => void
 }
 
 export function useTheme(): UseThemeResult {
@@ -118,12 +119,8 @@ export function useTheme(): UseThemeResult {
     root.setProperty('--on-accent', onAccentFor(accentColor))
   }, [accentColor, skin])
 
-  // --- Global transparency (frosted-glass surfaces) ----------------------
-  const [transparency, setTransparency] = useLocalStorage<boolean>(
-    TRANSPARENCY_KEY,
-    true,
-    { validate: (v): v is boolean => typeof v === 'boolean' },
-  )
+  // --- Global transparency modes ------------------------------------------
+  const [transparency, setTransparency] = useTransparencyMode()
   useEffect(() => {
     applyTransparency(transparency)
   }, [transparency])

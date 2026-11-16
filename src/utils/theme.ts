@@ -9,6 +9,11 @@ export const SKIN_KEY = 'claude-react-web:skin'
 export const TRANSPARENCY_KEY = 'claude-react-web:transparency'
 
 export type Theme = 'dark' | 'light' | 'system'
+export type TransparencyMode = 'glass' | 'no-frost' | 'opaque'
+
+export function isTransparencyMode(value: unknown): value is TransparencyMode {
+  return value === 'glass' || value === 'no-frost' || value === 'opaque'
+}
 
 /** A "skin" is orthogonal to the light/dark mode: it changes the visual
  *  *feel* (depth, glow, gradients, or — for 'hc' — a VSCode-style high
@@ -52,15 +57,6 @@ export function isBackgroundLocked(skin: Skin | undefined | null): boolean {
   return skin === 'anthropic' || skin === 'hc' || skin === 'soft-hc' || skin === 'brutalist'
 }
 
-/** True for skins whose glass tokens are already fully opaque (solid
- *  --bg-elev, no blur) — `hc`, `soft-hc` and `brutalist` — so the global
- *  transparency toggle would be a dead control there. `anthropic` keeps its
- *  warm tinted glass, so it is NOT locked (unlike the background/accent
- *  locks above). */
-export function isTransparencyLocked(skin: Skin | undefined | null): boolean {
-  return skin === 'hc' || skin === 'soft-hc' || skin === 'brutalist'
-}
-
 /** Apply a skin by toggling the `data-skin` attribute on <html>. The
  *  'default' skin removes the attribute entirely so the base :root /
  *  [data-theme] rules apply untouched. */
@@ -75,18 +71,15 @@ export function applySkin(skin: Skin): void {
   } catch { /* ignored */ }
 }
 
-/** Apply the global transparency preference by toggling the
- *  `data-transparency` attribute on <html>. Absent = on (the default and the
- *  historical look); `"off"` makes every frosted-glass floating surface render
- *  opaque (see glass.css's `:root[data-transparency="off"]` override). The
- *  `hc` / `soft-hc` skins already force opaque glass and are visually
- *  unaffected; the `anthropic` skin keeps its warm tinted glass and therefore
- *  DOES go opaque when off. */
-export function applyTransparency(on: boolean): void {
-  if (on) {
+/** Apply the global transparency preference through <html>. Absent = glass
+ *  (the historical look); "off" preserves the previous floating-glass-only
+ *  opaque behavior; "opaque" also forces wallpaper chrome and every direct
+ *  translucent surface fill to its solid token (see glass.css/layout.css). */
+export function applyTransparency(mode: TransparencyMode): void {
+  if (mode === 'glass') {
     document.documentElement.removeAttribute('data-transparency')
   } else {
-    document.documentElement.setAttribute('data-transparency', 'off')
+    document.documentElement.setAttribute('data-transparency', mode === 'opaque' ? 'opaque' : 'off')
   }
 }
 

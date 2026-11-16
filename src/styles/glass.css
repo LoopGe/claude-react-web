@@ -52,6 +52,85 @@
   --glass-edge-highlight: none;
 }
 
+/* Fully opaque chrome. Raw wallpaper slider values stay intact; layout.css
+   consumes the effective aliases pinned here, so Glass restores them. */
+:root[data-transparency="opaque"] {
+  --glass-surface-bg: var(--bg-elev-solid);
+  --glass-surface-border: var(--border);
+  --glass-blur: none;
+  --glass-blur-strong: none;
+  --glass-edge-highlight: 0 0 0 0 transparent;
+  --effective-app-chrome-alpha: 100%;
+  --effective-app-surface-alpha: 100%;
+  --effective-app-chrome-blur: 0px;
+}
+
+:root[data-transparency="opaque"] body.has-bg .sidebar,
+:root[data-transparency="opaque"] body.has-bg .main-header {
+  background-color: var(--bg-elev-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-transparency="opaque"] body.has-bg .chat-panel {
+  background-color: var(--bg-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Neutral surfaces whose own rules mix a base colour with transparent.
+   Semantic tint fills, scrims, shadows, selection and hover treatments stay
+   independent; this roster covers only the opaque surface underneath. */
+:root[data-transparency="opaque"] .app-empty-state,
+:root[data-transparency="opaque"] .app-loading-card,
+:root[data-transparency="opaque"] .composer-card,
+:root[data-transparency="opaque"] .handoff-veil::before,
+:root[data-transparency="opaque"] .working-bar::before,
+:root[data-transparency="opaque"] .lightbox-toolbar,
+:root[data-transparency="opaque"] .lightbox-nav {
+  background-color: var(--bg-elev-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-transparency="opaque"][data-skin="brutalist"] .working-bar::before {
+  background-color: var(--bt-yellow);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-transparency="opaque"] .streaming-msg,
+:root[data-transparency="opaque"] .pinned-user-message,
+:root[data-transparency="opaque"] .chat-older-float-pill,
+:root[data-transparency="opaque"] .image-preview-compressed,
+:root[data-transparency="opaque"] .image-preview-remove,
+:root[data-transparency="opaque"] .composer-expanded-tab.active {
+  background-color: var(--bg-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-transparency="opaque"] .streaming-msg.liquid-glass {
+  background-color: var(--bg-elev-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-transparency="opaque"] .bash-msg-header {
+  background-color: var(--bg-elev-3-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-transparency="opaque"] .chat-composer-drag .composer-card {
+  background-color: var(--drag-over-bg-solid);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-transparency="opaque"] .streaming-refraction {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+:root[data-transparency="opaque"] .image-preview-remove:hover,
+:root[data-transparency="opaque"] .lightbox-nav:hover,
+:root[data-transparency="opaque"] .composer-expanded-tab:hover {
+  background-color: var(--btn-hover-bg-solid);
+}
+
 /* Surfaces that sit ABOVE app content and want the frosted-glass read.
    Grouped because they all share the same translucent-bg + blur recipe;
    per-surface box-shadow rules below override the original elevation
@@ -194,16 +273,16 @@
    the High Contrast skin (hc): its flat pure-bg aesthetic relies on 1px
    solid borders, and a faint fg wash would undermine it.
    ════════════════════════════════════════════════════════════════════ */
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .modal,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .palette,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .settings-overlay > .settings-panel,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .git-overlay > .git-panel,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .panel-overlay > .panel-overlay-card,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .perm-overlay > .perm-card,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .ctx-menu,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .model-picker,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .cmd-picker,
-html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .appearance-panel {
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .modal,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .palette,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .settings-overlay > .settings-panel,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .git-overlay > .git-panel,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .panel-overlay > .panel-overlay-card,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .perm-overlay > .perm-card,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .ctx-menu,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .model-picker,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .cmd-picker,
+html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .appearance-panel {
   background-image: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--fg) 4%, transparent) 0%,
@@ -212,16 +291,16 @@ html:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):
 }
 /* Light theme: keep the wash but cooler — too much white-over-white
    crushes the soft tint, so we use a near-transparent slate-ish fill. */
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .modal,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .palette,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .settings-overlay > .settings-panel,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .git-overlay > .git-panel,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .panel-overlay > .panel-overlay-card,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .perm-overlay > .perm-card,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .ctx-menu,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .model-picker,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .cmd-picker,
-html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]) .appearance-panel {
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .modal,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .palette,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .settings-overlay > .settings-panel,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .git-overlay > .git-panel,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .panel-overlay > .panel-overlay-card,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .perm-overlay > .perm-card,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .ctx-menu,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .model-picker,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .cmd-picker,
+html[data-theme="light"]:not([data-skin="glow"]):not([data-skin="hc"]):not([data-skin="brutalist"]):not([data-transparency="off"]):not([data-transparency="opaque"]) .appearance-panel {
   background-image: linear-gradient(
     to bottom,
     color-mix(in srgb, var(--fg) 2.5%, transparent) 0%,

@@ -2089,15 +2089,14 @@ body.resizing-col .app {
 /* ── Frosted chrome when a background image is active ───────────────────
    Toggled by useBackground (body.has-bg). Each surface keeps its own base
    fill token (sidebar/header = --bg-elev, chat-panel = --bg) so opacity
-   100% resolves to exactly today's look. Both the fill alpha and the frost
-   strength are written by JS (--app-chrome-alpha / --app-chrome-blur), so
-   the Appearance panel's Opacity and Blur sliders control them
-   independently. Guarded by @supports so browsers without backdrop-filter
-   keep fully-opaque fills. */
+   100% resolves to exactly today's look. JS writes the raw slider values;
+   the effective aliases below let Opaque mode force solid chrome without
+   overwriting those preferences. Guarded by @supports so browsers without
+   backdrop-filter keep fully-opaque fills. */
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
   /* Two independent knobs, deliberately kept from multiplying:
-       --app-chrome-alpha  → the chrome's own fill   (Opacity slider)
-       --app-surface-alpha → everything inside it    (Content slider)
+       --effective-app-chrome-alpha  → the chrome's own fill   (Opacity slider)
+       --effective-app-surface-alpha → everything inside it    (Content slider)
      The remap below redeclares the fill tokens on the chrome containers, so the
      ~156 selectors that paint message cards, the composer, tool cards and code
      blocks with them follow one number — no per-surface opt-in to remember.
@@ -2154,17 +2153,17 @@ body.resizing-col .app {
   body.has-bg .main-header,
   body.has-bg .chat-panel,
   body.has-bg [data-portaled] {
-    --bg: color-mix(in srgb, var(--bg-solid) var(--app-surface-alpha), transparent);
-    --bg-elev: color-mix(in srgb, var(--bg-elev-solid) var(--app-surface-alpha), transparent);
-    --bg-elev-1: color-mix(in srgb, var(--bg-elev-1-solid) var(--app-surface-alpha), transparent);
-    --bg-elev-2: color-mix(in srgb, var(--bg-elev-2-solid) var(--app-surface-alpha), transparent);
-    --code-bg: color-mix(in srgb, var(--code-bg-solid) var(--app-surface-alpha), transparent);
-    --code-bar-bg: color-mix(in srgb, var(--code-bar-bg-solid) var(--app-surface-alpha), transparent);
-    --bg-elev-3: color-mix(in srgb, var(--bg-elev-3-solid) var(--app-surface-alpha), transparent);
-    --msg-tool-bg: color-mix(in srgb, var(--msg-tool-bg-solid) var(--app-surface-alpha), transparent);
-    --msg-tool-result-bg: color-mix(in srgb, var(--msg-tool-result-bg-solid) var(--app-surface-alpha), transparent);
-    --msg-system-bg: color-mix(in srgb, var(--msg-system-bg-solid) var(--app-surface-alpha), transparent);
-    --msg-error-bg: color-mix(in srgb, var(--msg-error-bg-solid) var(--app-surface-alpha), transparent);
+    --bg: color-mix(in srgb, var(--bg-solid) var(--effective-app-surface-alpha), transparent);
+    --bg-elev: color-mix(in srgb, var(--bg-elev-solid) var(--effective-app-surface-alpha), transparent);
+    --bg-elev-1: color-mix(in srgb, var(--bg-elev-1-solid) var(--effective-app-surface-alpha), transparent);
+    --bg-elev-2: color-mix(in srgb, var(--bg-elev-2-solid) var(--effective-app-surface-alpha), transparent);
+    --code-bg: color-mix(in srgb, var(--code-bg-solid) var(--effective-app-surface-alpha), transparent);
+    --code-bar-bg: color-mix(in srgb, var(--code-bar-bg-solid) var(--effective-app-surface-alpha), transparent);
+    --bg-elev-3: color-mix(in srgb, var(--bg-elev-3-solid) var(--effective-app-surface-alpha), transparent);
+    --msg-tool-bg: color-mix(in srgb, var(--msg-tool-bg-solid) var(--effective-app-surface-alpha), transparent);
+    --msg-tool-result-bg: color-mix(in srgb, var(--msg-tool-result-bg-solid) var(--effective-app-surface-alpha), transparent);
+    --msg-system-bg: color-mix(in srgb, var(--msg-system-bg-solid) var(--effective-app-surface-alpha), transparent);
+    --msg-error-bg: color-mix(in srgb, var(--msg-error-bg-solid) var(--effective-app-surface-alpha), transparent);
     /* Interaction-state fills. Their source is a fixed hex, so unlike the fills
        above nothing else would make them track the slider — without these a
        hovered button or a drag target stayed a solid block over the wallpaper.
@@ -2174,21 +2173,21 @@ body.resizing-col .app {
        here would replace the per-session accent with the GLOBAL one frozen into
        --msg-user-*-solid at :root. The bubble already follows the slider via
        --bg, which the rule above makes translucent. */
-    --btn-hover-bg: color-mix(in srgb, var(--btn-hover-bg-solid) var(--app-surface-alpha), transparent);
-    --btn-hover-border: color-mix(in srgb, var(--btn-hover-border-solid) var(--app-surface-alpha), transparent);
-    --drag-over-bg: color-mix(in srgb, var(--drag-over-bg-solid) var(--app-surface-alpha), transparent);
+    --btn-hover-bg: color-mix(in srgb, var(--btn-hover-bg-solid) var(--effective-app-surface-alpha), transparent);
+    --btn-hover-border: color-mix(in srgb, var(--btn-hover-border-solid) var(--effective-app-surface-alpha), transparent);
+    --drag-over-bg: color-mix(in srgb, var(--drag-over-bg-solid) var(--effective-app-surface-alpha), transparent);
   }
 
   body.has-bg .sidebar,
   body.has-bg .main-header {
-    background-color: color-mix(in srgb, var(--bg-elev-solid) var(--app-chrome-alpha), transparent);
-    backdrop-filter: blur(var(--app-chrome-blur));
-    -webkit-backdrop-filter: blur(var(--app-chrome-blur));
+    background-color: color-mix(in srgb, var(--bg-elev-solid) var(--effective-app-chrome-alpha), transparent);
+    backdrop-filter: blur(var(--effective-app-chrome-blur));
+    -webkit-backdrop-filter: blur(var(--effective-app-chrome-blur));
   }
   body.has-bg .chat-panel {
-    background-color: color-mix(in srgb, var(--bg-solid) var(--app-chrome-alpha), transparent);
-    backdrop-filter: blur(var(--app-chrome-blur));
-    -webkit-backdrop-filter: blur(var(--app-chrome-blur));
+    background-color: color-mix(in srgb, var(--bg-solid) var(--effective-app-chrome-alpha), transparent);
+    backdrop-filter: blur(var(--effective-app-chrome-blur));
+    -webkit-backdrop-filter: blur(var(--effective-app-chrome-blur));
   }
   body.has-bg .main-body {
     background: transparent;

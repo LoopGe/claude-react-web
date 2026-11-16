@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type RefObject } from 'react'
 import { clamp } from '../utils/clamp'
+import { useOpaqueTransparency } from './useOpaqueTransparency'
 
 /* ============================================================
    useLiquidGlass — SVG-displacement-map refraction for an element
@@ -34,9 +35,9 @@ export interface LiquidGlassOptions {
 }
 
 export interface LiquidGlass {
-  /** True only when the running browser actually applies SVG filters
-   *  as backdrop-filter (Chromium). Callers gate the refraction layer
-   *  on this and otherwise render their CSS frosted fallback. */
+  /** True when Chromium supports the filter and transparency mode allows it.
+   *  Callers gate the refraction layer on this and otherwise render their CSS
+   *  frosted fallback (solid when transparency is opaque). */
   supported: boolean
   /** Stable per-instance filter id. Reference as `url(#<filterId>)`. */
   filterId: string
@@ -107,9 +108,11 @@ export function useLiquidGlass(
   const feDispRef = useRef<SVGFEDisplacementMapElement | null>(null)
 
   const [supported] = useState(svgBackdropSupported)
+  const opaque = useOpaqueTransparency()
+  const glassSupported = supported && !opaque
 
   useEffect(() => {
-    if (!supported || !enabled) return
+    if (!glassSupported || !enabled) return
     const el = targetRef.current
     if (!el) return
     if (typeof ResizeObserver === 'undefined') return
@@ -238,7 +241,7 @@ export function useLiquidGlass(
       ro.disconnect()
       cancelAnimationFrame(raf)
     }
-  }, [supported, enabled, targetRef, bezel, radius, strength])
+  }, [glassSupported, enabled, targetRef, bezel, radius, strength])
 
-  return { supported, filterId, feImageRef, feDispRef }
+  return { supported: glassSupported, filterId, feImageRef, feDispRef }
 }

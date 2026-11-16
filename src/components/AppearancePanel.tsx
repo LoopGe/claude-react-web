@@ -19,8 +19,8 @@ import type { ReactNode } from 'react'
 import type { RefObject } from 'react'
 import { FloatingSurfaceProvider, useFloatingSurface } from '../hooks/useFloatingSurface'
 import type { FloatingDismissReason } from '../hooks/floating-surface-registry'
-import type { Skin, Theme } from '../utils/theme'
-import { isBackgroundLocked, isTransparencyLocked } from '../utils/theme'
+import type { Skin, Theme, TransparencyMode } from '../utils/theme'
+import { isBackgroundLocked } from '../utils/theme'
 import { ACCENT_COLORS, markPortaledSurface } from '../theme'
 import { useOutsideMouseDown } from '../hooks/useOutsideMouseDown'
 import type { BackgroundSetting } from '../theme'
@@ -32,7 +32,6 @@ import { ANIMATION_SPEED_LABELS, ANIMATION_SPEED_PRESETS } from '../../shared/an
 import { AccentSwatchGrid } from './AccentPicker'
 import { HoverHint } from './HoverHint'
 import { BackgroundPicker } from './BackgroundPicker'
-import { Switch } from './Switch'
 import { HoverPopover } from './HoverPopover'
 import { Segmented } from './Segmented'
 import { IconSparkles, IconSun, IconMoon, IconMonitor, IconCheck } from './icons/ToolIcons'
@@ -46,8 +45,8 @@ interface Props {
   onAccent: (color: string) => void
   background?: BackgroundSetting
   onBackgroundChange?: (next: BackgroundSetting) => void
-  transparency?: boolean
-  onTransparency?: (on: boolean) => void
+  transparency?: TransparencyMode
+  onTransparency?: (mode: TransparencyMode) => void
   /** The four global display presets this popover now owns (moved here from
    *  Global Settings → Appearance). Saved immediately by the parent. */
   displayPrefs: DisplayPresetPrefs
@@ -93,6 +92,13 @@ const MODE_OPTIONS: { value: Theme; label: string; icon: ReactNode }[] = [
   { value: 'system', label: 'System', icon: <IconMonitor size={15} /> },
 ]
 
+const TRANSPARENCY_MODES: readonly TransparencyMode[] = ['glass', 'no-frost', 'opaque']
+const TRANSPARENCY_LABELS: Record<TransparencyMode, string> = {
+  glass: 'Glass',
+  'no-frost': 'No frost',
+  opaque: 'Opaque',
+}
+
 /** One Display row: title + its grid-variant Segmented. `title` drives both
  *  the visible label and the radiogroup's aria-label so they cannot drift. */
 function PresetRow<T extends string>({
@@ -132,7 +138,7 @@ function AppearancePopover({
   onAccent,
   background = BACKGROUND_DEFAULT,
   onBackgroundChange = () => {},
-  transparency = true,
+  transparency = 'glass',
   onTransparency = () => {},
   displayPrefs,
   onDisplayPrefChange,
@@ -148,8 +154,8 @@ function AppearancePopover({
   onAccent: (color: string) => void
   background?: BackgroundSetting
   onBackgroundChange?: (next: BackgroundSetting) => void
-  transparency?: boolean
-  onTransparency?: (on: boolean) => void
+  transparency?: TransparencyMode
+  onTransparency?: (mode: TransparencyMode) => void
   displayPrefs: DisplayPresetPrefs
   onDisplayPrefChange: (patch: Partial<DisplayPresetPrefs>) => void
   anchor: { x: number; y: number }
@@ -319,23 +325,15 @@ function AppearancePopover({
         />
       </div>
 
-      {/* Transparency — hidden on hc / soft-hc, whose glass is already
-          fully opaque so the toggle would be a dead control. */}
-      {!isTransparencyLocked(skin) && (
-        <div className="appearance-section">
-          <div className="appearance-heading">Transparency</div>
-          <div className="appearance-transparency-row">
-            <span className="appearance-transparency-label">
-              Frosted glass surfaces
-            </span>
-            <Switch
-              checked={transparency}
-              onChange={onTransparency}
-              label="Frosted glass surfaces"
-            />
-          </div>
-        </div>
-      )}
+      <div className="appearance-section">
+        <PresetRow
+          title="Transparency"
+          value={transparency}
+          options={TRANSPARENCY_MODES}
+          labels={TRANSPARENCY_LABELS}
+          onChange={onTransparency}
+        />
+      </div>
 
       {/* Accent */}
       <div className="appearance-section">
@@ -419,7 +417,7 @@ export function AppearancePanel({
   onAccent,
   background = BACKGROUND_DEFAULT,
   onBackgroundChange = () => {},
-  transparency = true,
+  transparency = 'glass',
   onTransparency = () => {},
   displayPrefs,
   onDisplayPrefChange,

@@ -51,6 +51,11 @@
   /* Fill strength of the surfaces inside the chrome (message cards, composer,
      code blocks) — written by JS as a percentage, see BACKGROUND_DEFAULT_SURFACE. */
   --app-surface-alpha: 100%;
+  /* Effective values consumed by layout.css. Opaque mode overrides these
+     aliases, leaving the raw slider values above untouched for restoration. */
+  --effective-app-chrome-alpha: var(--app-chrome-alpha);
+  --effective-app-chrome-blur: var(--app-chrome-blur);
+  --effective-app-surface-alpha: var(--app-surface-alpha);
   --border: #262b36;
   --fg: #e6e8eb;
   --fg-muted: #8c94a3;

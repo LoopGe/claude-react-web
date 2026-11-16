@@ -73,7 +73,7 @@ describe('fixed floating surfaces', () => {
 // is no good — a rule on the container that reads it back would be a
 // self-reference, and a token COMPOSED from another fill token at :root has
 // already baked the opaque value in), and layout.css re-declares the token as a
-// mix of that alias with --app-surface-alpha on the chrome containers. An alias
+// mix of that alias with --effective-app-surface-alpha on the chrome containers. An alias
 // with no remap leaves the surface opaque; a remap whose alias doesn't exist
 // mixes a token against itself, which is invalid and silently drops the
 // declaration. Both halves are one list, so they are checked as one.
@@ -85,7 +85,7 @@ describe('wallpaper fill remap covers every frozen token', () => {
   // satisfy every cross-check below while painting the wrong fill.
   const remapped = new Map(
     [...style('layout.css').matchAll(
-      /--([\w-]+):\s*color-mix\(in srgb, var\(--([\w-]+)\) var\(--app-surface-alpha\), transparent\)/g,
+      /--([\w-]+):\s*color-mix\(\s*in srgb,\s*var\(--([\w-]+)\)\s+var\(--effective-app-surface-alpha\),\s*transparent\s*\)/g,
     )].map(([, name, source]) => [name, source]),
   )
 

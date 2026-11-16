@@ -3,6 +3,7 @@ import { render, screen, fireEvent, cleanup, within } from '@testing-library/rea
 import { AppearancePanel } from './AppearancePanel'
 import { expectPortaledToBody } from './portal-test-utils'
 import type { BackgroundSetting } from '../theme'
+import type { Skin } from '../utils/theme'
 
 const noBg: BackgroundSetting = { pref: { kind: 'none' }, opacity: 0.85 }
 
@@ -15,7 +16,7 @@ const DISPLAY_PREFS = {
   animationSpeed: 'fast',
 } as const
 
-function renderPanel(skin: 'default' | 'glow' | 'anthropic' | 'hc' | 'soft-hc') {
+function renderPanel(skin: Skin) {
   return render(
     <AppearancePanel
       skin={skin}
@@ -142,14 +143,24 @@ describe('AppearancePanel display presets', () => {
     )
     await openPanel()
 
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Transcript spacing' }))
-      .getByRole('radio', { name: 'Compact' }))
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Message text density' }))
-      .getByRole('radio', { name: 'Compact' }))
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Font size' }))
-      .getByRole('radio', { name: 'X-Large' }))
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
-      .getByRole('radio', { name: 'Slow' }))
+    fireEvent.click(
+      within(screen.getByRole('radiogroup', { name: 'Transcript spacing' })).getByRole('radio', {
+        name: 'Compact',
+      }),
+    )
+    fireEvent.click(
+      within(screen.getByRole('radiogroup', { name: 'Message text density' })).getByRole('radio', {
+        name: 'Compact',
+      }),
+    )
+    fireEvent.click(
+      within(screen.getByRole('radiogroup', { name: 'Font size' })).getByRole('radio', { name: 'X-Large' }),
+    )
+    fireEvent.click(
+      within(screen.getByRole('radiogroup', { name: 'Animation speed' })).getByRole('radio', {
+        name: 'Slow',
+      }),
+    )
 
     expect(onDisplayPrefChange).toHaveBeenNthCalledWith(1, { rowGap: 'compact' })
     expect(onDisplayPrefChange).toHaveBeenNthCalledWith(2, { textSpacing: 'compact' })
@@ -175,8 +186,9 @@ describe('AppearancePanel display presets', () => {
     )
     await openPanel()
 
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Animation speed' }))
-      .getByRole('radio', { name: 'Off' }))
+    fireEvent.click(
+      within(screen.getByRole('radiogroup', { name: 'Animation speed' })).getByRole('radio', { name: 'Off' }),
+    )
 
     expect(onDisplayPrefChange).toHaveBeenCalledWith({ animationSpeed: 'off' })
   })
@@ -201,38 +213,43 @@ describe('AppearancePanel display presets', () => {
 
     // 'Airy' is already active for DISPLAY_PREFS.rowGap; a re-click must not
     // trigger a no-op config write.
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Transcript spacing' }))
-      .getByRole('radio', { name: 'Airy' }))
+    fireEvent.click(
+      within(screen.getByRole('radiogroup', { name: 'Transcript spacing' })).getByRole('radio', {
+        name: 'Airy',
+      }),
+    )
 
     expect(onDisplayPrefChange).not.toHaveBeenCalled()
   })
 })
 
-describe('AppearancePanel transparency toggle', () => {
-  it('shows the Transparency section with the switch on by default', async () => {
+describe('AppearancePanel transparency modes', () => {
+  it('shows Glass as the default three-mode control', async () => {
     renderPanel('default')
     await openPanel()
-    expect(screen.getByText('Transparency')).toBeTruthy()
-    expect(screen.getByText('Frosted glass surfaces')).toBeTruthy()
-    expect(screen.getByRole('switch', { name: 'Frosted glass surfaces' }).getAttribute('aria-checked')).toBe('true')
+    const group = screen.getByRole('radiogroup', { name: 'Transparency' })
+    expect(within(group).getByRole('radio', { name: 'Glass' }).getAttribute('aria-checked')).toBe('true')
+    expect(within(group).getByRole('radio', { name: 'No frost' }).getAttribute('aria-checked')).toBe('false')
+    expect(within(group).getByRole('radio', { name: 'Opaque' }).getAttribute('aria-checked')).toBe('false')
   })
 
-  it('shows the toggle on anthropic — its warm glass is still translucent', async () => {
+  it('shows the modes on anthropic — its warm glass is still translucent', async () => {
     renderPanel('anthropic')
     await openPanel()
-    expect(screen.getByText('Frosted glass surfaces')).toBeTruthy()
+    expect(screen.getByRole('radiogroup', { name: 'Transparency' })).toBeTruthy()
   })
 
-  it('hides the toggle on hc / soft-hc — their glass is already opaque', async () => {
-    for (const skin of ['hc', 'soft-hc'] as const) {
+  it('offers Opaque on hc / soft-hc / brutalist — direct surfaces still use it', async () => {
+    for (const skin of ['hc', 'soft-hc', 'brutalist'] as const) {
       const { unmount } = renderPanel(skin)
       await openPanel()
-      expect(screen.queryByText('Frosted glass surfaces')).toBeNull()
+      expect(screen.getByRole('radiogroup', { name: 'Transparency' })).toBeTruthy()
+      expect(screen.getByRole('radio', { name: 'Opaque' })).toBeTruthy()
       unmount()
     }
   })
 
-  it('reports the next state when toggled', async () => {
+  it('reports opaque when the new mode is selected', async () => {
     const onTransparency = vi.fn()
     render(
       <AppearancePanel
@@ -246,12 +263,12 @@ describe('AppearancePanel transparency toggle', () => {
         onBackgroundChange={() => {}}
         displayPrefs={DISPLAY_PREFS}
         onDisplayPrefChange={() => {}}
-        transparency
+        transparency="glass"
         onTransparency={onTransparency}
       />,
     )
     await openPanel()
-    fireEvent.click(screen.getByRole('switch', { name: 'Frosted glass surfaces' }))
-    expect(onTransparency).toHaveBeenCalledWith(false)
+    fireEvent.click(screen.getByRole('radio', { name: 'Opaque' }))
+    expect(onTransparency).toHaveBeenCalledWith('opaque')
   })
 })

@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useTheme } from './useTheme'
+import { TRANSPARENCY_KEY } from '../utils/theme'
 
 describe('useTheme — accent lock on skins', () => {
   beforeEach(() => {
@@ -42,5 +43,34 @@ describe('useTheme — accent lock on skins', () => {
     act(() => result.current.setSkin('brutalist'))
     act(() => result.current.setSkin('default'))
     expect(document.documentElement.style.getPropertyValue('--accent')).toBe('#ff0000')
+  })
+})
+
+describe('useTheme — transparency modes', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.documentElement.removeAttribute('data-transparency')
+  })
+  afterEach(() => {
+    window.localStorage.clear()
+    document.documentElement.removeAttribute('data-transparency')
+  })
+
+  it.each([
+    [true, 'glass'],
+    [false, 'no-frost'],
+  ])('migrates the legacy boolean %s to %s', (stored, expected) => {
+    window.localStorage.setItem(TRANSPARENCY_KEY, JSON.stringify(stored))
+    const { result } = renderHook(() => useTheme())
+    expect(result.current.transparency).toBe(expected)
+    expect(JSON.parse(window.localStorage.getItem(TRANSPARENCY_KEY)!)).toBe(expected)
+  })
+
+  it('persists and applies opaque mode', () => {
+    const { result } = renderHook(() => useTheme())
+    act(() => result.current.setTransparency('opaque'))
+    expect(result.current.transparency).toBe('opaque')
+    expect(document.documentElement.getAttribute('data-transparency')).toBe('opaque')
+    expect(JSON.parse(window.localStorage.getItem(TRANSPARENCY_KEY)!)).toBe('opaque')
   })
 })

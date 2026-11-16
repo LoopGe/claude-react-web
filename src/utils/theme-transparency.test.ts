@@ -9,18 +9,23 @@ afterEach(() => {
 })
 
 describe('applyTransparency', () => {
-  it('removes the attribute when on — the default look', () => {
-    document.documentElement.setAttribute('data-transparency', 'off')
-    applyTransparency(true)
+  it('removes the attribute in glass mode — the default look', () => {
+    document.documentElement.setAttribute('data-transparency', 'opaque')
+    applyTransparency('glass')
     expect(document.documentElement.hasAttribute('data-transparency')).toBe(false)
   })
 
-  it('stamps data-transparency="off" when off', () => {
-    applyTransparency(false)
+  it('stamps data-transparency="off" in no-frost mode', () => {
+    applyTransparency('no-frost')
     expect(document.documentElement.getAttribute('data-transparency')).toBe('off')
   })
 
-  it('is keyed for a boolean localStorage flag under the app namespace', () => {
+  it('stamps data-transparency="opaque" in opaque mode', () => {
+    applyTransparency('opaque')
+    expect(document.documentElement.getAttribute('data-transparency')).toBe('opaque')
+  })
+
+  it('keeps the existing namespaced localStorage key for migration', () => {
     expect(TRANSPARENCY_KEY).toMatch(/^claude-react-web:/)
   })
 })

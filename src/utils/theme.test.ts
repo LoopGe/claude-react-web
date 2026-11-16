@@ -13,7 +13,6 @@ import {
   toggleTheme,
   isAccentLocked,
   isBackgroundLocked,
-  isTransparencyLocked,
   type Skin,
 } from './theme'
 
@@ -201,9 +200,8 @@ describe('brutalist skin registration', () => {
     expect(document.documentElement.getAttribute('data-skin')).toBe('brutalist')
     expect(localStorage.getItem(SKIN_KEY)).toBe('brutalist')
   })
-  it('locks accent, background AND transparency (strictest skin)', () => {
+  it('locks accent and background (strictest skin)', () => {
     expect(isAccentLocked('brutalist')).toBe(true)
     expect(isBackgroundLocked('brutalist')).toBe(true)
-    expect(isTransparencyLocked('brutalist')).toBe(true)
   })
 })
