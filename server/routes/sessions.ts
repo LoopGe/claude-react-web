@@ -1245,8 +1245,8 @@ export function buildSessionRouter(
     const opts: { maxBytes?: number; encoding?: 'utf-8' | 'base64' } = {}
     const maxBytes = Number(c.req.query('maxBytes') ?? '')
     if (c.req.query('maxBytes') !== undefined) {
-      if (!Number.isFinite(maxBytes) || maxBytes <= 0) {
-        return c.json({ error: 'maxBytes must be a positive number' }, 400)
+      if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || !Number.isSafeInteger(maxBytes + 1)) {
+        return c.json({ error: 'maxBytes must be a positive safe integer whose successor is also safe' }, 400)
       }
       opts.maxBytes = maxBytes
     }

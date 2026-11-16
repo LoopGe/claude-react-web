@@ -26,9 +26,12 @@ describe('session read-file route', () => {
     expect(res.status).toBe(400)
   })
 
-  it('rejects a non-positive maxBytes', async () => {
+  it('rejects an invalid maxBytes', async () => {
     const { app } = makeApp()
-    for (const bad of ['0', '-5', 'abc']) {
+    for (const bad of [
+      '0', '-5', 'abc', '1.5', 'NaN', 'Infinity',
+      String(Number.MAX_SAFE_INTEGER), '9007199254740992', '9007199254740993',
+    ]) {
       const res = await app.request(`/sessions/s1/read-file?path=${encodeURIComponent('/a.txt')}&maxBytes=${bad}`)
       expect(res.status).toBe(400)
     }

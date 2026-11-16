@@ -8,7 +8,7 @@ import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs'
 import * as nodeFs from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { rmRf } from './__test-utils__/index.js'
 import { SUBSCRIBER_QUEUE_CAP } from './async-subscription.js'
@@ -6625,6 +6625,21 @@ describe('SessionManager', () => {
       // mtime floored to whole ms — the SDK compares against this.
       expect(statMock).toHaveBeenCalledWith('/repo/a.txt')
       expect(mockHandles[0].seedReadState).toHaveBeenCalledWith('/repo/a.txt', 12345)
+    } finally {
+      statMock.mockReset()
+    }
+  })
+
+  it('readFile() stats a relative path against session cwd and seeds the original path', async () => {
+    const info = await sm.create({ cwd: dir })
+    mockHandles[0].readFile.mockResolvedValueOnce({ available: true, contents: 'body' })
+    const statMock = nodeFs.stat as MockedFunction<typeof nodeFs.stat>
+    statMock.mockResolvedValueOnce({ mtimeMs: 12345.9 } as Awaited<ReturnType<typeof nodeFs.stat>>)
+    try {
+      const res = await sm.readFile(info.id, 'a.txt')
+      expect(res).toEqual({ available: true, contents: 'body' })
+      expect(statMock).toHaveBeenCalledWith(resolve(dir, 'a.txt'))
+      expect(mockHandles[0].seedReadState).toHaveBeenCalledWith('a.txt', 12345)
     } finally {
       statMock.mockReset()
     }

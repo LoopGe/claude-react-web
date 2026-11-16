@@ -73,6 +73,13 @@ import {
   type PdfBudgetReservation,
 } from './pdf-documents.js'
 import { DEFAULT_CONTEXT_WINDOW, type NativeModelContextResolver } from './model-context.js'
+import type { FileReadResult } from '../../../shared/read-file.js'
+import {
+  DEFAULT_READ_MAX_BYTES,
+  NativeFileUnavailableError,
+  readNativeTarget,
+  resolveNativeReadTarget,
+} from './file-read.js'
 
 interface PendingDurableInitial {
   message: AgentUserMessage
@@ -868,10 +875,20 @@ export class NativeSession implements ProviderSessionHandle {
     // here and surfaces as the turn's error through the pump catch. This is
     // the loop's single pre-tool seam, so it covers bypass / deny paths too.
     if (this.assistantFlush) await this.assistantFlush
-    // An interrupt/destroy can land while the flush is in flight. Re-check
-    // before handing the signal to the broker: its abort listener never fires
-    // for an already-aborted signal, so the permission would park forever —
-    // and bypass mode would run the tool after the user stopped the turn.
+    return this.decidePermission(toolName, input, toolUseId, signal, permissionMode)
+  }
+
+  private async decidePermission(
+    toolName: string,
+    input: Record<string, unknown>,
+    toolUseId: string,
+    signal: AbortSignal,
+    permissionMode: string,
+  ) {
+    // An interrupt/destroy can land while the model turn's flush is in flight.
+    // Re-check before handing the signal to the broker: its abort listener
+    // never fires for an already-aborted signal, so the permission would park
+    // forever — and bypass mode would run the tool after the user stopped.
     if (signal.aborted) return { allowed: false, input, message: 'aborted' }
     // Live mode, not the spawn-time opts value: a bypass session downgraded
     // to default must stop auto-allowing.
@@ -898,6 +915,50 @@ export class NativeSession implements ProviderSessionHandle {
       input,
       message: result?.message ?? 'permission denied',
       questionResult: isQuestionResult(result),
+    }
+  }
+
+  async readFile(
+    path: string,
+    opts?: { maxBytes?: number; encoding?: 'utf-8' | 'base64' },
+  ): Promise<FileReadResult> {
+    const tools = this.currentProfile?.tools ?? this.baseToolProfile?.tools
+    const disallowedTools = this.currentProfile?.disallowedTools ?? this.baseToolProfile?.disallowedTools
+    if ((tools !== undefined && !tools.includes('Read')) || disallowedTools?.includes('Read')) {
+      return { available: false }
+    }
+
+    const maxBytes = opts?.maxBytes ?? DEFAULT_READ_MAX_BYTES
+    const encoding = opts?.encoding ?? 'utf-8'
+    const input = { file_path: path, maxBytes, encoding }
+    try {
+      const target = await resolveNativeReadTarget(this.opts.cwd, path)
+      const permission = this.baseToolProfile?.allowedTools?.includes('Read')
+        ? { allowed: true, input }
+        : await this.decidePermission(
+          'Read',
+          input,
+          `host-read-file:${this.ctx.uuid()}`,
+          this.sessionAbort.signal,
+          this.permissionMode,
+        )
+      if (!permission.allowed) return { available: false }
+      const updated = permission.input
+      if (Object.keys(updated).length !== 3
+        || updated.file_path !== input.file_path
+        || updated.maxBytes !== input.maxBytes
+        || updated.encoding !== input.encoding) {
+        return { available: false }
+      }
+      const { result } = await readNativeTarget(target, {
+        maxBytes,
+        encoding,
+        signal: this.sessionAbort.signal,
+      })
+      return result
+    } catch (err) {
+      if (err instanceof NativeFileUnavailableError) return { available: false }
+      throw err
     }
   }
 

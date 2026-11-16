@@ -929,6 +929,7 @@ describe('NativeSession', () => {
     expect(provider.capabilities.supportsMcp).toBe(true)
     expect(provider.capabilities.supportsFineGrainedPermissions).toBe(true)
     expect(provider.capabilities.supportsSteering).toBe(true)
+    expect(provider.capabilities.supportsReadFile).toBe(false)
   })
 
   it('admits a mid-turn supplement, injects the wrapped guidance before the next request and reports delivery', async () => {

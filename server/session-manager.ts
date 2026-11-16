@@ -33,7 +33,7 @@ import { UploadStore } from './upload-store.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
-import { join, resolve, sep } from 'node:path'
+import { isAbsolute, join, resolve, sep } from 'node:path'
 import { SessionStore, coerceMemory, coerceTaskBudget, type SessionMeta } from './persistence.js'
 import { PromptUuidStore, rewriteSeedPromptUuids, retainPromptUuidEntries, type PromptUuidEntry } from './prompt-uuid-store.js'
 import { SteeredStore, spliceSteeredIntoPage } from './steered-store.js'
@@ -7169,7 +7169,7 @@ export class SessionManager {
     // Edit proceed from incomplete knowledge).
     if (result.available && !result.truncated && typeof s.handle.seedReadState === 'function') {
       try {
-        const st = await stat(path)
+        const st = await stat(isAbsolute(path) ? path : resolve(s.cwd!, path))
         await s.handle.seedReadState(path, Math.floor(st.mtimeMs))
       } catch (err) {
         log.debug(`[session ${id}] seedReadState skipped for ${path}:`, err)
