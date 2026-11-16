@@ -386,3 +386,42 @@ describe('readNativeTextWindow', () => {
     expect(sameNativeFileIdentity(first.observation.identity, second.observation.identity)).toBe(true)
   })
 })
+
+describe('read boundary regressions', () => {
+  it('counts a trailing empty line separator toward the model window cap', async () => {
+    const contents = 'x'.repeat(MODEL_READ_WINDOW_MAX_BYTES) + '\n'
+    const target = await resolveNativeReadTarget(dir, await fixture(contents, 'cap-trailing-newline.txt'))
+
+    await expect(readNativeTextWindow(target, { signal: signal() }))
+      .rejects.toThrow(NativeReadWindowTooLargeError)
+  })
+
+  it('counts empty-line separators toward the model window cap', async () => {
+    const contents = 'x'.repeat(MODEL_READ_WINDOW_MAX_BYTES) + '\n\n'
+    const target = await resolveNativeReadTarget(dir, await fixture(contents, 'cap-empty-lines.txt'))
+
+    await expect(readNativeTextWindow(target, { signal: signal() }))
+      .rejects.toThrow(NativeReadWindowTooLargeError)
+  })
+
+  it('preserves a leading BOM on a complete host read', async () => {
+    const bom = String.fromCharCode(0xfeff)
+    const target = await resolveNativeReadTarget(dir, await fixture(`${bom}alpha`, 'host-bom.txt'))
+    const { result, observation } = await readNativeTarget(target, { signal: signal() })
+
+    expect(result.contents).toBe(`${bom}alpha`)
+    expect(result.truncated).toBe(false)
+    expect(observation).toBeDefined()
+  })
+
+  it('preserves BOM characters at the start of every projected line', async () => {
+    const bom = String.fromCharCode(0xfeff)
+    const contents = `${bom}first\n${bom}second\n${bom}`
+    const target = await resolveNativeReadTarget(dir, await fixture(contents, 'model-bom.txt'))
+    const window = await readNativeTextWindow(target, { signal: signal() })
+
+    expect(window.text).toBe(contents)
+    expect(window.endLine).toBe(3)
+    expect(window.reachedEof).toBe(true)
+  })
+})

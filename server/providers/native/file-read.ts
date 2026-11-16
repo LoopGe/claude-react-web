@@ -188,7 +188,7 @@ function completeUtf8Prefix(bytes: Buffer): Buffer {
 function decodeText(bytes: Buffer): string {
   if (bytes.includes(0)) throw new NativeFileEncodingError('file contains NUL bytes')
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
   } catch (err) {
     throw new NativeFileEncodingError('file is not valid UTF-8', { cause: err })
   }
@@ -269,7 +269,7 @@ export async function readNativeTextWindow(
     let stopped = false
     let naturalEof = false
     let succeeded = false
-    const decoder = new TextDecoder('utf-8', { fatal: true })
+    const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
     const stream = handle.createReadStream({ autoClose: false, start: startByteOffset })
 
     const validateChunk = (chunk: Buffer, streamDecode: boolean) => {
@@ -292,8 +292,12 @@ export async function readNativeTextWindow(
     }
     const finishLine = () => {
       if (!capturing) return
+      const nextRetainedBytes = retainedBytes + (lines.length > 0 ? 1 : 0) + currentBytes
+      if (nextRetainedBytes > MODEL_READ_WINDOW_MAX_BYTES) {
+        throw new NativeReadWindowTooLargeError('requested read window exceeds 1 MiB; request fewer lines')
+      }
       lines.push(Buffer.concat(lineParts, currentBytes))
-      retainedBytes += (lines.length > 1 ? 1 : 0) + currentBytes
+      retainedBytes = nextRetainedBytes
       lineParts = []
       currentBytes = 0
     }
