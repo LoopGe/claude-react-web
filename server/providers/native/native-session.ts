@@ -74,6 +74,7 @@ import {
 } from './pdf-documents.js'
 import { DEFAULT_CONTEXT_WINDOW, type NativeModelContextResolver } from './model-context.js'
 import type { FileReadResult } from '../../../shared/read-file.js'
+import type { NativeReadState } from './read-state.js'
 import {
   DEFAULT_READ_MAX_BYTES,
   NativeFileUnavailableError,
@@ -243,6 +244,8 @@ export interface NativeSessionOptions {
    *  creatable on an unconfigured machine (the failure surfaces as a loud
    *  turn error, not a create-time throw). */
   credentials: () => { baseUrl: string; authToken: string }
+  /** Per-session proof of complete current-version reads, shared by Read/Edit. */
+  readState: NativeReadState
   /** The builtin tools only. Discovered MCP tools are appended per turn by
    *  `rebuildTools`. */
   tools: ToolDef[]
@@ -950,16 +953,21 @@ export class NativeSession implements ProviderSessionHandle {
         || updated.encoding !== input.encoding) {
         return { available: false }
       }
-      const { result } = await readNativeTarget(target, {
+      const { result, observation } = await readNativeTarget(target, {
         maxBytes,
         encoding,
         signal: this.sessionAbort.signal,
       })
+      if (observation) this.opts.readState.observeHost(observation)
       return result
     } catch (err) {
       if (err instanceof NativeFileUnavailableError) return { available: false }
       throw err
     }
+  }
+
+  async seedReadState(path: string, mtimeMs: number): Promise<void> {
+    await this.opts.readState.seedReadState(this.opts.cwd, path, mtimeMs)
   }
 
   /** The real network streamer: Task 2's caller with retry, whose onRetry
@@ -1952,6 +1960,7 @@ export class NativeSession implements ProviderSessionHandle {
   async destroy(reason?: string): Promise<void> {
     if (this._closed) return
     this._closed = true
+    this.opts.readState.clear()
     this.sessionAbort.abort(new Error('destroyed'))
     // Crash recovery transfers pending input to respawnInPlace; keep its FIFO
     // and leases while the _closed checks above stop the old pump. Every other

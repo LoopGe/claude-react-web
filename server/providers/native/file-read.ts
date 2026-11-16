@@ -138,7 +138,7 @@ export async function withNativeFile<T>(
   opts?: { allowMutation?: boolean },
 ): Promise<{ value: T; observation: NativeReadObservation }> {
   throwIfAborted(signal)
-  const handle = await open(target.absolutePath, 'r').catch((err: unknown) => mapUnavailable(err, target.requestedPath))
+  const handle = await open(target.absolutePath, opts?.allowMutation ? 'r+' : 'r').catch((err: unknown) => mapUnavailable(err, target.requestedPath))
   try {
     throwIfAborted(signal)
     const openedInfo = await handle.stat({ bigint: true })

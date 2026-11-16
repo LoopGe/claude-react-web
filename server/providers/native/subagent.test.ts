@@ -7,7 +7,8 @@ import type { AgentMessage } from '../../agent-message.js'
 import type { AgentDefinitionStore, StoredAgentDefinition } from '../../agent-definition-store.js'
 import { NativeTaskManager } from './task-manager.js'
 import type { ToolDef } from './tools/types.js'
-import { readTool } from './tools/read.js'
+import { createReadTool } from './tools/read.js'
+import { NativeReadState } from './read-state.js'
 import { bashTool } from './tools/bash.js'
 import { createSkillTool } from './tools/skill.js'
 import type { NativeSkillCatalog, NativeSkillView } from './skills.js'
@@ -358,7 +359,7 @@ describe('createAgentTool', () => {
       tools: () => [
         { ...namedTool('Agent'), readOnlyHint: true },
         { ...namedTool('Task'), readOnlyHint: true },
-        readTool,
+        createReadTool(new NativeReadState()),
         namedTool('Bash'),
         namedTool('Write'),
         namedTool('Edit'),
@@ -424,7 +425,7 @@ describe('createAgentTool', () => {
     const s = scriptedStreamer([[startStop, ...textBlock(0, 'custom'), deltaStop('end_turn')]])
     const agent = createAgentTool(baseDeps({
       streamFor: s.streamFor.bind(s),
-      tools: () => [readTool, namedTool('Write')],
+      tools: () => [createReadTool(new NativeReadState()), namedTool('Write')],
       agentStore: fakeStore({
         explore: {
           name: 'Explore', description: 'Case-variant custom agent', prompt: 'CASE-CUSTOM',
@@ -477,7 +478,7 @@ describe('createAgentTool', () => {
     const emitted: Frame[] = []
     const permitted: Array<{ name: string; toolUseId: string }> = []
     const agent = createAgentTool(baseDeps({
-      tools: () => [readTool],
+      tools: () => [createReadTool(new NativeReadState())],
       streamFor: s.streamFor.bind(s),
       emit: (f) => emitted.push(f as Frame),
       requestPermission: async (name, input, toolUseId) => {

@@ -2,15 +2,22 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ToolInputError } from './types.js'
 import { MODEL_READ_WINDOW_MAX_BYTES } from '../file-read.js'
-import { readTool } from './read.js'
+import { createReadTool } from './read.js'
+import { NativeReadState } from '../read-state.js'
 
 let dir: string
 afterEach(async () => { if (dir) await rm(dir, { recursive: true, force: true }) })
 
 const ctx = (cwd: string) => ({ cwd, signal: new AbortController().signal })
+let state: NativeReadState
+let readTool: ReturnType<typeof createReadTool>
+beforeEach(() => {
+  state = new NativeReadState()
+  readTool = createReadTool(state)
+})
 
 describe('readTool', () => {
   it('returns line-numbered content', async () => {
@@ -82,5 +89,17 @@ describe('readTool', () => {
     await writeFile(join(dir, 'a.txt'), Array.from({ length: 2001 }, (_, index) => String(index + 1)).join('\n'))
     const res = await readTool.run({ file_path: 'a.txt', offset: 2001 }, ctx(dir))
     expect(res.text).toBe('  2001\t2001')
+  })
+
+  it('resumes an exact continuation and seeds after the second complete window', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'native-read-'))
+    await writeFile(join(dir, 'a.txt'), Array.from({ length: 2001 }, (_, index) => String(index + 1)).join('\n'))
+
+    await readTool.run({ file_path: 'a.txt' }, ctx(dir))
+    await expect(state.assertEditable(dir, 'a.txt')).rejects.toThrow(/read/i)
+    const res = await readTool.run({ file_path: 'a.txt', offset: 2001 }, ctx(dir))
+
+    expect(res.text).toBe('  2001\t2001')
+    await expect(state.assertEditable(dir, 'a.txt')).resolves.toBeDefined()
   })
 })

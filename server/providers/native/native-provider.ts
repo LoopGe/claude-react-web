@@ -26,9 +26,9 @@ import { resolveNativeStateDir } from './session-log/paths.js'
 import { readNativeHistoryEntries, readNativeHistoryPage } from './session-log/reader.js'
 import { readNativeSubagentTranscript } from './subagent-transcripts.js'
 import { bashTool } from './tools/bash.js'
-import { readTool } from './tools/read.js'
+import { createReadTool } from './tools/read.js'
 import { writeTool } from './tools/write.js'
-import { editTool } from './tools/edit.js'
+import { createEditTool } from './tools/edit.js'
 import { grepTool } from './tools/grep.js'
 import { globTool } from './tools/glob.js'
 import { lsTool } from './tools/ls.js'
@@ -46,7 +46,9 @@ import { createAttachmentReadTool } from './tools/index.js'
 import { copyConsumedAt, projectFileBlocksForProvider, type AgentUserMessage } from '../../agent-message.js'
 import { extractToolProfile } from '../../../shared/tool-profile.js'
 
-const TOOLS: ToolDef[] = [bashTool, readTool, writeTool, editTool, grepTool, globTool, lsTool, notebookEditTool, askUserQuestionTool]
+import { NativeReadState } from './read-state.js'
+
+const STATIC_TOOLS: ToolDef[] = [grepTool, globTool, lsTool, notebookEditTool, askUserQuestionTool]
 
 /** Pre-fidelity native sessions consume the same legacy handle as before. The
  *  subclass lives at the provider boundary so the manager stays neutral. */
@@ -128,7 +130,7 @@ export class NativeProvider implements AgentProvider {
     supportsSessionTitle: true,
     supportsTaskControl: true,
     supportsStructuredOutput: false,
-    supportsReadFile: false,
+    supportsReadFile: true,
     supportsSubagentTranscripts: true,
     supportsSteering: true,
   }
@@ -216,8 +218,16 @@ export class NativeProvider implements AgentProvider {
     const systemPromptAppend = (opts as { systemPromptAppend?: string }).systemPromptAppend
     const pdfBudgets = new PdfBudgetLedger()
     const preparedPdfs = new PreparedPdfStore(pdfBudgets)
+    const readState = new NativeReadState()
+    const sessionTools: ToolDef[] = [
+      bashTool,
+      createReadTool(readState),
+      writeTool,
+      createEditTool(readState),
+      ...STATIC_TOOLS,
+    ]
     const tools = config.nativeAttachmentFidelity && this.uploadStore
-      ? [...TOOLS, createAttachmentReadTool({
+      ? [...sessionTools, createAttachmentReadTool({
           uploadStore: this.uploadStore,
           stateDir: this.stateDir,
           referenceIndex: this.attachmentReferences,
@@ -226,7 +236,7 @@ export class NativeProvider implements AgentProvider {
           preparedPdfs,
           pdfDocumentsEnabled: () => config.nativeAttachmentFidelity && config.nativePdfDocuments,
         })]
-      : TOOLS
+      : sessionTools
     const system = renderSystem({ withAgentSection: true, systemPromptAppend }, tools)
     const subagentSystem = renderSystem({ withAgentSection: false, systemPromptAppend }, tools)
     // The manager has already resolved globals + inline configs + first-party
@@ -273,6 +283,7 @@ export class NativeProvider implements AgentProvider {
         profile,
         modelContext: this.modelContext,
         credentials,
+        readState,
         tools,
         mcp,
         agentStore: this.agentStore,

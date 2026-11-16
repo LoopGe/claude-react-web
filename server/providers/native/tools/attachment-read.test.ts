@@ -11,7 +11,8 @@ import { PDF_MAX_BYTES, PdfBudgetLedger, PreparedPdfStore } from '../pdf-documen
 import { NativeAttachmentReferenceIndex } from '../../../attachment-reference-index.js'
 import { aliasPathOf, attachmentRoot } from '../../../attachment-paths.js'
 import { UploadStore } from '../../../upload-store.js'
-import { readTool } from './read.js'
+import { createReadTool } from './read.js'
+import { NativeReadState } from '../read-state.js'
 import type { NativeFileAttachment } from '../session-log/format.js'
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -115,7 +116,7 @@ describe('AttachmentRead', () => {
     expect(fx.tool.readOnlyHint).toBe(true)
     expect(fx.tool.schema).toMatchObject({ required: ['id'] })
     expect(fx.tool.schema).not.toHaveProperty('properties.file_path')
-    await expect(readTool.run({ file_path: fx.path }, {
+    await expect(createReadTool(new NativeReadState()).run({ file_path: fx.path }, {
       cwd: fx.cwd, signal: new AbortController().signal,
     })).rejects.toThrow('path escapes the session working directory')
   })

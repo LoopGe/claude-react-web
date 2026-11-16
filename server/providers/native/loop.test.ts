@@ -4,7 +4,8 @@ import { runTurn, type LoopDeps } from './loop.js'
 import type { CanonicalEvent } from './canonical.js'
 import { defaultFrameContext, isRetainedThinkingBlock, type Frame } from './frames.js'
 import { NativeTaskManager } from './task-manager.js'
-import { readTool } from './tools/read.js'
+import { createReadTool } from './tools/read.js'
+import { NativeReadState } from './read-state.js'
 import { askUserQuestionTool } from './tools/ask-user-question.js'
 import type { ToolContext, ToolDef, ToolOutcome } from './tools/types.js'
 
@@ -59,7 +60,7 @@ const deltaStop = (stop: string): CanonicalEvent => ({ kind: 'message_end', stop
 
 const baseDeps = (over: Partial<LoopDeps>): LoopDeps => ({
   stream: async function* () { /* replaced by tests */ },
-  tools: [readTool],
+  tools: [createReadTool(new NativeReadState())],
   cwd: process.cwd(),
   tasks: new NativeTaskManager(() => {}),
   requestPermission: async (_t, input, _id, _signal) => ({ allowed: true, input }),
@@ -737,7 +738,7 @@ describe('runTurn', () => {
       path: '/registry/notes.txt', modelForm: 'handle' as const,
     }
     const tool: ToolDef = {
-      ...readTool,
+      ...createReadTool(new NativeReadState()),
       async run() {
         return {
           text: 'read notes.txt',
