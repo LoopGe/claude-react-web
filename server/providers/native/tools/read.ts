@@ -1,9 +1,16 @@
 // server/providers/native/tools/read.ts
-import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute, join, resolve, sep } from 'node:path'
+import {
+  MODEL_READ_MAX_LINES,
+  NativeFileEncodingError,
+  NativeFileUnavailableError,
+  NativeReadWindowTooLargeError,
+  readNativeTextWindow,
+  resolveNativeReadTarget,
+} from '../file-read.js'
 import { ToolInputError, type ToolDef } from './types.js'
 
-const MAX_LINES = 2000
+const MAX_LINES = MODEL_READ_MAX_LINES
 
 /** Resolve a user-supplied path against the session cwd and refuse anything
  *  that escapes it. P1 keeps the sandbox closed; the sandbox setting plumbs
@@ -34,20 +41,22 @@ export const readTool: ToolDef<{ file_path: string; offset?: number; limit?: num
     required: ['file_path'],
   },
   async run(input, ctx) {
-    const abs = resolveAgainstCwd(ctx.cwd, input.file_path)
-    let info
-    try {
-      info = await stat(abs)
-    } catch {
-      throw new ToolInputError(`file not found: ${input.file_path}`)
-    }
-    if (info.isDirectory()) throw new ToolInputError(`path is a directory: ${input.file_path}`)
-    const raw = await readFile(abs, 'utf-8')
-    const lines = raw.split('\n')
     const offset = Math.max(1, Math.floor(input.offset ?? 1))
     const limit = Math.min(MAX_LINES, Math.max(1, Math.floor(input.limit ?? MAX_LINES)))
-    const slice = lines.slice(offset - 1, offset - 1 + limit)
-    const text = slice.map((line, i) => `${String(offset + i).padStart(6)}\t${line}`).join('\n')
-    return { text }
+    try {
+      const target = await resolveNativeReadTarget(ctx.cwd, input.file_path)
+      const window = await readNativeTextWindow(target, { offset, limit, signal: ctx.signal })
+      const lineCount = Math.max(0, window.endLine - window.startLine + 1)
+      const lines = lineCount === 0 ? [] : window.text.split('\n')
+      const text = lines.map((line, i) => `${String(offset + i).padStart(6)}\t${line}`).join('\n')
+      return { text }
+    } catch (err) {
+      if (err instanceof NativeFileUnavailableError
+        || err instanceof NativeFileEncodingError
+        || err instanceof NativeReadWindowTooLargeError) {
+        throw new ToolInputError(err.message)
+      }
+      throw err
+    }
   },
 }
