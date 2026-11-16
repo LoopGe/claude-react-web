@@ -62,7 +62,7 @@ describe('SubagentCard summary header', () => {
     expect(compactToolCount.textContent).toBe('2 tools')
     expect(fullToolCount.getAttribute('aria-hidden')).toBeNull()
     expect(compactToolCount.getAttribute('aria-hidden')).toBeNull()
-    expect(document.querySelector('.subagent-card-open')).toBeTruthy()
+    expect(document.querySelector('.subagent-card-open .lucide-chevron-right')).toBeTruthy()
     expect(header.querySelectorAll('button')).toHaveLength(1)
 
     fireEvent.click(meta)

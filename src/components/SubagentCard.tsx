@@ -12,7 +12,7 @@ import { HoverHint } from './HoverHint'
 import { BackgroundToolButton } from './ToolCard'
 import { GridClipEnter } from './GridClipEnter'
 import type { SubagentChildCall } from '../session-store/types'
-import { IconCheck, IconAlertTriangle, IconExternalLink } from './icons/ToolIcons'
+import { IconCheck, IconAlertTriangle, IconChevronRight } from './icons/ToolIcons'
 
 interface Props {
   toolUseId: string
@@ -120,7 +120,7 @@ export const SubagentCard = memo(function SubagentCard({ toolUseId, fallbackLabe
                 </span>
               </span>
             )}
-            <span className="subagent-card-open" aria-hidden><IconExternalLink size={12} /></span>
+            <span className="subagent-card-open" aria-hidden><IconChevronRight size={12} /></span>
           </span>
         </button>
         {showActions && (

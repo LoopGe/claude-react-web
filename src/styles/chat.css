@@ -3490,7 +3490,9 @@ button.chat-empty-env-chip:hover {
   gap: var(--space-2);
   width: 100%;
   padding: var(--space-2) var(--space-3);
-  padding-right: calc(var(--space-3) + var(--size-24px));
+  /* Reserve the absolutely positioned open icon's slot plus a visible gap
+     after the metadata; the icon itself is outside the meta flex layout. */
+  padding-right: calc(var(--space-3) + var(--size-24px) + var(--space-2));
   background: transparent;
   border: none;
   font: inherit;
