@@ -15,7 +15,7 @@ import {
   type FileHandle,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -73,6 +73,16 @@ describe('resolveNativeReadTarget', () => {
     expect(absolute.realPath).toBe(await realpath(file))
     expect(linked.realPath).toBe(await realpath(file))
     expect(linked.identity).toEqual(relative.identity)
+  })
+
+  it('resolves a child file when cwd is the filesystem root', async () => {
+    const root = parse(dir).root
+    const file = await fixture('root child', 'root-cwd.txt')
+
+    const target = await resolveNativeReadTarget(root, file)
+
+    expect(target.absolutePath).toBe(file)
+    expect(target.realPath).toBe(await realpath(file))
   })
 
   it('rejects lexical escapes, absolute escapes, directories, and missing paths', async () => {

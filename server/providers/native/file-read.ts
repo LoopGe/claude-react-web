@@ -59,7 +59,8 @@ function inside(root: string, path: string): boolean {
   const normalize = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value
   const normalizedRoot = normalize(root)
   const normalizedPath = normalize(path)
-  return normalizedPath === normalizedRoot || normalizedPath.startsWith(normalizedRoot + sep)
+  const rootPrefix = normalizedRoot.endsWith(sep) ? normalizedRoot : normalizedRoot + sep
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(rootPrefix)
 }
 
 function identityOf(info: BigIntStats): NativeFileIdentity {

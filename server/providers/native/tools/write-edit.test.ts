@@ -197,13 +197,14 @@ describe('editTool', () => {
 
   it('precomputes replace_all overflow using UTF-8 bytes before writing', async () => {
     dir = await mkdtemp(join(tmpdir(), 'native-edit-'))
-    const original = `ab${'é'.repeat((MAX_EDIT_BYTES - 2) / 2)}`
-    expect(Buffer.byteLength(original)).toBe(MAX_EDIT_BYTES)
-    await writeFile(join(dir, 'a.txt'), original)
+    const original = 'a'.repeat(MAX_EDIT_BYTES)
+    const originalBytes = Buffer.from(original, 'utf8')
+    expect(originalBytes).toHaveLength(MAX_EDIT_BYTES)
+    await writeFile(join(dir, 'a.txt'), originalBytes)
     await hostSeed('a.txt')
 
-    await expect(editTool.run(input('a', '🙂'), ctx(dir))).rejects.toThrow(/8 MiB/i)
-    expect(await readFile(join(dir, 'a.txt'), 'utf-8')).toBe(original)
+    await expect(editTool.run(input('a', 'é', true), ctx(dir))).rejects.toThrow(/8 MiB/i)
+    expect((await readFile(join(dir, 'a.txt'))).equals(originalBytes)).toBe(true)
   }, 20000)
 
   it('rejects replace_all expansion over 8 MiB before allocation', async () => {
