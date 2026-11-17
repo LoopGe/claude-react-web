@@ -120,8 +120,16 @@ function resultAssistantUuid(e: ProjectionEntry): string | null {
 }
 
 /** Insertion index for an app-only occurrence using its old canonical anchors
- *  and strong semantic constraints (spec §7.2). */
-function appInsertIndex(a: ProjectionEntry, old: ProjectionEntry[], out: ProjectionEntry[]): number {
+ *  and strong semantic constraints (spec §7.2). `trailingCount` tracks how many
+ *  app entries were already inserted after each prev anchor so successive
+ *  trailing entries (e.g. a handoff boundary+summary) keep their old order
+ *  instead of reversing (each fresh pIdx+1 would otherwise re-insert at slot 1). */
+function appInsertIndex(
+  a: ProjectionEntry,
+  old: ProjectionEntry[],
+  out: ProjectionEntry[],
+  trailingCount: Map<string, number>,
+): number {
   const rUuid = resultAssistantUuid(a)
   if (obj(a.msg)?.type === 'result' && rUuid) return turnTerminalIndex(out, rUuid)
   const oldIdx = old.indexOf(a)
@@ -130,8 +138,9 @@ function appInsertIndex(a: ProjectionEntry, old: ProjectionEntry[], out: Project
   for (let i = oldIdx - 1; i >= 0; i--) if (!isApp(old[i])) { prev = old[i]; break }
   for (let i = oldIdx + 1; i < old.length; i++) if (!isApp(old[i])) { next = old[i]; break }
   if (isUserPrompt(a)) {
-    // A trailing root prompt goes after the whole canonical run; a bounded one
-    // goes before its old next canonical anchor.
+    // A trailing root prompt appends after the whole canonical run (out.length
+    // advances naturally); a bounded one goes before its old next anchor (fresh
+    // nIdx already accounts for earlier insertions shifting the anchor).
     if (next === null) return out.length
     const nIdx = out.findIndex((e) => e.occurrenceId === next!.occurrenceId)
     return nIdx < 0 ? out.length : nIdx
@@ -142,7 +151,11 @@ function appInsertIndex(a: ProjectionEntry, old: ProjectionEntry[], out: Project
   }
   if (prev) {
     const pIdx = out.findIndex((e) => e.occurrenceId === prev!.occurrenceId)
-    if (pIdx >= 0) return pIdx + 1
+    if (pIdx >= 0) {
+      const count = trailingCount.get(prev.occurrenceId) ?? 0
+      trailingCount.set(prev.occurrenceId, count + 1)
+      return pIdx + 1 + count
+    }
   }
   return out.length
 }
@@ -175,8 +188,9 @@ export function buildOrderedProjection(input: ReconcileInput): ProjectionEntry[]
   }
 
   // Remaining app-only occurrences (not merged, not already canonical).
+  const trailingCount = new Map<string, number>()
   for (const a of input.old.filter((e) => isApp(e) && !merged.has(e) && !out.some((c) => c.occurrenceId === e.occurrenceId))) {
-    const idx = appInsertIndex(a, input.old, out)
+    const idx = appInsertIndex(a, input.old, out, trailingCount)
     out.splice(idx, 0, { ...a, aliases: [...a.aliases] })
   }
 

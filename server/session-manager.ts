@@ -152,7 +152,8 @@ import {
   recordTranscriptMessage,
   type TranscriptHolder,
 } from './transcript-sidecar.js'
-import { occurrenceIdOf, type ProjectionEntry } from './transcript-projection.js'
+import { occurrenceIdOf, semanticMessageProjection, type ProjectionEntry } from './transcript-projection.js'
+import { createHash } from 'node:crypto'
 import { buildOrderedProjection } from './transcript-reconcile.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
@@ -8008,7 +8009,20 @@ export class SessionManager {
     const provider = this.providers.get(meta?.provider ?? this.defaultProvider)
     if (!provider?.readHistoryEntries) return []
     const afterUuid = afterUuidOverride ?? meta?.forkBoundaryUuid
-    const entries = await provider.readHistoryEntries(id, afterUuid ? { afterUuid } : {})
+    // Strict reconcile read (spec §7.1): a permission/IO/mid-parse failure must
+    // throw (→ degraded, retryable), NOT silently become an empty/partial
+    // snapshot. `missing` is a legit known-empty history; `boundary-not-found`
+    // is a real error. Falls back to the tolerant reader only for providers
+    // without the strict API.
+    let entries: HistoryEntry[]
+    if (provider.readHistoryForReconcile) {
+      const result = await provider.readHistoryForReconcile(id, afterUuid ? { afterUuid } : {})
+      if (result.status === 'boundary-not-found') throw new Error('boundary-not-found')
+      if (result.status === 'missing') return []
+      entries = result.entries
+    } else {
+      entries = await provider.readHistoryEntries(id, afterUuid ? { afterUuid } : {})
+    }
     const messages = entries.map((e) => e.message) as SDKMessage[]
     // readHistoryEntries normalizes untrimmed (it feeds search recall);
     // the live ingest path trims, so apply the same cap here or a rebuilt
@@ -8044,12 +8058,16 @@ export class SessionManager {
     const p = (async () => {
       try {
         const rawRows = await t.sidecar.load()
-        if (rawRows.some((r) => r.v === 2)) {
-          const folded = foldSidecarRowsV2(rawRows)
+        const folded = foldSidecarRowsV2(rawRows)
+        if (folded.hasCommittedGeneration) {
           t.store.hydrate(folded.entries)
           t.store.generation = folded.generation
+          for (const a of folded.aliases) t.store.registerUuidAlias(a.uuid, a.seq)
         } else {
-          t.store.hydrate(foldSidecarRows(rawRows))
+          // No committed v2 generation yet (incl. a crash before the first
+          // commit): fall back to the intact v1 projection, ignoring any
+          // uncommitted v2 tail rows rather than selecting an empty store.
+          t.store.hydrate(foldSidecarRows(rawRows.filter((r) => r.v !== 2)))
         }
         const composed = await this.composeTranscriptEntries(id)
         if (!this.isSessionDeleteTombstoned(id)) await this.reconcileOrdered(t, id, composed)
@@ -8080,6 +8098,27 @@ export class SessionManager {
       const u = (m as { uuid?: unknown })?.uuid
       return typeof u === 'string' ? u : null
     }
+    // Content-stable disambiguator (spec §5.2): UUID-less rows of one frame kind
+    // must not collapse to a single `anon:<kind>` identity, and old↔canonical
+    // copies of the same occurrence must align. A semantic-content hash gives
+    // distinct identities to distinct content and matches identical content
+    // across the live/disk uuid spaces. Keys are sorted recursively so the hash
+    // is insensitive to object key insertion order (sidecar vs normalized wire
+    // shapes differ in order but not content). Full provider sourceOrdinal
+    // alignment is a refinement; content identity is stable across restart.
+    const sortKeys = (v: unknown): unknown => {
+      if (Array.isArray(v)) return v.map(sortKeys)
+      if (v !== null && typeof v === 'object') {
+        const o = v as Record<string, unknown>
+        const out: Record<string, unknown> = {}
+        for (const k of Object.keys(o).sort()) out[k] = sortKeys(o[k])
+        return out
+      }
+      return v
+    }
+    const occCtx = (m: unknown) => ({
+      appOperationId: createHash('sha256').update(JSON.stringify(sortKeys(semanticMessageProjection(m)))).digest('hex').slice(0, 16),
+    })
     // True when `shared` appears in `canon` in the same relative order (a
     // chronology inversion among UUID-matched records is the incident signal).
     const isOrderedSubsequence = (shared: string[], canon: string[]): boolean => {
@@ -8090,7 +8129,7 @@ export class SessionManager {
       return i === shared.length
     }
     const canonical: ProjectionEntry[] = composed.map((msg) => ({
-      occurrenceId: occurrenceIdOf(msg, {}),
+      occurrenceId: occurrenceIdOf(msg, occCtx(msg)),
       msg,
       source: (msg as { type?: string }).type === 'result' ? 'result' : 'provider',
       aliases: [],
@@ -8101,7 +8140,7 @@ export class SessionManager {
     for (let seq = 0; seq < t.store.headSeq; seq++) {
       const m = t.store.messageAt(seq)
       if (!m) continue
-      const occ = occurrenceIdOf(m.msg, {})
+      const occ = occurrenceIdOf(m.msg, occCtx(m.msg))
       const canon = canonByOcc.get(occ)
       old.push({
         occurrenceId: occ,
@@ -8131,11 +8170,12 @@ export class SessionManager {
     }
     const startedAt = Date.now()
     const ordered = buildOrderedProjection(input)
-    t.store.reset()
-    t.store.hydrate(
-      ordered.map((e, i) => ({ seq: i, uuid: uuidOf(e.msg), msg: e.msg, evicted: e.evicted })),
-    )
-    const batchId = `rebuild-${id}-${t.store.generation}`
+    // Build the batch WITHOUT mutating the in-memory store; append + fsync FIRST
+    // (durable-before-publish, spec §8.1). Only after the commit is durable do we
+    // reset/hydrate the store — a write/fsync failure leaves the old generation
+    // intact and the holder degraded, never exposing an uncommitted rebuild.
+    const nextGen = t.store.generation + 1
+    const batchId = `rebuild-${id}-${nextGen}`
     const rows = ordered.map((e, i) => ({
       v: 2,
       batchId,
@@ -8146,16 +8186,25 @@ export class SessionManager {
       uuid: uuidOf(e.msg),
       type: (e.msg as { type?: string }).type,
       msg: e.msg,
+      evicted: e.evicted,
     }))
     const commit = makeCommitV2({
       batchId,
       batchType: 'generation',
-      generation: t.store.generation,
+      generation: nextGen,
       reason: 'ordered-rebuild',
       contentPolicy: 'preserve',
       rows,
     })
     await t.sidecar.appendBatch(rows, commit)
+    // Publication step (post-durable): swap the in-memory projection.
+    t.store.reset()
+    t.store.hydrate(
+      ordered.map((e, i) => ({ seq: i, uuid: uuidOf(e.msg), msg: e.msg, evicted: e.evicted })),
+    )
+    for (let i = 0; i < ordered.length; i++) {
+      for (const a of ordered[i].aliases) t.store.registerUuidAlias(a, i)
+    }
     metrics.count('transcript_reconcile_total', { mode: 'rebuild', result: 'success' })
     metrics.count('transcript_rebuild_reason', { reason: 'middle-gap' })
     metrics.count('transcript_rebuild_entries', { kind: 'canonical' }, ordered.length)

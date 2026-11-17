@@ -22,7 +22,7 @@
  * pure or fs-free, so they stay unit-testable without a temp dir.
  */
 
-import { mkdir, open, readFile, unlink } from 'node:fs/promises'
+import { mkdir, open, readFile, unlink, truncate } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname, basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -178,9 +178,47 @@ export class TranscriptSidecar {
       // not at construction (a manager with zero seq-assigned messages
       // shouldn't leave an empty tree behind).
       await mkdir(dirname(this.file!), { recursive: true })
+      // Recover a crash tail before appending so a torn partial line is never
+      // concatenated onto (spec §8.2/§9). Runs once per handle open.
+      await this.recoverTail()
       this.handle = await open(this.file!, 'a')
     }
     return this.handle
+  }
+
+  /** Truncate an uncommitted/torn tail back to the last valid commit (v2) or
+   *  the last complete line (v1), then fsync. A complete-but-invalid v2 commit
+   *  throws corrupt-sidecar (fail closed). No-op for an empty/missing file. */
+  private async recoverTail(): Promise<void> {
+    if (!this.file) return
+    let raw: string
+    try {
+      raw = await readFile(this.file, 'utf8')
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return
+      throw err
+    }
+    if (raw.length === 0) return
+    let prefix: string
+    if (raw.includes('"commit":true')) {
+      // v2: cut to the last valid commit of any batch type (throws on a
+      // complete-but-invalid commit).
+      prefix = truncateToLastCommit(raw).prefix
+    } else {
+      // v1: drop a torn trailing partial line (keep up to the last newline).
+      const lastNl = raw.lastIndexOf('\n')
+      prefix = lastNl >= 0 ? raw.slice(0, lastNl + 1) : ''
+    }
+    if (prefix.length < raw.length) {
+      await truncate(this.file, prefix.length)
+      const h = await open(this.file, 'r+')
+      try {
+        await h.sync()
+      } finally {
+        await h.close()
+      }
+    }
   }
 
   /** Durable batch append (spec §8.1/§8.2): write all rows + the commit record,
@@ -329,20 +367,32 @@ function parseBatches(rows: readonly SidecarRow[]): ParsedBatch[] {
   return [...committed, ...open.values()]
 }
 
-/** Fold v2 rows: adopt the latest committed generation, then replay later
- *  committed live/recovery/lifecycle/input batches in file order (spec §8.2).
- *  Uncommitted trailing batches are ignored. Complete-invalid commits throw. */
+/** Fold v2 rows: adopt the latest committed generation, then replay every row
+ *  AFTER that generation's commit record in file order — both committed v2
+ *  live/recovery/lifecycle/input batches AND the v1 suffix that live ingest /
+ *  eviction still append after a rebuild (spec §8.2). The pre-migration v1
+ *  prefix and any superseded earlier generations are ignored. Uncommitted
+ *  trailing batches are ignored. Complete-invalid commits throw.
+ *
+ *  `hasCommittedGeneration` is false when no v2 generation has committed yet
+ *  (e.g. a crash before the first commit) — the caller must then fall back to
+ *  the intact v1 projection rather than an empty v2 one. `aliases` carries
+ *  coverage alias→covering-seq mappings for the store to register. */
 export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
   entries: HydrateRow[]
   generation: number
   history: GenerationRecord[]
+  hasCommittedGeneration: boolean
+  aliases: Array<{ uuid: string; seq: number }>
 } {
   const batches = parseBatches(rows)
   const committed = batches.filter((b) => b.commit !== null)
   const genBatches = committed.filter(
     (b) => b.commit!.batchType === 'generation' || b.commit!.batchType === 'reset',
   )
-  if (genBatches.length === 0) return { entries: [], generation: 0, history: [] }
+  if (genBatches.length === 0) {
+    return { entries: [], generation: 0, history: [], hasCommittedGeneration: false, aliases: [] }
+  }
   const latest = genBatches.reduce((a, b) => (Number(b.commit!.generation) > Number(a.commit!.generation) ? b : a))
   const generation = Number(latest.commit!.generation)
   const history: GenerationRecord[] = genBatches.map((b) => ({
@@ -352,26 +402,67 @@ export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
   }))
   const bySeq = new Map<number, HydrateRow>()
   const occToSeq = new Map<string, number>()
-  const apply = (row: SidecarRow): void => {
-    if (row.evicted === true) {
-      const occ = typeof row.occurrenceId === 'string' ? row.occurrenceId : null
-      const seq = occ !== null ? occToSeq.get(occ) : undefined
-      if (seq !== undefined) {
-        const e = bySeq.get(seq)
-        if (e) e.evicted = true
-      }
+  const aliases: Array<{ uuid: string; seq: number }> = []
+  const isTombstoneOnly = (row: SidecarRow): boolean => row.evicted === true && row.msg === undefined
+  const applyMsg = (row: SidecarRow): void => {
+    if (typeof row.seq !== 'number') return
+    bySeq.set(row.seq, {
+      seq: row.seq,
+      uuid: typeof row.uuid === 'string' ? row.uuid : null,
+      msg: row.msg,
+      evicted: row.evicted === true ? true : undefined,
+    })
+    if (typeof row.occurrenceId === 'string') occToSeq.set(row.occurrenceId, row.seq)
+    if (Array.isArray(row.aliases)) {
+      for (const a of row.aliases) if (typeof a === 'string') aliases.push({ uuid: a, seq: row.seq })
+    }
+  }
+  const applyTomb = (row: SidecarRow): void => {
+    // v1 tombstone keys by seq; v2 tombstone keys by occurrenceId.
+    if (typeof row.seq === 'number') {
+      const e = bySeq.get(row.seq)
+      if (e) e.evicted = true
       return
     }
-    if (typeof row.seq !== 'number') return
-    bySeq.set(row.seq, { seq: row.seq, uuid: typeof row.uuid === 'string' ? row.uuid : null, msg: row.msg })
-    if (typeof row.occurrenceId === 'string') occToSeq.set(row.occurrenceId, row.seq)
+    const occ = typeof row.occurrenceId === 'string' ? row.occurrenceId : null
+    const seq = occ !== null ? occToSeq.get(occ) : undefined
+    if (seq !== undefined) {
+      const e = bySeq.get(seq)
+      if (e) e.evicted = true
+    }
   }
-  for (const row of latest.rows) apply(row)
-  for (const b of committed.slice(committed.indexOf(latest) + 1)) {
-    for (const row of b.rows) apply(row)
+  const applyRow = (row: SidecarRow): void => (isTombstoneOnly(row) ? applyTomb(row) : applyMsg(row))
+
+  for (const row of latest.rows) applyRow(row)
+
+  // Replay everything after the latest generation's commit record, in file order.
+  const committedBatchIds = new Set(committed.map((b) => b.batchId))
+  const openBatches = new Map<string, SidecarRow[]>()
+  let passedLatest = false
+  for (const row of rows) {
+    if (!passedLatest) {
+      if (row.v === 2 && row.commit === true && row.batchId === latest.batchId) passedLatest = true
+      continue
+    }
+    if (row.v === 2) {
+      const batchId = typeof row.batchId === 'string' ? row.batchId : null
+      if (batchId === null) continue
+      if (row.commit === true) {
+        const acc = openBatches.get(batchId) ?? []
+        if (committedBatchIds.has(batchId)) for (const r of acc) applyRow(r)
+        openBatches.delete(batchId)
+      } else {
+        const acc = openBatches.get(batchId) ?? []
+        acc.push(row)
+        openBatches.set(batchId, acc)
+      }
+    } else {
+      // v1 suffix row appended by live ingest / eviction after the rebuild.
+      applyRow(row)
+    }
   }
   const entries = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
-  return { entries, generation, history }
+  return { entries, generation, history, hasCommittedGeneration: true, aliases }
 }
 
 /** Truncate raw sidecar text to the last VALID commit record of ANY batchType

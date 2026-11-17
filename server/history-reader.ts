@@ -954,7 +954,9 @@ export async function readHistorySnapshot(
   sessionId: string,
   opts: { afterUuid?: string } = {},
 ): Promise<HistoryReadResult> {
-  const file = await findTranscriptFile(sessionId)
+  // Strict lookup: a permission/IO error during the scan must throw, not be
+  // swallowed into `missing` (which would silently drop disk-only history).
+  const file = await findTranscriptFile(sessionId, { strict: true })
   if (!file) return { status: 'missing', entries: [] }
   let raw: string
   try {
