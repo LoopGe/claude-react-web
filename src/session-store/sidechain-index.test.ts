@@ -1283,6 +1283,47 @@ describe('applyTasksSnapshot: isAsync authority', () => {
     })
   })
 
+  it('uses partial-result metadata for lifecycle without replacing canonical output', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', { ...m.activeSubagents.get('tu_a')!, isAsync: true })
+    const partial = {
+      toolUseId: 'tu_a', status: 'stopped' as const, isBackgrounded: true,
+      result: '[… omitted …]tail',
+      resultRef: {
+        totalChars: 100_000, hasResult: true, isError: false,
+        projection: 'partial' as const, resultVersion: 1,
+      },
+    }
+    m = applyTasksSnapshot(m, tasksOf([partial]))
+    expect(m.activeSubagents.get('tu_a')).toMatchObject({ status: 'done', result: undefined })
+
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      result: { content: [{ type: 'text', text: 'full report' }], isError: false },
+      resultOrigin: 'tool_result',
+    })
+    m = applyTasksSnapshot(m, tasksOf([partial]))
+    expect(m.activeSubagents.get('tu_a')?.result).toEqual({
+      content: [{ type: 'text', text: 'full report' }], isError: false,
+    })
+  })
+
+  it('does not replace an earlier summary with an empty legacy stopped result', () => {
+    let m = fresh()
+    m = updateSidechainIndexMirror(m, agentStart('tu_a'))
+    m.activeSubagents.set('tu_a', {
+      ...m.activeSubagents.get('tu_a')!,
+      isAsync: true,
+      result: { content: 'earlier output', isError: false },
+      resultOrigin: 'summary',
+    })
+    m = applyTasksSnapshot(m, tasksOf([
+      { toolUseId: 'tu_a', status: 'stopped', isBackgrounded: true, result: '' },
+    ]))
+    expect(m.activeSubagents.get('tu_a')?.result).toEqual({ content: 'earlier output', isError: false })
+  })
+
   it('does not let a stopped snapshot replace a settled streamed answer', () => {
     let m = fresh()
     m = updateSidechainIndexMirror(m, agentStart('tu_a'))

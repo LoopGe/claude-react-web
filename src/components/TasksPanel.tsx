@@ -32,7 +32,8 @@ import { SubagentTranscriptDialog } from './SubagentTranscriptDialog'
 import { IconEye, IconFileText, IconLoader, IconX } from './icons/ToolIcons'
 import { taskResource } from '../../shared/resource-address'
 import { useOptionalOpenResource } from '../resources/context'
-import { TaskResultBlock, TaskStatusIcon, TaskTypeIcon } from './task-parts'
+import { TaskStatusIcon, TaskTypeIcon } from './task-parts'
+import { TaskResultView } from './TaskResultView'
 import { formatError } from '../utils/format-error'
 
 /** Elapsed span for one task row. A row with no `endedAt` is still running and
@@ -60,6 +61,7 @@ export const TasksPanel = memo(function TasksPanel({
   sessionId,
   streamingMode,
   cwd,
+  panelVisible = true,
   onClose,
 }: {
   sessionId: string
@@ -69,6 +71,7 @@ export const TasksPanel = memo(function TasksPanel({
   /** Session working directory — forwarded to the transcript dialog so its
    *  tool rows can resolve relative paths. */
   cwd?: string
+  panelVisible?: boolean
   onClose: () => void
 }) {
   const tasks = useSessionField(sessionId, 'tasks')
@@ -156,7 +159,7 @@ export const TasksPanel = memo(function TasksPanel({
           {active.length > 0 && (
             <section className="tasks-panel-section">
               {active.map((t) => (
-                <TaskRow key={t.taskId} sessionId={sessionId} task={t} stopping={stopping.has(t.taskId)} onStop={stopTask} onViewTranscript={openTranscript} />
+                <TaskRow key={`${t.taskId}:${t.runId ?? ''}`} sessionId={sessionId} task={t} panelVisible={panelVisible} stopping={stopping.has(t.taskId)} onStop={stopTask} onViewTranscript={openTranscript} />
               ))}
             </section>
           )}
@@ -164,7 +167,7 @@ export const TasksPanel = memo(function TasksPanel({
             <section className="tasks-panel-section">
               <div className="tasks-panel-section-title">Finished</div>
               {finished.map((t) => (
-                <TaskRow key={t.taskId} sessionId={sessionId} task={t} stopping={false} onStop={stopTask} onViewTranscript={openTranscript} />
+                <TaskRow key={`${t.taskId}:${t.runId ?? ''}`} sessionId={sessionId} task={t} panelVisible={panelVisible} stopping={false} onStop={stopTask} onViewTranscript={openTranscript} />
               ))}
             </section>
           )}
@@ -176,6 +179,7 @@ export const TasksPanel = memo(function TasksPanel({
           agentId={transcript.agentId}
           label={transcript.label}
           streamingMode={streamingMode}
+          visible={panelVisible}
           cwd={cwd}
           onClose={() => setTranscript(null)}
         />
@@ -187,12 +191,14 @@ export const TasksPanel = memo(function TasksPanel({
 const TaskRow = memo(function TaskRow({
   sessionId,
   task,
+  panelVisible,
   stopping,
   onStop,
   onViewTranscript,
 }: {
   sessionId: string
   task: TaskRecordUi
+  panelVisible: boolean
   stopping: boolean
   onStop: (taskId: string) => void
   onViewTranscript?: (task: TaskRecordUi) => void
@@ -202,9 +208,9 @@ const TaskRow = memo(function TaskRow({
   // Only finished subagent rows can open the disk-transcript viewer: their
   // taskId is the Agent's agentId that keys subagents/agent-<id>.jsonl.
   const canViewTranscript = terminal && isSubagentTask(task)
-  // Spec §3.8 gate, unchanged: the expand affordance (and its body) exists
-  // only for a terminal task whose `result` is non-empty.
-  const resultBody = terminal && task.result != null && task.result !== '' ? task.result : null
+  // The expand gate uses result metadata so a paged result does not depend
+  // on its inline preview being present.
+  const hasResultBody = terminal && (task.resultRef?.totalChars ?? task.result?.length ?? 0) > 0
   // Expand state rides the row because the toggle lives in the row-end
   // control cluster while the body nests under the row content.
   const [resultOpen, setResultOpen] = useState(false)
@@ -250,7 +256,7 @@ const TaskRow = memo(function TaskRow({
             </span>
           </HoverHint>
         )}
-        {resultBody !== null && resultOpen && <TaskResultBlock result={resultBody} />}
+        {hasResultBody && resultOpen && <TaskResultView sessionId={sessionId} task={task} enabled={panelVisible} />}
       </span>
       {!terminal && (
         <span className="tasks-row-timer-wrap">
@@ -286,7 +292,7 @@ const TaskRow = memo(function TaskRow({
           </button>
         </HoverHint>
       )}
-      {resultBody !== null && (
+      {hasResultBody && (
         <button
           type="button"
           className="tasks-row-result-toggle"

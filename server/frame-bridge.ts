@@ -21,6 +21,7 @@
 // served here (the seq-window protocol pages it over REST).
 
 import type { SessionBroadcaster } from './session-types.js'
+import { taskSnapshotRevision } from './session-broadcaster.js'
 import type { AppPluginBroadcaster } from './app-plugins/event-bus.js'
 import type { SubagentTranscriptSource } from './subagent-transcript-source.js'
 import { createLogger } from './log.js'
@@ -41,7 +42,8 @@ import type {
   WsTurnChanges,
 } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
-import type { TaskRecordUi } from '../shared/tasks.js'
+import { randomUUID } from 'node:crypto'
+import { TASK_SNAPSHOT_MAX_CHARS, type TaskRecordUi } from '../shared/tasks.js'
 
 // Same scope as the old ws.ts logger so log output is unchanged.
 const log = createLogger('ws')
@@ -59,6 +61,8 @@ export interface FrameSink {
   send(frame: WsServerFrame): void
   sendRaw(data: string, kind?: string): void
   close(): void
+  /** Optional transport-level drain used by large chunked snapshots. */
+  waitForDrain?(cancelled?: AbortSignal): Promise<void>
 }
 
 export interface FrameBridgeDeps {
@@ -125,12 +129,71 @@ function messageFrameJson(
   return json
 }
 
+/** Send small rosters directly and split extreme metadata into bounded JSON
+ *  fragments. The client joins each baseline before parsing, so no task or
+ *  identity field is dropped when the aggregate exceeds one frame's budget. */
+async function sendTasksSnapshot(
+  sink: FrameSink,
+  sessionId: string,
+  tasks: TaskRecordUi[],
+  capable: boolean,
+  onUpgradeRequired: () => void,
+  isStopped: () => boolean,
+  cancelled: AbortSignal,
+  isStale: () => boolean = () => false,
+  cancelStaleChunks = true,
+): Promise<void> {
+  if (isStopped() || isStale()) return
+  const data = JSON.stringify(tasks)
+  const framePrefix = `{"kind":"tasks-snapshot","sessionId":${JSON.stringify(sessionId)},"tasks":`
+  const frameLength = framePrefix.length + data.length + 1
+  const requiresV1 = tasks.some((task) => task.resultRef?.projection === 'partial') || frameLength > TASK_SNAPSHOT_MAX_CHARS
+  if (requiresV1 && !capable) {
+    onUpgradeRequired()
+    return
+  }
+  if (frameLength <= TASK_SNAPSHOT_MAX_CHARS) {
+    sink.sendRaw(`${framePrefix}${data}}`, 'tasks-snapshot')
+    return
+  }
+  const baselineId = randomUUID()
+  // JSON escaping can expand one source code unit to six. Reserve the frame
+  // envelope as well, so the serialized chunk—not merely `data`—stays bounded.
+  const sourceChunkChars = Math.floor((TASK_SNAPSHOT_MAX_CHARS - 4_096) / 6)
+  const totalChunks = Math.ceil(data.length / sourceChunkChars)
+  for (let chunk = 0; chunk < totalChunks; chunk++) {
+    if (isStopped() || (cancelStaleChunks && isStale())) return
+    sink.send({
+      kind: 'tasks-snapshot-chunk', sessionId, baselineId, chunk, totalChunks,
+      data: data.slice(chunk * sourceChunkChars, (chunk + 1) * sourceChunkChars),
+    })
+    if (chunk + 1 === totalChunks) return
+    if (isStopped()) return
+    if (sink.waitForDrain) await sink.waitForDrain(cancelled)
+    else {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          cancelled.removeEventListener('abort', done)
+          resolve()
+        }
+        if (cancelled.aborted) done()
+        else {
+          cancelled.addEventListener('abort', done, { once: true })
+          setImmediate(done)
+        }
+      })
+    }
+  }
+}
+
 /** Per-session subscription state held inside one connection. The cleanup
  *  fn lets us tear the session's driver down when the connection closes or
  *  the client unsubscribes. */
 interface SessionSub {
   sessionId: string
   cleanup: () => void
+  taskSend: Promise<void>
+  taskAbort: AbortController
 }
 
 /**
@@ -139,6 +202,8 @@ interface SessionSub {
  */
 export class SessionConnection {
   private readonly sink: FrameSink
+  private taskOutputV1 = false
+  private taskResultUpgradeWarned = new Set<string>()
   private readonly sm: SessionBroadcaster
   private readonly appPlugins?: AppPluginBroadcaster
   private readonly subagentTranscripts?: SubagentTranscriptSource
@@ -151,6 +216,8 @@ export class SessionConnection {
    *  same session must not race the first through the await — subs.has()
    *  is only set after it completes. */
   private readonly starting = new Set<string>()
+  private readonly startingRetry = new Set<string>()
+  private readonly startingCancelled = new Set<string>()
 
   private globalCleanup: (() => void) | null = null
   private appPluginCleanup: (() => void) | null = null
@@ -280,13 +347,22 @@ export class SessionConnection {
       return
     }
     switch (frame.kind) {
+      case 'hello':
+        this.taskOutputV1 = Array.isArray(frame.capabilities) && frame.capabilities.includes('taskOutputV1')
+        return
       case 'subscribe':
         if (typeof frame.sessionId === 'string' && frame.sessionId) {
           void this.startSession(frame.sessionId)
         }
         break
       case 'unsubscribe':
-        if (typeof frame.sessionId === 'string' && frame.sessionId) this.stopSession(frame.sessionId)
+        if (typeof frame.sessionId === 'string' && frame.sessionId) {
+          this.startingRetry.delete(frame.sessionId)
+          if (this.starting.has(frame.sessionId) && !this.subs.has(frame.sessionId)) {
+            this.startingCancelled.add(frame.sessionId)
+          }
+          this.stopSession(frame.sessionId)
+        }
         break
       case 'ping':
         this.sink.send({ kind: 'pong', nonce: frame.nonce })
@@ -422,6 +498,32 @@ export class SessionConnection {
     }
   }
 
+  private warnTaskResultUpgrade(sessionId: string): void {
+    if (this.taskResultUpgradeWarned.has(sessionId)) return
+    this.taskResultUpgradeWarned.add(sessionId)
+    this.sink.send({
+      kind: 'error', sessionId,
+      message: 'Client upgrade required for paged task results and chunked task snapshots',
+    })
+  }
+
+  private queueTasksSnapshot(
+    entry: SessionSub,
+    tasks: TaskRecordUi[],
+    revision?: { value: number; current: () => number; cancelStaleChunks?: boolean },
+  ): Promise<void> {
+    const send = () => sendTasksSnapshot(
+      this.sink, entry.sessionId, tasks, this.taskOutputV1,
+      () => this.warnTaskResultUpgrade(entry.sessionId),
+      () => this.closed || this.subs.get(entry.sessionId) !== entry,
+      entry.taskAbort.signal,
+      revision ? () => revision.current() !== revision.value : undefined,
+      revision?.cancelStaleChunks,
+    )
+    entry.taskSend = entry.taskSend.then(send, send)
+    return entry.taskSend
+  }
+
   private async startSession(sessionId: string): Promise<void> {
     // A second subscribe on a connection that already holds this channel:
     // re-attach the caller's listener rather than swallowing the frame. The
@@ -431,7 +533,8 @@ export class SessionConnection {
     // know, so "I asked for this channel" always gets the handshake + the
     // pending-request re-broadcast. No session subscribers are wired here:
     // the existing channel keeps streaming.
-    if (this.subs.has(sessionId)) {
+    const existing = this.subs.get(sessionId)
+    if (existing) {
       // Wrapped because this branch runs before `starting.add` and outside
       // the try below: a throw here would reject this un-awaited call
       // instead of being reported as a refusal, and nothing would answer
@@ -447,6 +550,16 @@ export class SessionConnection {
             this.sm.listPendingDialogs(sessionId),
           )
           this.ackSubscribe(sessionId, true, 'already-live')
+          this.taskResultUpgradeWarned.delete(sessionId)
+          const taskSub = this.sm.subscribeTasks(sessionId)
+          if (taskSub) {
+            try {
+              await this.queueTasksSnapshot(existing, taskSub.snapshot as TaskRecordUi[])
+            } finally {
+              taskSub.unsubscribe()
+            }
+          }
+          if (this.closed || this.subs.get(sessionId) !== existing) return
           this.sendAttached(sessionId)
         } else {
           // The connection still lists this session but the manager no
@@ -463,6 +576,8 @@ export class SessionConnection {
       return
     }
     if (this.starting.has(sessionId)) {
+      this.startingCancelled.delete(sessionId)
+      this.startingRetry.add(sessionId)
       // An attempt is already in flight; it will answer with the real
       // outcome. Answering anything else here would be a guess.
       log.debug(`subscribe for ${sessionId} ignored — startSession already in flight`)
@@ -492,7 +607,7 @@ export class SessionConnection {
     let hookIter: AsyncIterator<unknown> | null = null
     let psugSub: { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null = null
     let psugIter: AsyncIterator<unknown> | null = null
-    let taskSub: { iterable: AsyncIterable<unknown>; snapshot: unknown; unsubscribe: () => void } | null = null
+    let taskSub: { iterable: AsyncIterable<unknown>; snapshot: unknown; revision?: number; currentRevision?: () => number; unsubscribe: () => void } | null = null
     let taskIter: AsyncIterator<unknown> | null = null
     let tasklistSub: { iterable: AsyncIterable<unknown>; unsubscribe: () => void } | null = null
     let tasklistIter: AsyncIterator<unknown> | null = null
@@ -551,7 +666,7 @@ export class SessionConnection {
       }
       // The socket may have closed while the spawn was in flight; don't
       // wire subscriptions onto a dead connection.
-      if (this.closed) return
+      if (this.closed || this.startingCancelled.has(sessionId)) return
       const msg = this.sm.subscribe(sessionId)
       msgSub = msg
       step = 'subscribePermissions'
@@ -630,12 +745,21 @@ export class SessionConnection {
         this.sink.send({ kind: 'prompt-suggestion', sessionId, suggestion: psugSub.snapshot })
       }
 
-      // 2.8) Always send the task-list snapshot — even when empty — so a
-      //      newly subscribed tab initializes its TasksPanel cleanly
-      //      (stale rows from a previous session view are wiped).
-      if (taskSub) {
-        this.sink.send({ kind: 'tasks-snapshot', sessionId, tasks: taskSub.snapshot as TaskRecordUi[] })
+      let stopped = false
+      const taskAbort = new AbortController()
+      const isStopped = () => stopped
+      const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter, psugIter, taskIter, tasklistIter]
+        .filter((it): it is AsyncIterator<unknown> => !!it)
+      const stop = () => {
+        if (stopped) return
+        stopped = true
+        taskAbort.abort()
+        this.taskResultUpgradeWarned.delete(sessionId)
+        for (const sub of [msgSub, permSub, elicitSub, dialogSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub, psugSub, taskSub, tasklistSub]) sub?.unsubscribe()
+        for (const iter of _iterCleanup) void iter.return?.()
       }
+      const entry: SessionSub = { sessionId, cleanup: stop, taskSend: Promise.resolve(), taskAbort }
+      this.subs.set(sessionId, entry)
 
       for (const run of hookSub?.snapshot ?? []) {
         this.sink.send({ kind: 'hook-run', sessionId, event: hookSnapshotEvent(run as HookRunRecord) as never })
@@ -648,17 +772,6 @@ export class SessionConnection {
       //    unbounded leak on a busy session); a loop that awaits its own
       //    pull attaches exactly one. Each loop emits synchronously after
       //    its own await, so per-channel order is preserved.
-      let stopped = false
-      const isStopped = () => stopped
-      const _iterCleanup: AsyncIterator<unknown>[] = [ctxIter, gitIter, msgStatIter, recapIter, clearedIter, cmdIter, hookIter, psugIter, taskIter, tasklistIter]
-        .filter((it): it is AsyncIterator<unknown> => !!it)
-      const stop = () => {
-        if (stopped) return
-        stopped = true
-        for (const sub of [msgSub, permSub, elicitSub, dialogSub, ctxSub, gitSub, msgStatSub, recapSub, clearedSub, cmdSub, hookSub, psugSub, taskSub, tasklistSub]) sub?.unsubscribe()
-        for (const iter of _iterCleanup) void iter.return?.()
-      }
-
       // Session-channel teardown. Runs once: when the MESSAGE loop ends
       // (done or throw) or when any loop throws.
       let finished = false
@@ -821,18 +934,28 @@ export class SessionConnection {
       drive(psugIter, (value) => {
         this.sink.send({ kind: 'prompt-suggestion', sessionId, suggestion: value as string })
       })
-      drive(taskIter, (value) => {
-        this.sink.send({ kind: 'tasks-snapshot', sessionId, tasks: value as TaskRecordUi[] })
-      })
       drive(tasklistIter, (value) => {
         // Complete frame from the broadcaster (seed frames ride the
         // same path). Forward verbatim.
         this.sink.send(value as WsTasklistSnapshot)
       })
 
-      this.subs.set(sessionId, { sessionId, cleanup: stop })
       this.ackSubscribe(sessionId, true, 'served')
+      if (taskSub) {
+        await this.queueTasksSnapshot(entry, taskSub.snapshot as TaskRecordUi[])
+      }
+      if (this.closed || stopped) return
       this.sendAttached(sessionId)
+      drive(taskIter, async (value) => {
+        const tasks = value as TaskRecordUi[]
+        const revision = taskSnapshotRevision(tasks)
+        await this.queueTasksSnapshot(
+          entry, tasks,
+          revision !== undefined && taskSub?.currentRevision
+            ? { value: revision, current: taskSub.currentRevision, cancelStaleChunks: false }
+            : undefined,
+        )
+      })
     } catch (err) {
       // SessionManager.require() throws HttpError for unknown sessions.
       // Relay that to the client rather than killing the connection;
@@ -853,6 +976,7 @@ export class SessionConnection {
       psugSub?.unsubscribe()
       taskSub?.unsubscribe()
       tasklistSub?.unsubscribe()
+      this.stopSession(sessionId)
       this.sink.send({ kind: 'error', sessionId, message: (err as Error).message })
       // …and the machine-readable half: nothing was established here, so
       // the client may ask again once the session is servable (`error`
@@ -860,6 +984,9 @@ export class SessionConnection {
       this.ackSubscribe(sessionId, false, 'refused')
     } finally {
       this.starting.delete(sessionId)
+      this.startingCancelled.delete(sessionId)
+      const retry = this.startingRetry.delete(sessionId)
+      if (retry && !this.closed) void this.startSession(sessionId)
     }
   }
 
@@ -870,13 +997,14 @@ export class SessionConnection {
    *  teardown never emits. Rejects if `next()` or `emit` throws. */
   private async driveChannel<T>(
     iter: AsyncIterator<T>,
-    emit: (v: T) => void,
+    emit: (v: T) => void | Promise<void>,
     isStopped: () => boolean,
   ): Promise<void> {
     while (!isStopped()) {
       const r = await iter.next()
       if (r.done || isStopped()) return
-      emit(r.value)
+      const pending = emit(r.value)
+      if (pending) await pending
     }
   }
 

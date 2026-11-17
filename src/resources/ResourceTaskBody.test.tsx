@@ -14,6 +14,7 @@ vi.mock('../session-store/selectors', () => ({
   useSessionField: (_id: string, field: string) => {
     if (field === 'tasks') return state.tasks
     if (field === 'replayReady') return state.replayReady
+    if (field === 'subagentIndex') return new Map()
     return undefined
   },
 }))

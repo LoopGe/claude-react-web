@@ -25,6 +25,7 @@ import { worktreeIsDirty } from '../git.js'
 import { worktreePathOf } from '../session-worktree.js'
 import { imagePayloadOfMessage } from '../../shared/user-frames.js'
 import { metrics } from '../metrics.js'
+import { TASK_RESULT_PAGE_MAX_CHARS } from '../../shared/tasks.js'
 
 const log = createLogger('http')
 
@@ -763,6 +764,28 @@ export function buildSessionRouter(
 
   // Stop a running task by id. The SDK emits a task_notification with status
   // 'stopped' afterwards, which folds the task to its terminal state.
+  // Bounded task-result pages. The live task map is authoritative;
+  // dormant reads use the task-result sidecar without resuming the provider.
+  app.get('/sessions/:id/tasks/:taskId/result', async (c) => {
+    const offset = Number(c.req.query('offset') ?? '0')
+    const limit = Number(c.req.query('limit') ?? String(TASK_RESULT_PAGE_MAX_CHARS))
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      return c.json({ error: 'offset must be a non-negative safe integer' }, 400)
+    }
+    if (!Number.isSafeInteger(limit) || limit < 2) {
+      return c.json({ error: 'limit must be a safe integer of at least 2' }, 400)
+    }
+    const resultVersion = c.req.query('resultVersion')
+    if (resultVersion !== undefined && (!Number.isSafeInteger(Number(resultVersion)) || Number(resultVersion) < 0)) {
+      return c.json({ error: 'resultVersion must be a non-negative safe integer' }, 400)
+    }
+    return c.json(await sm.readTaskResult(c.req.param('id'), c.req.param('taskId'), {
+      runId: c.req.query('runId'),
+      ...(resultVersion !== undefined ? { resultVersion: Number(resultVersion) } : {}),
+      offset, limit,
+    }))
+  })
+
   app.post('/sessions/:id/tasks/:taskId/stop', async (c) => {
     await sm.stopTask(c.req.param('id'), c.req.param('taskId'))
     return c.json({ ok: true })

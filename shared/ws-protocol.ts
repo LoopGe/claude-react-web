@@ -65,6 +65,7 @@ export interface WsSubagentTranscriptUnsubscribe {
 }
 
 export type WsClientFrame =
+  | WsHello
   | WsSubscribe
   | WsUnsubscribe
   | WsPing
@@ -282,14 +283,32 @@ export interface WsPromptSuggestion {
 /** Full snapshot of a session's background-task list, pushed on the
  *  dedicated `tasks` channel whenever the server's folded task state
  *  changes (task_started / task_updated / task_progress /
- *  task_notification). Full snapshot rather than incremental patches: task
- *  lists are tiny, snapshots are idempotent, and the subscribe-time
- *  snapshot doubles as the reconnect seed. Ephemeral like prompt-suggestion
- *  — task events never enter the history ring. */
+ *  task_notification). Full snapshot rather than incremental patches: ordinary
+ *  task lists are small, snapshots are idempotent, and the subscribe-time
+ *  snapshot doubles as the reconnect seed. Extreme aggregate metadata uses
+ *  `tasks-snapshot-chunk` instead of dropping identity or live task state.
+ *  Ephemeral like prompt-suggestion — task events never enter the history ring. */
+export interface WsHello {
+  kind: 'hello'
+  capabilities: string[]
+}
+
 export interface WsTasksSnapshot {
   kind: 'tasks-snapshot'
   sessionId: string
   tasks: import('./tasks.js').TaskRecordUi[]
+}
+
+/** Serialized-json chunks for an unusually large roster. Chunks of one
+ *  baseline are joined and parsed only after all pieces arrive, so clients
+ *  never apply a partial task list and identity fields need no truncation. */
+export interface WsTasksSnapshotChunk {
+  kind: 'tasks-snapshot-chunk'
+  sessionId: string
+  baselineId: string
+  chunk: number
+  totalChunks: number
+  data: string
 }
 
 /** Full git-state snapshot for one work tree, pushed after any
@@ -592,6 +611,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsContextUsage
   | WsPromptSuggestion
   | WsTasksSnapshot
+  | WsTasksSnapshotChunk
   | WsGitSnapshot
   | WsTasklistSnapshot
   | WsMessageConsumed

@@ -9318,6 +9318,64 @@ describe('SessionManager', () => {
   })
 
   describe('TaskResultStore wiring', () => {
+    it('pages live terminal results without falling back to stale sidecar records', async () => {
+      const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+      const session = (sm as unknown as { sessions: Map<string, { tasks: Map<string, TaskRecordUi> }> }).sessions.get(info.id)!
+      session.tasks.set('t1', {
+        taskId: 't1', description: 'done', status: 'completed', result: 'ab😀cd', runId: 'run-a', updatedAt: 10,
+      })
+      session.tasks.set('running', {
+        taskId: 'running', description: 'running', status: 'running', result: 'stale-live', updatedAt: 11,
+      })
+      const { TaskResultStore } = await import('./task-result-store.js')
+      await new TaskResultStore(dir).save(info.id, [{
+        taskId: 'disk-only', description: 'stale', status: 'completed', result: 'STALE', updatedAt: 1,
+      }])
+
+      const first = await sm.readTaskResult(info.id, 't1', { runId: 'run-a', offset: 0, limit: 4 })
+      expect(first).toMatchObject({ available: true, result: 'ab😀', nextOffset: 4, hasMore: true, totalChars: 6 })
+      if (!first.available) throw new Error('expected an available result')
+      const last = await sm.readTaskResult(info.id, 't1', { runId: 'run-a', offset: first.nextOffset, limit: 4 })
+      expect(last).toMatchObject({ available: true, result: 'cd', nextOffset: 6, hasMore: false })
+      await expect(sm.readTaskResult(info.id, 't1', { runId: 'old-run', offset: 0, limit: 4 })).rejects.toMatchObject({ status: 409 })
+      await expect(sm.readTaskResult(info.id, 't1', { resultVersion: -1, offset: 0, limit: 4 })).rejects.toMatchObject({ status: 409 })
+      await expect(sm.readTaskResult(info.id, 'running', { offset: 0, limit: 4 })).resolves.toMatchObject({
+        available: true, result: 'stal', hasMore: true,
+      })
+      await expect(sm.readTaskResult(info.id, 'disk-only', { offset: 0, limit: 4 })).rejects.toMatchObject({ status: 404 })
+    })
+
+    it('falls back to the sidecar when a session unloads during hydration', async () => {
+      const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+      const sessions = (sm as unknown as {
+        sessions: Map<string, { tasks: Map<string, TaskRecordUi>; tasksHydration?: Promise<void> }>
+      }).sessions
+      const session = sessions.get(info.id)!
+      let finishHydration!: () => void
+      session.tasksHydration = new Promise<void>((resolve) => { finishHydration = resolve })
+      const { TaskResultStore } = await import('./task-result-store.js')
+      await new TaskResultStore(dir).save(info.id, [{
+        taskId: 't1', description: 'done', status: 'completed', result: 'DURABLE', updatedAt: 10,
+      }])
+      const pending = sm.readTaskResult(info.id, 't1', { offset: 0, limit: 100 })
+      sessions.delete(info.id)
+      finishHydration()
+      await expect(pending).resolves.toMatchObject({ available: true, result: 'DURABLE' })
+    })
+
+    it('reads dormant results from the sidecar without resuming the session', async () => {
+      const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
+      const { TaskResultStore } = await import('./task-result-store.js')
+      await new TaskResultStore(dir).save(info.id, [{
+        taskId: 't1', description: 'done', status: 'completed', result: 'DORMANT', runId: 'run-a', updatedAt: 10,
+      }])
+      await sm.shutdown()
+      const resume = vi.spyOn(sm, 'resume')
+      const page = await sm.readTaskResult(info.id, 't1', { runId: 'run-a', offset: 0, limit: 100 })
+      expect(page).toMatchObject({ available: true, result: 'DORMANT', hasMore: false })
+      expect(resume).not.toHaveBeenCalled()
+    })
+
     it('hydrates session.tasks from the sidecar across a manager restart', async () => {
       // 1. Seed the sidecar under a KNOWN session id. `create()` always mints
       //    a fresh UUID and does NOT accept `resume:` (session-manager.ts
@@ -9335,6 +9393,7 @@ describe('SessionManager', () => {
       //    object, and assert the record lands.
       const info = await sm.create({ cwd: TEST_CWD, model: 'test-model' })
       const s1 = (sm as unknown as { sessions: Map<string, { tasks: Map<string, { result?: string; description?: string }> }> }).sessions.get(info.id)!
+      ;(sm as unknown as { sessions: Map<string, unknown> }).sessions.set('sess-known', s1)
       ;(sm as unknown as { hydrateTasks: (id: string, s: unknown) => void }).hydrateTasks('sess-known', s1)
       await vi.waitFor(() => {
         expect(s1.tasks.get('t1')?.result).toBe('FROM-DISK')
@@ -9414,14 +9473,18 @@ describe('SessionManager', () => {
         }, { timeout: 15_000 })
 
         const reconciled = snapshot.find((task) => task.taskId === running.taskId)!
-        expect(reconciled).toEqual({
+        expect(reconciled).toEqual(expect.objectContaining({
           ...running,
           status: 'stopped',
           reason: 'worker_restart',
           endedAt: expect.any(Number),
-        })
+          resultRef: expect.objectContaining({ projection: 'full' }),
+        }))
         expect(reconciled.endedAt!).toBeGreaterThanOrEqual(beforeRestart)
-        expect(snapshot.find((task) => task.taskId === terminal.taskId)).toEqual(terminal)
+        expect(snapshot.find((task) => task.taskId === terminal.taskId)).toEqual(expect.objectContaining({
+          ...terminal,
+          resultRef: expect.objectContaining({ projection: 'full' }),
+        }))
 
         // Waiting counts and TasksPanel Stop both derive from non-terminal records.
         expect(restarted.get(id).backgroundSubagentCount).toBe(0)
@@ -9430,7 +9493,10 @@ describe('SessionManager', () => {
 
         const { TaskResultStore } = await import('./task-result-store.js')
         await vi.waitFor(async () => {
-          expect(await new TaskResultStore(dir).load(id)).toEqual(snapshot)
+          expect(await new TaskResultStore(dir).load(id)).toEqual([
+            { ...running, status: 'stopped', reason: 'worker_restart', endedAt: reconciled.endedAt },
+            terminal,
+          ])
         }, { timeout: 15_000 })
         const broadcast = await Promise.race([
           nextBroadcast,
@@ -9467,7 +9533,10 @@ describe('SessionManager', () => {
           snapshot = currentTasks()
           expect(snapshot).toHaveLength(2)
         }, { timeout: 15_000 })
-        expect(snapshot).toEqual([running, terminal])
+        expect(snapshot).toEqual([
+          expect.objectContaining({ ...running, resultRef: expect.objectContaining({ projection: 'full' }) }),
+          expect.objectContaining({ ...terminal, resultRef: expect.objectContaining({ projection: 'full' }) }),
+        ])
         const { TaskResultStore } = await import('./task-result-store.js')
         expect(await new TaskResultStore(dir).load(id)).toEqual([running, terminal])
       } finally {

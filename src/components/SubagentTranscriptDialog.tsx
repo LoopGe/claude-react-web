@@ -15,6 +15,7 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   agentId,
   label,
   streamingMode,
+  visible = true,
   cwd,
   onClose,
 }: {
@@ -24,6 +25,7 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   /** Global streaming-preview mode, threaded from the panel prefs so the
    *  dialog follows the same setting as the main transcript. */
   streamingMode?: StreamingRenderMode
+  visible?: boolean
   /** Session working directory — relative paths in the transcript resolve
    *  against it. */
   cwd?: string
@@ -32,6 +34,7 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
   return (
     <Overlay
       variant="modal"
+      open={visible}
       onClose={onClose}
       ariaLabel={`Subagent transcript: ${label}`}
       // ~860px: tool cards need more width than the old 620px text renderer.
@@ -56,6 +59,7 @@ export const SubagentTranscriptDialog = function SubagentTranscriptDialog({
           agentId={agentId}
           streamingMode={streamingMode}
           cwd={cwd}
+          visible={visible}
           variant="dialog"
         />
       </div>

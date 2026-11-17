@@ -72,6 +72,7 @@ import type { Session, GlobalSessionEvent, SessionInfo } from './session-types.j
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import { pushBounded, stampReceivedAt } from './history-utils.js'
 import { isTerminalTaskStatus } from '../shared/tasks.js'
+import { broadcastTasksSnapshot } from './session-broadcaster.js'
 
 const log = createLogger('subagent-watcher')
 
@@ -742,10 +743,7 @@ export class BackgroundWatcherRegistry {
         startedAt: now,
         updatedAt: now,
       })
-      const snapshot = Array.from(session.tasks.values())
-      for (const sub of session.taskSubscribers) {
-        try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
-      }
+      broadcastTasksSnapshot(session)
     }
     // A new background subagent just launched — broadcast the updated count
     // so the sidebar can switch this session away from a plain 'live' dot
@@ -790,12 +788,7 @@ export class BackgroundWatcherRegistry {
           removed = true
         }
       }
-      if (removed) {
-        const snapshot = Array.from(session.tasks.values())
-        for (const sub of session.taskSubscribers) {
-          try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
-        }
-      }
+      if (removed) broadcastTasksSnapshot(session)
       // The watcher count feeds the sidebar's 'waiting' dot; re-broadcast so
       // it reflects the cancelled watcher immediately.
       this.deps.broadcastGlobal({ kind: 'update', session: this.deps.info(session) })

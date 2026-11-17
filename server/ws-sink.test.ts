@@ -73,9 +73,17 @@ describe('WsWriteQueue', () => {
     expect(ws.sent).toEqual([snapshot])
   })
 
+  it('delivers the observed tasks snapshot that exceeded the 16M ceiling', () => {
+    const { ws, queue } = makeQueue()
+    const snapshot = 'x'.repeat(18_241_480)
+    queue.enqueueRaw(snapshot, 'tasks-snapshot')
+    expect(ws.closeCalls).toHaveLength(0)
+    expect(ws.sent).toEqual([snapshot])
+  })
+
   it('exceeding MAX_QUEUE_CHARS force-closes the socket (slow-client overflow path)', () => {
     const { ws, queue } = makeQueue()
-    const big = 'x'.repeat(16_000_001)
+    const big = 'x'.repeat(64_000_001)
     queue.enqueueRaw(big, 'message')
     expect(ws.closeCalls).toHaveLength(1)
     expect(ws.closeCalls[0]!.code).toBe(1011)
@@ -86,8 +94,33 @@ describe('WsWriteQueue', () => {
 
   it('frames just under the cap do not close', () => {
     const { ws, queue } = makeQueue()
-    queue.enqueueRaw('y'.repeat(15_999_999), 'message')
+    queue.enqueueRaw('y'.repeat(63_999_999), 'message')
     expect(ws.closeCalls).toHaveLength(0)
+  })
+
+  it('cancelling a drain waiter removes it from the pending set', async () => {
+    const { ws, queue } = makeQueue()
+    queue.enqueueRaw('F1', 'message')
+    queue.enqueueRaw('x'.repeat(2_000_000), 'tasks-snapshot-chunk')
+    const abort = new AbortController()
+    const waiting = queue.waitForDrain(abort.signal)
+    const waiters = queue as unknown as { drainWaiters: Set<() => void> }
+    expect(waiters.drainWaiters.size).toBe(1)
+    abort.abort()
+    await waiting
+    expect(waiters.drainWaiters.size).toBe(0)
+    await ws.releaseAll()
+  })
+
+  it('stops and closes instead of rejecting when a socket send throws', async () => {
+    const { ws, queue } = makeQueue()
+    ws.send = () => { throw new Error('socket closing') }
+    queue.enqueueRaw('F1', 'message')
+    queue.enqueueRaw('F2', 'message')
+    await tick()
+    expect(ws.closeCalls).toEqual([{ code: 1011, reason: 'write failed' }])
+    queue.enqueueRaw('never', 'message')
+    expect(ws.sent).toEqual([])
   })
 
   it('stop() drops the queued backlog and rejects later enqueues', async () => {

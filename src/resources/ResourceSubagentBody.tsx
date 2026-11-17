@@ -11,6 +11,8 @@ import { ElapsedTimer } from '../components/ElapsedTimer'
 import { SubagentConversationBody } from '../components/SubagentConversationBody'
 import { SubagentTranscriptBody } from '../components/SubagentTranscriptBody'
 import { useOptionalOpenResource } from './context'
+import { useSubagentTaskResult } from '../hooks/useSubagentTaskResult'
+import { TaskResultView } from '../components/TaskResultView'
 
 export function ResourceSubagentBody({
   address,
@@ -124,13 +126,17 @@ function MirrorConversation({
   const planContent = useSessionField(sessionId, 'planContent')
   const questionAnswers = useSessionField(sessionId, 'questionAnswers')
   const ready = useSessionField(sessionId, 'replayReady')
+  const { currentTask, needsPagedResult, resultState, displayCurrent } = useSubagentTaskResult(sessionId, current)
 
   return (
     <div className="resource-agent-conversation">
+      {needsPagedResult && currentTask && (
+        <TaskResultView sessionId={sessionId} task={currentTask} enabled state={resultState} />
+      )}
       <SubagentConversationBody
         sessionId={sessionId}
         currentId={toolUseId}
-        current={current}
+        current={displayCurrent!}
         items={items}
         toolStatus={toolStatus}
         toolResults={toolResults}

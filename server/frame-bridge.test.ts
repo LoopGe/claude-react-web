@@ -24,6 +24,8 @@ import type {
 } from './session-types.js'
 import type { WsClientDebugRequest, WsClientFrame, WsMessageConsumed, WsMessageSteered, WsMessagesEvicted, WsMessagesWithdrawn, WsServerFrame, WsTurnChanges } from './ws-protocol.js'
 import { metrics } from './metrics.js'
+import type { TaskRecordUi } from '../shared/tasks.js'
+import { projectTasksSnapshot, TASK_SNAPSHOT_MAX_CHARS } from '../shared/tasks.js'
 
 const tick = () => new Promise<void>((r) => setImmediate(r))
 
@@ -147,6 +149,7 @@ class FakeSink implements FrameSink {
   frames: WsServerFrame[] = []
   rawCount = 0
   closed = false
+  waitForDrain?: () => Promise<void>
   send(frame: WsServerFrame): void {
     if (!this.closed) this.frames.push(frame)
   }
@@ -299,7 +302,7 @@ class FakeBroadcaster implements SessionBroadcaster {
   ensureContextUsageSeeds: string[] = []
   ensureContextUsageSeed(sessionId: string) { this.ensureContextUsageSeeds.push(sessionId) }
   subscribePromptSuggestion() { return null }
-  subscribeTasks() { return null }
+  subscribeTasks(): { iterable: AsyncIterable<TaskRecordUi[]>; snapshot: TaskRecordUi[]; unsubscribe: () => void } | null { return null }
   subscribeGitStatus() { return null }
   /** When non-null, handed out as the session's tasklist channel. */
   tasklistSub: CountedSub<never> | null = null
@@ -363,6 +366,205 @@ const assistant = (text: string, uuid?: string): SDKMessage =>
 const send = (conn: SessionConnection, frame: WsClientFrame) => conn.handleClientFrame(frame)
 
 describe('SessionConnection (in-memory sink)', () => {
+  it('projects bounded results on both initial and live tasks snapshots', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const channel = chan<TaskRecordUi[]>()
+    const canonical: TaskRecordUi = {
+      taskId: 't1', description: 'large', status: 'completed', updatedAt: 1,
+      result: 'x'.repeat(100_000),
+    }
+    sm.subscribeTasks = () => ({
+      iterable: channel.iterable,
+      snapshot: projectTasksSnapshot([canonical]),
+      unsubscribe: () => channel.end(),
+    })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    const initial = await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot')
+    if (initial.kind !== 'tasks-snapshot') throw new Error('narrowing')
+    const record = initial.tasks[0]!
+    expect(record.resultRef).toMatchObject({ projection: 'partial', totalChars: 100_000 })
+    expect(record.result).toBeUndefined()
+
+    channel.push(projectTasksSnapshot([{ ...canonical, updatedAt: 2 }]))
+    await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot' && f.tasks[0].updatedAt === 2)
+    const frames = sink.kinds('tasks-snapshot')
+    expect(frames).toHaveLength(2)
+    expect(canonical.result).toHaveLength(100_000)
+    expect(canonical.resultRef).toBeUndefined()
+    conn.close()
+  })
+
+  it('chunks an extreme roster without dropping any task identity', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const channel = chan<TaskRecordUi[]>()
+    const tasks = Array.from({ length: 100 }, (_, i) => ({
+      taskId: `t${i}`, description: '"\\'.repeat(2_048), status: 'running' as const, updatedAt: 1,
+    }))
+    sm.subscribeTasks = () => ({
+      iterable: channel.iterable,
+      snapshot: tasks,
+      unsubscribe: () => channel.end(),
+    })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot-chunk' && f.chunk === f.totalChunks - 1)
+    const chunks = sink.frames.filter((frame): frame is Extract<WsServerFrame, { kind: 'tasks-snapshot-chunk' }> => frame.kind === 'tasks-snapshot-chunk')
+    expect(chunks.length).toBeGreaterThan(1)
+    expect(chunks.every((frame) => frame.data.length <= TASK_SNAPSHOT_MAX_CHARS)).toBe(true)
+    expect(chunks.every((frame) => JSON.stringify(frame).length <= TASK_SNAPSHOT_MAX_CHARS)).toBe(true)
+    expect(JSON.parse(chunks.map((frame) => frame.data).join(''))).toEqual(tasks)
+    conn.close()
+  })
+
+  it('finishes the initial baseline before attaching, then forwards the current roster', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const channel = chan<TaskRecordUi[]>()
+    let revision = 0
+    const stale = Array.from({ length: 100 }, (_, i) => ({
+      taskId: `stale-${i}`, description: 'd'.repeat(4_096), status: 'running' as const, updatedAt: 1,
+    }))
+    sm.subscribeTasks = () => ({
+      iterable: channel.iterable, snapshot: stale, revision,
+      currentRevision: () => revision, unsubscribe: () => channel.end(),
+    })
+    sm.getHistory = () => []
+    sm.heads.set('s1', { generation: 0, headSeq: 0 })
+    const { sink, conn } = setup(sm)
+    let releaseDrain!: () => void
+    let drainCalls = 0
+    sink.waitForDrain = () => {
+      drainCalls += 1
+      return drainCalls === 1 ? new Promise<void>((resolve) => { releaseDrain = resolve }) : Promise.resolve()
+    }
+    conn.start()
+    send(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    const first = await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot-chunk' && f.chunk === 0)
+    revision = 1
+    channel.push([{ taskId: 'current', description: 'current', status: 'completed', result: 'new', updatedAt: 2 }])
+    releaseDrain()
+    await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot' && f.tasks[0]?.taskId === 'current')
+    expect(sink.kinds('tasks-snapshot-chunk')).toHaveLength(first.kind === 'tasks-snapshot-chunk' ? first.totalChunks : 0)
+    const attached = sink.kinds('attached')[0]
+    const lastChunk = sink.kinds('tasks-snapshot-chunk').at(-1)
+    expect(sink.frames.indexOf(attached!)).toBeGreaterThan(sink.frames.indexOf(lastChunk!))
+    conn.close()
+  })
+
+  it('checks teardown after backpressure before sending the next roster chunk', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const channel = chan<TaskRecordUi[]>()
+    const tasks = Array.from({ length: 100 }, (_, i) => ({
+      taskId: `t${i}`, description: 'd'.repeat(4_096), status: 'running' as const, updatedAt: 1,
+    }))
+    sm.subscribeTasks = () => ({ iterable: channel.iterable, snapshot: tasks, unsubscribe: () => channel.end() })
+    const { sink, conn } = setup(sm)
+    let releaseDrain!: () => void
+    sink.waitForDrain = () => new Promise<void>((resolve) => { releaseDrain = resolve })
+    let sendCalls = 0
+    const sendFrame = sink.send.bind(sink)
+    sink.send = (frame) => { sendCalls++; sendFrame(frame) }
+    conn.start()
+    send(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot-chunk' && f.chunk === 0)
+    const beforeClose = sendCalls
+    conn.close()
+    releaseDrain()
+    await tick()
+    expect(sendCalls).toBe(beforeClose)
+  })
+
+  it('re-serves the task roster on an already-live subscribe', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const tasks: TaskRecordUi[] = [{ taskId: 't1', description: 'done', status: 'completed', result: 'ok', updatedAt: 1 }]
+    sm.subscribeTasks = () => ({ iterable: chan<TaskRecordUi[]>().iterable, snapshot: tasks, unsubscribe: () => {} })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot')
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.reason === 'already-live')
+    expect(sink.kinds('tasks-snapshot')).toHaveLength(2)
+    conn.close()
+  })
+
+  it('retries a resubscribe that arrives while a cancelled start is draining', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const tasks = Array.from({ length: 100 }, (_, i) => ({
+      taskId: `t${i}`, description: 'd'.repeat(4_096), status: 'running' as const, updatedAt: 1,
+    }))
+    sm.subscribeTasks = () => ({ iterable: chan<TaskRecordUi[]>().iterable, snapshot: tasks, unsubscribe: () => {} })
+    sm.subscribe = () => ({ iterable: chan<SDKMessage>().iterable, history: [], unsubscribe: () => {} })
+    const { sink, conn } = setup(sm)
+    let drainCalls = 0
+    sink.waitForDrain = () => {
+      drainCalls += 1
+      return drainCalls === 1 ? new Promise<void>(() => {}) : Promise.resolve()
+    }
+    conn.start()
+    send(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot-chunk' && f.chunk === 0)
+    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'subscribe-result' && f.ok && f.reason === 'served')
+    expect(sink.kinds('subscribe-result').some((frame) => frame.kind === 'subscribe-result' && frame.ok && frame.reason === 'served')).toBe(true)
+    conn.close()
+  })
+
+  it('does not recreate a channel when the last starting subscriber unsubscribes', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const tasks = Array.from({ length: 100 }, (_, i) => ({
+      taskId: `t${i}`, description: 'd'.repeat(4_096), status: 'running' as const, updatedAt: 1,
+    }))
+    sm.subscribeTasks = () => ({ iterable: chan<TaskRecordUi[]>().iterable, snapshot: tasks, unsubscribe: () => {} })
+    const { sink, conn } = setup(sm)
+    sink.waitForDrain = () => new Promise<void>(() => {})
+    conn.start()
+    send(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'tasks-snapshot-chunk' && f.chunk === 0)
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    const servedBefore = sink.kinds('subscribe-result').filter((frame) => frame.kind === 'subscribe-result' && frame.ok).length
+    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
+    for (let i = 0; i < 5; i++) await tick()
+    expect(sink.kinds('tasks-snapshot-chunk')).toHaveLength(1)
+    expect(sink.kinds('subscribe-result').filter((frame) => frame.kind === 'subscribe-result' && frame.ok)).toHaveLength(servedBefore)
+    conn.close()
+  })
+
+  it('sends upgrade-required instead of partial results to legacy connections', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: true })
+    const channel = chan<TaskRecordUi[]>()
+    sm.subscribeTasks = () => ({
+      iterable: channel.iterable,
+      snapshot: projectTasksSnapshot([{ taskId: 't1', description: 'large', status: 'completed', updatedAt: 1, result: 'x'.repeat(100_000) }]),
+      unsubscribe: () => channel.end(),
+    })
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    await waitForFrame(sink, (f) => f.kind === 'error' && f.message.includes('Client upgrade required'))
+    expect(sink.kinds('tasks-snapshot')).toHaveLength(0)
+    expect(sink.kinds('tasks-snapshot-chunk')).toHaveLength(0)
+    conn.close()
+  })
+
   it('emits the global sessions-snapshot on start', () => {
     const sm = new FakeBroadcaster()
     sm.globalSnapshot = [{ id: 'a' }, { id: 'b' }] as unknown as SessionInfo[]
@@ -551,6 +753,29 @@ describe('SessionConnection (in-memory sink)', () => {
     expect(sm.resumed).toEqual(['s1'])
     expect(sink.kinds('error')).toHaveLength(0)
     expect(sink.kinds('subscribe-result')[0]).toMatchObject({ ok: true, reason: 'served' })
+  })
+
+  it('cancels a pending auto-resume subscribe when its last holder leaves', async () => {
+    const sm = new FakeBroadcaster()
+    sm.addSession('s1', { running: false })
+    let finishResume!: () => void
+    const resume = sm.resume.bind(sm)
+    sm.resume = async (id) => {
+      await new Promise<void>((resolve) => { finishResume = resolve })
+      return resume(id)
+    }
+    let subscriptions = 0
+    const subscribe = sm.subscribe.bind(sm)
+    sm.subscribe = (id) => { subscriptions++; return subscribe(id) }
+    const { sink, conn } = setup(sm)
+    conn.start()
+    send(conn, { kind: 'subscribe', sessionId: 's1' })
+    send(conn, { kind: 'unsubscribe', sessionId: 's1' })
+    finishResume()
+    for (let i = 0; i < 3; i++) await tick()
+    expect(subscriptions).toBe(0)
+    expect(sink.kinds('subscribe-result').some((frame) => frame.kind === 'subscribe-result' && frame.ok)).toBe(false)
+    conn.close()
   })
 
   it('does NOT resume a slept session — it is refused', async () => {

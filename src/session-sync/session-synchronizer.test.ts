@@ -448,6 +448,40 @@ describe('SessionSynchronizer protocol', () => {
     sync.stop()
   })
 
+  it('joins a chunked roster only after every baseline fragment arrives', () => {
+    const sid = 's1'
+    const store = getSessionStore(sid)
+    const sync = new SessionSynchronizer({
+      sessionId: sid,
+      store,
+      hub: fakeHub,
+      get: fakeGet,
+      handlers: noopHandlers,
+    })
+    sync.start()
+    const tasks = [
+      { taskId: 't1', description: 'one', status: 'running', updatedAt: 1 },
+      { taskId: 't2', description: 'two', status: 'completed', updatedAt: 2 },
+    ]
+    const data = JSON.stringify(tasks)
+    const third = Math.ceil(data.length / 3)
+    dispatchToSession(sid, {
+      kind: 'tasks-snapshot-chunk', sessionId: sid, baselineId: 'b1', chunk: 2, totalChunks: 3,
+      data: data.slice(third * 2),
+    } as unknown as WsServerFrame)
+    dispatchToSession(sid, {
+      kind: 'tasks-snapshot-chunk', sessionId: sid, baselineId: 'b1', chunk: 0, totalChunks: 3,
+      data: data.slice(0, third),
+    } as unknown as WsServerFrame)
+    expect(store.getSnapshot().tasks).toEqual([])
+    dispatchToSession(sid, {
+      kind: 'tasks-snapshot-chunk', sessionId: sid, baselineId: 'b1', chunk: 1, totalChunks: 3,
+      data: data.slice(third, third * 2),
+    } as unknown as WsServerFrame)
+    expect(store.getSnapshot().tasks).toEqual(tasks)
+    sync.stop()
+  })
+
   it('dispatches message-consumed', () => {
     const sid = 's1'
     const store = getSessionStore(sid)

@@ -13,6 +13,9 @@ import { isSafeUrl } from '../components/tool-views/shared'
 import { ElapsedTimer } from '../components/ElapsedTimer'
 import { SubagentTranscriptBody } from '../components/SubagentTranscriptBody'
 import { TaskResultBlock, TaskStatusIcon, TaskTypeIcon } from '../components/task-parts'
+import { TaskResultView, type TaskResultState } from '../components/TaskResultView'
+import { useTaskResult } from '../hooks/useTaskResult'
+import { canonicalResultText, hasRicherCanonicalResult as hasRicherResult } from '../utils/task-result'
 import { useOptionalOpenResource } from './context'
 
 export function ResourceTaskBody({
@@ -39,9 +42,27 @@ function TaskBody({
   cwd?: string
 }) {
   const tasks = useSessionField(sessionId, 'tasks')
+  const subagentIndex = useSessionField(sessionId, 'subagentIndex')
   const ready = useSessionField(sessionId, 'replayReady')
   const openResource = useOptionalOpenResource()
   const record = tasks.find((task) => task.taskId === taskId)
+  const indexed = Array.from(subagentIndex.values()).find((candidate) =>
+    candidate.taskId === taskId && candidate.toolUseId === record?.toolUseId,
+  )
+  const indexedText = useMemo(
+    () => canonicalResultText(indexed?.result?.content),
+    [indexed?.result],
+  )
+  const hasRicherCanonicalResult = hasRicherResult(record, indexed)
+  const resultState = useTaskResult({
+    sessionId,
+    taskId,
+    runId: record?.runId,
+    updatedAt: record?.updatedAt ?? 0,
+    resultVersion: record?.resultRef?.resultVersion,
+    totalChars: record?.resultRef?.totalChars ?? 0,
+    enabled: record?.resultRef?.projection === 'partial' && !hasRicherCanonicalResult,
+  })
 
   if (!record) {
     return (
@@ -54,6 +75,9 @@ function TaskBody({
   }
 
   const isSubagent = isSubagentTask(record)
+  const displayResult = hasRicherCanonicalResult
+    ? indexedText
+    : resultState.page?.result ?? record.result
 
   return (
     <div className="resource-task-body">
@@ -90,38 +114,47 @@ function TaskBody({
       </header>
       {isSubagent ? (
         <>
-          {hasDetails(record) && <TaskDetails record={record} compact />}
+          {hasDetails(record, displayResult) && <TaskDetails sessionId={sessionId} record={record} resultState={resultState} resultOverride={hasRicherCanonicalResult ? indexedText : undefined} compact />}
           <SubagentTranscriptBody
             sessionId={sessionId}
             agentId={record.taskId}
-            suppressResult={Boolean(record.result)}
+            resultState={resultState}
+            resultPreview={displayResult}
+            suppressResult={Boolean(displayResult || record.resultRef?.totalChars || record.result)}
             variant="fill"
             cwd={cwd}
           />
         </>
       ) : (
-        <TaskDetails record={record} showEmpty />
+        <TaskDetails sessionId={sessionId} record={record} resultState={resultState} resultOverride={hasRicherCanonicalResult ? indexedText : undefined} showEmpty />
       )}
     </div>
   )
 }
 
-function hasDetails(record: TaskRecordUi): boolean {
+function hasDetails(record: TaskRecordUi, displayResult?: string): boolean {
   return Boolean(
+    displayResult ||
     record.progressSummary ||
       record.lastToolName ||
       record.reason ||
       (record.resourceLinks && record.resourceLinks.length > 0) ||
-      record.result,
+      (record.resultRef?.totalChars ?? record.result?.length ?? 0) > 0,
   )
 }
 
 function TaskDetails({
+  sessionId,
   record,
+  resultState,
+  resultOverride,
   compact = false,
   showEmpty = false,
 }: {
+  sessionId: string
   record: TaskRecordUi
+  resultState: TaskResultState
+  resultOverride?: string
   compact?: boolean
   showEmpty?: boolean
 }) {
@@ -151,8 +184,10 @@ function TaskDetails({
           ))}
         </ul>
       )}
-      {record.result ? (
-        <TaskResultBlock result={record.result} />
+      {resultOverride ? (
+        <TaskResultBlock result={resultOverride} />
+      ) : (record.resultRef?.totalChars ?? record.result?.length ?? 0) > 0 ? (
+        <TaskResultView sessionId={sessionId} task={record} enabled state={resultState} />
       ) : showEmpty ? (
         <div className="hint">No output recorded yet.</div>
       ) : null}

@@ -22,6 +22,8 @@ import type {
 import type { QuestionAnswerEntry } from '../utils/question-answers'
 import type { StreamingRenderMode } from '../../shared/streaming-render-mode'
 import { cx } from '../utils/cx'
+import { useSubagentTaskResult } from '../hooks/useSubagentTaskResult'
+import { TaskResultView } from './TaskResultView'
 
 interface Props {
   /** Stack of toolUseIds: stack[0] is the outermost subagent the user
@@ -80,6 +82,7 @@ interface Props {
   /** Session working directory — relative paths in the conversation resolve
    *  against it (tool-row open buttons / Markdown links). */
   cwd?: string
+  visible?: boolean
 }
 
 export const SubagentOverlay = memo(function SubagentOverlay({
@@ -104,10 +107,12 @@ export const SubagentOverlay = memo(function SubagentOverlay({
   streamingMode,
   sessionId,
   cwd,
+  visible = true,
 }: Props) {
   const currentId = stack[stack.length - 1]
   const current = currentId ? index.get(currentId) : undefined
   const openResource = useOptionalOpenResource()
+  const { currentTask, needsPagedResult, resultState, displayCurrent } = useSubagentTaskResult(sessionId, current, visible)
   // Synthetic prompt/result rows are derived by MessageList from the record.
 
   // If the referenced subagent vanishes from the index (session reset,
@@ -154,6 +159,7 @@ export const SubagentOverlay = memo(function SubagentOverlay({
       variant="subagent"
       ariaLabel="Subagent details"
       isExiting={isExiting}
+      visible={visible}
       onClose={onClose}
       onEscape={() => {
         if (stack.length > 1) onPop()
@@ -266,10 +272,13 @@ export const SubagentOverlay = memo(function SubagentOverlay({
           transitionDirection ? `subagent-overlay-body-${transitionDirection}` : '',
         )}
       >
+        {needsPagedResult && currentTask && (
+          <TaskResultView sessionId={sessionId} task={currentTask} enabled={visible} state={resultState} />
+        )}
         <SubagentConversationBody
           sessionId={sessionId}
           currentId={currentId}
-          current={current}
+          current={displayCurrent!}
           items={items}
           toolStatus={toolStatus}
           toolResults={toolResults}

@@ -626,10 +626,15 @@ export interface Session {
    *  exposes no task-list query API, so this map IS the list. Seeded both
    *  by SDK frames (applyTaskEvent in session-pump) and by the subagent
    *  watcher (watcher-tracked agents on CLI versions that emit no task_*
-   *  frames would otherwise never appear). Cleared on /clear. Not
-   *  persisted — task state is in-memory only, lost on unload/dormancy
-   *  (same trade-off as backgroundSubagentCount). */
+   *  frames would otherwise never appear). Cleared on /clear. Live updates
+   *  stay in this map; TaskResultStore hydrates durable records on spawn and
+   *  serves dormant result pages without resuming the provider. */
   tasks: Map<string, import('../shared/tasks.js').TaskRecordUi>
+  tasksRevision?: number
+  /** Set while the sidecar hydration spawned for this session is still
+   *  folding records, so a concurrent result read can wait rather than fall
+   *  back to a stale disk generation. */
+  tasksHydration?: Promise<void>
   /** Per-subscriber pushables receiving FULL task-list snapshots (the
    *  Map's values as an array) on every task-state change. Same shape as
    *  contextUsageSubscribers; snapshot semantics make reconnects trivial. */
@@ -1028,7 +1033,7 @@ export interface SessionBroadcaster {
   ensureContextUsageSeed?(sessionId: string): void
   subscribeContextUsage(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: import('./session-pump.js').LiteContextUsage | undefined; unsubscribe: () => void } | null
   subscribePromptSuggestion(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot?: string | null; unsubscribe: () => void } | null
-  subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null
+  subscribeTasks(sessionId: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; revision?: number; currentRevision?: () => number; unsubscribe: () => void } | null
   subscribeGitStatus(sessionId: string): { iterable: AsyncIterable<import('./ws-protocol.js').WsGitSnapshot>; unsubscribe: () => void } | null
   /** Per-session subscription for `tasklist-snapshot` frames (full derived
    *  TaskCreate/TaskUpdate fold). A fresh subscriber is seeded with the

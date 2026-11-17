@@ -88,6 +88,16 @@ export interface TaskResourceLink {
   mimeType?: string
 }
 
+export interface TaskResultRef {
+  totalChars: number
+  /** True only for non-whitespace output, matching stopped-with-output lifecycle semantics. */
+  hasResult: boolean
+  isError: boolean
+  projection: 'full' | 'partial'
+  /** Content generation, stable across Date.now()-equal replacements. */
+  resultVersion: number
+}
+
 /** A task as tracked by the server and rendered by the client (TasksPanel,
  *  subagent chip enrichment). All optional fields are read defensively from
  *  the SDK frames — the wire shape can evolve without a protocol bump. */
@@ -128,6 +138,9 @@ export interface TaskRecordUi {
    *  `<result>`, native inline results, a foreground shell's tool_result, or
    *  a background task's output_file (read by the pump before the task fold). */
   result?: string
+  /** Wire-only result identity and bounded-preview metadata. Canonical live
+   *  records and the sidecar keep the full string without this field. */
+  resultRef?: TaskResultRef
   /** Files a backgrounded MCP task returned by reference (SDK 0.3.257
    *  `task_notification.resource_links`). */
   resourceLinks?: TaskResourceLink[]
@@ -144,4 +157,265 @@ export interface TaskRecordUi {
   startedAt?: number
   endedAt?: number
   updatedAt: number
+}
+
+export const TASK_RESULT_INLINE_CHARS = 16 * 1024
+export const TASK_SNAPSHOT_RESULT_BUDGET_CHARS = 128 * 1024
+export const TASK_SNAPSHOT_MAX_CHARS = 256 * 1024
+export const TASK_RESULT_PAGE_MAX_CHARS = 128 * 1024
+
+export interface TaskResultPage {
+  available: true
+  taskId: string
+  runId?: string
+  updatedAt: number
+  resultVersion?: number
+  offset: number
+  totalChars: number
+  result: string
+  nextOffset: number
+  previousOffset: number
+  hasMore: boolean
+}
+
+export interface TaskResultUnavailable {
+  available: false
+  taskId: string
+  runId?: string
+  updatedAt: number
+  resultVersion?: number
+}
+
+/** Non-cryptographic content generation used only to detect same-tick result
+ *  replacement; it is not an integrity or security digest. */
+export function taskResultVersion(text: string): number {
+  let h1 = 0xdeadbeef
+  let h2 = 0x41c6ce57
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i)
+    h1 = Math.imul(h1 ^ code, 2_654_435_761)
+    h2 = Math.imul(h2 ^ code, 1_597_334_677)
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2_246_822_519)
+  h1 = Math.imul(h1 ^ (h1 >>> 13), 3_266_489_917)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2_246_822_519)
+  h2 = Math.imul(h2 ^ (h2 >>> 13), 3_266_489_917)
+  return (h1 >>> 0) * 2_097_152 + (h2 & 0x1f_ffff)
+}
+
+const TASK_RESULT_VERSION_CACHE = new Map<string, number>()
+const TASK_RESULT_HAS_RESULT_CACHE = new Map<string, boolean>()
+const LARGE_RESULT_VERSION_CACHE = new Map<string, {
+  version: number
+  hasResult: boolean
+  expiresAt: number
+  timer?: ReturnType<typeof setTimeout>
+}>()
+const LARGE_RESULT_VERSION_TTL_MS = 60_000
+const LARGE_RESULT_VERSION_MAX_ENTRIES = 2
+
+function evictLargeResultVersion(result: string): void {
+  const entry = LARGE_RESULT_VERSION_CACHE.get(result)
+  if (!entry) return
+  if (entry.timer) clearTimeout(entry.timer)
+  LARGE_RESULT_VERSION_CACHE.delete(result)
+}
+
+function cacheLargeResultVersion(result: string, version: number): void {
+  const entry: { version: number; hasResult: boolean; expiresAt: number; timer?: ReturnType<typeof setTimeout> } = {
+    version, hasResult: /\S/.test(result), expiresAt: Date.now() + LARGE_RESULT_VERSION_TTL_MS,
+  }
+  LARGE_RESULT_VERSION_CACHE.set(result, entry)
+  // Each entry has its own fixed lifetime. Activity on other results must not
+  // keep an evicted multi-megabyte string alive by resetting a shared timer.
+  entry.timer = setTimeout(() => {
+    if (LARGE_RESULT_VERSION_CACHE.get(result) === entry) evictLargeResultVersion(result)
+  }, LARGE_RESULT_VERSION_TTL_MS)
+  ;(entry.timer as { unref?: () => void }).unref?.()
+}
+const TASK_RESULT_VERSION_CACHE_CAP = 100
+const TASK_RESULT_VERSION_CACHE_MAX_CHARS = 64_000_000
+let taskResultVersionCacheChars = 0
+let taskResultVersionTimer: ReturnType<typeof setTimeout> | undefined
+
+function scheduleTaskResultVersionCleanup(): void {
+  if (taskResultVersionTimer) return
+  taskResultVersionTimer = setTimeout(() => {
+    TASK_RESULT_VERSION_CACHE.clear()
+    TASK_RESULT_HAS_RESULT_CACHE.clear()
+    taskResultVersionCacheChars = 0
+    taskResultVersionTimer = undefined
+  }, LARGE_RESULT_VERSION_TTL_MS)
+  ;(taskResultVersionTimer as { unref?: () => void }).unref?.()
+}
+
+/** Cache content generation by value so metadata-only record clones and
+ *  sequential pages do not rescan an unchanged multi-megabyte string. */
+export function taskResultVersionForRecord(task: TaskRecordUi): number | undefined {
+  if (task.result === undefined) return undefined
+  const cached = TASK_RESULT_VERSION_CACHE.get(task.result)
+  if (cached !== undefined) return cached
+  if (task.result.length > TASK_RESULT_VERSION_CACHE_MAX_CHARS) {
+    const cachedLarge = LARGE_RESULT_VERSION_CACHE.get(task.result)
+    if (cachedLarge && cachedLarge.expiresAt > Date.now()) return cachedLarge.version
+    if (cachedLarge) evictLargeResultVersion(task.result)
+    // A bounded pair of oversized values covers adjacent large task outputs
+    // without evicting and rehashing the same two strings on every projection.
+    while (LARGE_RESULT_VERSION_CACHE.size >= LARGE_RESULT_VERSION_MAX_ENTRIES) {
+      const oldest = LARGE_RESULT_VERSION_CACHE.keys().next().value
+      if (oldest === undefined) break
+      evictLargeResultVersion(oldest)
+    }
+    const version = taskResultVersion(task.result)
+    cacheLargeResultVersion(task.result, version)
+    return version
+  }
+  const version = taskResultVersion(task.result)
+  if (task.result.length <= TASK_RESULT_VERSION_CACHE_MAX_CHARS) {
+    while (TASK_RESULT_VERSION_CACHE.size > 0 &&
+      (TASK_RESULT_VERSION_CACHE.size >= TASK_RESULT_VERSION_CACHE_CAP ||
+        taskResultVersionCacheChars + task.result.length > TASK_RESULT_VERSION_CACHE_MAX_CHARS)) {
+      const oldest = TASK_RESULT_VERSION_CACHE.keys().next().value
+      if (oldest === undefined) break
+      TASK_RESULT_VERSION_CACHE.delete(oldest)
+      TASK_RESULT_HAS_RESULT_CACHE.delete(oldest)
+      taskResultVersionCacheChars -= oldest.length
+    }
+    TASK_RESULT_VERSION_CACHE.set(task.result, version)
+    taskResultVersionCacheChars += task.result.length
+    scheduleTaskResultVersionCleanup()
+  }
+  return version
+}
+
+/** Return the cached non-whitespace flag alongside the content generation. */
+export function taskResultHasResultForRecord(task: TaskRecordUi): boolean {
+  if (task.result === undefined) return false
+  taskResultVersionForRecord(task)
+  if (task.result.length > TASK_RESULT_VERSION_CACHE_MAX_CHARS) {
+    return LARGE_RESULT_VERSION_CACHE.get(task.result)!.hasResult
+  }
+  const cached = TASK_RESULT_HAS_RESULT_CACHE.get(task.result)
+  if (cached !== undefined) return cached
+  const hasResult = /\S/.test(task.result)
+  TASK_RESULT_HAS_RESULT_CACHE.set(task.result, hasResult)
+  return hasResult
+}
+
+/** Hash a canonical text projection without retaining it in the server's
+ *  content cache. Browser precedence checks use this lifecycle-free variant. */
+export function taskResultVersionForText(text: string): number {
+  return taskResultVersion(text)
+}
+
+/** Slice the stored UTF-16 string without splitting a surrogate pair. The
+ *  returned nextOffset is the only continuation clients should use. */
+export function pageTaskResult(
+  text: string,
+  requestedOffset: number,
+  requestedLimit: number,
+): { offset: number; totalChars: number; result: string; nextOffset: number; previousOffset: number; hasMore: boolean } {
+  if (!Number.isSafeInteger(requestedOffset) || requestedOffset < 0 || requestedOffset > text.length) {
+    throw new RangeError('offset must be a non-negative safe integer no greater than totalChars')
+  }
+  if (!Number.isSafeInteger(requestedLimit) || requestedLimit <= 0) {
+    throw new RangeError('limit must be a positive safe integer')
+  }
+  const offset = isLowSurrogate(text.charCodeAt(requestedOffset)) && isHighSurrogate(text.charCodeAt(requestedOffset - 1))
+    ? requestedOffset + 1
+    : requestedOffset
+  const limit = Math.min(requestedLimit, TASK_RESULT_PAGE_MAX_CHARS)
+  let nextOffset = Math.min(text.length, Math.max(offset + 1, requestedOffset + limit))
+  if (nextOffset < text.length && isHighSurrogate(text.charCodeAt(nextOffset - 1)) && isLowSurrogate(text.charCodeAt(nextOffset))) {
+    nextOffset -= 1
+    if (nextOffset === offset) {
+      // The requested window contains only part of one code point. Include
+      // the pair rather than returning an empty page or splitting it.
+      nextOffset += 2
+    }
+  }
+  let previousOffset = Math.max(0, offset - TASK_RESULT_PAGE_MAX_CHARS)
+  if (isLowSurrogate(text.charCodeAt(previousOffset)) && isHighSurrogate(text.charCodeAt(previousOffset - 1))) {
+    previousOffset -= 1
+  }
+  return {
+    offset,
+    totalChars: text.length,
+    result: text.slice(offset, nextOffset),
+    nextOffset,
+    previousOffset,
+    hasMore: nextOffset < text.length,
+  }
+}
+
+const taskProjectionCache = new WeakMap<TaskRecordUi, Partial<Record<'empty' | 'full' | 'partial', TaskRecordUi>>>()
+
+/** Project canonical task records onto the bounded WS roster. Result bodies
+ *  stay in the live map/sidecar; only this transport copy is clipped. Partial
+ *  results omit `result` entirely so an older client cannot mistake a tail for
+ *  canonical output; new clients use resultRef for lifecycle and paged reads. */
+export function projectTasksSnapshot(tasks: readonly TaskRecordUi[]): TaskRecordUi[] {
+  let remaining = TASK_SNAPSHOT_RESULT_BUDGET_CHARS
+  return tasks.map((task) => {
+    const result = task.result
+    const full = result !== undefined && result.length <= TASK_RESULT_INLINE_CHARS && result.length <= remaining
+    const mode = result === undefined ? 'empty' : full ? 'full' : 'partial'
+    const cached = taskProjectionCache.get(task)?.[mode]
+    if (cached) {
+      if (full) remaining -= result!.length
+      return cached
+    }
+    if (full) remaining -= result!.length
+    const projectedTask: TaskRecordUi = {
+      ...task,
+      description: clipSnapshotText(task.description, 2_048),
+      ...(task.subagentType !== undefined ? { subagentType: clipSnapshotText(task.subagentType, 256) } : {}),
+      ...(task.workflowName !== undefined ? { workflowName: clipSnapshotText(task.workflowName, 256) } : {}),
+      ...(task.progressSummary !== undefined ? { progressSummary: clipSnapshotText(task.progressSummary, 4_096) } : {}),
+      ...(task.lastToolName !== undefined ? { lastToolName: clipSnapshotText(task.lastToolName, 256) } : {}),
+      ...(task.resourceLinks !== undefined
+        ? {
+            resourceLinks: task.resourceLinks.map((link) => ({
+              ...link,
+              name: clipSnapshotText(link.name, 256),
+              ...(link.title !== undefined ? { title: clipSnapshotText(link.title, 512) } : {}),
+              ...(link.mimeType !== undefined ? { mimeType: clipSnapshotText(link.mimeType, 256) } : {}),
+            })),
+          }
+        : {}),
+    }
+    let projected = projectedTask
+    if (result !== undefined) {
+      projected = {
+        ...projectedTask,
+        result: full ? result : undefined,
+        resultRef: {
+          totalChars: result.length,
+          hasResult: taskResultHasResultForRecord(task),
+          isError: task.status !== 'completed' && task.status !== 'stopped',
+          projection: full ? ('full' as const) : ('partial' as const),
+          resultVersion: taskResultVersionForRecord(task)!,
+        },
+      }
+    }
+    const modes = taskProjectionCache.get(task) ?? {}
+    modes[mode] = projected
+    taskProjectionCache.set(task, modes)
+    return projected
+  })
+}
+
+function clipSnapshotText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  let end = maxChars
+  if (isHighSurrogate(text.charCodeAt(end - 1)) && isLowSurrogate(text.charCodeAt(end))) end -= 1
+  return text.slice(0, end)
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff
 }

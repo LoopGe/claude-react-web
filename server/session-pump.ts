@@ -28,6 +28,7 @@ import type { HookRunRecord, HookRuntimeEvent, HookRunStatus } from '../shared/h
 import type { PluginLoadError } from '../shared/session-info.js'
 import type { CliNotification } from '../shared/ws-protocol.js'
 import { MAX_TERMINAL_TASKS, isTerminalTaskStatus, normalizeTaskType, type TaskRecordUi, type TaskResourceLink } from '../shared/tasks.js'
+import { broadcastTasksSnapshot } from './session-broadcaster.js'
 import { AUTOCOMPACT_BUFFER_TOKENS, AUTOCOMPACT_MAX_OUTPUT_FLOOR } from '../shared/auto-compact.js'
 import { isEmptyResultFrame, localCommandOf } from '../shared/results.js'
 import { summarizeTurnResult } from '../shared/turn-summary.js'
@@ -127,7 +128,7 @@ function applyTaskToolResults(session: Session, msg: SDKMessage): boolean {
       break
     }
   }
-  if (changed) pushTasksSnapshot(session)
+  if (changed) broadcastTasksSnapshot(session)
   return changed
 }
 
@@ -414,21 +415,11 @@ function pruneTerminalTasks(session: Session): void {
   }
 }
 
-/** Push the current `session.tasks` contents as a full snapshot to every
- *  task subscriber. Shared by applyTaskEvent and
- *  applyBackgroundTasksChanged. */
-function pushTasksSnapshot(session: Session): void {
-  const snapshot = Array.from(session.tasks.values())
-  for (const sub of session.taskSubscribers) {
-    try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
-  }
-}
-
 /** Prune terminal overflow and broadcast the current snapshot. Exported so
  *  SessionManager's sidecar hydrate path reuses the same cap + fan-out. */
 export function pruneAndBroadcastTasks(session: Session): void {
   pruneTerminalTasks(session)
-  pushTasksSnapshot(session)
+  broadcastTasksSnapshot(session)
 }
 
 /** Fold a harness `<task-notification>` user-role XML injection into
@@ -551,7 +542,7 @@ export function applyBackgroundTasksChanged(session: Session, msg: SDKMessage): 
       })
     }
   }
-  pushTasksSnapshot(session)
+  broadcastTasksSnapshot(session)
 }
 
 /** One entry of a Stop-hook `background_tasks` array (SDK
@@ -658,7 +649,7 @@ export function reconcileTasksFromStopHook(session: Session, summaries: StopHook
 
   if (!changed) return false
   pruneTerminalTasks(session)
-  pushTasksSnapshot(session)
+  broadcastTasksSnapshot(session)
   return true
 }
 
@@ -706,7 +697,7 @@ export function settleTasksOnProcessExit(session: Session, skipTaskIds?: Readonl
   }
   if (!changed) return false
   pruneTerminalTasks(session)
-  pushTasksSnapshot(session)
+  broadcastTasksSnapshot(session)
   return true
 }
 

@@ -116,7 +116,7 @@ import { filterClientEnv } from './session-env.js'
 import { effortLevelsForModel, supportsFastModeForModel, supportsThinkingForModel } from './effort-capability.js'
 import type { ModelInfo } from '../shared/model-info.js'
 import { coerceThinkingSetting, type SessionMemorySettings, type ThinkingSetting, type WorktreeInfo } from '../shared/session-info.js'
-import { isTerminalTaskStatus, type TaskRecordUi } from '../shared/tasks.js'
+import { isTerminalTaskStatus, pageTaskResult, taskResultVersionForRecord, type TaskRecordUi, type TaskResultPage, type TaskResultUnavailable } from '../shared/tasks.js'
 import type { SandboxSetting } from '../shared/sandbox.js'
 import { coerceAccountInfo, type AccountInfoData } from '../shared/account-info.js'
 import { type RewindFilesResult } from '../shared/rewind.js'
@@ -1515,7 +1515,7 @@ export class SessionManager {
    *  execution cannot survive its host process, so hydrated active records
    *  are settled before the snapshot is persisted and broadcast. */
   private hydrateTasks(id: string, session: Session): void {
-    void (async () => {
+    session.tasksHydration = (async () => {
       let records: TaskRecordUi[] | null = null
       try {
         records = await this.taskResultStore.load(id)
@@ -1523,6 +1523,7 @@ export class SessionManager {
         log.warn(`[${id}] task-result hydrate failed: ${err}`)
         return
       }
+      if (this.sessions.get(id) !== session) return
       if (!records || records.length === 0) return
       let reconciled = false
       if (session.provider === 'native') {
@@ -3397,6 +3398,7 @@ export class SessionManager {
       promptSuggestionSubscribers: new Set(),
       lastPromptSuggestion: undefined,
       tasks: new Map(),
+      tasksRevision: 0,
       taskSubscribers: new Set(),
       gitStatusSubscribers: new Set(),
       tasklistSubscribers: new Set(),
@@ -7076,6 +7078,63 @@ export class SessionManager {
     return { available: true, anchors }
   }
 
+  /** Read a bounded task-result page. Live task state is authoritative;
+   *  only a non-live session may read its durable sidecar, and this method
+   *  deliberately never resumes a provider process. */
+  async readTaskResult(
+    id: string,
+    taskId: string,
+    opts: { runId?: string; resultVersion?: number; offset: number; limit: number },
+  ): Promise<TaskResultPage | TaskResultUnavailable> {
+    this.requireKnownSession(id)
+    let record: TaskRecordUi | undefined
+    for (;;) {
+      const live = this.sessions.get(id)
+      if (live) {
+        const current = live.tasks.get(taskId)
+        if (current) {
+          // Hydration only fills missing keys; an already-live canonical record
+          // is independent of the sidecar read and must not wait behind it.
+          record = current
+          break
+        }
+        await live.tasksHydration
+        // Hydration may outlive sleep/unload or a respawn. Only the session
+        // still registered after the await owns the authoritative task map.
+        if (this.sessions.get(id) === live) {
+          record = live.tasks.get(taskId)
+          break
+        }
+        continue
+      }
+      const records = await this.taskResultStore.load(id)
+      // A resume may have landed while the sidecar read was in flight.
+      if (this.sessions.has(id)) continue
+      record = records?.find((candidate) => candidate.taskId === taskId)
+      break
+    }
+    if (!record) throw new HttpError(404, `task ${taskId} not found`)
+    if (opts.runId !== undefined && record.runId !== opts.runId) {
+      throw new HttpError(409, `task ${taskId} run does not match`)
+    }
+    const identity = {
+      taskId: record.taskId,
+      ...(record.runId !== undefined ? { runId: record.runId } : {}),
+      updatedAt: record.updatedAt,
+      ...(record.result !== undefined ? { resultVersion: taskResultVersionForRecord(record)! } : {}),
+    }
+    if (opts.resultVersion !== undefined && identity.resultVersion !== opts.resultVersion) {
+      throw new HttpError(409, `task ${taskId} result generation does not match`)
+    }
+    if (record.result === undefined) return { available: false, ...identity }
+    try {
+      return { available: true, ...identity, ...pageTaskResult(record.result, opts.offset, opts.limit) }
+    } catch (err) {
+      if (err instanceof RangeError) throw new HttpError(400, err.message)
+      throw err
+    }
+  }
+
   /** One completed turn's changed-file summary from the snapshot sidecar.
    *  Does NOT require a live Query — dormant and terminated sessions can
    *  serve their recorded turns. Throws HttpError 404 for unknown sessions. */
@@ -7369,7 +7428,7 @@ export class SessionManager {
     return this.broadcaster.subscribePromptSuggestion(id)
   }
 
-  subscribeTasks(id: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null {
+  subscribeTasks(id: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; revision?: number; currentRevision?: () => number; unsubscribe: () => void } | null {
     return this.broadcaster.subscribeTasks(id)
   }
 

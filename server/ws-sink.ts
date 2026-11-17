@@ -9,6 +9,7 @@ import { createLogger } from './log.js'
 import { metrics } from './metrics.js'
 import type { WsServerFrame } from './ws-protocol.js'
 import type { FrameSink } from './frame-bridge.js'
+import { waitForDrainCancellation } from './drain-waiters.js'
 
 const log = createLogger('ws')
 
@@ -24,9 +25,9 @@ const BACKPRESSURE_HIGH = 1_000_000
  *  alive (TCP-wise) but never catches up could grow this buffer without
  *  bound. When the cap is exceeded we force-close the socket so the
  *  client reconnects (mirrors the async-subscription overflow strategy).
- *  16M chars is generous enough that it only trips on a pathologically
- *  slow client, not a transient slow spell. */
-const MAX_QUEUE_CHARS = 16_000_000
+ *  64M chars is a last-resort guard only; bounded task-result projection
+ *  keeps legitimate roster frames far below this ceiling. */
+const MAX_QUEUE_CHARS = 64_000_000
 
 /**
  * Async write queue with backpressure control for a single WebSocket.
@@ -49,6 +50,7 @@ export class WsWriteQueue {
   private stopped = false
   private ws: WebSocket
   private totalChars = 0
+  private drainWaiters = new Set<() => void>()
 
   constructor(ws: WebSocket) {
     this.ws = ws
@@ -96,6 +98,23 @@ export class WsWriteQueue {
     this.queue.length = 0
     this.head = 0
     this.totalChars = 0
+    this.settleDrainWaiters()
+  }
+
+  /** Resolve when the queue is at or below the backpressure target, or after
+   *  teardown makes further progress impossible. Sustained unrelated traffic
+   *  therefore cannot pin a chunked snapshot behind a permanently full queue. */
+  waitForDrain(cancelled?: AbortSignal): Promise<void> {
+    if (this.stopped || this.totalChars <= BACKPRESSURE_HIGH) return Promise.resolve()
+    return waitForDrainCancellation(this.drainWaiters, cancelled)
+  }
+
+  private settleDrainWaiters(): void {
+    if (this.totalChars > BACKPRESSURE_HIGH && !this.stopped) return
+    if (this.drainWaiters.size === 0) return
+    const waiters = [...this.drainWaiters]
+    this.drainWaiters.clear()
+    for (const resolve of waiters) resolve()
   }
 
   private async drain() {
@@ -111,6 +130,7 @@ export class WsWriteQueue {
         // on stale data. From here on totalChars is always exactly the
         // queued-and-unsent bytes.
         this.totalChars -= data.length
+        this.settleDrainWaiters()
         // Backpressure: if the kernel socket buffer is full, send the
         // frame with a callback that fires when it has been flushed.
         // This is the idiomatic ws backpressure mechanism — the library
@@ -137,11 +157,16 @@ export class WsWriteQueue {
           await new Promise<void>((r) => setImmediate(r))
         }
       }
+    } catch (err) {
+      log.warn('WS send failed; closing socket:', err)
+      this.stop()
+      if (this.ws.readyState === this.ws.OPEN) this.ws.close(1011, 'write failed')
     } finally {
       this.queue.length = 0
       this.head = 0
       this.totalChars = 0
       this.draining = false
+      this.settleDrainWaiters()
     }
   }
 }
@@ -164,5 +189,9 @@ export class WsFrameSink implements FrameSink {
 
   close(): void {
     this.queue.stop()
+  }
+
+  waitForDrain(cancelled?: AbortSignal): Promise<void> {
+    return this.queue.waitForDrain(cancelled)
   }
 }

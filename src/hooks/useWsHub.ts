@@ -240,6 +240,7 @@ export function WsHubProvider({ children, url }: ProviderProps) {
         // assumed). The server answers each re-subscribe with the `attached`
         // handshake, which is the client's reconnect catch-up trigger.
         for (const state of channelsRef.current.values()) state.live = false
+        sendOn(conn, { kind: 'hello', capabilities: ['taskOutputV1'] })
         for (const sessionId of channelsRef.current.keys()) {
           sendOn(conn, { kind: 'subscribe', sessionId })
         }

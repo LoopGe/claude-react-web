@@ -10,13 +10,15 @@ import type { MessagePortMain } from 'electron'
 import { createLogger } from '../server/log.js'
 import type { WsServerFrame } from '../server/ws-protocol.js'
 import type { FrameSink } from '../server/frame-bridge.js'
+import { waitForDrainCancellation } from '../server/drain-waiters.js'
 
 const log = createLogger('desktop')
 
 /** Mirror of WsWriteQueue.MAX_QUEUE_CHARS, measured in serialized chars. */
-const MAX_QUEUE_CHARS = 8_000_000
+const MAX_QUEUE_CHARS = 64_000_000
 /** Yield to the event loop every N frames so other channels stay fair. */
 const FRAMES_PER_YIELD = 10
+const DRAIN_TARGET_CHARS = 1_000_000
 
 export class PortFrameSink implements FrameSink {
   private queue: string[] = []
@@ -24,6 +26,7 @@ export class PortFrameSink implements FrameSink {
   private totalChars = 0
   private draining = false
   private stopped = false
+  private drainWaiters = new Set<() => void>()
 
   constructor(
     private readonly port: MessagePortMain,
@@ -67,11 +70,25 @@ export class PortFrameSink implements FrameSink {
     this.queue.length = 0
     this.head = 0
     this.totalChars = 0
+    this.settleDrainWaiters()
     try {
       this.port.close()
     } catch {
       /* already closed */
     }
+  }
+
+  waitForDrain(cancelled?: AbortSignal): Promise<void> {
+    if (this.stopped || this.totalChars <= DRAIN_TARGET_CHARS) return Promise.resolve()
+    return waitForDrainCancellation(this.drainWaiters, cancelled)
+  }
+
+  private settleDrainWaiters(): void {
+    if (this.totalChars > DRAIN_TARGET_CHARS && !this.stopped) return
+    if (this.drainWaiters.size === 0) return
+    const waiters = [...this.drainWaiters]
+    this.drainWaiters.clear()
+    for (const resolve of waiters) resolve()
   }
 
   private async drain(): Promise<void> {
@@ -82,6 +99,7 @@ export class PortFrameSink implements FrameSink {
         const data = this.queue[this.head++]!
         // Retire its chars now — same accounting rule as the WS sink.
         this.totalChars -= data.length
+        this.settleDrainWaiters()
         try {
           this.port.postMessage(data)
         } catch (err) {
@@ -101,6 +119,7 @@ export class PortFrameSink implements FrameSink {
       this.head = 0
       this.totalChars = 0
       this.draining = false
+      this.settleDrainWaiters()
     }
   }
 }

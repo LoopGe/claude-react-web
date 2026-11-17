@@ -123,14 +123,15 @@ const bridge: DesktopBridge = {
         // The host posts already-serialized JSON strings (one stringify per
         // frame, shared across subscribers). Decode once here — mirrors the
         // web transport's JSON.parse of an incoming WebSocket message.
-        if (typeof data === 'string') {
-          try {
-            handlers.onFrame(JSON.parse(data))
-          } catch {
-            /* malformed — drop, same as the web transport */
-          }
-        } else {
-          handlers.onFrame(data)
+        try {
+          const frame = typeof data === 'string' ? JSON.parse(data) : data
+          if (frame?.kind === 'ipc-fatal') {
+            if (activePort === port) activePort = null
+            port.close()
+            handlers.onClose()
+          } else handlers.onFrame(frame)
+        } catch {
+          /* malformed — drop, same as the web transport */
         }
       }
       port.onmessageerror = () => handlers.onError?.()

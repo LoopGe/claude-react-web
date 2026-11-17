@@ -854,6 +854,8 @@ export function applyTasksSnapshot(mirror: ServerMirror, tasks: TaskRecordUi[]):
       activeSubagents = new Map(activeSubagents)
     }
     const isTerminal = isTerminalTaskStatus(task.status)
+    const hasTaskOutput = task.resultRef?.hasResult ?? (typeof task.result === 'string' && task.result.trim() !== '')
+    const isPartialResult = task.resultRef?.projection === 'partial'
     // ★ 权威写入:server 给了布尔就覆盖(双向;live 与 terminal 都写)。
     const nextIsAsync = typeof task.isBackgrounded === 'boolean'
       ? task.isBackgrounded
@@ -911,16 +913,17 @@ export function applyTasksSnapshot(mirror: ServerMirror, tasks: TaskRecordUi[]):
       !record.endedAtEstimated && record.endedAt != null && terminalTaskTime < record.endedAt
     const settleFromTerminalTask = isTerminal && !staleTerminalTask && record.status !== 'dismissed' &&
       (nextIsAsync === true || record.status === 'background' || record.status === 'pending' ||
-        (record.status === 'interrupted' && task.status === 'completed') ||
-        (typeof task.result === 'string' && task.result.trim() !== '') || task.status !== 'completed')
-    const notificationResult = isTerminal && !staleTerminalTask && record.status !== 'dismissed' &&
-      shouldWriteTerminalResult(record, task.status, task.result ?? '', true)
+        (record.status === 'interrupted' && task.status === 'completed') || hasTaskOutput || task.status !== 'completed')
+    const notificationResult = isTerminal && !staleTerminalTask && !isPartialResult && record.status !== 'dismissed' &&
+      typeof task.result === 'string' && task.result.trim().length > 0 &&
+      shouldWriteTerminalResult(record, task.status, task.result, true)
       ? {
           result: { content: task.result, isError: task.status !== 'completed' && task.status !== 'stopped' },
           resultOrigin: 'notification' as const,
         }
       : null
     const hasCapturedOutput = notificationResult != null ||
+      (isPartialResult && hasTaskOutput && record.result?.isError !== true) ||
       (record.result != null && !record.result.isError && record.resultOrigin !== 'summary' && record.resultOrigin !== 'async_metadata')
     const settledStatus = task.status === 'stopped' && record.result?.isError === true
       ? 'interrupted' as const

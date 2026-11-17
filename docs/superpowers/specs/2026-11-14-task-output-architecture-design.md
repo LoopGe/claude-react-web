@@ -1,16 +1,18 @@
 # 任务输出流架构设计
 
-- 状态：proposed（等待上游完整 workflow 实时事件）
+- 状态：proposed（实时输出等待上游完整 workflow 实时事件；终态 roster 分离已先行）
 - 日期：2026-11-15
-- 当前实现：仅保留 WS 写队列 16M 临时止血，不启动任务输出改造或数据迁移
+- 当前实现：终态结果使用有界 roster 投影与分页读取；WS 与 desktop IPC 写队列上限 64M 仅作最后保护；实时输出改造与数据迁移仍未启动
 
 ## 1. 背景与证据
 
 `tasks-snapshot` 当前携带完整 `TaskRecordUi.result`。真实会话 `08fad444-a973-4cda-b752-5824e5680757` 的两条后台 vitest 输出分别包含 3,220,008 和 3,198,860 个原始字符，50 条任务记录组成的单帧达到 8,018,020 字符。独立 WS 订阅复现了服务端在发送该帧时以 `1011 write queue overflow` 关闭连接；客户端重连后再次读取同一快照，形成无限重连。
 
-提交 `74aeca3e` 已把 `MAX_QUEUE_CHARS` 从 8M 临时提高到 16M。该修改只扩大容忍范围，不约束任务输出大小。
+提交 `74aeca3e` 已把 `MAX_QUEUE_CHARS` 从 8M 临时提高到 16M。随后会话 `3a2f5b6b-d36b-4db2-a096-6e01f02b6e46` 的 51 条任务结果形成 **18,241,480 字符**快照，独立 WS 复验再次在 `tasks-snapshot` 发送时关闭连接；其中结果正文合计 15,178,970 字符，四条最大结果各约 3.5M。这证明任何固定上限都只是延迟故障。
 
-既有 [TasksPanel 任务结果设计](./2026-10-22-task-results-in-tasks-panel-design.md) 接受了快照携带完整正文和持久化全量输出。本提案取代这两项目标约束，但在上游前置条件满足前，现有实现保持不变。
+为解除这一不依赖实时数据的故障，终态结果先行从 roster 分离：任务 fan-out 与初始订阅统一使用有界投影，小结果保持内联，大结果仅携带明确 partial 元数据而省略正文，避免旧客户端把截断尾部误当 canonical；完整 canonical 字符串仍由 live map/sidecar 持有，终态结果通过 UTF-16 分页 API 按需读取，live 缺失不得回退旧 sidecar，dormant/slept 读取不得 resume。客户端以 `resultRef` 保留 stopped-with-output 等生命周期证据，partial 预览不得覆盖 richer canonical 结果。WS 上限随后调整为 64M，但仍只作最后保护。
+
+既有 [TasksPanel 任务结果设计](./2026-10-22-task-results-in-tasks-panel-design.md) 接受了快照携带完整正文和持久化全量输出。本提案取代这两项目标约束；终态 roster 投影与分页读取已先行落地，实时输出和存储迁移仍等待上游前置条件。
 
 ## 2. 目标
 
@@ -24,7 +26,7 @@
 - 客户端有界渲染，隐藏面板和非活动资源页释放观察；
 - shell、Monitor、subagent、forked Skill、workflow 均有真实实时数据源，不以终态 artifact 冒充实时输出。
 
-## 3. 当前决策：等待上游完整能力
+## 3. 实时输出仍等待上游完整能力
 
 SDK 0.3.311 / CLI 2.1.311 存在以下数据缺口：
 
@@ -35,7 +37,7 @@ SDK 0.3.311 / CLI 2.1.311 存在以下数据缺口：
 - shell/Monitor 的 `getTaskOutput` 只返回最后 8 KiB，高吞吐任务在两次轮询之间可能产生无法补回的缺口；
 - 解码文本长度不能可靠映射非 UTF-8 原始字节坐标。
 
-因此，当前不修改任务输出代码、不迁移现有 sidecar、不启动分期实现。第 9 节的上游探针全部通过后，才重新进入详细 TDD 实施规划。
+因此，实时输出代码、OutputRing/journal 和旧 sidecar 存储格式迁移仍未启动，第 9 节的上游探针全部通过后才进入详细 TDD 实施规划。终态 roster 投影与分页读取是独立的先行修复，不改变原始 transcript/provider artifact，也不宣称提供实时流、原始字节游标或 64 MiB journal 保留模型。
 
 ## 4. 统一数据模型
 

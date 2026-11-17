@@ -26,6 +26,7 @@ import type {
 } from '../types'
 import type { ContextUsage } from '../types/context-usage'
 import { extractMessagePlainText } from '../../shared/search/extract'
+import type { TaskRecordUi } from '../../shared/tasks'
 
 // ── Public interfaces (verbatim from the task brief) ──────────────
 
@@ -116,6 +117,9 @@ export class SessionSynchronizer {
 
   // Paging snapshot (owned here, NOT in the store reducer).
   private paging: TranscriptPagingSnapshot = { loadingOlder: false, olderError: null }
+  private taskBaselineId: string | null = null
+  private taskChunks: string[] = []
+  private taskChunksReceived = 0
   private pagingListeners = new Set<() => void>()
 
   constructor(options: {
@@ -181,6 +185,9 @@ export class SessionSynchronizer {
   }
 
   private stopInternal(): void {
+    this.taskBaselineId = null
+    this.taskChunks = []
+    this.taskChunksReceived = 0
     if (this.teardown) {
       this.teardown()
       this.teardown = null
@@ -536,7 +543,27 @@ export class SessionSynchronizer {
         store.dispatch({ type: 'PROMPT_SUGGESTION', suggestion: frame.suggestion })
         break
       }
+      case 'tasks-snapshot-chunk': {
+        if (this.taskBaselineId !== frame.baselineId) {
+          this.taskBaselineId = frame.baselineId
+          this.taskChunks = []
+          this.taskChunksReceived = 0
+        }
+        if (this.taskChunks[frame.chunk] === undefined) this.taskChunksReceived += 1
+        this.taskChunks[frame.chunk] = frame.data
+        if (this.taskChunksReceived === frame.totalChunks) {
+          const tasks = JSON.parse(this.taskChunks.join('')) as TaskRecordUi[]
+          this.taskBaselineId = null
+          this.taskChunks = []
+          this.taskChunksReceived = 0
+          store.dispatch({ type: 'TASKS_SNAPSHOT', tasks })
+        }
+        break
+      }
       case 'tasks-snapshot': {
+        this.taskBaselineId = null
+        this.taskChunks = []
+        this.taskChunksReceived = 0
         // Full task-list snapshot from the dedicated `tasks` channel.
         // The reducer also enriches matching activeSubagent records
         // (taskId / progressSummary / lastToolName / background flip).

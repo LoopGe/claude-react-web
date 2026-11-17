@@ -173,7 +173,7 @@ function wireIpc(): void {
       // Overflow: tell the renderer to re-subscribe; it re-establishes and the
       // bridge re-serves a replay.
       try {
-        port1.postMessage(JSON.stringify({ kind: 'error', message: 'ipc queue overflow; re-subscribe' }))
+        port1.postMessage(JSON.stringify({ kind: 'ipc-fatal', message: 'ipc queue overflow; re-subscribe' }))
       } catch {
         /* gone */
       }

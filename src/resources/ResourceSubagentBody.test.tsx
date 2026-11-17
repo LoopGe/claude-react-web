@@ -18,6 +18,7 @@ vi.mock('../session-store/selectors', () => ({
     if (field === 'subagentIndex') return state.index
     if (field === 'replayReady') return state.replayReady
     if (field === 'items') return []
+    if (field === 'tasks') return []
     if (
       field === 'toolStatus' ||
       field === 'toolResults' ||

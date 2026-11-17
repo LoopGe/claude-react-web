@@ -70,6 +70,11 @@ describe('SubagentTranscriptDialog', () => {
     expect(screen.getByText(/Bash/)).toBeTruthy()
   })
 
+  it('hides the portalled dialog with its owning panel', () => {
+    render(<SubagentTranscriptDialog sessionId="s1" agentId="hidden" label="hidden agent" visible={false} onClose={() => {}} />)
+    expect(screen.queryByText('hidden agent')).toBeNull()
+  })
+
   it('renders actual native reader output through MessageList without mutating cached content', async () => {
     const sessionId = 'native-client-integration'
     const agentId = 'native-agent'
@@ -186,6 +191,62 @@ describe('SubagentTranscriptDialog', () => {
       />,
     )
     expect(screen.getAllByText('final answer')).toHaveLength(1)
+  })
+
+  it('shows paged-result failures instead of hiding them behind an older indexed result', async () => {
+    seedStore('paged-error', 'task-error')
+    const sessionStore = sessionStoreRegistry.getOrCreate('paged-error')
+    sessionStore.dispatch({
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{
+        taskId: 'task-error', toolUseId: 'tu-error', description: 'background work', status: 'completed',
+        isBackgrounded: true, updatedAt: 10, endedAt: 10,
+        resultRef: {
+          totalChars: 20_000, hasResult: true, isError: false, projection: 'partial',
+          resultVersion: 1,
+        },
+      }],
+    })
+    vi.mocked(api.get).mockImplementation((path) => path.includes('/result?')
+      ? Promise.reject(new Error('result unavailable'))
+      : Promise.resolve({ messages: [] }))
+    render(
+      <SubagentTranscriptBody
+        sessionId="paged-error"
+        agentId="task-error"
+        subagent={{
+          toolUseId: 'tu-error', label: 'background work', status: 'done', isAsync: true, toolCount: 0,
+          endedAt: 5, resultOrigin: 'notification', result: { content: 'old indexed output', isError: false },
+        }}
+      />,
+    )
+    await waitFor(() => expect(screen.getByText(/result unavailable/)).toBeTruthy())
+    expect(screen.queryByText('old indexed output')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+  })
+
+  it('keeps a readable task result available when the transcript fails to load', async () => {
+    const sessionStore = sessionStoreRegistry.getOrCreate('result-without-transcript')
+    sessionStore.dispatch({
+      type: 'TASKS_SNAPSHOT',
+      tasks: [{
+        taskId: 'task-readable', toolUseId: 'tu-readable', description: 'background work', status: 'completed',
+        isBackgrounded: true, updatedAt: 10, endedAt: 10,
+        resultRef: {
+          totalChars: 20_000, hasResult: true, isError: false, projection: 'partial',
+          resultVersion: 1,
+        },
+      }],
+    })
+    const scratch = sessionStoreRegistry.getOrCreate(subagentStoreId('result-without-transcript', 'task-readable'))
+    scratch.dispatch({ type: 'ERROR', message: 'transcript missing' })
+    vi.mocked(api.get).mockResolvedValue({
+      available: true, taskId: 'task-readable', updatedAt: 10, resultVersion: 1,
+      offset: 0, totalChars: 20_000, result: 'readable page', nextOffset: 20_000, hasMore: false,
+    })
+    render(<SubagentTranscriptBody sessionId="result-without-transcript" agentId="task-readable" />)
+    await waitFor(() => expect(screen.getByText('readable page')).toBeTruthy())
+    expect(screen.getByText(/Failed to load transcript: transcript missing/)).toBeTruthy()
   })
 
   it('uses the session task record to restore a dialog result', () => {

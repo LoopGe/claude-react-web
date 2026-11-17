@@ -28,6 +28,7 @@ import type { Session } from './session-types.js'
 import type { SessionRecap } from './session-types.js'
 import type { WsMessageConsumed, WsMessageSteered, WsMessagesWithdrawn, WsMessagesEvicted, WsTurnChanges, WsGitSnapshot, WsTasklistSnapshot } from './ws-protocol.js'
 import type { HookRunRecord, HookRuntimeEvent } from '../shared/hooks.js'
+import { projectTasksSnapshot, type TaskRecordUi } from '../shared/tasks.js'
 import type { Pushable } from './pushable.js'
 import { createPushable } from './pushable.js'
 import { createLogger } from './log.js'
@@ -41,6 +42,24 @@ const tlog = createLogger('tasklist')
 /** The three lists that make up one pushed git snapshot (defined next to
  *  its producer in git.ts; re-exported for the existing importers). */
 export type { GitSnapshotPayload }
+
+const taskSnapshotRevisions = new WeakMap<TaskRecordUi[], number>()
+
+export function taskSnapshotRevision(snapshot: TaskRecordUi[]): number | undefined {
+  return taskSnapshotRevisions.get(snapshot)
+}
+
+/** Single fan-out boundary for task rosters. Canonical records stay in the
+ *  session map; subscribers only ever receive the bounded projection. */
+export function broadcastTasksSnapshot(session: Session): void {
+  if (session.taskSubscribers.size === 0) return
+  const snapshot = projectTasksSnapshot(Array.from(session.tasks.values()))
+  session.tasksRevision = (session.tasksRevision ?? 0) + 1
+  taskSnapshotRevisions.set(snapshot, session.tasksRevision)
+  for (const sub of session.taskSubscribers) {
+    try { sub.push(snapshot) } catch { /* subscriber dead — skip */ }
+  }
+}
 
 /** Per-repoGroup snapshot sequencing. Every compute takes `seq = ++seq`
  *  when it STARTS; its result is applied (cached + pushed) only when
@@ -95,11 +114,17 @@ export class SessionEventBroadcaster {
    *  when no tasks) so a freshly subscribed tab can initialize its
    *  TasksPanel unconditionally. Returns null when the session is
    *  unknown. */
-  subscribeTasks(id: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; unsubscribe: () => void } | null {
+  subscribeTasks(id: string): { iterable: AsyncIterable<unknown>; snapshot: import('../shared/tasks.js').TaskRecordUi[]; revision: number; currentRevision: () => number; unsubscribe: () => void } | null {
     const s = this.sessions.get(id)
     if (!s) return null
-    const sub = this.subscribePushableSet(s, s.taskSubscribers, 'tasks', 20)
-    return { iterable: sub.iterable, snapshot: Array.from(s.tasks.values()), unsubscribe: sub.unsubscribe }
+    const sub = this.subscribePushableSet(s, s.taskSubscribers, 'tasks', 1)
+    const snapshot = projectTasksSnapshot(Array.from(s.tasks.values()))
+    const revision = s.tasksRevision ?? 0
+    taskSnapshotRevisions.set(snapshot, revision)
+    return {
+      iterable: sub.iterable, snapshot, revision,
+      currentRevision: () => s.tasksRevision ?? 0, unsubscribe: sub.unsubscribe,
+    }
   }
 
   /** AsyncIterable of full `git-snapshot` frames for one session. A fresh

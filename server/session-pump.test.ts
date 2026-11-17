@@ -1438,6 +1438,17 @@ function sysFrame(subtype: string, extra: Record<string, unknown> = {}): SDKMess
 }
 
 describe('applyTaskEvent', () => {
+  it('projects large results once at the production task fan-out', () => {
+    const { session, snapshots } = makeTaskSession()
+    applyTaskEvent(session, sysFrame('task_notification', {
+      task_id: 't1', status: 'completed', result: 'x'.repeat(100_000),
+    }))
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0][0].result).toBeUndefined()
+    expect(snapshots[0][0].resultRef).toMatchObject({ projection: 'partial', totalChars: 100_000 })
+    expect(session.tasks.get('t1')?.result).toHaveLength(100_000)
+  })
+
   it('carries run_id (SDK 0.3.295) onto the record and advances it on a newer run', () => {
     const { session } = makeTaskSession()
     applyTaskEvent(session, sysFrame('task_started', { task_id: 't1', description: 'd', run_id: 'run-b' }))

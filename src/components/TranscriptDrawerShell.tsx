@@ -11,6 +11,7 @@ interface Props {
   variant: 'subagent' | 'workflow'
   ariaLabel: string
   isExiting: boolean
+  visible?: boolean
   /** Direct root/scrim press only. */
   onClose: () => void
   /** Caller-specific navigation: pop, unfocus or close. */
@@ -24,6 +25,7 @@ export function TranscriptDrawerShell({
   variant,
   ariaLabel,
   isExiting,
+  visible = true,
   onClose,
   onEscape,
   onExited,
@@ -37,7 +39,7 @@ export function TranscriptDrawerShell({
   // layer. Exit-window Escape is swallowed but never acted on.
   const { surfaceId } = useFloatingSurface({
     kind: 'dialog',
-    active: true,
+    active: visible,
     phase: isExiting ? 'exiting' : 'open',
     swallowEscapeOnExit: true,
     getContainer: () => overlayRef.current,
@@ -47,7 +49,7 @@ export function TranscriptDrawerShell({
   })
 
   // Keep the root stable while children change; focus restores on final unmount.
-  useFocusTrap(overlayRef, { restoreFocus: true, escapeSelector: '.chat-panel' })
+  useFocusTrap(overlayRef, { restoreFocus: true, escapeSelector: '.chat-panel', active: visible })
 
   return (
     <FloatingSurfaceProvider surfaceId={surfaceId}>

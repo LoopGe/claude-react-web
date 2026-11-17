@@ -2649,6 +2649,7 @@ export const Chat = memo(function Chat({
             sessionId={session.id}
             cwd={session.cwd}
             streamingMode={globalPrefs.streamingRenderMode}
+            panelVisible={panelVisible !== false}
             onClose={() => onCloseTasksPanel?.()}
           />
           </ErrorBoundary>
@@ -2782,6 +2783,7 @@ export const Chat = memo(function Chat({
             stack={subagentStack}
             sessionId={session.id}
             cwd={session.cwd}
+            visible={panelVisible !== false}
             items={items}
             index={overlayIndex}
             onClose={closeSubagent}
