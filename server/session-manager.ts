@@ -8155,6 +8155,17 @@ export class SessionManager {
     log.info(`[session ${id}] transcript ordered-rebuild: ${ordered.length} entries, generation ${t.store.generation}`)
   }
 
+  /** Explicit recovery retry (spec §10): drop the cached holder and re-reconcile
+   *  from the sidecar's committed prefix (fold ignores an uncommitted/torn tail),
+   *  rebuilding if needed. Recovers a `rebuild_failed`/degraded session without a
+   *  server restart. Returns the resulting cursor + degraded flag. */
+  async retryTranscriptReconcile(id: string): Promise<{ generation: number; headSeq: number; degraded: boolean }> {
+    this.transcriptStores.delete(id)
+    this.transcriptReconciles.delete(id)
+    const t = await this.ensureTranscriptReconciled(id)
+    return { generation: t.store.generation, headSeq: t.store.headSeq, degraded: t.degraded }
+  }
+
   /** Pre-seed a FORK's seq store from its source's transcript BEFORE the
    *  fork's pump starts — the fork-path counterpart of resume()'s
    *  pre-spawn reconcile, closing the same chronology hole.

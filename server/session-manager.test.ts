@@ -8668,6 +8668,23 @@ describe('SessionManager', () => {
       }
     })
 
+    it('retryTranscriptReconcile re-reconciles from the committed prefix idempotently (spec §10)', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      emitAssistant('a1', 'hi')
+      mockHandles[0].emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 2)).toBe(true)
+      await sm.getTranscriptWindow(info.id)
+      expect(await waitFor(async () => (await transcriptRowCount(info.id)) >= 2)).toBe(true)
+
+      const r1 = await sm.retryTranscriptReconcile(info.id)
+      expect(r1.degraded).toBe(false)
+      expect(r1.headSeq).toBe(2)
+      const r2 = await sm.retryTranscriptReconcile(info.id)
+      expect(r2).toEqual(r1)
+      const win = await sm.getTranscriptWindow(info.id)
+      expect(win.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual(['a1', 'r1'])
+    })
+
     it('reconciles against a real JSONL: the whole-message line is deduped, per-block lines are kept', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       const base = '00bf9e30-3506-44fd-b02c-'

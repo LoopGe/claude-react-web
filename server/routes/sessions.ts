@@ -806,6 +806,15 @@ export function buildSessionRouter(
     return c.json({ ok: true, session })
   })
 
+  // Explicit transcript reconcile retry (spec §10): recovers a degraded /
+  // rebuild-failed session from the sidecar's committed prefix without a server
+  // restart. 503 when the retry still fails (retryable).
+  app.post('/sessions/:id/transcript/reconcile', async (c) => {
+    const result = await sm.retryTranscriptReconcile(c.req.param('id'))
+    if (result.degraded) return c.json({ error: 'transcript reconcile failed', ...result }, 503)
+    return c.json({ ok: true, ...result })
+  })
+
   // Handoff `/handoff` — the app-side summarize + clear-with-seed flow: the
   // session's history is summarized by the aux LLM and a FRESH continuation
   // session Y is seeded with the hand-off summary (the client swaps the panel
