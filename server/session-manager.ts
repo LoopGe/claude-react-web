@@ -21,7 +21,7 @@ import {
   type SDKUserMessage,
   type Settings,
 } from '@anthropic-ai/claude-agent-sdk'
-import type { ProcessExitInfo } from './process-monitor.js'
+import { reapRetiredJobs, type ProcessExitInfo } from './process-monitor.js'
 import type { AuxLlmTarget } from './anthropic-api.js'
 import { sameCwd, canonicalCwd } from './cwd-equality.js'
 import { isEmptyResultFrame } from '../shared/results.js'
@@ -1094,7 +1094,7 @@ export class SessionManager {
       workingStuckMs: opts.workingStuckMs ?? defaultConfig.workingStuckMs,
       unload: (id, opts) => this.unload(id, opts),
       sweepOrphanWorktrees: () => this.sweepOrphansTick(),
-      onGcTick: () => { void this.recordRetentionMetrics() },
+      onGcTick: () => { void this.recordRetentionMetrics(); reapRetiredJobs() },
     })
 
     // RecapManager — owns the lifecycle (pending — ready/error) for the

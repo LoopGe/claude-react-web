@@ -1,6 +1,7 @@
 // server/providers/native/tools/bash.ts
-import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { decodeShellBytes } from '../../../shell-encoding.js'
+import { captureBirthTime, killTreeWin32 } from '../../../win32-job.js'
 import { ToolInputError, type ToolDef } from './types.js'
 import { resolveBashShell } from './shell.js'
 
@@ -27,9 +28,9 @@ function shellPath(): string {
  *  launcher whose real shell and command run as descendants, so killing the
  *  direct child leaves `sleep 2; ...` running and the promise parked on the
  *  open stdio pipes until the command finishes on its own. */
-function killTree(child: ChildProcess): void {
+function killTree(child: ChildProcess, birthTime: string | null): void {
   if (process.platform === 'win32' && child.pid !== undefined) {
-    execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {})
+    killTreeWin32(child.pid, birthTime)
     return
   }
   child.kill('SIGKILL')
@@ -108,6 +109,11 @@ export const bashTool: ToolDef<{ command: string; timeout_ms?: number }> = {
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       })
+      // Spawn-time creation identity: the win32 tree kill refuses a PID whose
+      // live creation time no longer matches (PID reuse fence).
+      const birthTime = process.platform === 'win32' && child.pid !== undefined
+        ? captureBirthTime(child.pid)
+        : null
       const stdout = new CappedOutput()
       const stderr = new CappedOutput()
       let timedOut = false
@@ -120,7 +126,7 @@ export const bashTool: ToolDef<{ command: string; timeout_ms?: number }> = {
         resolvePromise(result)
       }
       const kill = () => {
-        killTree(child)
+        killTree(child, birthTime)
         // The killed tree's stdio pipes can outlive the processes by seconds;
         // our read ends must not keep the call (or the event loop) waiting.
         child.stdout?.destroy()

@@ -1,5 +1,9 @@
 // server/providers/native/tools/bash.test.ts
 import { describe, expect, it } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { bashTool } from './bash.js'
 import { ToolInputError } from './types.js'
 
@@ -44,4 +48,48 @@ describe('bashTool', () => {
     expect(res.text).toContain('...[truncated]...')
     expect(res.text.length).toBeLessThan(31_000)
   }, 15_000)
+})
+
+/** Poll until `process.kill(pid, 0)` throws — the process is gone. */
+async function expectGone(pid: number, ms = 5000): Promise<void> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0)
+      await new Promise((r) => setTimeout(r, 20))
+    } catch {
+      return
+    }
+  }
+  throw new Error(`pid ${pid} still alive after ${ms}ms`)
+}
+
+describe.runIf(process.platform === 'win32')('bashTool win32 tree kill', () => {
+  // Git Bash's bash.exe is a launcher: the real shell and the command run as
+  // descendants, so the kill must take the whole tree — a direct-child kill
+  // would leave the sleeping node process behind. The timeout trigger is used
+  // because its result carries the captured stdout (the descendant's pid
+  // line); the abort result discards output. Both triggers call the same
+  // killTree. The script-file shape keeps quoting out of the shell's parser
+  // (same convention as exec.test.ts).
+  it('timeout kills the sleeping descendant, not just the shell launcher', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bash-tree-'))
+    let descendantPid = 0
+    try {
+      await writeFile(join(dir, 't.js'), 'console.log(process.pid); setInterval(() => {}, 1000)', 'utf8')
+      const res = await bashTool.run({ command: 'node t.js & wait', timeout_ms: 1500 }, ctx(dir))
+      expect(res.isError).toBe(true)
+      expect(res.text).toContain('timed out after 1500ms')
+      const pidLine = /^(\d+)\r?$/m.exec(res.text)
+      expect(pidLine).not.toBeNull()
+      descendantPid = Number(pidLine![1])
+      await expectGone(descendantPid)
+    } finally {
+      // Backstop: a failed assertion must not leak the sleeper.
+      if (descendantPid > 0) {
+        spawnSync('taskkill', ['/PID', String(descendantPid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+  }, 20_000)
 })

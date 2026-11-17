@@ -29,7 +29,7 @@ export interface HealthMonitorDeps {
    *  monitor auto-interrupts it. 0 = disabled. */
   workingStuckMs: number
   /** Escalate: force-unload a session that couldn't be unstuck. */
-  unload(id: string, opts: { terminate: boolean; reason: string }): Promise<void>
+  unload(id: string, opts: { terminated: boolean; reason: string }): Promise<void>
   /** Fire-and-forget orphan-worktree sweep, invoked once per GC tick.
    *  Optional — absent when there is no state dir. */
   sweepOrphanWorktrees?: () => void
@@ -111,7 +111,7 @@ export class SessionHealthMonitor {
         `[session ${id}] init never completed — no messages after ${idleSince}ms ` +
         `(pendingTurns=${s.pendingTurns}, subscribers=${s.subscribers.size}). Force-unloading.`,
       )
-      void this.deps.unload(id, { terminate: true, reason: 'init_stuck' })
+      void this.deps.unload(id, { terminated: true, reason: 'init_stuck' })
       return
     }
 
@@ -129,7 +129,7 @@ export class SessionHealthMonitor {
       log.error(
         `[session ${id}] still silent ${now - s.autoInterruptedAt}ms after auto-interrupt — escalating to unload`,
       )
-      void this.deps.unload(id, { terminate: true, reason: 'stuck' })
+      void this.deps.unload(id, { terminated: true, reason: 'stuck' })
       return
     }
 
@@ -142,7 +142,7 @@ export class SessionHealthMonitor {
     s.autoInterruptedAt = now
     if (!s.handle.interrupt) {
       log.warn(`[session ${id}] provider does not support interrupt; escalating to unload`)
-      void this.deps.unload(id, { terminate: true, reason: 'stuck' })
+      void this.deps.unload(id, { terminated: true, reason: 'stuck' })
       return
     }
     s.handle.interrupt().then(

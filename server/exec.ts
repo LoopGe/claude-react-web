@@ -18,6 +18,7 @@ import { TextDecoder } from 'node:util'
 import { createLogger } from './log.js'
 import { decodeShellBytes } from './shell-encoding.js'
 import { COMMAND_PREVIEW_CAP } from './constants.js'
+import { captureBirthTime, killTreeWin32 } from './win32-job.js'
 
 const log = createLogger('exec')
 
@@ -31,7 +32,7 @@ const TAIL_BYTES = 400_000
 
 export interface ExecOptions {
   /** Optional abort signal (e.g. tied to the user-driven /exec/abort stop
-   *  button). SIGKILLs the child when fired. */
+   *  button). Kills the child's process tree when fired. */
   signal?: AbortSignal
   /** Streamed line callback for live progress UI. Receives each new line of
    *  combined stdout+stderr as it lands. */
@@ -132,6 +133,13 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
       finish({ exitCode: -1 })
       return
     }
+    // Spawn-time creation identity: the win32 tree kill refuses a PID whose
+    // live creation time no longer matches (PID reuse fence). Only the abort
+    // path consumes it, so capture it only when a signal is wired — otherwise
+    // a koffi-less host would pay a ~200 ms PowerShell query it can never use.
+    const birthTime = opts.signal !== undefined && process.platform === 'win32' && child.pid !== undefined
+      ? captureBirthTime(child.pid)
+      : null
 
     const onChunk = (stream: NodeJS.ReadableStream, bucket: 'stdout' | 'stderr') => {
       stream.on('data', (chunk: Buffer) => {
@@ -151,7 +159,13 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
 
     const onAbort = () => {
       log.info(`command aborted: "${command.slice(0, COMMAND_PREVIEW_CAP)}"`)
-      try { child.kill('SIGKILL') } catch { /* already gone */ }
+      if (process.platform === 'win32' && child.pid !== undefined) {
+        // The shell (cmd.exe) runs the command as a descendant; killing only
+        // the direct child would leave it running.
+        killTreeWin32(child.pid, birthTime)
+      } else {
+        try { child.kill('SIGKILL') } catch { /* already gone */ }
+      }
       finish({ interrupted: true })
     }
     if (opts.signal) {

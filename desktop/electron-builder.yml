@@ -45,10 +45,19 @@ extraMetadata:
 
 # The SDK locates its CLI by walking up from its own module path, and that CLI
 # is a native executable. asar is transparent for reads but NOT for exec, so
-# the whole SDK tree must live on the real filesystem.
+# the whole SDK tree must live on the real filesystem. koffi's native .node
+# addon needs the same treatment (LoadLibrary cannot read it out of asar) — and
+# in koffi 3.1.1 the prebuilt .node ships in the @koromix platform optional
+# package (node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node), NOT
+# under node_modules/koffi/build: its loader tries the @koromix package first.
+# Unpacking only node_modules/koffi/** would leave the actual .node inside
+# app.asar, so the packaged win32 host would silently degrade to the taskkill
+# fallback and lose the kernel kill-on-close guarantee. Both trees are unpacked.
 asar: true
 asarUnpack:
   - node_modules/@anthropic-ai/**
+  - node_modules/koffi/**
+  - node_modules/@koromix/**
 
 mac:
   category: public.app-category.developer-tools
