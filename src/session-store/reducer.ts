@@ -200,6 +200,31 @@ export function reduceSessionState(state: SessionState, action: SessionAction): 
         },
         intent: createInitialClientIntent(),
       }
+    case 'REBASE_TRANSCRIPT':
+      // Ordered rebuild: reset the transcript window to the new generation but
+      // PRESERVE ClientIntent (pending input/dismissals/error) for reconciliation
+      // against the new projection — unless a missed clear forces a full reset.
+      return {
+        sessionId: state.sessionId,
+        mirror: {
+          ...createInitialServerMirror(),
+          replayReady: true,
+          window: bumpGeneration(state.mirror.window, action.generation, action.headSeq),
+        },
+        intent: action.fullReset ? createInitialClientIntent() : state.intent,
+      }
+    case 'TRANSCRIPT_RESYNC':
+      // Same-generation resync after a durable tombstoneEpoch change: reset the
+      // window (keep generation), preserve intent, re-fetch/reconcile.
+      return {
+        sessionId: state.sessionId,
+        mirror: {
+          ...createInitialServerMirror(),
+          replayReady: true,
+          window: emptyWindow(action.generation, action.headSeq),
+        },
+        intent: state.intent,
+      }
     default:
       return state
   }

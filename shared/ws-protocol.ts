@@ -164,6 +164,12 @@ export interface WsMessage<Msg> {
   seq: number
   /** Seq-space generation the message's seq belongs to. */
   generation: number
+  /** Stable occurrence identity (spec §5.2) — lets UUID-less live rows and
+   *  plugin anchors re-resolve after an ordered rebuild. Optional for backward
+   *  compatibility with pre-rebase servers. */
+  occurrenceId?: string
+  /** Occurrence frame kind (user/assistant/system subtype/compact). */
+  frameKind?: string
 }
 /** Sent immediately after a successful `subscribe-result` (ok:true): the
  *  current state of the session's transcript seq space. The client (P2)
@@ -180,6 +186,32 @@ export interface WsAttached {
   /** Next seq the server will allocate — the exclusive upper bound of the
    *  assigned space. */
   headSeq: number
+  /** Durable epochs (spec §8.3) — let a reconnecting client invalidate search
+   *  / lifecycle state even when generation/headSeq are unchanged. Optional for
+   *  backward compatibility. */
+  tombstoneEpoch?: number
+  lifecycleEpoch?: number
+  rebaseEpoch?: number
+  clearEpoch?: number
+  /** Why the client must reset: a missed ordered-rebuild vs a missed clear. */
+  reason?: 'ordered-rebuild' | 'clear'
+}
+
+/** Ordered-rebuild reset signal (spec §8.3): a control envelope on the PRIMARY
+ *  message queue (NOT wrapped as `kind:'message'`), ordered before any
+ *  new-generation frame. The client resets its seq window to `generation` and
+ *  reconciles pending input against the new projection. `lastFullResetGeneration`
+ *  lets the client detect a missed clear/compact that must force a full reset
+ *  even if this rebase frame arrives before the independent clear notification. */
+export interface WsTranscriptRebased {
+  kind: 'transcript-rebased'
+  sessionId: string
+  reason: 'ordered-rebuild'
+  generation: number
+  headSeq: number
+  lastFullResetGeneration?: number
+  rebaseEpoch?: number
+  clearEpoch?: number
 }
 /** Server-authoritative eviction notice: the named seqs were tombstoned in
  *  the session's transcript seq store (refusal-fallback retraction or a
@@ -618,6 +650,7 @@ export type WsServerFrame<Session, Msg, Perm, Decision, Recap, Command = never, 
   | WsTurnChanges
   | WsMessagesWithdrawn
   | WsAttached
+  | WsTranscriptRebased
   | WsMessageSteered
   | WsMessagesEvicted
   | WsSessionRecapUpdate<Recap>

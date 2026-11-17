@@ -5542,3 +5542,36 @@ describe('in-place draft lifecycle (draft / supersede / interrupt-freeze)', () =
     expect(state.mirror.frozenDrafts).toEqual([{ key: 'draft:1', text: 'half' }])
   })
 })
+
+describe('REBASE_TRANSCRIPT / TRANSCRIPT_RESYNC (spec §8.3)', () => {
+  it('REBASE preserves ClientIntent (error + pending placeholder) and resets window to the new generation', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'WINDOW_BUMP', generation: 3, headSeq: 5 })
+    state = reduceSessionState(state, { type: 'ERROR', message: 'boom' })
+    state = applyOptimistic(state, 'pending input', 'optimistic:keep')
+    expect(state.intent.pendingPlaceholders.size).toBe(1)
+    state = reduceSessionState(state, { type: 'REBASE_TRANSCRIPT', generation: 4, headSeq: 0 })
+    expect(state.mirror.window.generation).toBe(4)
+    expect(state.intent.error).toBe('boom')
+    expect(state.intent.pendingPlaceholders.has('optimistic:keep')).toBe(true)
+  })
+
+  it('REBASE fullReset wipes intent (a missed clear must not keep pre-clear intent)', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'ERROR', message: 'boom' })
+    state = applyOptimistic(state, 'x', 'optimistic:gone')
+    state = reduceSessionState(state, { type: 'REBASE_TRANSCRIPT', generation: 9, headSeq: 0, fullReset: true })
+    expect(state.intent.error).toBeNull()
+    expect(state.intent.pendingPlaceholders.size).toBe(0)
+    expect(state.mirror.window.generation).toBe(9)
+  })
+
+  it('TRANSCRIPT_RESYNC preserves intent and keeps the same generation', () => {
+    let state = createInitialSessionState('s')
+    state = reduceSessionState(state, { type: 'WINDOW_BUMP', generation: 7, headSeq: 3 })
+    state = reduceSessionState(state, { type: 'ERROR', message: 'keep' })
+    state = reduceSessionState(state, { type: 'TRANSCRIPT_RESYNC', generation: 7, headSeq: 3, tombstoneEpoch: 2 })
+    expect(state.mirror.window.generation).toBe(7)
+    expect(state.intent.error).toBe('keep')
+  })
+})

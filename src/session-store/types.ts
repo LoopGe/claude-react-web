@@ -764,6 +764,27 @@ export type SessionAction =
    *  empty live state (same semantics as CLEAR_TRANSCRIPT) with the new
    *  generation/headSeq cursor. */
   | { type: 'WINDOW_BUMP'; generation: number; headSeq: number }
+  /** Ordered-rebuild reset (spec §8.3): the server rebuilt the transcript in
+   *  provider order and bumped generation. Unlike WINDOW_BUMP this PRESERVES
+   *  ClientIntent (error, dismissedSubagents, pendingPlaceholders) so pending
+   *  input survives for reconciliation against the new projection; the
+   *  transcript window resets to the new generation/headSeq and re-fetches.
+   *  `fullReset` (computed by the caller from missed generationHistory) wipes
+   *  intent too — a missed clear/compact must not keep pre-clear intent. */
+  | {
+      type: 'REBASE_TRANSCRIPT'
+      generation: number
+      headSeq: number
+      fullReset?: boolean
+      lastFullResetGeneration?: number
+      rebaseEpoch?: number
+      clearEpoch?: number
+    }
+  /** Same-generation transcript resync (spec §8.3): a durable tombstoneEpoch
+   *  change (e.g. a missed eviction while disconnected) invalidates the window
+   *  without a generation bump. Resets the transcript window and re-runs
+   *  projection reconciliation, PRESERVING ClientIntent. */
+  | { type: 'TRANSCRIPT_RESYNC'; generation: number; headSeq: number; tombstoneEpoch?: number }
 
 export interface SessionSnapshot {
   replayReady: boolean
