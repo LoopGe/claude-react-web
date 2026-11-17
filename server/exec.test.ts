@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { spawnSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -63,4 +64,61 @@ describe('escapeXml', () => {
     expect(escapeXml('a<b>c&d')).toBe('a&lt;b&gt;c&amp;d')
     expect(escapeXml('plain')).toBe('plain')
   })
+})
+
+/** Poll until `process.kill(pid, 0)` throws — the process is gone. */
+async function expectGone(pid: number, ms = 5000): Promise<void> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0)
+      await new Promise((r) => setTimeout(r, 20))
+    } catch {
+      return
+    }
+  }
+  throw new Error(`pid ${pid} still alive after ${ms}ms`)
+}
+
+describe.runIf(process.platform === 'win32')('execCommand win32 tree kill', () => {
+  // cmd.exe is the direct child; `node t.js` runs as its descendant. Aborting
+  // must kill the whole tree — a direct-child kill leaves the sleeping node
+  // process behind (the orphan gap this pin closes). The descendant prints its
+  // own pid, captured live through onProgress before the abort.
+  it('abort kills the sleeping descendant, not just the shell', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'exec-tree-'))
+    const ac = new AbortController()
+    let descendantPid = 0
+    let capturePid: (line: string) => void = () => {}
+    try {
+      await writeFile(join(dir, 't.js'), 'console.log(process.pid); setInterval(() => {}, 1000)', 'utf8')
+      const pidReady = new Promise<number>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('child printed no pid within 5s')), 5000)
+        capturePid = (line) => {
+          const m = /^(\d+)\r?$/.exec(line)
+          if (m) {
+            clearTimeout(timer)
+            resolve(Number(m[1]))
+          }
+        }
+      })
+      const run = execCommand(dir, 'node t.js', {
+        signal: ac.signal,
+        onProgress: (line) => capturePid(line),
+      })
+      descendantPid = await pidReady
+      ac.abort()
+      const result = await run
+      expect(result.interrupted).toBe(true)
+      await expectGone(descendantPid)
+    } finally {
+      // Backstop: settle a still-running exec and kill the sleeper so a failed
+      // assertion never leaks it into the process table.
+      ac.abort()
+      if (descendantPid > 0) {
+        spawnSync('taskkill', ['/PID', String(descendantPid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      }
+      await rm(dir, { recursive: true, force: true })
+    }
+  }, 20_000)
 })

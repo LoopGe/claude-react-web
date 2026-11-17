@@ -73,6 +73,8 @@ jobs:
           server/process-monitor.test.ts
           server/win32-job.test.ts
           server/session-health.test.ts
+          server/providers/native/tools/bash.test.ts
+          server/exec.test.ts
 
   commitlint:
     if: github.event_name == 'pull_request'
