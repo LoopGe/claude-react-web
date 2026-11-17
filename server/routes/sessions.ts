@@ -683,6 +683,15 @@ export function buildSessionRouter(
     const limit = Math.min(1000, Math.max(1, limitNum ?? 200))
 
     if (aroundRaw != null || aroundUuid != null) {
+      // Stale-generation guard (spec §11): a search hit pinned to an old
+      // generation must not resolve into a rebuilt seq space.
+      const genRaw = c.req.query('generation')
+      if (genRaw != null && /^\d+$/.test(genRaw)) {
+        const head = sm.transcriptHead(id)
+        if (head && Number(genRaw) !== head.generation) {
+          throw new HttpError(409, 'stale-generation')
+        }
+      }
       let seq: number
       if (aroundUuid != null) {
         const resolved = await sm.transcriptSeqOfUuid(id, aroundUuid)
