@@ -111,6 +111,8 @@ interface Props {
   deletingIds?: Set<string>
   onSelect: (id: string) => void
   onCreate: (form: NewSessionForm) => void
+  /** Immediately create from server defaults, without opening the dialog. */
+  onNewDefaultSession?: () => void
   /** Global first-party tool defaults (server config map) — forwarded to
    *  <NewSessionDialog> so the create form can offer per-server checkboxes
    *  pre-checked from the global default. */
@@ -219,6 +221,7 @@ export const SessionList = memo(function SessionList({
   onToggleGroupCollapse,
   onSelect,
   onCreate,
+  onNewDefaultSession,
   firstPartyTools,
   onDelete,
   onSleep,
@@ -597,18 +600,18 @@ export const SessionList = memo(function SessionList({
     <>
       <div className="session-list-top">
         <HoverHint
-          label="New session or group · drop a folder here to prefill cwd · Alt+N opens New session"
+          label="New session, default session, or group · drop a folder here to prefill cwd · Alt+N opens New session"
           side="bottom"
           align="start"
         >
-          {/* Same create menu as the header "+" (CreateMenuButton): New
-              session… opens the dialog, New group… opens the name prompt.
-              The folder-drop handlers bypass the menu — a drop always opens
-              the dialog pre-filled directly. */}
+          {/* Shared create menu: New session… opens the dialog, the optional
+              default item creates immediately, and New group… opens the name
+              prompt. Folder drops always open the pre-filled dialog. */}
           <CreateMenuButton
             className={`btn btn-primary new-session-btn ${dropZoneActive ? 'drop-target' : ''}`}
             style={{ width: '100%' }}
             onNewSession={() => setShowDialog(true)}
+            onNewDefaultSession={onNewDefaultSession}
             onCreateGroup={onCreateGroup}
             askPrompt={askPrompt}
             onDragOver={(e) => {

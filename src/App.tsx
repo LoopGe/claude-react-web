@@ -64,7 +64,7 @@ import type { PaletteItem } from './components/CommandPalette'
 import type { WsServerFrame } from './ws-types'
 import type { MessageSearchHit } from '../shared/search-results'
 import { createMessageJumpTarget, type MessageJumpTarget } from '../shared/message-jump'
-import type { NewSessionForm, PermissionMode, SessionInfo, SessionGroup, SidebarSection } from './types'
+import type { NewSessionForm, McpServerConfigMeta, PermissionMode, SessionInfo, SessionGroup, SidebarSection } from './types'
 import type { ClearSessionOptions } from './local-commands'
 import { PERMISSION_MODE_CYCLE } from './types'
 import { ACCENT_COLORS } from './theme'
@@ -700,6 +700,7 @@ export function App() {
   const maxGroupSizeRef = useRef(maxGroupSize)
   const groupsRef = useRef(groups)
   const activeGroupIdRef = useRef<string | null>(null)
+  const isMobileRef = useRef(isMobile)
   /** Forward ref to animatePanels (declared much later). closeSession /
    *  handleAddToGroup / handleReorderSidebar all need to FLIP-animate the
    *  surviving panels when openIds shrinks or grows, but animatePanels
@@ -831,6 +832,7 @@ export function App() {
   resumingRef.current = resuming
   maxOpenRef.current = maxOpen
   maxGroupSizeRef.current = maxGroupSize
+  isMobileRef.current = isMobile
   helpOpenRef.current = helpOpen
 
   // Close the in-panel history overlay when its host panel goes away (no
@@ -1957,8 +1959,21 @@ export function App() {
     [setGroups, validateGroupName, toast],
   )
 
+  const handleAddToGroupRef = useRef(handleAddToGroup)
+  const handleCreateGroupRef = useRef(handleCreateGroup)
+  /* eslint-disable react-hooks/refs -- completion callbacks must use the latest group limit/name rules, not a stale render closure */
+  handleAddToGroupRef.current = handleAddToGroup
+  handleCreateGroupRef.current = handleCreateGroup
+  /* eslint-enable react-hooks/refs */
+
+  type CreateViewOrigin = { activeGroupId: string | null; focusedId: string | null }
+
   const handleCreate = useCallback(
-    async (form: NewSessionForm) => {
+    async (form: NewSessionForm, origin?: CreateViewOrigin) => {
+      const viewOrigin = origin ?? {
+        activeGroupId: activeGroupIdRef.current,
+        focusedId: focusedIdRef.current,
+      }
       // `groupId` / `newGroupName` are frontend-only fields — don't forward
       // them to the SDK.
       const { groupId, newGroupName, ...rest } = form
@@ -1969,6 +1984,10 @@ export function App() {
         // The session-created handler refreshes it in place (idempotent — the
         // `some` guard prevents a duplicate if that frame already landed).
         setSessions((prev) => (prev.some((s) => s.id === res.session.id) ? prev : [res.session, ...prev]))
+        const finish = (opened: boolean) => {
+          setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
+          return opened
+        }
 
         // Assign to group (optional — ungrouped sessions are allowed). A new
         // session only joins while the group has room; a full group makes
@@ -1977,20 +1996,18 @@ export function App() {
         // snapshot) so a concurrent group fill is reflected here, matching
         // handleAddToGroup's own re-check.
         const targetGroup = groupId ? groupsRef.current.find((g) => g.id === groupId) : undefined
-        const joinsGroup = targetGroup != null && targetGroup.sessionIds.length < maxGroupSizeRef.current
-        if (groupId) handleAddToGroup(res.session.id, groupId)
+        if (groupId) handleAddToGroupRef.current(res.session.id, groupId)
 
-        // Inline "Create group «name»" pick from the dialog: mint the group
-        // with the session as its initial member (validation + toast live in
-        // handleCreateGroup). '' = invalid name (toast already shown) → the
-        // session stays ungrouped. Not handleAddToGroup: it reads groupsRef,
-        // which won't contain the new group until React commits the append —
-        // and a brand-new group can't be full and can never be the active
-        // group view, so the view logic below reduces to the plain create
-        // path.
+        // Inline "Create group «name»" pick: mint the group through the latest
+        // name validator, so a concurrent same-name group cannot slip in while
+        // the session POST is pending. An invalid name leaves the session
+        // ungrouped and keeps the existing toast behavior.
         const newGroupId = newGroupName
-          ? handleCreateGroup(newGroupName, res.session.id) || undefined
+          ? handleCreateGroupRef.current(newGroupName, res.session.id) || undefined
           : undefined
+        const joinsGroup = newGroupId
+          ? true
+          : targetGroup != null && targetGroup.sessionIds.length < maxGroupSizeRef.current
 
         // When viewing a group, only open the new session in the grid if it
         // actually joined that group. A refused add (full group) leaves it in
@@ -1998,24 +2015,117 @@ export function App() {
         // ungrouped panel. Otherwise it stays out of the grid too (different
         // group than the one being viewed).
         const effectiveGroupId = newGroupId ?? groupId ?? null
-        if (activeGroupId && (effectiveGroupId !== activeGroupId || !joinsGroup)) {
-          setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
-        } else if (activeGroupId && effectiveGroupId === activeGroupId && joinsGroup) {
-          // Same group — append to existing group grid (matches handleSelect
-          // behaviour for same-group sessions).
-          openSession(res.session.id, res.session.lastTurnAt)
-        } else {
-          // Ungrouped session, no group view — replace grid with single panel.
+        // The POST may outlive the view it started in. Only open automatically
+        // when the user is still in the SAME view (active group AND focused
+        // session). A deliberate selection made while the request was pending
+        // always wins over the completed create.
+        const originRemovedLeavesEmptyView = viewOrigin.focusedId != null
+          && !sessionsRef.current.some((s) => s.id === viewOrigin.focusedId)
+          && focusedIdRef.current === null
+          && openIdsRef.current.length === 0
+        const viewChanged = !originRemovedLeavesEmptyView && (
+          activeGroupIdRef.current !== viewOrigin.activeGroupId
+          || focusedIdRef.current !== viewOrigin.focusedId
+        )
+        if (viewChanged) return finish(false)
+        if (effectiveGroupId) {
+          if (!joinsGroup || (viewOrigin.activeGroupId && effectiveGroupId !== viewOrigin.activeGroupId)) {
+            return finish(false)
+          }
+          if (viewOrigin.activeGroupId) {
+            // Same group — append to the existing group grid. openSession also
+            // owns the seen-turn update, so finish() must not repeat it.
+            openSession(res.session.id, res.session.lastTurnAt)
+            return true
+          }
+          // An ordinary group-targeted create from an ungrouped view opens the
+          // new session when that view has not changed.
           setFocusedId(res.session.id)
           setOpenIds([res.session.id])
-          setLastSeenTurn((prev) => ({ ...prev, [res.session.id]: res.session.lastTurnAt ?? Date.now() }))
+          return finish(true)
         }
+        if (viewOrigin.activeGroupId) {
+          // An ungrouped create cannot join the active group (typically full),
+          // so leave it in the sidebar instead of replacing the group grid.
+          return finish(false)
+        }
+        setFocusedId(res.session.id)
+        setOpenIds([res.session.id])
+        return finish(true)
       } catch (e) {
         toast.error(`Couldn't create session: ${(e as Error).message}`)
+        return false
       }
     },
-    [handleAddToGroup, handleCreateGroup, activeGroupId, openSession, setLastSeenTurn, toast],
+    [openSession, setLastSeenTurn, toast],
   )
+
+  const defaultSessionCreating = useRef(false)
+  /** Create immediately from the server's defaults, bypassing both the dialog
+   *  and its recent-project prefill. Setup and the sidebar's default-session
+   *  action share this path so their cwd/model/group behavior cannot drift. */
+  const handleCreateDefaultSession = useCallback(async (opts?: { configSource?: 'force' | 'fresh' | 'server' }) => {
+    if (defaultSessionCreating.current) return
+    defaultSessionCreating.current = true
+    try {
+      // Capture the invocation view before any async read. Membership and the
+      // decision to open must both belong to this view, even if the user
+      // switches groups or focuses another session while requests are pending.
+      const viewOrigin = {
+        activeGroupId: activeGroupIdRef.current,
+        focusedId: focusedIdRef.current,
+      }
+      const activeGroup = viewOrigin.activeGroupId
+        ? groupsRef.current.find((g) => g.id === viewOrigin.activeGroupId)
+        : undefined
+      const groupId = activeGroup && activeGroup.sessionIds.length < maxGroupSizeRef.current
+        ? activeGroup.id
+        : undefined
+      // Force a current config read rather than trusting a completed cache
+      // entry from a previous profile. Setup can skip this second read because
+      // its own refresh has just populated the same cache. The independent MCP
+      // read starts at the same time; each keeps its own failure policy.
+      const configSource = opts?.configSource ?? 'force'
+      const defaultsPromise: Promise<{ cwd?: string; model?: string }> = configSource === 'server'
+        ? Promise.resolve({})
+        : configSource === 'fresh'
+          ? Promise.resolve(peekConfig()?.defaults ?? {})
+          : fetchConfig({ force: true }).then((r) => r.defaults).catch(() => ({}))
+      const mcpPromise = api.get<{ servers: McpServerConfigMeta[] }>('/mcp-config').catch((err) => {
+        // AppOptions.mcpConfigStore is optional: a 404 here means this host has
+        // no global MCP selection to snapshot, not a failing server.
+        if ((err as { status?: number }).status === 404) return { servers: [] }
+        throw err
+      })
+      let effectiveDefaults: { cwd?: string; model?: string }
+      let enabledMcpServers: string[]
+      try {
+        const [defaults, mcp] = await Promise.all([defaultsPromise, mcpPromise])
+        effectiveDefaults = defaults
+        // Every globally-enabled server is explicit at create, so resume cannot
+        // widen the session to a different global set. A read failure must NOT
+        // become an explicit empty selection that silently disables MCP.
+        enabledMcpServers = mcp.servers.filter((s) => s.enabled !== false).map((s) => s.name)
+      } catch (err) {
+        toast.error(`Couldn't load MCP servers: ${(err as Error).message}`)
+        return
+      }
+      const opened = await handleCreate({
+        provider: 'claude',
+        cwd: effectiveDefaults.cwd,
+        model: effectiveDefaults.model,
+        permissionMode: 'default',
+        enabledMcpServers,
+        groupId,
+      }, viewOrigin)
+      // Close the drawer only after creation has actually opened a panel.
+      // Read the viewport at completion too, since a resize can happen while
+      // the create is pending.
+      if (isMobileRef.current && opened) setDrawerOpen(false)
+    } finally {
+      defaultSessionCreating.current = false
+    }
+  }, [handleCreate, toast])
 
   const handleFork = useCallback(
     async (id: string) => {
@@ -4787,30 +4897,33 @@ export function App() {
 
   const handleConfigured = useCallback(
     async ({ openNewSession }: { openNewSession: boolean }) => {
-      // Best-effort refresh — populates defaults.cwd / serverModels so
-      // the auto-opened NewSessionDialog isn't blank. We DELIBERATELY
-      // swallow refresh errors and flip isConfigured anyway, because:
+      // Best-effort refresh — populates the defaults used by immediate
+      // default-session creation. We DELIBERATELY swallow refresh errors and
+      // flip isConfigured anyway, because:
       //
       //   1. /config/setup already succeeded (otherwise SetupPage would
       //      have caught its own POST failure and never called us).
       //      Trapping the user on SetupPage makes the next retry click
       //      re-POST /config/setup, overwriting the just-written file.
       //
-      //   2. Empty defaults are recoverable — the user picks cwd / model
-      //      manually in NewSessionDialog. A "stuck on setup forever"
+      //   2. Empty defaults are recoverable — the create route applies its
+      //      server-side cwd/model defaults. A "stuck on setup forever"
       //      page is not.
       //
       // SetupPage's finalize catch therefore only fires for /config/setup
-      // failures, which are legitimate retries.
+      // failures, which are legitimate retries. Session creation has its own
+      // toast in handleCreate and likewise must not re-open Setup.
+      let refreshed = false
       try {
         await refreshConfigResponse()
+        refreshed = true
       } catch (err) {
         console.error('Post-setup /config refresh failed:', err)
       }
       setIsConfigured(true)
-      if (openNewSession) setNewSessionDialogOpen(true)
+      if (openNewSession) await handleCreateDefaultSession({ configSource: refreshed ? 'fresh' : 'server' })
     },
-    [refreshConfigResponse],
+    [refreshConfigResponse, handleCreateDefaultSession],
   )
 
   const handleGlobalSettingsSaved = useCallback(() => {
@@ -4996,6 +5109,7 @@ export function App() {
           deletingIds={deletingSessionIds}
           onSelect={handleSelectFromSidebar}
           onCreate={handleCreate}
+          onNewDefaultSession={handleCreateDefaultSession}
           firstPartyTools={globalPrefs.firstPartyTools}
           onDelete={handleDelete}
           onSleep={sleepSession}

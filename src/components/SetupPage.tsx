@@ -25,9 +25,9 @@ import type { McpServerConfigMeta } from '../types'
 
 interface Props {
   /** Called after the config has been written. `openNewSession` reflects
-   *  whether the parent should auto-open the NewSessionDialog once the main
-   *  UI mounts. Two call sites, and only the first goes through
-   *  `/config/setup`:
+   *  whether the parent should immediately create a default session once the
+   *  main UI mounts, without opening NewSessionDialog. Two call sites, and only
+   *  the first goes through `/config/setup`:
    *
    *    1. The wizard's finalize path, after `/config/setup` has succeeded.
    *       Here `openNewSession` reflects whether the user clicked the final
@@ -46,11 +46,11 @@ interface Props {
    *       the user makes it.)
    *
    *  Both paths land in App.handleConfigured (best-effort /config refresh +
-   *  setIsConfigured(true)).
+   *  setIsConfigured(true), then optional immediate default-session creation).
    *
    *  May return a promise; the dialog awaits it so the submit button stays
-   *  in its loading state through the parent's post-setup work (currently
-   *  a /config refresh). If the parent throws, the rejection surfaces here
+   *  in its loading state through the parent's post-setup work (a /config
+   *  refresh and, when requested, session creation). If the parent throws, the rejection surfaces here
    *  and we render it inline, keeping the user on Step 4 to retry. (That is
    *  call site 1's screen; SetupWebImport instead logs a hand-off rejection,
    *  since its import already succeeded by then.) */
@@ -676,7 +676,7 @@ export function SetupPage({ onConfigured }: Props) {
         // 用户在前置屏按了离开按钮（那一态下标签是 Finish）、且此前那次导入已把
         // config.json 写好（服务端 configured:true）——前置屏只在那种情况下调这个
         // 回调。直接走既有收尾路径：App 的 handleConfigured 会 refreshConfig +
-        // setIsConfigured，并自动开 New session 对话框。勾选行与 Import selected
+        // setIsConfigured，并在默认工作区立即创建 Session。勾选行与 Import selected
         // 不含在这条路上。
         onConfigured={() => onConfigured({ openNewSession: true })}
       />
