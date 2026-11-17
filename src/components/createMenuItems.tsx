@@ -1,8 +1,8 @@
-// Header "+" create-menu item definitions, shared by the two new-session
-// entry points: the header nav strip (SessionNavStrip) and the
-// desktop titlebar tabs (DesktopTitlebarTabs). Same contract as
+// Create-menu item definitions shared by the sidebar, header nav strip and
+// desktop titlebar. The optional default-session row is injected only by the
+// sidebar; the other surfaces keep the original two-row menu. Same contract as
 // groupMenuItems — the builder owns the item rows AND the create-group
-// prompt copy so the two surfaces cannot drift; the caller injects the
+// prompt copy so the surfaces cannot drift; the caller injects the
 // dialog host and the side effects as plain callbacks.
 
 import { ContextMenuItem } from './ContextMenu'
@@ -11,14 +11,16 @@ import type { PromptRequest } from '../hooks/useDialogHosts'
 
 export function buildCreateMenuItems(opts: {
   onNewSession: () => void
+  /** Immediate create from server defaults. Supplied only by the sidebar. */
+  onNewDefaultSession?: () => void
   /** Called with the NEW name after the create prompt confirms. */
   onCreateGroup: (name: string) => void
   askPrompt: (config: PromptRequest) => void
-  /** Park the New session… row (e.g. the titlebar is at panel capacity).
+  /** Park both New session rows (e.g. the titlebar is at panel capacity).
    *  New group… stays available — it consumes no panel slot. */
   newSessionDisabled?: boolean
 }): ContextMenuItem[] {
-  const { onNewSession, onCreateGroup, askPrompt, newSessionDisabled = false } = opts
+  const { onNewSession, onNewDefaultSession, onCreateGroup, askPrompt, newSessionDisabled = false } = opts
   return [
     {
       label: 'New session…',
@@ -26,6 +28,14 @@ export function buildCreateMenuItems(opts: {
       disabled: newSessionDisabled,
       onClick: () => onNewSession(),
     },
+    ...(onNewDefaultSession
+      ? [{
+          label: 'New Session (Default)',
+          icon: <IconMessageCircle size={14} />,
+          disabled: newSessionDisabled,
+          onClick: () => onNewDefaultSession(),
+        }]
+      : []),
     {
       label: 'New group…',
       icon: <IconFolder size={14} />,

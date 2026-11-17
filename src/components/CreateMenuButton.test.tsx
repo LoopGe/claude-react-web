@@ -38,6 +38,15 @@ describe('CreateMenuButton', () => {
     expect(labels).toEqual(['New session…', 'New group…'])
   })
 
+  it('New Session (Default) fires its callback and closes the menu', () => {
+    const onNewDefaultSession = vi.fn()
+    setup({ onNewDefaultSession })
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByText('New Session (Default)'))
+    expect(onNewDefaultSession).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('menu')).toBeNull()
+  })
+
   it('New session… fires onNewSession and closes the menu', () => {
     const { onNewSession } = setup()
     fireEvent.click(screen.getByRole('button', { name: 'Create' }))

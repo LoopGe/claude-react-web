@@ -1,9 +1,7 @@
-// Header "+" button that opens the create menu (New session… / New group…)
-// instead of immediately creating a session. Shared by SessionNavStrip's
-// leading + and DesktopTitlebarTabs' titlebar + so both surfaces offer the
-// same two-step flow. Owns its own open-state + ContextMenu; the caller
-// supplies the actions and the prompt host (same contracts as
-// buildCreateMenuItems).
+// Create-menu button for the sidebar, SessionNavStrip and DesktopTitlebarTabs.
+// The ordinary flow opens New session… / New group…; the sidebar can also
+// inject an immediate New Session (Default) row. Owns its open-state +
+// ContextMenu; the caller supplies the actions and prompt host.
 //
 // The trigger TOGGLES the menu: ContextMenu gets `triggerRef` so a press on
 // the + is not treated as an outside press (see useOutsideMouseDown), and
@@ -19,12 +17,13 @@ import type { PromptRequest } from '../hooks/useDialogHosts'
 
 interface Props extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'children'> {
   onNewSession: () => void
+  onNewDefaultSession?: () => void
   onCreateGroup: (name: string) => void
   /** Opens the New-group prompt (DialogHosts' askPrompt). Deliberately the
    *  stable callback, not the whole hosts object — dialog open/close/busy
    *  flips that identity and would re-render every header tab. */
   askPrompt: (config: PromptRequest) => void
-  /** Park the New session… row (see buildCreateMenuItems). */
+  /** Park both New session rows (see buildCreateMenuItems). */
   newSessionDisabled?: boolean
   /** The + glyph (or any button content). */
   children?: ReactNode
@@ -39,6 +38,7 @@ interface Props extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' 
 
 export function CreateMenuButton({
   onNewSession,
+  onNewDefaultSession,
   onCreateGroup,
   askPrompt,
   newSessionDisabled,
@@ -53,8 +53,8 @@ export function CreateMenuButton({
   const mergedTriggerRef = useMergedRef(triggerRef, externalRef)
 
   const items = useMemo(
-    () => buildCreateMenuItems({ onNewSession, onCreateGroup, askPrompt, newSessionDisabled }),
-    [onNewSession, onCreateGroup, askPrompt, newSessionDisabled],
+    () => buildCreateMenuItems({ onNewSession, onNewDefaultSession, onCreateGroup, askPrompt, newSessionDisabled }),
+    [onNewSession, onNewDefaultSession, onCreateGroup, askPrompt, newSessionDisabled],
   )
   const close = useCallback((reason?: FloatingDismissReason) => {
     setAnchor(null)

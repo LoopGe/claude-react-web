@@ -4,6 +4,7 @@ import { buildCreateMenuItems } from './createMenuItems'
 function build(overrides?: Partial<Parameters<typeof buildCreateMenuItems>[0]>) {
   const calls = {
     newSession: 0,
+    newDefaultSession: 0,
     created: [] as string[],
     prompt: null as null | {
       title: string
@@ -35,6 +36,18 @@ describe('buildCreateMenuItems', () => {
     expect(items.map((i) => i.label)).toEqual(['New session…', 'New group…'])
   })
 
+  it('inserts the default-session action between session and group when provided', () => {
+    const { items, calls } = build({
+      onNewDefaultSession: () => {
+        calls.newDefaultSession += 1
+      },
+    })
+    expect(items.map((i) => i.label)).toEqual(['New session…', 'New Session (Default)', 'New group…'])
+    items[1].onClick!()
+    expect(calls.newDefaultSession).toBe(1)
+    expect(calls.newSession).toBe(0)
+  })
+
   it('clicking New session… fires onNewSession', () => {
     const { items, calls } = build()
     items.find((i) => i.label === 'New session…')!.onClick!()
@@ -54,11 +67,12 @@ describe('buildCreateMenuItems', () => {
     expect(calls.created).toEqual(['My Group'])
   })
 
-  it('newSessionDisabled parks only the New session… row', () => {
+  it('newSessionDisabled parks both session rows but not New group…', () => {
     // The disabled gate lives in ContextMenu (it skips onClick); the builder
-    // just marks the row.
-    const { items } = build({ newSessionDisabled: true })
+    // just marks the rows.
+    const { items } = build({ newSessionDisabled: true, onNewDefaultSession: () => undefined })
     expect(items.find((i) => i.label === 'New session…')?.disabled).toBe(true)
+    expect(items.find((i) => i.label === 'New Session (Default)')?.disabled).toBe(true)
     expect(items.find((i) => i.label === 'New group…')?.disabled).toBeFalsy()
   })
 })
