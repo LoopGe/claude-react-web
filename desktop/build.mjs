@@ -7,6 +7,8 @@
 //
 // The claude-agent-sdk stays external for the same reason as build.mjs: it
 // spawns the real CLI at runtime and resolves files relative to itself.
+// koffi stays external too: a native Node-API addon loaded via createRequire
+// at runtime (win32 only), shipped through electron-builder's asarUnpack.
 // Electron itself is external (provided by the runtime).
 
 import { build } from 'esbuild'
@@ -18,7 +20,7 @@ const shared = {
   bundle: true,
   platform: 'node',
   target: 'node20',
-  external: ['electron', '@anthropic-ai/claude-agent-sdk'],
+  external: ['electron', '@anthropic-ai/claude-agent-sdk', 'koffi'],
   logLevel: 'info',
 }
 

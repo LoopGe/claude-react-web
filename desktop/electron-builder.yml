@@ -45,10 +45,12 @@ extraMetadata:
 
 # The SDK locates its CLI by walking up from its own module path, and that CLI
 # is a native executable. asar is transparent for reads but NOT for exec, so
-# the whole SDK tree must live on the real filesystem.
+# the whole SDK tree must live on the real filesystem. koffi ships a native
+# .node addon (LoadLibrary cannot read it out of asar) — same treatment.
 asar: true
 asarUnpack:
   - node_modules/@anthropic-ai/**
+  - node_modules/koffi/**
 
 mac:
   category: public.app-category.developer-tools

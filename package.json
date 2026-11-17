@@ -143,5 +143,8 @@
   },
   "allowScripts": {
     "electron@33.4.11": true
+  },
+  "optionalDependencies": {
+    "koffi": "3.1.1"
   }
 }
