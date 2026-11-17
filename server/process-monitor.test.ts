@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { ChildProcess } from 'node:child_process'
+import { spawnSync, type ChildProcess } from 'node:child_process'
 import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk'
-import { ProcessMonitor, type MonitoredSpawn, type ProcessExitInfo } from './process-monitor.js'
+import { ProcessMonitor, reapRetiredJobs, type MonitoredSpawn, type ProcessExitInfo } from './process-monitor.js'
 import { metrics } from './metrics.js'
 import { createJobForProcess, Win32JobError, type Win32Job } from './win32-job.js'
 
@@ -67,14 +67,21 @@ async function expectGone(pid: number, ms = 3000): Promise<void> {
 /** SpawnOptions for a child that spawns its own sleeping grandchild, prints
  *  the grandchild's pid to stdout, then stays alive. With `ignoreSigterm`
  *  both processes trap SIGTERM, so only a group SIGKILL can stop them. The
- *  grandchild is spawned WITHOUT detached, so it shares the child's process
- *  group — a group signal reaches both; a single-PID kill does not. */
-function treeSpawnOpts(ignoreSigterm: boolean): SpawnOptions {
+ *  grandchild is spawned WITHOUT detached by default, so it shares the
+ *  child's process group — a group signal reaches both; a single-PID kill
+ *  does not. `detachedGrandchild` (win32 survivor tests only) spawns it
+ *  detached instead: probe-verified on this host, a non-detached grandchild
+ *  is torn down with the child's console when the child exits or is killed,
+ *  so it cannot play a survivor; a detached one outlives the child AND still
+ *  joins the kill-on-close Job (CREATE_NEW_PROCESS_GROUP is not a breakaway).
+ *  POSIX call sites never pass it, so their group semantics are unchanged. */
+function treeSpawnOpts(ignoreSigterm: boolean, detachedGrandchild = false): SpawnOptions {
   const trap = ignoreSigterm ? `process.on('SIGTERM',()=>{});` : ''
   const grandchild = trap + 'setInterval(()=>{},1000)'
+  const grandOpts = detachedGrandchild ? `{stdio:'ignore',detached:true}` : `{stdio:'ignore'}`
   const script =
     `const {spawn}=require('child_process');` +
-    `const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore'});` +
+    `const c=spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],${grandOpts});` +
     `console.log(c.pid);` +
     trap +
     `setInterval(()=>{},1000)`
@@ -650,6 +657,133 @@ describe('ProcessMonitor', () => {
       }
     } finally {
       killBackstop(undefined, proc, grandchildPid)
+    }
+  }, 15_000)
+
+  /** SpawnOptions for a child that spawns a sleeping grandchild
+   *  (stdio:'ignore', detached — the backgrounded-service shape that outlives
+   *  the child on this host; see treeSpawnOpts), prints the grandchild's pid,
+   *  then exits on its own with `code` — the graceful-survivor shape: the CLI
+   *  ran its own shutdown and left an intentionally backgrounded descendant
+   *  behind. The short exit delay guarantees the parent's unregister lands
+   *  BEFORE the 'exit' event: on win32, stdout-data and process-exit delivery
+   *  have no guaranteed order, and an exit processed first would classify the
+   *  close as a crash. */
+  function gracefulSurvivorOpts(code = 0): SpawnOptions {
+    const script =
+      `const {spawn}=require('child_process');` +
+      `const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true});` +
+      `console.log(c.pid);` +
+      `setTimeout(()=>process.exit(${code}),200)`
+    return {
+      command: process.execPath,
+      args: ['-e', script],
+      env: { ...process.env } as SpawnOptions['env'],
+      signal: new AbortController().signal,
+    }
+  }
+
+  it.runIf(process.platform === 'win32')('win32: graceful intentional exit retires survivors; exit sweep reaps them', async () => {
+    const mon = new ProcessMonitor(vi.fn())
+    const reg = mon.register('s-retire')
+    const proc = mon.spawnFor(reg, gracefulSurvivorOpts())
+    const entry = entryOf(mon, reg)
+    let grandchildPid = 0
+    try {
+      grandchildPid = await firstStdoutLine(proc)
+      mon.unregister(reg)
+      // realExited settles on the direct CLI 'exit' with NO quiescence wait:
+      // the survivor below is still alive when this resolves.
+      await expectRealExitSoon(reg, 5000)
+      expect(mon.retiredCount).toBe(1)
+      // The retired Job stays OPEN — its kill-on-close handle is what keeps
+      // the survivor reachable for a later reap / host-exit sweep.
+      expect(entry.job!.activeCount()).toBeGreaterThanOrEqual(1)
+      expect(() => process.kill(grandchildPid, 0)).not.toThrow()
+
+      mon.sweepForProcessExit()
+      expect(mon.retiredCount).toBe(0)
+      await expectGone(grandchildPid) // kill-on-close reaped it
+    } finally {
+      killBackstop(entry, proc, grandchildPid)
+      mon.sweepForProcessExit()
+    }
+  }, 15_000)
+
+  it.runIf(process.platform === 'win32')('win32: killed intentional exit terminates survivors instead of retiring', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit)
+    const reg = mon.register('s-killed-intentional')
+    const proc = mon.spawnFor(reg, treeSpawnOpts(false, true))
+    const entry = entryOf(mon, reg)
+    let grandchildPid = 0
+    try {
+      grandchildPid = await firstStdoutLine(proc)
+      mon.unregister(reg)
+      // External-style force kill of the direct child only: killed=true
+      // overrides the intentional flag, so survivors must NOT be trusted.
+      ;(proc as unknown as ChildProcess).kill('SIGKILL')
+      const info = await expectRealExitSoon(reg, 5000)
+      expect(info.killed).toBe(true)
+      await expectGone(grandchildPid)
+      expect(mon.retiredCount).toBe(0)
+      // The handle was closed, not dropped on the floor: querying it fails.
+      expect(() => entry.job!.activeCount()).toThrow()
+      expect(onExit).not.toHaveBeenCalled()
+    } finally {
+      killBackstop(entry, proc, grandchildPid)
+      mon.sweepForProcessExit()
+    }
+  }, 15_000)
+
+  it.runIf(process.platform === 'win32')('win32: crash terminates survivors and surfaces onExit', async () => {
+    const onExit = vi.fn()
+    const mon = new ProcessMonitor(onExit)
+    const reg = mon.register('s-crash-survivors')
+    // NO unregister: the child's own exit(2) is an unintentional crash.
+    const proc = mon.spawnFor(reg, gracefulSurvivorOpts(2))
+    const entry = entryOf(mon, reg)
+    let grandchildPid = 0
+    try {
+      grandchildPid = await firstStdoutLine(proc)
+      const before = metrics.snapshot().counters['containment_job_terminate'] ?? 0
+      const info = await expectExitSoon(reg, 5000)
+      expect(info.code).toBe(2)
+      await expectGone(grandchildPid)
+      expect(onExit).toHaveBeenCalledTimes(1)
+      expect(onExit.mock.calls[0][0]).toMatchObject({ sessionId: 's-crash-survivors', code: 2 })
+      expect(mon.retiredCount).toBe(0)
+      expect(metrics.snapshot().counters['containment_job_terminate'] ?? 0).toBe(before + 1)
+      expect(() => entry.job!.activeCount()).toThrow()
+    } finally {
+      killBackstop(entry, proc, grandchildPid)
+      mon.sweepForProcessExit()
+    }
+  }, 15_000)
+
+  it.runIf(process.platform === 'win32')('win32: reapRetiredJobs closes a retired Job whose survivors exited', async () => {
+    const mon = new ProcessMonitor(vi.fn())
+    const reg = mon.register('s-reap')
+    const proc = mon.spawnFor(reg, gracefulSurvivorOpts())
+    const entry = entryOf(mon, reg)
+    let grandchildPid = 0
+    try {
+      grandchildPid = await firstStdoutLine(proc)
+      mon.unregister(reg)
+      await expectRealExitSoon(reg, 5000)
+      expect(mon.retiredCount).toBe(1)
+
+      // The survivor exits on its own (external taskkill stands in for the
+      // backgrounded service finishing its work).
+      spawnSync('taskkill', ['/PID', String(grandchildPid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      await expectGone(grandchildPid)
+      reapRetiredJobs()
+      expect(mon.retiredCount).toBe(0)
+      expect(metrics.snapshot().gauges['retired_jobs']).toBe(0)
+      expect(() => entry.job!.activeCount()).toThrow()
+    } finally {
+      killBackstop(entry, proc, grandchildPid)
+      mon.sweepForProcessExit()
     }
   }, 15_000)
 

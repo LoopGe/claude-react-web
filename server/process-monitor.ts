@@ -164,6 +164,30 @@ function installProcessExitHook(): void {
   })
 }
 
+/** Win32 Jobs retired by a graceful intentional exit whose Job still had
+ *  members: the CLI ran its own shutdown and what it left behind may be an
+ *  intentionally backgrounded service, so the handle stays OPEN (closing it
+ *  would kill-on-close the survivors). Module-level like processExitSweeps —
+ *  the host-exit sweep closes every retired Job regardless of which monitor
+ *  retired it. A monitor whose last entry retired a Job releases its sweep
+ *  registration, but that leaks nothing: when the host process dies the
+ *  kernel closes its handle table, and kill-on-close reaps the survivors. */
+const retiredJobs = new Set<Win32Job>()
+
+/** Close retired Jobs whose survivors have all exited (activeCount 0), so a
+ *  long-lived host does not accumulate kernel Job handles for finished
+ *  background services. Called from the session-manager GC tick; the gauge
+ *  rides the same call instead of adding a timer. */
+export function reapRetiredJobs(): void {
+  for (const job of retiredJobs) {
+    if (job.activeCount() === 0) {
+      job.close()
+      retiredJobs.delete(job)
+    }
+  }
+  metrics.gauge('retired_jobs', retiredJobs.size)
+}
+
 export class ProcessMonitor {
   private entries = new Map<MonitoredSpawn, Entry>()
   private readonly onExit: (info: ProcessExitInfo) => void
@@ -470,6 +494,13 @@ export class ProcessMonitor {
       if (entry.resolved) continue
       this.signalTree(entry, 'SIGTERM')
     }
+    if (IS_WIN32) {
+      // Retired Jobs outlive their entries (graceful-exit survivors). The
+      // host is dying, so nothing may outlive it: close every retired handle
+      // — kill-on-close reaps the survivors synchronously.
+      for (const job of retiredJobs) job.close()
+      retiredJobs.clear()
+    }
   }
   private readonly processExitSweep = (): void => this.sweepForProcessExit()
   /** Whether this monitor's sweep currently sits in the module-level exit
@@ -523,6 +554,9 @@ export class ProcessMonitor {
     entry.resolveExit(info)
     this.entries.delete(reg)
     this.releaseSweepIfIdle()
+    if (IS_WIN32) {
+      this.finalizeWin32Job(reg, entry, info)
+    }
     // Leftover group-mates, CRASH PATH ONLY: the CLI may die before its own
     // foreground children (a crash, or an escalation leg that killed only
     // the direct child). Once the direct child is gone nobody owns those
@@ -558,6 +592,49 @@ export class ProcessMonitor {
         `[process-monitor] intentional exit for session ${entry.sessionId} ` +
         `(code=${info.code}, spawnError=${info.spawnError ? 'yes' : 'no'}) — not surfacing`,
       )
+    }
+  }
+
+  /** Win32 exit classification — the win32 counterpart of the POSIX pgid
+   *  sweep above. Every path either CLOSES the entry's Job handle or RETIRES
+   *  it (module-level retiredJobs); no path drops a handle on the floor.
+   *
+   *  Survivors are terminated when the exit was not a trusted graceful close:
+   *  a crash (!intentional), an external force-kill (killed / signal), or our
+   *  own escalation (selfTerminated — set by signalTree BEFORE terminate(),
+   *  because TerminateJobObject surfaces as a plain code exit with
+   *  killed=false / signal=null and would otherwise read as graceful). Only
+   *  an intentional, unforced, non-escalated exit with live members retires
+   *  the Job: the CLI already ran its own shutdown, and the members may be
+   *  intentionally backgrounded services that must survive (POSIX parity).
+   *  With no Job (capability/retryable fallback) the same predicate gates the
+   *  birth-time-guarded taskkill; a trusted graceful exit skips it. */
+  private finalizeWin32Job(reg: MonitoredSpawn, entry: Entry, info: ProcessExitInfo): void {
+    const terminateSurvivors =
+      !reg.intentional || info.killed || info.signal !== null || entry.selfTerminated
+    if (entry.job) {
+      const count = entry.job.activeCount()
+      if (count === 0) {
+        entry.job.close()
+      } else if (terminateSurvivors) {
+        log.warn(
+          `CLI exited with ${count} Job survivor(s) — terminating the tree [${entry.sessionId}]`,
+        )
+        entry.job.terminate()
+        entry.job.close()
+      } else {
+        log.info(
+          `CLI exited gracefully with ${count} Job survivor(s) — retiring the Job [${entry.sessionId}]`,
+        )
+        retiredJobs.add(entry.job)
+      }
+      return
+    }
+    const pid = entry.process?.pid
+    if (pid && terminateSurvivors) {
+      if (killTreeWin32(pid, entry.birthTime)) {
+        metrics.count('containment_fallback_treekill')
+      }
     }
   }
 
@@ -660,5 +737,11 @@ export class ProcessMonitor {
    *  registered-but-unspawned and spawned-but-not-yet-exited entries. */
   get size(): number {
     return this.entries.size
+  }
+
+  /** Number of retired win32 Jobs awaiting reap (test seam; module-level,
+   *  shared across monitors). Always 0 on POSIX. */
+  get retiredCount(): number {
+    return retiredJobs.size
   }
 }
