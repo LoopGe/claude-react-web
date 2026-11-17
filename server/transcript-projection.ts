@@ -110,6 +110,9 @@ export function semanticMessageProjection(msg: unknown): unknown {
   const out: Loose = {}
   for (const key of Object.keys(m)) {
     if (PROVENANCE_KEYS.has(key)) continue
+    // An explicit `undefined` value (e.g. normalize's `message: o.message` on a
+    // system frame) is semantically identical to an absent key.
+    if (m[key] === undefined) continue
     out[key] = m[key]
   }
   return out

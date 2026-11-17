@@ -8058,6 +8058,8 @@ export class SessionManager {
         // before the failure; the sidecar's append queue is unbroken. Never
         // head-append unknown middle records (the incident bug).
         t.degraded = true
+        metrics.count('transcript_reconcile_total', { mode: 'rebuild', result: 'error' })
+        metrics.count('transcript_rebuild_failures', { stage: 'reconcile' })
         log.warn(`[session ${id}] transcript reconcile failed: ${(err as Error).message ?? err}`)
       } finally {
         t.reconciled = true
@@ -8124,8 +8126,10 @@ export class SessionManager {
     }
     if (isOrderedSubsequence(oldSharedUuids, canonUuids)) {
       backfillFromEntries(t, composed)
+      metrics.count('transcript_reconcile_total', { mode: 'append', result: 'success' })
       return
     }
+    const startedAt = Date.now()
     const ordered = buildOrderedProjection(input)
     t.store.reset()
     t.store.hydrate(
@@ -8152,6 +8156,10 @@ export class SessionManager {
       rows,
     })
     await t.sidecar.appendBatch(rows, commit)
+    metrics.count('transcript_reconcile_total', { mode: 'rebuild', result: 'success' })
+    metrics.count('transcript_rebuild_reason', { reason: 'middle-gap' })
+    metrics.count('transcript_rebuild_entries', { kind: 'canonical' }, ordered.length)
+    metrics.observe('transcript_rebuild_ms', Date.now() - startedAt)
     log.info(`[session ${id}] transcript ordered-rebuild: ${ordered.length} entries, generation ${t.store.generation}`)
   }
 
