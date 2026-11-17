@@ -12,6 +12,7 @@
  * composition layer (Task 6) refines it with TurnAnchorStore membership.
  */
 
+import { isDeepStrictEqual } from 'node:util'
 import { assistantMessageShapeOf } from '../shared/assistant-message.js'
 import { semanticEquivalent, type ProjectionEntry, type TombstoneKind } from './transcript-projection.js'
 
@@ -189,6 +190,31 @@ export function buildOrderedProjection(input: ReconcileInput): ProjectionEntry[]
       const rUuid = resultAssistantUuid(p.entry)
       const at = obj(p.entry.msg)?.type === 'result' && rUuid ? turnTerminalIndex(out, rUuid) : out.length
       out.splice(at, 0, { ...p.entry, aliases: [...p.entry.aliases] })
+    }
+  }
+
+  // Whole-message coverage dedup (spec §5.2): a multi-block assistant row whose
+  // blocks equal the concatenation of same-response per-block rows is redundant
+  // — tombstone it (coverage) and alias its uuid onto the first covering frame.
+  const respGroups = new Map<string, { whole: ProjectionEntry[]; singles: ProjectionEntry[] }>()
+  for (const e of out) {
+    const shape = assistantMessageShapeOf(e.msg)
+    if (!shape?.blocks || !shape.id) continue
+    const g = respGroups.get(shape.id) ?? { whole: [], singles: [] }
+    if (shape.blocks.length > 1) g.whole.push(e)
+    else g.singles.push(e)
+    respGroups.set(shape.id, g)
+  }
+  for (const g of respGroups.values()) {
+    if (g.whole.length === 0 || g.singles.length === 0) continue
+    const merged = g.singles.flatMap((s) => assistantMessageShapeOf(s.msg)?.blocks ?? [])
+    for (const w of g.whole) {
+      const wBlocks = assistantMessageShapeOf(w.msg)?.blocks ?? []
+      if (!isDeepStrictEqual(wBlocks, merged)) continue
+      w.evicted = true
+      const wUuid = uuidOf(w.msg)
+      const first = g.singles[0]
+      if (wUuid && !first.aliases.includes(wUuid)) first.aliases.push(wUuid)
     }
   }
 

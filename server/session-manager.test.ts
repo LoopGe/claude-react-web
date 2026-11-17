@@ -8622,6 +8622,52 @@ describe('SessionManager', () => {
       }
     })
 
+    it('incident: a record live-appended at the tail but belonging mid-history rebuilds to provider order on restart', async () => {
+      const info = await sm.create({ cwd: TEST_CWD })
+      // Live arrival order A, N, R (R arrived late) → sidecar seqs [A, N, R].
+      // message.id matches the provider log so semantic equivalence holds.
+      const live = (uuid: string, id: string, text: string) =>
+        mockHandles[0].emit({ type: 'assistant', uuid, parent_tool_use_id: null, message: { id, role: 'assistant', content: [{ type: 'text', text }] } })
+      live('A', 'mA', 'first')
+      live('N', 'mN', 'newer')
+      live('R', 'mR', 'disk-only recap that belongs between A and N')
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      expect(await waitFor(async () => (await transcriptRowCount(info.id)) === 3)).toBe(true)
+
+      // Provider log order is A, R, N — R belongs in the MIDDLE, not the tail.
+      const jsonl = [
+        { type: 'assistant', uuid: 'A', message: { id: 'mA', role: 'assistant', content: [{ type: 'text', text: 'first' }] } },
+        { type: 'assistant', uuid: 'R', message: { id: 'mR', role: 'assistant', content: [{ type: 'text', text: 'disk-only recap that belongs between A and N' }] } },
+        { type: 'assistant', uuid: 'N', message: { id: 'mN', role: 'assistant', content: [{ type: 'text', text: 'newer' }] } },
+      ]
+      const realConfigDir = process.env.CLAUDE_CONFIG_DIR
+      process.env.CLAUDE_CONFIG_DIR = dir
+      try {
+        const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
+        mkdirSync(dirname(jsonlPath), { recursive: true })
+        writeFileSync(jsonlPath, jsonl.map((line) => JSON.stringify(line)).join('\n') + '\n')
+
+        const store2 = new SessionStore({ stateDir: dir })
+        await store2.load()
+        const sm2 = new SessionManager({ store: store2 })
+        try {
+          const reloaded = await sm2.getTranscriptWindow(info.id)
+          // Provider order, NOT the tail-displaced live order [A, N, R].
+          expect(reloaded.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual(['A', 'R', 'N'])
+          expect(reloaded.generation).toBeGreaterThan(0)
+          // Idempotent: a second reconcile is an empty append (no further bump).
+          const gen = reloaded.generation
+          const again = await sm2.getTranscriptWindow(info.id)
+          expect(again.generation).toBe(gen)
+          expect(again.messages.map((m) => (m.msg as { uuid?: string }).uuid)).toEqual(['A', 'R', 'N'])
+        } finally {
+          await sm2.shutdown()
+        }
+      } finally {
+        process.env.CLAUDE_CONFIG_DIR = realConfigDir
+      }
+    })
+
     it('reconciles against a real JSONL: the whole-message line is deduped, per-block lines are kept', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       const base = '00bf9e30-3506-44fd-b02c-'

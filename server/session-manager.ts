@@ -147,9 +147,13 @@ import {
   TranscriptSidecar,
   backfillFromEntries,
   foldSidecarRows,
+  foldSidecarRowsV2,
+  makeCommitV2,
   recordTranscriptMessage,
   type TranscriptHolder,
 } from './transcript-sidecar.js'
+import { occurrenceIdOf, type ProjectionEntry } from './transcript-projection.js'
+import { buildOrderedProjection } from './transcript-reconcile.js'
 import { readStderrTail, cliLogInfo } from './cli-diagnostics.js'
 import { createLogger } from './log.js'
 import type { HistoryEntry, HistoryPage } from './history-reader.js'
@@ -8039,12 +8043,20 @@ export class SessionManager {
     if (inFlight) return inFlight
     const p = (async () => {
       try {
-        t.store.hydrate(foldSidecarRows(await t.sidecar.load()))
+        const rawRows = await t.sidecar.load()
+        if (rawRows.some((r) => r.v === 2)) {
+          const folded = foldSidecarRowsV2(rawRows)
+          t.store.hydrate(folded.entries)
+          t.store.generation = folded.generation
+        } else {
+          t.store.hydrate(foldSidecarRows(rawRows))
+        }
         const composed = await this.composeTranscriptEntries(id)
-        if (!this.isSessionDeleteTombstoned(id)) backfillFromEntries(t, composed)
+        if (!this.isSessionDeleteTombstoned(id)) await this.reconcileOrdered(t, id, composed)
       } catch (err) {
         // Degraded but usable: the store keeps whatever hydrated/appended
-        // before the failure; the sidecar's append queue is unbroken.
+        // before the failure; the sidecar's append queue is unbroken. Never
+        // head-append unknown middle records (the incident bug).
         t.degraded = true
         log.warn(`[session ${id}] transcript reconcile failed: ${(err as Error).message ?? err}`)
       } finally {
@@ -8055,6 +8067,92 @@ export class SessionManager {
     })()
     this.transcriptReconciles.set(id, p)
     return p
+  }
+
+  /** Ordered reconcile (spec §6/§7): choose append-only back-fill vs a full
+   *  ordered rebuild. A middle gap / order mismatch rebuilds the projection in
+   *  provider order and publishes a new v2 generation batch — it never appends
+   *  unknown historical records at the seq head (the incident root cause). */
+  private async reconcileOrdered(t: TranscriptHolder, id: string, composed: SDKMessage[]): Promise<void> {
+    const uuidOf = (m: unknown): string | null => {
+      const u = (m as { uuid?: unknown })?.uuid
+      return typeof u === 'string' ? u : null
+    }
+    // True when `shared` appears in `canon` in the same relative order (a
+    // chronology inversion among UUID-matched records is the incident signal).
+    const isOrderedSubsequence = (shared: string[], canon: string[]): boolean => {
+      let i = 0
+      for (const u of canon) {
+        if (i < shared.length && shared[i] === u) i++
+      }
+      return i === shared.length
+    }
+    const canonical: ProjectionEntry[] = composed.map((msg) => ({
+      occurrenceId: occurrenceIdOf(msg, {}),
+      msg,
+      source: (msg as { type?: string }).type === 'result' ? 'result' : 'provider',
+      aliases: [],
+      evicted: false,
+    }))
+    const canonByOcc = new Map(canonical.map((e) => [e.occurrenceId, e]))
+    const old: ProjectionEntry[] = []
+    for (let seq = 0; seq < t.store.headSeq; seq++) {
+      const m = t.store.messageAt(seq)
+      if (!m) continue
+      const occ = occurrenceIdOf(m.msg, {})
+      const canon = canonByOcc.get(occ)
+      old.push({
+        occurrenceId: occ,
+        msg: m.msg,
+        source: canon ? canon.source : 'app',
+        aliases: [],
+        evicted: t.store.isEvicted(seq),
+      })
+    }
+    const input = { old, canonical, pending: [], oldTombstones: [] }
+    // Rebuild only on a genuine chronology inversion among UUID-matched records
+    // (the incident: a disk-only record persisted at the tail that belongs in the
+    // middle). Coverage dedup and pure tail append stay on backfillFromEntries,
+    // which already handles whole-message coverage and uuid-less positional guards.
+    const canonUuids = composed.map((m) => uuidOf(m)).filter((u): u is string => u !== null)
+    const canonUuidSet = new Set(canonUuids)
+    const oldSharedUuids: string[] = []
+    for (let seq = 0; seq < t.store.headSeq; seq++) {
+      const m = t.store.messageAt(seq)
+      const u = m ? uuidOf(m.msg) : null
+      if (u !== null && canonUuidSet.has(u)) oldSharedUuids.push(u)
+    }
+    if (isOrderedSubsequence(oldSharedUuids, canonUuids)) {
+      backfillFromEntries(t, composed)
+      return
+    }
+    const ordered = buildOrderedProjection(input)
+    t.store.reset()
+    t.store.hydrate(
+      ordered.map((e, i) => ({ seq: i, uuid: uuidOf(e.msg), msg: e.msg, evicted: e.evicted })),
+    )
+    const batchId = `rebuild-${id}-${t.store.generation}`
+    const rows = ordered.map((e, i) => ({
+      v: 2,
+      batchId,
+      seq: i,
+      occurrenceId: e.occurrenceId,
+      source: e.source,
+      aliases: e.aliases,
+      uuid: uuidOf(e.msg),
+      type: (e.msg as { type?: string }).type,
+      msg: e.msg,
+    }))
+    const commit = makeCommitV2({
+      batchId,
+      batchType: 'generation',
+      generation: t.store.generation,
+      reason: 'ordered-rebuild',
+      contentPolicy: 'preserve',
+      rows,
+    })
+    await t.sidecar.appendBatch(rows, commit)
+    log.info(`[session ${id}] transcript ordered-rebuild: ${ordered.length} entries, generation ${t.store.generation}`)
   }
 
   /** Pre-seed a FORK's seq store from its source's transcript BEFORE the
