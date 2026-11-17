@@ -5,19 +5,19 @@
  */
 import { describe, it, expect } from 'vitest'
 import { buildSessionRouter } from './sessions.js'
-import { HttpError } from '../errors.js'
+import { createErrorHandler } from '../errors.js'
 import type { SessionManager } from '../session-manager.js'
 
-/** The production app mounts an onError that translates HttpError → JSON status
- *  (server/app.ts); the bare router does not, so mirror it here. */
+/** The production app mounts createErrorHandler (server/app.ts) to translate
+ *  HttpError → JSON status; the bare router does not, so mirror it here. */
 function appFor(sm: SessionManager) {
   const app = buildSessionRouter(sm)
-  app.onError((err, c) => {
-    if (err instanceof HttpError) return c.json({ error: err.message }, err.status)
-    throw err
-  })
+  app.onError(createErrorHandler('[test]'))
   return app
 }
+
+const body = async (res: Response): Promise<{ error?: string; aroundSeq?: number }> =>
+  (await res.json()) as { error?: string; aroundSeq?: number }
 
 function mockManager(generation: number): SessionManager {
   const page = {
@@ -48,14 +48,14 @@ describe('around/messages stale-generation guard', () => {
     const app = appFor(mockManager(5))
     const res = await app.request('/sessions/s1/messages?aroundUuid=A&generation=3')
     expect(res.status).toBe(409)
-    expect((await res.json()).error).toBe('stale-generation')
+    expect((await body(res)).error).toBe('stale-generation')
   })
 
   it('the current generation resolves normally', async () => {
     const app = appFor(mockManager(5))
     const res = await app.request('/sessions/s1/messages?aroundUuid=A&generation=5')
     expect(res.status).toBe(200)
-    expect((await res.json()).aroundSeq).toBe(3)
+    expect((await body(res)).aroundSeq).toBe(3)
   })
 
   it('no generation param skips the guard (backward compatible)', async () => {
