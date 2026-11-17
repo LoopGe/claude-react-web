@@ -570,6 +570,7 @@ describe('ProcessMonitor', () => {
     } else {
       expect(onExit.mock.calls[0][0]).toMatchObject({ sessionId: 's-exit-sweep', signal: 'SIGTERM' })
     }
+    expect(onExit).toHaveBeenCalledTimes(1)
   })
 
   // ---- win32 Job containment ----

@@ -134,8 +134,10 @@ export function execCommand(cwd: string, command: string, opts: ExecOptions = {}
       return
     }
     // Spawn-time creation identity: the win32 tree kill refuses a PID whose
-    // live creation time no longer matches (PID reuse fence).
-    const birthTime = process.platform === 'win32' && child.pid !== undefined
+    // live creation time no longer matches (PID reuse fence). Only the abort
+    // path consumes it, so capture it only when a signal is wired — otherwise
+    // a koffi-less host would pay a ~200 ms PowerShell query it can never use.
+    const birthTime = opts.signal !== undefined && process.platform === 'win32' && child.pid !== undefined
       ? captureBirthTime(child.pid)
       : null
 
