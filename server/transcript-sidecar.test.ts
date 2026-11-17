@@ -8,6 +8,9 @@ import {
   TranscriptSidecar,
   backfillFromEntries,
   foldSidecarRows,
+  foldSidecarRowsV2,
+  truncateToLastCommit,
+  makeCommitV2,
   recordTranscriptMessage,
   transcriptRow,
   type TranscriptHolder,
@@ -471,5 +474,102 @@ describe('TranscriptStore extensions (Task 3)', () => {
     s.evict(['u1', 'u3'])
     expect(s.visibleCount).toBe(3)
     expect(s.headSeq).toBe(5) // seq space unchanged
+  })
+})
+
+describe('sidecar v2 batch commits / fold / crash recovery (spec §8.2/§9)', () => {
+  function msgRow(batchId: string, seq: number, uuid: string, occurrenceId = `uuid:${uuid}:user`): Record<string, unknown> {
+    return { v: 2, batchId, seq, occurrenceId, source: 'provider', aliases: [], uuid, type: 'user', msg: { type: 'user', uuid, message: { role: 'user', content: uuid } } }
+  }
+  function genCommit(batchId: string, generation: number, rows: object[]): Record<string, unknown> {
+    return makeCommitV2({ batchId, batchType: 'generation', generation, reason: 'ordered-rebuild', contentPolicy: 'preserve', rows })
+  }
+  function liveCommit(batchId: string, generation: number, rows: object[]): Record<string, unknown> {
+    return makeCommitV2({ batchId, batchType: 'live', generation, reason: 'initial', contentPolicy: 'preserve', rows })
+  }
+  function lines(...rows: object[]): string {
+    return rows.map((r) => JSON.stringify(r)).join('\n') + '\n'
+  }
+
+  it('fold adopts the latest committed generation and replays a later live batch', () => {
+    const g0 = [msgRow('g0', 0, 'a')]
+    const g1 = [msgRow('g1', 0, 'b')]
+    const live = [msgRow('l1', 1, 'c')]
+    const rows = [
+      ...g0, genCommit('g0', 0, g0),
+      ...g1, genCommit('g1', 1, g1),
+      ...live, liveCommit('l1', 1, live),
+    ]
+    const folded = foldSidecarRowsV2(rows)
+    expect(folded.generation).toBe(1)
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['b', 'c'])
+    expect(folded.entries.map((e) => e.seq)).toEqual([0, 1])
+    expect(folded.history.map((h) => h.generation)).toEqual([0, 1])
+  })
+
+  it('uncommitted batch is ignored by fold; truncate returns prior committed prefix + salvaged tail', () => {
+    const g0 = [msgRow('g0', 0, 'a')]
+    const orphan = [msgRow('orphan', 1, 'x')]
+    const raw = lines(...g0, genCommit('g0', 0, g0), ...orphan)
+    const rows = raw.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    const folded = foldSidecarRowsV2(rows)
+    expect(folded.entries.map((e) => e.uuid)).toEqual(['a'])
+    const { prefix, salvaged } = truncateToLastCommit(raw)
+    expect(prefix).toBe(lines(...g0, genCommit('g0', 0, g0)))
+    expect(salvaged.map((r) => r.uuid)).toEqual(['x'])
+  })
+
+  it('a committed non-public recovery batch after the generation commit survives truncation', () => {
+    const g0 = [msgRow('g0', 0, 'a')]
+    const recovery = [{ v: 2, batchId: 'r1', operationId: 'op1', payload: { kind: 'result-revision' } }]
+    const rCommit = makeCommitV2({ batchId: 'r1', batchType: 'recovery', generation: 0, reason: 'initial', contentPolicy: 'preserve', rows: recovery })
+    const raw = lines(...g0, genCommit('g0', 0, g0), ...recovery, rCommit)
+    const { prefix, salvaged } = truncateToLastCommit(raw)
+    expect(prefix).toBe(raw)
+    expect(salvaged).toEqual([])
+  })
+
+  it('a complete commit record with a bad checksum is not truncatable; fold throws corrupt-sidecar', () => {
+    const g0 = [msgRow('g0', 0, 'a')]
+    const badCommit = { ...genCommit('g0', 0, g0), checksum: 'deadbeef' }
+    const raw = lines(...g0, badCommit)
+    expect(() => truncateToLastCommit(raw)).toThrow(/corrupt-sidecar/)
+    const rows = raw.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    expect(() => foldSidecarRowsV2(rows)).toThrow(/corrupt-sidecar/)
+  })
+
+  it('v1 duplicate base seq fails with duplicate-seq', () => {
+    const rows = [
+      { seq: 0, uuid: 'a', type: 'user', msg: { type: 'user', uuid: 'a' } },
+      { seq: 0, uuid: 'b', type: 'user', msg: { type: 'user', uuid: 'b' } },
+    ]
+    expect(() => foldSidecarRows(rows)).toThrow(/duplicate-seq/)
+  })
+
+  it('appendBatch fsyncs before resolving and propagates write errors', async () => {
+    const dir = await tmpDir()
+    // Derive the real FileHandle prototype from an actual handle (the module
+    // mock does not re-export the FileHandle class binding).
+    const probe = await nodeFs.open(path.join(dir, 'probe'), 'w')
+    const handleProto = Object.getPrototypeOf(probe) as { sync: () => Promise<void>; writeFile: (d: string) => Promise<void> }
+    await probe.close()
+
+    const sidecar = new TranscriptSidecar(dir, 'sid-batch')
+    const syncSpy = vi.spyOn(handleProto, 'sync')
+    const rows = [msgRow('b1', 0, 'a')]
+    await sidecar.appendBatch(rows, genCommit('b1', 0, rows))
+    expect(syncSpy).toHaveBeenCalled()
+    const loaded = await sidecar.load()
+    expect(loaded.some((r) => r.commit === true)).toBe(true)
+    syncSpy.mockRestore()
+    await sidecar.close()
+
+    const dir2 = await tmpDir()
+    const sidecar2 = new TranscriptSidecar(dir2, 'sid-err')
+    // Force the next write to fail; appendBatch must reject (not swallow).
+    const writeSpy = vi.spyOn(handleProto, 'writeFile').mockRejectedValueOnce(new Error('disk full'))
+    await expect(sidecar2.appendBatch([msgRow('b2', 0, 'z')], genCommit('b2', 0, []))).rejects.toThrow('disk full')
+    writeSpy.mockRestore()
+    await sidecar2.close()
   })
 })

@@ -25,6 +25,7 @@
 import { mkdir, open, readFile, unlink } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import { dirname, basename, join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { createLogger } from './log.js'
 import { assistantMessageShapeOf } from '../shared/assistant-message.js'
@@ -181,6 +182,225 @@ export class TranscriptSidecar {
     }
     return this.handle
   }
+
+  /** Durable batch append (spec §8.1/§8.2): write all rows + the commit record,
+   *  then fsync BEFORE resolving. Unlike appendRow this PROPAGATES write/sync
+   *  errors (the durable-before-publish barrier must not swallow a failure).
+   *  The serial chain stays alive for later appends even if this batch fails. */
+  async appendBatch(rows: readonly object[], commit: object): Promise<void> {
+    if (!this.file || this.removed || this.closed) return
+    const payload = [...rows, commit].map((r) => JSON.stringify(r)).join('\n') + '\n'
+    const run = this.queue.then(async () => {
+      if (this.removed) return
+      const handle = await this.ensureHandle()
+      try {
+        await handle.writeFile(payload)
+        await handle.sync()
+      } catch (err) {
+        // Release the failed descriptor so a later close/remove cannot inherit
+        // an untracked open handle (fatal on Windows); surface the error.
+        this.handle = null
+        try {
+          await handle.close()
+        } catch {
+          /* best-effort release */
+        }
+        throw err
+      }
+    })
+    this.queue = run.catch(() => {})
+    await run
+  }
+
+  private baselinePath(): string | null {
+    return this.file ? this.file.replace(/\.ndjson$/, '.v1baseline.json') : null
+  }
+
+  /** Persist the v1→v2 migration recovery baseline (spec §9): the original v1
+   *  byte length + sha256, fsynced, so a pre-commit crash can restore the v1
+   *  prefix instead of leaving an unrecoverable mixed file. */
+  async writeV1Baseline(b: V1MigrationBaseline): Promise<void> {
+    const p = this.baselinePath()
+    if (!p) return
+    await mkdir(dirname(p), { recursive: true })
+    const handle = await open(p, 'w')
+    try {
+      await handle.writeFile(JSON.stringify(b))
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+  }
+
+  async readV1Baseline(): Promise<V1MigrationBaseline | null> {
+    const p = this.baselinePath()
+    if (!p) return null
+    try {
+      const raw = await readFile(p, 'utf8')
+      const parsed = JSON.parse(raw) as V1MigrationBaseline
+      if (typeof parsed.sourceByteLength !== 'number' || typeof parsed.sourceSha256 !== 'string') return null
+      return parsed
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return null
+      throw err
+    }
+  }
+}
+
+/** One committed generation's reset metadata (spec §8.3/§9). */
+export interface GenerationRecord {
+  generation: number
+  reason: 'initial' | 'ordered-rebuild' | 'clear' | 'compact' | 'recovery'
+  contentPolicy: 'preserve' | 'replace'
+}
+
+/** v1→v2 migration recovery baseline (spec §9). */
+export interface V1MigrationBaseline {
+  sourceByteLength: number
+  sourceSha256: string
+}
+
+/** Stable sha256 over a batch's row payloads (canonical JSON array). */
+export function batchChecksum(rows: readonly object[]): string {
+  return createHash('sha256').update(JSON.stringify(rows)).digest('hex')
+}
+
+/** Build a v2 commit record for a batch (count + checksum over its rows). */
+export function makeCommitV2(opts: {
+  batchId: string
+  batchType: 'generation' | 'live' | 'recovery' | 'lifecycle' | 'input' | 'reset'
+  generation: number
+  reason: GenerationRecord['reason']
+  contentPolicy: GenerationRecord['contentPolicy']
+  rows: readonly object[]
+}): SidecarRow {
+  return {
+    v: 2,
+    commit: true,
+    batchId: opts.batchId,
+    batchType: opts.batchType,
+    generation: opts.generation,
+    reason: opts.reason,
+    contentPolicy: opts.contentPolicy,
+    count: opts.rows.length,
+    checksum: batchChecksum(opts.rows),
+  }
+}
+
+interface ParsedBatch {
+  batchId: string
+  rows: SidecarRow[]
+  commit: SidecarRow | null
+}
+
+function validateCommit(b: ParsedBatch): void {
+  const c = b.commit!
+  if (typeof c.count !== 'number' || c.count !== b.rows.length) {
+    throw new Error(`corrupt-sidecar: batch ${b.batchId} count mismatch`)
+  }
+  if (batchChecksum(b.rows) !== c.checksum) {
+    throw new Error(`corrupt-sidecar: batch ${b.batchId} checksum mismatch`)
+  }
+}
+
+/** Group v2 rows into batches in file order; a commit record closes its batch.
+ *  A complete-but-invalid commit throws corrupt-sidecar. Trailing batches with
+ *  no commit record are returned uncommitted (commit:null). v1 rows are skipped. */
+function parseBatches(rows: readonly SidecarRow[]): ParsedBatch[] {
+  const committed: ParsedBatch[] = []
+  const open = new Map<string, ParsedBatch>()
+  for (const row of rows) {
+    if (row.v !== 2) continue
+    const batchId = typeof row.batchId === 'string' ? row.batchId : null
+    if (batchId === null) continue
+    if (row.commit === true) {
+      const b = open.get(batchId) ?? { batchId, rows: [], commit: null }
+      b.commit = row
+      validateCommit(b)
+      committed.push(b)
+      open.delete(batchId)
+    } else {
+      const b = open.get(batchId) ?? { batchId, rows: [], commit: null }
+      b.rows.push(row)
+      open.set(batchId, b)
+    }
+  }
+  return [...committed, ...open.values()]
+}
+
+/** Fold v2 rows: adopt the latest committed generation, then replay later
+ *  committed live/recovery/lifecycle/input batches in file order (spec §8.2).
+ *  Uncommitted trailing batches are ignored. Complete-invalid commits throw. */
+export function foldSidecarRowsV2(rows: readonly SidecarRow[]): {
+  entries: HydrateRow[]
+  generation: number
+  history: GenerationRecord[]
+} {
+  const batches = parseBatches(rows)
+  const committed = batches.filter((b) => b.commit !== null)
+  const genBatches = committed.filter(
+    (b) => b.commit!.batchType === 'generation' || b.commit!.batchType === 'reset',
+  )
+  if (genBatches.length === 0) return { entries: [], generation: 0, history: [] }
+  const latest = genBatches.reduce((a, b) => (Number(b.commit!.generation) > Number(a.commit!.generation) ? b : a))
+  const generation = Number(latest.commit!.generation)
+  const history: GenerationRecord[] = genBatches.map((b) => ({
+    generation: Number(b.commit!.generation),
+    reason: b.commit!.reason as GenerationRecord['reason'],
+    contentPolicy: b.commit!.contentPolicy as GenerationRecord['contentPolicy'],
+  }))
+  const bySeq = new Map<number, HydrateRow>()
+  const occToSeq = new Map<string, number>()
+  const apply = (row: SidecarRow): void => {
+    if (row.evicted === true) {
+      const occ = typeof row.occurrenceId === 'string' ? row.occurrenceId : null
+      const seq = occ !== null ? occToSeq.get(occ) : undefined
+      if (seq !== undefined) {
+        const e = bySeq.get(seq)
+        if (e) e.evicted = true
+      }
+      return
+    }
+    if (typeof row.seq !== 'number') return
+    bySeq.set(row.seq, { seq: row.seq, uuid: typeof row.uuid === 'string' ? row.uuid : null, msg: row.msg })
+    if (typeof row.occurrenceId === 'string') occToSeq.set(row.occurrenceId, row.seq)
+  }
+  for (const row of latest.rows) apply(row)
+  for (const b of committed.slice(committed.indexOf(latest) + 1)) {
+    for (const row of b.rows) apply(row)
+  }
+  const entries = [...bySeq.values()].sort((a, b) => a.seq - b.seq)
+  return { entries, generation, history }
+}
+
+/** Truncate raw sidecar text to the last VALID commit record of ANY batchType
+ *  (spec §8.2). Returns the committed prefix and the salvaged uncommitted tail
+ *  rows. A complete-but-invalid commit record is NOT truncatable — it throws
+ *  corrupt-sidecar (the caller must fail closed, not hide corruption). A torn
+ *  final line is dropped (it is after the last commit). */
+export function truncateToLastCommit(raw: string): { prefix: string; salvaged: SidecarRow[] } {
+  const lines = raw.split('\n')
+  const parsed: Array<{ row: SidecarRow; idx: number }> = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line.trim()) continue
+    try {
+      parsed.push({ row: JSON.parse(line) as SidecarRow, idx: i })
+    } catch {
+      /* torn line — part of the uncommitted tail, dropped from the prefix */
+    }
+  }
+  // Validates every complete commit; throws corrupt-sidecar on a bad one.
+  parseBatches(parsed.map((p) => p.row))
+  let lastCommitIdx = -1
+  for (const { row, idx } of parsed) {
+    if (row.v === 2 && row.commit === true) lastCommitIdx = idx
+  }
+  if (lastCommitIdx === -1) return { prefix: '', salvaged: parsed.map((p) => p.row) }
+  const prefix = lines.slice(0, lastCommitIdx + 1).join('\n') + '\n'
+  const salvaged = parsed.filter((p) => p.idx > lastCommitIdx).map((p) => p.row)
+  return { prefix, salvaged }
 }
 
 /** Build the message row persisted for one seq-assigned message (spec §2
@@ -210,6 +430,7 @@ export function transcriptRow(seq: number, uuid: string | null, msg: unknown): S
  *  projection. */
 export function foldSidecarRows(rows: readonly SidecarRow[]): HydrateRow[] {
   const bySeq = new Map<number, HydrateRow>()
+  const baseSeen = new Set<number>()
   for (const row of rows) {
     const seq = row.seq
     if (typeof seq !== 'number' || !Number.isInteger(seq) || seq < 0) continue
@@ -219,6 +440,10 @@ export function foldSidecarRows(rows: readonly SidecarRow[]): HydrateRow[] {
       else bySeq.set(seq, { seq, uuid: null, evicted: true })
       continue
     }
+    // Two distinct BASE rows sharing one seq is corruption (spec §9): a
+    // Map last-wins would silently hide the overwritten occurrence.
+    if (baseSeen.has(seq)) throw new Error(`duplicate-seq: ${seq}`)
+    baseSeen.add(seq)
     const uuid = typeof row.uuid === 'string' ? row.uuid : null
     bySeq.set(seq, {
       seq,
