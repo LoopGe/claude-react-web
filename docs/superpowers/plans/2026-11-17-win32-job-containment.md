@@ -113,7 +113,7 @@ export class Win32JobError extends Error {
   constructor(message: string, readonly capability: boolean) // capability=true → sticky fallback
 }
 export interface Win32Job {
-  terminate(): void      // TerminateJobObject(job, 1); idempotent
+  terminate(): void      // TerminateJobObject(job, 1); idempotent; counts containment_job_terminate once per effective call
   activeCount(): number  // class-1 query, u32 @ offset 40
   close(): void          // CloseHandle; idempotent
 }
@@ -159,10 +159,12 @@ Expected: FAIL — cannot resolve `./win32-job.js`.
 Lazy cached bindings via `createRequire(import.meta.url)('koffi')`; `koffi.load('kernel32.dll')`, `kernel32.func('__stdcall', name, result, args)`, `PVOID = koffi.pointer('void')`. Cache the `FILETIME` koffi struct (`{dwLowDateTime:'uint32', dwHighDateTime:'uint32'}`) at module level — koffi's type registry is global per process. Bind: `CreateJobObjectW`, `SetInformationJobObject`, `AssignProcessToJobObject`, `QueryInformationJobObject`, `TerminateJobObject`, `OpenProcess`, `GetProcessTimes`, `CloseHandle`, `GetLastError`.
 
 - `createJobForProcess`: `CreateJobObjectW(null,null)` → `Buffer.alloc(144)`, `writeUInt32LE(0x2000, 16)`, `SetInformationJobObject(job, 9, buf, 144)` (create/set failures → `Win32JobError(msg, true)`, close job); `OpenProcess(0x1 | 0x100, 0, pid)` → `AssignProcessToJobObject(job, handle)` → `CloseHandle(handle)` (open/assign failures → `Win32JobError(msg, false)`, close job).
+- `terminate`: `TerminateJobObject(job, 1)` behind a `terminated` boolean guard; on the first effective call `metrics.count('containment_job_terminate')`.
 - `activeCount`: `Buffer.alloc(48)`, `QueryInformationJobObject(job, 1, buf, 48, null)`, `readUInt32LE(40)`.
 - `processIdentity`: `OpenProcess(0x1000, 0, pid)` + `GetProcessTimes` → ticks = `BigInt(high) << 32n | BigInt(low)` → `String(ticks)`; null on any failure; always close the handle.
 - `captureBirthTime`: `processIdentity(pid)` ?? `spawnSync('powershell', ['-NoProfile','-Command',`(Get-Process -Id ${pid}).StartTime.ToFileTime()`], {windowsHide:true})` stdout trimmed (null on non-zero/empty).
 - `killTreeWin32`: `birthTime === null` → `log.error` + return false; `current = captureBirthTime(pid)`; null → `log.error` + false; `current !== birthTime` → `log.warn` (PID reused) + false; else `spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {stdio:'ignore', windowsHide:true})` + return true.
+
 The first real spawn attempt is the capability probe (Task 3) — no separate probe function.
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -189,8 +191,8 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Modify: `.github/workflows/ci.yml:66-72`
 
 **Interfaces:**
-- Consumes: Task 2's `Win32Job`, `Win32JobError`, `createJobForProcess`, `captureBirthTime`, `killTreeWin32`, `win32JobAvailable`.
-- Produces: `Entry.job: Win32Job | null`, `Entry.birthTime: string | null`, `Entry.selfTerminated: boolean`; constructor `opts.jobFactory?: (pid: number) => Win32Job` (test seam, default `createJobForProcess`); `get containmentMode(): 'job' | 'fallback' | 'posix'`. Task 4 reads these fields and the mode.
+- Consumes: Task 2's `Win32Job`, `Win32JobError`, `createJobForProcess`, `captureBirthTime`, `killTreeWin32`.
+- Produces: `Entry.job: Win32Job | null`, `Entry.birthTime: string | null`, `Entry.selfTerminated: boolean`; constructor `opts.jobFactory?: (pid: number) => Win32Job` (test seam, default `createJobForProcess`); `get containmentMode(): 'job' | 'fallback' | 'posix'` (monitor-level sticky state: `'fallback'` only after a capability failure). Task 4 reads these fields and the mode.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -214,8 +216,9 @@ it('win32: capability failure sticks to fallback; fallback still tree-kills', as
   // second register+spawn: factory NOT called again (sticky)
 })
 it('win32: dead-child assignment failure is retryable, not sticky', async () => {
-  // factory throws Win32JobError('gone', false) once, then delegates to createJobForProcess
-  // first spawn: mode fallback; second spawn: mode job
+  // factory throws Win32JobError('gone', false) on the first call, then delegates to createJobForProcess
+  // first spawn: entry.job null, containmentMode still 'job' (not sticky)
+  // second register+spawn: factory called again, tree dies via Job on escalation (expectGone both)
 })
 ```
 
@@ -231,7 +234,7 @@ Expected: FAIL — `containmentMode` undefined / trees survive.
 - `spawnFor` (win32 only, after `defaultSpawnFn`): `entry.birthTime = captureBirthTime(pid)`; if `!jobStickyFailed` try `entry.job = this.jobFactory(pid)`; catch `Win32JobError`: `capability` → `jobStickyFailed = true` + `log.warn` once; else `log.warn` retryable. Never throw out of `spawnFor` for containment failures.
 - `signalTree`: win32 branch before the pgid branch — `entry.job` → `entry.selfTerminated = true; entry.job.terminate()`; else `killTreeWin32(pid, entry.birthTime)`. POSIX path unchanged.
 - `unregister` safety-timer escalation: win32 → single `this.signalTree(entry, 'SIGKILL')`, no `escalationTimer` leg; POSIX two-leg ladder unchanged.
-- `metrics.count('containment_job_terminate')` on Job terminate; `metrics.count('containment_fallback_treekill')` when `killTreeWin32` returns true.
+- `metrics.count('containment_fallback_treekill')` when `killTreeWin32` returns true. (The Job-terminate counter lives inside `Win32Job.terminate()` — Task 2.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -301,7 +304,7 @@ Expected: FAIL — survivors orphan / `retiredCount` undefined.
 
 - Module-level `const retiredJobs = new Set<Win32Job>()`; `export function reapRetiredJobs()`: for each, `activeCount() === 0` → `close()` + delete; `metrics.gauge('retired_jobs', retiredJobs.size)`.
 - `finalizeEntry` win32 branch (after listener detach, before `onExit` surfacing), replacing the pgid-gated sweep on win32:
-  - `entry.job`: `count = entry.job.activeCount()`; 0 → `close()`; else classify — terminate when `!reg.intentional || info.killed || info.signal !== null || entry.selfTerminated` (`terminate()` + `close()` + counter); otherwise retire (`retiredJobs.add(entry.job)`, keep open).
+  - `entry.job`: `count = entry.job.activeCount()`; 0 → `close()`; else classify — terminate when `!reg.intentional || info.killed || info.signal !== null || entry.selfTerminated` (`terminate()` + `close()`); otherwise retire (`retiredJobs.add(entry.job)`, keep open).
   - fallback (no job): terminate via `killTreeWin32(pid, entry.birthTime)` under the same classify predicate; intentional-graceful → skip (POSIX-parity trust).
   - POSIX pgid sweep unchanged.
 - `sweepForProcessExit`: win32 live entries → `job.terminate()` or `killTreeWin32` (both synchronous); then `for (const j of retiredJobs) j.close()` + clear (kill-on-close reaps survivors). POSIX unchanged.
@@ -329,6 +332,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 **Files:**
 - Modify: `server/providers/native/tools/bash.ts:30-36`, `server/exec.ts:152-156`
 - Test: `server/providers/native/tools/bash.test.ts`, `server/exec.test.ts`
+- Modify: `.github/workflows/ci.yml` (windows-platform file list)
 
 **Interfaces:**
 - Consumes: Task 2's `killTreeWin32(pid, birthTime)`, `captureBirthTime(pid)`.
@@ -353,10 +357,14 @@ Expected: FAIL on win32 — descendant survives the direct-child kill (exec.ts p
 Run: `npx vitest run server/providers/native/tools/bash.test.ts server/exec.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Wire CI**
+
+Add `server/providers/native/tools/bash.test.ts` and `server/exec.test.ts` to the `windows-platform` job's vitest file list (their new win32 pins must run in CI). Confirm both files' full suites pass on this win32 host first.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add server/providers/native/tools/bash.ts server/providers/native/tools/bash.test.ts server/exec.ts server/exec.test.ts
+git add server/providers/native/tools/bash.ts server/providers/native/tools/bash.test.ts server/exec.ts server/exec.test.ts .github/workflows/ci.yml
 git commit -m "refactor(exec): route win32 tree-kill through the guarded killTreeWin32 helper
 
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
