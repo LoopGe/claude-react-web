@@ -43,9 +43,9 @@ first leg of the ladder.
   the child leads its own process group and `entry.pgid = child.pid`.
 - `signalTree(entry, sig)` delivers teardown signals to the whole group via
   `process.kill(-pgid, sig)`, falling back to the direct child when the group
-  signal fails (ESRCH/EPERM). Windows has no POSIX groups: pgid stays undefined
-  and only the direct child is signalled — deliberately weaker containment,
-  documented in-code rather than papered over.
+  signal fails (ESRCH/EPERM). Windows has no POSIX groups: pgid stays undefined,
+  and the original direct-child-only degradation there is partially superseded
+  by [win32 Job containment](2026-11-17-win32-job-containment.md).
 - The destroy-time safety timer no longer merely gives up waiting. At
   `safetyMs` (15s) it resolves `exited` with `exitSafetyTimeout` (preserving the
   clear()/respawn gate contract) **and escalates**: group SIGTERM, then — if the
@@ -119,13 +119,17 @@ still running; `realExited` is now a truthful "the process is gone" signal
 (used by permanent-delete gating) instead of one that can stay pending forever.
 
 Cost and remaining boundary, adopted knowingly: SIGKILL of the server itself,
-fatal crashes, and power loss still orphan everything — no in-process handler
-can run, matching DSH's "needs an external supervisor" declaration. CLI-spawned
-background tasks that `setsid` into their own sessions are unreachable by group
-signal; they are cleaned by the CLI's own graceful shutdown, which the
-escalation ladder now gives time to run. On Windows, tree termination degrades
-to direct-child kills (no POSIX groups). The safety timer now actively kills a
-child it previously only abandoned — a wedged CLI mid-turn is terminated rather
+fatal crashes, and power loss still orphan everything on POSIX — no in-process
+handler can run, matching DSH's "needs an external supervisor" declaration; on
+Windows this boundary is closed by [win32 Job containment](2026-11-17-win32-job-containment.md)
+(partial supersession — kernel kill-on-close reaps the forest even when the
+host is hard-killed). CLI-spawned background tasks that `setsid` into their own
+sessions are unreachable by group signal; they are cleaned by the CLI's own
+graceful shutdown, which the escalation ladder now gives time to run. On Windows, tree termination degrades
+to direct-child kills (no POSIX groups) — partially superseded on Windows by
+[win32 Job containment](2026-11-17-win32-job-containment.md); the POSIX decision
+stands.
+The safety timer now actively kills a child it previously only abandoned — a wedged CLI mid-turn is terminated rather
 than left running, which is the intended force-unload semantic. Three narrower
 residuals from the review passes: the finalization sweep sends one SIGTERM with
 no SIGKILL escalation behind it (a crash-orphaned survivor that traps SIGTERM
