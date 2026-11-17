@@ -17,6 +17,11 @@ export interface HubConnection {
   id: string
   push: (frame: unknown) => void
   closed?: boolean
+  /** Whether this connection's client supports the ordered-rebase protocol
+   *  (spec §8.3). A rebuild must be refused while any incapable subscriber is
+   *  attached, so an old tab never receives a new-generation frame it cannot
+   *  reset for. Defaults to false (unknown/legacy client). */
+  orderedRebase?: boolean
 }
 
 interface SessionChannel {
@@ -65,6 +70,19 @@ export class SessionSubscriptionHub {
 
   subscriberCount(sessionId: string): number {
     return this.sessions.get(sessionId)?.conns.size ?? 0
+  }
+
+  /** True when no live subscriber lacks ordered-rebase support (spec §8.3).
+   *  A session with no subscribers is rebuildable; one with any incapable
+   *  (legacy/unknown) subscriber is not — the rebuild must wait for a reload. */
+  allSubscribersCapable(sessionId: string): boolean {
+    const ch = this.sessions.get(sessionId)
+    if (!ch) return true
+    for (const conn of ch.conns.values()) {
+      if (conn.closed) continue
+      if (conn.orderedRebase !== true) return false
+    }
+    return true
   }
 
   /** Fan a frame out to every live connection on the session's queue. */

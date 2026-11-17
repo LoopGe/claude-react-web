@@ -28,6 +28,10 @@ export type { WsTurnChanges } from './turn-changes.js'
 export interface WsSubscribe {
   kind: 'subscribe'
   sessionId: string
+  /** Client declares ordered-rebase protocol support (spec §8.3). The server
+   *  refuses a transcript rebuild while any subscriber lacks this, so a legacy
+   *  tab is never sent a new-generation frame it cannot reset for. */
+  orderedRebase?: boolean
 }
 
 /** Stop streaming events for `sessionId`. Safe to call even if not

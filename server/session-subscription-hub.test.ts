@@ -51,3 +51,29 @@ describe('SessionSubscriptionHub (spec §8.1)', () => {
     expect(hub.subscriberCount('nope')).toBe(0)
   })
 })
+
+describe('SessionSubscriptionHub capability gate (spec §8.3)', () => {
+  it('no subscribers → rebuildable', () => {
+    expect(new SessionSubscriptionHub().allSubscribersCapable('s1')).toBe(true)
+  })
+  it('an incapable (legacy/unknown) subscriber blocks rebuild', () => {
+    const hub = new SessionSubscriptionHub()
+    hub.attach('s1', { id: 'old', push: () => {} }) // orderedRebase undefined
+    expect(hub.allSubscribersCapable('s1')).toBe(false)
+  })
+  it('all capable subscribers → rebuildable', () => {
+    const hub = new SessionSubscriptionHub()
+    hub.attach('s1', { id: 'a', push: () => {}, orderedRebase: true })
+    hub.attach('s1', { id: 'b', push: () => {}, orderedRebase: true })
+    expect(hub.allSubscribersCapable('s1')).toBe(true)
+  })
+  it('a mixed set blocks rebuild; a closed incapable subscriber is ignored', () => {
+    const hub = new SessionSubscriptionHub()
+    hub.attach('s1', { id: 'a', push: () => {}, orderedRebase: true })
+    const old: HubConnection = { id: 'old', push: () => {}, orderedRebase: false }
+    hub.attach('s1', old)
+    expect(hub.allSubscribersCapable('s1')).toBe(false)
+    old.closed = true
+    expect(hub.allSubscribersCapable('s1')).toBe(true)
+  })
+})
