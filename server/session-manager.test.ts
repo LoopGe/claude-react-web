@@ -8472,6 +8472,9 @@ describe('SessionManager', () => {
       })
     }
 
+    const loadTranscriptRows = (sessionId: string) => new TranscriptSidecar(dir, sessionId).load()
+    const transcriptRowCount = async (sessionId: string) => (await loadTranscriptRows(sessionId)).length
+
     it('seq-assigns sent prompts and pump-ingested messages; window reads back by seq', async () => {
       const info = await sm.create({ cwd: TEST_CWD })
       await sm.send(info.id, 'hello')
@@ -8531,7 +8534,11 @@ describe('SessionManager', () => {
       expect(win.headSeq).toBe(3) // seqs are not recycled
 
       // Simulate a process restart: a fresh manager over the same state dir
-      // rehydrates the store from the sidecar, tombstone included.
+      // rehydrates the store from the sidecar, tombstone included. Wait for
+      // the queued tombstone append to be visible through the real loader.
+      expect(await waitFor(async () =>
+        (await loadTranscriptRows(info.id)).some((row) => row.seq === 0 && row.evicted === true),
+      )).toBe(true)
       const store2 = new SessionStore({ stateDir: dir })
       await store2.load()
       const sm2 = new SessionManager({ store: store2 })
@@ -8581,11 +8588,7 @@ describe('SessionManager', () => {
       // the page, so the cards stay 'running').
       const sidecarFile = join(dir, 'transcripts', `${info.id}.ndjson`)
       const originalUuid = `${base}638463dbf3fa`
-      const rowCount = async () =>
-        existsSync(sidecarFile)
-          ? (await nodeFs.readFile(sidecarFile, 'utf8')).split('\n').filter(Boolean).length
-          : 0
-      expect(await waitFor(async () => (await rowCount()) === 3)).toBe(true)
+      expect(await waitFor(async () => (await transcriptRowCount(info.id)) === 3)).toBe(true)
       await nodeFs.appendFile(sidecarFile, JSON.stringify({
         seq: 3,
         uuid: originalUuid,
@@ -8656,6 +8659,12 @@ describe('SessionManager', () => {
         const jsonlPath = join(dir, 'projects', encodeCwd(TEST_CWD), `${info.id}.jsonl`)
         mkdirSync(dirname(jsonlPath), { recursive: true })
         writeFileSync(jsonlPath, jsonl.map((line) => JSON.stringify(line)).join('\n') + '\n')
+
+        // transcriptHead advances synchronously with the in-memory record, but
+        // sidecar persistence is fire-and-forget. Wait for all three live rows
+        // before a second manager reads them, or reconcile sees partial live
+        // coverage and correctly keeps the whole-message line as a fallback.
+        expect(await waitFor(async () => (await transcriptRowCount(info.id)) === 3)).toBe(true)
 
         const store2 = new SessionStore({ stateDir: dir })
         await store2.load()
