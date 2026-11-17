@@ -25,7 +25,7 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { normalize, paginateRenderable } from '../../../history-reader.js'
-import type { HistoryEntry, HistoryPage, RawLine } from '../../../history-reader.js'
+import type { HistoryEntry, HistoryPage, HistoryReadResult, RawLine } from '../../../history-reader.js'
 import { nativeHistoryCache } from './cache.js'
 import { isSidechainEvent, parseEventLine, parseHeaderLine } from './format.js'
 import type { NativeCompactEvent } from './format.js'
@@ -188,6 +188,9 @@ export async function readNativeHistoryEntries(
     if (isSidechainEvent(line)) continue
     entries.push({
       index,
+      // Full-stream ordinal (computed before the sidechain drop above), so
+      // filtering never renumbers it (spec §4).
+      sourceOrdinal: index,
       // No trim: this path feeds search, which reads content to build snippets
       // and never ships the full message over WS.
       message: normalize(line, id, false),
@@ -205,4 +208,73 @@ export async function readNativeHistoryPage(
   if (!lines) return emptyPage()
   const stream = filterAfterUuid(withRepair(lines), opts.afterUuid).map(publicNativeHistoryLine)
   return paginateRenderable(stream, id, opts)
+}
+
+/** The compact boundary occurrence the live native path emits but the public
+ *  read projection synthesizes away (it renders only the summary). Ordered
+ *  reconcile must see BOTH boundary and summary as distinct occurrences sharing
+ *  the event uuid (spec §11 compact); frameKind tells them apart. */
+function compactBoundaryLine(event: NativeCompactEvent): RawLine {
+  return {
+    type: 'system',
+    subtype: 'compact_boundary',
+    uuid: event.uuid,
+    timestamp: event.timestamp,
+  }
+}
+
+/** True when the log's final non-empty line is a torn (unparseable) event —
+ *  the writer mid-append. The cache already ignores it; reconcile reports it. */
+async function nativeLogTornTail(stateDir: string, id: string): Promise<boolean> {
+  let text: string
+  try {
+    text = await readFile(nativeSessionLogPath(stateDir, id), 'utf8')
+  } catch {
+    return false
+  }
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (!line.trim()) continue
+    try {
+      JSON.parse(line)
+      return false
+    } catch {
+      return true
+    }
+  }
+  return false
+}
+
+/** Ordered-reconcile snapshot for the native log (spec §7.1). Emits the compact
+ *  boundary + summary dual occurrence, sourceOrdinal-bearing entries, and an
+ *  explicit read status. The public entries/page paths above keep the
+ *  summary-only projection unchanged. */
+export async function readNativeHistorySnapshot(
+  stateDir: string,
+  id: string,
+  opts: { afterUuid?: string } = {},
+): Promise<HistoryReadResult> {
+  const loaded = await nativeHistoryCache.load(stateDir, id)
+  if (!loaded) return { status: 'missing', entries: [] }
+  const compact = await lastCompactEvent(stateDir, id, loaded.size, loaded.mtimeMs)
+  const floored: RawLine[] = compact
+    ? [
+        compactBoundaryLine(compact),
+        compactSummaryLine(compact),
+        ...loaded.lines.filter((line) => typeof line.seq === 'number' && line.seq > compact.seq),
+      ]
+    : [...loaded.lines]
+  const repaired = withRepair(floored)
+  if (opts.afterUuid && !repaired.some((line) => line.uuid === opts.afterUuid)) {
+    return { status: 'boundary-not-found', entries: [] }
+  }
+  const stream = filterAfterUuid(repaired, opts.afterUuid).map(publicNativeHistoryLine)
+  const entries: HistoryEntry[] = []
+  for (const [index, line] of stream.entries()) {
+    if (isSidechainEvent(line)) continue
+    entries.push({ index, sourceOrdinal: index, message: normalize(line, id, false) })
+  }
+  const tornTail = await nativeLogTornTail(stateDir, id)
+  return tornTail ? { status: 'ok', entries, tornTail: true } : { status: 'ok', entries }
 }

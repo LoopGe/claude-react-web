@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt, deleteTranscriptFiles, normalize } from './history-reader.js'
+import { paginateJsonl, turnAnchorsFromJsonl, sliceWindow, paginateRenderable, parseLastUserPrompt, readLastUserPrompt, deleteTranscriptFiles, normalize, historyEntriesFromJsonl, historySnapshotFromJsonl, readHistorySnapshot } from './history-reader.js'
 import { jsonlPageCache } from './jsonl-cache.js'
 import { fileHandleText } from '../shared/upload-handle.js'
 
@@ -518,6 +518,71 @@ describe('historyEntriesFromJsonl', () => {
     const entries = historyEntriesFromJsonl(raw, SID, { afterUuid: 'clear-init' })
     expect(entries.map((entry) => entry.index)).toEqual([0, 1])
     expect(entries.map((entry) => (entry.message as { uuid: string }).uuid)).toEqual(['u1', 'a1'])
+  })
+})
+
+describe('ordered reconcile history snapshot (spec §4/§5.3/§7.1)', () => {
+  it('sourceOrdinal is the RAW line index, not the filtered index', () => {
+    const raw = jsonl([
+      { type: 'user', uuid: 'before', message: { role: 'user', content: 'before' } },
+      { type: 'system', subtype: 'init', uuid: 'clear-init' },
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'find me' } },
+      { type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } },
+    ])
+    const entries = historyEntriesFromJsonl(raw, SID, { afterUuid: 'clear-init' })
+    expect(entries.map((e) => e.index)).toEqual([0, 1])
+    expect(entries.map((e) => e.sourceOrdinal)).toEqual([2, 3])
+  })
+
+  it('normalize carries top-level local_command_output.content', () => {
+    const out = normalize({ type: 'system', subtype: 'local_command_output', uuid: 'c', content: 'Total cost: $1' } as never, SID, false) as { content?: unknown }
+    expect(out.content).toBe('Total cost: $1')
+  })
+
+  it('normalize carries top-level system/error.error', () => {
+    const out = normalize({ type: 'system', subtype: 'error', uuid: 'e', error: 'boom' } as never, SID, false) as { error?: unknown }
+    expect(out.error).toBe('boom')
+  })
+
+  it('normalize carries top-level memory_recall mode/memories', () => {
+    const memories = [{ path: 'm.md', scope: 'personal', content: 'body' }]
+    const out = normalize({ type: 'system', subtype: 'memory_recall', uuid: 'm', mode: 'select', memories } as never, SID, false) as { mode?: unknown; memories?: unknown }
+    expect(out.mode).toBe('select')
+    expect(out.memories).toEqual(memories)
+  })
+
+  it('snapshot: present afterUuid with no suffix → ok empty', () => {
+    const raw = jsonl([{ type: 'user', uuid: 'b', message: { role: 'user', content: 'x' } }])
+    const res = historySnapshotFromJsonl(raw, SID, { afterUuid: 'b' })
+    expect(res.status).toBe('ok')
+    expect(res.entries).toEqual([])
+  })
+
+  it('snapshot: absent afterUuid → boundary-not-found', () => {
+    const raw = jsonl([{ type: 'user', uuid: 'b', message: { role: 'user', content: 'x' } }])
+    const res = historySnapshotFromJsonl(raw, SID, { afterUuid: 'missing' })
+    expect(res.status).toBe('boundary-not-found')
+    expect(res.entries).toEqual([])
+  })
+
+  it('snapshot: torn final half-line → ok + tornTail with verified prefix', () => {
+    const good = JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } })
+    const raw = good + '\n' + '{"type":"assistant","uuid":"a1","mess'
+    const res = historySnapshotFromJsonl(raw, SID, {})
+    expect(res.status).toBe('ok')
+    expect(res.tornTail).toBe(true)
+    expect(res.entries.map((e) => (e.message as { uuid: string }).uuid)).toEqual(['u1'])
+  })
+
+  it('snapshot: mid-file corrupt line throws', () => {
+    const raw = '{"type":"user","uuid":"u1","message":{"role":"user","content":"hi"}}\n' + '{bad json\n' + JSON.stringify({ type: 'assistant', uuid: 'a1', message: { role: 'assistant', content: [] } }) + '\n'
+    expect(() => historySnapshotFromJsonl(raw, SID, {})).toThrow()
+  })
+
+  it('snapshot: file missing → missing', async () => {
+    const res = await readHistorySnapshot('nonexistent-session-xyz-000', {})
+    expect(res.status).toBe('missing')
+    expect(res.entries).toEqual([])
   })
 })
 

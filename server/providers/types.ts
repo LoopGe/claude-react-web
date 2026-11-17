@@ -1,5 +1,5 @@
 import type { AgentMessage, AgentUserMessage } from '../agent-message.js'
-import type { HistoryEntry, HistoryPage } from '../history-reader.js'
+import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../history-reader.js'
 import type { SessionMeta } from '../persistence.js'
 import type { ResumableSession } from '../session-types.js'
 import type { SessionMemorySettings, ThinkingSetting } from '../../shared/session-info.js'
@@ -395,6 +395,11 @@ export interface AgentProvider {
   listResumable?(opts?: ListResumableOptions): Promise<ResumableSession[]>
   readHistoryPage?(id: string, opts: { before?: number; beforeUuid?: string; limit: number; afterUuid?: string }): Promise<HistoryPage>
   readHistoryEntries?(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]>
+  /** Ordered-reconcile history snapshot (spec §7.1): sourceOrdinal-bearing
+   *  entries plus an explicit read status (missing/boundary-not-found/tornTail).
+   *  Unlike readHistoryEntries (tolerant search recall), mid-file corruption
+   *  throws and IO errors are not swallowed into an empty history. */
+  readHistoryForReconcile?(id: string, opts: { afterUuid?: string }): Promise<HistoryReadResult>
   /** Provider-owned standalone subagent catalog/transcript reads. Unlike the
    *  compatibility handle method, these need no live Query and resolve the
    *  on-disk location from the session reference. */

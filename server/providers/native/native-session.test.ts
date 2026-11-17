@@ -4957,6 +4957,36 @@ describe('NativeSession', () => {
     await session.destroy()
   })
 
+  it('reconcile snapshot emits compact boundary + summary as two occurrences with sourceOrdinal', async () => {
+    const dir = await tempDir('native-snap-')
+    const provider = providerWithStreamer([textTurn('first reply')], dir)
+    const session = provider.createSession({ id: 'snap', cwd: dir })
+    const compactable = session as unknown as {
+      compactInPlace(summary: string, opts: { uuid: string; timestamp: string }): Promise<void>
+    }
+    void (async () => { for await (const _ of session.messages) { /* drain */ } })()
+    session.enqueueUserMessage(userMsg('OLD') as never)
+    await vi.waitFor(() => expect(logOf(session).events.some((e) => e.type === 'turn/end')).toBe(true))
+    await compactable.compactInPlace('SUMMARY', { uuid: 'c1', timestamp: '2026-11-09T00:00:00.000Z' })
+    await session.destroy()
+
+    const res = await provider.readHistoryForReconcile!('snap', {})
+    expect(res.status).toBe('ok')
+    const boundary = res.entries.find((e) => (e.message as { subtype?: string }).subtype === 'compact_boundary')
+    const summary = res.entries.find((e) => (e.message as { isCompactSummary?: boolean }).isCompactSummary === true)
+    expect(boundary).toBeDefined()
+    expect(summary).toBeDefined()
+    expect((boundary!.message as { uuid: string }).uuid).toBe('c1')
+    expect((summary!.message as { uuid: string }).uuid).toBe('c1')
+    expect(boundary!.sourceOrdinal).not.toBe(summary!.sourceOrdinal)
+    expect(res.entries.every((e) => typeof e.sourceOrdinal === 'number')).toBe(true)
+    // The public entries projection stays summary-only: the boundary occurrence
+    // is NEW reconcile behavior, so this contrast pins what the snapshot adds.
+    const publicEntries = await provider.readHistoryEntries!('snap', {})
+    expect(publicEntries.some((e) => (e.message as { subtype?: string }).subtype === 'compact_boundary')).toBe(false)
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
+
   it('refuses to compact while a turn is in flight or input is queued', async () => {
     const dir = await tempDir('native-inplace-refuse-')
     const provider = new NativeProvider({ stateDir: dir })

@@ -8,7 +8,7 @@ import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.
 import { config, DEFAULT_PROFILE, type ProviderProfile, type ServerConfig } from '../../config.js'
 import { resolveActiveProfile } from '../../profiles.js'
 import { HttpError } from '../../errors.js'
-import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
+import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { AgentProvider, CreateSessionOptions, ProviderCapabilities, ProviderSessionHandle, ProviderSessionRef } from '../types.js'
 import type { LoopDeps } from './loop.js'
@@ -23,7 +23,7 @@ import { TASK_OUTPUT_GUIDANCE } from './tools/task-output.js'
 import { nativeHistoryCache } from './session-log/cache.js'
 import { deleteNativeSessionLog, hasNativeSessionLog } from './session-log/log.js'
 import { resolveNativeStateDir } from './session-log/paths.js'
-import { readNativeHistoryEntries, readNativeHistoryPage } from './session-log/reader.js'
+import { readNativeHistoryEntries, readNativeHistoryPage, readNativeHistorySnapshot } from './session-log/reader.js'
 import { readNativeSubagentTranscript } from './subagent-transcripts.js'
 import { bashTool } from './tools/bash.js'
 import { createReadTool } from './tools/read.js'
@@ -312,6 +312,10 @@ export class NativeProvider implements AgentProvider {
 
   readHistoryEntries(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]> {
     return readNativeHistoryEntries(this.stateDir, id, opts)
+  }
+
+  readHistoryForReconcile(id: string, opts: { afterUuid?: string }): Promise<HistoryReadResult> {
+    return readNativeHistorySnapshot(this.stateDir, id, opts)
   }
 
   hasTranscript(meta: SessionMeta): Promise<boolean> {

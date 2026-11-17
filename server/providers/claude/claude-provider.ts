@@ -26,13 +26,13 @@ import {
   resolveConfiguredModelId,
   resolveGroup,
 } from '../../model-groups.js'
-import { readHistoryEntries, readLastUserPrompt } from '../../history-reader.js'
+import { readHistoryEntries, readHistorySnapshot, readLastUserPrompt } from '../../history-reader.js'
 import { condensePromptPreview } from '../../../shared/prompt-preview.js'
 import { stripFileHandles } from '../../../shared/upload-handle.js'
 import { jsonlPageCache } from '../../jsonl-cache.js'
 import { claudeConfigDir } from '../../claude-config-dir.js'
 import { filterClientEnv } from '../../session-env.js'
-import type { HistoryEntry, HistoryPage } from '../../history-reader.js'
+import type { HistoryEntry, HistoryPage, HistoryReadResult } from '../../history-reader.js'
 import type { SessionMeta } from '../../persistence.js'
 import type { MpStore } from '../../mp-store.js'
 import type { AgentDefinitionStore } from '../../agent-definition-store.js'
@@ -839,6 +839,10 @@ export class ClaudeProvider implements AgentProvider {
 
   readHistoryEntries(id: string, opts: { afterUuid?: string }): Promise<HistoryEntry[]> {
     return readHistoryEntries(id, opts)
+  }
+
+  readHistoryForReconcile(id: string, opts: { afterUuid?: string }): Promise<HistoryReadResult> {
+    return readHistorySnapshot(id, opts)
   }
 
   async hasTranscript(meta: SessionMeta): Promise<boolean> {

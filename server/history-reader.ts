@@ -67,7 +67,21 @@ export interface HistoryPage {
 export interface HistoryEntry {
   /** Renderable-message index in chronological order after clear-boundary filtering. */
   index: number
+  /** 0-based RAW log line / native event ordinal BEFORE afterUuid/renderability
+   *  filtering (spec §4). Stable identity for UUID-less provider rows; filtering
+   *  must never renumber it. */
+  sourceOrdinal: number
   message: unknown
+}
+
+/** Ordered-reconcile history read (spec §7.1). `missing` is only ENOENT/no
+ *  transcript; permission/IO/mid-parse errors throw. `boundary-not-found` means
+ *  an explicit afterUuid was absent. `tornTail` marks a crash-torn final line
+ *  whose verified prefix is returned. */
+export interface HistoryReadResult {
+  status: 'ok' | 'missing' | 'boundary-not-found'
+  entries: HistoryEntry[]
+  tornTail?: boolean
 }
 
 export interface RawLine {
@@ -649,6 +663,22 @@ export function normalize(o: RawLine, sessionId: string, trim: boolean): unknown
         ...pickCompactMetadata(o.compact_metadata),
       }
       : {}),
+    // Semantic-preserving passthrough (spec §5.3): these renderable system
+    // frames carry their renderer payload at the TOP LEVEL. Dropping it would
+    // make a disk-restored card render empty AND break ordered-reconcile
+    // semantic equivalence (provider copy vs live sidecar copy).
+    ...(o.type === 'system' && o.subtype === 'local_command_output' && o.content !== undefined
+      ? { content: o.content }
+      : {}),
+    ...(o.type === 'system' && o.subtype === 'error' && o.error !== undefined
+      ? { error: o.error }
+      : {}),
+    ...(o.type === 'system' && o.subtype === 'memory_recall'
+      ? {
+        ...(typeof o.mode === 'string' ? { mode: o.mode } : {}),
+        ...(Array.isArray(o.memories) ? { memories: o.memories } : {}),
+      }
+      : {}),
   }
   // Apply the same oversized tool_result cap the live pump does. Disk lines
   // pass `message.content` through verbatim, so without this a resumed seed /
@@ -849,14 +879,92 @@ export function historyEntriesFromJsonl(
   sessionId: string,
   opts: { afterUuid?: string } = {},
 ): HistoryEntry[] {
-  return parseRenderable(raw, opts).map((message, index) => ({
-    index,
-    // No trim: this path feeds search (extractMessagePlainText) and discard
-    // anchor previews (assistant text), which read content to build snippets /
-    // previews and never ship the full message over WS. Trimming here would
-    // only destroy on-disk search recall.
-    message: normalize(message, sessionId, false),
-  }))
+  // Tolerant scan (search recall): a corrupt/torn line is skipped, never thrown.
+  return scanRenderable(raw, sessionId, opts, false).entries
+}
+
+interface ScanResult {
+  entries: HistoryEntry[]
+  tornTail: boolean
+  boundaryFound: boolean
+}
+
+/** Shared renderable scanner. `sourceOrdinal` is the RAW split index (before
+ *  afterUuid/renderability filtering); `index` is the filtered renderable
+ *  counter. strict=true (reconcile) throws on a mid-file corrupt line and
+ *  reports a torn FINAL line via tornTail; strict=false (search) tolerates both.
+ *  No trim: both paths feed search/snippets or the manager's own trim step. */
+function scanRenderable(
+  raw: string,
+  sessionId: string,
+  opts: { afterUuid?: string },
+  strict: boolean,
+): ScanResult {
+  const lines = raw.split('\n')
+  let lastNonEmpty = -1
+  for (let i = 0; i < lines.length; i++) if (lines[i].trim()) lastNonEmpty = i
+  const entries: HistoryEntry[] = []
+  let pastBoundary = !opts.afterUuid
+  let boundaryFound = !opts.afterUuid
+  let tornTail = false
+  let index = 0
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (!line) continue
+    let parsed: RawLine
+    try {
+      parsed = JSON.parse(line) as RawLine
+    } catch {
+      if (i === lastNonEmpty) {
+        tornTail = true
+        break
+      }
+      if (strict) throw new Error(`corrupt transcript line ${i} (session ${sessionId})`)
+      continue
+    }
+    if (!pastBoundary) {
+      if (parsed.uuid === opts.afterUuid) {
+        pastBoundary = true
+        boundaryFound = true
+      }
+      continue
+    }
+    if (isRenderable(parsed)) {
+      entries.push({ index: index++, sourceOrdinal: i, message: normalize(parsed, sessionId, false) })
+    }
+  }
+  return { entries, tornTail, boundaryFound }
+}
+
+/** Ordered-reconcile snapshot (spec §7.1): strict parse, explicit read status.
+ *  Mid-file corruption throws; a torn final line yields the verified prefix. */
+export function historySnapshotFromJsonl(
+  raw: string,
+  sessionId: string,
+  opts: { afterUuid?: string } = {},
+): HistoryReadResult {
+  const { entries, tornTail, boundaryFound } = scanRenderable(raw, sessionId, opts, true)
+  if (opts.afterUuid && !boundaryFound) return { status: 'boundary-not-found', entries: [] }
+  return tornTail ? { status: 'ok', entries, tornTail: true } : { status: 'ok', entries }
+}
+
+/** File-level reconcile snapshot. ENOENT/no transcript → missing; other IO
+ *  errors throw (never swallowed into an empty history). */
+export async function readHistorySnapshot(
+  sessionId: string,
+  opts: { afterUuid?: string } = {},
+): Promise<HistoryReadResult> {
+  const file = await findTranscriptFile(sessionId)
+  if (!file) return { status: 'missing', entries: [] }
+  let raw: string
+  try {
+    raw = await readFile(file.path, 'utf8')
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') return { status: 'missing', entries: [] }
+    throw err
+  }
+  return historySnapshotFromJsonl(raw, sessionId, opts)
 }
 
 export function parseRenderable(raw: string, opts: { afterUuid?: string }): RawLine[] {
