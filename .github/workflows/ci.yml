@@ -70,6 +70,9 @@ jobs:
           server/subagent-transcripts.test.ts
           server/snapshot/shadow-git.test.ts
           server/app-plugins/plugin-runtime.test.ts
+          server/process-monitor.test.ts
+          server/win32-job.test.ts
+          server/session-health.test.ts
 
   commitlint:
     if: github.event_name == 'pull_request'

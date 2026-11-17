@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
+import type { ChildProcess } from 'node:child_process'
 import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk'
 import { ProcessMonitor, type MonitoredSpawn, type ProcessExitInfo } from './process-monitor.js'
+import { metrics } from './metrics.js'
+import { createJobForProcess, Win32JobError, type Win32Job } from './win32-job.js'
 
 // The monitor's spawnFor returns the SDK's SpawnedProcess type (only 'exit' /
 // 'error' declared), but the underlying object is a Node ChildProcess. Cast
@@ -98,7 +101,10 @@ function firstStdoutLine(p: SpawnedProcess): Promise<number> {
       }
     }
     stdout.on('data', onChunk)
-    setTimeout(() => reject(new Error('child printed no pid within 2s')), 2000)
+    // 5s, not 2s: the win32 Job tests below run this helper on the Windows CI
+    // lane, where node child startup under worker contention routinely exceeds
+    // 2s (win32-job.test.ts calibrates the same wait at 5s).
+    setTimeout(() => reject(new Error('child printed no pid within 5s')), 5000)
   })
 }
 
@@ -548,6 +554,147 @@ describe('ProcessMonitor', () => {
     mon.sweepForProcessExit()
 
     await expectExitSoon(reg)
-    expect(onExit.mock.calls[0][0]).toMatchObject({ sessionId: 's-exit-sweep', signal: 'SIGTERM' })
+    // The sweep's exit shape is platform-owned: POSIX delivers a group
+    // SIGTERM (libuv reports the signal); win32 terminates the kill-on-close
+    // Job — TerminateJobObject's exit code 1 with no signal. Both prove the
+    // sweep killed the tree and surfaced exactly one onExit.
+    if (process.platform === 'win32') {
+      expect(onExit.mock.calls[0][0]).toMatchObject({ sessionId: 's-exit-sweep', code: 1, signal: null })
+    } else {
+      expect(onExit.mock.calls[0][0]).toMatchObject({ sessionId: 's-exit-sweep', signal: 'SIGTERM' })
+    }
   })
+
+  // ---- win32 Job containment ----
+  // spawnFor assigns a kill-on-close Job synchronously after spawn — before
+  // the child's runtime init, so descendants it spawns later join the Job.
+  // Destroy escalation is ONE forceful whole-tree leg (Job terminate, or the
+  // guarded taskkill fallback when no Job exists). A capability failure sticks
+  // the monitor to the fallback for its lifetime; a retryable per-process
+  // failure leaves containment enabled for the next spawn.
+
+  /** The private Entry fields the win32 kill paths own, for test inspection. */
+  type Win32EntryView = { job: Win32Job | null; birthTime: string | null; selfTerminated: boolean }
+  function entryOf(mon: ProcessMonitor, reg: MonitoredSpawn): Win32EntryView {
+    return (mon as unknown as { entries: Map<MonitoredSpawn, Win32EntryView> }).entries.get(reg)!
+  }
+
+  /** Test-hygiene backstop: close the entry's Job (kill-on-close reaps any
+   *  live members) and direct-kill both pids, so a failed assertion never
+   *  leaks sleepers into the process table. */
+  function killBackstop(entry: Win32EntryView | undefined, proc: SpawnedProcess, grandPid: number): void {
+    entry?.job?.close()
+    ;(proc as unknown as { kill: (s?: NodeJS.Signals) => boolean }).kill('SIGKILL')
+    if (grandPid > 0) {
+      try { process.kill(grandPid, 'SIGKILL') } catch { /* already gone */ }
+    }
+  }
+
+  it.runIf(process.platform === 'win32')('win32: spawn assigns a Job and destroy escalation terminates the whole tree', async () => {
+    const mon = new ProcessMonitor(vi.fn(), { safetyMs: 100, escalateMs: 50 })
+    const reg = mon.register('s-job')
+    const proc = mon.spawnFor(reg, treeSpawnOpts(false))
+    const entry = entryOf(mon, reg)
+    let grandchildPid = 0
+    try {
+      grandchildPid = await firstStdoutLine(proc)
+      expect(mon.containmentMode).toBe('job')
+      expect(entry.job).toBeTruthy()
+      // The grandchild spawned AFTER assignment, so it must be a Job member —
+      // activeCount 1 here would mean the assignment raced the child's init.
+      expect(entry.job!.activeCount()).toBeGreaterThanOrEqual(2)
+
+      mon.unregister(reg)
+      await expectRealExitSoon(reg, 5000)
+      expect(entry.selfTerminated).toBe(true)
+      await expectGone((proc as unknown as ChildProcess).pid!)
+      await expectGone(grandchildPid)
+    } finally {
+      killBackstop(entry, proc, grandchildPid)
+    }
+  }, 15_000)
+
+  it.runIf(process.platform === 'win32')('win32: capability failure sticks to fallback; fallback still tree-kills', async () => {
+    const factory = vi.fn((): Win32Job => { throw new Win32JobError('probe', true) })
+    const mon = new ProcessMonitor(vi.fn(), { safetyMs: 100, jobFactory: factory })
+    const reg = mon.register('s-fallback')
+    const proc = mon.spawnFor(reg, treeSpawnOpts(false))
+    let grandchildPid = 0
+    try {
+      grandchildPid = await firstStdoutLine(proc)
+      expect(mon.containmentMode).toBe('fallback')
+      expect(factory).toHaveBeenCalledTimes(1)
+
+      const before = metrics.snapshot().counters['containment_fallback_treekill'] ?? 0
+      mon.unregister(reg)
+      await expectRealExitSoon(reg, 5000)
+      await expectGone((proc as unknown as ChildProcess).pid!)
+      await expectGone(grandchildPid)
+      expect(metrics.snapshot().counters['containment_fallback_treekill'] ?? 0).toBe(before + 1)
+
+      // Sticky: a second spawn never consults the factory again, and the
+      // fallback still kills the whole tree.
+      const reg2 = mon.register('s-fallback-2')
+      const proc2 = mon.spawnFor(reg2, treeSpawnOpts(false))
+      let grand2 = 0
+      try {
+        grand2 = await firstStdoutLine(proc2)
+        expect(factory).toHaveBeenCalledTimes(1)
+        expect(mon.containmentMode).toBe('fallback')
+        mon.unregister(reg2)
+        await expectRealExitSoon(reg2, 5000)
+        await expectGone((proc2 as unknown as ChildProcess).pid!)
+        await expectGone(grand2)
+      } finally {
+        killBackstop(entryOf(mon, reg2), proc2, grand2)
+      }
+    } finally {
+      killBackstop(undefined, proc, grandchildPid)
+    }
+  }, 15_000)
+
+  it.runIf(process.platform === 'win32')('win32: dead-child assignment failure is retryable, not sticky', async () => {
+    let calls = 0
+    const factory = vi.fn((pid: number): Win32Job => {
+      calls += 1
+      if (calls === 1) throw new Win32JobError('gone', false)
+      return createJobForProcess(pid)
+    })
+    const mon = new ProcessMonitor(vi.fn(), { safetyMs: 100, jobFactory: factory })
+    const reg = mon.register('s-retry')
+    const proc = mon.spawnFor(reg, treeSpawnOpts(false))
+    const entry = entryOf(mon, reg)
+    let grandchildPid = 0
+    try {
+      grandchildPid = await firstStdoutLine(proc)
+      // Retryable failure: no Job for THIS entry, but containment stays on.
+      expect(entry.job).toBeNull()
+      expect(mon.containmentMode).toBe('job')
+      mon.unregister(reg)
+      await expectRealExitSoon(reg, 5000)
+      await expectGone((proc as unknown as ChildProcess).pid!)
+      await expectGone(grandchildPid)
+
+      // The next spawn retries the factory and gets a real Job.
+      const reg2 = mon.register('s-retry-2')
+      const proc2 = mon.spawnFor(reg2, treeSpawnOpts(false))
+      const entry2 = entryOf(mon, reg2)
+      let grand2 = 0
+      try {
+        grand2 = await firstStdoutLine(proc2)
+        expect(factory).toHaveBeenCalledTimes(2)
+        expect(entry2.job).toBeTruthy()
+        expect(mon.containmentMode).toBe('job')
+        mon.unregister(reg2)
+        await expectRealExitSoon(reg2, 5000)
+        expect(entry2.selfTerminated).toBe(true)
+        await expectGone((proc2 as unknown as ChildProcess).pid!)
+        await expectGone(grand2)
+      } finally {
+        killBackstop(entry2, proc2, grand2)
+      }
+    } finally {
+      killBackstop(entry, proc, grandchildPid)
+    }
+  }, 15_000)
 })

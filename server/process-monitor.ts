@@ -23,6 +23,8 @@ import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import type { SpawnOptions, SpawnedProcess } from '@anthropic-ai/claude-agent-sdk'
 import { createLogger } from './log.js'
+import { metrics } from './metrics.js'
+import { captureBirthTime, createJobForProcess, killTreeWin32, Win32JobError, type Win32Job } from './win32-job.js'
 
 const log = createLogger('process-monitor')
 
@@ -96,12 +98,23 @@ interface Entry {
   stdoutErrorHandler: ((err: Error) => void) | null
   safetyTimer: NodeJS.Timeout | null
   /** Second-leg timer of the destroy escalation (SIGKILL tree). Null unless
-   *  the safety timer has fired and the tree is still alive. */
+   *  the safety timer has fired and the tree is still alive. POSIX only —
+   *  win32 escalates in a single forceful leg (see unregister). */
   escalationTimer: NodeJS.Timeout | null
   /** Process-group id of the spawned CLI. Equal to the child pid because the
    *  POSIX spawn is detached (the child leads its own group). Undefined on
-   *  Windows, where tree signalling degrades to direct-PID kills. */
+   *  Windows, where containment is a kill-on-close Job Object instead. */
   pgid: number | undefined
+  /** Win32 kill-on-close Job containing the CLI tree. Null on POSIX, before
+   *  assignment, and after a failed assignment (capability or retryable). */
+  job: Win32Job | null
+  /** Win32 spawn-captured creation time (decimal 100ns FILETIME ticks) that
+   *  fences PID reuse before a fallback taskkill. Null on POSIX or when
+   *  unreadable at spawn. */
+  birthTime: string | null
+  /** Set when signalTree terminates this entry's Job — exit classification
+   *  reads it to tell a monitor-issued kill from an external one. */
+  selfTerminated: boolean
   resolved: boolean
 }
 
@@ -112,7 +125,8 @@ interface Entry {
  *  process group (pgid == pid): every teardown signal can then reach the
  *  whole CLI tree via the negative-pgid group signal instead of only the
  *  direct child (see signalTree). Windows has no POSIX groups — the child
- *  stays attached and tree termination degrades to direct-PID kills. */
+ *  stays attached and spawnFor places it in a kill-on-close Job Object whose
+ *  membership inherits to later-spawned descendants (see signalTree). */
 function defaultSpawnFn(opts: SpawnOptions): SpawnedProcess {
   const child = spawn(opts.command, opts.args, {
     cwd: opts.cwd,
@@ -130,9 +144,9 @@ function defaultSpawnFn(opts: SpawnOptions): SpawnedProcess {
  *  can't hang forever if the child wedges and never emits 'exit'. */
 const EXIT_SAFETY_MS = 15_000
 
-/** Gap between the destroy-escalation legs: SIGTERM tree first, then — if
- *  the child ignored it and is still alive — SIGKILL tree. Mirrors DSH's
- *  subprocess-local teardown ladder. */
+/** Gap between the POSIX destroy-escalation legs: SIGTERM tree first, then —
+ *  if the child ignored it and is still alive — SIGKILL tree. Mirrors DSH's
+ *  subprocess-local teardown ladder. Win32 escalates in one forceful leg. */
 const ESCALATE_MS = 2_000
 
 /** Process-exit sweep closures, one per live ProcessMonitor that has spawned
@@ -162,12 +176,30 @@ export class ProcessMonitor {
    *  every captured stderr line, in addition to the existing log.warn.
    *  Used by the claude provider to tee stderr into session-scoped log files. */
   private readonly stderrSink?: (sessionId: string, line: string) => void
+  /** Win32 Job factory. Injectable so tests can force capability/retryable
+   *  assignment failures without touching the process-global koffi registry. */
+  private readonly jobFactory: (pid: number) => Win32Job
+  /** Sticky win32 capability failure: once the environment proves it cannot
+   *  support Job containment, every later spawn skips the factory and kills
+   *  via the guarded taskkill fallback. Retryable per-process failures never
+   *  set this. */
+  private jobStickyFailed = false
 
-  constructor(onExit: (info: ProcessExitInfo) => void, opts?: { safetyMs?: number; escalateMs?: number; stderrSink?: (sessionId: string, line: string) => void }) {
+  constructor(onExit: (info: ProcessExitInfo) => void, opts?: { safetyMs?: number; escalateMs?: number; stderrSink?: (sessionId: string, line: string) => void; jobFactory?: (pid: number) => Win32Job }) {
     this.onExit = onExit
     this.safetyMs = opts?.safetyMs ?? EXIT_SAFETY_MS
     this.escalateMs = opts?.escalateMs ?? ESCALATE_MS
     this.stderrSink = opts?.stderrSink
+    this.jobFactory = opts?.jobFactory ?? createJobForProcess
+  }
+
+  /** Containment regime this monitor kills trees with: 'posix' off Windows;
+   *  'job' while Job assignment is viable; 'fallback' (sticky) once a
+   *  capability failure proved the environment cannot support Jobs. A
+   *  retryable failure leaves 'job' with only that entry's job null. */
+  get containmentMode(): 'job' | 'fallback' | 'posix' {
+    if (!IS_WIN32) return 'posix'
+    return this.jobStickyFailed ? 'fallback' : 'job'
   }
 
   /** Register a session before `query()` is called. Returns a handle whose
@@ -199,6 +231,9 @@ export class ProcessMonitor {
       safetyTimer: null,
       escalationTimer: null,
       pgid: undefined,
+      job: null,
+      birthTime: null,
+      selfTerminated: false,
       resolved: false,
     })
     return reg
@@ -229,6 +264,27 @@ export class ProcessMonitor {
       // off this. Windows has no groups — pgid stays undefined.
       const pid = (process as unknown as ChildProcess).pid
       if (!IS_WIN32 && pid) entry.pgid = pid
+      if (IS_WIN32 && pid) {
+        // Birth identity fences PID reuse before any fallback force-kill.
+        entry.birthTime = captureBirthTime(pid)
+        // Assign synchronously right after spawn: Job membership inherits
+        // only to descendants spawned AFTER assignment, and this beats the
+        // child's runtime init. Containment failures never throw out of
+        // spawnFor — the session still runs, with weaker teardown.
+        if (!this.jobStickyFailed) {
+          try {
+            entry.job = this.jobFactory(pid)
+          } catch (err) {
+            if (!(err instanceof Win32JobError)) throw err
+            if (err.capability) {
+              this.jobStickyFailed = true
+              log.warn(`[${sid}] win32 Job containment unavailable — sticky taskkill fallback: ${err.message}`)
+            } else {
+              log.warn(`[${sid}] win32 Job assignment failed (retryable — next spawn retries): ${err.message}`)
+            }
+          }
+        }
+      }
     }
     installProcessExitHook()
     processExitSweeps.add(this.processExitSweep)
@@ -366,15 +422,26 @@ export class ProcessMonitor {
   /** Signal one tracked tree. POSIX delivers to the whole process group via
    *  the negative pgid (the detached child leads it, so CLI-spawned foreground
    *  descendants die with it); a failed group signal (ESRCH — group already
-   *  gone, or EPERM) falls back to the direct child. Windows has no process
-   *  groups: only the direct child can be killed, so CLI-spawned descendants
-   *  that outlive it are NOT covered here — containment is weaker and the
-   *  escape hatch is the CLI's own graceful shutdown, which we preserve by
-   *  escalating SIGTERM before SIGKILL. Never throws: delivery races exit. */
+   *  gone, or EPERM) falls back to the direct child. Win32 has one forceful
+   *  whole-tree leg regardless of `sig`: terminate the entry's kill-on-close
+   *  Job, or — when no Job exists — the birth-time-guarded taskkill fallback
+   *  (which refuses an unverified kill rather than hitting a recycled PID).
+   *  Never throws: delivery races exit. */
   private signalTree(entry: Entry, sig: NodeJS.Signals): void {
     const child = entry.process
     const pid = child?.pid
     if (!child || !pid) return
+    if (IS_WIN32) {
+      if (entry.job) {
+        entry.selfTerminated = true
+        entry.job.terminate()
+        return
+      }
+      if (killTreeWin32(pid, entry.birthTime)) {
+        metrics.count('containment_fallback_treekill')
+      }
+      return
+    }
     if (entry.pgid !== undefined) {
       try {
         process.kill(-entry.pgid, sig)
@@ -393,9 +460,11 @@ export class ProcessMonitor {
   /** Synchronous teardown of every live tree this monitor tracks. This is the
    *  body of the module-level `process.on('exit')` hook: the host is dying and
    *  won't get another scheduler tick, so only sync kill syscalls are possible
-   *  (no timers, no awaits). The SIGTERM gives each CLI a chance to run its own
-   *  graceful shutdown — including killing ITS background task trees — even
-   *  though nothing will ever SIGKILL-escalate behind this signal. */
+   *  (no timers, no awaits). On POSIX the SIGTERM gives each CLI a chance to
+   *  run its own graceful shutdown — including killing ITS background task
+   *  trees — even though nothing will ever SIGKILL-escalate behind this
+   *  signal. On win32 the leg is forceful (Job terminate / guarded taskkill),
+   *  which is the only way to reach the whole tree synchronously. */
   sweepForProcessExit(): void {
     for (const entry of this.entries.values()) {
       if (entry.resolved) continue
@@ -560,20 +629,29 @@ export class ProcessMonitor {
         exitSafetyTimeout: true,
       })
       // The SDK's graceful close has had its full window and the child is
-      // still alive — stop waiting passively and tear the TREE down: group
-      // SIGTERM first (lets the CLI run its own graceful shutdown, including
-      // killing its background task trees), then a group SIGKILL for a child
-      // that ignored it. The real 'exit' handler still owns finalization, so
-      // realExited settles with the actual signal.
-      log.warn(`escalating teardown for session ${reg.sessionId}: SIGTERM to process group ${entry.pgid ?? 'n/a'}`)
-      this.signalTree(entry, 'SIGTERM')
-      entry.escalationTimer = setTimeout(() => {
-        entry.escalationTimer = null
-        if (entry.resolved) return
-        log.warn(`session ${reg.sessionId} survived SIGTERM — SIGKILL to process group ${entry.pgid ?? 'n/a'}`)
+      // still alive — stop waiting passively and tear the TREE down. The real
+      // 'exit' handler still owns finalization, so realExited settles with
+      // the actual exit info.
+      if (IS_WIN32) {
+        // One forceful whole-tree leg: Job terminate (or the guarded taskkill
+        // fallback) reaches every descendant at once, so there is no SIGTERM
+        // leg to ladder from and no escalationTimer.
+        log.warn(`escalating teardown for session ${reg.sessionId}: win32 ${entry.job ? 'Job terminate' : 'taskkill tree kill'}`)
         this.signalTree(entry, 'SIGKILL')
-      }, this.escalateMs)
-      ;(entry.escalationTimer as { unref?: () => void }).unref?.()
+      } else {
+        // Group SIGTERM first (lets the CLI run its own graceful shutdown,
+        // including killing its background task trees), then a group SIGKILL
+        // for a child that ignored it.
+        log.warn(`escalating teardown for session ${reg.sessionId}: SIGTERM to process group ${entry.pgid ?? 'n/a'}`)
+        this.signalTree(entry, 'SIGTERM')
+        entry.escalationTimer = setTimeout(() => {
+          entry.escalationTimer = null
+          if (entry.resolved) return
+          log.warn(`session ${reg.sessionId} survived SIGTERM — SIGKILL to process group ${entry.pgid ?? 'n/a'}`)
+          this.signalTree(entry, 'SIGKILL')
+        }, this.escalateMs)
+        ;(entry.escalationTimer as { unref?: () => void }).unref?.()
+      }
     }, this.safetyMs)
     ;(entry.safetyTimer as { unref?: () => void }).unref?.()
   }
