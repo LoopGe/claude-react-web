@@ -172,17 +172,23 @@ retired handle whose survivors exit naturally does not leak until host exit.
   `log.warn`. With identity verified, `taskkill /PID <pid> /T /F` with
   `windowsHide`, fixed argv, never through a shell. Single writer: the native
   Bash tool and `server/exec.ts` `onAbort` both kill through it.
-- **Dependency & bundle** — `koffi` 3.1.1 in `optionalDependencies`. It **has an
-  install script** (`cnoke --prebuild`) that selects a prebuilt binary and needs
-  `APPDATA` / `LOCALAPPDATA` on win32; where those vars are absent the optional
-  dep is skipped and containment degrades loudly to the taskkill fallback. CI
-  (plain `npm ci`; the windows runner has the vars) installs it.
-  `external: [..., 'koffi']` in `build.mjs` (both entries) and
-  `desktop/build.mjs`; loaded only on win32, so POSIX never touches it. koffi is
-  Node-API based, so it loads under Electron without an ABI rebuild;
-  `desktop/electron-builder.yml` `asarUnpack` includes `node_modules/koffi/**`
-  (LoadLibrary cannot read the native addon out of asar). Absence degrades to
-  fallback, never breaks a session.
+- **Dependency & bundle** — `koffi` 3.1.1 in `optionalDependencies`. koffi 3.1.1
+  distributes its prebuilt binaries via platform-specific optional packages
+  (`@koromix/koffi-<platform>`, e.g. `@koromix/koffi-win32-x64`); the actual
+  `.node` lives at `node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node`,
+  and koffi's loader tries that package before any `koffi/build` path. It **has
+  an install script** (`cnoke --prebuild`) that validates/selects those prebuilt
+  packages and needs `APPDATA` / `LOCALAPPDATA` on win32; where those vars are
+  absent the optional dep is skipped and containment degrades loudly to the
+  guarded taskkill fallback. CI (plain `npm ci`; the windows runner has the
+  vars) installs it. `external: [..., 'koffi']` in `build.mjs` (both entries)
+  and `desktop/build.mjs`; loaded only on win32, so POSIX never touches it.
+  koffi is Node-API based, so it loads under Electron without an ABI rebuild;
+  desktop packaging must `asarUnpack` `node_modules/@koromix/**` (the real
+  `.node` location) in addition to `node_modules/koffi/**` — LoadLibrary cannot
+  read the native addon out of asar, and unpacking only the koffi tree would
+  leave the `.node` packed and silently degrade the packaged win32 host to the
+  fallback. Absence degrades to fallback, never breaks a session.
 - **Logging & metrics** — `createLogger('win32-job')`; loud warns on sticky /
   retryable containment failure, a warn per survivor-terminating exit and an
   info per retire; counters `containment_job_terminate` /
@@ -272,10 +278,14 @@ Costs and remaining boundaries, adopted knowingly:
   is preserved for session unload, which is the case it was written for.
 - **Fallback PID reuse.** Guarded uniformly by spawn-captured creation time
   (FFI or one PowerShell query). If identity is unavailable the helper refuses
-  the kill and logs loudly, accepting a residual orphan in that rare
-  double-failure rather than a wrong-tree force-kill. The check-then-kill
-  window after a successful guard is accepted in the same class as the 11-09
-  pgid-reuse acceptance.
+  the kill and logs loudly, accepting a residual orphan rather than a
+  wrong-tree force-kill. In fallback mode a dead root can never be
+  identity-verified (`captureBirthTime` of a dead PID is always null), so
+  survivor reaping on crash/killed exits is refused by design (loud
+  `log.error`) — inherent to any dead-root exit without a Job, not a rare
+  double-failure. The Job path does not have this limitation: handle identity
+  is kernel-guaranteed. The check-then-kill window after a successful guard is
+  accepted in the same class as the 11-09 pgid-reuse acceptance.
 - **Retired-handle accumulation.** Bounded by sessions that left survivors;
   kernel Job objects are cheap, the GC tick closes empty ones, host exit closes
   the rest, and the kernel's handle-table close is the final backstop.
