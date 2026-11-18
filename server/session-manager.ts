@@ -5360,7 +5360,7 @@ export class SessionManager {
     s.withdrawnUuids = []
     s.pendingSnapshotAnchors = undefined
     s.lastContextUsage = undefined
-    this.broadcastSessionCleared(s.id)
+    this.broadcastSessionCleared(s.id, t.store.generation)
     this.pushCompactFrames(s, summary, uuid, timestamp, preTokens)
     log.info(
       `[session ${s.id}] auto-compact: reset transcript in place ` +
@@ -7584,9 +7584,11 @@ export class SessionManager {
   }
 
   /** Broadcast a `session-cleared` signal to every subscriber of the given
-   *  session. See SessionEventBroadcaster.broadcastSessionCleared. */
-  broadcastSessionCleared(id: string): void {
-    this.broadcaster.broadcastSessionCleared(id)
+   *  session. See SessionEventBroadcaster.broadcastSessionCleared.
+   *  `clearedGeneration` is the server's authoritative post-reset generation
+   *  (spec §8.3) so the client arms its stale-page floor from it. */
+  broadcastSessionCleared(id: string, clearedGeneration?: number): void {
+    this.broadcaster.broadcastSessionCleared(id, clearedGeneration)
   }
 
   /** Broadcast a `git-snapshot` frame to every session sharing the

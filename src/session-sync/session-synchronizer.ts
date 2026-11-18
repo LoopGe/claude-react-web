@@ -715,8 +715,10 @@ export class SessionSynchronizer {
         // epoch — the epoch is what actually invalidates in-flight page
         // requests when NO generation has been adopted yet (the window's
         // cursor is still −1 here, so `generation + 1` degenerates to a
-        // floor of 0 that a pre-clear gen-0 page would pass).
-        run.minGeneration = store.getSnapshot().generation + 1
+        // floor of 0 that a pre-clear gen-0 page would pass). Prefer the
+        // server's authoritative clearedGeneration (spec §8.3) when present;
+        // fall back to local+1 for pre-journal servers.
+        run.minGeneration = frame.clearedGeneration ?? store.getSnapshot().generation + 1
         run.clearEpoch++
         handlers.onCleared?.()
         void this.refetchTail(run)

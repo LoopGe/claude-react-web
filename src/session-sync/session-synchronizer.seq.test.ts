@@ -1143,3 +1143,46 @@ describe('SessionSynchronizer transcript recovery (spec §10)', () => {
     sync.stop()
   })
 })
+
+describe('SessionSynchronizer session-cleared clearedGeneration (spec §8.3)', () => {
+  beforeEach(() => {
+    currentSessionListeners = new Map()
+    transcripts.clear()
+    staleNext = null
+    deferredFetches = []
+    mockSubscribe.mockClear()
+    mockApiGet.mockReset()
+    mockApiGet.mockImplementation(defaultApiGetImpl)
+    mockApiPost.mockReset()
+    mockApiPost.mockImplementation(async (_path: string, _body?: unknown) => ({ ok: true }))
+    void sessionStoreRegistry.clear()
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  it('arms the authoritative clearedGeneration floor, rejecting a stale pre-clear page', async () => {
+    const sid = 'cleared-gen'
+    const t = transcript(sid)
+    t.msgs.push({ seq: 0, msg: fakeMsg(sid, 0) })
+    t.headSeq = 1
+    t.generation = 0
+    const sync = makeSync(sid)
+    const open = queueDeferredFetch(/limit=200/) // park the open-path tail fetch
+    sync.start()
+    await new Promise((r) => setTimeout(r, 10))
+    // Server clears to generation 7; the client's local generation is still 0.
+    t.generation = 7
+    t.msgs = [{ seq: 0, msg: fakeMsg(sid, 100) }]
+    t.headSeq = 1
+    const refetch = queueDeferredFetch(/limit=200/) // park the clear-triggered refetch too
+    dispatchToSession(sid, { kind: 'session-cleared', sessionId: sid, clearedGeneration: 7 })
+    await new Promise((r) => setTimeout(r, 10))
+    // Resolve the parked pre-clear fetch with a stale gen-3 page FIRST. The floor
+    // must be 7 (authoritative clearedGeneration), not local+1=1: gen 3 is then
+    // rejected and retried into gen 7. With a local+1 floor gen 3 would be
+    // accepted and the window would stick at 3.
+    open.resolve({ generation: 3, headSeq: 1, totalCount: 1, startIndex: 0, hasMore: false, messages: [{ seq: 0, msg: fakeMsg(sid, 99) }], tombstones: [] })
+    await vi.waitFor(() => expect(getSessionStore(sid).getSnapshot().generation).toBe(7))
+    refetch.resolve({ generation: 7, headSeq: 1, totalCount: 1, startIndex: 0, hasMore: false, messages: [{ seq: 0, msg: fakeMsg(sid, 100) }], tombstones: [] })
+    sync.stop()
+  })
+})

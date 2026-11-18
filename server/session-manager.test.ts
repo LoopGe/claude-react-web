@@ -2890,6 +2890,24 @@ describe('SessionManager', () => {
       expect(journal.clearEpoch).toBe(1)
     })
 
+    it('session-cleared carries the authoritative clearedGeneration after compact', async () => {
+      const info = await sm.create({ cwd: dir })
+      await sm.send(info.id, 'seed turn')
+      const h = mockHandles.at(-1)!
+      h.emit({ type: 'assistant', uuid: 'a1', parent_tool_use_id: null, message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } })
+      h.emit({ type: 'result', subtype: 'success', uuid: 'r1', session_id: info.id })
+      expect(await waitFor(() => sm.transcriptHead(info.id)?.headSeq === 3)).toBe(true)
+      const prevGen = sm.transcriptHead(info.id)!.generation
+      const frames: Array<{ kind?: string; clearedGeneration?: number }> = []
+      const sub = sm.subscribeSessionCleared(info.id)
+      void (async () => { for await (const f of sub!.iterable) frames.push(f as { kind?: string; clearedGeneration?: number }) })()
+      const live = liveSession(info.id)
+      live.handle.compactInPlace = vi.fn(async () => {})
+      await callAutoCompact(live, { totalTokens: 90, maxTokens: 100, model: 'test-model', autoCompactThreshold: 50 })
+      expect(frames.some((f) => f.kind === 'session-cleared' && f.clearedGeneration === prevGen + 1)).toBe(true)
+      sub!.unsubscribe()
+    })
+
     it('crash after provider compact before reset commit: restart completes reset, no pre-clear republish', async () => {
       const prevConfigDir = process.env.CLAUDE_CONFIG_DIR
       process.env.CLAUDE_CONFIG_DIR = dir

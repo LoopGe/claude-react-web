@@ -485,6 +485,11 @@ export interface WsSessionRecapUpdate<Recap> {
 export interface WsSessionCleared {
   kind: 'session-cleared'
   sessionId: string
+  /** The server's authoritative post-reset generation (spec §8.3). The client
+   *  arms its stale-page floor from this rather than guessing local+1, so a
+   *  stale local generation cannot accept pre-reset content. Optional for
+   *  pre-journal servers. */
+  clearedGeneration?: number
 }
 
 

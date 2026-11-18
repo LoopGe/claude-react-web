@@ -252,7 +252,7 @@ export class SessionEventBroadcaster {
    *  and drops its local cache in response. Called by the pump after a
    *  `/clear`-triggered context reset is confirmed (and the history ring
    *  has already been truncated). */
-  broadcastSessionCleared(id: string): void {
+  broadcastSessionCleared(id: string, clearedGeneration?: number): void {
     // /clear restarts the CLI transcript, so the next tasklist derive
     // legitimately regresses to rev 0 — drop the cached seed or the
     // rev-regression guard in emitTasklistSnapshot would pin the
@@ -261,7 +261,7 @@ export class SessionEventBroadcaster {
     const s = this.sessions.get(id)
     if (!s) return
     if (s.sessionClearedSubscribers.size === 0) return
-    const frame = { kind: 'session-cleared' as const, sessionId: id }
+    const frame = { kind: 'session-cleared' as const, sessionId: id, clearedGeneration }
     for (const sub of s.sessionClearedSubscribers) {
       try { sub.push(frame) } catch { /* subscriber dead — skip */ }
     }
