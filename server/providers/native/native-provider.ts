@@ -180,7 +180,7 @@ export class NativeProvider implements AgentProvider {
   } = {}) {
     this.stateDir = resolveNativeStateDir(opts.stateDir)
     this.authFor = opts.authFor
-    this.mcpRegistry = new SharedRegistry({ authFor: this.authFor })
+    this.mcpRegistry = new SharedRegistry()
     this.agentStore = opts.agentStore
     this.uploadStore = opts.uploadStore
     const discovery = new AnthropicModelDiscovery()

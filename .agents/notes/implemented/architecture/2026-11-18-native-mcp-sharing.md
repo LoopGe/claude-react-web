@@ -91,7 +91,7 @@ Posture aligned with DSH (user-approved):
   settled close knows whether cleanup failed), retaining a `cleanupFailed` record
   and reviving a during-teardown acquirer. Immediate teardown at users==0, no idle
   grace.
-- **Sharing key** = `JSON.stringify(['stdio', command, args, sorted env])` —
+- **Sharing key** = `JSON.stringify(['stdio', command, args, env sorted by key])` —
   **includes env**, unlike the local replace-diff identity (which excludes it). The
   two keys serve different purposes and stay separate.
 - **`connections.ts`** — the per-session view. An entry union: LOCAL (`sdk` / `sse` /
@@ -118,8 +118,10 @@ Posture aligned with DSH (user-approved):
   (`native-session.ts` `buildFullTools`) for per-session tool restrictions over shared
   tools (ownership keys on the session-local server name); loop-level
   `requestPermission` (sharing does not bypass permissions).
-- **OAuth**: `authFor` is host-global. Local entries resolve auth by server name; a
-  shared record resolves by its sharing key (see Consequences for the residual).
+- **OAuth**: `authFor` is host-global and consumed only by the view's LOCAL entries
+  (remote `sse`/`http` resolve it by server name). Shared records are stdio-only and
+  carry no auth plumbing — the stdio transport builder ignores `authProvider`
+  entirely (see Consequences).
 - **Metrics / logging**: `shared_mcp_records` gauge, `mcp_shared_acquire` /
   `mcp_shared_release` counters; finite enum labels only. Scopes:
   `native-mcp-shared` (record), `native-mcp-registry` (registry), `native-mcp` (view).
@@ -130,7 +132,12 @@ Posture aligned with DSH (user-approved):
   through `processIdentity` directly (microsecond death confirmation, no PowerShell
   on the teardown path), and only koffi-absent hosts fall back to `captureBirthTime`'s
   PowerShell leg. POSIX uses `kill(pid, 0)` liveness with an `'alive'` sentinel
-  (PID-reuse fencing is win32-only).
+  (PID-reuse fencing is win32-only). The exit-confirmation cadence follows the same
+  capability: cheap reads poll at 25 ms; blocking reads (the PowerShell leg, or an
+  injected probe of unknown cost) take one immediate read, an async sleep to the
+  deadline, and one final read — a hung close must not busy-poll a blocking
+  spawnSync and freeze the event loop. A re-close of a retained `cleanupFailed`
+  record skips re-confirmation entirely: the verdict is sticky.
 
 ### Auto-reconnect asymmetry (intentional)
 
@@ -177,6 +184,10 @@ replacement.
 **Bought**: N×M → M children for identical stdio configs (the memory goal); one
 connection per server across sessions; a DSH-aligned failure posture proven on the
 harness. The acceptance behaviors are pinned by real-process tests (see Testing).
+The API surface is unchanged: `setServers` / `reconnect` / `toggle` / `statuses`
+(and the rest of the `NativeMcpConnections` / `NativeSession` handle signatures)
+keep their shapes, and the manager MCP route (`session-manager-mcp.ts`) works for
+both providers — sharing is invisible above the view.
 
 **Cost / residuals**:
 
@@ -193,16 +204,26 @@ harness. The acceptance behaviors are pinned by real-process tests (see Testing)
   a replacement overlap a live child. Residual degraded edge: when BOTH identity
   sources fail on a live child the read is null and death is indistinguishable from
   unreadable — fail-closed is not claimed there. POSIX gating is liveness-only (no
-  birth-time identity).
+  birth-time identity). Recovery through a disabled view entry is two-step: the first
+  `reconnect(name)` re-acquires the retained record (its `ready` is already settled,
+  so no gate runs); a second `reconnect(name)` on the now-enabled entry runs the
+  death gate.
+- **Reconnect teardown trusts the SDK close escalation**: the reconnect path's
+  no-overlapping-child guarantee leans on the SDK stdio transport's close ladder
+  (stdin EOF → SIGTERM at ~2s → SIGKILL at ~4s, inside the default 5s close race;
+  on Windows SIGTERM is already a hard kill). `runAttempt`'s teardown runs no exit
+  confirmation, and a child lost before the handshake has no captured PID to
+  confirm.
 - **Two distinct keys**: the sharing key includes env; the local replace-diff identity
   excludes env. Conflating them would wrong-merge different-env servers or change
   replace-diff semantics. They stay separate; a shared entry's replace-diff identity
   IS its sharing key, so an env-only change correctly acquires a new child.
-- **OAuth residual**: a shared stdio record resolves `authFor` by its sharing key,
-  while the host store keys by server name, so a shared stdio entry needing stored
-  OAuth misses the lookup (silent; no secret leaks). stdio servers are usually
-  env-keyed, and remote `sse`/`http` stay local with correct name-keyed `authFor`, so
-  the practical surface is small.
+- **OAuth keying is inert, not a live miss**: `createMcpTransport`'s stdio branch
+  ignores `authProvider` entirely (only `sse`/`http` consume it), so a shared stdio
+  record has no OAuth lookup to miss — it carries no `authFor` plumbing at all.
+  Remote `sse`/`http` stay local with correct name-keyed `authFor`. If stdio ever
+  grows an auth surface, the record would need the server name threaded through
+  (the sharing key is not a credential-store key).
 - **View-level timeout opts** (`connectTimeoutMs` / `toolTimeoutMs`) are not forwarded
   to shared records (the registry uses its own defaults). The provider constructs the
   registry with defaults, so there is no production impact; a caller passing custom
@@ -220,6 +241,10 @@ modes make each lifecycle hazard deterministic). A bye marker plus the `childIde
 probe prove real child exit — no leaked children. The healthy-close pins carry a
 generous `closeTimeoutMs` margin so a load-stretched healthy child exit never trips
 `cleanupFailed` retention; the deliberately-hung retention pin keeps a short deadline.
+The unit registry/view healthy pins carry a 10s `closeTimeoutMs` margin; the
+manager-level e2e healthy leg is the one exception — it runs against the
+provider-owned registry's production default 5s close deadline (its teardown poll
+allows 8s), a rare load-flake mode rather than a padded pin.
 
 - **`mcp/shared-record.test.ts`** — connect/discover/close core; sibling-safe per-call
   abort; crash rejects in-flight calls, keeps cached tools registered, reconnects with
@@ -228,7 +253,9 @@ generous `closeTimeoutMs` margin so a load-stretched healthy child exit never tr
   death-gated reconnect refused while the child is alive / allowed after confirmed
   death; recycled-PID refusal; reconnect racing an in-flight hung close refuses after
   teardown settles (no overlapping child); secret env never logged; FFI-fast identity
-  timing.
+  timing; blocking identity reads confirm exit with two reads and an async sleep
+  (no busy poll); a re-close of a retained `cleanupFailed` record skips
+  re-confirmation (sticky verdict, no status flip).
 - **`mcp/shared-registry.test.ts`** — two acquires share one child + release semantics;
   different env yields separate children; release-at-0 cannot race a concurrent
   acquire; acquire during healthy teardown gets a reviving record (not a zombie);

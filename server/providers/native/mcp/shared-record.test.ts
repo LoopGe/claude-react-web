@@ -136,6 +136,11 @@ describe('sharingKey', () => {
     const base: NativeMcpServerConfig = { type: 'stdio', command: 'node', args: ['server.mjs'] }
     // Insertion order of env keys must not change the identity.
     expect(sharingKey({ ...base, env: { A: '1', B: '2' } })).toBe(sharingKey({ ...base, env: { B: '2', A: '1' } }))
+    // Pathological comma-bearing keys whose coerced "k,v" pair strings TIE
+    // must still order deterministically (sort by KEY, not the joined pair) —
+    // a tie would fall back to insertion order and split one server in two.
+    expect(sharingKey({ ...base, env: { 'a,b': 'c', a: 'b,c' } }))
+      .toBe(sharingKey({ ...base, env: { a: 'b,c', 'a,b': 'c' } }))
     // An env VALUE change is a different identity (a different child).
     expect(sharingKey({ ...base, env: { A: '1' } })).not.toBe(sharingKey({ ...base, env: { A: '2' } }))
     // Presence vs absence of env differs too.
@@ -488,6 +493,78 @@ describe('SharedRecord cleanup death gate', () => {
     expect(rec.pid).toBe(pid)
     expect(ignoreExitCount(byePath)).toBe(1)
     expectChildAlive(pid)
+  }, 15_000)
+
+  // Blocking-read cadence pin: on a koffi-absent win32 host the identity
+  // probe is captureBirthTime's BLOCKING PowerShell spawnSync (~0.5-0.9s per
+  // read), so the exit confirmation must not busy-poll it at EXIT_POLL_MS —
+  // a hung close would freeze the event loop for the whole window. An
+  // injected probe stands in for that leg (injected probes are treated as
+  // blocking): exactly one immediate read + one final read at the deadline,
+  // with an ASYNC sleep between them. The FFI-fast pin below keeps the cheap
+  // leg honest.
+  it('blocking identity reads confirm exit with two reads and an async sleep, not a busy poll', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    let reads = 0
+    const probe = (pid: number): string | null => {
+      reads++
+      // A real synchronous stall, like spawnSync('powershell'): Atomics.wait
+      // blocks the thread without burning CPU.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+      return childIdentity(pid)
+    }
+    const rec = makeRecord(stdioConfig(byePath, '--ignore-exit'), { closeTimeoutMs: 400, identityProbe: probe })
+    await rec.connect()
+    expect(reads).toBe(1) // the spawn birth capture, nothing else
+    expect(rec.cleanupFailed).toBe(false)
+
+    // A timer landing inside the confirmation window (the close race takes
+    // ~400ms; the confirmation sleep runs ~400-800ms) proves the inter-read
+    // sleep yields to the event loop instead of blocking it synchronously.
+    let closeSettled = false
+    let yieldedDuringConfirm = false
+    setTimeout(() => { yieldedDuringConfirm = !closeSettled }, 500)
+    await rec.close()
+    closeSettled = true
+
+    expect(rec.cleanupFailed).toBe(true)
+    expect(rec.status).toBe('failed')
+    // Birth capture + exactly two confirmation reads. A 25ms busy poll over
+    // the 400ms window with a 10ms-blocking probe would take ~10 reads
+    // (mutation-verified RED: 10 vs 3).
+    expect(reads).toBe(3)
+    expect(yieldedDuringConfirm).toBe(true)
+    expectChildAlive(rec.pid!)
+  }, 15_000)
+
+  it('re-closing a retained cleanupFailed record skips re-confirmation (sticky verdict)', async () => {
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    let reads = 0
+    const probe = (pid: number): string | null => { reads++; return childIdentity(pid) }
+    const rec = makeRecord(stdioConfig(byePath, '--ignore-exit'), { closeTimeoutMs: 200, identityProbe: probe })
+    await rec.connect()
+    await rec.close()
+    expect(rec.cleanupFailed).toBe(true)
+    expect(rec.status).toBe('failed')
+    const readsAfterFirstClose = reads
+    const errorAfterFirstClose = rec.error
+
+    // A second release-at-0 of the retained record must not burn another
+    // confirmation window re-setting the same sticky flag (the child is
+    // still hung), and must not transiently flip status failed→disabled.
+    const started = Date.now()
+    const closing = rec.close()
+    await delay(0)
+    expect(rec.status).toBe('failed')
+    await closing
+    expect(reads).toBe(readsAfterFirstClose)
+    expect(Date.now() - started).toBeLessThan(200)
+    expect(rec.cleanupFailed).toBe(true)
+    expect(rec.status).toBe('failed')
+    expect(rec.error).toBe(errorAfterFirstClose)
+    expectChildAlive(rec.pid!)
   }, 15_000)
 
   // R5 regression pin: with the koffi FFI available, dead-pid identity reads

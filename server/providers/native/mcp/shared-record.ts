@@ -34,14 +34,20 @@
 //     sustained uptime past `maxDelayMs`.
 //   - Cleanup is fail-closed: `close()` races `client.close()` against
 //     `closeTimeoutMs`, then confirms the stdio child actually exited by
-//     polling its birth-time identity under a second `closeTimeoutMs` window.
+//     reading its birth-time identity under a second `closeTimeoutMs` window.
 //     The identity source is capability-gated: a sticky self-PID probe decides
 //     once per process whether the koffi FFI works — available reads go through
 //     `processIdentity` directly (microsecond death confirmation, no
 //     PowerShell on the teardown path), and only koffi-absent hosts fall back
-//     to `captureBirthTime`'s PowerShell leg. A child still alive at that
-//     deadline sets `cleanupFailed` (no automatic force-kill — the gate
-//     guards replacement). A `cleanupFailed` record refuses manual
+//     to `captureBirthTime`'s PowerShell leg. The confirmation cadence follows
+//     the same capability: cheap reads poll at `EXIT_POLL_MS`, while blocking
+//     reads (the PowerShell leg, or an injected probe of unknown cost) take
+//     one immediate read, an async sleep to the deadline, and one final read —
+//     a hung close must not busy-poll a blocking spawnSync and freeze the
+//     event loop. A child still alive at that deadline sets `cleanupFailed`
+//     (no automatic force-kill — the gate guards replacement); the verdict is
+//     sticky, so a re-close of a retained record skips re-confirmation. A
+//     `cleanupFailed` record refuses manual
 //     `reconnect()` until the child's death is confirmed: the
 //     identity must read null, so a recycled PID (a different birth-time
 //     identity) can never pass. Only an allowed reconnect clears the flag,
@@ -51,7 +57,6 @@
 //     indistinguishable from unreadable — fail-closed is not claimed there.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js'
 import type { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { CallToolResultSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { createMcpTransport, isMcpAuthError, type McpTransportTarget } from '../../../mcp-config.js'
@@ -66,7 +71,9 @@ const CLIENT_INFO = { name: 'claude-react-web-native', version: '1.0.0' }
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000
 const DEFAULT_CLOSE_TIMEOUT_MS = 5_000
-/** Poll cadence of the child-exit confirmation after a close. */
+/** Poll cadence of the child-exit confirmation when identity reads are cheap
+ *  (microsecond FFI / `kill(pid, 0)`). Blocking reads get a coarse two-read
+ *  cadence instead — see `confirmChildExit`. */
 const EXIT_POLL_MS = 25
 const DEFAULT_RECONNECT: ReconnectPolicy = {
   enabled: true,
@@ -76,15 +83,17 @@ const DEFAULT_RECONNECT: ReconnectPolicy = {
 }
 
 /** The host-global identity of a shared stdio config: command + args + env.
- *  Env entries are sorted so insertion order does not split one server into two
- *  children. Deliberately INCLUDES env, unlike the per-session replace-diff
- *  identity in `connections.ts` (which excludes it). */
+ *  Env entries are sorted BY KEY so insertion order does not split one server
+ *  into two children (a coerced "k,v" pair compare can tie on comma-bearing
+ *  keys and fall back to insertion order). Deliberately INCLUDES env, unlike
+ *  the per-session replace-diff identity in `connections.ts` (which excludes
+ *  it). */
 export function sharingKey(config: NativeMcpServerConfig): string {
   return JSON.stringify([
     'stdio',
     config.command ?? '',
     config.args ?? [],
-    Object.entries(config.env ?? {}).sort(),
+    Object.entries(config.env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   ])
 }
 
@@ -97,6 +106,15 @@ let ffiAvailable: boolean | undefined
 function ffiIdentityAvailable(): boolean {
   ffiAvailable ??= processIdentity(process.pid) !== null
   return ffiAvailable
+}
+
+/** Whether the DEFAULT identity probe reads cheaply: microsecond FFI on win32
+ *  with koffi, `kill(pid, 0)` on POSIX. Only the koffi-absent win32 leg blocks
+ *  the event loop (`captureBirthTime`'s synchronous PowerShell spawn,
+ *  ~0.5-0.9s per read), and the exit confirmation gives blocking reads a
+ *  coarse two-read cadence instead of the `EXIT_POLL_MS` poll. */
+function defaultIdentityReadIsCheap(): boolean {
+  return process.platform !== 'win32' || ffiIdentityAvailable()
 }
 
 /** Liveness + identity probe for one child PID, the default behind the
@@ -138,8 +156,6 @@ export interface ReconnectPolicy {
 }
 
 export interface SharedRecordOptions {
-  /** OAuth provider for a remote server, when the host stores credentials. */
-  authFor?: (name: string) => OAuthClientProvider | undefined
   connectTimeoutMs?: number // default 10_000
   toolTimeoutMs?: number // default 120_000
   /** Default { enabled: true, initialDelayMs: 500, maxDelayMs: 30_000, maxAttempts: 10 }. */
@@ -147,7 +163,9 @@ export interface SharedRecordOptions {
   closeTimeoutMs?: number // default 5_000
   /** Identity probe for the child-exit confirmation and the reconnect death
    *  gate; defaults to `childIdentity`. Injectable so tests can simulate PID
-   *  reuse deterministically (a mismatched birth-time identity). */
+   *  reuse deterministically (a mismatched birth-time identity). An injected
+   *  probe's read cost is unknown, so the exit confirmation treats it as
+   *  BLOCKING (the coarse two-read cadence, never the fast poll). */
   identityProbe?: (pid: number) => string | null
 }
 
@@ -179,12 +197,17 @@ export class SharedRecord {
    *  clears it. */
   cleanupFailed = false
 
-  private readonly authFor?: (name: string) => OAuthClientProvider | undefined
   private readonly connectTimeoutMs: number
   private readonly toolTimeoutMs: number
   private readonly closeTimeoutMs: number
   private readonly policy: ReconnectPolicy
   private readonly identityProbe: (pid: number) => string | null
+  /** Whether exit-confirmation reads are microsecond-cheap (the default probe
+   *  on the FFI / POSIX leg). Blocking reads — the koffi-absent PowerShell
+   *  fallback, or an injected probe of unknown cost — get the coarse two-read
+   *  cadence so a hung close cannot freeze the event loop with a poll of
+   *  synchronous spawns. */
+  private readonly cheapIdentityReads: boolean
   /** Reconnect attempt count within the active outage. Reset ONLY by sustained
    *  uptime past `maxDelayMs` or a manual `reconnect()` — never by a new loss,
    *  so a flapping server still burns its budget and gives up. */
@@ -219,12 +242,12 @@ export class SharedRecord {
     this.key = key
     this.config = config
     this.label = `${config.command ?? 'mcp'}#${shortHash(key)}`
-    this.authFor = opts.authFor
     this.connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this.toolTimeoutMs = opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
     this.closeTimeoutMs = opts.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS
     this.policy = opts.reconnect ?? DEFAULT_RECONNECT
     this.identityProbe = opts.identityProbe ?? childIdentity
+    this.cheapIdentityReads = opts.identityProbe === undefined && defaultIdentityReadIsCheap()
     this.ready = new Promise<void>((resolve) => {
       this.settleReady = resolve
     })
@@ -355,9 +378,14 @@ export class SharedRecord {
       // Out of service from the moment teardown starts: a closed record must
       // never stay marked 'connected' (a racing acquirer would see a zombie).
       // confirmChildExit overrides to 'failed' when the child survives the
-      // deadline; a revival reconnect moves it on to pending/connected.
-      this.status = 'disabled'
-      this.error = undefined
+      // deadline; a revival reconnect moves it on to pending/connected. A
+      // retained cleanupFailed record keeps its sticky verdict untouched —
+      // no transient failed→disabled downgrade, and confirmChildExit skips
+      // re-polling an outcome that cannot change.
+      if (!this.cleanupFailed) {
+        this.status = 'disabled'
+        this.error = undefined
+      }
       await this.closeResources()
       await this.confirmChildExit()
       this.tools = []
@@ -383,6 +411,11 @@ export class SharedRecord {
   private async runAttempt(): Promise<{ ok: true } | { ok: false; err: unknown }> {
     // Tear down the previous generation BEFORE spawning a replacement so a
     // reconnect never overlaps two children (and a freed child is gone first).
+    // This path runs no confirmChildExit (and a child lost before the
+    // handshake has no captured PID to confirm), so the no-overlap guarantee
+    // leans on the SDK stdio transport's close escalation: stdin EOF, then
+    // SIGTERM at ~2s, then SIGKILL at ~4s — all inside the default 5s close
+    // race, and on Windows SIGTERM is already a hard TerminateProcess.
     this.abort.abort()
     await this.closeResources()
     this.abort = new AbortController()
@@ -503,12 +536,12 @@ export class SharedRecord {
     this.uptimeTimer = undefined
   }
 
-  /** Build the transport and run the handshake, capturing the stdio child PID. */
+  /** Build the transport and run the handshake, capturing the stdio child PID.
+   *  Shared records are stdio-only (the view gates on type), and the stdio
+   *  transport takes no authProvider — OAuth belongs to the view's local
+   *  sse/http entries, so there is no auth plumbing here. */
   private async openConnection(client: Client): Promise<void> {
-    const transport = createMcpTransport(transportTarget(this.config), {
-      authProvider: this.authFor?.(this.key),
-      preferAuthProvider: true,
-    })
+    const transport = createMcpTransport(transportTarget(this.config))
     await client.connect(transport)
     if (this.config.type === 'stdio') {
       this.pid = (transport as StdioClientTransport).pid ?? null
@@ -599,23 +632,42 @@ export class SharedRecord {
     })
   }
 
-  /** Confirm the stdio child exited after a close: poll its identity until it
+  /** Confirm the stdio child exited after a close: read its identity until it
    *  reads null (dead) or a `closeTimeoutMs` window passes. A mismatched
    *  identity also proves exit — the PID was recycled, so the captured child
    *  is gone. Still alive at the deadline → `cleanupFailed`: no automatic
    *  force-kill, the death gate on `reconnect()` guards replacement. The flag
    *  is never cleared here — only a death-gated manual reconnect clears it, so
-   *  a retained record stays blocked even if the child dies later. */
+   *  a retained record stays blocked even if the child dies later.
+   *
+   *  Cadence follows the read cost: cheap reads (FFI / `kill(pid, 0)`) poll at
+   *  EXIT_POLL_MS; blocking reads (the koffi-absent PowerShell leg, or an
+   *  injected probe of unknown cost) take ONE immediate read, an ASYNC sleep
+   *  to the deadline, and ONE final read — a healthy close confirms in the
+   *  first read, and a hung close costs two blocking reads instead of a full
+   *  window of them freezing the event loop. */
   private async confirmChildExit(): Promise<void> {
     const pid = this.pid
     if (pid === null) return
+    // Sticky verdict: a prior close already proved the child outlived its
+    // deadline. Re-polling cannot change the outcome (only a death-gated
+    // reconnect clears the flag), so a re-close skips the window entirely.
+    if (this.cleanupFailed) return
     const deadline = Date.now() + this.closeTimeoutMs
-    for (;;) {
-      const identity = this.identityProbe(pid)
-      if (identity === null) return
-      if (this.birthTime !== null && identity !== this.birthTime) return
-      if (Date.now() >= deadline) break
-      await delay(EXIT_POLL_MS)
+    // null = dead; a mismatched identity = the PID was recycled, so the
+    // captured child is gone too.
+    const gone = (identity: string | null): boolean =>
+      identity === null || (this.birthTime !== null && identity !== this.birthTime)
+    if (this.cheapIdentityReads) {
+      for (;;) {
+        if (gone(this.identityProbe(pid))) return
+        if (Date.now() >= deadline) break
+        await delay(EXIT_POLL_MS)
+      }
+    } else {
+      if (gone(this.identityProbe(pid))) return
+      await delay(Math.max(0, deadline - Date.now()))
+      if (gone(this.identityProbe(pid))) return
     }
     this.cleanupFailed = true
     this.status = 'failed'

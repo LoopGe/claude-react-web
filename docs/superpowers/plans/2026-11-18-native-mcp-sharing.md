@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript / Node ≥ 20 ESM, `@modelcontextprotocol/sdk` Client + StdioClientTransport (`.pid` getter), vitest real-process tests (existing `stdio-server.mjs` fixture), koffi-backed `processIdentity` (win32-job.ts) for the death gate.
 
-**Spec:** `.agents/notes/proposed/architecture/2026-11-18-native-mcp-sharing.md`
+**Spec:** `.agents/notes/implemented/architecture/2026-11-18-native-mcp-sharing.md`
 
 ## Global Constraints
 
