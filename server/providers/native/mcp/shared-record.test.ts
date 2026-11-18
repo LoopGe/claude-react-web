@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { processIdentity } from '../../../win32-job.js'
+import { disableLogRing, enableLogRing, getLogConfig, readLogRing, setLogConfig } from '../../../log.js'
 import type { NativeMcpServerConfig } from './connections.js'
 import { SharedRecord, sharingKey } from './shared-record.js'
 
@@ -176,5 +177,41 @@ describe('SharedRecord', () => {
     await waitFor(() => existsSync(byePath), 5000, 'the stdio child to write its bye marker')
     await expectChildGone(pid)
     expect(rec.tools).toEqual([])
+  }, 15_000)
+
+  it('never logs secret env values in diagnostics', async () => {
+    // The sharing key embeds env values, so the raw key must never reach a log.
+    // Capture what the logger actually emits (its in-process ring) for both a
+    // successful and a failed connect carrying a distinctive secret, and assert
+    // neither the value nor the env key name appears — mirroring the env/header
+    // secrecy pin in connections.test.ts.
+    const dir = await tempDir()
+    const byePath = join(dir, 'bye.txt')
+    const secret = 'super-secret-env-value-12345'
+    const prevConfig = getLogConfig()
+    enableLogRing()
+    setLogConfig({ level: 'trace' })
+    try {
+      const rec = makeRecord({ ...stdioConfig(byePath), env: { SECRET_TOKEN: secret } })
+      await rec.connect()
+      expect(rec.status).toBe('connected')
+      await rec.close()
+
+      const bad = makeRecord({ type: 'stdio', command: 'definitely-not-allowed', env: { SECRET_TOKEN: secret } })
+      await bad.connect()
+      expect(bad.status).toBe('failed')
+
+      const { lines } = readLogRing({ scope: 'native-mcp-shared' })
+      expect(lines.length).toBeGreaterThan(0)
+      for (const line of lines) {
+        expect(line.msg).not.toContain(secret)
+        expect(line.msg).not.toContain('SECRET_TOKEN')
+      }
+      // The diagnostic tag is the non-secret command + 8-hex key hash.
+      expect(lines.some((l) => /\[node#[0-9a-f]{8}\] connected/.test(l.msg))).toBe(true)
+    } finally {
+      disableLogRing()
+      setLogConfig(prevConfig)
+    }
   }, 15_000)
 })

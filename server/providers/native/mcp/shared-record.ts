@@ -98,6 +98,11 @@ export class SharedRecord {
   private readonly connectTimeoutMs: number
   private readonly toolTimeoutMs: number
   private readonly closeTimeoutMs: number
+  /** Non-secret diagnostic tag. The sharing `key` embeds env values (API keys),
+   *  so it must never reach a log; this label carries only the command plus a
+   *  one-way hash of the key, which keeps distinct configs — including ones that
+   *  differ only in env — distinguishable without revealing any secret. */
+  private readonly label: string
   private client?: Client
   private connectTimer?: ReturnType<typeof setTimeout>
   private settleReady: () => void = noop
@@ -105,6 +110,7 @@ export class SharedRecord {
   constructor(key: string, config: NativeMcpServerConfig, opts: SharedRecordOptions = {}) {
     this.key = key
     this.config = config
+    this.label = `${config.command ?? 'mcp'}#${shortHash(key)}`
     this.authFor = opts.authFor
     this.connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this.toolTimeoutMs = opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
@@ -133,13 +139,13 @@ export class SharedRecord {
       const version = client.getServerVersion()
       if (version) this.serverInfo = { name: version.name, version: version.version }
       this.status = 'connected'
-      log.info(`[${this.key}] connected (${discovered.length} tools)`)
+      log.info(`[${this.label}] connected (${discovered.length} tools)`)
     } catch (err) {
       await this.closeResources()
       this.error = errorMessage(err)
       this.tools = []
       this.status = isMcpAuthError(err) ? 'needs-auth' : 'failed'
-      log.warn(`[${this.key}] ${this.status}: ${this.error}`)
+      log.warn(`[${this.label}] ${this.status}: ${this.error}`)
     } finally {
       // Resolving an already-settled promise is a no-op, so later attempts
       // (reconnects) leave `ready` pinned to the INITIAL settlement.
@@ -263,7 +269,7 @@ export class SharedRecord {
   private raceClose(client: Client): Promise<void> {
     return new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
-        log.warn(`[${this.key}] client close exceeded ${this.closeTimeoutMs}ms`)
+        log.warn(`[${this.label}] client close exceeded ${this.closeTimeoutMs}ms`)
         resolve()
       }, this.closeTimeoutMs)
       client.close().then(
@@ -273,7 +279,7 @@ export class SharedRecord {
         },
         (err) => {
           clearTimeout(timer)
-          log.debug(`[${this.key}] client close failed: ${errorMessage(err)}`)
+          log.debug(`[${this.label}] client close failed: ${errorMessage(err)}`)
           resolve()
         },
       )
@@ -287,6 +293,18 @@ function noop(): void {}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/** Stable 8-hex FNV-1a hash (same algorithm as `shared/mcp-fqn.ts`). One-way, so
+ *  hashing the env-bearing sharing key yields a distinguishable log tag without
+ *  exposing the env values it embeds. */
+function shortHash(input: string): string {
+  let hash = 2166136261
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i)
+    hash = Math.imul(hash, 16777619) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
 }
 
 function transportTarget(config: NativeMcpServerConfig): McpTransportTarget {
