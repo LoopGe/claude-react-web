@@ -9,13 +9,20 @@
 // `_testStream`); the tool-call scripting mirrors native-session.test.ts's MCP
 // test. The temp dir is a real git repo so the first-party git-tools server
 // has a working tree to report on.
+//
+// The last test proves host-global stdio SHARING through the same manager
+// path: two sessions with an identical external stdio config drive ONE real
+// child (stdio-server.mjs fixture), both route calls through it, deleting one
+// session keeps it alive for the survivor, and deleting the last reaps it.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { SessionStore } from '../../persistence.js'
@@ -23,11 +30,16 @@ import { SessionManager } from '../../session-manager.js'
 import { ProviderRegistry } from '../registry.js'
 import { NativeProvider } from './native-provider.js'
 import type { CanonicalEvent } from './canonical.js'
+import type { NativeMcpServerConfig } from './mcp/connections.js'
+import { childIdentity, sharingKey } from './mcp/shared-record.js'
+import type { SharedRegistry } from './mcp/shared-registry.js'
 
 const execFileAsync = promisify(execFile)
 
 const GIT_STATUS_FQN = 'mcp__git-tools__git_status'
 const ECHO_FQN = 'mcp__a__echo'
+const EXT_ECHO_FQN = 'mcp__ext__echo'
+const stdioFixturePath = fileURLToPath(new URL('./mcp/fixtures/stdio-server.mjs', import.meta.url))
 
 function textTurn(text: string): CanonicalEvent[] {
   return [
@@ -154,6 +166,7 @@ async function makeEnv(): Promise<{ cwd: string; stateDir: string }> {
 
 interface Fixture {
   sm: SessionManager
+  provider: NativeProvider
   requests: StreamRequest[]
   scripts: CanonicalEvent[][]
 }
@@ -178,7 +191,13 @@ async function makeFixture(stateDir: string): Promise<Fixture> {
   registry.register(provider)
   const sm = new SessionManager({ store, providers: registry })
   managers.push(sm)
-  return { sm, requests, scripts }
+  return { sm, provider, requests, scripts }
+}
+
+/** The provider's host-global shared MCP registry (private field; the same
+ *  test seam native-provider.mcp.test.ts reads). */
+function registryOf(provider: NativeProvider): SharedRegistry {
+  return (provider as unknown as { mcpRegistry: SharedRegistry }).mcpRegistry
 }
 
 async function createSession(
@@ -353,4 +372,87 @@ describe('native MCP end to end through SessionManager', () => {
 
     unsubscribe()
   })
+
+  it('shares ONE stdio child across two sessions; delete keeps it until the last user', async () => {
+    const { cwd, stateDir } = await makeEnv()
+    const fx = await makeFixture(stateDir)
+    // The bye marker lives in the state dir, keeping the git work tree clean.
+    const byePath = join(stateDir, 'bye.txt')
+    const cfg: NativeMcpServerConfig = { type: 'stdio', command: 'node', args: [stdioFixturePath, byePath] }
+    const key = sharingKey(cfg)
+    const reg = registryOf(fx.provider)
+    fx.scripts.push(
+      toolUseTurn('e1', EXT_ECHO_FQN, JSON.stringify({ text: 'from session one' })),
+      textTurn('one done'),
+      toolUseTurn('e2', EXT_ECHO_FQN, JSON.stringify({ text: 'from session two' })),
+      textTurn('two done'),
+      toolUseTurn('e3', EXT_ECHO_FQN, JSON.stringify({ text: 'survivor still works' })),
+      textTurn('three done'),
+    )
+    const id1 = await createSession(fx, cwd, { mcpServers: { ext: cfg }, canUseTool: allowingCanUseTool([]) })
+    const id2 = await createSession(fx, cwd, { mcpServers: { ext: cfg }, canUseTool: allowingCanUseTool([]) })
+    const c1 = collectFrames(fx.sm, id1)
+    const c2 = collectFrames(fx.sm, id2)
+
+    // Both manager-created sessions acquire the SAME provider-owned record:
+    // one registry entry, two users, one real child PID.
+    await vi.waitFor(() => {
+      expect(reg.get(key)?.users).toBe(2)
+    }, { timeout: 8000 })
+    const record = reg.get(key)!
+    await record.ready
+    expect(record.status).toBe('connected')
+    expect(reg.size).toBe(1)
+    const pid = record.pid!
+    expect(pid).toBeGreaterThan(0)
+
+    // Both sessions advertise the shared tool under their own session-local
+    // name (re-projected, never the env-bearing sharing key) alongside the
+    // first-party server, and both calls route through the ONE child.
+    await sendAndWait(fx, id1, c1.frames, 'echo from one', 1)
+    await sendAndWait(fx, id2, c2.frames, 'echo from two', 1)
+    expect(toolNames(fx.requests[0])).toContain(EXT_ECHO_FQN)
+    expect(toolNames(fx.requests[0])).toContain(GIT_STATUS_FQN)
+    expect(toolNames(fx.requests[2])).toContain(EXT_ECHO_FQN)
+    expect(toolResultsOf(fx.requests[1]).filter((r) => r.tool_use_id === 'e1'))
+      .toEqual([{ tool_use_id: 'e1', text: 'from session one', is_error: false }])
+    expect(toolResultsOf(fx.requests[3]).filter((r) => r.tool_use_id === 'e2'))
+      .toEqual([{ tool_use_id: 'e2', text: 'from session two', is_error: false }])
+    // No respawn across turns: the same child served both sessions.
+    expect(record.pid).toBe(pid)
+    expect(record.users).toBe(2)
+    for (const id of [id1, id2]) {
+      const statuses = (await fx.sm.mcpServerStatus(id)) as Array<Record<string, unknown>>
+      expect(statuses.find((s) => s.name === 'ext')).toMatchObject({ status: 'connected', scope: 'global' })
+    }
+
+    // Deleting one session releases only ITS ref: the child stays alive and
+    // the surviving session still routes calls through it.
+    await fx.sm.delete(id1)
+    await vi.waitFor(() => {
+      expect(record.users).toBe(1)
+    }, { timeout: 8000 })
+    expect(reg.size).toBe(1)
+    expect(existsSync(byePath)).toBe(false)
+    expect(childIdentity(pid)).not.toBeNull()
+    await sendAndWait(fx, id2, c2.frames, 'survivor echo', 2)
+    expect(toolResultsOf(fx.requests[5]).filter((r) => r.tool_use_id === 'e3'))
+      .toEqual([{ tool_use_id: 'e3', text: 'survivor still works', is_error: false }])
+    expect(record.pid).toBe(pid)
+
+    // Deleting the LAST user reaps the child: the registry drops the record,
+    // the fixture writes its bye marker, and the PID's identity reads null.
+    await fx.sm.delete(id2)
+    await vi.waitFor(() => {
+      expect(reg.size).toBe(0)
+    }, { timeout: 8000 })
+    await vi.waitFor(() => {
+      expect(existsSync(byePath)).toBe(true)
+    }, { timeout: 5000 })
+    expect(record.users).toBe(0)
+    expect(childIdentity(pid)).toBeNull()
+
+    c1.unsubscribe()
+    c2.unsubscribe()
+  }, 15_000)
 })
