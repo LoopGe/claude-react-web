@@ -36,12 +36,21 @@
   bottom: 0;
   height: var(--size-6px);
 }
+/* Cross-axis fill: updateAxis sizes only the DRAG axis inline (width here,
+   height on the vertical thumb). Block layout stretches width:auto to the
+   track, but height:auto on the empty thumb div collapses to 0 — without
+   this rule the horizontal thumb is just its 2px transparent border, too
+   thin to grab (measured live: 2px vs the vertical thumb's 6px). Pinned by
+   overlay-scrollbar-thumb.test.ts. */
+.os-track-horizontal .os-thumb {
+  height: 100%;
+}
 .os-track.os-track-hidden {
   display: none;
 }
 
-/* Thumb: transparent 1px border + background-clip:padding-box gives a 6px
-   colored core inside an 8px track — narrow footprint, still legible. Hidden
+/* Thumb: transparent 1px border + background-clip:padding-box gives a 4px
+   colored core inside a 6px track — narrow footprint, still legible. Hidden
    and non-interactive unless the track is .os-visible. */
 .os-thumb {
   pointer-events: none;

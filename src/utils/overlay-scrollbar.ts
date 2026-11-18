@@ -353,21 +353,35 @@ export function attachOverlayScrollbar(
       const thumbSize = variant === 'vertical' ? a.thumb.offsetHeight : a.thumb.offsetWidth
       const trackSize = variant === 'vertical' ? trackRect.height : trackRect.width
       const travel = trackSize - thumbSize
+      // The track origin must be on the SAME axis as the pointer coordinate
+      // (clientX pairs with left, clientY with top).
+      const trackOrigin = variant === 'vertical' ? trackRect.top : trackRect.left
+      // Preserve the grab point: the pointer's offset from the thumb's
+      // RENDERED leading edge, so the thumb follows the pointer exactly from
+      // the first move — even when the rAF thumb sync lags a wheel scroll.
+      // Centering the thumb under the pointer instead dead-zones edge grabs
+      // by thumbSize/2 and teleports opposite-edge grabs to the far end,
+      // which a wide diff thumb (half-width > travel) turns into "drag does
+      // nothing" / "jumps to the end".
+      const thumbRect = a.thumb.getBoundingClientRect()
+      const thumbEdge = variant === 'vertical' ? thumbRect.top : thumbRect.left
+      const pointerStart = variant === 'vertical' ? e.clientY : e.clientX
+      const grabOffset = pointerStart - thumbEdge
 
       const onMove = (ev: PointerEvent) => {
         // Recompute the scroll range each move: content can grow/shrink while
         // the user holds the drag (streaming), and a maxScroll frozen at
-        // pointerdown would stall short of the new bottom.
+        // pointerdown would stall short of the new bottom. Track/thumb
+        // geometry stays the pointerdown sample.
         const cs = variant === 'vertical' ? el.clientHeight : el.clientWidth
         const ss = variant === 'vertical' ? el.scrollHeight : el.scrollWidth
         const freshMaxScroll = ss - cs
         if (freshMaxScroll <= 0 || travel <= 0) return
         const pointerPos = variant === 'vertical' ? ev.clientY : ev.clientX
-        // Center the thumb under the pointer for a natural grab feel.
-        const rel = (pointerPos - trackRect.top - thumbSize / 2) / travel
-        const clamped = clamp(rel, 0, 1)
-        if (variant === 'vertical') el.scrollTop = clamped * freshMaxScroll
-        else el.scrollLeft = clamped * freshMaxScroll
+        const thumbPos = clamp(pointerPos - trackOrigin - grabOffset, 0, travel)
+        const scrollPos = (thumbPos / travel) * freshMaxScroll
+        if (variant === 'vertical') el.scrollTop = scrollPos
+        else el.scrollLeft = scrollPos
       }
       const onUp = (ev: PointerEvent) => {
         dragging = false
