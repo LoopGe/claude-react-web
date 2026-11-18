@@ -416,8 +416,23 @@ describe('SessionSearchPreview', () => {
     // The ack stays merged into the subagent lifecycle: no standalone result
     // bubble, and the launch metadata is not inlined into the main view.
     expectAllResultsMerged(container)
-    expect(container.querySelector('.subagent-card')).toBeTruthy()
     expect(container.textContent).not.toContain('Async agent launched successfully')
+    // Owner-seek: the active target is the owning Agent card row (the assistant
+    // item carrying tu-agent), and the consumed ack result row no longer renders.
+    expect(container.querySelector('[data-message-id="a5"] .subagent-card')).toBeTruthy()
+    expect(container.querySelector('[data-message-id="u6"]')).toBeNull()
+
+    // The hit stays findable: it seeks the owning Agent card (above) and the
+    // sidechain conversation is reachable via drill-in (non-vacuous positive
+    // assertion). The ack string itself is async launch metadata — the record
+    // stays `running` with resultOrigin 'async_metadata', which the detail view
+    // deliberately does not render as output (subagentResultContent returns
+    // undefined), exactly like the live transcript. So findability for an ack
+    // hit is the owning card + its reachable conversation, not a printed copy of
+    // the metadata; a literal "ack text in the sidechain" assertion cannot hold.
+    fireEvent.click(container.querySelector('.subagent-card-details')!)
+    expect(screen.getByText('Subagent conversation')).toBeTruthy()
+    expect(container.textContent).toContain('review')
   })
 
   it('uses the reducer-selected canonical result in the sidechain detail', () => {
@@ -480,6 +495,10 @@ describe('SessionSearchPreview', () => {
     // no standalone bubble alongside the card.
     expectAllResultsMerged(container)
     expect(container.querySelector('.subagent-card-done')).toBeTruthy()
+    // Owner-seek: the active target is the owning Agent card row, not the
+    // consumed canonical result row.
+    expect(container.querySelector('[data-message-id="a5"] .subagent-card')).toBeTruthy()
+    expect(container.querySelector('[data-message-id="u7"]')).toBeNull()
 
     fireEvent.click(container.querySelector('.subagent-card-details')!)
 
@@ -534,6 +553,10 @@ describe('SessionSearchPreview', () => {
     // no standalone bubble alongside the card.
     expectAllResultsMerged(container)
     expect(container.querySelector('.subagent-card-interrupted')).toBeTruthy()
+    // Owner-seek: the active target is the owning Agent card row, not the
+    // consumed errored result row.
+    expect(container.querySelector('[data-message-id="a5"] .subagent-card')).toBeTruthy()
+    expect(container.querySelector('[data-message-id="u6"]')).toBeNull()
 
     fireEvent.click(container.querySelector('.subagent-card-details')!)
 

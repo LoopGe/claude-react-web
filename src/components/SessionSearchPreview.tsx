@@ -132,14 +132,20 @@ export function SessionSearchPreview({
   const targetItemIndex = useMemo(() => {
     const resultId = targetInfo.resultId
     if (!resultId) return targetInfo.index
-    // Consumed results stay merged into their cards (generic tool cards as
-    // well as plan/question cards): rewriting their lifecycle would falsify
-    // the snapshot. Seek the owning card row instead of the consumed result
-    // row, which no longer renders on its own.
+    // Consumed results stay merged into their cards: rewriting their lifecycle
+    // would falsify the snapshot. Seek the owning card row instead of the
+    // consumed result row, which no longer renders on its own. Covers generic
+    // tool cards (toolResults), plan/question cards, and the sidechain owners
+    // (Agent/Task/Explore via activeSubagents, Workflow via activeWorkflows) —
+    // those ids never enter toolResults (TOOL_STATUS_EXCLUDE); their results
+    // are consumed through the sidechain records instead. Forked Skills are
+    // already covered via toolResults.
     if (
       lifecycle.planStatus.has(resultId) ||
       lifecycle.questionAnswers.has(resultId) ||
-      lifecycle.toolResults.has(resultId)
+      lifecycle.toolResults.has(resultId) ||
+      lifecycle.activeSubagents.has(resultId) ||
+      lifecycle.activeWorkflows.has(resultId)
     ) {
       const owner = items.findIndex((candidate) =>
         getBlocks(candidate.msg).some(
